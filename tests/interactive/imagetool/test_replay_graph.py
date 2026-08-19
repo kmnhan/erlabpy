@@ -11,6 +11,7 @@ import pytest
 import xarray as xr
 
 import erlab
+import erlab.extensions._api as extension_api
 from erlab.interactive.imagetool._provenance import _graph
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
@@ -74,6 +75,8 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
+    GaussianFilterOperation,
     ImageDerivativeOperation,
     IselOperation,
     QSelOperation,
@@ -102,6 +105,34 @@ def _exec_generated_code(
         namespace.update(namespace_items)
     exec(code, namespace, namespace)  # noqa: S102
     return namespace
+
+
+def _extension_routine_operation() -> ExtensionRoutineOperation:
+    return ExtensionRoutineOperation(
+        script_name="local_routine.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={},
+    )
+
+
+def _registered_routine(
+    script_path: pathlib.Path,
+) -> extension_api._RegisteredScriptCapability:
+    return extension_api._RegisteredScriptCapability(
+        registered_path=script_path,
+        script_name=script_path.name,
+        source_hash="a" * 64,
+        descriptor=erlab.extensions.RoutineDescriptor(
+            id="scale",
+            name="Scale",
+            category="Other",
+            summary="",
+            function_name="scale",
+        ),
+        source_bytes=script_path.read_bytes(),
+    )
 
 
 def _file_replay_source(
@@ -2426,6 +2457,365 @@ def test_replay_graph_restore_support_preserves_module_prologue(
         )
     assert namespace["__doc__"] == "Load the replay source."
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2))
+
+
+def test_extension_code_preserves_module_prologue(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code=(
+            '"""Generated extension workflow."""\n'
+            "from __future__ import annotations\n"
+            "import xarray as xr\n"
+            "annotation: MissingType | None = None\n"
+            "result = xr.DataArray([3.0])"
+        ),
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+
+    assert code.startswith(
+        '"""Generated extension workflow."""\nfrom __future__ import annotations'
+    )
+    assert namespace["__doc__"] == "Generated extension workflow."
+    assert namespace["__annotations__"] == {"annotation": "MissingType | None"}
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([6.0]))
+
+
+def test_extension_binding_does_not_shadow_nonuniform_restore_support(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "_restore_image_tool_dimensions.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    source = xr.DataArray(
+        [1.0, 2.0, 3.0],
+        dims=("x_idx",),
+        coords={"x": ("x_idx", [0.0, 0.2, 1.0])},
+    )
+    source_dict = source.to_dict()
+    extension_operation = ExtensionRoutineOperation(
+        script_name=script_path.name,
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={},
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code=(
+            f"import xarray as xr\nresult = xr.DataArray.from_dict({source_dict!r})"
+        ),
+        active_name="result",
+    ).append_replay_stage(
+        full_data(extension_operation, RestoreNonuniformDimsOperation())
+    )
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+    scale_call = next(
+        node
+        for node in ast.walk(ast.parse(code))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "scale"
+    )
+    scale_call_source = ast.get_source_segment(code, scale_call)
+
+    assert scale_call_source is not None
+    assert "\n" not in scale_call_source
+    expected = (source * 2.0).swap_dims({"x_idx": "x"})
+    xr.testing.assert_identical(namespace["result"], expected)
+
+
+def test_extension_code_preserves_external_framework_alias_input(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    source = xr.DataArray([1.0, 3.0, 2.0], dims=("x",))
+    gaussian = GaussianFilterOperation(sigma={"x": 0.5})
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use caller data",
+        seed_code="result = era",
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation(), gaussian))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"era": source})
+
+    module = ast.parse(code)
+    capture = next(
+        statement
+        for statement in module.body
+        if isinstance(statement, ast.Assign)
+        and isinstance(statement.value, ast.Name)
+        and statement.value.id == "era"
+    )
+    framework_import = next(
+        statement
+        for statement in module.body
+        if isinstance(statement, ast.Import)
+        and any(
+            alias.name == "erlab.analysis" and alias.asname == "era"
+            for alias in statement.names
+        )
+    )
+    if not isinstance(capture.targets[0], ast.Name):
+        pytest.fail("The caller data capture does not use a simple name")
+
+    assert capture.lineno < framework_import.lineno
+    assert capture.targets[0].id != "era"
+    xr.testing.assert_identical(namespace["result"], gaussian.apply(source * 2.0))
+
+
+def test_extension_code_hoists_nested_script_prologues(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    data_path = tmp_path / "source.nc"
+    xr.DataArray([4.0]).to_netcdf(data_path)
+    nested_source = file_load(
+        start_label="Load nested source",
+        seed_code=(
+            '"""Load the nested source."""\n'
+            "from __future__ import annotations\n"
+            "import xarray as xr\n"
+            f"derived = xr.load_dataarray({str(data_path)!r})"
+        ),
+        file_load_source=_file_replay_source(data_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use nested source",
+        seed_code=(
+            '"""Process the nested source."""\n'
+            "from __future__ import annotations\n"
+            "annotation: int | None = None\n"
+            "result = source"
+        ),
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="source",
+                label="Nested source",
+                provenance_spec=nested_source,
+            ),
+        ),
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+
+    assert code.startswith(
+        '"""Load the nested source."""\nfrom __future__ import annotations'
+    )
+    assert code.count("from __future__ import annotations") == 1
+    string_expressions = [
+        statement.value.value
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    ]
+    assert string_expressions == [
+        "Load the nested source.",
+        "Process the nested source.",
+    ]
+    assert namespace["__doc__"] == "Load the nested source."
+    assert namespace["__annotations__"] == {"annotation": "int | None"}
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([8.0]))
+
+
+def test_extension_code_preserves_nested_load_script_input(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use caller data",
+        seed_code=("def get_data():\n    return load_script\n\nresult = get_data()"),
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+    source = xr.DataArray([3.0])
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"load_script": source})
+
+    xr.testing.assert_identical(namespace["result"], source * 2.0)
+
+
+def test_extension_code_preserves_later_load_script_input(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = script(
+        ScriptCodeOperation(
+            label="Use caller data",
+            code="result = load_script",
+        ),
+        start_label="Create data",
+        seed_code="result = xr.DataArray([1.0])",
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+    source = xr.DataArray([3.0])
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"load_script": source})
+
+    xr.testing.assert_identical(namespace["result"], source * 2.0)
+
+
+def test_extension_code_does_not_capture_later_local_load_script_binding(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use local data",
+        seed_code=(
+            "def get_data():\n"
+            "    return load_script\n\n"
+            "load_script = xr.DataArray([3.0])\n"
+            "result = get_data()"
+        ),
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([6.0]))
 
 
 def test_replay_graph_restore_support_does_not_shadow_script_function(

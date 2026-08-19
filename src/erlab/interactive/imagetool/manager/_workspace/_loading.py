@@ -26,6 +26,7 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
+from erlab.extensions._models import _script_name_key
 from erlab.interactive import _qt_state
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
@@ -46,7 +47,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromWorkspaceManifestDialog,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
-    _WorkspaceExtensionRequirement,
+    _WorkspaceScriptRequirement,
 )
 from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
@@ -54,6 +55,10 @@ from erlab.interactive.imagetool.manager._widgets import (
 )
 from erlab.interactive.imagetool.manager._workspace._format import (
     _require_itws_workspace_path,
+)
+from erlab.interactive.imagetool.manager._workspace._state import (
+    _OpaqueManifestContainer,
+    _WorkspaceScriptState,
 )
 
 if typing.TYPE_CHECKING:
@@ -880,6 +885,7 @@ class _WorkspaceLoader:
         profiler: _WorkspaceLoadProfiler | None = None,
         pending_workspace_memory_payload: tuple[str | os.PathLike[str], str]
         | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         with _workspace_load_stage(profiler, "imagetool metadata restore"):
             uid = ds.attrs.get("manager_node_uid")
@@ -942,8 +948,13 @@ class _WorkspaceLoader:
                 and not replay_source_pending
             ):
                 replay_source_data = self._workspace_replay_source_data(ds, uid=uid)
+            saved_uid = self._workspace_saved_uid_from_dataset(ds)
             kwargs: dict[str, typing.Any] = {
-                "uid": uid,
+                "uid": (
+                    saved_uid
+                    if saved_uid is None or reserved_uids is None
+                    else reserved_uids.get(saved_uid, saved_uid)
+                ),
                 "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
                 "source_snapshot_token": ds.attrs.get(
                     "manager_node_source_snapshot_token"
@@ -986,14 +997,24 @@ class _WorkspaceLoader:
             ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
 
             if pending_workspace_memory_payload is not None:
-                return self.pending._register_pending_workspace_imagetool(
-                    ds,
+                pending_ds = self._workspace_dataset_with_reserved_uid(
+                    ds, reserved_uids
+                )
+                target = self.pending._register_pending_workspace_imagetool(
+                    pending_ds,
                     parent_target=parent_target,
                     node_path=node_path,
                     kwargs=kwargs,
                     pending_workspace_memory_payload=pending_workspace_memory_payload,
                     loaded_targets_by_uid=loaded_targets_by_uid,
                 )
+                self._record_reserved_workspace_target(
+                    saved_uid,
+                    target,
+                    loaded_targets_by_uid,
+                    reserved_uids,
+                )
+                return target
 
         with _workspace_load_stage(profiler, "imagetool widget restore"):
             tool = ImageTool.from_dataset(ds, **tool_kwargs)
@@ -1067,17 +1088,27 @@ class _WorkspaceLoader:
         profiler: _WorkspaceLoadProfiler | None = None,
         pending_workspace_tool_payload: tuple[str | os.PathLike[str], str]
         | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         if pending_workspace_tool_payload is not None:
             self.pending._validate_pending_workspace_tool_dataset(
                 ds, parent_target=parent_target
             )
-            return self.pending._register_pending_workspace_tool(
-                ds,
+            saved_uid = self._workspace_saved_uid_from_dataset(ds)
+            pending_ds = self._workspace_dataset_with_reserved_uid(ds, reserved_uids)
+            target = self.pending._register_pending_workspace_tool(
+                pending_ds,
                 parent_target=parent_target,
                 pending_workspace_tool_payload=pending_workspace_tool_payload,
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
+            self._record_reserved_workspace_target(
+                saved_uid,
+                target,
+                loaded_targets_by_uid,
+                reserved_uids,
+            )
+            return target
 
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
         try:
@@ -1102,12 +1133,18 @@ class _WorkspaceLoader:
                     )
                 )
             with _workspace_load_stage(profiler, "tool manager registration"):
+                saved_uid = self._workspace_saved_uid_from_dataset(ds)
+                reserved_uid = (
+                    saved_uid
+                    if saved_uid is None or reserved_uids is None
+                    else reserved_uids.get(saved_uid, saved_uid)
+                )
                 if parent_target is None:
                     self._require_workspace_root_tool_is_figure(tool)
                     target = self._manager.add_figuretool(
                         tool,
                         show=_workspace_dataset_window_visible(ds, "tool"),
-                        uid=ds.attrs.get("manager_node_uid"),
+                        uid=reserved_uid,
                         snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
                         source_snapshot_token=ds.attrs.get(
                             "manager_node_source_snapshot_token"
@@ -1120,7 +1157,7 @@ class _WorkspaceLoader:
                         tool,
                         parent_target,
                         show=_workspace_dataset_window_visible(ds, "tool"),
-                        uid=ds.attrs.get("manager_node_uid"),
+                        uid=reserved_uid,
                         snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
                         source_snapshot_token=ds.attrs.get(
                             "manager_node_source_snapshot_token"
@@ -1158,6 +1195,83 @@ class _WorkspaceLoader:
         if isinstance(uid, str) and uid:
             return uid
         return None
+
+    @classmethod
+    def _workspace_dataset_with_reserved_uid(
+        cls,
+        ds: xr.Dataset,
+        reserved_uids: Mapping[str, str] | None,
+    ) -> xr.Dataset:
+        """Return a metadata view with the preallocated incoming node UID."""
+        saved_uid = cls._workspace_saved_uid_from_dataset(ds)
+        if saved_uid is None or reserved_uids is None:
+            return ds
+        reserved_uid = reserved_uids.get(saved_uid, saved_uid)
+        if reserved_uid == saved_uid:
+            return ds
+        reserved = ds.copy(deep=False)
+        reserved.attrs = dict(ds.attrs)
+        reserved.attrs["manager_node_uid"] = reserved_uid
+        return reserved
+
+    @staticmethod
+    def _record_reserved_workspace_target(
+        saved_uid: str | None,
+        target: int | str,
+        loaded_targets_by_uid: dict[str, int | str] | None,
+        reserved_uids: Mapping[str, str] | None,
+    ) -> None:
+        """Keep the saved-to-target map authoritative after metadata rebasing."""
+        if saved_uid is None or loaded_targets_by_uid is None:
+            return
+        if reserved_uids is not None:
+            reserved_uid = reserved_uids.get(saved_uid, saved_uid)
+            if reserved_uid != saved_uid:
+                loaded_targets_by_uid.pop(reserved_uid, None)
+        loaded_targets_by_uid[saved_uid] = target
+
+    def _reserve_workspace_uids(
+        self,
+        manifest: Mapping[str, typing.Any] | None,
+        incoming_scripts: _WorkspaceScriptState | None = None,
+        *,
+        selected_paths: Collection[str] | None = None,
+    ) -> dict[str, str]:
+        """Allocate every incoming node identity before any node is restored.
+
+        Failed nodes still need distinct identities because their unresolved script
+        requirements remain in the document after a degraded load.
+        """
+        incoming_uids: list[str] = []
+        manifest_uids: set[str] = set()
+        for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
+            if selected_paths is not None and entry.get("path") not in selected_paths:
+                continue
+            uid = entry.get("uid")
+            if not isinstance(uid, str) or not uid:
+                continue
+            if uid in manifest_uids:
+                raise ValueError(
+                    f"Workspace manifest contains duplicate node UID {uid!r}"
+                )
+            manifest_uids.add(uid)
+            incoming_uids.append(uid)
+        if incoming_scripts is not None:
+            for requirement in incoming_scripts.requirements:
+                for uid in requirement.referencing_nodes:
+                    if uid not in manifest_uids:
+                        manifest_uids.add(uid)
+                        incoming_uids.append(uid)
+
+        used = set(self._manager._tool_graph.nodes)
+        reserved: dict[str, str] = {}
+        for saved_uid in incoming_uids:
+            candidate = saved_uid
+            while candidate in used:
+                candidate = uuid.uuid4().hex
+            reserved[saved_uid] = candidate
+            used.add(candidate)
+        return reserved
 
     def _record_workspace_loaded_node_target(
         self,
@@ -1298,6 +1412,7 @@ class _WorkspaceLoader:
         node_path: str | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = None
@@ -1356,6 +1471,7 @@ class _WorkspaceLoader:
                 node_path=node_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
                 pending_workspace_memory_payload=pending_imagetool_payload,
+                reserved_uids=reserved_uids,
             )
         elif "tool" in node_tree:
             ds = None
@@ -1394,6 +1510,7 @@ class _WorkspaceLoader:
                 parent_target=parent_target,
                 loaded_targets_by_uid=loaded_targets_by_uid,
                 pending_workspace_tool_payload=pending_tool_payload,
+                reserved_uids=reserved_uids,
             )
         else:
             raise ValueError("Workspace node has no supported window payload")
@@ -1431,6 +1548,7 @@ class _WorkspaceLoader:
                         else f"{node_path}/childtools/{child_key}"
                     ),
                     loaded_targets_by_uid=loaded_targets_by_uid,
+                    reserved_uids=reserved_uids,
                 )
         return target
 
@@ -1444,6 +1562,7 @@ class _WorkspaceLoader:
         node_path: str | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str | None:
         try:
             return self._load_workspace_node(
@@ -1454,6 +1573,7 @@ class _WorkspaceLoader:
                 node_path=node_path,
                 workspace_file_path=workspace_file_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
+                reserved_uids=reserved_uids,
             )
         except Exception as exc:
             self._record_skipped_workspace_node(node_path, exc)
@@ -1468,6 +1588,7 @@ class _WorkspaceLoader:
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int:
         loaded_count = 0
         for key in root_keys:
@@ -1483,6 +1604,7 @@ class _WorkspaceLoader:
                     workspace_file_path=workspace_file_path,
                     node_path=key,
                     loaded_targets_by_uid=loaded_targets_by_uid,
+                    reserved_uids=reserved_uids,
                 )
                 if target is not None:
                     loaded_count += 1
@@ -1496,6 +1618,7 @@ class _WorkspaceLoader:
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int:
         if "figures" not in tree:
             return 0
@@ -1522,6 +1645,7 @@ class _WorkspaceLoader:
                 workspace_file_path=workspace_file_path,
                 node_path=figure_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
+                reserved_uids=reserved_uids,
             )
             if target is not None:
                 loaded_count += 1
@@ -1536,8 +1660,7 @@ class _WorkspaceLoader:
         mark_dirty: bool,
         selected_paths: set[str] | None = None,
         profiler: _WorkspaceLoadProfiler | None = None,
-        incoming_extension_requirements: Iterable[_WorkspaceExtensionRequirement]
-        | None = None,
+        incoming_extension_state: _WorkspaceScriptState | None = None,
     ) -> bool:
         if profiler is None:
             profiler = _WorkspaceLoadProfiler(fname)
@@ -1546,6 +1669,15 @@ class _WorkspaceLoader:
         root_order = manifest.get("root_order", ())
         if not isinstance(nodes, list) or not isinstance(root_order, list):
             raise TypeError("Workspace manifest is missing node ordering")
+        if (
+            not replace
+            and incoming_extension_state is not None
+            and incoming_extension_state.has_opaque_requirements
+        ):
+            raise ValueError(
+                "cannot import a workspace with opaque extension requirements; "
+                "open the workspace instead"
+            )
 
         entries_by_path: dict[str, Mapping[str, typing.Any]] = {}
         for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
@@ -1576,6 +1708,7 @@ class _WorkspaceLoader:
             raise ValueError("Workspace manifest has no loadable root nodes")
 
         loaded_targets_by_uid: dict[str, int | str] = {}
+        reserved_uids: dict[str, str] = {}
         child_paths: dict[str, list[str]] = {path: [] for path in entries_by_path}
         for path in entries_by_path:
             if "/childtools/" not in path:
@@ -1708,6 +1841,7 @@ class _WorkspaceLoader:
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     profiler=profiler,
                     pending_workspace_memory_payload=pending_payload,
+                    reserved_uids=reserved_uids,
                 )
             else:
                 target = self._load_workspace_tool_dataset(
@@ -1716,6 +1850,7 @@ class _WorkspaceLoader:
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     profiler=profiler,
                     pending_workspace_tool_payload=pending_payload,
+                    reserved_uids=reserved_uids,
                 )
             for child_path in child_paths[path]:
                 _load_path_or_warn(child_path, target)
@@ -1766,6 +1901,12 @@ class _WorkspaceLoader:
             else contextlib.nullcontext()
         )
         backup: _WorkspaceReplaceBackup | None = None
+        previous_import_scripts = (
+            self._manager._workspace_state.extension_scripts.copy()
+            if not replace
+            else None
+        )
+        extension_scripts_changed = False
         with (
             maybe_guard,
             erlab.interactive.utils.wait_dialog(
@@ -1781,6 +1922,18 @@ class _WorkspaceLoader:
                         self._manager._workspace_state.advance_document_identity()
                         self._manager.remove_all_tools()
                         self._controller._drain_workspace_restore_events()
+                reserved_uids = self._reserve_workspace_uids(
+                    manifest,
+                    incoming_extension_state,
+                    selected_paths=selected_paths,
+                )
+                if incoming_extension_state is not None:
+                    incoming_extension_state = incoming_extension_state.copy()
+                    incoming_extension_state.rebase_nodes(reserved_uids)
+                    extension_scripts_changed = self._install_extension_scripts(
+                        incoming_extension_state,
+                        replace=replace,
+                    )
                 loaded_count = 0
                 for root_path in root_paths:
                     if _load_path_or_warn(root_path) is not None:
@@ -1793,9 +1946,6 @@ class _WorkspaceLoader:
                 with profiler.stage("link/layout restore"):
                     self._manager._rebase_loaded_workspace_dependency_refs(
                         loaded_targets_by_uid,
-                        incoming_extension_requirements=(
-                            incoming_extension_requirements
-                        ),
                     )
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if replace:
@@ -1805,6 +1955,10 @@ class _WorkspaceLoader:
                         self._restore_workspace_loader_state(manifest)
                         self._restore_acquisition_context(manifest)
                         self._restore_standalone_apps_state(manifest)
+                if mark_dirty and not replace and extension_scripts_changed:
+                    self._controller._mark_workspace_structure_dirty(
+                        "Imported extension scripts"
+                    )
                 if not mark_dirty:
                     with profiler.stage("ui catch-up"):
                         self._controller._drain_workspace_restore_events()
@@ -1814,6 +1968,10 @@ class _WorkspaceLoader:
                         self._restore_replaced_workspace_backup(backup)
                     except Exception:
                         logger.exception("Failed to restore previous workspace")
+                elif previous_import_scripts is not None:
+                    self._manager._workspace_state.extension_scripts.replace(
+                        previous_import_scripts
+                    )
                 raise
             finally:
                 if backup is not None:
@@ -1943,6 +2101,7 @@ class _WorkspaceLoader:
             )
             backup: _WorkspaceReplaceBackup | None = None
             loaded_targets_by_uid: dict[str, int | str] = {}
+            reserved_uids: dict[str, str] = {}
             with (
                 maybe_guard,
                 erlab.interactive.utils.wait_dialog(
@@ -1959,6 +2118,8 @@ class _WorkspaceLoader:
                             self._manager._workspace_state.advance_document_identity()
                             self._manager.remove_all_tools()
                             self._controller._drain_workspace_restore_events()
+                        self._manager._workspace_state.extension_scripts.clear()
+                    reserved_uids = self._reserve_workspace_uids(manifest)
                     root_item = (
                         None
                         if dialog is None
@@ -1972,6 +2133,7 @@ class _WorkspaceLoader:
                             manifest=manifest,
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
+                            reserved_uids=reserved_uids,
                         )
                         loaded_count += self._load_workspace_figures(
                             tree,
@@ -1979,6 +2141,7 @@ class _WorkspaceLoader:
                             manifest=manifest,
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
+                            reserved_uids=reserved_uids,
                         )
                     if loaded_count == 0 and self._skipped_workspace_nodes:
                         self._raise_no_workspace_windows_loaded()
@@ -2452,57 +2615,20 @@ class _WorkspaceLoader:
                                 ):
                                     return self._finish_workspace_file_load(False)
                                 selected_paths = dialog.selected_paths()
-                            previous_extension_state = (
-                                self._manager._extensions.workspace_requirement_state()
+                            incoming_extension_state = self._prepare_extension_scripts(
+                                access.path,
+                                manifest,
+                                selected_paths=selected_paths,
                             )
-                            previous_save_as_only = (
-                                self._manager._workspace_state.save_as_only
+                            loaded = self._from_h5py_workspace_file(
+                                access.path,
+                                manifest,
+                                replace=replace,
+                                mark_dirty=mark_dirty,
+                                selected_paths=selected_paths,
+                                profiler=profiler,
+                                incoming_extension_state=incoming_extension_state,
                             )
-                            previous_degraded_reasons = (
-                                self._manager._workspace_state.degraded_reasons
-                            )
-                            try:
-                                incoming_extension_requirements = (
-                                    self._prepare_extension_requirements(
-                                        access.path,
-                                        manifest,
-                                        replace=replace,
-                                        selected_paths=selected_paths,
-                                    )
-                                )
-                                loaded = self._from_h5py_workspace_file(
-                                    access.path,
-                                    manifest,
-                                    replace=replace,
-                                    mark_dirty=mark_dirty,
-                                    selected_paths=selected_paths,
-                                    profiler=profiler,
-                                    incoming_extension_requirements=(
-                                        incoming_extension_requirements
-                                    ),
-                                )
-                            except Exception:
-                                (
-                                    previous_requirements,
-                                    previous_embedded_sources,
-                                    previous_unresolved_embedded_objects,
-                                    previous_unresolved_payloads,
-                                ) = previous_extension_state
-                                self._manager._extensions.set_workspace_requirements(
-                                    previous_requirements,
-                                    embedded_sources=previous_embedded_sources,
-                                    unresolved_embedded_objects=(
-                                        previous_unresolved_embedded_objects
-                                    ),
-                                    unresolved_payloads=previous_unresolved_payloads,
-                                )
-                                self._manager._workspace_state.save_as_only = (
-                                    previous_save_as_only
-                                )
-                                self._manager._workspace_state.degraded_reasons = (
-                                    previous_degraded_reasons
-                                )
-                                raise
                             if loaded and associate:
                                 self._controller._associate_loaded_workspace_file(
                                     access.path,
@@ -2569,7 +2695,6 @@ class _WorkspaceLoader:
                         profiler=profiler,
                     )
                     if replace:
-                        self._manager._extensions.set_workspace_requirements(())
                         self._manager._workspace_state.save_as_only = False
                         self._manager._workspace_state.degraded_reasons = ()
                     if loaded and associate:
@@ -2600,17 +2725,23 @@ class _WorkspaceLoader:
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes
 
-    def _prepare_extension_requirements(
+    def _prepare_extension_scripts(
         self,
         workspace_path: pathlib.Path,
         manifest: Mapping[str, typing.Any],
         *,
-        replace: bool,
         selected_paths: set[str] | None,
-    ) -> tuple[_WorkspaceExtensionRequirement, ...]:
-        """Inspect exact workspace requirements without importing embedded code."""
+    ) -> _WorkspaceScriptState:
+        """Read document-owned script metadata and bytes without importing code."""
         selected_uids: set[str] | None = None
-        if selected_paths is not None:
+        manifest_paths = {
+            str(path)
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
+                manifest
+            )
+            if isinstance((path := entry.get("path")), str)
+        }
+        if selected_paths is not None and not manifest_paths.issubset(selected_paths):
             selected_uids = {
                 str(uid)
                 for entry in workspace_format._iter_workspace_manifest_node_entries(
@@ -2619,15 +2750,46 @@ class _WorkspaceLoader:
                 if entry.get("path") in selected_paths
                 and isinstance((uid := entry.get("uid")), str)
             }
-        raw_requirements = manifest.get("extension_requirements", ())
-        requirements: list[_WorkspaceExtensionRequirement] = []
-        unresolved_payloads: list[typing.Any] = []
-        embedded_sources: dict[tuple[str, str], bytes] = {}
-        unresolved_embedded_objects: dict[str, tuple[bytes, str | None]] = {}
-        invalid_entries = 0
 
-        def read_embedded_object(object_id: str) -> tuple[bytes, str | None] | None:
+        requirements: list[_WorkspaceScriptRequirement] = []
+        opaque_requirements: list[typing.Any] = []
+        opaque_sources: list[typing.Any] = []
+        opaque_objects: dict[str, tuple[bytes, str | None]] = {}
+        state = _WorkspaceScriptState()
+        referenced_sources: set[tuple[str, str]] = set()
+        validated_script_names: dict[str, str] = {}
+
+        def reserve_script_name(script_name: str) -> bool:
+            key = _script_name_key(script_name)
+            previous = validated_script_names.setdefault(key, script_name)
+            return previous == script_name
+
+        def selected_raw_requirement(raw: typing.Any) -> bool:
+            if selected_uids is None:
+                return True
+            if not selected_uids:
+                return False
+            references = raw.get("referencing_nodes") if isinstance(raw, dict) else None
+            if not isinstance(references, (list, tuple)):
+                return True
+            return any(
+                isinstance(uid, str) and uid in selected_uids for uid in references
+            )
+
+        def raw_source_key(raw: typing.Any) -> tuple[str, str] | None:
+            if not isinstance(raw, dict):
+                return None
+            script_name = raw.get("script_name")
+            source_hash = raw.get("source_hash")
+            if isinstance(script_name, str) and isinstance(source_hash, str):
+                return script_name, source_hash
+            return None
+
+        def read_embedded_object(
+            object_id: str,
+        ) -> tuple[bytes, str | None] | None:
             try:
+                workspace_store.WorkspaceStore.object_path(object_id)
                 return workspace_storage._read_workspace_blob(workspace_path, object_id)
             except Exception:
                 logger.warning(
@@ -2638,33 +2800,30 @@ class _WorkspaceLoader:
                 )
                 return None
 
+        def preserve_raw_source_object(raw: typing.Any) -> None:
+            object_ids = workspace_store.WorkspaceStore.manifest_extension_object_ids(
+                {"embedded_extension_sources": raw}
+            )
+            for object_id in object_ids:
+                embedded_object = read_embedded_object(object_id)
+                if embedded_object is not None:
+                    opaque_objects[object_id] = embedded_object
+
+        raw_requirements = manifest.get("extension_requirements", ())
+        opaque_requirement_container: _OpaqueManifestContainer | None = None
         if isinstance(raw_requirements, list):
             for raw in raw_requirements:
-                if selected_uids is not None:
-                    raw_references = (
-                        raw.get("referencing_nodes") if isinstance(raw, dict) else None
-                    )
-                    if not isinstance(raw_references, (list, tuple)) or not any(
-                        isinstance(uid, str) and uid in selected_uids
-                        for uid in raw_references
-                    ):
-                        continue
+                if not selected_raw_requirement(raw):
+                    continue
                 try:
-                    requirement = _WorkspaceExtensionRequirement.model_validate(raw)
+                    requirement = _WorkspaceScriptRequirement.model_validate(raw)
                 except Exception:
-                    invalid_entries += 1
-                    unresolved_payloads.append(copy.deepcopy(raw))
-                    object_id = (
-                        raw.get("embedded_object_id") if isinstance(raw, dict) else None
-                    )
-                    if (
-                        isinstance(object_id, str)
-                        and (embedded_object := read_embedded_object(object_id))
-                        is not None
-                    ):
-                        unresolved_embedded_objects[object_id] = embedded_object
+                    opaque_requirements.append(copy.deepcopy(raw))
+                    source_key = raw_source_key(raw)
+                    if source_key is not None:
+                        referenced_sources.add(source_key)
                     logger.warning(
-                        "Preserving an invalid workspace extension requirement",
+                        "Preserving an invalid workspace script requirement",
                         exc_info=True,
                         extra={"suppress_ui_alert": True},
                     )
@@ -2680,90 +2839,141 @@ class _WorkspaceLoader:
                     requirement = requirement.model_copy(
                         update={"referencing_nodes": selected_references}
                     )
+                if not reserve_script_name(requirement.script_name):
+                    opaque_requirements.append(copy.deepcopy(raw))
+                    referenced_sources.add(
+                        (requirement.script_name, requirement.source_hash)
+                    )
+                    logger.warning(
+                        "Preserving a workspace script requirement with an "
+                        "ambiguous filename",
+                        extra={"suppress_ui_alert": True},
+                    )
+                    continue
                 requirements.append(requirement)
-                if requirement.embedded_object_id is None:
-                    continue
-                embedded_object = read_embedded_object(requirement.embedded_object_id)
-                if embedded_object is None:
-                    continue
-                source, kind = embedded_object
-                if kind != "extension-python-source-v1":
-                    unresolved_embedded_objects[requirement.embedded_object_id] = (
-                        source,
-                        kind,
-                    )
-                    continue
-                embedded_sources[
-                    (requirement.extension_id, requirement.source_hash)
-                ] = source
-                if hashlib.sha256(source).hexdigest() != requirement.source_hash:
-                    unresolved_embedded_objects[requirement.embedded_object_id] = (
-                        source,
-                        kind,
-                    )
-        elif "extension_requirements" in manifest:
-            invalid_entries = 1
-            unresolved_payloads.append(copy.deepcopy(raw_requirements))
-            object_id = (
-                raw_requirements.get("embedded_object_id")
-                if isinstance(raw_requirements, dict)
-                else None
+                referenced_sources.add(
+                    (requirement.script_name, requirement.source_hash)
+                )
+        elif "extension_requirements" in manifest and selected_raw_requirement(
+            raw_requirements
+        ):
+            opaque_requirement_container = _OpaqueManifestContainer(
+                copy.deepcopy(raw_requirements)
             )
-            if (
-                isinstance(object_id, str)
-                and (embedded_object := read_embedded_object(object_id)) is not None
-            ):
-                unresolved_embedded_objects[object_id] = embedded_object
+            source_key = raw_source_key(raw_requirements)
+            if source_key is not None:
+                referenced_sources.add(source_key)
             logger.warning(
-                "Preserving a malformed workspace extension requirement container",
+                "Preserving a malformed workspace script requirement container",
                 extra={"suppress_ui_alert": True},
             )
-        if replace:
-            self._manager._extensions.set_workspace_requirements(
-                requirements,
-                embedded_sources=embedded_sources,
-                unresolved_embedded_objects=unresolved_embedded_objects,
-                unresolved_payloads=unresolved_payloads,
-            )
-        else:
-            # One source hash names one source object across the combined document.
-            # Prefer bytes that satisfy that identity. If neither copy does, retain
-            # the open document's bytes so an import cannot replace unresolved state.
-            merged_embedded_sources = dict(
-                self._manager._extensions._workspace_embedded_sources
-            )
-            for key, source in embedded_sources.items():
-                existing_source = merged_embedded_sources.get(key)
+
+        raw_sources = manifest.get("embedded_extension_sources", ())
+        opaque_source_container: _OpaqueManifestContainer | None = None
+        seen_verified: set[tuple[str, str]] = set()
+        has_opaque_dependency = bool(
+            opaque_requirements or opaque_requirement_container is not None
+        )
+        if isinstance(raw_sources, list):
+            for raw in raw_sources:
+                source_key = raw_source_key(raw)
+                try:
+                    entry = (
+                        workspace_format._WorkspaceEmbeddedScriptEntry.model_validate(
+                            raw
+                        )
+                    )
+                except Exception:
+                    if (
+                        selected_uids is not None
+                        and source_key is not None
+                        and source_key not in referenced_sources
+                        and not has_opaque_dependency
+                    ):
+                        continue
+                    opaque_sources.append(copy.deepcopy(raw))
+                    preserve_raw_source_object(raw)
+                    logger.warning(
+                        "Preserving an invalid embedded script source entry",
+                        exc_info=True,
+                        extra={"suppress_ui_alert": True},
+                    )
+                    continue
                 if (
-                    existing_source is None
-                    or hashlib.sha256(source).hexdigest() == key[1]
+                    selected_uids is not None
+                    and (entry.script_name, entry.source_hash) not in referenced_sources
+                    and not has_opaque_dependency
                 ):
-                    merged_embedded_sources[key] = source
-
-            merged_unresolved_objects = dict(
-                self._manager._extensions._workspace_unresolved_embedded_objects
+                    continue
+                if not reserve_script_name(entry.script_name):
+                    opaque_sources.append(copy.deepcopy(raw))
+                    preserve_raw_source_object(raw)
+                    logger.warning(
+                        "Preserving an embedded script source with an ambiguous "
+                        "filename",
+                        extra={"suppress_ui_alert": True},
+                    )
+                    continue
+                embedded_object = read_embedded_object(entry.object_id)
+                if embedded_object is None:
+                    opaque_sources.append(copy.deepcopy(raw))
+                    continue
+                source, kind = embedded_object
+                if (
+                    kind != "extension-python-source-v1"
+                    or hashlib.sha256(source).hexdigest() != entry.source_hash
+                ):
+                    opaque_sources.append(copy.deepcopy(raw))
+                    opaque_objects[entry.object_id] = embedded_object
+                    continue
+                key = (entry.script_name, entry.source_hash)
+                if key in seen_verified:
+                    opaque_sources.append(copy.deepcopy(raw))
+                    continue
+                seen_verified.add(key)
+                state.remember_verified_source(
+                    *key,
+                    source,
+                    explicit=key not in referenced_sources,
+                )
+        elif "embedded_extension_sources" in manifest and (
+            selected_uids is None or selected_uids
+        ):
+            opaque_source_container = _OpaqueManifestContainer(
+                copy.deepcopy(raw_sources)
             )
-            for object_id, unresolved_object in unresolved_embedded_objects.items():
-                merged_unresolved_objects.setdefault(object_id, unresolved_object)
-            for (
-                _extension_id,
-                source_hash,
-            ), source in merged_embedded_sources.items():
-                if hashlib.sha256(source).hexdigest() == source_hash:
-                    merged_unresolved_objects.pop(f"extension-{source_hash}", None)
-
-            self._manager._extensions.set_workspace_requirements(
-                (
-                    *self._manager._extensions.collect_workspace_requirements(),
-                    *requirements,
-                ),
-                embedded_sources=merged_embedded_sources,
-                unresolved_embedded_objects=merged_unresolved_objects,
-                unresolved_payloads=(
-                    *self._manager._extensions._unresolved_workspace_requirement_payloads,
-                    *unresolved_payloads,
-                ),
+            preserve_raw_source_object(raw_sources)
+            logger.warning(
+                "Preserving a malformed embedded script source container",
+                extra={"suppress_ui_alert": True},
             )
+
+        return _WorkspaceScriptState(
+            requirements,
+            verified_sources=state.verified_sources,
+            opaque_requirement_payloads=opaque_requirements,
+            opaque_source_payloads=opaque_sources,
+            opaque_objects=opaque_objects,
+            explicit_sources=state.explicit_sources,
+            opaque_requirement_container=opaque_requirement_container,
+            opaque_source_container=opaque_source_container,
+        )
+
+    def _install_extension_scripts(
+        self,
+        incoming_state: _WorkspaceScriptState,
+        *,
+        replace: bool,
+    ) -> bool:
+        """Install one parsed script state after outgoing nodes are removed."""
+        scripts = self._manager._workspace_state.extension_scripts
+        previous = scripts.copy()
+        if replace:
+            scripts.replace(incoming_state)
+        else:
+            scripts.merge(incoming_state)
+        self._manager._extensions._reconcile_persisted_workspace_requirements()
+
         unavailable = [
             item
             for item in self._manager._extensions.resolved_workspace_requirements(
@@ -2771,14 +2981,15 @@ class _WorkspaceLoader:
             )
             if item.state != "ready"
         ]
-        if replace:
-            self._manager._workspace_state.save_as_only = bool(
-                unavailable or invalid_entries
-            )
-            reasons = [
-                f"{item.requirement.extension_id}: {item.state}" for item in unavailable
-            ]
-            if invalid_entries:
-                reasons.append(f"{invalid_entries} invalid extension requirements")
-            self._manager._workspace_state.degraded_reasons = tuple(reasons)
-        return tuple(requirements)
+        if not replace:
+            return not scripts.has_same_content(previous)
+        self._manager._workspace_state.save_as_only = bool(
+            unavailable or incoming_state.has_opaque_content
+        )
+        reasons = [
+            f"{item.requirement.script_name}: {item.state}" for item in unavailable
+        ]
+        if incoming_state.has_opaque_content:
+            reasons.append("unrecognized extension content")
+        self._manager._workspace_state.degraded_reasons = tuple(reasons)
+        return not scripts.has_same_content(previous)

@@ -311,6 +311,28 @@ class _NodePersistenceView:
     source_paths: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _NodeProvenanceOwnerSnapshot:
+    """Exact provenance state owned by one managed node.
+
+    A ToolWindow owns its live source and input provenance. Pending ToolWindow
+    payloads own the serialized input copy. The managed node owns all other source
+    and displayed provenance. Keeping these values in one snapshot makes a script
+    identity change atomic across those owners.
+    """
+
+    imagetool: ImageTool | None
+    tool_window: ToolWindow | None
+    pending_payload: tuple[pathlib.Path, str] | None
+    pending_payload_kind: typing.Literal["imagetool", "tool"] | None
+    node_source_spec: ToolProvenanceSpec | None
+    node_provenance_spec: ToolProvenanceSpec | None
+    tool_source_spec: ToolProvenanceSpec | None
+    tool_input_provenance_spec: ToolProvenanceSpec | None
+    tool_input_from_parent: bool
+    pending_payload_attrs: dict[str, typing.Any] | None
+
+
 def _format_chunk_summary(data: xr.DataArray) -> str:
     chunks = data.chunks
     if chunks is None:
@@ -1470,6 +1492,215 @@ class _ManagedWindowNode(QtCore.QObject):
     def _invalidate_preview_image_cache(self) -> None:
         self._preview_image_cache = None
 
+    def _provenance_owner_snapshot(self) -> _NodeProvenanceOwnerSnapshot:
+        """Capture every authoritative provenance value for this node."""
+        tool = self.tool_window
+        return _NodeProvenanceOwnerSnapshot(
+            imagetool=self.imagetool,
+            tool_window=tool,
+            pending_payload=self._pending_workspace_payload,
+            pending_payload_kind=self._pending_workspace_payload_kind,
+            node_source_spec=self._source_spec,
+            node_provenance_spec=self._provenance_spec,
+            tool_source_spec=None if tool is None else tool.source_spec,
+            tool_input_provenance_spec=(
+                None if tool is None else tool.input_provenance_spec
+            ),
+            tool_input_from_parent=(
+                False if tool is None else tool._input_provenance_snapshot_from_parent
+            ),
+            pending_payload_attrs=(
+                None
+                if self._pending_workspace_payload_attrs is None
+                else dict(self._pending_workspace_payload_attrs)
+            ),
+        )
+
+    @staticmethod
+    def _remap_provenance_value(
+        provenance_spec: ToolProvenanceSpec | None,
+        remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+        *,
+        live_source: bool = False,
+    ) -> ToolProvenanceSpec | None:
+        if provenance_spec is None:
+            return None
+        remapped = remap(provenance_spec)
+        if not isinstance(remapped, ToolProvenanceSpec):
+            raise TypeError("A provenance remap must return a ToolProvenanceSpec")
+        if live_source:
+            return require_live_source_spec(remapped)
+        return remapped
+
+    @staticmethod
+    def _pending_tool_provenance(
+        attrs: Mapping[str, typing.Any], key: str
+    ) -> ToolProvenanceSpec | None:
+        """Parse one valid pending ToolWindow provenance attribute."""
+        value = attrs.get(key)
+        if isinstance(value, bytes):
+            try:
+                value = value.decode()
+            except UnicodeDecodeError:
+                return None
+        if not isinstance(value, str):
+            return None
+        try:
+            return parse_tool_provenance_spec(json.loads(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _apply_provenance_owner_snapshot(
+        self, snapshot: _NodeProvenanceOwnerSnapshot
+    ) -> None:
+        """Apply one provenance snapshot without marking the workspace dirty."""
+        if (
+            self.imagetool is not snapshot.imagetool
+            or self.tool_window is not snapshot.tool_window
+            or self._pending_workspace_payload != snapshot.pending_payload
+            or self._pending_workspace_payload_kind != snapshot.pending_payload_kind
+        ):
+            raise RuntimeError("Managed provenance ownership changed during remap")
+
+        node_provenance_changed = (
+            self._source_spec != snapshot.node_source_spec
+            or self._provenance_spec != snapshot.node_provenance_spec
+        )
+        provenance_attr_keys = (
+            erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
+            erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+        )
+        current_attrs = self._pending_workspace_payload_attrs or {}
+        replacement_attrs = snapshot.pending_payload_attrs or {}
+        pending_attrs_changed = any(
+            current_attrs.get(key) != replacement_attrs.get(key)
+            for key in provenance_attr_keys
+        )
+        self._source_spec = snapshot.node_source_spec
+        self._provenance_spec = snapshot.node_provenance_spec
+        if snapshot.pending_payload_attrs is None:
+            self._pending_workspace_payload_attrs = None
+        elif self._pending_workspace_payload is not None:
+            self.update_pending_workspace_payload_attrs(snapshot.pending_payload_attrs)
+
+        tool = snapshot.tool_window
+        if tool is not None:
+            source_changed = tool.source_spec != snapshot.tool_source_spec
+            input_changed = (
+                tool.input_provenance_spec != snapshot.tool_input_provenance_spec
+                or tool._input_provenance_snapshot_from_parent
+                != snapshot.tool_input_from_parent
+            )
+            with tool._coalesce_provenance_changes():
+                if source_changed:
+                    tool._source_spec = snapshot.tool_source_spec
+                    tool._notify_provenance_changed()
+                if input_changed:
+                    tool._set_input_provenance_snapshot(
+                        snapshot.tool_input_provenance_spec,
+                        from_parent=snapshot.tool_input_from_parent,
+                    )
+
+        if snapshot.imagetool is not None and node_provenance_changed:
+            snapshot.imagetool.set_provenance_spec(self.provenance_spec)
+        if node_provenance_changed or pending_attrs_changed:
+            self._invalidate_provenance_derived_state(refresh_display=True)
+
+    def remap_provenance_owners(
+        self,
+        remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+    ) -> tuple[_NodeProvenanceOwnerSnapshot, bool]:
+        """Atomically remap all provenance values owned by this node.
+
+        The returned snapshot is suitable for :meth:`restore_provenance_owners`.
+        This method does not mark the workspace dirty. The caller must first commit
+        all related nodes and document state, and then call
+        :meth:`commit_provenance_owner_remap` for each changed node.
+        """
+        before = self._provenance_owner_snapshot()
+        node_source_spec = self._remap_provenance_value(
+            before.node_source_spec, remap, live_source=True
+        )
+        node_provenance_spec = self._remap_provenance_value(
+            before.node_provenance_spec, remap
+        )
+        tool_source_spec = self._remap_provenance_value(
+            before.tool_source_spec, remap, live_source=True
+        )
+        tool_input_provenance_spec = self._remap_provenance_value(
+            before.tool_input_provenance_spec, remap
+        )
+
+        attrs = (
+            None
+            if before.pending_payload_attrs is None
+            else dict(before.pending_payload_attrs)
+        )
+        pending_attrs_changed = False
+        if attrs is not None and before.pending_payload_kind == "tool":
+            source_key = erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR
+            if node_source_spec != before.node_source_spec and source_key in attrs:
+                if node_source_spec is None:
+                    attrs.pop(source_key, None)
+                else:
+                    attrs[source_key] = json.dumps(
+                        node_source_spec.model_dump(mode="json")
+                    )
+                pending_attrs_changed = True
+
+            input_key = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+            pending_input = self._pending_tool_provenance(attrs, input_key)
+            remapped_pending_input = self._remap_provenance_value(pending_input, remap)
+            if remapped_pending_input != pending_input:
+                if remapped_pending_input is None:
+                    attrs.pop(input_key, None)
+                else:
+                    attrs[input_key] = json.dumps(
+                        remapped_pending_input.model_dump(mode="json")
+                    )
+                pending_attrs_changed = True
+
+        changed = (
+            node_source_spec != before.node_source_spec
+            or node_provenance_spec != before.node_provenance_spec
+            or tool_source_spec != before.tool_source_spec
+            or tool_input_provenance_spec != before.tool_input_provenance_spec
+            or pending_attrs_changed
+        )
+        if not changed:
+            return before, False
+
+        after = _NodeProvenanceOwnerSnapshot(
+            imagetool=before.imagetool,
+            tool_window=before.tool_window,
+            pending_payload=before.pending_payload,
+            pending_payload_kind=before.pending_payload_kind,
+            node_source_spec=node_source_spec,
+            node_provenance_spec=node_provenance_spec,
+            tool_source_spec=tool_source_spec,
+            tool_input_provenance_spec=tool_input_provenance_spec,
+            tool_input_from_parent=before.tool_input_from_parent,
+            pending_payload_attrs=attrs,
+        )
+        try:
+            self._apply_provenance_owner_snapshot(after)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._apply_provenance_owner_snapshot(before)
+            raise
+        return before, True
+
+    def restore_provenance_owners(self, snapshot: _NodeProvenanceOwnerSnapshot) -> None:
+        """Restore a snapshot returned by :meth:`remap_provenance_owners`."""
+        self._apply_provenance_owner_snapshot(snapshot)
+
+    def commit_provenance_owner_remap(self) -> None:
+        """Mark a successfully committed provenance remap for persistence."""
+        manager = self._manager()
+        if manager is None or manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._mark_node_state_dirty(self.uid)
+
     @property
     def source_spec(
         self,
@@ -2542,47 +2773,50 @@ class _ManagedWindowNode(QtCore.QObject):
             self._notify_change(_ManagedNodeChange.ROW)
             return updated
 
-        try:
-            if self._output_id is not None:
-                parent_tool = self.manager._parent_node(self).tool_window
-                if parent_tool is not None and parent_tool.source_state != "fresh":
-                    self._set_source_state(parent_tool.source_state)
-                    self.manager._mark_descendants_source_state(
-                        self.uid, parent_tool.source_state
+        with self.manager._extensions.execution.capture_replay_sources() as publication:
+            try:
+                if self._output_id is not None:
+                    parent_tool = self.manager._parent_node(self).tool_window
+                    if parent_tool is not None and parent_tool.source_state != "fresh":
+                        self._set_source_state(parent_tool.source_state)
+                        self.manager._mark_descendants_source_state(
+                            self.uid, parent_tool.source_state
+                        )
+                        return False
+                    payload = self._resolved_output_payload()
+                    if payload is None:
+                        self._set_source_state("unavailable")
+                        return False
+                    resolved, provenance_spec = payload
+                else:
+                    if not self.has_source_binding:
+                        return False
+                    parent_data = self.parent_source_data()
+                    source_spec = self._materialized_source_spec(parent_data)
+                    resolved = source_spec.apply(
+                        parent_data,
+                        extension_executor=(
+                            self.manager._extensions.execution.run_operation
+                        ),
                     )
-                    return False
-                payload = self._resolved_output_payload()
-                if payload is None:
-                    self._set_source_state("unavailable")
-                    return False
-                resolved, provenance_spec = payload
-            else:
-                if not self.has_source_binding:
-                    return False
-                parent_data = self.parent_source_data()
-                source_spec = self._materialized_source_spec(parent_data)
-                resolved = source_spec.apply(
-                    parent_data,
-                    extension_executor=(
-                        self.manager._extensions.execution.run_operation
-                    ),
+                    provenance_spec = compose_display_provenance(
+                        self.manager._parent_node(self).displayed_provenance_spec,
+                        source_spec,
+                        parent_data=parent_data,
+                    )
+                publication.require_current_for_publication()
+                self._replace_imagetool_data(
+                    resolved,
+                    provenance_spec,
+                    propagate_descendants=True,
+                    replay_source_data=None,
+                    preserve_filter=True,
                 )
-                provenance_spec = compose_display_provenance(
-                    self.manager._parent_node(self).displayed_provenance_spec,
-                    source_spec,
-                    parent_data=parent_data,
-                )
-            self._replace_imagetool_data(
-                resolved,
-                provenance_spec,
-                propagate_descendants=True,
-                replay_source_data=None,
-                preserve_filter=True,
-            )
-        except Exception:
-            self._set_source_state("unavailable")
-            self.manager._mark_descendants_source_unavailable(self.uid)
-            return False
+            except Exception:
+                self._set_source_state("unavailable")
+                self.manager._mark_descendants_source_unavailable(self.uid)
+                return False
+            publication.publish()
 
         return True
 
@@ -2608,47 +2842,50 @@ class _ManagedWindowNode(QtCore.QObject):
             self._set_source_state("stale")
             return False
 
-        try:
-            if self._output_id is not None:
-                payload = self._resolved_output_payload()
-                if payload is None:
-                    self._set_source_state("unavailable")
-                    return False
-                resolved, provenance_spec = payload
-            else:
-                if not self.has_source_binding:
-                    return False
-                source_spec = self._materialized_source_spec(parent_data)
-                resolved = source_spec.apply(
-                    parent_data,
-                    extension_executor=(
-                        self.manager._extensions.execution.run_operation
-                    ),
-                )
-                provenance_spec = compose_display_provenance(
-                    self.manager._parent_node(self).displayed_provenance_spec,
-                    source_spec,
-                    parent_data=parent_data,
-                )
-        except Exception:
-            self._set_source_state("unavailable")
-            return False
-
-        if self._source_auto_update:
+        with self.manager._extensions.execution.capture_replay_sources() as publication:
             try:
-                self._replace_imagetool_data(
-                    resolved,
-                    provenance_spec,
-                    propagate_descendants=False,
-                    replay_source_data=None,
-                    preserve_filter=True,
-                )
+                if self._output_id is not None:
+                    payload = self._resolved_output_payload()
+                    if payload is None:
+                        self._set_source_state("unavailable")
+                        return False
+                    resolved, provenance_spec = payload
+                else:
+                    if not self.has_source_binding:
+                        return False
+                    source_spec = self._materialized_source_spec(parent_data)
+                    resolved = source_spec.apply(
+                        parent_data,
+                        extension_executor=(
+                            self.manager._extensions.execution.run_operation
+                        ),
+                    )
+                    provenance_spec = compose_display_provenance(
+                        self.manager._parent_node(self).displayed_provenance_spec,
+                        source_spec,
+                        parent_data=parent_data,
+                    )
             except Exception:
                 self._set_source_state("unavailable")
                 return False
-            return True
-        self._set_source_state("stale")
-        return False
+
+            if self._source_auto_update:
+                try:
+                    publication.require_current_for_publication()
+                    self._replace_imagetool_data(
+                        resolved,
+                        provenance_spec,
+                        propagate_descendants=False,
+                        replay_source_data=None,
+                        preserve_filter=True,
+                    )
+                except Exception:
+                    self._set_source_state("unavailable")
+                    return False
+                publication.publish()
+                return True
+            self._set_source_state("stale")
+            return False
 
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None

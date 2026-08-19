@@ -65,7 +65,7 @@ def test_loader_decorator_accepts_one_extension_as_a_string(
         "from pathlib import Path\n"
         "import xarray as xr\n"
         "from erlab.extensions import loader\n\n"
-        "@loader(extensions='txt')\n"
+        "@loader(extensions='TXT')\n"
         "def load_text(path: Path) -> xr.DataArray:\n"
         "    return xr.DataArray([1.0])\n"
     )
@@ -260,7 +260,7 @@ def value(data: xr.DataArray) -> xr.DataArray:
     return data + 1
 """
     )
-    revision = hashlib.sha256(script.read_bytes()).hexdigest()
+    source_hash = hashlib.sha256(script.read_bytes()).hexdigest()
     spec_from_file_location = extension_api.importlib.util.spec_from_file_location
 
     def replace_source_during_import(
@@ -275,7 +275,7 @@ def value(data: xr.DataArray) -> xr.DataArray:
         replace_source_during_import,
     )
 
-    loaded = load_script(script, expected_source_hash=revision)
+    loaded = load_script(script, expected_source_hash=source_hash)
 
     xr.testing.assert_identical(
         loaded.erlab.routines["value"][1](xr.DataArray([1])), xr.DataArray([2])
@@ -476,6 +476,61 @@ def test_load_script_rejects_invalid_loader_input_and_duplicate_ids(
         load_script(duplicate)
 
 
+def test_load_script_accepts_aliases_of_one_decorated_function(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "aliased.py"
+    source.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        "@routine(id='stable-scale')\n"
+        "def scale(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data * 2\n\n"
+        "legacy_scale = scale\n"
+    )
+
+    loaded = load_script(source)
+    data = xr.DataArray([1.0, 2.0])
+
+    assert tuple(loaded.erlab.routines) == ("stable-scale",)
+    xr.testing.assert_identical(loaded.scale(data), data * 2)
+    xr.testing.assert_identical(loaded.legacy_scale(data), data * 2)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        '@routine(category="")',
+        '@loader(extensions=("txt", "txt"))',
+    ],
+)
+def test_load_script_normalizes_descriptor_validation_errors(
+    tmp_path: pathlib.Path,
+    metadata: str,
+) -> None:
+    source = tmp_path / "invalid_metadata.py"
+    if metadata.startswith("@routine"):
+        first_annotation = "xr.DataArray"
+        return_annotation = "xr.DataArray"
+        imports = ""
+        result = "value"
+    else:
+        first_annotation = "Path"
+        return_annotation = "xr.DataArray"
+        imports = "from pathlib import Path\n"
+        result = "xr.DataArray()"
+    source.write_text(
+        f"{imports}import xarray as xr\n"
+        "from erlab.extensions import loader, routine\n\n"
+        f"{metadata}\n"
+        f"def invalid(value: {first_annotation}) -> {return_annotation}:\n"
+        f"    return {result}\n"
+    )
+
+    with pytest.raises(ExtensionSignatureError, match="invalid metadata"):
+        load_script(source)
+
+
 @pytest.mark.parametrize("parameter_name", ["loader_extensions", "without_values"])
 def test_load_script_rejects_manager_reserved_loader_parameters(
     tmp_path: pathlib.Path,
@@ -673,25 +728,57 @@ def test_script_can_use_an_installed_dependency(
     )
 
 
-def test_source_resolver_lookup_survives_manager_removal(
+def test_registered_backend_lookup_survives_manager_removal(
     tmp_path: pathlib.Path,
 ) -> None:
     source_path = tmp_path / "source.py"
     source_path.write_text("value = 1\n")
-
-    def closing_resolver(_extension_id: str, _source_hash: str) -> pathlib.Path:
-        extension_api._remove_resolvers("first")
-        raise KeyError
-
-    extension_api._set_source_resolver(
-        "first", lambda _extension_id, _source_hash: source_path
+    descriptor = RoutineDescriptor(
+        id="value",
+        name="Value",
+        category="Lab",
+        summary="",
+        function_name="value",
     )
-    extension_api._set_source_resolver("closing", closing_resolver)
+
+    class Backend:
+        def __init__(self, *, closing: bool = False) -> None:
+            self.closing = closing
+
+        def resolve_registered_capability(
+            self,
+            script_name: str,
+            kind: str,
+            capability_id: str,
+            *,
+            source_hash: str | None = None,
+            require_enabled: bool = True,
+        ) -> extension_api._RegisteredScriptCapability:
+            del kind, source_hash, require_enabled
+            if self.closing:
+                extension_api._remove_registered_script_backend("first")
+                raise KeyError
+            if (script_name, capability_id) != ("source.py", "value"):
+                raise KeyError
+            return extension_api._RegisteredScriptCapability(
+                registered_path=source_path,
+                script_name=script_name,
+                source_hash="a" * 64,
+                descriptor=descriptor,
+                source_bytes=source_path.read_bytes(),
+            )
+
+    extension_api._set_registered_script_backend("first", Backend())
+    extension_api._set_registered_script_backend("closing", Backend(closing=True))
     try:
-        assert extension_api._resolved_source("lab", "source") == source_path
+        resolved = extension_api._resolve_registered_script_capability(
+            "source.py", "routine", "value"
+        )
+        assert resolved.registered_path == source_path
+        assert resolved.descriptor == descriptor
     finally:
-        extension_api._remove_resolvers("first")
-        extension_api._remove_resolvers("closing")
+        extension_api._remove_registered_script_backend("first")
+        extension_api._remove_registered_script_backend("closing")
 
 
 @pytest.mark.parametrize(
@@ -850,7 +937,7 @@ def test_public_models_validate_persisted_values() -> None:
     with pytest.raises(ValueError, match="contain a suffix"):
         LoaderDescriptor(**valid_loader_arguments, extensions=(".",))
     with pytest.raises(ValueError, match="must be unique"):
-        LoaderDescriptor(**valid_loader_arguments, extensions=(".txt", ".txt"))
+        LoaderDescriptor(**valid_loader_arguments, extensions=(".txt", ".TXT"))
 
 
 def test_loaded_script_exposes_capabilities_and_module_attributes(
@@ -956,41 +1043,94 @@ def test_run_functions_validate_lookup_and_results(
         run_loader("data.txt", script=source, loader_id="load_data")
 
 
-def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
+def test_registered_backend_runs_pinned_source_and_reports_absence(
+    tmp_path: pathlib.Path,
+) -> None:
     owner = "test-public-capability-resolver"
+    source_path = tmp_path / "lab.py"
+    source_path.write_text(
+        """import pathlib
+import xarray as xr
+from erlab.extensions import loader, routine
 
-    def resolve(
-        extension_id: str,
-        source_hash: str,
-        kind: str,
-        capability_id: str,
-    ) -> typing.Callable[..., typing.Any]:
-        if (extension_id, source_hash, capability_id) != ("lab", "source", "value"):
-            raise KeyError
-        if kind == "routine":
-            return lambda data: data + 1
-        return lambda path: xr.DataArray([len(path.name)])
+@routine(id="value")
+def value(data: xr.DataArray) -> xr.DataArray:
+    return data + 1
 
-    extension_api._set_capability_resolver(owner, resolve)
+@loader(id="value")
+def load_value(path: pathlib.Path) -> xr.DataArray:
+    return xr.DataArray([len(path.name)])
+"""
+    )
+    source_bytes = source_path.read_bytes()
+    expected_source_hash = hashlib.sha256(source_bytes).hexdigest()
+    descriptors = {
+        "routine": RoutineDescriptor(
+            id="value",
+            name="Value",
+            category="Lab",
+            summary="",
+            function_name="value",
+        ),
+        "loader": LoaderDescriptor(
+            id="value",
+            name="Value",
+            category="Lab",
+            summary="",
+            function_name="load_value",
+        ),
+    }
+
+    class Backend:
+        def resolve_registered_capability(
+            self,
+            script_name: str,
+            kind: str,
+            capability_id: str,
+            *,
+            source_hash: str | None = None,
+            require_enabled: bool = True,
+        ) -> extension_api._RegisteredScriptCapability:
+            del require_enabled
+            if (script_name, source_hash, capability_id) != (
+                "lab.py",
+                expected_source_hash,
+                "value",
+            ):
+                raise KeyError
+            return extension_api._RegisteredScriptCapability(
+                registered_path=source_path,
+                script_name=script_name,
+                source_hash=expected_source_hash,
+                descriptor=descriptors[kind],
+                source_bytes=source_bytes,
+            )
+
+    extension_api._set_registered_script_backend(owner, Backend())
     try:
         xr.testing.assert_identical(
             run_routine(
                 xr.DataArray([1]),
-                extension_id="lab",
-                source_hash="source",
+                registered_script="lab.py",
+                source_hash=expected_source_hash,
                 routine_id="value",
             ),
             xr.DataArray([2]),
         )
         result = run_loader(
             "value.txt",
-            extension_id="lab",
-            source_hash="source",
+            registered_script="lab.py",
+            source_hash=expected_source_hash,
             loader_id="value",
         )
         xr.testing.assert_identical(result, xr.DataArray([9]))
     finally:
-        extension_api._remove_resolvers(owner)
+        extension_api._remove_registered_script_backend(owner)
 
-    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="No extension"):
-        extension_api._resolved_source("lab", "source")
+    with pytest.raises(
+        erlab.extensions.ExtensionNotFoundError,
+        match="Registered script capability",
+    ):
+        extension_api._resolve_registered_capability(
+            "lab.py", "source", "routine", "value"
+        )

@@ -16,6 +16,12 @@ import xarray as xr
 from pydantic import ValidationError
 
 import erlab
+import erlab.extensions._api as extension_api
+from erlab.interactive.imagetool._load_source import (
+    _load_provenance_from_file_details,
+    _load_source_details_from_file,
+    _load_source_details_from_provenance,
+)
 from erlab.interactive.imagetool._provenance import _code
 from erlab.interactive.imagetool._provenance._code import (
     _MAPPING_MARKER,
@@ -547,10 +553,9 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         ),
         AssignAttrsOperation(attrs={"sample": "test"}),
         ExtensionRoutineOperation(
-            extension_id="my_lab",
+            script_name="my_lab.py",
             source_hash="a" * 64,
             routine_id="where",
-            extension_name="My Lab",
             routine_name="Where",
             parameters={},
         ),
@@ -5100,6 +5105,179 @@ def test_file_load_source_replay_call_round_trips() -> None:
     assert parsed_erlab.replay_call.target == "example"
 
 
+def test_extension_load_source_code_uses_current_registration(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_script = tmp_path / "current_loader.py"
+    current_script.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(id="load_data", name="Current Lab Data")
+def read_current(path: Path) -> xr.DataArray:
+    return xr.DataArray([2.0 * float(path.read_text())])
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("3")
+    current_descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Current Lab Data",
+        category="Lab",
+        summary="",
+        function_name="read_current",
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: extension_api._RegisteredScriptCapability(
+            registered_path=current_script,
+            script_name=current_script.name,
+            source_hash="b" * 64,
+            descriptor=current_descriptor,
+            source_bytes=current_script.read_bytes(),
+        ),
+    )
+
+    class PinnedLoader:
+        script_name = "lab_loader.py"
+        source_hash = "a" * 64
+        loader_id = "load_data"
+        source_path = tmp_path / "missing" / "old_loader.py"
+        descriptor = erlab.extensions.LoaderDescriptor(
+            id="load_data",
+            name="Current Lab Data",
+            category="Lab",
+            summary="",
+            function_name="read_old",
+        )
+
+        def __call__(self, _path: pathlib.Path) -> xr.DataArray:
+            raise RuntimeError("The pinned callable must not generate copied code")
+
+    details = _load_source_details_from_file(
+        data_path,
+        (
+            PinnedLoader(),
+            {},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    if details.load_code is None:
+        raise RuntimeError("The registered loader did not generate code")
+    namespace = _exec_generated_code(details.load_code, {})
+
+    assert details.loader_text == "current_loader.py: Current Lab Data"
+    assert str(current_script) in details.load_code
+    assert "old_loader.py" not in details.load_code
+    assert ".read_current(" in details.load_code
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([6.0]))
+
+    provenance = _load_provenance_from_file_details(
+        data_path,
+        (
+            PinnedLoader(),
+            {},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    if provenance is None or provenance.file_load_source is None:
+        raise RuntimeError("The extension loader did not create provenance")
+    assert provenance.file_load_source.load_code is None
+
+
+def test_registered_extension_provenance_exposes_current_load_code(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_loader.py"
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader()
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("4")
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: extension_api._RegisteredScriptCapability(
+            registered_path=script_path,
+            script_name=script_path.name,
+            source_hash="a" * 64,
+            descriptor=erlab.extensions.LoaderDescriptor(
+                id="load_data",
+                name="Load data",
+                category="Other",
+                summary="",
+                function_name="load_data",
+            ),
+            source_bytes=script_path.read_bytes(),
+        ),
+    )
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="local_loader.py: Load data",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="local_loader.py",
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+        load_code="load_script('/sender/local_loader.py').load_data()",
+    )
+
+    details = _load_source_details_from_provenance(load_source)
+    if details.load_code is None:
+        raise RuntimeError("The registered loader did not generate code")
+    namespace = _exec_generated_code(details.load_code, {})
+
+    assert str(script_path) in details.load_code
+    assert "/sender/local_loader.py" not in details.load_code
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([4.0]))
+
+
+def test_embedded_only_extension_provenance_suppresses_recorded_load_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_reference(*_args: typing.Any) -> typing.NoReturn:
+        raise erlab.extensions.ExtensionNotFoundError("not registered")
+
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        missing_reference,
+    )
+    load_source = FileLoadSource(
+        path="scan.txt",
+        loader_label="Extension Loader",
+        loader_text="embedded_loader.py: Load data",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="embedded_loader.py",
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+        load_code="load_script('/sender/embedded_loader.py').load_data()",
+    )
+
+    details = _load_source_details_from_provenance(load_source)
+
+    assert details.load_code is None
+
+
 def test_provenance_file_source_capabilities_cover_script_backed_files(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -5200,6 +5378,54 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
     assert can_reload_without_trust(plain_script)
 
 
+def test_file_reload_checks_extension_routine_operations(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    xr.DataArray([1.0]).to_netcdf(path)
+    spec = file_load(
+        start_label="Load data",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=FileLoadSource(
+            path=str(path),
+            loader_label="Load Function",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="(none)",
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    ).append_replay_stage(
+        full_data(
+            ExtensionRoutineOperation(
+                script_name="local_routine.py",
+                source_hash="a" * 64,
+                routine_id="scale",
+                routine_name="Scale",
+                parameters={},
+            )
+        )
+    )
+    calls: list[tuple[str, str, str, str]] = []
+
+    def capability_status(
+        script_name: str,
+        source_hash: str,
+        kind: str,
+        capability_id: str,
+    ) -> str:
+        calls.append((script_name, source_hash, kind, capability_id))
+        return "disabled"
+
+    assert not can_reload_without_trust(
+        spec,
+        extension_status_resolver=typing.cast("typing.Any", capability_status),
+    )
+    assert calls == [("local_routine.py", "a" * 64, "routine", "scale")]
+
+
 def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     data = _base_data()
 
@@ -5238,7 +5464,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     with pytest.raises(ValidationError, match="lowercase SHA-256"):
         FileReplayCall(
             kind="extension_loader",
-            target="lab-loader",
+            target="lab_loader.py",
             source_hash="not-a-source",
             capability_id="load_data",
             selection=FileDataSelection(kind="dataarray"),
@@ -5246,7 +5472,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     with pytest.raises(ValidationError, match="source_hash and capability_id"):
         FileReplayCall(
             kind="extension_loader",
-            target="lab-loader",
+            target="lab_loader.py",
             selection=FileDataSelection(kind="dataarray"),
         )
 
@@ -5335,13 +5561,57 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
 def test_extension_routine_rejects_invalid_source_identity() -> None:
     with pytest.raises(ValidationError, match="lowercase SHA-256"):
         ExtensionRoutineOperation(
-            extension_id="lab-routines",
+            script_name="lab_routines.py",
             source_hash="not-a-source",
             routine_id="normalize",
-            extension_name="Lab Routines",
             routine_name="Normalize",
             parameters={},
         )
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    ["lab", ".", "../lab.py", "folder/lab.py", "bad\x00.py"],
+)
+def test_extension_provenance_rejects_invalid_script_names(
+    script_name: str,
+) -> None:
+    with pytest.raises(ValidationError, match=r"must be a \.py basename"):
+        ExtensionRoutineOperation(
+            script_name=script_name,
+            source_hash="a" * 64,
+            routine_id="normalize",
+            routine_name="Normalize",
+            parameters={},
+        )
+    with pytest.raises(ValidationError, match=r"must be a \.py basename"):
+        FileReplayCall(
+            kind="extension_loader",
+            target=script_name,
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+
+
+def test_extension_provenance_preserves_valid_script_name_spelling() -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="Lab_Routines.PY",
+        source_hash="a" * 64,
+        routine_id="normalize",
+        routine_name="Normalize",
+        parameters={},
+    )
+    replay_call = FileReplayCall(
+        kind="extension_loader",
+        target="Lab_Loaders.PY",
+        source_hash="b" * 64,
+        capability_id="load_data",
+        selection=FileDataSelection(kind="dataarray"),
+    )
+
+    assert operation.script_name == "Lab_Routines.PY"
+    assert replay_call.target == "Lab_Loaders.PY"
 
 
 def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> None:

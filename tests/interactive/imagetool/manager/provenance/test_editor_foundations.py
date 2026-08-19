@@ -1,3 +1,4 @@
+import contextlib
 import enum
 import gc
 import pathlib
@@ -148,8 +149,6 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    source_path = tmp_path / "lab_loader.py"
-    source_path.write_text("# test source\n")
     data_path = tmp_path / "scan.txt"
     data_path.write_text("1\n")
     source_hash = "a" * 64
@@ -171,13 +170,12 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
     )
 
     class _LoaderCall:
-        extension_id = "lab_loader"
+        script_name = "lab_loader.py"
         loader_id = "load_lab_data"
         __name__ = "load"
 
         def __init__(self) -> None:
             self.source_hash = source_hash
-            self.source_path = source_path
             self.descriptor = descriptor
 
         def __call__(self, path: pathlib.Path, **kwargs: typing.Any) -> xr.DataArray:
@@ -189,11 +187,11 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
     load_source = FileLoadSource(
         path=str(data_path),
         loader_label="Extension Loader",
-        loader_text="lab_loader: load_lab_data",
+        loader_text="lab_loader.py: load_lab_data",
         kwargs_text="scale=2.0",
         replay_call=FileReplayCall(
             kind="extension_loader",
-            target="lab_loader",
+            target="lab_loader.py",
             source_hash=source_hash,
             capability_id="load_lab_data",
             kwargs=_serialize_loader_kwargs({"scale": 2.0}),
@@ -241,7 +239,7 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
     if replay_call is None:
         raise RuntimeError("The edited file load has no replay call")
     assert replay_call.kind == "extension_loader"
-    assert replay_call.target == "lab_loader"
+    assert replay_call.target == "lab_loader.py"
     assert replay_call.source_hash == source_hash
     assert replay_call.capability_id == "load_lab_data"
     assert _deserialize_loader_kwargs(replay_call.kwargs) == {"scale": 3.0}
@@ -256,11 +254,11 @@ def test_file_load_edit_dialog_does_not_substitute_for_missing_extension_loader(
     load_source = FileLoadSource(
         path=str(data_path),
         loader_label="Extension Loader",
-        loader_text="lab_loader: load_lab_data",
+        loader_text="lab_loader.py: load_lab_data",
         kwargs_text="scale=2.0",
         replay_call=FileReplayCall(
             kind="extension_loader",
-            target="lab_loader",
+            target="lab_loader.py",
             source_hash="a" * 64,
             capability_id="load_lab_data",
             kwargs={"scale": 2.0},
@@ -291,11 +289,11 @@ def test_missing_extension_loader_provenance_is_not_editable(
         file_load_source=FileLoadSource(
             path=str(data_path),
             loader_label="Extension Loader",
-            loader_text="lab_loader: load_lab_data",
+            loader_text="lab_loader.py: load_lab_data",
             kwargs_text="",
             replay_call=FileReplayCall(
                 kind="extension_loader",
-                target="lab_loader",
+                target="lab_loader.py",
                 source_hash="a" * 64,
                 capability_id="load_lab_data",
                 selection=FileDataSelection(kind="dataarray"),
@@ -1298,7 +1296,13 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
         execution=types.SimpleNamespace(
             run_operation=lambda *_args, **_kwargs: pytest.fail(
                 "built-in provenance must not use extension execution"
-            )
+            ),
+            capture_replay_sources=lambda: contextlib.nullcontext(
+                types.SimpleNamespace(
+                    require_current_for_publication=lambda: None,
+                    publish=lambda: None,
+                )
+            ),
         ),
     )
     manager._script_input_can_reload = lambda *_args, **_kwargs: True

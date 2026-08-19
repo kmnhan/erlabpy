@@ -111,9 +111,6 @@ if typing.TYPE_CHECKING:
         ImageToolSelectionSourceBinding,
     )
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
-    from erlab.interactive.imagetool.manager._extensions._models import (
-        _WorkspaceExtensionRequirement,
-    )
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
         _WatcherServer,
@@ -1303,7 +1300,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _mark_removed_subtree_dirty(self, uid: str) -> None:
         subtree_uids = self._tool_graph.subtree_uids(uid)
         if not self._workspace_state.closing_document:
-            self._extensions.remove_workspace_node_references(subtree_uids)
+            self._workspace_state.extension_scripts.remove_node_references(subtree_uids)
         for node_uid in subtree_uids:
             node = self._tool_graph.nodes.get(node_uid)
             if node is not None:
@@ -2505,13 +2502,9 @@ class ImageToolManager(_ImageToolManagerBase):
     def _rebase_loaded_workspace_dependency_refs(
         self,
         loaded_targets_by_uid: Mapping[str, int | str],
-        *,
-        incoming_extension_requirements: Iterable[_WorkspaceExtensionRequirement]
-        | None = None,
     ) -> None:
         self._lineage_controller._rebase_loaded_workspace_dependency_refs(
             loaded_targets_by_uid,
-            incoming_extension_requirements=incoming_extension_requirements,
         )
 
     def _selected_reload_targets(

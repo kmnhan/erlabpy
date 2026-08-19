@@ -27,7 +27,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.extensions._api import _capability_status
+from erlab.extensions._api import _registered_script_capability_status
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
@@ -2745,12 +2745,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self._load_func is None:
             return None
-        extension_id, source_hash, loader_id = _extension_loader_identity(
+        script_name, source_hash, loader_id = _extension_loader_identity(
             self._load_func[0]
         )
         if not (
-            isinstance(extension_id, str)
-            and extension_id
+            isinstance(script_name, str)
+            and script_name
             and isinstance(source_hash, str)
             and source_hash
             and isinstance(loader_id, str)
@@ -2759,12 +2759,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return None
         manager = self._manager_instance if self._in_manager else None
         resolver = (
-            _capability_status
+            _registered_script_capability_status
             if manager is None
             else manager._extensions.capability_status
         )
         return resolver(
-            extension_id,
+            script_name,
             source_hash,
             "loader",
             loader_id,
@@ -2809,10 +2809,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
         extension_status = self._direct_extension_loader_status()
         if extension_status is not None and extension_status != "ready":
-            extension_id = _extension_loader_identity(loader)[0]
+            script_name = _extension_loader_identity(loader)[0]
             return (
-                f"The saved extension loader {extension_id!r} cannot run because "
-                f"its status is {extension_status!r}. Review the extension in "
+                f"The loader from registered script {script_name!r} cannot run "
+                f"because its status is {extension_status!r}. Review the script in "
                 "ImageTool Manager, then try again."
             )
         return None
@@ -2860,35 +2860,41 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
             if source_status == "extension-disabled":
                 return (
-                    f"The saved extension {replay_call.target!r} is disabled. "
+                    f"The registered script {replay_call.target!r} is disabled. "
                     "Enable it in ImageTool Manager, then try again."
                 )
             if source_status == "extension-approval-required":
                 return (
-                    "The saved extension source is not approved. Review it in "
-                    "ImageTool Manager, then try again."
+                    f"The registered script {replay_call.target!r} is not approved. "
+                    "Review it in ImageTool Manager, then try again."
                 )
             if source_status == "extension-missing-source":
                 return (
-                    "The exact saved extension source is not available. Restore it "
-                    "in ImageTool Manager, then try again."
+                    f"The registered script {replay_call.target!r} is not available. "
+                    "Register or locate it in ImageTool Manager, then try again."
                 )
             if source_status == "extension-missing-capability":
                 return (
-                    "The saved extension source does not provide loader "
+                    f"The registered script {replay_call.target!r} does not provide "
+                    "loader "
                     f"{replay_call.capability_id!r}."
                 )
             if source_status == "extension-hash-mismatch":
                 return (
-                    "The stored extension source does not match its saved source. "
-                    "Restore the exact source in ImageTool Manager, then try again."
+                    f"The registered script {replay_call.target!r} changed after "
+                    "this provenance was recorded. Restore matching contents in "
+                    "ImageTool Manager, then try again."
                 )
             if source_status == "extension-unsupported-api":
-                return "The saved loader uses an unsupported extension API version."
+                return (
+                    f"The loader from registered script {replay_call.target!r} uses "
+                    "an unsupported extension API version."
+                )
             if source_status == "extension-validation-failed":
                 return (
-                    "The saved extension loader could not be validated. Open Manage "
-                    "Extensions in ImageTool Manager for details."
+                    f"The loader from registered script {replay_call.target!r} could "
+                    "not be validated. Open Manage Extensions in ImageTool Manager "
+                    "for details."
                 )
             if provenance_spec.kind == "file":
                 return None
@@ -3041,8 +3047,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return manager._script_reload_from_slicer_area(self, execute=True)
         if self._direct_reloadable() or self._provenance_reloadable():
             try:
-                data, kwargs = self._fetch_reload_data()
-                self._replace_reload_data(data, kwargs)
+                replay_capture = (
+                    contextlib.nullcontext(None)
+                    if manager is None
+                    else manager._extensions.execution.capture_replay_sources()
+                )
+                with replay_capture as publication:
+                    data, kwargs = self._fetch_reload_data()
+                    if publication is not None:
+                        publication.require_current_for_publication()
+                    self._replace_reload_data(data, kwargs)
+                    if publication is not None:
+                        publication.publish()
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."

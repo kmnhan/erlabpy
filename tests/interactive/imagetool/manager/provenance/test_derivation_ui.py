@@ -1,3 +1,4 @@
+import contextlib
 import json
 import pathlib
 import types
@@ -939,7 +940,13 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
             execution=types.SimpleNamespace(
                 run_operation=lambda *_args, **_kwargs: pytest.fail(
                     "built-in provenance must not use extension execution"
-                )
+                ),
+                capture_replay_sources=lambda: contextlib.nullcontext(
+                    types.SimpleNamespace(
+                        require_current_for_publication=lambda: None,
+                        publish=lambda: None,
+                    )
+                ),
             ),
         ),
     )

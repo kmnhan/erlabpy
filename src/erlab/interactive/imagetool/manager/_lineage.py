@@ -50,9 +50,6 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
-    from erlab.interactive.imagetool.manager._extensions._models import (
-        _WorkspaceExtensionRequirement,
-    )
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
@@ -290,38 +287,39 @@ class _LineageController:
             )
         if source_status == "extension-disabled":
             return (
-                f"The saved extension {replay_call.target!r} for {label} is disabled. "
-                "Enable it in Manage Extensions, then try again."
+                f"The registered script {replay_call.target!r} for {label} is "
+                "disabled. Enable it in Manage Extensions, then try again."
             )
         if source_status == "extension-approval-required":
             return (
-                f"The saved extension source for {label} is not approved. "
-                "Review it in Workspace Requirements, then try again."
+                f"The required script {replay_call.target!r} for {label} is not "
+                "approved. Review it in Workspace Requirements, then try again."
             )
         if source_status == "extension-missing-source":
             return (
-                f"The exact saved extension source for {label} is not available. "
-                "Restore it from Workspace Requirements, then try again."
+                f"The required script {replay_call.target!r} for {label} is not "
+                "registered. Restore it from Workspace Requirements, then try again."
             )
         if source_status == "extension-missing-capability":
             return (
-                f"The saved extension source for {label} does not provide loader "
-                f"{replay_call.capability_id!r}."
+                f"The registered script {replay_call.target!r} for {label} does not "
+                f"provide loader {replay_call.capability_id!r}."
             )
         if source_status == "extension-hash-mismatch":
             return (
-                f"The stored extension source for {label} does not match its saved "
-                "source hash. Restore the required source, then try again."
+                f"The registered script {replay_call.target!r} for {label} does not "
+                "match the recorded source hash. Restore matching contents, then "
+                "try again."
             )
         if source_status == "extension-unsupported-api":
             return (
-                f"The saved extension loader for {label} uses an unsupported "
-                "extension API version."
+                f"The loader from registered script {replay_call.target!r} for "
+                f"{label} uses an unsupported extension API version."
             )
         if source_status == "extension-validation-failed":
             return (
-                f"The saved extension loader for {label} could not be validated. "
-                "Open Manage Extensions for details."
+                f"The loader from registered script {replay_call.target!r} for "
+                f"{label} could not be validated. Open Manage Extensions for details."
             )
         return None
 
@@ -811,19 +809,11 @@ class _LineageController:
     def _rebase_loaded_workspace_dependency_refs(
         self,
         loaded_targets_by_uid: Mapping[str, int | str],
-        *,
-        incoming_extension_requirements: Iterable[_WorkspaceExtensionRequirement]
-        | None = None,
     ) -> None:
         """Rebase loaded-node dependencies within the incoming workspace scope."""
         uid_map = self._manager._workspace_loaded_uid_map(loaded_targets_by_uid)
         if not uid_map:
             return
-        self._manager._extensions.rebase_workspace_requirement_nodes(
-            uid_map,
-            requirements=incoming_extension_requirements,
-        )
-
         for target in loaded_targets_by_uid.values():
             try:
                 node = self._manager._node_for_target(target)
@@ -1200,60 +1190,73 @@ class _LineageController:
         spec = node.provenance_spec
         if spec is None:
             return False
-        try:
-            result = self._manager._rebuild_script_provenance(
-                spec,
-                target_node_uid=node.uid,
-            )
-        except _TrustedScriptReplayCancelled:
-            return False
-        except _ScriptRebuildError as exc:
-            erlab.interactive.utils.MessageDialog.critical(
-                self._manager,
-                "Error",
-                str(exc),
-                detailed_text=exc.details,
-            )
-            return False
+        with (
+            self._manager._extensions.execution.capture_replay_sources()
+        ) as publication:
+            try:
+                result = self._manager._rebuild_script_provenance(
+                    spec,
+                    target_node_uid=node.uid,
+                )
+            except _TrustedScriptReplayCancelled:
+                return False
+            except _ScriptRebuildError as exc:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self._manager,
+                    "Error",
+                    str(exc),
+                    detailed_text=exc.details,
+                )
+                return False
 
-        current = node.current_source_data()
-        if erlab.interactive.imagetool.slicer.check_cursors_compatible(
-            current, result.data
-        ):
-            self._manager._replace_script_reload_target(node, result)
-            self._manager._status_bar.showMessage("Reloaded data from inputs", 5000)
-            return True
-
-        details = self._manager._reload_incompatibility_details(current, result.data)
-        match self._manager._prompt_incompatible_reload_commit(details):
-            case "replace":
+            current = node.current_source_data()
+            if erlab.interactive.imagetool.slicer.check_cursors_compatible(
+                current, result.data
+            ):
+                publication.require_current_for_publication()
                 self._manager._replace_script_reload_target(node, result)
                 self._manager._status_bar.showMessage("Reloaded data from inputs", 5000)
+                publication.publish()
                 return True
-            case "new":
-                tool = erlab.interactive.itool(
-                    result.data, manager=False, execute=False
-                )
-                if not isinstance(tool, ImageTool):
-                    erlab.interactive.utils.MessageDialog.critical(
-                        self._manager,
-                        "Error",
-                        "An error occurred while opening reloaded data.",
-                        detailed_text="",
+
+            details = self._manager._reload_incompatibility_details(
+                current, result.data
+            )
+            match self._manager._prompt_incompatible_reload_commit(details):
+                case "replace":
+                    publication.require_current_for_publication()
+                    self._manager._replace_script_reload_target(node, result)
+                    self._manager._status_bar.showMessage(
+                        "Reloaded data from inputs", 5000
                     )
+                    publication.publish()
+                    return True
+                case "new":
+                    tool = erlab.interactive.itool(
+                        result.data, manager=False, execute=False
+                    )
+                    if not isinstance(tool, ImageTool):
+                        erlab.interactive.utils.MessageDialog.critical(
+                            self._manager,
+                            "Error",
+                            "An error occurred while opening reloaded data.",
+                            detailed_text="",
+                        )
+                        return False
+                    publication.require_current_for_publication()
+                    self._manager.add_imagetool(
+                        tool,
+                        show=True,
+                        activate=True,
+                        provenance_spec=result.provenance_spec,
+                    )
+                    self._manager._status_bar.showMessage(
+                        "Opened reloaded data as a new tool", 5000
+                    )
+                    publication.publish()
+                    return True
+                case _:
                     return False
-                self._manager.add_imagetool(
-                    tool,
-                    show=True,
-                    activate=True,
-                    provenance_spec=result.provenance_spec,
-                )
-                self._manager._status_bar.showMessage(
-                    "Opened reloaded data as a new tool", 5000
-                )
-                return True
-            case _:
-                return False
 
     def remove_selected(self) -> None:
         """Discard selected ImageTool windows."""

@@ -128,7 +128,7 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.extensions._models import _validate_source_hash
+from erlab.extensions._models import _script_name_key, _validate_source_hash
 from erlab.interactive.imagetool._provenance._code import (
     _DATAARRAY_MARKER,
     _DATASET_MARKER,
@@ -2025,6 +2025,7 @@ class FileReplayCall(pydantic.BaseModel):
                 "extension loader replay requires source_hash and capability_id"
             )
         if self.kind == "extension_loader":
+            _script_name_key(self.target)
             _validate_source_hash(typing.cast("str", self.source_hash))
         if any(not isinstance(key, str) for key in self.kwargs):
             raise TypeError("file replay kwargs must use string keys")

@@ -1151,7 +1151,12 @@ class WorkspaceStore:
 
     @staticmethod
     def object_path(object_id: str) -> str:
-        if not object_id or "/" in object_id or object_id in {".", ".."}:
+        if (
+            not object_id
+            or "/" in object_id
+            or "\x00" in object_id
+            or object_id in {".", ".."}
+        ):
             raise ValueError("Workspace object ID must be one path component")
         return f"/{_WORKSPACE_OBJECTS_GROUP}/{object_id}"
 
@@ -1284,8 +1289,10 @@ class WorkspaceStore:
                 handle = handle[0]
             os.fsync(int(handle))
 
-    @staticmethod
-    def manifest_node_object_ids(manifest: Mapping[str, typing.Any]) -> frozenset[str]:
+    @classmethod
+    def manifest_node_object_ids(
+        cls, manifest: Mapping[str, typing.Any]
+    ) -> frozenset[str]:
         """Return data object IDs referenced by workspace nodes."""
         object_ids: set[str] = set()
         nodes = manifest.get("nodes", ())
@@ -1295,31 +1302,37 @@ class WorkspaceStore:
             if not isinstance(entry, dict):
                 continue
             object_id = entry.get("payload_object_id")
-            if isinstance(object_id, str) and object_id:
-                object_ids.add(object_id)
+            if not isinstance(object_id, str):
+                continue
+            try:
+                cls.object_path(object_id)
+            except ValueError:
+                continue
+            object_ids.add(object_id)
         return frozenset(object_ids)
 
-    @staticmethod
+    @classmethod
     def manifest_extension_object_ids(
+        cls,
         manifest: Mapping[str, typing.Any],
     ) -> frozenset[str]:
-        """Return embedded extension object IDs referenced by a manifest."""
+        """Return all valid object IDs reachable from extension source content."""
         object_ids: set[str] = set()
-        requirements = manifest.get("extension_requirements", ())
-        if isinstance(requirements, dict):
-            requirements = [requirements]
-        if isinstance(requirements, list):
-            for requirement in requirements:
-                if not isinstance(requirement, dict):
-                    continue
-                object_id = requirement.get("embedded_object_id")
-                if (
-                    isinstance(object_id, str)
-                    and object_id
-                    and "/" not in object_id
-                    and object_id not in {".", ".."}
-                ):
-                    object_ids.add(object_id)
+        pending = [manifest.get("embedded_extension_sources", ())]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                object_id = value.get("object_id")
+                if isinstance(object_id, str):
+                    try:
+                        cls.object_path(object_id)
+                    except ValueError:
+                        pass
+                    else:
+                        object_ids.add(object_id)
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
         return frozenset(object_ids)
 
     @classmethod

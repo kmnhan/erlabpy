@@ -12,6 +12,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.utils
 from erlab.extensions import LoaderDescriptor
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
     _extension_loader_identity,
@@ -327,12 +328,14 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
                     )
                 elif self._replay_call.kind == "extension_loader":
                     (
-                        extension_id,
+                        script_name,
                         extension_source_hash,
                         extension_capability_id,
                     ) = _extension_loader_identity(func)
                     matches = (
-                        extension_id == self._replay_call.target
+                        script_name is not None
+                        and _script_name_key(script_name)
+                        == _script_name_key(self._replay_call.target)
                         and extension_source_hash == self._replay_call.source_hash
                         and extension_capability_id == self._replay_call.capability_id
                     )
@@ -627,9 +630,12 @@ def _same_replay_loader(
     left: FileReplayCall,
     right: FileReplayCall,
 ) -> bool:
+    targets_match = left.target == right.target
+    if left.kind == right.kind == "extension_loader":
+        targets_match = _script_name_key(left.target) == _script_name_key(right.target)
     return (
         left.kind == right.kind
-        and left.target == right.target
+        and targets_match
         and left.source_hash == right.source_hash
         and left.capability_id == right.capability_id
         and encode_provenance_value(left.kwargs)

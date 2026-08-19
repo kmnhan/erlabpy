@@ -900,6 +900,37 @@ def test_explorer_workspace_state_missing_root_is_empty(
     assert not explorer._model_index_for_path(missing_path).isValid()
 
 
+def test_explorer_extension_loader_matches_uppercase_file_suffix(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    class _TextLoader:
+        extensions = (".txt",)
+        always_single = False
+        description = ""
+
+    matching_path = tmp_path / "values.TXT"
+    unsupported_path = tmp_path / "values.csv"
+    matching_path.touch()
+    unsupported_path.touch()
+    explorer = _DataExplorer(
+        root_path=tmp_path,
+        loader_name="lab",
+        external_loaders={"lab": _TextLoader()},
+    )
+    qtbot.addWidget(explorer)
+
+    matching_index = explorer._model_index_for_path(matching_path)
+    unsupported_index = explorer._model_index_for_path(unsupported_path)
+
+    assert matching_index.isValid()
+    assert unsupported_index.isValid()
+    assert explorer._fs_model.flags(matching_index) & QtCore.Qt.ItemFlag.ItemIsEnabled
+    assert not (
+        explorer._fs_model.flags(unsupported_index) & QtCore.Qt.ItemFlag.ItemIsEnabled
+    )
+
+
 def test_explorer_filesystem_read_error_stays_empty(
     monkeypatch,
     tmp_path: pathlib.Path,

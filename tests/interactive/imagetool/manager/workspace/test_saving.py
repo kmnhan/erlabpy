@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import errno
+import hashlib
 import json
 import os
 import pathlib
@@ -35,6 +36,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager._extensions._models import (
+    _WorkspaceScriptRequirement,
+)
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
@@ -415,6 +419,320 @@ def test_workspace_state_repeated_non_node_dirty_during_save(
     assert len(state.dirty_events) == 2
     assert state.dirty_events[-1].generation == 2
     assert getattr(state.dirty_events[-1], event_field)
+
+
+def test_workspace_script_state_owns_verified_and_explicit_sources() -> None:
+    source = b"from erlab.extensions import routine\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceScriptRequirement(
+        script_name="Gaussian_Tools.py",
+        capability_id="normalize",
+        capability_name="Normalize",
+        capability_kind="routine",
+        source_hash=source_hash,
+        extension_api_version=1,
+        referencing_nodes=("loaded", "failed"),
+    )
+    scripts = workspace_state._WorkspaceScriptState((requirement,))
+    scripts.remember_verified_source(
+        requirement.script_name,
+        source_hash,
+        source,
+        explicit=True,
+    )
+
+    snapshot = scripts.copy()
+    scripts.rebase_nodes({"loaded": "loaded-import", "failed": "failed-import"})
+    scripts.remove_node_references(("loaded-import",))
+    scripts.remap_script("gaussian_tools.py", source_hash, "filters.py")
+
+    assert scripts.requirements[0].script_name == "filters.py"
+    assert scripts.requirements[0].referencing_nodes == ("failed-import",)
+    assert ("filters.py", source_hash) in scripts.verified_sources
+    assert scripts.explicit_sources == {("filters.py", source_hash)}
+    assert scripts.source_manifest_value(frozenset()) == [
+        {
+            "script_name": "filters.py",
+            "source_hash": source_hash,
+            "object_id": f"extension-source-{source_hash}",
+        }
+    ]
+    assert snapshot.requirements == (requirement,)
+    assert snapshot.explicit_sources == {("Gaussian_Tools.py", source_hash)}
+
+    with pytest.raises(ValueError, match="does not match its hash"):
+        scripts.remember_verified_source("bad.py", "0" * 64, source)
+
+
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    [
+        ("Gaussian.py", "gaussian.py"),
+        (
+            "caf\N{LATIN SMALL LETTER E WITH ACUTE}.py",
+            "cafe\N{COMBINING ACUTE ACCENT}.py",
+        ),
+    ],
+)
+def test_workspace_script_state_rejects_ambiguous_filenames_atomically(
+    first_name: str,
+    second_name: str,
+) -> None:
+    first = _WorkspaceScriptRequirement(
+        script_name=first_name,
+        capability_id="first",
+        capability_name="First",
+        capability_kind="routine",
+        source_hash="a" * 64,
+        extension_api_version=1,
+    )
+    second = first.model_copy(
+        update={
+            "script_name": second_name,
+            "capability_id": "second",
+            "capability_name": "Second",
+        }
+    )
+
+    with pytest.raises(ValueError, match="ambiguous filenames"):
+        workspace_state._WorkspaceScriptState((first, second))
+
+    scripts = workspace_state._WorkspaceScriptState((first,))
+    with pytest.raises(ValueError, match="ambiguous filenames"):
+        scripts.merge(workspace_state._WorkspaceScriptState((second,)))
+    assert scripts.requirements == (first,)
+
+
+def test_workspace_script_capture_preserves_conflicting_opaque_object() -> None:
+    source = b"def normalize(data):\n    return data\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    object_id = f"extension-source-{source_hash}"
+    scripts = workspace_state._WorkspaceScriptState(
+        opaque_objects={object_id: (b"future opaque bytes", "future-kind")}
+    )
+
+    assert scripts.remember_verified_source("analysis.py", source_hash, source) is None
+    assert scripts.verified_sources == {}
+    assert scripts.opaque_objects == {
+        object_id: (b"future opaque bytes", "future-kind")
+    }
+
+
+def test_committed_generation_merges_embedded_source_into_live_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedded_source = b"EMBEDDED = 1\n"
+    embedded_hash = hashlib.sha256(embedded_source).hexdigest()
+    later_source = b"LATER = 2\n"
+    later_hash = hashlib.sha256(later_source).hexdigest()
+    scripts = workspace_state._WorkspaceScriptState()
+    scripts.remember_verified_source("later.py", later_hash, later_source)
+    manager = types.SimpleNamespace(
+        _workspace_state=types.SimpleNamespace(
+            extension_scripts=scripts,
+            schema_version=0,
+        )
+    )
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    controller._manager = manager
+    controller._workspace_store = None
+    monkeypatch.setattr(
+        controller,
+        "_commit_saved_tool_data_references",
+        lambda _snapshot: None,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_repoint_saved_pending_workspace_payloads",
+        lambda *_args, **_kwargs: None,
+    )
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        generation_plan=workspace_storage._WorkspaceGenerationPlan(
+            manifest={"schema_version": 6, "nodes": []},
+            objects=(),
+        ),
+        compression_mode="none",
+        embedded_script_sources=(("embedded.py", embedded_hash, embedded_source),),
+    )
+
+    controller._adopt_committed_workspace_generation(
+        pathlib.Path("workspace.itws"),
+        snapshot,
+        manifest=snapshot.generation_plan.manifest,
+    )
+
+    assert set(scripts.verified_sources) == {
+        ("embedded.py", embedded_hash),
+        ("later.py", later_hash),
+    }
+    assert manager._workspace_state.schema_version == 6
+
+
+def test_committed_save_retains_always_embedded_source_for_later_save(
+    qtbot,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    script_path = tmp_path / "always.py"
+    script_source = b"VALUE = 1\n"
+    script_path.write_bytes(script_source)
+    source_hash = hashlib.sha256(script_source).hexdigest()
+    workspace_path = tmp_path / "always.itws"
+
+    with manager_context() as manager:
+        catalog, _registered_hash = manager._extensions.catalog.store.register_script(
+            script_path
+        )
+        record = catalog.extensions[script_path.name.casefold()]
+        manager._extensions.catalog.store.update_script(
+            record.script_name,
+            expected_record_generation=record.record_generation,
+            embed_policy="always",
+        )
+        manager._extensions.catalog.refresh()
+        tool = itool(xr.DataArray([1.0]), manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: workspace_path,
+        )
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert (script_path.name, source_hash) in (
+            manager._workspace_state.extension_scripts.verified_sources
+        )
+        script_path.unlink()
+        manager._workspace_state.mark_layout_dirty()
+        assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+
+    source_entries = _current_workspace_manifest(workspace_path)[
+        "embedded_extension_sources"
+    ]
+    assert source_entries == [
+        {
+            "script_name": script_path.name,
+            "source_hash": source_hash,
+            "object_id": f"extension-source-{source_hash}",
+        }
+    ]
+    recovered_source, kind = workspace_storage._read_workspace_blob(
+        workspace_path,
+        source_entries[0]["object_id"],
+    )
+    assert recovered_source == script_source
+    assert kind == "extension-python-source-v1"
+
+
+def test_routine_publication_survives_opaque_source_object_collision(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source_path = tmp_path / "opaque_collision.py"
+    source = b"""import xarray as xr
+from erlab.extensions import routine
+
+@routine(name="Scale")
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2
+"""
+    source_path.write_bytes(source)
+    source_hash = hashlib.sha256(source).hexdigest()
+    object_id = f"extension-source-{source_hash}"
+    opaque_source = b"future opaque bytes"
+    opaque_kind = "future-extension-source"
+    opaque_payload = {
+        "script_name": source_path.name,
+        "source_hash": source_hash,
+        "object_id": object_id,
+        "future": {"kept": True},
+    }
+    workspace_path = tmp_path / "opaque-collision.itws"
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        catalog, _source_hash = manager._extensions.catalog.store.register_script(
+            source_path
+        )
+        record = catalog.extensions[source_path.name.casefold()]
+        manager._extensions.execution.validate_script(
+            record.script_name,
+            record.source_hash,
+            expected_record_generation=record.record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        manager._workspace_state.extension_scripts.replace(
+            workspace_state._WorkspaceScriptState(
+                opaque_source_payloads=(opaque_payload,),
+                opaque_objects={object_id: (opaque_source, opaque_kind)},
+            )
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            show=False,
+        )
+
+        manager._extensions.execution.queue_routine(
+            script_name=record.script_name,
+            source_hash=record.source_hash,
+            routine_id="scale",
+            parameters={},
+            target=0,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        xr.testing.assert_equal(manager._get_imagetool_data(1), data * 2)
+        scripts = manager._workspace_state.extension_scripts
+        assert scripts.verified_sources == {}
+        assert scripts.opaque_objects == {object_id: (opaque_source, opaque_kind)}
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+    manifest = _current_workspace_manifest(workspace_path)
+    assert manifest["embedded_extension_sources"] == [opaque_payload]
+    restored_source, restored_kind = workspace_storage._read_workspace_blob(
+        workspace_path,
+        object_id,
+    )
+    assert restored_source == opaque_source
+    assert restored_kind == opaque_kind
+
+
+def test_workspace_script_state_preserves_opaque_containers() -> None:
+    requirement_container = {"future": [1, {"value": "kept"}]}
+    source_container = {"future_source": True}
+    scripts = workspace_state._WorkspaceScriptState(
+        opaque_requirement_container=workspace_state._OpaqueManifestContainer(
+            requirement_container
+        ),
+        opaque_source_container=workspace_state._OpaqueManifestContainer(
+            source_container
+        ),
+    )
+
+    assert scripts.requirement_manifest_value(()) == requirement_container
+    assert scripts.source_manifest_value(frozenset()) == source_container
+    copied = scripts.copy()
+    requirement_container["future"].append("changed")
+    source_container["future_source"] = False
+    assert copied.requirement_manifest_value(()) == {"future": [1, {"value": "kept"}]}
+    assert copied.source_manifest_value(frozenset()) == {"future_source": True}
+
+    copied.merge(workspace_state._WorkspaceScriptState())
+    imported = workspace_state._WorkspaceScriptState()
+    imported.merge(copied)
+    assert imported.requirement_manifest_value(()) == {"future": [1, {"value": "kept"}]}
+    assert imported.source_manifest_value(frozenset()) == {"future_source": True}
 
 
 def test_manager_close_save_path_updates_file_path(

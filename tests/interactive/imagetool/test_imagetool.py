@@ -4322,6 +4322,53 @@ def test_itool_reload_unavailable_reason_metadata_branches(
     win.close()
 
 
+def test_itool_direct_extension_loader_status_uses_script_name(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
+    qtbot.addWidget(win)
+    source_file = tmp_path / "source.dat"
+    source_file.write_text("test\n")
+
+    class LoaderCall:
+        script_name = "lab_loader.py"
+        source_hash = "a" * 64
+        loader_id = "load_data"
+
+        def __call__(self, _path: pathlib.Path) -> xr.DataArray:
+            return xr.DataArray([1.0])
+
+    status_calls: list[tuple[str, str, str, str]] = []
+
+    def capability_status(
+        script_name: str,
+        source_hash: str,
+        kind: str,
+        capability_id: str,
+    ) -> typing.Literal["ready"]:
+        status_calls.append((script_name, source_hash, kind, capability_id))
+        return "ready"
+
+    monkeypatch.setattr(
+        imagetool_viewer,
+        "_registered_script_capability_status",
+        capability_status,
+    )
+    win.slicer_area._file_path = source_file
+    win.slicer_area._load_func = (
+        LoaderCall(),
+        {},
+        FileDataSelection(kind="dataarray"),
+    )
+
+    assert win.slicer_area._direct_reloadable()
+    assert status_calls == [("lab_loader.py", "a" * 64, "loader", "load_data")]
+
+    win.close()
+
+
 def test_itool_save(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)

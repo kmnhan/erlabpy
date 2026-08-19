@@ -2,39 +2,30 @@
 
 from __future__ import annotations
 
-import contextlib
+import dataclasses
 import datetime
 import hashlib
 import json
 import os
 import pathlib
-import re
-import shutil
 import typing
 import uuid
 
 from qtpy import QtCore
 
-from erlab.extensions import (
-    EXTENSION_API_VERSION,
-    ExtensionNotFoundError,
-    LoaderDescriptor,
-    RoutineDescriptor,
-    load_script,
-)
+from erlab.extensions import EXTENSION_API_VERSION, LoaderDescriptor, RoutineDescriptor
 from erlab.extensions._api import (
     _CapabilityStatus,
-    _remove_resolvers,
-    _set_capability_resolver,
-    _set_capability_status_resolver,
-    _set_script_capability_reference_resolver,
-    _set_source_resolver,
+    _RegisteredScriptCapability,
+    _RegisteredScriptUnavailable,
+    _remove_registered_script_backend,
+    _set_registered_script_backend,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
     _ExtensionCatalogModel,
-    _ExtensionRecord,
-    _ExtensionSource,
-    _source_loader_name_filters,
+    _script_loader_name_filters,
+    _script_name_key,
+    _ScriptRecord,
 )
 
 if typing.TYPE_CHECKING:
@@ -46,11 +37,25 @@ class _ExtensionCatalogError(RuntimeError):
 
 
 class _ExtensionCatalogConflictError(_ExtensionCatalogError):
-    """The same extension changed after an editor read it."""
+    """The same script changed after an editor read it."""
 
 
 class _ExtensionCatalogLockError(_ExtensionCatalogError):
     pass
+
+
+@dataclasses.dataclass(frozen=True)
+class _PinnedScript:
+    """One catalog record and the exact local bytes read for it."""
+
+    catalog_generation: int
+    record: _ScriptRecord
+    source_bytes: bytes = dataclasses.field(repr=False)
+
+    @property
+    def registered_path(self) -> pathlib.Path:
+        """Return the absolute local file used for this snapshot."""
+        return pathlib.Path(self.record.source_path)
 
 
 def _default_catalog_directory() -> pathlib.Path:
@@ -63,119 +68,59 @@ def _default_catalog_directory() -> pathlib.Path:
     return pathlib.Path(location) / "ERLab" / "ImageTool Manager" / "extensions"
 
 
-def _safe_extension_id(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-.")
-    if not normalized:
-        normalized = f"extension-{uuid.uuid4().hex[:8]}"
-    return normalized
-
-
-def _catalog_payload_v1(payload: object) -> object:
-    """Normalize catalogs written by unreleased extension prototypes."""
-    if not isinstance(payload, dict) or payload.get("schema_version", 1) not in {
-        1,
-        2,
-        3,
-        4,
-    }:
-        return payload
-    migrated = dict(payload)
-    migrated["schema_version"] = 1
-    raw_extensions = migrated.get("extensions", {})
-    if not isinstance(raw_extensions, dict):
-        return migrated
-    favorites = {
-        tuple(value)
-        for value in migrated.get("routine_favorites", ())
-        if isinstance(value, (list, tuple)) and len(value) == 2
-    }
-    extensions: dict[str, object] = {}
-    for extension_id, raw_record in raw_extensions.items():
-        if not isinstance(extension_id, str) or not isinstance(raw_record, dict):
-            extensions[extension_id] = raw_record
-            continue
-        record = dict(raw_record)
-        removed = record.pop("removed", False)
-        favorite = record.pop("favorite", False)
-        record.pop("metadata", None)
-        source_type = record.get("source_type", "script")
-        if source_type == "environment-package":
-            continue
-        record.pop("source_type", None)
-        if removed:
-            continue
-        revisions = record.pop("revisions", None)
-        current_revision = record.pop("current_revision", None)
-        if isinstance(revisions, dict):
-            current = revisions.get(current_revision)
-            if isinstance(current, dict):
-                current = dict(current)
-                current.pop("change_summary", None)
-                if "registered_at" not in current and "created_at" in current:
-                    current["registered_at"] = current.pop("created_at")
-                record["source"] = current
-                if favorite:
-                    for routine in current.get("routines", ()):
-                        if isinstance(routine, dict) and isinstance(
-                            routine.get("id"), str
-                        ):
-                            favorites.add((extension_id, routine["id"]))
-        source = record.get("source")
-        if isinstance(source, dict):
-            source = dict(source)
-            source.pop("import_error", None)
-            source.pop("validation_error", None)
-            source.pop("change_summary", None)
-            for field in (
-                "routine_call_references",
-                "loader_call_references",
-                "entry_point_group",
-                "entry_point_name",
-                "entry_point_value",
-                "distribution_name",
-                "distribution_version",
-                "editable",
-                "loader_always_single",
-                "loader_dialog_methods",
-            ):
-                source.pop(field, None)
-            if "registered_at" not in source and "created_at" in source:
-                source["registered_at"] = source.pop("created_at")
-            record["source"] = source
-        extensions[extension_id] = record
-    migrated["extensions"] = extensions
-    migrated["routine_favorites"] = tuple(
-        sorted(favorite for favorite in favorites if favorite[0] in extensions)
+def _capability_descriptor(
+    snapshot: _PinnedScript,
+    kind: typing.Literal["routine", "loader"],
+    capability_id: str,
+) -> RoutineDescriptor | LoaderDescriptor | None:
+    descriptors = (
+        snapshot.record.routines if kind == "routine" else snapshot.record.loaders
     )
-    return migrated
+    return next((item for item in descriptors if item.id == capability_id), None)
 
 
-def _catalog_with_canonical_names(
-    catalog: _ExtensionCatalogModel,
-) -> _ExtensionCatalogModel:
-    """Use source filenames as persisted visible names."""
-    records = dict(catalog.extensions)
-    changed = False
-    for extension_id, record in catalog.extensions.items():
-        canonical_name = (
-            pathlib.Path(record.source.source_path).name
-            if record.source.source_path
-            else None
-        )
-        if canonical_name and canonical_name != record.name:
-            records[extension_id] = record.model_copy(update={"name": canonical_name})
-            changed = True
-    return catalog.model_copy(update={"extensions": records}) if changed else catalog
+def _capability_status(
+    snapshot: _PinnedScript,
+    kind: typing.Literal["routine", "loader"],
+    capability_id: str,
+    *,
+    require_enabled: bool = True,
+) -> _CapabilityStatus:
+    record = snapshot.record
+    if not record.approved:
+        return "approval-required"
+    descriptor = _capability_descriptor(snapshot, kind, capability_id)
+    if descriptor is None:
+        return "missing-capability"
+    if descriptor.extension_api_version != EXTENSION_API_VERSION:
+        return "unsupported-api"
+    if require_enabled and not record.enabled:
+        return "disabled"
+    return "ready"
+
+
+def _read_source_snapshot(path: pathlib.Path) -> tuple[bytes, str]:
+    """Read source bytes and modification time from the same open local file."""
+    try:
+        with path.open("rb") as stream:
+            source_bytes = stream.read()
+            modified_timestamp = os.fstat(stream.fileno()).st_mtime
+    except OSError as error:
+        raise FileNotFoundError(path) from error
+    modified_at = (
+        datetime.datetime.fromtimestamp(modified_timestamp)
+        .astimezone()
+        .isoformat(timespec="seconds")
+    )
+    return source_bytes, modified_at
 
 
 class _ExtensionCatalogStore:
-    """Own catalog locking, generation checks, and atomic commits.
+    """Own catalog transactions and resolve exact local script snapshots.
 
     Every mutation re-reads the catalog while holding ``QLockFile``. A caller can
     merge an unrelated global change, but a changed ``record_generation`` rejects
-    stale edits to the same extension.
-
-    Only script registrations and user preferences cross the persistence boundary.
+    stale edits to the same script.
     """
 
     def __init__(self, directory: os.PathLike[str] | str | None = None) -> None:
@@ -186,21 +131,17 @@ class _ExtensionCatalogStore:
         )
         self.path = self.directory / "catalog.json"
         self.lock_path = self.directory / "catalog.json.lock"
-        self.objects_directory = self.directory / "objects"
 
     def read(self) -> _ExtensionCatalogModel:
         if not self.path.exists():
             return _ExtensionCatalogModel()
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            catalog = _ExtensionCatalogModel.model_validate(
-                _catalog_payload_v1(payload)
-            )
-        except (OSError, ValueError) as error:
+            return _ExtensionCatalogModel.model_validate(payload)
+        except (OSError, TypeError, ValueError) as error:
             raise _ExtensionCatalogError(
                 f"Could not read the extension catalog: {error}"
             ) from error
-        return _catalog_with_canonical_names(catalog)
 
     def _lock(self) -> QtCore.QLockFile:
         try:
@@ -235,99 +176,28 @@ class _ExtensionCatalogStore:
                 f"Could not commit the extension catalog: {save_file.errorString()}"
             )
 
-    def clean_unreleased_catalog(self) -> None:
-        """Remove prototype fields and package records from the persistent file."""
-        if not self.path.exists():
-            return
-        lock = self._lock()
-        try:
-            try:
-                payload = json.loads(self.path.read_text(encoding="utf-8"))
-                normalized = _catalog_with_canonical_names(
-                    _ExtensionCatalogModel.model_validate(_catalog_payload_v1(payload))
-                )
-            except (OSError, ValueError) as error:
-                raise _ExtensionCatalogError(
-                    f"Could not read the extension catalog: {error}"
-                ) from error
-            if payload != normalized.model_dump(mode="json"):
-                self._write_unlocked(normalized)
-        finally:
-            lock.unlock()
-
-    def _commit_with_staged_objects(
-        self, catalog: _ExtensionCatalogModel, object_names: set[str]
-    ) -> pathlib.Path | None:
-        """Stage managed objects until the atomic catalog commit succeeds."""
-        staging_directory = self.directory / f".removal-{uuid.uuid4().hex}"
-        moved: list[tuple[pathlib.Path, pathlib.Path]] = []
-        invalid_object = next(
-            (
-                name
-                for name in object_names
-                if re.fullmatch(r"[0-9a-f]{64}\.py", name) is None
-            ),
-            None,
-        )
-        if invalid_object is not None:
-            raise _ExtensionCatalogError(
-                f"Invalid managed extension object name: {invalid_object!r}"
-            )
-        try:
-            for object_name in sorted(object_names):
-                source = self.objects_directory / object_name
-                if not source.is_file():
-                    continue
-                staging_directory.mkdir(parents=True, exist_ok=True)
-                staged = staging_directory / object_name
-                os.replace(source, staged)
-                moved.append((source, staged))
-            self._write_unlocked(catalog)
-        except Exception as error:
-            restore_errors: list[OSError] = []
-            for source, staged in reversed(moved):
-                try:
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(staged, source)
-                except OSError as restore_error:
-                    restore_errors.append(restore_error)
-            if staging_directory.exists() and not restore_errors:
-                shutil.rmtree(staging_directory, ignore_errors=True)
-            if restore_errors:
-                raise _ExtensionCatalogError(
-                    "Could not commit the extension catalog or restore staged source "
-                    f"objects. The retained staging path is {staging_directory}"
-                ) from error
-            raise
-        if not moved:
-            return None
-        try:
-            shutil.rmtree(staging_directory)
-        except OSError:
-            return staging_directory
-        return None
-
     def mutate(
         self,
-        extension_id: str | None,
+        script_name: str | None,
         callback: Callable[[_ExtensionCatalogModel], _ExtensionCatalogModel],
         *,
         expected_record_generation: int | None = None,
         check_record_generation: bool = False,
     ) -> _ExtensionCatalogModel:
+        script_key = None if script_name is None else _script_name_key(script_name)
         lock = self._lock()
         try:
             current = self.read()
-            if extension_id is not None and (
+            if script_key is not None and (
                 expected_record_generation is not None or check_record_generation
             ):
-                record = current.extensions.get(extension_id)
+                record = current.extensions.get(script_key)
                 actual = None if record is None else record.record_generation
                 if actual != expected_record_generation:
                     raise _ExtensionCatalogConflictError(
-                        f"Extension {extension_id!r} changed in another manager"
+                        f"Script {script_name!r} changed in another manager"
                     )
-            updated = _catalog_with_canonical_names(callback(current))
+            updated = callback(current)
             if updated == current:
                 return current
             updated = updated.model_copy(update={"generation": current.generation + 1})
@@ -339,287 +209,206 @@ class _ExtensionCatalogStore:
         finally:
             lock.unlock()
 
-    def recovery_source_path(self, extension_id: str, source_hash: str) -> pathlib.Path:
-        """Return the recovery copy when it matches the registered source."""
-        record = self.read().extensions.get(extension_id)
-        if record is None or record.source.source_hash != source_hash:
-            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
-        path = self.objects_directory / record.source.object_name
-        if not path.is_file():
-            raise FileNotFoundError(path)
-        return path
-
-    def executable_source_path(
-        self, extension_id: str, source_hash: str
-    ) -> pathlib.Path:
-        """Return a registered user file only when it matches the source hash.
-
-        Managed source objects are recovery copies. They must not become an
-        implicit execution location when a user-owned script is missing or changed.
-        """
-        record = self.read().extensions.get(extension_id)
-        if record is None or record.source.source_hash != source_hash:
-            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
-        if record.source.source_path is None:
-            raise FileNotFoundError(
-                f"Extension {extension_id}:{source_hash} has no registered script file"
-            )
-        path = pathlib.Path(record.source.source_path).expanduser().resolve()
-        try:
-            source = path.read_bytes()
-        except OSError as error:
-            raise FileNotFoundError(path) from error
-        if hashlib.sha256(source).hexdigest() != source_hash:
-            raise _ExtensionCatalogConflictError(
-                f"Registered script {path} does not match source {source_hash}"
-            )
-        return path
-
-    def pin_execution_source(
-        self, extension_id: str, source_hash: str
-    ) -> tuple[_ExtensionCatalogModel, pathlib.Path, bytes]:
-        """Read one executable source snapshot while catalog writers are blocked.
-
-        The registered file proves that the source is still available to the user.
-        The managed object supplies immutable bytes to the admitted call. Reload and
-        removal transactions cannot replace either catalog identity or managed bytes
-        between these checks.
-        """
+    def resolve_script(
+        self, script_name: str, expected_source_hash: str | None = None
+    ) -> _PinnedScript:
+        """Return one verified snapshot of the sole registered local script."""
+        script_key = _script_name_key(script_name)
         lock = self._lock()
         try:
             catalog = self.read()
-            record = catalog.extensions.get(extension_id)
-            if record is None or record.source.source_hash != source_hash:
-                raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
-            registered_path = self.executable_source_path(extension_id, source_hash)
-            managed_path = self.objects_directory / record.source.object_name
-            try:
-                source = managed_path.read_bytes()
-            except OSError as error:
-                raise FileNotFoundError(managed_path) from error
-            if hashlib.sha256(source).hexdigest() != source_hash:
+            record = catalog.extensions.get(script_key)
+            if record is None:
+                raise KeyError(script_name)
+            if (
+                expected_source_hash is not None
+                and record.source_hash != expected_source_hash
+            ):
                 raise _ExtensionCatalogConflictError(
-                    f"Managed script {managed_path} does not match source {source_hash}"
+                    f"Registered script {record.script_name!r} has different contents"
                 )
-            return catalog, registered_path, source
+            source_path = pathlib.Path(record.source_path)
+            try:
+                source_bytes = source_path.read_bytes()
+            except OSError as error:
+                raise FileNotFoundError(source_path) from error
+            if hashlib.sha256(source_bytes).hexdigest() != record.source_hash:
+                raise _ExtensionCatalogConflictError(
+                    f"Registered script {record.script_name!r} changed on disk"
+                )
+            return _PinnedScript(catalog.generation, record, source_bytes)
         finally:
             lock.unlock()
 
-    def script_capability_reference(
-        self,
-        extension_id: str,
-        kind: str,
-        capability_id: str,
-    ) -> tuple[pathlib.Path, str]:
-        """Return the current validated user path and public function name.
-
-        Copied code follows the locally registered script. Runtime checks use
-        :meth:`executable_source_path` to reject changed source.
-        """
-        record = self.read().extensions.get(extension_id)
-        if record is None:
-            raise KeyError(extension_id)
-        source = record.source
-        descriptors = (
-            source.routines
-            if kind == "routine"
-            else source.loaders
-            if kind == "loader"
-            else ()
-        )
-        descriptor = next(
-            (item for item in descriptors if item.id == capability_id), None
-        )
-        if descriptor is None or not source.approved:
-            raise KeyError(capability_id)
-        try:
-            path = self.executable_source_path(extension_id, source.source_hash)
-        except _ExtensionCatalogConflictError as error:
-            raise FileNotFoundError(
-                f"Registered script {extension_id!r} changed on disk"
-            ) from error
-        return path, descriptor.function_name
-
-    def _store_script_source(self, source: bytes, source_hash: str) -> str:
-        """Store verified bytes and atomically repair a corrupt source object."""
-        if hashlib.sha256(source).hexdigest() != source_hash:
-            raise ValueError("Extension source does not match its source hash")
-        object_name = f"{source_hash}.py"
-        self.objects_directory.mkdir(parents=True, exist_ok=True)
-        object_path = self.objects_directory / object_name
-        try:
-            if hashlib.sha256(object_path.read_bytes()).hexdigest() == source_hash:
-                return object_name
-        except OSError:
-            pass
-        save_file = QtCore.QSaveFile(os.fspath(object_path))
-        if not save_file.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
-            raise _ExtensionCatalogError(save_file.errorString())
-        if save_file.write(source) != len(source):
-            save_file.cancelWriting()
-            raise _ExtensionCatalogError(save_file.errorString())
-        if not save_file.commit():
-            raise _ExtensionCatalogError(save_file.errorString())
-        return object_name
-
-    def add_script(
+    def register_script(
         self,
         path: os.PathLike[str] | str,
         *,
-        extension_id: str | None = None,
-        approved: bool = False,
         expected_source_hash: str | None = None,
-        expected_record_generation: int | None = None,
-        check_record_generation: bool = False,
-    ) -> tuple[_ExtensionCatalogModel, str, bool]:
+    ) -> tuple[_ExtensionCatalogModel, str]:
+        """Register a new local script by its case-insensitive filename."""
         source_path = pathlib.Path(path).expanduser().resolve()
-        source = source_path.read_bytes()
-        source_hash = hashlib.sha256(source).hexdigest()
-        if expected_source_hash is not None and source_hash != expected_source_hash:
-            raise _ExtensionCatalogConflictError(
-                "The script source changed after it was reviewed"
-            )
-        extension_id = _safe_extension_id(extension_id or source_path.stem)
-        modified_at = (
-            datetime.datetime.fromtimestamp(source_path.stat().st_mtime)
-            .astimezone()
-            .isoformat(timespec="seconds")
+        script_name = source_path.name
+        script_key = _script_name_key(script_name)
+        registered_at = (
+            datetime.datetime.now().astimezone().isoformat(timespec="seconds")
         )
-        now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-        object_name = f"{source_hash}.py"
-        object_path = self.objects_directory / object_name
+        registered_source_hash: str | None = None
 
-        lock = self._lock()
-        try:
-            current = self.read()
-            if expected_record_generation is not None or check_record_generation:
-                existing = current.extensions.get(extension_id)
-                actual = None if existing is None else existing.record_generation
-                if actual != expected_record_generation:
-                    raise _ExtensionCatalogConflictError(
-                        f"Extension {extension_id!r} changed in another manager"
-                    )
-
-            object_existed = object_path.exists()
-            try:
-                self._store_script_source(source, source_hash)
-                records = dict(current.extensions)
-                existing = records.get(extension_id)
-                changed = existing is None or (
-                    source_hash != existing.source.source_hash
+        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
+            nonlocal registered_source_hash
+            if script_key in catalog.extensions:
+                existing = catalog.extensions[script_key]
+                raise _ExtensionCatalogConflictError(
+                    f"Script {existing.script_name!r} is already registered"
                 )
-                replaced_object_name = (
-                    existing.source.object_name
-                    if existing is not None and changed
-                    else None
+            source_bytes, modified_at = _read_source_snapshot(source_path)
+            source_hash = hashlib.sha256(source_bytes).hexdigest()
+            if expected_source_hash is not None and source_hash != expected_source_hash:
+                raise _ExtensionCatalogConflictError(
+                    "The script source changed after it was reviewed"
                 )
+            registered_source_hash = source_hash
+            records = dict(catalog.extensions)
+            records[script_key] = _ScriptRecord(
+                script_name=script_name,
+                source_path=os.fspath(source_path),
+                source_hash=source_hash,
+                source_modified_at=modified_at,
+                registered_at=registered_at,
+                record_generation=1,
+            )
+            return catalog.model_copy(update={"extensions": records})
 
-                if existing is not None and not changed:
-                    updated_source = existing.source.model_copy(
-                        update={
-                            "source_path": os.fspath(source_path),
-                            "source_modified_at": modified_at,
-                        }
-                    )
-                    if (
-                        updated_source != existing.source
-                        or existing.name != source_path.name
-                    ):
-                        records[extension_id] = existing.model_copy(
-                            update={
-                                "name": source_path.name,
-                                "source": updated_source,
-                                "record_generation": existing.record_generation + 1,
-                            }
-                        )
-                else:
-                    registered_source = _ExtensionSource(
-                        source_hash=source_hash,
-                        object_name=object_name,
-                        source_path=os.fspath(source_path),
-                        source_modified_at=modified_at,
-                        registered_at=now,
-                        approved=approved,
-                    )
-                    if existing is None:
-                        record = _ExtensionRecord(
-                            id=extension_id,
-                            name=source_path.name,
-                            source=registered_source,
-                            record_generation=1,
-                        )
-                    else:
-                        record = existing.model_copy(
-                            update={
-                                "name": source_path.name,
-                                "enabled": False,
-                                "source": registered_source,
-                                "record_generation": existing.record_generation + 1,
-                            }
-                        )
-                    records[extension_id] = record
+        catalog = self.mutate(None, update)
+        if registered_source_hash is None:
+            raise _ExtensionCatalogError("Script registration returned no source hash")
+        return catalog, registered_source_hash
 
-                updated = current.model_copy(update={"extensions": records})
-                if updated != current:
-                    updated = updated.model_copy(
-                        update={"generation": current.generation + 1}
-                    )
-                    updated = _ExtensionCatalogModel.model_validate(
-                        updated.model_dump(mode="python")
-                    )
-                    self._write_unlocked(updated)
-            except Exception:
-                referenced_before = any(
-                    record.source.object_name == object_name
-                    for record in current.extensions.values()
-                )
-                if not object_existed and not referenced_before:
-                    with contextlib.suppress(OSError):
-                        object_path.unlink(missing_ok=True)
-                raise
-
-            if (
-                replaced_object_name is not None
-                and replaced_object_name != object_name
-                and not any(
-                    record.source.object_name == replaced_object_name
-                    for record in updated.extensions.values()
-                )
-            ):
-                with contextlib.suppress(OSError):
-                    (self.objects_directory / replaced_object_name).unlink(
-                        missing_ok=True
-                    )
-            return updated, source_hash, changed
-        finally:
-            lock.unlock()
-
-    def enable_validated_source(
+    def relocate_script(
         self,
-        extension_id: str,
+        script_name: str,
+        path: os.PathLike[str] | str,
+        *,
+        expected_record_generation: int,
+    ) -> _ExtensionCatalogModel:
+        """Move one registration to an identical local script with the same name."""
+        script_key = _script_name_key(script_name)
+        source_path = pathlib.Path(path).expanduser().resolve()
+        if source_path.name != script_name:
+            raise _ExtensionCatalogConflictError(
+                "The selected file has a different script name"
+            )
+
+        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
+            record = catalog.extensions[script_key]
+            if source_path.name != record.script_name:
+                raise _ExtensionCatalogConflictError(
+                    "The selected file has a different script name"
+                )
+            source_bytes, modified_at = _read_source_snapshot(source_path)
+            source_hash = hashlib.sha256(source_bytes).hexdigest()
+            if source_hash != record.source_hash:
+                raise _ExtensionCatalogConflictError(
+                    "The selected file has different script contents"
+                )
+            updated = record.model_copy(
+                update={
+                    "source_path": os.fspath(source_path),
+                    "source_modified_at": modified_at,
+                }
+            )
+            if updated == record:
+                return catalog
+            records = dict(catalog.extensions)
+            records[script_key] = updated.model_copy(
+                update={"record_generation": record.record_generation + 1}
+            )
+            return catalog.model_copy(update={"extensions": records})
+
+        return self.mutate(
+            script_name,
+            update,
+            expected_record_generation=expected_record_generation,
+        )
+
+    def reload_script(
+        self,
+        script_name: str,
+        *,
+        expected_source_hash: str,
+        expected_record_generation: int,
+    ) -> tuple[_ExtensionCatalogModel, bool]:
+        """Record reviewed local contents and invalidate changed capabilities."""
+        script_key = _script_name_key(script_name)
+        changed: bool | None = None
+
+        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
+            nonlocal changed
+            record = catalog.extensions[script_key]
+            source_path = pathlib.Path(record.source_path)
+            source_bytes, modified_at = _read_source_snapshot(source_path)
+            source_hash = hashlib.sha256(source_bytes).hexdigest()
+            if source_hash != expected_source_hash:
+                raise _ExtensionCatalogConflictError(
+                    "The script source changed after it was reviewed"
+                )
+            changed = source_hash != record.source_hash
+            if not changed:
+                return catalog
+            records = dict(catalog.extensions)
+            records[script_key] = record.model_copy(
+                update={
+                    "source_hash": source_hash,
+                    "source_modified_at": modified_at,
+                    "approved": False,
+                    "enabled": False,
+                    "routines": (),
+                    "loaders": (),
+                    "record_generation": record.record_generation + 1,
+                }
+            )
+            return catalog.model_copy(update={"extensions": records})
+
+        catalog = self.mutate(
+            script_name,
+            update,
+            expected_record_generation=expected_record_generation,
+        )
+        if changed is None:
+            raise _ExtensionCatalogError("Script reload returned no change state")
+        return catalog, changed
+
+    def commit_script_validation(
+        self,
+        script_name: str,
         *,
         source_hash: str,
         expected_record_generation: int,
         routines: tuple[RoutineDescriptor, ...],
         loaders: tuple[LoaderDescriptor, ...],
-        enable_extension: bool = True,
+        enable_script: bool = True,
     ) -> _ExtensionCatalogModel:
         """Commit descriptors produced by execution-layer validation."""
+        script_key = _script_name_key(script_name)
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            current = catalog.extensions[extension_id]
-            if source_hash != current.source.source_hash:
+            record = catalog.extensions[script_key]
+            if source_hash != record.source_hash:
                 raise _ExtensionCatalogConflictError(
-                    f"Extension {extension_id!r} changed during validation"
+                    f"Script {script_name!r} changed during validation"
                 )
-            validated_source = current.source.model_copy(
-                update={
-                    "approved": True,
-                    "routines": routines,
-                    "loaders": loaders,
-                }
+            source_bytes, _modified_at = _read_source_snapshot(
+                pathlib.Path(record.source_path)
             )
-            name_filters = _source_loader_name_filters(validated_source)
+            if hashlib.sha256(source_bytes).hexdigest() != source_hash:
+                raise _ExtensionCatalogConflictError(
+                    f"Script {script_name!r} changed during validation"
+                )
+            candidate = record.model_copy(
+                update={"approved": True, "routines": routines, "loaders": loaders}
+            )
+            name_filters = _script_loader_name_filters(candidate)
             duplicate_filters = sorted(
                 name_filter
                 for name_filter in set(name_filters)
@@ -628,149 +417,120 @@ class _ExtensionCatalogStore:
             if duplicate_filters:
                 joined = ", ".join(repr(value) for value in duplicate_filters)
                 raise _ExtensionCatalogConflictError(
-                    f"Extension {extension_id!r} provides duplicate file dialog "
-                    f"filters: {joined}"
+                    f"Script {script_name!r} provides duplicate file dialog filters: "
+                    f"{joined}"
                 )
             candidate_filters = set(name_filters)
-            for other in catalog.extensions.values():
-                if other.id == extension_id or not other.enabled:
+            for other_key, other in catalog.extensions.items():
+                if other_key == script_key or not other.enabled:
                     continue
-                other_source = other.source
                 conflicts = sorted(
-                    candidate_filters.intersection(
-                        _source_loader_name_filters(other_source)
-                    )
+                    candidate_filters.intersection(_script_loader_name_filters(other))
                 )
                 if conflicts:
                     joined = ", ".join(repr(value) for value in conflicts)
                     raise _ExtensionCatalogConflictError(
-                        f"Extension {extension_id!r} conflicts with enabled extension "
-                        f"{other.id!r} for file dialog filters: {joined}"
+                        f"Script {script_name!r} conflicts with enabled script "
+                        f"{other.script_name!r} for file dialog filters: {joined}"
                     )
             records = dict(catalog.extensions)
-            records[extension_id] = current.model_copy(
+            records[script_key] = candidate.model_copy(
                 update={
-                    "enabled": current.enabled or enable_extension,
-                    "source": validated_source,
-                    "record_generation": current.record_generation + 1,
+                    "enabled": record.enabled or enable_script,
+                    "record_generation": record.record_generation + 1,
                 }
             )
             return catalog.model_copy(update={"extensions": records})
 
         return self.mutate(
-            extension_id,
+            script_name,
             update,
             expected_record_generation=expected_record_generation,
         )
 
-    def resolve_capability(
+    def resolve_registered_capability(
         self,
-        extension_id: str,
-        source_hash: str,
-        kind: str,
+        script_name: str,
+        kind: typing.Literal["routine", "loader"],
         capability_id: str,
-    ) -> Callable[..., typing.Any]:
-        """Resolve a capability from the current approved source."""
-        record = self.read().extensions.get(extension_id)
-        if record is None or source_hash != record.source.source_hash:
-            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
-        source = record.source
-        if not record.enabled:
-            raise ExtensionNotFoundError(f"Extension {extension_id!r} is disabled")
-        if not source.approved:
-            raise ExtensionNotFoundError(
-                f"Extension source {extension_id}:{source_hash} is not approved"
-            )
-        loaded = load_script(
-            self.executable_source_path(extension_id, source_hash),
-            expected_source_hash=source_hash,
-        )
-        entries = loaded.erlab.routines if kind == "routine" else loaded.erlab.loaders
+        *,
+        source_hash: str | None = None,
+        require_enabled: bool = True,
+    ) -> _RegisteredScriptCapability:
+        """Resolve one capability from one verified local-script snapshot."""
         try:
-            return entries[capability_id][1]
-        except KeyError as error:
-            raise KeyError(f"Unknown {kind} capability {capability_id!r}") from error
-
-    def capability_status(
-        self,
-        extension_id: str,
-        source_hash: str,
-        kind: str,
-        capability_id: str,
-    ) -> _CapabilityStatus:
-        """Resolve exact catalog state without importing extension code."""
-        record = self.read().extensions.get(extension_id)
-        if record is None or source_hash != record.source.source_hash:
-            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
-        source = record.source
-        try:
-            self.executable_source_path(extension_id, source_hash)
-        except (FileNotFoundError, KeyError):
-            return "missing-source"
-        except _ExtensionCatalogConflictError:
-            return "hash-mismatch"
-        if not source.approved:
-            return "approval-required"
-        descriptors = source.routines if kind == "routine" else source.loaders
-        descriptor = next(
-            (item for item in descriptors if item.id == capability_id), None
+            snapshot = self.resolve_script(script_name, source_hash)
+        except KeyError:
+            raise
+        except _ExtensionCatalogConflictError as error:
+            raise _RegisteredScriptUnavailable("hash-mismatch") from error
+        except (FileNotFoundError, _ExtensionCatalogError) as error:
+            raise _RegisteredScriptUnavailable("missing-source") from error
+        status = _capability_status(
+            snapshot,
+            kind,
+            capability_id,
+            require_enabled=require_enabled,
         )
+        if status != "ready":
+            raise _RegisteredScriptUnavailable(status)
+        descriptor = _capability_descriptor(snapshot, kind, capability_id)
         if descriptor is None:
-            return "missing-capability"
-        if descriptor.extension_api_version != EXTENSION_API_VERSION:
-            return "unsupported-api"
-        if not record.enabled:
-            return "disabled"
-        return "ready"
+            raise _RegisteredScriptUnavailable("missing-capability")
+        return _RegisteredScriptCapability(
+            registered_path=snapshot.registered_path,
+            script_name=snapshot.record.script_name,
+            source_hash=snapshot.record.source_hash,
+            descriptor=descriptor,
+            source_bytes=snapshot.source_bytes,
+        )
 
-    def source_available(self, record: _ExtensionRecord, source_hash: str) -> bool:
-        """Check the registered source without importing extension code."""
-        if record.source.source_hash != source_hash:
-            return False
-        try:
-            self.executable_source_path(record.id, source_hash)
-        except (FileNotFoundError, KeyError, _ExtensionCatalogError):
-            return False
-        return True
-
-    def update_record(
+    def update_script(
         self,
-        extension_id: str,
+        script_name: str,
         *,
         expected_record_generation: int,
         enabled: bool | None = None,
         embed_policy: typing.Literal["referenced", "always", "never"] | None = None,
     ) -> _ExtensionCatalogModel:
+        script_key = _script_name_key(script_name)
+
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            record = catalog.extensions[extension_id]
-            values: dict[str, typing.Any] = {
-                "record_generation": record.record_generation + 1
-            }
+            record = catalog.extensions[script_key]
+            values: dict[str, typing.Any] = {}
             if enabled is not None:
                 values["enabled"] = enabled
             if embed_policy is not None:
                 values["embed_policy"] = embed_policy
+            updated = record.model_copy(update=values)
+            if updated == record:
+                return catalog
             records = dict(catalog.extensions)
-            records[extension_id] = record.model_copy(update=values)
+            records[script_key] = updated.model_copy(
+                update={"record_generation": record.record_generation + 1}
+            )
             return catalog.model_copy(update={"extensions": records})
 
         return self.mutate(
-            extension_id,
+            script_name,
             update,
             expected_record_generation=expected_record_generation,
         )
 
     def set_routine_favorite(
         self,
-        extension_id: str,
+        script_name: str,
         routine_id: str,
         *,
         favorite: bool,
     ) -> _ExtensionCatalogModel:
         """Add or remove one routine from the application favorites."""
+        script_key = _script_name_key(script_name)
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            entry = (extension_id, routine_id)
+            if script_key not in catalog.extensions:
+                raise KeyError(script_name)
+            entry = (script_key, routine_id)
             favorites = list(catalog.routine_favorites)
             if favorite and entry not in favorites:
                 favorites.append(entry)
@@ -786,48 +546,34 @@ class _ExtensionCatalogStore:
 
     def remove_script(
         self,
-        extension_id: str,
+        script_name: str,
         *,
         expected_record_generation: int,
-    ) -> tuple[_ExtensionCatalogModel, pathlib.Path | None]:
-        """Permanently remove one script record and its unshared source objects."""
-        lock = self._lock()
-        try:
-            current = self.read()
-            record = current.extensions.get(extension_id)
-            actual_generation = None if record is None else record.record_generation
-            if actual_generation != expected_record_generation:
-                raise _ExtensionCatalogConflictError(
-                    f"Extension {extension_id!r} changed in another manager"
-                )
-            if record is None:
-                raise KeyError(extension_id)
-            records = dict(current.extensions)
-            del records[extension_id]
-            referenced_objects = {
-                remaining.source.object_name for remaining in records.values()
-            }
-            removable_objects = {record.source.object_name}.difference(
-                referenced_objects
-            )
-            updated = current.model_copy(
+    ) -> _ExtensionCatalogModel:
+        """Remove one registration without modifying its local Python file."""
+        script_key = _script_name_key(script_name)
+
+        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
+            if script_key not in catalog.extensions:
+                raise KeyError(script_name)
+            records = dict(catalog.extensions)
+            del records[script_key]
+            return catalog.model_copy(
                 update={
-                    "generation": current.generation + 1,
                     "extensions": records,
                     "routine_favorites": tuple(
-                        favorite
-                        for favorite in current.routine_favorites
-                        if favorite[0] != extension_id
+                        entry
+                        for entry in catalog.routine_favorites
+                        if entry[0] != script_key
                     ),
                 }
             )
-            updated = _ExtensionCatalogModel.model_validate(
-                updated.model_dump(mode="python")
-            )
-            retained = self._commit_with_staged_objects(updated, removable_objects)
-            return updated, retained
-        finally:
-            lock.unlock()
+
+        return self.mutate(
+            script_name,
+            update,
+            expected_record_generation=expected_record_generation,
+        )
 
 
 class _ExtensionCatalog(QtCore.QObject):
@@ -851,11 +597,8 @@ class _ExtensionCatalog(QtCore.QObject):
         self.store = _ExtensionCatalogStore(directory)
         self.load_error: str | None = None
         try:
-            self.store.clean_unreleased_catalog()
             self.model = self.store.read()
         except _ExtensionCatalogError as error:
-            # Keep the unreadable file in place. This prevents an older or damaged
-            # installation from replacing catalog data that it cannot validate.
             self.load_error = str(error)
             self.model = _ExtensionCatalogModel()
         self._watcher = QtCore.QFileSystemWatcher(self)
@@ -868,14 +611,7 @@ class _ExtensionCatalog(QtCore.QObject):
         self._refresh_timer.timeout.connect(self._refresh_slot)
         self._restore_watches()
         self._resolver_owner = uuid.uuid4().hex
-        _set_source_resolver(self._resolver_owner, self.store.executable_source_path)
-        _set_script_capability_reference_resolver(
-            self._resolver_owner, self.store.script_capability_reference
-        )
-        _set_capability_resolver(self._resolver_owner, self.store.resolve_capability)
-        _set_capability_status_resolver(
-            self._resolver_owner, self.store.capability_status
-        )
+        _set_registered_script_backend(self._resolver_owner, self.store)
 
     def _restore_watches(self) -> bool:
         try:
@@ -916,7 +652,9 @@ class _ExtensionCatalog(QtCore.QObject):
             detail = str(error)
             if detail != self.load_error:
                 self.load_error = detail
+                self.model = _ExtensionCatalogModel()
                 self.read_failed.emit(detail)
+                self.changed.emit(self.model)
             return
         recovered = self.load_error is not None
         self.load_error = None
@@ -933,4 +671,4 @@ class _ExtensionCatalog(QtCore.QObject):
         self._watcher.fileChanged.disconnect(self._schedule_refresh_slot)
         self._watcher.directoryChanged.disconnect(self._schedule_refresh_slot)
         self._refresh_timer.timeout.disconnect(self._refresh_slot)
-        _remove_resolvers(self._resolver_owner)
+        _remove_registered_script_backend(self._resolver_owner)

@@ -310,7 +310,7 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
 
         if index.isValid():
             flags = QtCore.Qt.ItemFlag.ItemIsDragEnabled | default_flags
-            ext: str = self.get_fs(index).path.suffix
+            ext = self.get_fs(index).path.suffix.casefold()
             loader = self.file_browser._loader(self.file_browser.loader_name)
             if (
                 loader.extensions is not None

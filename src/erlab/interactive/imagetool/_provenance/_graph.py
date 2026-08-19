@@ -76,6 +76,7 @@ class ReplayNode:
 class ReplayGraph:
     __slots__ = (
         "_cacheable_keys",
+        "_external_names",
         "_reserved_names",
         "aliases",
         "display",
@@ -93,6 +94,7 @@ class ReplayGraph:
     ) -> None:
         self.nodes: list[ReplayNode] = []
         self._cacheable_keys: dict[str, str] = {}
+        self._external_names: set[str] = set()
         self._reserved_names = set(reserved_names or ())
         self.aliases: list[tuple[str, str]] = []
         self.display = bool(display)
@@ -102,6 +104,11 @@ class ReplayGraph:
     @property
     def reserved_names(self) -> set[str]:
         return set(self._reserved_names)
+
+    @property
+    def external_names(self) -> set[str]:
+        """Return names that emitted script code receives from its caller."""
+        return set(self._external_names)
 
     def add_alias(self, public_name: str, key: str) -> None:
         if _is_semantic_replay_name(public_name):
@@ -138,6 +145,18 @@ _REPLAY_ALIASES = {
     "era": "erlab.analysis",
     "eri": "erlab.interactive",
     "eplt": "erlab.plotting",
+}
+_REPLAY_FRAMEWORK_IMPORTS = {
+    "erlab": "import erlab",
+    "np": "import numpy as np",
+    "numpy": "import numpy",
+    "pathlib": "import pathlib",
+    "xr": "import xarray as xr",
+    "xarray": "import xarray",
+    **{
+        alias: f"import {target} as {alias}"
+        for alias, target in _REPLAY_ALIASES.items()
+    },
 }
 _REPLAY_RESERVED_PUBLIC_NAMES = {"data", "derived", "tools"}
 _REPLAY_TEMP_PREFIX = "_itool_replay_"
@@ -284,20 +303,22 @@ def _statement_scope_names(stmt: ast.stmt) -> _CurrentScopeNames:
     return names
 
 
+def _symbol_table_dependencies(table: symtable.SymbolTable) -> set[str]:
+    """Return names that a nested scope resolves outside itself."""
+    dependencies = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_referenced()
+        and (symbol.is_global() or symbol.is_free())
+        and symbol.get_name() != table.get_name()
+    }
+    for child in table.get_children():
+        dependencies.update(_symbol_table_dependencies(child))
+    return dependencies
+
+
 def _script_function_dependencies(code: str) -> dict[tuple[str, int], set[str]]:
     table = symtable.symtable(code, "<ImageTool script provenance>", "exec")
-
-    def child_dependencies(child: symtable.SymbolTable) -> set[str]:
-        deps = {
-            symbol.get_name()
-            for symbol in child.get_symbols()
-            if symbol.is_referenced()
-            and (symbol.is_global() or symbol.is_free())
-            and symbol.get_name() != child.get_name()
-        }
-        for nested in child.get_children():
-            deps.update(child_dependencies(nested))
-        return deps
 
     output: dict[tuple[str, int], set[str]] = {}
     for child in table.get_children():
@@ -306,7 +327,7 @@ def _script_function_dependencies(code: str) -> dict[tuple[str, int], set[str]]:
         lineno = child.get_lineno()
         if lineno is None:
             continue
-        output[(child.get_name(), lineno)] = child_dependencies(child)
+        output[(child.get_name(), lineno)] = _symbol_table_dependencies(child)
     return output
 
 
@@ -314,12 +335,24 @@ def _validate_script_code_names(
     code: str,
     available_names: set[str],
     function_dependencies: dict[str, set[str]],
-) -> None:
+    *,
+    external_name_candidates: Collection[str] | None = (),
+) -> set[str]:
+    """Validate reads and return permitted names supplied by the caller.
+
+    ``None`` permits every unresolved name. A collection permits only its members.
+    Deferred function dependencies are checked when the function is first read.
+    """
     module = ast.parse(code, mode="exec")
     new_function_dependencies = _script_function_dependencies(code)
+    external_names: set[str] = set()
 
     def require(name: str, visiting: set[str] | None = None) -> str | None:
         if name not in available_names:
+            if external_name_candidates is None or name in external_name_candidates:
+                available_names.add(name)
+                external_names.add(name)
+                return None
             return name
         deps = function_dependencies.get(name)
         if not deps:
@@ -437,6 +470,7 @@ def _validate_script_code_names(
 
     for stmt in module.body:
         validate_stmt(stmt)
+    return external_names
 
 
 def _simple_assignment_source_name(code: str, target_name: str) -> str | None:
@@ -468,9 +502,15 @@ def _validate_script_provenance(
     spec: typing.Any,
     *,
     external_input_names: set[str] | None = None,
-    allow_free_seed_names: bool = False,
+    allow_external_names: bool = False,
     strict_replay_code: bool = True,
-) -> None:
+) -> tuple[set[str], set[str]]:
+    """Validate a script recipe and return all and seed-only caller names.
+
+    Display seeds can start from caller variables. Later replay steps keep their
+    normal strict name checks, except for ``load_script`` because generated extension
+    setup owns that import name.
+    """
     if spec.kind != "script":
         raise ReplayGraphError("Expected script provenance")
     if spec.active_name is None:
@@ -482,24 +522,24 @@ def _validate_script_provenance(
     if not strict_replay_code:
         builtin_names.update(vars(builtins))
 
-    available_names = {
+    implicit_framework_names = {
         "erlab",
         "np",
         "numpy",
         "xr",
         "xarray",
         *_REPLAY_ALIASES,
-        *builtin_names,
     }
+    available_names = set(builtin_names)
+    if not allow_external_names:
+        available_names.update(implicit_framework_names)
     if spec.script_inputs:
         available_names.update(script_input.name for script_input in spec.script_inputs)
-    elif allow_free_seed_names:
-        # Display-only provenance rooted at an ImageTool may use the conventional
-        # external ``data`` name without serializing it as a ScriptInput.
-        available_names.add("data")
     elif external_input_names is not None:
         available_names.update(external_input_names)
     function_dependencies: dict[str, set[str]] = {}
+    caller_names: set[str] = set()
+    seed_caller_names: set[str] = set()
     has_replay_step = False
     active_available = spec.active_name in available_names
     current_name: str | None = spec.active_name if active_available else None
@@ -518,19 +558,15 @@ def _validate_script_provenance(
                 raise ReplayGraphError(
                     "Script replay code is not valid Python"
                 ) from exc
-        if allow_free_seed_names:
-            module = ast.parse(spec.seed_code, mode="exec")
-            for stmt in module.body:
-                names = _statement_scope_names(stmt)
-                if isinstance(stmt, ast.FunctionDef):
-                    function_dependencies[stmt.name] = set()
-                available_names.update(names.stores)
-        else:
-            _validate_script_code_names(
-                spec.seed_code,
-                available_names,
-                function_dependencies,
-            )
+        seed_caller_names = _validate_script_code_names(
+            spec.seed_code,
+            available_names,
+            function_dependencies,
+            external_name_candidates=None if allow_external_names else (),
+        )
+        caller_names.update(seed_caller_names)
+        if allow_external_names:
+            available_names.update(implicit_framework_names)
         active_available = active_available or _code_stores_name(
             spec.seed_code, spec.active_name
         )
@@ -565,10 +601,15 @@ def _validate_script_provenance(
                     raise ReplayGraphError(
                         "Script replay code is not valid Python"
                     ) from exc
-            _validate_script_code_names(
-                operation.code,
-                available_names,
-                function_dependencies,
+            caller_names.update(
+                _validate_script_code_names(
+                    operation.code,
+                    available_names,
+                    function_dependencies,
+                    external_name_candidates=(
+                        {"load_script"} if allow_external_names else ()
+                    ),
+                )
             )
             active_available = active_available or _code_stores_name(
                 operation.code, spec.active_name
@@ -601,6 +642,7 @@ def _validate_script_provenance(
         raise ReplayGraphError("Script provenance has no replay code")
     if not active_available and current_name != spec.active_name:
         raise ReplayGraphError("Script provenance has no replay code")
+    return caller_names, seed_caller_names
 
 
 def _file_seed_code_parts(seed_code: str, active_name: str) -> tuple[str | None, str]:
@@ -957,14 +999,16 @@ def _compile_spec(
         )
 
     if parsed.kind == "script":
-        _validate_script_provenance(
+        caller_names, seed_caller_names = _validate_script_provenance(
             parsed,
             external_input_names=set(external_inputs or ()),
-            allow_free_seed_names=display
+            allow_external_names=display
             and not parsed.script_inputs
-            and not external_inputs,
+            and not external_inputs
+            and parsed.file_load_source is None,
             strict_replay_code=not display and not trusted_user_code,
         )
+        graph._external_names.update(caller_names)
         bindings: list[tuple[str, str]] = []
         if parsed.script_inputs:
             for script_input in parsed.script_inputs:
@@ -1027,6 +1071,8 @@ def _compile_spec(
         current_bindings = tuple(bindings)
         pending_codes: list[str] = []
         pending_code_hoist_imports: list[bool] = []
+        pending_code_external_names: list[tuple[str, ...]] = []
+        pending_code_framework_owned: list[bool] = []
 
         def relay_key(source_key: str) -> str:
             return graph.add_node(
@@ -1092,6 +1138,7 @@ def _compile_spec(
 
         def flush_script() -> None:
             nonlocal current_bindings, current_name, pending_code_hoist_imports
+            nonlocal pending_code_external_names, pending_code_framework_owned
             nonlocal pending_codes, script_current_key
             if not pending_codes:
                 return
@@ -1109,6 +1156,8 @@ def _compile_spec(
                         "active_name": output_name,
                         "bindings": current_bindings,
                         "codes": tuple(pending_codes),
+                        "external_names": tuple(pending_code_external_names),
+                        "framework_owned": tuple(pending_code_framework_owned),
                         "hoist_imports": tuple(pending_code_hoist_imports),
                     },
                 ),
@@ -1119,6 +1168,8 @@ def _compile_spec(
                     "active_name": output_name,
                     "bindings": current_bindings,
                     "codes": tuple(pending_codes),
+                    "external_names": tuple(pending_code_external_names),
+                    "framework_owned": tuple(pending_code_framework_owned),
                     "hoist_imports": tuple(pending_code_hoist_imports),
                 },
             )
@@ -1127,6 +1178,8 @@ def _compile_spec(
             if display and _is_semantic_replay_name(output_name):
                 graph.add_alias(output_name, script_current_key)
             pending_codes = []
+            pending_code_external_names = []
+            pending_code_framework_owned = []
             pending_code_hoist_imports = []
 
         def apply_context_binding(names: Sequence[str]) -> None:
@@ -1163,6 +1216,8 @@ def _compile_spec(
             if seed_file_load_parts is None:
                 if not apply_simple_alias(parsed.seed_code):
                     pending_codes.append(parsed.seed_code)
+                    pending_code_external_names.append(tuple(sorted(seed_caller_names)))
+                    pending_code_framework_owned.append(False)
                     pending_code_hoist_imports.append(False)
             else:
                 seed_setup_code, seed_load_code, seed_output_name = seed_file_load_parts
@@ -1193,6 +1248,11 @@ def _compile_spec(
                     )
                 if not apply_simple_alias(operation_code):
                     pending_codes.append(operation_code)
+                    accesses, _rebindings = _code_name_accesses(operation_code)
+                    pending_code_external_names.append(
+                        tuple(sorted(caller_names & accesses))
+                    )
+                    pending_code_framework_owned.append(False)
                     pending_code_hoist_imports.append(
                         bool(getattr(operation, "hoist_imports", False))
                     )
@@ -1275,6 +1335,8 @@ def _compile_spec(
                         reserved_names=graph.reserved_names,
                     )
                 )
+                pending_code_external_names.append(())
+                pending_code_framework_owned.append(True)
                 pending_code_hoist_imports.append(False)
                 continue
 
@@ -2425,6 +2487,48 @@ def _split_module_prologue(code: str) -> tuple[str, str]:
     return prologue, body.strip("\n")
 
 
+def _partition_module_prologue(code: str) -> tuple[str | None, str, str]:
+    """Separate one chunk's docstring, future imports, and executable body.
+
+    Each replay chunk is valid as an independent module. The combined replay module
+    can keep only one module docstring, but every future import must precede generated
+    extension setup and support definitions.
+    """
+    prologue, body = _split_module_prologue(code)
+    if not prologue:
+        return None, "", code
+
+    module = ast.parse(prologue, mode="exec")
+    first_statement = module.body[0]
+    has_docstring = (
+        isinstance(first_statement, ast.Expr)
+        and isinstance(first_statement.value, ast.Constant)
+        and isinstance(first_statement.value.value, str)
+    )
+    first_future = next(
+        (
+            statement
+            for statement in module.body
+            if isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+        ),
+        None,
+    )
+    if first_future is None:
+        return (prologue if has_docstring else None), "", body
+    if not has_docstring:
+        return None, prologue, body
+
+    encoded = prologue.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    future_start = line_starts[first_future.lineno - 1] + first_future.col_offset
+    prefix = encoded[:future_start].decode().rstrip("\n")
+    future_imports = encoded[future_start:].decode().strip("\n")
+    return prefix, future_imports, body
+
+
 def _import_binding_targets(code: str) -> dict[str, str] | None:
     """Return names bound by one import and their canonical targets.
 
@@ -2712,8 +2816,12 @@ def _extension_script_references(
     graph: ReplayGraph,
 ) -> dict[str, tuple[pathlib.Path, str]]:
     """Resolve each graph-owned extension call to one current local script."""
-    from erlab.extensions import ExtensionNotFoundError
-    from erlab.extensions._api import _resolved_script_capability_reference
+    from erlab.extensions import (
+        ExtensionNotFoundError,
+        LoaderDescriptor,
+        RoutineDescriptor,
+    )
+    from erlab.extensions._api import _resolve_registered_script_capability
     from erlab.interactive.imagetool._provenance._operations._extension import (
         ExtensionRoutineOperation,
     )
@@ -2723,7 +2831,7 @@ def _extension_script_references(
         capability_kind: typing.Literal["routine", "loader"]
         if _is_extension_loader_node(node):
             replay_call = node.payload["load_source"].replay_call
-            extension_id = replay_call.target
+            script_name = replay_call.target
             capability_kind = "loader"
             capability_id = replay_call.capability_id
         elif node.kind == "operation" and isinstance(
@@ -2732,7 +2840,7 @@ def _extension_script_references(
             operation = typing.cast(
                 "ExtensionRoutineOperation", node.payload["operation"]
             )
-            extension_id = operation.extension_id
+            script_name = operation.script_name
             capability_kind = "routine"
             capability_id = operation.routine_id
         else:
@@ -2740,8 +2848,8 @@ def _extension_script_references(
         if not isinstance(capability_id, str):
             raise ReplayGraphError("Extension replay metadata is incomplete")
         try:
-            source_path, function_name = _resolved_script_capability_reference(
-                extension_id,
+            reference = _resolve_registered_script_capability(
+                script_name,
                 capability_kind,
                 capability_id,
             )
@@ -2749,42 +2857,17 @@ def _extension_script_references(
             raise ReplayGraphError(
                 "Extension call does not have a registered local script"
             ) from exc
+        descriptor = reference.descriptor
+        expected_type = (
+            RoutineDescriptor if capability_kind == "routine" else LoaderDescriptor
+        )
+        if not isinstance(descriptor, expected_type):
+            raise ReplayGraphError("Registered extension capability has the wrong type")
         references[node.key] = (
-            pathlib.Path(source_path).expanduser().resolve(),
-            function_name,
+            pathlib.Path(reference.registered_path).expanduser().resolve(),
+            descriptor.function_name,
         )
     return references
-
-
-def _extension_script_binding_base(source_path: pathlib.Path) -> str:
-    """Return a readable Python binding based on a registered script name."""
-    module_base = re.sub(r"\W", "_", source_path.stem)
-    if not module_base.isidentifier() or keyword.iskeyword(module_base):
-        return "extension_script"
-    return module_base
-
-
-def _script_reads_name_before_binding(graph: ReplayGraph, name: str) -> bool:
-    """Return whether recorded script code first gets ``name`` from its caller."""
-    bound = False
-    for node in graph.nodes:
-        if node.kind != "script":
-            continue
-        bindings = typing.cast("tuple[tuple[str, str], ...]", node.payload["bindings"])
-        if any(input_name == name for input_name, _input_key in bindings):
-            bound = True
-        for code in typing.cast("tuple[str, ...]", node.payload["codes"]):
-            try:
-                statements = ast.parse(code, mode="exec").body
-            except SyntaxError:
-                continue
-            for statement in statements:
-                scope_names = _statement_scope_names(statement)
-                if not bound and name in scope_names.loads:
-                    return True
-                if name in scope_names.stores:
-                    bound = True
-    return False
 
 
 def emit_replay_code(
@@ -2802,6 +2885,9 @@ def emit_replay_code(
     extension_references = _extension_script_references(graph)
     copied_script_bindings = _copied_script_bindings(graph)
     chunks: list[tuple[str, bool]] = []
+    chunk_external_names: list[tuple[str, ...]] = []
+    chunk_framework_owned: list[bool] = []
+    extension_setup_chunks: list[tuple[str, bool]] = []
     materialized_aliases: dict[str, str] = {}
     generated_copy_names: set[str] = set()
     materialized_binding_names = set(names.values())
@@ -2820,75 +2906,6 @@ def emit_replay_code(
                 accesses, rebindings = _code_name_accesses(code)
                 reserved_binding_names.update(accesses)
                 reserved_binding_names.update(rebindings)
-    extension_binding_names = {
-        *graph.reserved_names,
-        *reserved_binding_names,
-        *names.values(),
-        "load_script",
-    }
-    if any(_is_extension_loader_node(node) for node in graph.nodes):
-        # Structured loader code uses these public modules. Reserve their bindings
-        # before a script file name becomes a generated module name.
-        extension_binding_names.update({"np", "pathlib", "xr"})
-    external_load_script_name: str | None = None
-    if extension_references and _script_reads_name_before_binding(graph, "load_script"):
-        external_load_script_name = "input_data"
-        suffix = 2
-        while external_load_script_name in extension_binding_names:
-            external_load_script_name = f"input_data_{suffix}"
-            suffix += 1
-        extension_binding_names.add(external_load_script_name)
-    extension_script_bindings: dict[pathlib.Path, str] = {}
-    for node in graph.nodes:
-        reference = extension_references.get(node.key)
-        if reference is None:
-            continue
-        source_path, _function_name = reference
-        if source_path in extension_script_bindings:
-            continue
-        module_base = _extension_script_binding_base(source_path)
-        module_name = module_base
-        suffix = 2
-        while module_name in extension_binding_names:
-            module_name = f"{module_base}_{suffix}"
-            suffix += 1
-        extension_binding_names.add(module_name)
-        extension_script_bindings[source_path] = module_name
-    active_setup_key: str | None = None
-
-    def append_code(code: str, *, group_imports: bool = False) -> None:
-        chunks.append((code, graph.display and group_imports))
-
-    def extension_binding(node_key: str) -> tuple[str, str]:
-        source_path, function_name = extension_references[node_key]
-        module_name = extension_script_bindings[source_path]
-        return module_name, function_name
-
-    if extension_script_bindings:
-        if external_load_script_name is not None:
-            append_code(f"{external_load_script_name} = load_script")
-        append_code(
-            "from erlab.extensions import load_script",
-            group_imports=True,
-        )
-        for source_path, module_name in extension_script_bindings.items():
-            append_code(f"{module_name} = load_script({str(source_path)!r})")
-
-    def copied_binding_name(input_name: str) -> str:
-        if input_name not in materialized_binding_names:
-            materialized_binding_names.add(input_name)
-            return input_name
-        suffix = 2
-        while True:
-            candidate = f"{input_name}_{suffix}"
-            if (
-                candidate not in materialized_binding_names
-                and candidate not in reserved_binding_names
-            ):
-                materialized_binding_names.add(candidate)
-                return candidate
-            suffix += 1
-
     dynamic_restore_needed = any(
         (node.kind == "source_view" and _source_view_emits_code(graph, node))
         or (
@@ -2907,6 +2924,92 @@ def emit_replay_code(
         if dynamic_restore_name is not None
         else None
     )
+    extension_binding_names = {
+        *graph.reserved_names,
+        *reserved_binding_names,
+        *names.values(),
+        *_REPLAY_ALIASES,
+        "erlab",
+        "load_script",
+        "np",
+        "numpy",
+        "pathlib",
+        "xr",
+        "xarray",
+    }
+    if dynamic_restore_name is not None:
+        extension_binding_names.add(dynamic_restore_name)
+    external_load_script_name: str | None = None
+    if extension_references and "load_script" in graph.external_names:
+        external_load_script_name = "input_data"
+        suffix = 2
+        while external_load_script_name in extension_binding_names:
+            external_load_script_name = f"input_data_{suffix}"
+            suffix += 1
+        extension_binding_names.add(external_load_script_name)
+    extension_script_bindings: dict[pathlib.Path, str] = {}
+    for node in graph.nodes:
+        reference = extension_references.get(node.key)
+        if reference is None:
+            continue
+        source_path, _function_name = reference
+        if source_path in extension_script_bindings:
+            continue
+        module_base = re.sub(r"\W", "_", source_path.stem)
+        if not module_base.isidentifier() or keyword.iskeyword(module_base):
+            module_base = "extension_script"
+        module_name = module_base
+        suffix = 2
+        while module_name in extension_binding_names:
+            module_name = f"{module_base}_{suffix}"
+            suffix += 1
+        extension_binding_names.add(module_name)
+        extension_script_bindings[source_path] = module_name
+    active_setup_key: str | None = None
+
+    def append_code(
+        code: str,
+        *,
+        group_imports: bool = False,
+        external_names: tuple[str, ...] = (),
+        framework_owned: bool = True,
+    ) -> None:
+        chunks.append((code, graph.display and group_imports))
+        chunk_external_names.append(external_names)
+        chunk_framework_owned.append(framework_owned)
+
+    def extension_binding(node_key: str) -> tuple[str, str]:
+        source_path, function_name = extension_references[node_key]
+        module_name = extension_script_bindings[source_path]
+        return module_name, function_name
+
+    if extension_script_bindings:
+        if external_load_script_name is not None:
+            extension_setup_chunks.append(
+                (f"{external_load_script_name} = load_script", False)
+            )
+        extension_setup_chunks.append(
+            ("from erlab.extensions import load_script", graph.display)
+        )
+        for source_path, module_name in extension_script_bindings.items():
+            extension_setup_chunks.append(
+                (f"{module_name} = load_script({str(source_path)!r})", False)
+            )
+
+    def copied_binding_name(input_name: str) -> str:
+        if input_name not in materialized_binding_names:
+            materialized_binding_names.add(input_name)
+            return input_name
+        suffix = 2
+        while True:
+            candidate = f"{input_name}_{suffix}"
+            if (
+                candidate not in materialized_binding_names
+                and candidate not in reserved_binding_names
+            ):
+                materialized_binding_names.add(candidate)
+                return candidate
+            suffix += 1
 
     for node in graph.nodes:
         if node.kind == "setup":
@@ -3001,6 +3104,18 @@ def emit_replay_code(
                 )
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
+            external_names_by_code = list(
+                typing.cast(
+                    "tuple[tuple[str, ...], ...]",
+                    node.payload.get("external_names", ((),) * len(codes)),
+                )
+            )
+            framework_owned_by_code = list(
+                typing.cast(
+                    "tuple[bool, ...]",
+                    node.payload.get("framework_owned", (False,) * len(codes)),
+                )
+            )
             hoist_imports = list(
                 typing.cast(
                     "tuple[bool, ...]",
@@ -3093,9 +3208,32 @@ def emit_replay_code(
                         inline_targets={active_name},
                     )
                 ]
+                external_names_by_code = [
+                    tuple(
+                        sorted(
+                            {
+                                name
+                                for names_for_code in external_names_by_code
+                                for name in names_for_code
+                            }
+                        )
+                    )
+                ]
+                framework_owned_by_code = [any(framework_owned_by_code)]
                 hoist_imports = [False]
-            for code, group_imports in zip(codes, hoist_imports, strict=True):
-                append_code(code, group_imports=group_imports)
+            for code, group_imports, external_names, framework_owned in zip(
+                codes,
+                hoist_imports,
+                external_names_by_code,
+                framework_owned_by_code,
+                strict=True,
+            ):
+                append_code(
+                    code,
+                    group_imports=group_imports,
+                    external_names=external_names,
+                    framework_owned=framework_owned,
+                )
             if active_name != name:
                 append_code(f"{name} = {active_name}")
             active_setup_key = None
@@ -3116,9 +3254,95 @@ def emit_replay_code(
             and materialized_aliases.get(public_name) != planned_name
         ):
             append_code(f"{public_name} = {planned_name}")
-    code = _group_framework_imports(chunks)
+    module_docstring: str | None = None
+    future_prologues: list[str] = []
+    for index, (chunk, group_imports) in enumerate(chunks):
+        if not chunk.strip():
+            continue
+        docstring, chunk_future_imports, body = _partition_module_prologue(chunk)
+        if docstring is not None:
+            if module_docstring is None:
+                module_docstring = docstring
+            else:
+                body = "\n".join(part for part in (docstring, body) if part)
+        if chunk_future_imports:
+            future_prologues.append(chunk_future_imports)
+        chunks[index] = (body, group_imports)
+
+    framework_import_names: set[str] = set()
+    framework_owned_names: set[str] = set()
+    for (chunk, _group_imports), framework_owned in zip(
+        chunks, chunk_framework_owned, strict=True
+    ):
+        if not framework_owned:
+            continue
+        module = ast.parse(chunk, mode="exec")
+        loaded_names = {
+            node.id
+            for node in ast.walk(module)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        imported_names: set[str] = set()
+        for statement in module.body:
+            if not isinstance(statement, ast.Import | ast.ImportFrom):
+                continue
+            bindings = _import_binding_targets(ast.unparse(statement))
+            if bindings is not None:
+                imported_names.update(bindings)
+        framework_owned_names.update(
+            (loaded_names | imported_names) & _REPLAY_FRAMEWORK_IMPORTS.keys()
+        )
+        framework_import_names.update(
+            (loaded_names - imported_names) & _REPLAY_ALIASES.keys()
+        )
+
+    external_capture_chunks: list[tuple[str, bool]] = []
+    external_name_replacements: dict[str, str] = {}
+    for external_name in sorted(
+        (graph.external_names & framework_owned_names) - {"load_script"}
+    ):
+        replacement = "input_data"
+        suffix = 2
+        while replacement in extension_binding_names:
+            replacement = f"input_data_{suffix}"
+            suffix += 1
+        extension_binding_names.add(replacement)
+        external_name_replacements[external_name] = replacement
+        external_capture_chunks.append((f"{replacement} = {external_name}", False))
+
+    for index, ((chunk, group_imports), external_names) in enumerate(
+        zip(chunks, chunk_external_names, strict=True)
+    ):
+        replacements = {
+            name: external_name_replacements[name]
+            for name in external_names
+            if name in external_name_replacements
+        }
+        if replacements:
+            chunk = _replace_code_identifiers(chunk, replacements)
+        chunks[index] = (chunk, group_imports)
+
+    framework_setup_chunks = tuple(
+        (_REPLAY_FRAMEWORK_IMPORTS[name], True)
+        for name in _REPLAY_FRAMEWORK_IMPORTS
+        if name in framework_import_names
+    )
+    code = _group_framework_imports(
+        (
+            *external_capture_chunks,
+            *framework_setup_chunks,
+            *extension_setup_chunks,
+            *chunks,
+        )
+    )
+    future_import_code = _group_framework_imports(
+        tuple((future_prologue, True) for future_prologue in future_prologues)
+    )
+    module_prologue = "\n".join(
+        part for part in (module_docstring, future_import_code) if part
+    )
     if dynamic_restore_support is None:
-        return _rename_display_replay_temps(
+        cleaned_code = _rename_display_replay_temps(
             graph,
             names,
             _cleanup_emitted_replay_code(
@@ -3128,8 +3352,8 @@ def emit_replay_code(
                 compact_temporaries=not graph.display,
             ),
         )
+        return "\n\n".join(part for part in (module_prologue, cleaned_code) if part)
 
-    module_prologue, code = _split_module_prologue(code)
     leading_imports, body = _leading_top_level_imports(code)
     cleaned_body = _rename_display_replay_temps(
         graph,

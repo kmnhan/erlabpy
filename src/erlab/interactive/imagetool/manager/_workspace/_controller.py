@@ -764,6 +764,9 @@ class _WorkspaceController:
             workspace_path,
             manifest=manifest,
         )
+        scripts = self._manager._workspace_state.extension_scripts
+        for script_name, source_hash, source in snapshot.embedded_script_sources:
+            scripts.remember_verified_source(script_name, source_hash, source)
         self._manager._workspace_state.schema_version = (
             workspace_format._current_workspace_schema_version()
         )

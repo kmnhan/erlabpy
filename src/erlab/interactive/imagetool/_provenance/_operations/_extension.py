@@ -9,6 +9,7 @@ import pydantic
 import erlab
 from erlab.extensions._models import (
     _require_finite_parameter_values,
+    _script_name_key,
     _validate_source_hash,
 )
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
@@ -27,12 +28,17 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     """Apply a user extension routine from an identified source snapshot."""
 
     op: typing.Literal["extension_routine"] = "extension_routine"
-    extension_id: str
+    script_name: str
     source_hash: str
     routine_id: str
-    extension_name: str
     routine_name: str
     parameters: dict[str, bool | int | float | str | None]
+
+    @pydantic.field_validator("script_name")
+    @classmethod
+    def _valid_script_name(cls, value: str) -> str:
+        _script_name_key(value)
+        return value
 
     @pydantic.field_validator("source_hash")
     @classmethod
@@ -50,14 +56,14 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.extensions.run_routine(
             data,
-            extension_id=self.extension_id,
+            registered_script=self.script_name,
             source_hash=self.source_hash,
             routine_id=self.routine_id,
             parameters=self.parameters,
         )
 
     def derivation_label(self) -> str:
-        return f"Run {self.routine_name} ({self.extension_name})"
+        return f"Run {self.routine_name} ({self.script_name})"
 
     def derivation_entry(self) -> DerivationEntry:
         return DerivationEntry(self.derivation_label(), None, False)
@@ -96,6 +102,8 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
         function_name: str,
     ) -> str:
         """Emit only the call for a script binding owned by the graph compiler."""
+        if not self.parameters:
+            return f"{output_name} = {module_name}.{function_name}({input_name})"
         parameters = tuple(
             f"    {name}={_provenance_value_code(value)},"
             for name, value in self.parameters.items()

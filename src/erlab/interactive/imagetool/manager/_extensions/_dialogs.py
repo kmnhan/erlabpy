@@ -16,7 +16,7 @@ from erlab.extensions import (
     ParameterKind,
     RoutineDescriptor,
 )
-from erlab.extensions._models import _require_finite_parameter_values
+from erlab.extensions._models import _require_finite_parameter_values, _script_name_key
 from erlab.interactive.imagetool.manager._widgets import _ElidedValueLabel
 
 if typing.TYPE_CHECKING:
@@ -24,8 +24,8 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.manager._extensions._models import (
         _ExtensionCatalogModel,
-        _ExtensionRecord,
         _ResolvedWorkspaceRequirement,
+        _ScriptRecord,
     )
 
 
@@ -230,7 +230,7 @@ class _RoutineSelectionDialog(QtWidgets.QDialog):
 
     def __init__(
         self,
-        routines: tuple[tuple[str, str, RoutineDescriptor], ...],
+        routines: tuple[tuple[str, RoutineDescriptor], ...],
         parent: QtWidgets.QWidget,
         *,
         favorites: Collection[tuple[str, str]] = (),
@@ -242,13 +242,13 @@ class _RoutineSelectionDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         self.list_widget = QtWidgets.QListWidget(self)
         self.list_widget.setObjectName("manager_extension_routine_list")
-        for extension_id, extension_name, descriptor in routines:
+        for script_name, descriptor in routines:
             item = QtWidgets.QListWidgetItem(
-                f"{descriptor.category} — {descriptor.name} ({extension_name})"
+                f"{descriptor.category} — {descriptor.name} ({script_name})"
             )
             item.setData(
                 QtCore.Qt.ItemDataRole.UserRole,
-                (extension_id, descriptor.id),
+                (script_name, descriptor.id),
             )
             self.list_widget.addItem(item)
         if self.list_widget.count():
@@ -334,7 +334,6 @@ class _SourceViewerDialog(QtWidgets.QDialog):
 class _ManageExtensionsDialog(QtWidgets.QDialog):
     action_requested = QtCore.Signal(str, str)
     add_script_requested = QtCore.Signal()
-    open_folder_requested = QtCore.Signal()
     selection_changed = QtCore.Signal(str)
     activated = QtCore.Signal()
 
@@ -355,10 +354,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._apply_search)
         controls.addWidget(self.search_edit, 1)
-        self.open_folder_button = QtWidgets.QPushButton("Open Extensions Folder", self)
-        self.open_folder_button.setObjectName("manager_extension_open_folder_button")
-        self.open_folder_button.clicked.connect(self.open_folder_requested)
-        controls.addWidget(self.open_folder_button)
         layout.addLayout(controls)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
         splitter.setObjectName("manager_extension_splitter")
@@ -396,8 +391,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         for key, title in (
             ("embedding", "Workspace embedding"),
             ("registered_date", "Registered"),
-            ("original_source", "Registered source file"),
-            ("managed_source", "Stored recovery source"),
+            ("source", "Registered source file"),
         ):
             if key == "embedding":
                 self.embedding_combo = QtWidgets.QComboBox(details_widget)
@@ -412,7 +406,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
                 form.addRow(title, self.embedding_combo)
                 self._embedding_form_label = form.labelForField(self.embedding_combo)
                 continue
-            if key in {"original_source", "managed_source"}:
+            if key == "source":
                 label = _ElidedValueLabel(parent=details_widget)
             else:
                 label = QtWidgets.QLabel(details_widget)
@@ -420,7 +414,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             label.setTextInteractionFlags(
                 QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
             )
-            label.setWordWrap(key not in {"original_source", "managed_source"})
+            label.setWordWrap(key != "source")
             self._detail_labels[key] = label
             form.addRow(title, label)
             form_label = form.labelForField(label)
@@ -441,7 +435,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             ("reload", "Reload from Disk…"),
             ("remove", "Remove Extension…"),
             ("error", "Show Error Details"),
-            ("view_source", "View Stored Source"),
+            ("view_source", "View Source"),
             ("open_source", "Open Source File"),
             (
                 "reveal_source",
@@ -484,9 +478,8 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, 1)
-        self._records: dict[str, _ExtensionRecord] = {}
+        self._records: dict[str, _ScriptRecord] = {}
         self._source_states: dict[tuple[str, str], str] = {}
-        self._managed_paths: dict[tuple[str, str], str] = {}
         self._validation_errors: dict[tuple[str, str], str] = {}
         self._removal_reason: str | None = None
         self.tree.currentItemChanged.connect(self._selection_changed)
@@ -501,48 +494,50 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         catalog: _ExtensionCatalogModel,
         source_states: dict[tuple[str, str], str] | None = None,
         *,
-        managed_paths: dict[tuple[str, str], str] | None = None,
         validation_errors: dict[tuple[str, str], str] | None = None,
     ) -> None:
-        selected_id = self.selected_extension_id
+        selected_name = self.selected_script_name
+        selected_key = (
+            None if selected_name is None else _script_name_key(selected_name)
+        )
         scroll_bar = self.tree.verticalScrollBar()
         scroll_position = 0 if scroll_bar is None else scroll_bar.value()
-        self._records = dict(catalog.extensions)
+        self._records = {
+            record.script_name: record for record in catalog.extensions.values()
+        }
         self._source_states = dict(source_states or {})
-        self._managed_paths = dict(managed_paths or {})
         self._validation_errors = dict(validation_errors or {})
         self.tree.setSortingEnabled(False)
         self.tree.clear()
         selected_item: QtWidgets.QTreeWidgetItem | None = None
         for record in catalog.extensions.values():
-            current = record.source
             source_state = self._source_states.get(
-                (record.id, record.source.source_hash), ""
+                (record.script_name, record.source_hash), ""
             )
             validation_error = self._validation_errors.get(
-                (record.id, current.source_hash)
+                (record.script_name, record.source_hash)
             )
             health = "Ready"
             if validation_error:
                 health = "Import failed"
             elif _source_is_unavailable(source_state):
                 health = "Source unavailable"
-            elif not current.approved:
+            elif not record.approved:
                 health = "Approval required"
             activation = "Enabled" if record.enabled else "Disabled"
-            location = current.source_path or "Workspace embedded source"
+            location = record.source_path
             state = f"{activation} · {health}"
             item = QtWidgets.QTreeWidgetItem(
                 (
-                    record.name,
+                    record.script_name,
                     state,
                     _display_datetime(
-                        current.source_modified_at or current.registered_at
+                        record.source_modified_at or record.registered_at
                     ),
                     location,
                 )
             )
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, record.id)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, record.script_name)
             item.setData(
                 0,
                 QtCore.Qt.ItemDataRole.UserRole + 1,
@@ -551,7 +546,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 2, health)
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 3, location)
             self.tree.addTopLevelItem(item)
-            if record.id == selected_id:
+            if _script_name_key(record.script_name) == selected_key:
                 selected_item = item
         self.tree.setSortingEnabled(True)
         self._apply_search()
@@ -567,7 +562,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _update_details(self) -> None:
-        record = self._records.get(self.selected_extension_id or "")
+        record = self._records.get(self.selected_script_name or "")
         if record is None:
             self.name_label.clear()
             self.status_label.clear()
@@ -580,9 +575,12 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             self.embedding_combo.setEnabled(False)
             self.removal_reason_label.clear()
             return
-        source = record.source
-        source_state = self._source_states.get((record.id, source.source_hash), "")
-        validation_error = self._validation_errors.get((record.id, source.source_hash))
+        source_state = self._source_states.get(
+            (record.script_name, record.source_hash), ""
+        )
+        validation_error = self._validation_errors.get(
+            (record.script_name, record.source_hash)
+        )
         health = "Ready"
         failure = ""
         if validation_error:
@@ -591,9 +589,9 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         elif _source_is_unavailable(source_state):
             health = "Source unavailable"
             failure = source_state
-        elif not source.approved:
+        elif not record.approved:
             health = "Approval required"
-        self.name_label.setText(record.name)
+        self.name_label.setText(record.script_name)
         activation = "Enabled" if record.enabled else "Disabled"
         self.status_label.setText(f"{activation} · {health}")
         self.status_label.setProperty(
@@ -603,24 +601,17 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self.status_label.setProperty("healthState", health)
         self.failure_label.setText(failure)
         self.failure_label.setProperty("fullError", validation_error or "")
-        routine_names = ", ".join(item.name for item in source.routines) or "None"
-        loader_names = ", ".join(item.name for item in source.loaders) or "None"
+        routine_names = ", ".join(item.name for item in record.routines) or "None"
+        loader_names = ", ".join(item.name for item in record.loaders) or "None"
         self.capabilities_label.setText(
             f"Routines: {routine_names}\nLoaders: {loader_names}"
         )
         self._detail_labels["registered_date"].setText(
-            _display_datetime(source.source_modified_at or source.registered_at)
+            _display_datetime(record.registered_at)
         )
-        source_path = source.source_path
-        managed_path = self._managed_paths.get((record.id, source.source_hash), "")
-        self._detail_labels["original_source"].setText(
-            source_path or "No external source file"
-        )
-        self._detail_labels["original_source"].setProperty("sourcePath", source_path)
-        self._detail_labels["managed_source"].setText(managed_path or "Unavailable")
-        self._detail_labels["managed_source"].setProperty(
-            "sourcePath", managed_path or None
-        )
+        source_path = record.source_path
+        self._detail_labels["source"].setText(source_path)
+        self._detail_labels["source"].setProperty("sourcePath", source_path)
         self._buttons["toggle"].setEnabled(True)
         self._buttons["toggle"].setText(
             "Retry Validation"
@@ -633,14 +624,12 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             "extensionActionState",
             "retry" if validation_error else "disable" if record.enabled else "enable",
         )
-        original_available = bool(source_path and pathlib.Path(source_path).is_file())
+        source_available = pathlib.Path(source_path).is_file()
         source_changed = source_state == "Source file changed"
         self._buttons["reload"].setEnabled(True)
         reload_text = (
-            "Restore Stored Copy…"
-            if source_path is None
-            else "Locate Script…"
-            if not original_available
+            "Locate Script…"
+            if not source_available
             else "Review Update…"
             if source_changed
             else "Reload from Disk…"
@@ -648,21 +637,27 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._buttons["reload"].setText(reload_text)
         self._buttons["reload"].setProperty(
             "extensionActionState",
-            "restore"
-            if source_path is None
-            else "locate"
-            if not original_available
+            "locate"
+            if not source_available
             else "review"
             if source_changed
             else "reload",
         )
         self._buttons["error"].setVisible(bool(validation_error))
         self._buttons["error"].setEnabled(bool(validation_error))
-        self._buttons["view_source"].setEnabled(bool(managed_path))
+        source_viewable = source_state == "Ready"
+        self._buttons["view_source"].setEnabled(source_viewable)
+        self._buttons["view_source"].setToolTip(
+            "Review the script update before you view its source."
+            if source_changed
+            else ""
+            if source_viewable
+            else "The registered source file is unavailable."
+        )
         for action_id in ("open_source", "reveal_source", "copy_source"):
-            self._buttons[action_id].setEnabled(original_available)
+            self._buttons[action_id].setEnabled(source_available)
             self._buttons[action_id].setToolTip(
-                "" if original_available else "The original source file is unavailable."
+                "" if source_available else "The registered source file is unavailable."
             )
         self.embedding_combo.setEnabled(True)
         index = self.embedding_combo.findData(record.embed_policy)
@@ -683,7 +678,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._update_details()
 
     @property
-    def selected_extension_id(self) -> str | None:
+    def selected_script_name(self) -> str | None:
         item = self.tree.currentItem()
         if item is None:
             return None
@@ -694,9 +689,9 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
     def _selection_changed(self) -> None:
         self._removal_reason = None
         self._update_details()
-        extension_id = self.selected_extension_id
-        if extension_id is not None:
-            self.selection_changed.emit(extension_id)
+        script_name = self.selected_script_name
+        if script_name is not None:
+            self.selection_changed.emit(script_name)
 
     @QtCore.Slot(str)
     def _apply_search(self, _text: str = "") -> None:
@@ -729,9 +724,9 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             self._emit_action(f"embedding:{policy}")
 
     def _emit_action(self, action_id: str) -> None:
-        extension_id = self.selected_extension_id
-        if extension_id is not None:
-            self.action_requested.emit(action_id, extension_id)
+        script_name = self.selected_script_name
+        if script_name is not None:
+            self.action_requested.emit(action_id, script_name)
 
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         super().showEvent(event)
@@ -756,12 +751,19 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget,
         *,
         recoverable: Collection[tuple[str, str]] = (),
+        unresolved_count: int = 0,
     ) -> None:
         super().__init__(parent)
         self._recoverable = frozenset(recoverable)
         self.setObjectName("manager_workspace_extension_requirements_dialog")
         self.setWindowTitle("Workspace Requirements")
         layout = QtWidgets.QVBoxLayout(self)
+        self.unresolved_label = QtWidgets.QLabel(self)
+        self.unresolved_label.setObjectName(
+            "manager_workspace_extension_unresolved_count"
+        )
+        self.unresolved_label.setWordWrap(True)
+        layout.addWidget(self.unresolved_label)
         self.tree = QtWidgets.QTreeWidget(self)
         self.tree.setObjectName("manager_workspace_extension_requirements")
         self.tree.setHeaderLabels(("Extension", "Capability", "State", "Details"))
@@ -773,7 +775,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         self._register_button.clicked.connect(self._register_selected)
         self.tree.currentItemChanged.connect(self._update_register_button)
         layout.addWidget(self._register_button)
-        self.set_requirements(requirements)
+        self.set_requirements(requirements, unresolved_count=unresolved_count)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
         )
@@ -781,7 +783,10 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
     def set_requirements(
-        self, requirements: tuple[_ResolvedWorkspaceRequirement, ...]
+        self,
+        requirements: tuple[_ResolvedWorkspaceRequirement, ...],
+        *,
+        unresolved_count: int = 0,
     ) -> None:
         """Replace displayed states while preserving the selected requirement."""
         selected = self.tree.currentItem()
@@ -793,13 +798,10 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         self.tree.clear()
         for resolved in requirements:
             requirement = resolved.requirement
-            extension_name = requirement.metadata_snapshot.get(
-                "extension_name", requirement.extension_id
-            )
             item = QtWidgets.QTreeWidgetItem(
                 (
-                    str(extension_name),
-                    requirement.capability_id,
+                    requirement.script_name,
+                    requirement.capability_name,
                     resolved.state,
                     resolved.detail,
                 )
@@ -808,7 +810,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
                 0,
                 QtCore.Qt.ItemDataRole.UserRole,
                 (
-                    requirement.extension_id,
+                    requirement.script_name,
                     requirement.source_hash,
                 ),
             )
@@ -816,6 +818,17 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             self.tree.addTopLevelItem(item)
             if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == selected_key:
                 self.tree.setCurrentItem(item)
+        self.unresolved_label.setProperty("unresolvedCount", unresolved_count)
+        self.unresolved_label.setText(
+            ""
+            if unresolved_count == 0
+            else (
+                f"This workspace has {unresolved_count} extension requirement"
+                f"{'s' if unresolved_count != 1 else ''} that this version of "
+                "ERLab cannot read. Save As preserves these entries."
+            )
+        )
+        self.unresolved_label.setVisible(unresolved_count > 0)
         self._update_register_button()
 
     @QtCore.Slot()
@@ -858,11 +871,10 @@ class _MissingScriptsDialog(QtWidgets.QDialog):
     """Recover several unavailable registered scripts in one dialog."""
 
     locate_requested = QtCore.Signal(str)
-    restore_requested = QtCore.Signal(str)
 
     def __init__(
         self,
-        records: tuple[_ExtensionRecord, ...],
+        records: tuple[_ScriptRecord, ...],
         parent: QtWidgets.QWidget,
     ) -> None:
         super().__init__(parent)
@@ -883,12 +895,8 @@ class _MissingScriptsDialog(QtWidgets.QDialog):
         actions = QtWidgets.QHBoxLayout()
         self.locate_button = QtWidgets.QPushButton("Locate Script…", self)
         self.locate_button.setObjectName("manager_locate_extension_script_button")
-        self.restore_button = QtWidgets.QPushButton("Restore Stored Copy…", self)
-        self.restore_button.setObjectName("manager_restore_extension_script_button")
         self.locate_button.clicked.connect(self._locate_selected)
-        self.restore_button.clicked.connect(self._restore_selected)
         actions.addWidget(self.locate_button)
-        actions.addWidget(self.restore_button)
         actions.addStretch(1)
         layout.addLayout(actions)
         buttons = QtWidgets.QDialogButtonBox(
@@ -904,26 +912,23 @@ class _MissingScriptsDialog(QtWidgets.QDialog):
         self.set_records(records)
 
     @property
-    def selected_extension_id(self) -> str | None:
+    def selected_script_name(self) -> str | None:
         item = self.tree.currentItem()
         if item is None:
             return None
         value = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         return value if isinstance(value, str) else None
 
-    def set_records(self, records: tuple[_ExtensionRecord, ...]) -> None:
+    def set_records(self, records: tuple[_ScriptRecord, ...]) -> None:
         """Refresh missing scripts and retain the selected extension when possible."""
-        selected_id = self.selected_extension_id
+        selected_name = self.selected_script_name
         self.tree.clear()
         selected_item: QtWidgets.QTreeWidgetItem | None = None
         for record in records:
-            source = record.source
-            item = QtWidgets.QTreeWidgetItem(
-                (record.name, source.source_path or "No registered source file")
-            )
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, record.id)
+            item = QtWidgets.QTreeWidgetItem((record.script_name, record.source_path))
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, record.script_name)
             self.tree.addTopLevelItem(item)
-            if record.id == selected_id:
+            if record.script_name == selected_name:
                 selected_item = item
         if selected_item is not None:
             self.tree.setCurrentItem(selected_item)
@@ -933,16 +938,10 @@ class _MissingScriptsDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _update_actions(self) -> None:
-        enabled = self.selected_extension_id is not None
+        enabled = self.selected_script_name is not None
         self.locate_button.setEnabled(enabled)
-        self.restore_button.setEnabled(enabled)
 
     @QtCore.Slot()
     def _locate_selected(self) -> None:
-        if (extension_id := self.selected_extension_id) is not None:
-            self.locate_requested.emit(extension_id)
-
-    @QtCore.Slot()
-    def _restore_selected(self) -> None:
-        if (extension_id := self.selected_extension_id) is not None:
-            self.restore_requested.emit(extension_id)
+        if (script_name := self.selected_script_name) is not None:
+            self.locate_requested.emit(script_name)

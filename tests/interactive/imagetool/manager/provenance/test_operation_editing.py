@@ -426,10 +426,9 @@ def test_manager_extension_routine_editability_requires_a_ready_descriptor(
     expected_editable: bool,
 ) -> None:
     operation = ExtensionRoutineOperation(
-        extension_id="lab",
+        script_name="lab.py",
         source_hash="a" * 64,
         routine_id="scale",
-        extension_name="lab.py",
         routine_name="Scale",
         parameters={"scale": 2.0},
     )
@@ -453,8 +452,19 @@ def test_manager_extension_routine_editability_requires_a_ready_descriptor(
     node.has_replay_source = True
     node.replay_source_data = xr.DataArray([1.0])
     controller = _fake_edit_controller(node)
+    status_calls: list[tuple[str, str, str, str]] = []
+
+    def capability_status(
+        script_name: str,
+        source_hash: str,
+        kind: str,
+        capability_id: str,
+    ) -> str:
+        status_calls.append((script_name, source_hash, kind, capability_id))
+        return status
+
     controller._manager._extensions = types.SimpleNamespace(
-        capability_status=lambda *_args: status,
+        capability_status=capability_status,
         routine_descriptor=lambda *_args: descriptor,
     )
 
@@ -462,14 +472,14 @@ def test_manager_extension_routine_editability_requires_a_ready_descriptor(
 
     assert editable is expected_editable
     assert bool(reason) is not expected_editable
+    assert status_calls == [("lab.py", "a" * 64, "routine", "scale")]
 
 
 def test_manager_extension_routine_without_parameters_is_not_editable() -> None:
     operation = ExtensionRoutineOperation(
-        extension_id="lab",
+        script_name="lab.py",
         source_hash="a" * 64,
         routine_id="normalize",
-        extension_name="lab.py",
         routine_name="Normalize",
         parameters={},
     )
@@ -500,10 +510,9 @@ def test_manager_extension_routine_editor_preserves_identity_and_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     operation = ExtensionRoutineOperation(
-        extension_id="lab",
+        script_name="lab.py",
         source_hash="a" * 64,
         routine_id="scale",
-        extension_name="lab.py",
         routine_name="Scale",
         parameters={"scale": 2.0},
     )

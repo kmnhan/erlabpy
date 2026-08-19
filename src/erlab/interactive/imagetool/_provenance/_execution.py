@@ -14,7 +14,7 @@ import numpy as np
 import xarray as xr
 
 import erlab
-from erlab.extensions._api import _capability_status
+from erlab.extensions._api import _registered_script_capability_status
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
@@ -43,10 +43,14 @@ from erlab.interactive.imagetool._provenance._model import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from erlab.extensions._api import _CapabilityStatusResolver
+    from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive.imagetool._provenance._operations import (
         ExtensionRoutineOperation,
     )
+
+    _CapabilityStatusResolver = Callable[
+        [str, str, typing.Literal["routine", "loader"], str], _CapabilityStatus
+    ]
 
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
@@ -255,7 +259,7 @@ def _load_file_source_object(
             return extension_loader_executor(load_source)
         return erlab.extensions.run_loader(
             file_path,
-            extension_id=call.target,
+            registered_script=call.target,
             source_hash=call.source_hash,
             loader_id=call.capability_id,
             parameters=_deserialize_loader_kwargs(call.kwargs),
@@ -483,7 +487,7 @@ def file_load_source_status(
         if replay_call.capability_id is None:
             return "extension-missing-capability"
         capability_status = (
-            _capability_status
+            _registered_script_capability_status
             if extension_status_resolver is None
             else extension_status_resolver
         )(
@@ -518,14 +522,7 @@ def can_reload_without_trust(
     spec = parse_tool_provenance_spec(value)
     if spec is None:
         return False
-    if spec.kind == "file":
-        return (
-            file_load_source_status(
-                spec, extension_status_resolver=extension_status_resolver
-            )
-            == "loadable"
-        )
-    if spec.kind != "script":
+    if spec.kind not in {"file", "script"}:
         return False
     if (
         has_file_load_source(spec)
@@ -535,10 +532,10 @@ def can_reload_without_trust(
         != "loadable"
     ):
         return False
-    if not script_provenance_replayable(spec):
+    if spec.kind == "script" and not script_provenance_replayable(spec):
         return False
     capability_status = (
-        _capability_status
+        _registered_script_capability_status
         if extension_status_resolver is None
         else extension_status_resolver
     )
@@ -548,7 +545,7 @@ def can_reload_without_trust(
         extension_operation = typing.cast("ExtensionRoutineOperation", operation)
         if (
             capability_status(
-                extension_operation.extension_id,
+                extension_operation.script_name,
                 extension_operation.source_hash,
                 "routine",
                 extension_operation.routine_id,

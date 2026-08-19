@@ -6,7 +6,9 @@ import enum
 import functools
 import inspect
 import math
+import pathlib
 import typing
+import unicodedata
 from collections.abc import Mapping
 
 import pydantic
@@ -16,6 +18,20 @@ if typing.TYPE_CHECKING:
     from pathlib import Path
 
 EXTENSION_API_VERSION: typing.Literal[1] = 1
+
+
+def _script_name_key(script_name: str) -> str:
+    """Return the case-insensitive identity for one Python script basename."""
+    if (
+        not script_name
+        or script_name in {".", ".."}
+        or "\x00" in script_name
+        or "/" in script_name
+        or "\\" in script_name
+        or pathlib.PurePath(script_name).suffix.casefold() != ".py"
+    ):
+        raise ValueError("script name must be a .py basename")
+    return unicodedata.normalize("NFC", script_name).casefold()
 
 
 def _validate_source_hash(value: str) -> str:
@@ -233,6 +249,7 @@ class LoaderDescriptor(pydantic.BaseModel):
     @pydantic.field_validator("extensions")
     @classmethod
     def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        values = tuple(value.casefold() for value in values)
         if any(not value.startswith(".") or value == "." for value in values):
             raise ValueError(
                 "loader filename extensions must start with a dot and contain a suffix"

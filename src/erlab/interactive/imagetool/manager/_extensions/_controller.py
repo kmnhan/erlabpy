@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
-import fnmatch
 import functools
 import hashlib
 import logging
@@ -12,21 +10,19 @@ import os
 import pathlib
 import traceback
 import typing
-import uuid
 from collections import defaultdict, deque
-from collections.abc import Mapping
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.extensions import EXTENSION_API_VERSION, LoaderDescriptor, RoutineDescriptor
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
 from erlab.interactive.imagetool._provenance._model import iter_operation_refs
 from erlab.interactive.imagetool.manager._extensions._catalog import (
     _ExtensionCatalog,
     _ExtensionCatalogConflictError,
     _ExtensionCatalogError,
-    _safe_extension_id,
 )
 from erlab.interactive.imagetool.manager._extensions._dialogs import (
     _ExtensionParameterDialog,
@@ -44,12 +40,14 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
     _ExtensionCatalogModel,
-    _ExtensionRecord,
-    _ExtensionSource,
     _ResolvedWorkspaceRequirement,
-    _WorkspaceExtensionRequirement,
+    _ScriptRecord,
+    _WorkspaceScriptRequirement,
 )
-from erlab.interactive.imagetool.manager._registry import live_manager_records
+from erlab.interactive.imagetool.manager._registry import (
+    ImageToolManagerRegistryError,
+    live_manager_records,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable
@@ -67,15 +65,11 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class _ExtensionSourceHashMismatchError(FileNotFoundError):
-    """Report that available script bytes do not match the required source."""
-
-
 class _ExtensionController(QtCore.QObject):
     """Own extension UI, script approval, and execution for one manager.
 
-    Script registrations are application-wide. Workspace ``Open Without`` decisions
-    stay on this controller and do not propagate to other managers.
+    Script registrations are application-wide. Validation failures and execution
+    queues stay local to this manager.
     """
 
     def __init__(self, manager: ImageToolManager) -> None:
@@ -92,31 +86,22 @@ class _ExtensionController(QtCore.QObject):
         self._routine_action_groups: list[
             tuple[QtWidgets.QMenu, list[QtGui.QAction]]
         ] = []
-        self._workspace_requirements: tuple[_WorkspaceExtensionRequirement, ...] = ()
-        self._workspace_embedded_sources: dict[tuple[str, str], bytes] = {}
-        self._workspace_unresolved_embedded_objects: dict[
-            str, tuple[bytes, str | None]
-        ] = {}
         self._explorer_loaders: dict[str, erlab.io.dataloader.LoaderBase] = {}
         self._closed = False
         self._shown_catalog_errors: set[str] = set()
         self._missing_script_prompt_shown = False
         self._missing_scripts_dialog: _MissingScriptsDialog | None = None
         self._missing_scripts_dialog_slots: (
-            tuple[Callable[[str], None], Callable[[str], None], Callable[[int], None]]
-            | None
+            tuple[Callable[[str], None], Callable[[int], None]] | None
         ) = None
-        self._unresolved_workspace_requirement_payloads: tuple[typing.Any, ...] = ()
         self._manage_dialog = _ManageExtensionsDialog(manager)
         self._manage_dialog.action_requested.connect(self._manage_action_slot)
         self._manage_add_script_slot = self.add_script
-        self._manage_open_folder_slot = self._open_extensions_folder
         self._manage_selection_slot = self._refresh_removal_eligibility
         self._manage_activated_slot = self._refresh_removal_eligibility
         self._execution_state_slot = self._refresh_removal_eligibility
         self._validation_changed_slot = self._session_validation_changed
         self._manage_dialog.add_script_requested.connect(self._manage_add_script_slot)
-        self._manage_dialog.open_folder_requested.connect(self._manage_open_folder_slot)
         self._manage_dialog.selection_changed.connect(self._manage_selection_slot)
         self._manage_dialog.activated.connect(self._manage_activated_slot)
         self.execution.queue_changed.connect(self._execution_state_slot)
@@ -144,7 +129,7 @@ class _ExtensionController(QtCore.QObject):
         self._sync_explorer_loaders()
         self._initial_catalog_error_slot = self._show_initial_catalog_error
         QtCore.QTimer.singleShot(0, self._initial_catalog_error_slot)
-        self._missing_script_prompt_slot = self._prompt_for_missing_scripts
+        self._missing_script_prompt_slot = self._show_missing_script_recovery
         QtCore.QTimer.singleShot(0, self._missing_script_prompt_slot)
 
     @QtCore.Slot()
@@ -191,19 +176,15 @@ class _ExtensionController(QtCore.QObject):
         parent_menu.addMenu(menu)
         return menu
 
-    def _enabled_routines(self) -> tuple[tuple[str, str, RoutineDescriptor], ...]:
+    def _enabled_routines(self) -> tuple[tuple[str, RoutineDescriptor], ...]:
         if self.catalog.load_error is not None:
             return ()
-        entries: list[tuple[str, str, RoutineDescriptor]] = []
+        entries: list[tuple[str, RoutineDescriptor]] = []
         for record in self.catalog.model.extensions.values():
-            if not record.enabled:
-                continue
-            source = record.source
-            if not self.catalog.store.source_available(record, source.source_hash):
-                continue
-            if self.execution.validation_error(record.id, source.source_hash):
-                continue
-            entries.extend((record.id, record.name, item) for item in source.routines)
+            routines = self.execution.ready_routines(
+                record.script_name, record.source_hash
+            )
+            entries.extend((record.script_name, item) for item in routines)
         return tuple(entries)
 
     def file_loaders(
@@ -223,20 +204,17 @@ class _ExtensionController(QtCore.QObject):
         entries: dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]] = {}
         owners: dict[str, str] = {}
         for record in self.catalog.model.extensions.values():
-            if not record.enabled:
-                continue
-            source = record.source
-            if not self.catalog.store.source_available(record, source.source_hash):
-                continue
-            if self.execution.validation_error(record.id, source.source_hash):
-                continue
-            for descriptor in source.loaders:
+            for call in self.execution.ready_loader_calls(
+                record.script_name, record.source_hash
+            ):
+                descriptor = call.descriptor
                 patterns = tuple(f"*{suffix}" for suffix in descriptor.extensions) or (
                     "*",
                 )
                 name_filter = f"{descriptor.name} ({' '.join(patterns)})"
                 if path_values and not all(
-                    any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
+                    not descriptor.extensions
+                    or path.suffix.casefold() in descriptor.extensions
                     for path in path_values
                 ):
                     continue
@@ -244,56 +222,18 @@ class _ExtensionController(QtCore.QObject):
                 if previous_owner is not None:
                     raise ValueError(
                         f"Conflicting extension file dialog filter {name_filter!r} "
-                        f"provided by {previous_owner!r} and {record.id!r}"
+                        f"provided by {previous_owner!r} and {record.script_name!r}"
                     )
                 entries[name_filter] = (
-                    self._loader_call(record, source, descriptor),
+                    call,
                     {
                         parameter.id: parameter.default
                         for parameter in descriptor.parameters
                         if not parameter.required
                     },
                 )
-                owners[name_filter] = record.id
+                owners[name_filter] = record.script_name
         return entries
-
-    def _loader_call(
-        self,
-        record: _ExtensionRecord,
-        source: _ExtensionSource,
-        descriptor: LoaderDescriptor,
-        *,
-        source_hash: str | None = None,
-    ) -> _ExtensionLoaderCall:
-        """Create one manager-local call pinned to validated catalog state."""
-        pinned_source_hash = source.source_hash if source_hash is None else source_hash
-        catalog, registered_source_path, source_bytes = (
-            self.catalog.store.pin_execution_source(record.id, pinned_source_hash)
-        )
-        pinned_record = catalog.extensions[record.id]
-        pinned_source = pinned_record.source
-        pinned_descriptor = next(
-            (item for item in pinned_source.loaders if item.id == descriptor.id), None
-        )
-        if pinned_descriptor is None:
-            raise erlab.extensions.ExtensionExecutionError(
-                f"Loader {descriptor.id!r} is not available"
-            )
-        self._remember_registered_source(
-            pinned_record, pinned_source_hash, source_bytes=source_bytes
-        )
-        return _ExtensionLoaderCall(
-            manager_session_id=self._manager._manager_record.internal_id,
-            catalog_generation=catalog.generation,
-            extension_id=pinned_record.id,
-            extension_name=pinned_record.name,
-            source_hash=pinned_source_hash,
-            loader_id=pinned_descriptor.id,
-            descriptor=pinned_descriptor,
-            source_path=registered_source_path,
-            source_bytes=source_bytes,
-            executor=self.execution.run_loader,
-        )
 
     def replay_loader(
         self, load_source: FileLoadSource
@@ -313,48 +253,10 @@ class _ExtensionController(QtCore.QObject):
             raise erlab.extensions.ExtensionExecutionError(
                 "The extension catalog is unavailable"
             )
-        catalog = self.catalog.model
-        record = catalog.extensions.get(replay_call.target)
-        source = (
-            record.source
-            if record is not None
-            and record.source.source_hash == replay_call.source_hash
-            else None
-        )
-        global_status = self.capability_status(
+        call = self.execution.loader_call(
             replay_call.target,
             replay_call.source_hash,
-            "loader",
             replay_call.capability_id,
-        )
-        global_ready = (
-            global_status == "ready"
-            and record is not None
-            and record.enabled
-            and source is not None
-            and source.approved
-        )
-        if not global_ready:
-            raise erlab.extensions.ExtensionExecutionError(
-                "The extension loader source is not available"
-            )
-        if record is None or source is None:
-            raise erlab.extensions.ExtensionExecutionError(
-                "The extension loader source is not available"
-            )
-        descriptor = next(
-            (item for item in source.loaders if item.id == replay_call.capability_id),
-            None,
-        )
-        if descriptor is None:
-            raise erlab.extensions.ExtensionExecutionError(
-                f"Loader {replay_call.capability_id!r} is not available"
-            )
-        call = self._loader_call(
-            record,
-            source,
-            descriptor,
-            source_hash=replay_call.source_hash,
         )
         return self.execution.run_loader(
             call,
@@ -364,39 +266,50 @@ class _ExtensionController(QtCore.QObject):
 
     def capability_status(
         self,
-        extension_id: str,
+        script_name: str,
         source_hash: str,
-        kind: str,
+        kind: typing.Literal["routine", "loader"],
         capability_id: str,
     ) -> _CapabilityStatus:
         """Resolve application catalog state for this manager."""
-        if self.execution.validation_error(extension_id, source_hash) is not None:
-            return "validation-failed"
         if self.catalog.load_error is not None:
             return "missing-source"
-        try:
-            global_status = self.catalog.store.capability_status(
-                extension_id,
-                source_hash,
-                kind,
-                capability_id,
-            )
-        except (KeyError, _ExtensionCatalogError):
-            global_status = "missing-source"
-        return global_status
+        return self.execution.capability_status(
+            script_name,
+            source_hash,
+            kind,
+            capability_id,
+        )
 
     def routine_descriptor(
         self,
-        extension_id: str,
+        script_name: str,
         source_hash: str,
         routine_id: str,
     ) -> RoutineDescriptor | None:
         """Return a routine descriptor from the exact registered script source."""
-        record = self.catalog.model.extensions.get(extension_id)
-        if record is None or record.source.source_hash != source_hash:
+        try:
+            snapshot = self.catalog.store.resolve_script(script_name, source_hash)
+        except (FileNotFoundError, KeyError, _ExtensionCatalogError):
             return None
         return next(
-            (item for item in record.source.routines if item.id == routine_id),
+            (item for item in snapshot.record.routines if item.id == routine_id),
+            None,
+        )
+
+    def loader_descriptor(
+        self,
+        script_name: str,
+        source_hash: str,
+        loader_id: str,
+    ) -> LoaderDescriptor | None:
+        """Return a loader descriptor from the exact registered script source."""
+        try:
+            snapshot = self.catalog.store.resolve_script(script_name, source_hash)
+        except (FileNotFoundError, KeyError, _ExtensionCatalogError):
+            return None
+        return next(
+            (item for item in snapshot.record.loaders if item.id == loader_id),
             None,
         )
 
@@ -411,17 +324,10 @@ class _ExtensionController(QtCore.QObject):
             self._explorer_loaders.clear()
             return
         for record in self.catalog.model.extensions.values():
-            if not record.enabled:
-                continue
-            source = record.source
-            if not self.catalog.store.source_available(record, source.source_hash):
-                continue
-            if self.execution.validation_error(record.id, source.source_hash):
-                continue
-            for descriptor in source.loaders:
-                adapter = _DecoratedLoaderAdapter(
-                    self._loader_call(record, source, descriptor)
-                )
+            for call in self.execution.ready_loader_calls(
+                record.script_name, record.source_hash
+            ):
+                adapter = _DecoratedLoaderAdapter(call)
                 updated[adapter.name] = adapter
         self._explorer_loaders.clear()
         self._explorer_loaders.update(updated)
@@ -480,7 +386,9 @@ class _ExtensionController(QtCore.QObject):
         if routines or not compact:
             menu.addSeparator()
         favorite_entries = tuple(
-            entry for entry in routines if (entry[0], entry[2].id) in favorite_keys
+            entry
+            for entry in routines
+            if (_script_name_key(entry[0]), entry[1].id) in favorite_keys
         )
         if favorite_entries:
             favorites = typing.cast("QtWidgets.QMenu", menu.addMenu("Favorites"))
@@ -490,8 +398,13 @@ class _ExtensionController(QtCore.QObject):
                 retained.append(favorites_action)
             for entry in favorite_entries:
                 self._add_routine_action(favorites, entry, retained)
+        routines_by_key = {
+            (_script_name_key(entry[0]), entry[1].id): entry for entry in routines
+        }
         recent_keys = tuple(
-            key for key in self._recent if key in {(e[0], e[2].id) for e in routines}
+            (_script_name_key(script_name), routine_id)
+            for script_name, routine_id in self._recent
+            if (_script_name_key(script_name), routine_id) in routines_by_key
         )
         if recent_keys:
             recent_menu = typing.cast("QtWidgets.QMenu", menu.addMenu("Recent"))
@@ -499,21 +412,18 @@ class _ExtensionController(QtCore.QObject):
             if recent_action is not None:
                 recent_action.setProperty("requiresImageTool", True)
                 retained.append(recent_action)
-            by_key = {(entry[0], entry[2].id): entry for entry in routines}
             for key in recent_keys:
-                self._add_routine_action(recent_menu, by_key[key], retained)
-        categories: dict[str, list[tuple[str, str, RoutineDescriptor]]] = defaultdict(
-            list
-        )
+                self._add_routine_action(recent_menu, routines_by_key[key], retained)
+        categories: dict[str, list[tuple[str, RoutineDescriptor]]] = defaultdict(list)
         for entry in routines:
-            categories[entry[2].category].append(entry)
+            categories[entry[1].category].append(entry)
         for category in sorted(categories):
             category_menu = typing.cast("QtWidgets.QMenu", menu.addMenu(category))
             category_action = category_menu.menuAction()
             if category_action is not None:
                 category_action.setProperty("requiresImageTool", True)
                 retained.append(category_action)
-            for entry in sorted(categories[category], key=lambda item: item[2].name):
+            for entry in sorted(categories[category], key=lambda item: item[1].name):
                 self._add_routine_action(category_menu, entry, retained)
         if compact:
             if update_actions:
@@ -530,17 +440,17 @@ class _ExtensionController(QtCore.QObject):
     def _add_routine_action(
         self,
         menu: QtWidgets.QMenu,
-        entry: tuple[str, str, RoutineDescriptor],
+        entry: tuple[str, RoutineDescriptor],
         retained: list[QtGui.QAction],
     ) -> None:
-        extension_id, extension_name, descriptor = entry
+        script_name, descriptor = entry
         action = typing.cast("QtGui.QAction", menu.addAction(descriptor.name))
-        action.setData((extension_id, descriptor.id))
+        action.setData((script_name, descriptor.id))
         action.setProperty("requiresImageTool", True)
-        action.setToolTip(descriptor.summary or extension_name)
+        action.setToolTip(descriptor.summary or script_name)
         action.triggered.connect(
-            lambda _checked=False, ext=extension_id, routine=descriptor.id: (
-                self.run_routine(ext, routine)
+            lambda _checked=False, script=script_name, routine=descriptor.id: (
+                self.run_routine(script, routine)
             )
         )
         retained.append(action)
@@ -575,7 +485,12 @@ class _ExtensionController(QtCore.QObject):
         dialog = _RoutineSelectionDialog(
             routines,
             self._manager,
-            favorites=self.catalog.model.routine_favorites,
+            favorites=tuple(
+                (script_name, descriptor.id)
+                for script_name, descriptor in routines
+                if (_script_name_key(script_name), descriptor.id)
+                in self.catalog.model.routine_favorites
+            ),
         )
         favorite_slot = self._set_routine_favorite
         dialog.favorite_requested.connect(favorite_slot)
@@ -586,11 +501,11 @@ class _ExtensionController(QtCore.QObject):
 
     @QtCore.Slot(str, str, bool)
     def _set_routine_favorite(
-        self, extension_id: str, routine_id: str, favorite: bool
+        self, script_name: str, routine_id: str, favorite: bool
     ) -> None:
         try:
             self.catalog.store.set_routine_favorite(
-                extension_id, routine_id, favorite=favorite
+                script_name, routine_id, favorite=favorite
             )
             self.catalog.refresh()
         except Exception:
@@ -601,7 +516,7 @@ class _ExtensionController(QtCore.QObject):
                 detailed_text=traceback.format_exc(),
             )
 
-    def run_routine(self, extension_id: str, routine_id: str) -> None:
+    def run_routine(self, script_name: str, routine_id: str) -> None:
         targets = self._manager._selected_imagetool_targets()
         if len(targets) != 1:
             QtWidgets.QMessageBox.information(
@@ -610,22 +525,26 @@ class _ExtensionController(QtCore.QObject):
                 "Select one ImageTool before you run a routine.",
             )
             return
-        record = self.catalog.model.extensions.get(extension_id)
-        if record is None or not record.enabled:
+        try:
+            snapshot = self.catalog.store.resolve_script(script_name)
+        except (FileNotFoundError, KeyError, _ExtensionCatalogError):
+            return
+        record = snapshot.record
+        if not record.enabled:
             return
         descriptor = next(
-            (item for item in record.source.routines if item.id == routine_id),
+            (item for item in record.routines if item.id == routine_id),
             None,
         )
         if descriptor is None:
             return
-        self._remember_registered_source(record, record.source.source_hash)
         dialog = _ExtensionParameterDialog(descriptor, self._manager)
         if not dialog.exec():
             return
         try:
             self.execution.queue_routine(
-                extension_id=extension_id,
+                script_name=record.script_name,
+                source_hash=record.source_hash,
                 routine_id=routine_id,
                 parameters=dialog.parameters,
                 target=targets[0],
@@ -638,31 +557,10 @@ class _ExtensionController(QtCore.QObject):
                 detailed_text=traceback.format_exc(),
             )
             return
-        key = (extension_id, routine_id)
+        key = (record.script_name, routine_id)
         with contextlib.suppress(ValueError):
             self._recent.remove(key)
         self._recent.appendleft(key)
-
-    def _remember_registered_source(
-        self,
-        record: _ExtensionRecord,
-        source_hash: str,
-        *,
-        source_bytes: bytes | None = None,
-    ) -> None:
-        """Retain script bytes used by this workspace before registration changes."""
-        key = (record.id, source_hash)
-        if key in self._workspace_embedded_sources:
-            return
-        source = source_bytes
-        if source is None:
-            try:
-                path = self.catalog.store.recovery_source_path(record.id, source_hash)
-                source = path.read_bytes()
-            except (KeyError, OSError, _ExtensionCatalogConflictError):
-                return
-        if hashlib.sha256(source).hexdigest() == source_hash:
-            self._workspace_embedded_sources[key] = source
 
     @QtCore.Slot()
     def add_script(self) -> None:
@@ -673,44 +571,15 @@ class _ExtensionController(QtCore.QObject):
             "Python scripts (*.py)",
         )
         if path:
-            self._review_and_add(pathlib.Path(path))
+            self._review_and_register(pathlib.Path(path))
 
-    def _review_and_add(
-        self, path: pathlib.Path, *, extension_id: str | None = None
-    ) -> bool:
+    def _review_and_register(self, path: pathlib.Path) -> bool:
+        """Review and register one user-owned local Python script."""
         try:
-            reviewed_source = path.read_bytes()
+            resolved_path = path.expanduser().resolve()
+            reviewed_source = resolved_path.read_bytes()
             reviewed_source_hash = hashlib.sha256(reviewed_source).hexdigest()
             source_text = reviewed_source.decode("utf-8")
-            catalog_extension_id = _safe_extension_id(extension_id or path.stem)
-            existing = self.catalog.model.extensions.get(catalog_extension_id)
-            if extension_id is None:
-                resolved_path = path.expanduser().resolve()
-                matching_record = next(
-                    (
-                        record
-                        for record in self.catalog.model.extensions.values()
-                        if (source_path := record.source.source_path) is not None
-                        and pathlib.Path(source_path).expanduser().resolve()
-                        == resolved_path
-                    ),
-                    None,
-                )
-                if matching_record is not None:
-                    catalog_extension_id = matching_record.id
-                    existing = matching_record
-            if extension_id is None and existing is not None:
-                current_source = existing.source
-                same_source = (
-                    current_source.source_path is not None
-                    and pathlib.Path(current_source.source_path).expanduser().resolve()
-                    == resolved_path
-                )
-                if not same_source:
-                    catalog_extension_id = _safe_extension_id(
-                        f"{path.stem}-{uuid.uuid4().hex[:8]}"
-                    )
-                    existing = None
             dialog = _SourceReviewDialog(
                 None,
                 self._manager,
@@ -727,26 +596,39 @@ class _ExtensionController(QtCore.QObject):
         if not dialog.exec():
             return False
         try:
-            _catalog, _source_hash, changed = self.catalog.store.add_script(
-                path,
-                extension_id=catalog_extension_id,
-                expected_source_hash=reviewed_source_hash,
-                expected_record_generation=(
-                    None if existing is None else existing.record_generation
-                ),
-                check_record_generation=True,
-            )
+            script_key = _script_name_key(resolved_path.name)
+            existing = self.catalog.store.read().extensions.get(script_key)
+            if existing is None:
+                catalog, _source_hash = self.catalog.store.register_script(
+                    resolved_path,
+                    expected_source_hash=reviewed_source_hash,
+                )
+                changed = True
+            elif pathlib.Path(existing.source_path) != resolved_path:
+                QtWidgets.QMessageBox.warning(
+                    self._manager,
+                    "Script Already Registered",
+                    f"{existing.script_name} is already registered at "
+                    f"{existing.source_path}.",
+                )
+                return False
+            else:
+                catalog, changed = self.catalog.store.reload_script(
+                    existing.script_name,
+                    expected_source_hash=reviewed_source_hash,
+                    expected_record_generation=existing.record_generation,
+                )
             self.catalog.refresh()
-            record = self.catalog.model.extensions[catalog_extension_id]
-            source = record.source
-            if not changed and record.enabled and source.approved:
+            record = catalog.extensions[script_key]
+            if not changed and record.enabled and record.approved:
                 self._manager._status_bar.showMessage(
                     "The registered script contents did not change.",
                     4000,
                 )
                 return True
-            self.execution.validate_and_enable(
-                record.id,
+            self.execution.validate_script(
+                record.script_name,
+                record.source_hash,
                 expected_record_generation=record.record_generation,
             )
             self.catalog.refresh()
@@ -762,34 +644,35 @@ class _ExtensionController(QtCore.QObject):
             return False
 
     def _missing_script_records(
-        self, extension_ids: Collection[str] | None = None
-    ) -> tuple[_ExtensionRecord, ...]:
+        self, script_names: Collection[str] | None = None
+    ) -> tuple[_ScriptRecord, ...]:
         """Return enabled scripts whose registered current file cannot be read."""
-        missing: list[_ExtensionRecord] = []
+        requested_keys = (
+            None
+            if script_names is None
+            else {_script_name_key(value) for value in script_names}
+        )
+        missing: list[_ScriptRecord] = []
         for record in self.catalog.model.extensions.values():
             if not record.enabled or (
-                extension_ids is not None and record.id not in extension_ids
+                requested_keys is not None
+                and _script_name_key(record.script_name) not in requested_keys
             ):
                 continue
-            source = record.source
-            if source.source_path is None:
-                missing.append(record)
-                continue
             try:
-                pathlib.Path(source.source_path).read_bytes()
-            except OSError:
+                self.catalog.store.resolve_script(
+                    record.script_name, record.source_hash
+                )
+            except _ExtensionCatalogConflictError:
+                continue
+            except (FileNotFoundError, KeyError, _ExtensionCatalogError):
                 missing.append(record)
         return tuple(missing)
-
-    @QtCore.Slot()
-    def _prompt_for_missing_scripts(self) -> None:
-        """Prompt for missing registered scripts after the event loop starts."""
-        self._show_missing_script_recovery()
 
     def _show_missing_script_recovery(
         self,
         *,
-        extension_ids: Collection[str] | None = None,
+        script_names: Collection[str] | None = None,
         repeat: bool = False,
     ) -> bool:
         """Offer one session-scoped recovery dialog for all missing scripts."""
@@ -803,7 +686,7 @@ class _ExtensionController(QtCore.QObject):
             return True
         if self._missing_script_prompt_shown and not repeat:
             return False
-        records = self._missing_script_records(extension_ids)
+        records = self._missing_script_records(script_names)
         if not records:
             return False
         self._missing_script_prompt_shown = True
@@ -812,18 +695,14 @@ class _ExtensionController(QtCore.QObject):
         def refresh_dialog() -> None:
             if not erlab.interactive.utils.qt_is_valid(dialog):
                 return
-            remaining = self._missing_script_records(extension_ids)
+            remaining = self._missing_script_records(script_names)
             if not remaining:
                 dialog.accept()
             else:
                 dialog.set_records(remaining)
 
-        def locate_slot(extension_id: str) -> None:
-            self._locate_missing_script(extension_id)
-            refresh_dialog()
-
-        def restore_slot(extension_id: str) -> None:
-            self._restore_missing_script(extension_id)
+        def locate_slot(script_name: str) -> None:
+            self._locate_missing_script(script_name)
             refresh_dialog()
 
         def finished_slot(_result: int) -> None:
@@ -832,59 +711,39 @@ class _ExtensionController(QtCore.QObject):
             with contextlib.suppress(TypeError, RuntimeError):
                 dialog.locate_requested.disconnect(locate_slot)
             with contextlib.suppress(TypeError, RuntimeError):
-                dialog.restore_requested.disconnect(restore_slot)
-            with contextlib.suppress(TypeError, RuntimeError):
                 dialog.finished.disconnect(finished_slot)
             self._missing_scripts_dialog = None
             self._missing_scripts_dialog_slots = None
 
         dialog.locate_requested.connect(locate_slot)
-        dialog.restore_requested.connect(restore_slot)
         dialog.finished.connect(finished_slot)
         self._missing_scripts_dialog = dialog
         self._missing_scripts_dialog_slots = (
             locate_slot,
-            restore_slot,
             finished_slot,
         )
         dialog.show()
         dialog.raise_()
         return True
 
-    def _locate_missing_script(self, extension_id: str) -> bool:
-        record = self.catalog.model.extensions.get(extension_id)
+    def _locate_missing_script(self, script_name: str) -> bool:
+        record = self.catalog.model.extensions.get(_script_name_key(script_name))
         if record is None:
             return False
-        source = record.source
-        initial = source.source_path or self._manager._recent_or_default_directory()
         path_value, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
             self._manager,
-            f"Locate {record.name}",
-            initial or "",
+            f"Locate {record.script_name}",
+            record.source_path,
             "Python scripts (*.py)",
         )
         if not path_value:
             return False
         path = pathlib.Path(path_value).expanduser().resolve()
         try:
-            source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            erlab.interactive.utils.MessageDialog.critical(
-                self._manager,
-                "Extension Error",
-                "The selected script could not be read.",
-                detailed_text=traceback.format_exc(),
-            )
-            return False
-        if source_hash != source.source_hash:
-            return self._review_and_add(path, extension_id=extension_id)
-        try:
-            self.catalog.store.add_script(
+            self.catalog.store.relocate_script(
+                record.script_name,
                 path,
-                extension_id=extension_id,
-                expected_source_hash=source.source_hash,
                 expected_record_generation=record.record_generation,
-                check_record_generation=True,
             )
             self.catalog.refresh()
             return True  # noqa: TRY300 - success exits before the shared error path.
@@ -907,7 +766,8 @@ class _ExtensionController(QtCore.QObject):
     ) -> pathlib.Path | None:
         """Write recovery source without replacing a different user file."""
         initial_directory = self._manager._recent_or_default_directory() or ""
-        suggested_path = os.fspath(pathlib.Path(initial_directory) / suggested_name)
+        safe_name = pathlib.Path(suggested_name).name
+        suggested_path = os.fspath(pathlib.Path(initial_directory) / safe_name)
         destination_value, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self._manager,
             title,
@@ -953,50 +813,6 @@ class _ExtensionController(QtCore.QObject):
             return None
         return destination
 
-    def _restore_missing_script(self, extension_id: str) -> bool:
-        record = self.catalog.model.extensions.get(extension_id)
-        if record is None:
-            return False
-        source_hash = record.source.source_hash
-        try:
-            source = self.catalog.store.recovery_source_path(
-                extension_id, source_hash
-            ).read_bytes()
-        except OSError:
-            erlab.interactive.utils.MessageDialog.critical(
-                self._manager,
-                "Extension Error",
-                "The stored recovery source is unavailable.",
-                detailed_text=traceback.format_exc(),
-            )
-            return False
-        destination = self._save_source_as_user_file(
-            source,
-            title=f"Restore {record.name}",
-            suggested_name=record.name,
-        )
-        if destination is None:
-            return False
-        try:
-            self.catalog.store.add_script(
-                destination,
-                extension_id=extension_id,
-                expected_source_hash=source_hash,
-                expected_record_generation=record.record_generation,
-                check_record_generation=True,
-            )
-            self.catalog.refresh()
-            return True  # noqa: TRY300 - success exits before the shared error path.
-        except Exception:
-            erlab.interactive.utils.MessageDialog.critical(
-                self._manager,
-                "Extension Error",
-                "The restored script could not be registered.",
-                detailed_text=traceback.format_exc(),
-            )
-            self.catalog.refresh()
-            return False
-
     @QtCore.Slot()
     def show_manager(self) -> None:
         self._refresh_manage_dialog()
@@ -1008,100 +824,77 @@ class _ExtensionController(QtCore.QObject):
             self._manage_dialog.set_catalog(_ExtensionCatalogModel())
             self._refresh_removal_eligibility()
             return
-        managed_paths: dict[tuple[str, str], str] = {}
+        source_states: dict[tuple[str, str], str] = {}
         for record in self.catalog.model.extensions.values():
-            source_hash = record.source.source_hash
-            with contextlib.suppress(FileNotFoundError, KeyError):
-                managed_paths[(record.id, source_hash)] = os.fspath(
-                    self.catalog.store.recovery_source_path(record.id, source_hash)
+            key = (record.script_name, record.source_hash)
+            try:
+                self.catalog.store.resolve_script(
+                    record.script_name, record.source_hash
                 )
+            except _ExtensionCatalogConflictError:
+                source_states[key] = "Source file changed"
+            except FileNotFoundError:
+                source_states[key] = "Source file missing"
+            except (KeyError, _ExtensionCatalogError):
+                source_states[key] = "Source file unreadable"
+            else:
+                source_states[key] = "Ready"
         self._manage_dialog.set_catalog(
             self.catalog.model,
-            self._catalog_source_states(),
-            managed_paths=managed_paths,
-            validation_errors=self.execution.validation_errors,
+            source_states,
+            validation_errors={
+                (record.script_name, record.source_hash): error
+                for record in self.catalog.model.extensions.values()
+                if (
+                    error := self.execution.validation_error(
+                        record.script_name, record.source_hash
+                    )
+                )
+                is not None
+            },
         )
         self._refresh_removal_eligibility()
 
-    @QtCore.Slot()
-    def _open_extensions_folder(self) -> None:
-        try:
-            self.catalog.store.directory.mkdir(parents=True, exist_ok=True)
-            erlab.utils.misc.open_in_file_manager(self.catalog.store.directory)
-        except OSError:
-            erlab.interactive.utils.MessageDialog.critical(
-                self._manager,
-                "Extension Error",
-                "The extensions folder could not be opened.",
-                detailed_text=traceback.format_exc(),
-            )
-
-    def _catalog_source_states(self) -> dict[tuple[str, str], str]:
-        states: dict[tuple[str, str], str] = {}
-        for record in self.catalog.model.extensions.values():
-            source = record.source
-            source_hash = source.source_hash
-            key = (record.id, source_hash)
-            if source.source_path is None:
-                states[key] = "No registered source file"
-                continue
-            source_path = pathlib.Path(source.source_path)
-            if not source_path.is_file():
-                states[key] = "Source file missing"
-                continue
-            try:
-                current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
-            except OSError:
-                states[key] = "Source file unreadable"
-            else:
-                states[key] = (
-                    "Ready" if current_hash == source_hash else "Source file changed"
-                )
-        return states
-
     @QtCore.Slot(str, str)
-    def _manage_action(self, action_id: str, extension_id: str) -> None:
-        record = self.catalog.model.extensions.get(extension_id)
+    def _manage_action(self, action_id: str, script_name: str) -> None:
+        record = self.catalog.model.extensions.get(_script_name_key(script_name))
         if record is None:
             return
         try:
             if action_id == "reload":
-                source_path = record.source.source_path
-                if source_path is None:
-                    self._restore_missing_script(extension_id)
+                source_path = pathlib.Path(record.source_path)
+                if not source_path.is_file():
+                    self._locate_missing_script(record.script_name)
                     return
-                if not pathlib.Path(source_path).is_file():
-                    self._locate_missing_script(extension_id)
-                    return
-                self._review_and_add(
-                    pathlib.Path(source_path), extension_id=extension_id
-                )
+                self._review_and_register(source_path)
                 return
             validation_error = self.execution.validation_error(
-                record.id, record.source.source_hash
+                record.script_name, record.source_hash
             )
             if action_id == "toggle" and validation_error is not None:
-                if record.source.approved:
-                    self.execution.validate_source(
-                        extension_id,
-                        record.source.source_hash,
+                if record.approved:
+                    self.execution.validate_script(
+                        record.script_name,
+                        record.source_hash,
                         expected_record_generation=record.record_generation,
-                        enable_extension=False,
+                        enable_script=False,
                         persist_result=False,
                     )
                 else:
-                    self.execution.validate_and_enable(
-                        extension_id,
+                    self.execution.validate_script(
+                        record.script_name,
+                        record.source_hash,
                         expected_record_generation=record.record_generation,
                     )
             elif action_id == "toggle" and not record.enabled:
-                self.execution.validate_and_enable(
-                    extension_id,
+                self.execution.validate_script(
+                    record.script_name,
+                    record.source_hash,
                     expected_record_generation=record.record_generation,
                 )
             elif action_id == "toggle":
-                self.catalog.store.update_record(
-                    extension_id,
+                self.catalog.store.update_script(
+                    record.script_name,
                     expected_record_generation=record.record_generation,
                     enabled=False,
                 )
@@ -1112,8 +905,8 @@ class _ExtensionController(QtCore.QObject):
                 policy = action_id.removeprefix("embedding:")
                 if policy not in {"referenced", "always", "never"}:
                     return
-                self.catalog.store.update_record(
-                    extension_id,
+                self.catalog.store.update_script(
+                    record.script_name,
                     expected_record_generation=record.record_generation,
                     embed_policy=typing.cast(
                         'typing.Literal["referenced", "always", "never"]', policy
@@ -1121,7 +914,7 @@ class _ExtensionController(QtCore.QObject):
                 )
             elif action_id == "error":
                 validation_error = self.execution.validation_error(
-                    record.id, record.source.source_hash
+                    record.script_name, record.source_hash
                 )
                 if validation_error:
                     erlab.interactive.utils.MessageDialog.critical(
@@ -1132,15 +925,15 @@ class _ExtensionController(QtCore.QObject):
                     )
                 return
             elif action_id == "view_source":
-                self._show_source(record.id, record.source.source_hash)
+                self._show_source(record.script_name, record.source_hash)
                 return
             elif action_id in {"open_source", "reveal_source", "copy_source"}:
-                source_path = record.source.source_path
-                if source_path is None or not pathlib.Path(source_path).is_file():
+                source_path = record.source_path
+                if not pathlib.Path(source_path).is_file():
                     QtWidgets.QMessageBox.information(
                         self._manager,
                         "Source File Unavailable",
-                        "The original source file is unavailable.",
+                        "The registered source file is unavailable.",
                     )
                     return
                 if action_id == "open_source":
@@ -1171,45 +964,48 @@ class _ExtensionController(QtCore.QObject):
             )
         self._refresh_manage_dialog()
 
-    def _show_source(self, extension_id: str, source_hash: str) -> None:
-        record = self.catalog.model.extensions.get(extension_id)
-        if record is None:
-            return
+    def _show_source(self, script_name: str, source_hash: str) -> None:
         try:
-            source_text = self.source_bytes(extension_id, source_hash).decode("utf-8")
-        except (KeyError, OSError, UnicodeError):
+            snapshot = self.catalog.store.resolve_script(script_name, source_hash)
+            source_text = snapshot.source_bytes.decode("utf-8")
+        except (
+            FileNotFoundError,
+            KeyError,
+            UnicodeError,
+            _ExtensionCatalogError,
+        ):
             erlab.interactive.utils.MessageDialog.critical(
                 self._manager,
                 "Extension Error",
-                "The stored extension source could not be read.",
+                "The registered extension source could not be read.",
                 detailed_text=traceback.format_exc(),
             )
             return
         dialog = _SourceViewerDialog(
             source_text,
             self._manager,
-            title=f"Running Source — {record.name}",
+            title=f"Extension Source — {script_name}",
         )
         dialog.exec()
 
     @QtCore.Slot()
     @QtCore.Slot(str)
-    def _refresh_removal_eligibility(self, _extension_id: str = "") -> None:
-        extension_id = self._manage_dialog.selected_extension_id
-        reason = None if extension_id is None else self._removal_blocker(extension_id)
+    def _refresh_removal_eligibility(self, _script_name: str = "") -> None:
+        script_name = self._manage_dialog.selected_script_name
+        reason = None if script_name is None else self._removal_blocker(script_name)
         self._manage_dialog.set_removal_reason(reason)
 
-    def _removal_blocker(self, extension_id: str) -> str | None:
-        record = self.catalog.model.extensions.get(extension_id)
+    def _removal_blocker(self, script_name: str) -> str | None:
+        record = self.catalog.model.extensions.get(_script_name_key(script_name))
         if record is None:
             return None
         try:
             other_managers = tuple(
                 manager
-                for manager in live_manager_records()
+                for manager in live_manager_records(strict=True, include_starting=True)
                 if manager.internal_id != self._manager._manager_record.internal_id
             )
-        except Exception:
+        except ImageToolManagerRegistryError:
             return "Removal is unavailable because other managers could not be checked."
         if other_managers:
             descriptions = "; ".join(
@@ -1218,57 +1014,47 @@ class _ExtensionController(QtCore.QObject):
                 for manager in other_managers
             )
             return f"Close the other ImageTool Managers first: {descriptions}."
-        if self.execution.uses_extension(extension_id):
-            return "Wait for this extension's active or queued jobs to finish."
+        if self.execution.uses_script(record.script_name):
+            return "Wait for this script's active or queued jobs to finish."
         requirements = tuple(
             requirement
             for requirement in self.collect_workspace_requirements()
-            if requirement.extension_id == extension_id
+            if _script_name_key(requirement.script_name)
+            == _script_name_key(record.script_name)
         )
         if requirements:
             workspace_path = self._manager._manager_record.workspace_path
             location = (
                 "the current workspace" if workspace_path is None else workspace_path
             )
-            return f"Remove this extension from {location} before you delete it."
-        if any(
-            isinstance(payload, Mapping) and payload.get("extension_id") == extension_id
-            for payload in self._unresolved_workspace_requirement_payloads
-        ):
+            return f"Remove this script from {location} before you delete it."
+        if self._manager._workspace_state.extension_scripts.has_opaque_content:
             return (
-                "This extension is referenced by workspace data that this ERLab "
+                "This script can be referenced by workspace data that this ERLab "
                 "version cannot inspect."
             )
         return None
 
-    def _remove_extension(self, record: _ExtensionRecord) -> None:
-        blocker = self._removal_blocker(record.id)
+    def _remove_extension(self, record: _ScriptRecord) -> None:
+        blocker = self._removal_blocker(record.script_name)
         if blocker is not None:
             QtWidgets.QMessageBox.information(
                 self._manager, "Extension Cannot Be Removed", blocker
             )
             self._refresh_removal_eligibility()
             return
-        object_paths = {
-            self.catalog.store.objects_directory / record.source.object_name
-        }
-        total_size = sum(path.stat().st_size for path in object_paths if path.is_file())
-        current = record.source
         dialog = QtWidgets.QMessageBox(self._manager)
         dialog.setObjectName("manager_extension_remove_confirmation")
         dialog.setWindowTitle("Remove Extension")
         dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        dialog.setText(f"Remove {record.name} from ERLab?")
+        dialog.setText(f"Remove {record.script_name} from ERLab?")
         dialog.setInformativeText(
-            "ERLab stores one recovery copy "
-            f"({erlab.utils.formatting.format_nbytes(total_size)}). ERLab will delete "
-            "that copy if no other extension uses it. The original source file will "
-            "not be deleted."
+            "ERLab will remove this registration. The local Python file will not be "
+            "deleted."
         )
         dialog.setDetailedText(
-            f"Original source: {current.source_path or 'No external source file'}\n\n"
-            "Closed workspaces that did not embed this script can lose replay "
-            "capability."
+            f"Registered source: {record.source_path}\n\n"
+            "Closed workspaces without an embedded copy can lose replay capability."
         )
         dialog.setStandardButtons(
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -1277,29 +1063,23 @@ class _ExtensionController(QtCore.QObject):
         dialog.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
         if dialog.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
             return
-        blocker = self._removal_blocker(record.id)
+        blocker = self._removal_blocker(record.script_name)
         if blocker is not None:
             QtWidgets.QMessageBox.information(
                 self._manager, "Extension Cannot Be Removed", blocker
             )
             self._refresh_removal_eligibility()
             return
-        _catalog, retained = self.catalog.store.remove_script(
-            record.id,
+        self.catalog.store.remove_script(
+            record.script_name,
             expected_record_generation=record.record_generation,
         )
         self.catalog.refresh()
-        if retained is not None:
-            QtWidgets.QMessageBox.warning(
-                self._manager,
-                "Extension Removed",
-                "The extension was removed, but staged source files could not be "
-                f"deleted. They remain at {retained}.",
-            )
 
     @QtCore.Slot(object)
     def _catalog_changed(self, _model: object) -> None:
         self.execution.prune_validation_errors(self.catalog.model)
+        self._reconcile_persisted_workspace_requirements()
         self._refresh_extension_state_views()
 
     def _refresh_extension_state_views(self) -> None:
@@ -1326,22 +1106,22 @@ class _ExtensionController(QtCore.QObject):
 
     def collect_workspace_requirements(
         self,
-    ) -> tuple[_WorkspaceExtensionRequirement, ...]:
+    ) -> tuple[_WorkspaceScriptRequirement, ...]:
         """Rebuild loaded-node dependencies and retain unresolved references.
 
         Current provenance is authoritative for nodes in the graph. References to
         nodes that did not load and unresolved requirements without node references
-        remain available for a degraded Save As. A resolved dependency that is not in
-        the current graph is retired from workspace-owned state.
+        remain available for a degraded Save As. Resolved dependencies that are not
+        in the current graph are omitted without mutating document state.
         """
         loaded_node_uids = set(self._manager._tool_graph.nodes)
         persisted: dict[
-            tuple[str, str, str, str], list[_WorkspaceExtensionRequirement]
+            tuple[str, str, str, str], list[_WorkspaceScriptRequirement]
         ] = defaultdict(list)
-        for item in self._workspace_requirements:
+        for item in self._manager._workspace_state.extension_scripts.requirements:
             persisted[
                 (
-                    item.extension_id,
+                    _script_name_key(item.script_name),
                     item.source_hash,
                     item.capability_kind,
                     item.capability_id,
@@ -1350,27 +1130,19 @@ class _ExtensionController(QtCore.QObject):
 
         def merged_persisted_requirement(
             key: tuple[str, str, str, str],
-        ) -> _WorkspaceExtensionRequirement | None:
+        ) -> _WorkspaceScriptRequirement | None:
             """Merge per-node state for one immutable source dependency."""
             items = persisted.get(key)
             if not items:
                 return None
             primary = items[0]
-            metadata = dict(primary.metadata_snapshot)
             referencing_nodes: set[str] = set()
             file_sources: set[str] = set()
-            embedded_object_id = primary.embedded_object_id
             for item in items:
                 referencing_nodes.update(item.referencing_nodes)
                 file_sources.update(item.file_sources)
-                if embedded_object_id is None:
-                    embedded_object_id = item.embedded_object_id
-                for name, value in item.metadata_snapshot.items():
-                    metadata.setdefault(name, value)
             return primary.model_copy(
                 update={
-                    "metadata_snapshot": metadata,
-                    "embedded_object_id": embedded_object_id,
                     "referencing_nodes": tuple(sorted(referencing_nodes)),
                     "file_sources": tuple(sorted(file_sources)),
                 }
@@ -1380,6 +1152,7 @@ class _ExtensionController(QtCore.QObject):
         operations: dict[tuple[str, str, str], typing.Any] = {}
         loader_references: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         loader_files: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+        loader_script_names: dict[tuple[str, str, str], str] = {}
         for uid, node in self._manager._tool_graph.nodes.items():
             spec = node.passive_displayed_provenance_spec
             pending_specs = deque(() if spec is None else (spec,))
@@ -1397,7 +1170,7 @@ class _ExtensionController(QtCore.QObject):
                         "ExtensionRoutineOperation", operation
                     )
                     key = (
-                        extension_operation.extension_id,
+                        _script_name_key(extension_operation.script_name),
                         extension_operation.source_hash,
                         extension_operation.routine_id,
                     )
@@ -1414,20 +1187,21 @@ class _ExtensionController(QtCore.QObject):
                 ):
                     continue
                 key = (
-                    replay_call.target,
+                    _script_name_key(replay_call.target),
                     replay_call.source_hash,
                     replay_call.capability_id,
                 )
                 loader_references[key].add(uid)
                 loader_files[key].add(current_spec.file_load_source.path)
-        requirements: list[_WorkspaceExtensionRequirement] = []
+                loader_script_names[key] = replay_call.target
+        requirements: list[_WorkspaceScriptRequirement] = []
         for key, node_uids in references.items():
-            extension_id, source_hash, routine_id = key
-            record = self.catalog.model.extensions.get(extension_id)
+            _script_key, source_hash, routine_id = key
             operation = typing.cast("ExtensionRoutineOperation", operations[key])
+            script_name = operation.script_name
             previous = merged_persisted_requirement(
                 (
-                    extension_id,
+                    _script_name_key(script_name),
                     source_hash,
                     "routine",
                     routine_id,
@@ -1437,41 +1211,11 @@ class _ExtensionController(QtCore.QObject):
                 node_uids.update(
                     set(previous.referencing_nodes).difference(loaded_node_uids)
                 )
-            metadata = {} if previous is None else dict(previous.metadata_snapshot)
-            record_source = (
-                None
-                if record is None or record.source.source_hash != source_hash
-                else record.source
-            )
-            if record is not None and record_source is not None:
-                for obsolete_key in (
-                    "author",
-                    "contact",
-                    "project_url",
-                    "change_summary",
-                    "changelog",
-                ):
-                    metadata.pop(obsolete_key, None)
-                metadata = {
-                    **metadata,
-                    "extension_name": record.name,
-                    "routine_name": operation.routine_name,
-                }
-            elif previous is None:
-                metadata = {
-                    "extension_name": operation.extension_name,
-                    "routine_name": operation.routine_name,
-                }
-            if (
-                previous is None
-                and record_source is not None
-                and record_source.source_modified_at is not None
-            ):
-                metadata["source_modified_at"] = record_source.source_modified_at
             requirements.append(
-                _WorkspaceExtensionRequirement(
-                    extension_id=extension_id,
+                _WorkspaceScriptRequirement(
+                    script_name=script_name,
                     capability_id=routine_id,
+                    capability_name=operation.routine_name,
                     capability_kind="routine",
                     source_hash=source_hash,
                     extension_api_version=(
@@ -1479,21 +1223,15 @@ class _ExtensionController(QtCore.QObject):
                         if previous is None
                         else previous.extension_api_version
                     ),
-                    metadata_snapshot=metadata,
-                    embedded_object_id=self._embedded_script_object_id(
-                        record=record,
-                        source_hash=source_hash,
-                        previous=previous,
-                    ),
                     referencing_nodes=tuple(sorted(node_uids)),
                 )
             )
         for key, node_uids in loader_references.items():
-            extension_id, source_hash, loader_id = key
-            record = self.catalog.model.extensions.get(extension_id)
+            _script_key, source_hash, loader_id = key
+            script_name = loader_script_names[key]
             previous = merged_persisted_requirement(
                 (
-                    extension_id,
+                    _script_name_key(script_name),
                     source_hash,
                     "loader",
                     loader_id,
@@ -1505,51 +1243,24 @@ class _ExtensionController(QtCore.QObject):
                     loaded_node_uids
                 )
                 node_uids.update(unresolved_node_uids)
-            loader_metadata = (
-                {} if previous is None else dict(previous.metadata_snapshot)
-            )
-            loader_record_source = (
-                None
-                if record is None or record.source.source_hash != source_hash
-                else record.source
-            )
-            if record is not None and loader_record_source is not None:
-                for obsolete_key in (
-                    "author",
-                    "contact",
-                    "project_url",
-                    "change_summary",
-                    "changelog",
-                ):
-                    loader_metadata.pop(obsolete_key, None)
-                loader_metadata = {
-                    **loader_metadata,
-                    "extension_name": record.name,
-                }
-            if (
-                previous is None
-                and loader_record_source is not None
-                and loader_record_source.source_modified_at is not None
-            ):
-                loader_metadata["source_modified_at"] = (
-                    loader_record_source.source_modified_at
-                )
+            descriptor = self.loader_descriptor(script_name, source_hash, loader_id)
             requirements.append(
-                _WorkspaceExtensionRequirement(
-                    extension_id=extension_id,
+                _WorkspaceScriptRequirement(
+                    script_name=script_name,
                     capability_id=loader_id,
+                    capability_name=(
+                        descriptor.name
+                        if descriptor is not None
+                        else previous.capability_name
+                        if previous is not None
+                        else loader_id
+                    ),
                     capability_kind="loader",
                     source_hash=source_hash,
                     extension_api_version=(
                         EXTENSION_API_VERSION
                         if previous is None
                         else previous.extension_api_version
-                    ),
-                    metadata_snapshot=loader_metadata,
-                    embedded_object_id=self._embedded_script_object_id(
-                        record=record,
-                        source_hash=source_hash,
-                        previous=previous,
                     ),
                     referencing_nodes=tuple(sorted(node_uids)),
                     file_sources=tuple(
@@ -1566,197 +1277,154 @@ class _ExtensionController(QtCore.QObject):
             )
         keys = {
             (
-                item.extension_id,
+                _script_name_key(item.script_name),
                 item.source_hash,
                 item.capability_kind,
                 item.capability_id,
             )
             for item in requirements
         }
-        retired_persisted_keys: set[tuple[str, str, str, str]] = set()
         for key in persisted:
             if key in keys:
                 continue
             previous = typing.cast(
-                "_WorkspaceExtensionRequirement",
+                "_WorkspaceScriptRequirement",
                 merged_persisted_requirement(key),
-            )
-            had_no_references = any(
-                not item.referencing_nodes for item in persisted[key]
             )
             remaining_node_uids = tuple(
                 uid for uid in previous.referencing_nodes if uid not in loaded_node_uids
             )
-            unresolved_no_reference = (
-                had_no_references
+            if remaining_node_uids or (
+                not previous.referencing_nodes
                 and self._resolve_requirement(previous).state != "ready"
-            )
-            if remaining_node_uids or unresolved_no_reference:
+            ):
                 requirements.append(
                     previous.model_copy(
                         update={"referencing_nodes": remaining_node_uids}
                     )
                 )
-            else:
-                # This saved dependency has been reconciled with the current graph.
-                # Remove it from workspace-owned state so a later catalog change
-                # cannot make the discarded dependency appear again.
-                retired_persisted_keys.add(key)
-        if retired_persisted_keys:
-            self._workspace_requirements = tuple(
-                item
-                for item in self._workspace_requirements
-                if (
-                    item.extension_id,
-                    item.source_hash,
-                    item.capability_kind,
-                    item.capability_id,
-                )
-                not in retired_persisted_keys
-            )
-        keys.update(
-            (
-                item.extension_id,
-                item.source_hash,
-                item.capability_kind,
-                item.capability_id,
-            )
-            for item in requirements
-        )
-        for record in self.catalog.model.extensions.values():
-            if record.embed_policy != "always":
-                continue
-            source = record.source
-            metadata = {"extension_name": record.name}
-            for capability_kind, descriptors in (
-                ("routine", source.routines),
-                ("loader", source.loaders),
-            ):
-                for descriptor in descriptors:
-                    key = (
-                        record.id,
-                        source.source_hash,
-                        capability_kind,
-                        descriptor.id,
-                    )
-                    if key in keys:
-                        continue
-                    requirements.append(
-                        _WorkspaceExtensionRequirement(
-                            extension_id=record.id,
-                            capability_id=descriptor.id,
-                            capability_kind=typing.cast(
-                                'typing.Literal["routine", "loader"]',
-                                capability_kind,
-                            ),
-                            source_hash=source.source_hash,
-                            extension_api_version=EXTENSION_API_VERSION,
-                            metadata_snapshot=(
-                                metadata
-                                if source.source_modified_at is None
-                                else {
-                                    **metadata,
-                                    "source_modified_at": source.source_modified_at,
-                                }
-                            ),
-                            embedded_object_id=self._embedded_script_object_id(
-                                record=record,
-                                source_hash=source.source_hash,
-                                previous=None,
-                            ),
-                        )
-                    )
         return tuple(requirements)
 
-    def _embedded_script_object_id(
-        self,
-        *,
-        record: _ExtensionRecord | None,
-        source_hash: str,
-        previous: _WorkspaceExtensionRequirement | None,
-    ) -> str | None:
-        """Name an embedded object only when its source can be preserved."""
-        if previous is not None and previous.embedded_object_id is not None:
-            return previous.embedded_object_id
-        if record is None:
-            return None
-        if record.embed_policy == "never":
-            return None
+    def collect_workspace_embedded_sources(
+        self, requirements: Iterable[_WorkspaceScriptRequirement]
+    ) -> tuple[tuple[str, str, bytes], ...]:
+        """Return exact normal sources that the current workspace must embed."""
+        state = self._manager._workspace_state.extension_scripts
         try:
-            self.source_bytes(record.id, source_hash)
-        except (KeyError, OSError):
-            return None
-        return f"extension-{source_hash}"
-
-    def source_bytes(self, extension_id: str, source_hash: str) -> bytes:
-        """Return workspace or catalog bytes that match a source hash."""
-        return self._verified_source(extension_id, source_hash)
-
-    def _verified_source(
-        self,
-        extension_id: str,
-        source_hash: str,
-        *,
-        include_embedded: bool = True,
-        include_catalog: bool = True,
-    ) -> bytes:
-        """Select the first source whose bytes match the requested hash."""
-        candidates: list[bytes] = []
-        if include_embedded:
-            embedded = self._workspace_embedded_sources.get((extension_id, source_hash))
-            if embedded is not None:
-                candidates.append(embedded)
-        if include_catalog:
-            with contextlib.suppress(KeyError, OSError, _ExtensionCatalogError):
-                candidates.append(
-                    self.catalog.store.recovery_source_path(
-                        extension_id, source_hash
-                    ).read_bytes()
-                )
-        for source in candidates:
-            if hashlib.sha256(source).hexdigest() == source_hash:
-                return source
-        if candidates:
-            raise _ExtensionSourceHashMismatchError(
-                f"Available source does not match {extension_id}:{source_hash}"
+            records = self.catalog.store.read().extensions
+        except _ExtensionCatalogError:
+            records = {}
+        wanted = set(state.explicit_sources)
+        for requirement in requirements:
+            record = records.get(_script_name_key(requirement.script_name))
+            if (
+                record is not None
+                and record.source_hash == requirement.source_hash
+                and record.embed_policy == "never"
+            ):
+                try:
+                    self.catalog.store.resolve_script(
+                        requirement.script_name, requirement.source_hash
+                    )
+                except (FileNotFoundError, KeyError, _ExtensionCatalogError):
+                    pass
+                else:
+                    continue
+            wanted.add((requirement.script_name, requirement.source_hash))
+        wanted.update(
+            (record.script_name, record.source_hash)
+            for record in records.values()
+            if record.embed_policy == "always"
+        )
+        verified_sources = {
+            (_script_name_key(script_name), source_hash): source
+            for (script_name, source_hash), (_entry, source) in (
+                state.verified_sources.items()
             )
-        raise FileNotFoundError(
-            f"No source is available for {extension_id}:{source_hash}"
-        )
+        }
+        sources: list[tuple[str, str, bytes]] = []
+        for script_name, source_hash in sorted(
+            wanted, key=lambda item: (_script_name_key(item[0]), item[1])
+        ):
+            source = verified_sources.get((_script_name_key(script_name), source_hash))
+            if source is None:
+                try:
+                    source = self.catalog.store.resolve_script(
+                        script_name, source_hash
+                    ).source_bytes
+                except (FileNotFoundError, KeyError, _ExtensionCatalogError):
+                    continue
+            sources.append((script_name, source_hash, source))
+        return tuple(sources)
 
-    def set_workspace_requirements(
-        self,
-        requirements: Iterable[_WorkspaceExtensionRequirement],
-        *,
-        embedded_sources: dict[tuple[str, str], bytes] | None = None,
-        unresolved_embedded_objects: dict[str, tuple[bytes, str | None]] | None = None,
-        unresolved_payloads: Iterable[typing.Any] = (),
-    ) -> None:
-        self._workspace_requirements = tuple(requirements)
-        self._workspace_embedded_sources = dict(embedded_sources or {})
-        self._workspace_unresolved_embedded_objects = dict(
-            unresolved_embedded_objects or {}
+    def _reconcile_persisted_workspace_requirements(self) -> None:
+        """Retire resolved dependencies that have no document references."""
+        state = self._manager._workspace_state.extension_scripts
+        state.requirements = tuple(
+            requirement
+            for requirement in state.requirements
+            if requirement.referencing_nodes
+            or self._resolve_requirement(requirement).state != "ready"
         )
-        self._unresolved_workspace_requirement_payloads = tuple(
-            copy.deepcopy(item) for item in unresolved_payloads
-        )
+        state.explicit_sources = {
+            key
+            for key in state.explicit_sources
+            if (record := self.catalog.model.extensions.get(_script_name_key(key[0])))
+            is None
+            or record.source_hash != key[1]
+            or record.embed_policy != "always"
+        }
 
-    def _remap_workspace_extension(
-        self, previous_id: str, source_hash: str, registered_id: str
+    def _canonicalize_workspace_script_name(
+        self, script_name: str, source_hash: str
     ) -> None:
-        """Remap one workspace source after it is registered under a new ID."""
+        """Use one registered filename spelling across current document owners."""
+        script_key = _script_name_key(script_name)
+        requirements = self.collect_workspace_requirements()
+        state = self._manager._workspace_state.extension_scripts
+        source_hashes = {source_hash}
+        source_hashes.update(
+            requirement.source_hash
+            for requirement in requirements
+            if _script_name_key(requirement.script_name) == script_key
+            and requirement.script_name != script_name
+        )
+        source_hashes.update(
+            source_hash
+            for stored_name, source_hash in state.verified_sources
+            if _script_name_key(stored_name) == script_key
+            and stored_name != script_name
+        )
+        for source_hash in sorted(source_hashes):
+            self._remap_workspace_script(script_name, source_hash, script_name)
+
+    def _remap_workspace_script(
+        self, previous_name: str, source_hash: str, registered_name: str
+    ) -> None:
+        """Remap one workspace source after it is saved with a new filename."""
+        previous_key = _script_name_key(previous_name)
 
         def remap_spec(spec: typing.Any) -> typing.Any:
             candidate = spec
             for ref, operation in reversed(tuple(iter_operation_refs(spec))):
                 if (
                     getattr(operation, "op", None) == "extension_routine"
-                    and getattr(operation, "extension_id", None) == previous_id
+                    and isinstance(
+                        operation_script_name := getattr(
+                            operation, "script_name", None
+                        ),
+                        str,
+                    )
+                    and _script_name_key(operation_script_name) == previous_key
                     and getattr(operation, "source_hash", None) == source_hash
                 ):
                     candidate = candidate._replace_operation_ref(
                         ref,
-                        (operation.model_copy(update={"extension_id": registered_id}),),
+                        (
+                            operation.model_copy(
+                                update={"script_name": registered_name}
+                            ),
+                        ),
                     )
 
             script_inputs = []
@@ -1788,7 +1456,7 @@ class _ExtensionController(QtCore.QObject):
             if (
                 replay_call is not None
                 and replay_call.kind == "extension_loader"
-                and replay_call.target == previous_id
+                and _script_name_key(replay_call.target) == previous_key
                 and replay_call.source_hash == source_hash
             ):
                 candidate = candidate.model_copy(
@@ -1796,7 +1464,7 @@ class _ExtensionController(QtCore.QObject):
                         "file_load_source": load_source.model_copy(
                             update={
                                 "replay_call": replay_call.model_copy(
-                                    update={"target": registered_id}
+                                    update={"target": registered_name}
                                 )
                             }
                         )
@@ -1804,54 +1472,35 @@ class _ExtensionController(QtCore.QObject):
                 )
             return candidate
 
-        for node in self._manager._tool_graph.nodes.values():
-            spec = node.passive_displayed_provenance_spec
-            if spec is None:
-                continue
-            remapped = remap_spec(spec)
-            if remapped != spec:
-                node.set_displayed_provenance(remapped, advance_snapshot=False)
-
-        self._workspace_requirements = tuple(
-            requirement.model_copy(update={"extension_id": registered_id})
-            if requirement.extension_id == previous_id
-            and requirement.source_hash == source_hash
-            else requirement
-            for requirement in self._workspace_requirements
-        )
-        embedded = self._workspace_embedded_sources.pop(
-            (previous_id, source_hash), None
-        )
-        if embedded is not None:
-            self._workspace_embedded_sources[(registered_id, source_hash)] = embedded
-
-    def workspace_requirement_state(
-        self,
-    ) -> tuple[
-        tuple[_WorkspaceExtensionRequirement, ...],
-        dict[tuple[str, str], bytes],
-        dict[str, tuple[bytes, str | None]],
-        tuple[typing.Any, ...],
-    ]:
-        """Copy workspace-owned extension state for transactional rollback."""
-        return (
-            self._workspace_requirements,
-            dict(self._workspace_embedded_sources),
-            dict(self._workspace_unresolved_embedded_objects),
-            copy.deepcopy(self._unresolved_workspace_requirement_payloads),
+        state = self._manager._workspace_state.extension_scripts
+        original_state = state.copy()
+        remapped_state = state.copy()
+        remapped_state.remap_script(previous_name, source_hash, registered_name)
+        state_changed = (
+            remapped_state.requirements != original_state.requirements
+            or remapped_state.verified_sources != original_state.verified_sources
+            or remapped_state.explicit_sources != original_state.explicit_sources
         )
 
-    def workspace_requirement_payloads(self) -> tuple[typing.Any, ...]:
-        """Return validated and unresolved payloads for lossless saving."""
-        return copy.deepcopy(
-            (
-                *(
-                    item.model_dump(mode="json")
-                    for item in self.collect_workspace_requirements()
-                ),
-                *self._unresolved_workspace_requirement_payloads,
-            )
-        )
+        applied: list[tuple[typing.Any, typing.Any]] = []
+        try:
+            for node in tuple(self._manager._tool_graph.nodes.values()):
+                snapshot, changed = node.remap_provenance_owners(remap_spec)
+                if changed:
+                    applied.append((node, snapshot))
+            if state_changed:
+                state.replace(remapped_state)
+        except Exception:
+            with contextlib.suppress(Exception):
+                state.replace(original_state)
+            for node, snapshot in reversed(applied):
+                with contextlib.suppress(Exception):
+                    node.restore_provenance_owners(snapshot)
+            raise
+        for node, _snapshot in applied:
+            node.commit_provenance_owner_remap()
+        if state_changed and not applied:
+            self._manager._mark_workspace_structure_dirty("Remapped extension script")
 
     def resolved_workspace_requirements(
         self,
@@ -1861,7 +1510,7 @@ class _ExtensionController(QtCore.QObject):
         requirements = (
             self.collect_workspace_requirements()
             if include_current
-            else self._workspace_requirements
+            else self._manager._workspace_state.extension_scripts.requirements
         )
         return tuple(self._resolve_requirement(item) for item in requirements)
 
@@ -1873,67 +1522,13 @@ class _ExtensionController(QtCore.QObject):
             resolved = self._resolve_requirement(requirement)
             if resolved.state != "ready":
                 return (
-                    f"Extension {requirement.extension_id!r} is {resolved.state}. "
+                    f"Extension {requirement.script_name!r} is {resolved.state}. "
                     "Open Workspace Requirements for details."
                 )
         return None
 
-    def rebase_workspace_requirement_nodes(
-        self,
-        uid_map: dict[str, str],
-        *,
-        requirements: Iterable[_WorkspaceExtensionRequirement] | None = None,
-    ) -> None:
-        """Rebase only requirements owned by the workspace being loaded.
-
-        An imported workspace can use the same saved UID as an existing manager node.
-        The transient object-identity scope keeps that imported UID map from changing
-        requirements that belonged to the open document before the import.
-        """
-        if not uid_map:
-            return
-        selected = None if requirements is None else {id(item) for item in requirements}
-        self._workspace_requirements = tuple(
-            requirement.model_copy(
-                update={
-                    "referencing_nodes": tuple(
-                        uid_map.get(uid, uid) for uid in requirement.referencing_nodes
-                    )
-                }
-            )
-            if selected is None or id(requirement) in selected
-            else requirement
-            for requirement in self._workspace_requirements
-        )
-
-    def remove_workspace_node_references(self, node_uids: Iterable[str]) -> None:
-        """Remove dependencies for nodes that the user explicitly deleted.
-
-        Requirements for nodes that failed to load remain unchanged because those
-        nodes do not pass through this method.
-        """
-        removed = set(node_uids)
-        if not removed:
-            return
-        requirements: list[_WorkspaceExtensionRequirement] = []
-        for requirement in self._workspace_requirements:
-            if not requirement.referencing_nodes:
-                requirements.append(requirement)
-                continue
-            remaining = tuple(
-                uid for uid in requirement.referencing_nodes if uid not in removed
-            )
-            if not remaining:
-                continue
-            if remaining != requirement.referencing_nodes:
-                requirement = requirement.model_copy(
-                    update={"referencing_nodes": remaining}
-                )
-            requirements.append(requirement)
-        self._workspace_requirements = tuple(requirements)
-
     def _resolve_requirement(
-        self, requirement: _WorkspaceExtensionRequirement
+        self, requirement: _WorkspaceScriptRequirement
     ) -> _ResolvedWorkspaceRequirement:
         if requirement.extension_api_version != EXTENSION_API_VERSION:
             return _ResolvedWorkspaceRequirement(
@@ -1947,121 +1542,89 @@ class _ExtensionController(QtCore.QObject):
                 state="missing",
                 detail="The extension catalog is unavailable",
             )
-        record = self.catalog.model.extensions.get(requirement.extension_id)
-        if record is None:
-            try:
-                self._verified_source(
-                    requirement.extension_id,
-                    requirement.source_hash,
-                    include_catalog=False,
-                )
-            except _ExtensionSourceHashMismatchError:
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement, state="hash-mismatch"
-                )
-            except FileNotFoundError:
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement, state="missing"
-                )
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="missing",
-                detail="Save and register the script included with this workspace",
-            )
-        source = (
-            record.source
-            if record.source.source_hash == requirement.source_hash
-            else None
+        status = self.execution.capability_status(
+            requirement.script_name,
+            requirement.source_hash,
+            requirement.capability_kind,
+            requirement.capability_id,
         )
-        if source is None:
-            try:
-                self._verified_source(
-                    requirement.extension_id,
-                    requirement.source_hash,
-                    include_catalog=False,
-                )
-            except _ExtensionSourceHashMismatchError:
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement, state="hash-mismatch"
-                )
-            except FileNotFoundError:
-                pass
-            else:
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement,
-                    state="missing",
-                    detail=(
-                        "Save and register the script included with this workspace"
-                    ),
-                )
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="missing",
-                detail="The required source is not registered",
-            )
-        try:
-            self.catalog.store.executable_source_path(
-                record.id, requirement.source_hash
-            )
-        except _ExtensionCatalogConflictError:
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="hash-mismatch",
-                detail="The registered script file changed",
-            )
-        except (FileNotFoundError, KeyError):
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="missing",
-                detail="The registered script file is unavailable",
-            )
-        validation_error = self.execution.validation_error(
-            record.id, requirement.source_hash
-        )
-        if validation_error:
+        if status == "ready":
+            return _ResolvedWorkspaceRequirement(requirement=requirement, state="ready")
+        if status == "validation-failed":
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
                 state="validation-failed",
-                detail=validation_error,
+                detail=(
+                    self.execution.validation_error(
+                        requirement.script_name, requirement.source_hash
+                    )
+                    or "The script could not be validated"
+                ),
             )
-        if not source.approved:
+        if status == "approval-required":
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement, state="approval-required"
             )
-        capabilities = (
-            source.routines
-            if requirement.capability_kind == "routine"
-            else source.loaders
-        )
-        if all(item.id != requirement.capability_id for item in capabilities):
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="missing",
-                detail="The registered source does not provide the required capability",
-            )
-        if not record.enabled:
+        if status == "disabled":
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement, state="disabled"
             )
-        return _ResolvedWorkspaceRequirement(requirement=requirement, state="ready")
+        if status == "unsupported-api":
+            return _ResolvedWorkspaceRequirement(
+                requirement=requirement,
+                state="unsupported-api",
+                detail="The registered capability uses an unsupported API",
+            )
+        if status == "hash-mismatch":
+            return _ResolvedWorkspaceRequirement(
+                requirement=requirement,
+                state="hash-mismatch",
+                detail="The registered script has different contents",
+            )
+        recoverable = any(
+            _script_name_key(stored_name) == _script_name_key(requirement.script_name)
+            and stored_hash == requirement.source_hash
+            for stored_name, stored_hash in (
+                self._manager._workspace_state.extension_scripts.verified_sources
+            )
+        )
+        return _ResolvedWorkspaceRequirement(
+            requirement=requirement,
+            state="missing",
+            detail=(
+                "Save and register the script included with this workspace"
+                if recoverable
+                else "The required local script is unavailable"
+            ),
+        )
 
     @QtCore.Slot()
     def show_workspace_requirements(self) -> None:
+        state = self._manager._workspace_state.extension_scripts
+        resolved = self.resolved_workspace_requirements()
         dialog = _WorkspaceRequirementsDialog(
-            self.resolved_workspace_requirements(),
+            resolved,
             self._manager,
             recoverable={
-                (item.extension_id, item.source_hash)
-                for item in self._workspace_requirements
-                if (item.extension_id, item.source_hash)
-                in self._workspace_embedded_sources
+                (item.requirement.script_name, item.requirement.source_hash)
+                for item in resolved
+                if any(
+                    _script_name_key(stored_name)
+                    == _script_name_key(item.requirement.script_name)
+                    and stored_hash == item.requirement.source_hash
+                    for stored_name, stored_hash in state.verified_sources
+                )
             },
+            unresolved_count=self._unresolved_workspace_entry_count(),
         )
 
-        def register_slot(extension_id: str, source_hash: str) -> None:
-            self._save_and_register_embedded_script(extension_id, source_hash)
+        def register_slot(script_name: str, source_hash: str) -> None:
+            self._save_and_register_embedded_script(script_name, source_hash)
             if erlab.interactive.utils.qt_is_valid(dialog):
-                dialog.set_requirements(self.resolved_workspace_requirements())
+                dialog.set_requirements(
+                    self.resolved_workspace_requirements(),
+                    unresolved_count=self._unresolved_workspace_entry_count(),
+                )
 
         dialog.register_requested.connect(register_slot)
         try:
@@ -2070,12 +1633,31 @@ class _ExtensionController(QtCore.QObject):
             with contextlib.suppress(TypeError, RuntimeError):
                 dialog.register_requested.disconnect(register_slot)
 
+    def _unresolved_workspace_entry_count(self) -> int:
+        """Return the visible count of opaque extension manifest entries."""
+        state = self._manager._workspace_state.extension_scripts
+        return (
+            len(state.opaque_requirement_payloads)
+            + len(state.opaque_source_payloads)
+            + int(state.opaque_requirement_container is not None)
+            + int(state.opaque_source_container is not None)
+        )
+
     @QtCore.Slot(str, str)
     def _save_and_register_embedded_script(
-        self, extension_id: str, source_hash: str
+        self, script_name: str, source_hash: str
     ) -> bool:
         """Save workspace source as a user file before registration and import."""
-        source = self._workspace_embedded_sources.get((extension_id, source_hash))
+        state = self._manager._workspace_state.extension_scripts
+        source = next(
+            (
+                value[1]
+                for (stored_name, stored_hash), value in state.verified_sources.items()
+                if _script_name_key(stored_name) == _script_name_key(script_name)
+                and stored_hash == source_hash
+            ),
+            None,
+        )
         if source is None:
             QtWidgets.QMessageBox.warning(
                 self._manager,
@@ -2086,8 +1668,9 @@ class _ExtensionController(QtCore.QObject):
         requirement = next(
             (
                 item
-                for item in self._workspace_requirements
-                if item.extension_id == extension_id and item.source_hash == source_hash
+                for item in self.collect_workspace_requirements()
+                if _script_name_key(item.script_name) == _script_name_key(script_name)
+                and item.source_hash == source_hash
             ),
             None,
         )
@@ -2109,31 +1692,18 @@ class _ExtensionController(QtCore.QObject):
         )
         if not dialog.exec():
             return False
-        extension_name = str(
-            requirement.metadata_snapshot.get("extension_name", extension_id)
-        )
-        suggested_name = (
-            extension_name
-            if extension_name.lower().endswith(".py")
-            else f"{extension_id}.py"
-        )
-        existing = self.catalog.model.extensions.get(extension_id)
-        if existing is not None and existing.source.source_hash != source_hash:
-            modified = requirement.metadata_snapshot.get("source_modified_at")
-            try:
-                date = (
-                    QtCore.QDateTime.fromString(
-                        str(modified), QtCore.Qt.DateFormat.ISODate
-                    )
-                    .date()
-                    .toString("yyyy-MM-dd")
-                )
-            except (TypeError, ValueError):
-                date = ""
-            if not date:
-                date = QtCore.QDate.currentDate().toString("yyyy-MM-dd")
+        suggested_name = requirement.script_name
+        existing = self.catalog.model.extensions.get(_script_name_key(script_name))
+        if existing is not None and existing.source_hash != source_hash:
             path_name = pathlib.Path(suggested_name)
-            suggested_name = f"{path_name.stem}_workspace_{date}.py"
+            index = 1
+            while True:
+                suffix = "_workspace" if index == 1 else f"_workspace_{index}"
+                candidate = f"{path_name.stem}{suffix}.py"
+                if _script_name_key(candidate) not in self.catalog.model.extensions:
+                    suggested_name = candidate
+                    break
+                index += 1
         destination = self._save_source_as_user_file(
             source,
             title="Save Workspace Extension Script",
@@ -2142,36 +1712,46 @@ class _ExtensionController(QtCore.QObject):
         if destination is None:
             return False
         try:
-            registration_id = extension_id
-            if existing is not None and existing.source.source_hash != source_hash:
-                registration_id = _safe_extension_id(
-                    f"{destination.stem}-{uuid.uuid4().hex[:8]}"
+            destination_name = destination.name
+            destination_key = _script_name_key(destination_name)
+            current = self.catalog.store.read().extensions.get(destination_key)
+            if current is None:
+                catalog, _registered_hash = self.catalog.store.register_script(
+                    destination,
+                    expected_source_hash=source_hash,
                 )
-            self.catalog.store.add_script(
-                destination,
-                extension_id=registration_id,
-                expected_source_hash=source_hash,
-                expected_record_generation=(
-                    None
-                    if registration_id != extension_id or existing is None
-                    else existing.record_generation
-                ),
-                check_record_generation=True,
-            )
+            elif current.source_hash != source_hash:
+                QtWidgets.QMessageBox.warning(
+                    self._manager,
+                    "Script Name Already Used",
+                    f"{current.script_name} is already registered with different "
+                    "contents. Save this script with a different filename.",
+                )
+                return False
+            elif pathlib.Path(current.source_path) != destination:
+                catalog = self.catalog.store.relocate_script(
+                    current.script_name,
+                    destination,
+                    expected_record_generation=current.record_generation,
+                )
+            else:
+                catalog = self.catalog.store.read()
             self.catalog.refresh()
-            record = self.catalog.model.extensions[registration_id]
-            if not record.source.approved:
-                self.execution.validate_source(
-                    registration_id,
+            record = catalog.extensions[destination_key]
+            if not record.approved or not record.enabled:
+                self.execution.validate_script(
+                    record.script_name,
                     source_hash,
                     expected_record_generation=record.record_generation,
-                    enable_extension=True,
                 )
                 self.catalog.refresh()
-            if registration_id != extension_id:
-                self._remap_workspace_extension(
-                    extension_id, source_hash, registration_id
+            if destination_name != requirement.script_name:
+                self._remap_workspace_script(
+                    requirement.script_name,
+                    source_hash,
+                    destination_name,
                 )
+            self._reconcile_persisted_workspace_requirements()
             return True  # noqa: TRY300 - success exits before the shared error path.
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
@@ -2184,42 +1764,48 @@ class _ExtensionController(QtCore.QObject):
             return False
 
     def notify_unavailable_workspace_requirements(self) -> None:
+        unresolved_count = self._unresolved_workspace_entry_count()
         unavailable = [
             item
             for item in self.resolved_workspace_requirements()
             if item.state != "ready"
         ]
-        if not unavailable:
+        if not unavailable and unresolved_count == 0:
             return
         missing_registered_scripts = {
-            item.requirement.extension_id
+            item.requirement.script_name
             for item in unavailable
             if item.state == "missing"
             and (
                 record := self.catalog.model.extensions.get(
-                    item.requirement.extension_id
+                    _script_name_key(item.requirement.script_name)
                 )
             )
             is not None
-            and record.source.source_hash == item.requirement.source_hash
+            and record.source_hash == item.requirement.source_hash
         }
         if missing_registered_scripts and self._show_missing_script_recovery(
-            extension_ids=missing_registered_scripts,
+            script_names=missing_registered_scripts,
             repeat=True,
         ):
             return
-        if any(
-            (
-                item.requirement.extension_id,
-                item.requirement.source_hash,
+        state = self._manager._workspace_state.extension_scripts
+        if (
+            any(
+                any(
+                    _script_name_key(stored_name)
+                    == _script_name_key(item.requirement.script_name)
+                    and stored_hash == item.requirement.source_hash
+                    for stored_name, stored_hash in state.verified_sources
+                )
+                for item in unavailable
             )
-            in self._workspace_embedded_sources
-            for item in unavailable
+            or unresolved_count
         ):
             self.show_workspace_requirements()
             return
         states = ", ".join(
-            f"{item.requirement.extension_id}: {item.state}" for item in unavailable
+            f"{item.requirement.script_name}: {item.state}" for item in unavailable
         )
         dialog = erlab.interactive.utils.MessageDialog(
             self._manager,
@@ -2269,10 +1855,6 @@ class _ExtensionController(QtCore.QObject):
                 (
                     self._manage_dialog.add_script_requested,
                     self._manage_add_script_slot,
-                ),
-                (
-                    self._manage_dialog.open_folder_requested,
-                    self._manage_open_folder_slot,
                 ),
                 (
                     self._manage_dialog.selection_changed,

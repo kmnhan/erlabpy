@@ -234,24 +234,20 @@ class _ProvenanceEditController:
                     "The recorded source does not include replay loader information."
                 ),
                 "missing-loader": "The recorded source loader is not available.",
-                "extension-disabled": "The recorded extension is disabled.",
-                "extension-approval-required": (
-                    "The recorded extension source needs approval."
-                ),
-                "extension-missing-source": (
-                    "The recorded extension source is not available."
-                ),
+                "extension-disabled": "The registered script is disabled.",
+                "extension-approval-required": ("The required script needs approval."),
+                "extension-missing-source": ("The required script is not registered."),
                 "extension-missing-capability": (
-                    "The recorded extension source does not provide this loader."
+                    "The registered script does not provide this loader."
                 ),
                 "extension-hash-mismatch": (
-                    "The recorded extension source has the wrong content hash."
+                    "The registered script does not match the recorded source hash."
                 ),
                 "extension-unsupported-api": (
-                    "The recorded extension uses an unsupported API version."
+                    "The registered script uses an unsupported extension API version."
                 ),
                 "extension-validation-failed": (
-                    "The recorded extension loader could not be validated."
+                    "The registered script loader could not be validated."
                 ),
             }[source_status]
 
@@ -602,20 +598,25 @@ class _ProvenanceEditController:
             candidate = node.displayed_source_spec.append_replacement_operations(
                 *operations
             )
-            try:
-                data, candidate = self._replay_candidate_result(
-                    node,
-                    "source",
-                    candidate,
-                )
-                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-            except Exception as exc:
-                raise _ProvenanceReplayFailure(
-                    "validating the pasted provenance steps: "
-                    "replaying the requested provenance",
-                    exc,
-                ) from exc
-            self._replace_node_data(node, "source", data, candidate, None)
+            with (
+                self._manager._extensions.execution.capture_replay_sources()
+            ) as publication:
+                try:
+                    data, candidate = self._replay_candidate_result(
+                        node,
+                        "source",
+                        candidate,
+                    )
+                    erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
+                except Exception as exc:
+                    raise _ProvenanceReplayFailure(
+                        "validating the pasted provenance steps: "
+                        "replaying the requested provenance",
+                        exc,
+                    ) from exc
+                publication.require_current_for_publication()
+                self._replace_node_data(node, "source", data, candidate, None)
+                publication.publish()
             self._manager._update_info(uid=node.uid)
             return
 
@@ -633,63 +634,70 @@ class _ProvenanceEditController:
         *,
         where: str,
     ) -> None:
-        current_data = node.current_public_data()
-        replay_source_data = node.resolved_replay_source_data()
-        try:
-            if local.kind == "script":
-                trusted_user_code = script_provenance_requires_trust(local)
-                if trusted_user_code:
-                    self._manager._ensure_script_provenance_trusted(
+        with (
+            self._manager._extensions.execution.capture_replay_sources()
+        ) as publication:
+            current_data = node.current_public_data()
+            replay_source_data = node.resolved_replay_source_data()
+            try:
+                if local.kind == "script":
+                    trusted_user_code = script_provenance_requires_trust(local)
+                    if trusted_user_code:
+                        self._manager._ensure_script_provenance_trusted(
+                            local,
+                            reason="paste these provenance steps",
+                        )
+                    data = replay_script_provenance(
                         local,
-                        reason="paste these provenance steps",
+                        {
+                            "data": current_data,
+                            "derived": current_data,
+                        },
+                        trusted_user_code=trusted_user_code,
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                        extension_loader_executor=(
+                            self._manager._extensions.replay_loader
+                        ),
                     )
-                data = replay_script_provenance(
+                else:
+                    data = local.apply(
+                        current_data,
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                    )
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
+            except _TrustedScriptReplayCancelled:
+                raise
+            except Exception as exc:
+                raise _ProvenanceReplayFailure(
+                    f"{where}: replaying the requested provenance",
+                    exc,
+                ) from exc
+
+            if local.kind == "script":
+                spec = compose_full_provenance(
+                    node.displayed_provenance_spec,
                     local,
-                    {
-                        "data": current_data,
-                        "derived": current_data,
-                    },
-                    trusted_user_code=trusted_user_code,
-                    extension_executor=(
-                        self._manager._extensions.execution.run_operation
-                    ),
-                    extension_loader_executor=(self._manager._extensions.replay_loader),
+                    script_context_names=("data", "derived"),
                 )
             else:
-                data = local.apply(
-                    current_data,
-                    extension_executor=(
-                        self._manager._extensions.execution.run_operation
-                    ),
+                spec = compose_full_provenance(
+                    node.displayed_provenance_spec,
+                    local,
                 )
-            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-        except _TrustedScriptReplayCancelled:
-            raise
-        except Exception as exc:
-            raise _ProvenanceReplayFailure(
-                f"{where}: replaying the requested provenance",
-                exc,
-            ) from exc
-
-        if local.kind == "script":
-            spec = compose_full_provenance(
-                node.displayed_provenance_spec,
-                local,
-                script_context_names=("data", "derived"),
+            if spec is None:
+                spec = local.to_replay_spec()
+            publication.require_current_for_publication()
+            node.replace_with_detached_data(
+                data,
+                spec,
+                preserve_filter=False,
+                replay_source_data=replay_source_data,
             )
-        else:
-            spec = compose_full_provenance(
-                node.displayed_provenance_spec,
-                local,
-            )
-        if spec is None:
-            spec = local.to_replay_spec()
-        node.replace_with_detached_data(
-            data,
-            spec,
-            preserve_filter=False,
-            replay_source_data=replay_source_data,
-        )
+            publication.publish()
         self._manager._update_info(uid=node.uid)
 
     def can_delete_row(
@@ -1436,97 +1444,102 @@ class _ProvenanceEditController:
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
         while True:
-            candidate = dialog.provenance_spec(
-                active_name=_file_load_edit_active_name(spec),
-                replay_steps=spec.steps,
-            )
-            if spec.kind == "script":
-                candidate = _replace_file_load_fields(spec, candidate)
-            if row is None:
-                edit_candidate = candidate
-            elif root_spec is None:
-                edit_candidate = self._root_candidate_for_row(node, row, candidate)
-            else:
-                edit_candidate = self._replace_script_input_path_spec(
-                    root_spec,
-                    row.script_input_path,
-                    candidate,
+            with (
+                self._manager._extensions.execution.capture_replay_sources()
+            ) as publication:
+                candidate = dialog.provenance_spec(
+                    active_name=_file_load_edit_active_name(spec),
+                    replay_steps=spec.steps,
                 )
-
-            peer_edits = [
-                (peer, dialog.peer_provenance_spec(peer))
-                for peer in dialog.selected_batch_peers()
-            ]
-            deferred_peer_edits: list[
-                tuple[
-                    _FileLoadBatchPeer,
-                    ToolProvenanceSpec,
-                ]
-            ] = []
-            for peer, peer_candidate in peer_edits:
-                if peer.node.uid == node.uid and peer.scope == scope:
-                    edit_candidate = self._replace_file_load_target_spec(
-                        edit_candidate,
-                        peer,
-                        peer_candidate,
-                    )
+                if spec.kind == "script":
+                    candidate = _replace_file_load_fields(spec, candidate)
+                if row is None:
+                    edit_candidate = candidate
+                elif root_spec is None:
+                    edit_candidate = self._root_candidate_for_row(node, row, candidate)
                 else:
-                    deferred_peer_edits.append((peer, peer_candidate))
+                    edit_candidate = self._replace_script_input_path_spec(
+                        root_spec,
+                        row.script_input_path,
+                        candidate,
+                    )
 
-            try:
-                validated_edits = [
-                    self._validated_edit(node, scope, edit_candidate, where=where),
+                peer_edits = [
+                    (peer, dialog.peer_provenance_spec(peer))
+                    for peer in dialog.selected_batch_peers()
                 ]
-            except Exception as exc:
-                spreadsheet_error = _spreadsheet_metadata_error_from_exception(exc)
-                if spreadsheet_error is None:
-                    raise
-                source = dialog.loader_options.spreadsheet_metadata_source()
-                if source is None:
-                    raise
-                action = self._prompt_spreadsheet_metadata_recovery(
-                    source, spreadsheet_error
-                )
-                if action == "retry":
-                    continue
-                if action == "configure" and (
-                    dialog.loader_options.configure_spreadsheet_metadata(
-                        load_on_open=False
-                    )
-                ):
-                    continue
-                return
-
-            failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
-            for peer, peer_candidate in deferred_peer_edits:
-                try:
-                    peer_where = (
-                        "validating the edited file-load provenance for "
-                        f"{peer.node.display_text}"
-                    )
-                    if peer.script_input_path:
-                        peer_candidate = self._replace_file_load_target_spec(
-                            self._root_spec_for_batch_peer(peer),
+                deferred_peer_edits: list[
+                    tuple[
+                        _FileLoadBatchPeer,
+                        ToolProvenanceSpec,
+                    ]
+                ] = []
+                for peer, peer_candidate in peer_edits:
+                    if peer.node.uid == node.uid and peer.scope == scope:
+                        edit_candidate = self._replace_file_load_target_spec(
+                            edit_candidate,
                             peer,
                             peer_candidate,
                         )
-                    validated_edits.append(
-                        self._validated_edit(
-                            peer.node,
-                            peer.scope,
-                            peer_candidate,
-                            where=peer_where,
-                        )
-                    )
+                    else:
+                        deferred_peer_edits.append((peer, peer_candidate))
+
+                try:
+                    validated_edits = [
+                        self._validated_edit(node, scope, edit_candidate, where=where),
+                    ]
                 except Exception as exc:
-                    failures.append((peer, exc))
-            if failures and not self._confirm_apply_valid_batch(
-                valid_peer_count=len(validated_edits) - 1,
-                failures=failures,
-            ):
-                return
-            for edit in validated_edits:
-                self._apply_validated_edit(edit)
+                    spreadsheet_error = _spreadsheet_metadata_error_from_exception(exc)
+                    if spreadsheet_error is None:
+                        raise
+                    source = dialog.loader_options.spreadsheet_metadata_source()
+                    if source is None:
+                        raise
+                    action = self._prompt_spreadsheet_metadata_recovery(
+                        source, spreadsheet_error
+                    )
+                    if action == "retry":
+                        continue
+                    if action == "configure" and (
+                        dialog.loader_options.configure_spreadsheet_metadata(
+                            load_on_open=False
+                        )
+                    ):
+                        continue
+                    return
+
+                failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
+                for peer, peer_candidate in deferred_peer_edits:
+                    try:
+                        peer_where = (
+                            "validating the edited file-load provenance for "
+                            f"{peer.node.display_text}"
+                        )
+                        if peer.script_input_path:
+                            peer_candidate = self._replace_file_load_target_spec(
+                                self._root_spec_for_batch_peer(peer),
+                                peer,
+                                peer_candidate,
+                            )
+                        validated_edits.append(
+                            self._validated_edit(
+                                peer.node,
+                                peer.scope,
+                                peer_candidate,
+                                where=peer_where,
+                            )
+                        )
+                    except Exception as exc:
+                        failures.append((peer, exc))
+                if failures and not self._confirm_apply_valid_batch(
+                    valid_peer_count=len(validated_edits) - 1,
+                    failures=failures,
+                ):
+                    return
+                publication.require_current_for_publication()
+                for edit in validated_edits:
+                    self._apply_validated_edit(edit)
+                publication.publish()
             return
 
     def _edit_operation_row(
@@ -1615,7 +1628,7 @@ class _ProvenanceEditController:
         operation: ExtensionRoutineOperation,
     ) -> tuple[RoutineDescriptor | None, str]:
         status = self._manager._extensions.capability_status(
-            operation.extension_id,
+            operation.script_name,
             operation.source_hash,
             "routine",
             operation.routine_id,
@@ -1642,7 +1655,7 @@ class _ProvenanceEditController:
             }[status]
             return None, reason
         descriptor = self._manager._extensions.routine_descriptor(
-            operation.extension_id,
+            operation.script_name,
             operation.source_hash,
             operation.routine_id,
         )
@@ -1927,9 +1940,13 @@ class _ProvenanceEditController:
         *,
         where: str = "validating the provenance change",
     ) -> None:
-        self._apply_validated_edit(
-            self._validated_edit(node, scope, candidate, where=where)
-        )
+        with (
+            self._manager._extensions.execution.capture_replay_sources()
+        ) as publication:
+            edit = self._validated_edit(node, scope, candidate, where=where)
+            publication.require_current_for_publication()
+            self._apply_validated_edit(edit)
+            publication.publish()
 
     def _validated_edit(
         self,

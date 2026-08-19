@@ -167,25 +167,35 @@ def test_workspace_store_value_validation_and_closed_state(
     path = tmp_path / "workspace.itws"
     with pytest.raises(ValueError, match="only when create is true"):
         workspace_store.WorkspaceStore(path, workspace_id="invalid")
-    for object_id in ("", ".", "..", "nested/object"):
+    for object_id in ("", ".", "..", "nested/object", "\x00"):
         with pytest.raises(ValueError, match="one path component"):
             workspace_store.WorkspaceStore.object_path(object_id)
 
     assert workspace_store.WorkspaceStore.manifest_object_ids({"nodes": {}}) == set()
     assert workspace_store.WorkspaceStore.manifest_object_ids(
-        {"nodes": [None, {}, {"payload_object_id": ""}, {"payload_object_id": "ok"}]}
+        {
+            "nodes": [
+                None,
+                {},
+                {"payload_object_id": ""},
+                {"payload_object_id": "\x00"},
+                {"payload_object_id": "ok"},
+            ]
+        }
     ) == {"ok"}
     assert workspace_store.WorkspaceStore.manifest_extension_object_ids(
         {
-            "extension_requirements": [
-                {"embedded_object_id": ""},
-                {"embedded_object_id": "."},
-                {"embedded_object_id": ".."},
-                {"embedded_object_id": "nested/object"},
-                {"embedded_object_id": "extension-valid"},
+            "embedded_extension_sources": [
+                {"object_id": ""},
+                {"object_id": "."},
+                {"object_id": ".."},
+                {"object_id": "nested/object"},
+                {"object_id": "\x00"},
+                {"object_id": "extension-valid"},
+                {"future": {"sources": [{"object_id": "extension-nested"}]}},
             ]
         }
-    ) == {"extension-valid"}
+    ) == {"extension-valid", "extension-nested"}
 
     store = workspace_store.WorkspaceStore(path, create=True)
     store.close()

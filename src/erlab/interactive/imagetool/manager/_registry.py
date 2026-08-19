@@ -140,21 +140,33 @@ def _registry_lock(timeout_ms: int = _LOCK_TIMEOUT_MS) -> Iterator[None]:
         lock.unlock()
 
 
-def _read_records_unlocked() -> list[_ManagerRecord]:
+def _read_records_unlocked(*, strict: bool = False) -> list[_ManagerRecord]:
     if not _REGISTRY_PATH.exists():
         return []
     try:
         raw = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as error:
+        if strict:
+            raise ImageToolManagerRegistryError(
+                f"Could not read ImageTool manager registry: {error}"
+            ) from error
         return []
     if not isinstance(raw, list):
+        if strict:
+            raise ImageToolManagerRegistryError(
+                "ImageTool manager registry must contain a list"
+            )
         return []
     records: list[_ManagerRecord] = []
     for item in raw:
-        if isinstance(item, dict):
-            record = _ManagerRecord.from_dict(item)
-            if record is not None:
-                records.append(record)
+        record = _ManagerRecord.from_dict(item) if isinstance(item, dict) else None
+        if record is None:
+            if strict:
+                raise ImageToolManagerRegistryError(
+                    "ImageTool manager registry contains an invalid record"
+                )
+            continue
+        records.append(record)
     return records
 
 
@@ -242,9 +254,9 @@ def _record_is_active(record: _ManagerRecord, *, now: float | None = None) -> bo
     return now - record.heartbeat <= _STARTUP_GRACE_S
 
 
-def _active_records_unlocked() -> list[_ManagerRecord]:
+def _active_records_unlocked(*, strict: bool = False) -> list[_ManagerRecord]:
     now = time.time()
-    records = _read_records_unlocked()
+    records = _read_records_unlocked(strict=strict)
     active = [record for record in records if _record_is_active(record, now=now)]
     if len(active) != len(records):
         _write_records_unlocked(active)
@@ -252,15 +264,22 @@ def _active_records_unlocked() -> list[_ManagerRecord]:
 
 
 def live_manager_records(
-    *, lock_timeout_ms: int = _LOCK_TIMEOUT_MS
+    *,
+    lock_timeout_ms: int = _LOCK_TIMEOUT_MS,
+    strict: bool = False,
+    include_starting: bool = False,
 ) -> tuple[_ManagerRecord, ...]:
-    """Return ready live managers, removing stale registry entries."""
+    """Return active manager records, removing stale registry entries.
+
+    Set ``strict`` when a destructive operation must stop if the registry cannot
+    prove which managers are active. Set ``include_starting`` only when an operation
+    must also account for managers that have reserved a live startup record.
+    """
     with _registry_lock(lock_timeout_ms):
-        return tuple(
-            record
-            for record in _active_records_unlocked()
-            if record.state == _READY_STATE
-        )
+        records = _active_records_unlocked(strict=strict)
+        if include_starting:
+            return tuple(records)
+        return tuple(record for record in records if record.state == _READY_STATE)
 
 
 def reserve_manager_record(*, host: str) -> _ManagerRecord:
@@ -318,7 +337,7 @@ _WORKSPACE_PATH_UNCHANGED = object()
 def refresh_manager_record(
     internal_id: str,
     *,
-    workspace_path: str | None | object = _WORKSPACE_PATH_UNCHANGED,
+    workspace_path: str | object | None = _WORKSPACE_PATH_UNCHANGED,
     lock_timeout_ms: int = _LOCK_TIMEOUT_MS,
 ) -> None:
     """Refresh a manager heartbeat."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import hashlib
 import importlib
@@ -16,6 +17,7 @@ import typing
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 
+import pydantic
 import xarray as xr
 
 from erlab.extensions._models import (
@@ -34,11 +36,6 @@ from erlab.extensions._models import (
 )
 
 _CAPABILITY_ATTRIBUTE = "__erlab_extension_capability__"
-_SourceResolver = Callable[[str, str], os.PathLike[str] | str]
-_ScriptCapabilityReferenceResolver = Callable[
-    [str, str, str], tuple[os.PathLike[str] | str, str]
-]
-_CapabilityResolver = Callable[[str, str, str, str], Callable[..., typing.Any]]
 _CapabilityStatus = typing.Literal[
     "ready",
     "disabled",
@@ -49,13 +46,42 @@ _CapabilityStatus = typing.Literal[
     "unsupported-api",
     "validation-failed",
 ]
-_CapabilityStatusResolver = Callable[[str, str, str, str], _CapabilityStatus]
-_source_resolvers: dict[str, _SourceResolver] = {}
-_script_capability_reference_resolvers: dict[
-    str, _ScriptCapabilityReferenceResolver
-] = {}
-_capability_resolvers: dict[str, _CapabilityResolver] = {}
-_capability_status_resolvers: dict[str, _CapabilityStatusResolver] = {}
+
+
+@dataclasses.dataclass(frozen=True)
+class _RegisteredScriptCapability:
+    """One capability and its verified registered script source."""
+
+    registered_path: pathlib.Path
+    script_name: str
+    source_hash: str
+    descriptor: RoutineDescriptor | LoaderDescriptor
+    source_bytes: bytes = dataclasses.field(repr=False)
+
+
+class _RegisteredScriptUnavailable(LookupError):
+    """Report why one registered script capability cannot be resolved."""
+
+    def __init__(self, status: _CapabilityStatus) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+class _RegisteredScriptBackend(typing.Protocol):
+    """Resolve registered scripts for public calls and copied code."""
+
+    def resolve_registered_capability(
+        self,
+        script_name: str,
+        kind: typing.Literal["routine", "loader"],
+        capability_id: str,
+        *,
+        source_hash: str | None = None,
+        require_enabled: bool = True,
+    ) -> _RegisteredScriptCapability: ...
+
+
+_registered_script_backends: dict[str, _RegisteredScriptBackend] = {}
 _resolver_lock = threading.RLock()
 
 
@@ -181,7 +207,7 @@ def loader(
     for value in extension_values:
         if not isinstance(value, str):
             raise TypeError("loader filename extensions must be strings")
-        value = value.strip()
+        value = value.strip().casefold()
         if not value or value == ".":
             raise ValueError("a loader filename extension must contain a suffix")
         normalized_extensions.append(value if value.startswith(".") else f".{value}")
@@ -519,6 +545,7 @@ def _module_capabilities(
 ]:
     routines: dict[str, tuple[RoutineDescriptor, Callable[..., typing.Any]]] = {}
     loaders: dict[str, tuple[LoaderDescriptor, Callable[..., typing.Any]]] = {}
+    seen_callables: set[int] = set()
     for value in vars(module).values():
         metadata = getattr(value, _CAPABILITY_ATTRIBUTE, None)
         if (
@@ -527,7 +554,16 @@ def _module_capabilities(
             or getattr(value, "__module__", None) != module.__name__
         ):
             continue
-        descriptor = _descriptor_for(value, metadata)
+        callable_identity = id(value)
+        if callable_identity in seen_callables:
+            continue
+        seen_callables.add(callable_identity)
+        try:
+            descriptor = _descriptor_for(value, metadata)
+        except pydantic.ValidationError as error:
+            raise ExtensionSignatureError(
+                f"Extension function {value.__name__!r} has invalid metadata: {error}"
+            ) from error
         destination_ids = (
             routines if isinstance(descriptor, RoutineDescriptor) else loaders
         )
@@ -657,109 +693,114 @@ def load_script(
     )
 
 
-def _set_source_resolver(owner: str, resolver: _SourceResolver) -> None:
-    """Register one live catalog resolver without displacing other managers."""
-    with _resolver_lock:
-        _source_resolvers[owner] = resolver
-
-
-def _set_script_capability_reference_resolver(
-    owner: str, resolver: _ScriptCapabilityReferenceResolver
+def _set_registered_script_backend(
+    owner: str, backend: _RegisteredScriptBackend
 ) -> None:
-    """Register metadata used to generate code for current local scripts."""
+    """Register one live catalog backend without displacing other managers."""
     with _resolver_lock:
-        _script_capability_reference_resolvers[owner] = resolver
+        _registered_script_backends[owner] = backend
 
 
-def _set_capability_resolver(owner: str, resolver: _CapabilityResolver) -> None:
-    """Register one live capability resolver without displacing other managers."""
+def _remove_registered_script_backend(owner: str) -> None:
+    """Remove only the catalog backend owned by one closing manager."""
     with _resolver_lock:
-        _capability_resolvers[owner] = resolver
+        _registered_script_backends.pop(owner, None)
 
 
-def _set_capability_status_resolver(
-    owner: str, resolver: _CapabilityStatusResolver
-) -> None:
-    """Register a metadata-only capability state check for one live catalog."""
+def _resolve_from_registered_backends(
+    script_name: str,
+    kind: typing.Literal["routine", "loader"],
+    capability_id: str,
+    *,
+    source_hash: str | None = None,
+    require_enabled: bool = True,
+) -> _RegisteredScriptCapability:
+    """Resolve one capability through the single registered-script boundary."""
     with _resolver_lock:
-        _capability_status_resolvers[owner] = resolver
+        backends = tuple(_registered_script_backends.values())
+    for backend in reversed(backends):
+        try:
+            return backend.resolve_registered_capability(
+                script_name,
+                kind,
+                capability_id,
+                source_hash=source_hash,
+                require_enabled=require_enabled,
+            )
+        except KeyError:
+            continue
+    raise _RegisteredScriptUnavailable("missing-source")
 
 
-def _remove_resolvers(owner: str) -> None:
-    """Remove only the resolvers owned by one closing manager."""
-    with _resolver_lock:
-        _source_resolvers.pop(owner, None)
-        _script_capability_reference_resolvers.pop(owner, None)
-        _capability_resolvers.pop(owner, None)
-        _capability_status_resolvers.pop(owner, None)
-
-
-def _resolved_capability(
-    extension_id: str,
+def _resolve_registered_capability(
+    script_name: str,
     source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
-) -> Callable[..., typing.Any] | None:
-    with _resolver_lock:
-        resolvers = tuple(_capability_resolvers.values())
-    if not resolvers:
-        return None
-    for resolver in reversed(resolvers):
-        try:
-            return resolver(extension_id, source_hash, kind, capability_id)
-        except KeyError:
-            continue
-    return None
+) -> Callable[..., typing.Any]:
+    try:
+        reference = _resolve_from_registered_backends(
+            script_name,
+            kind,
+            capability_id,
+            source_hash=source_hash,
+        )
+    except _RegisteredScriptUnavailable as error:
+        raise ExtensionNotFoundError(
+            f"Registered script capability {script_name}:{capability_id} is "
+            f"unavailable: {error.status}"
+        ) from error
+    loaded = _load_script_bytes(
+        reference.source_bytes,
+        reference.registered_path,
+        expected_source_hash=reference.source_hash,
+    )
+    entries = loaded.erlab.routines if kind == "routine" else loaded.erlab.loaders
+    try:
+        return entries[capability_id][1]
+    except KeyError as error:
+        raise ExtensionNotFoundError(
+            f"Registered script capability {script_name}:{capability_id} was not found"
+        ) from error
 
 
-def _capability_status(
-    extension_id: str,
+def _registered_script_capability_status(
+    script_name: str,
     source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
 ) -> _CapabilityStatus:
     """Return why a catalog can or cannot run a capability without importing it."""
-    with _resolver_lock:
-        resolvers = tuple(_capability_status_resolvers.values())
-    for resolver in reversed(resolvers):
-        try:
-            return resolver(extension_id, source_hash, kind, capability_id)
-        except KeyError:
-            continue
-    return "missing-source"
+    try:
+        _resolve_from_registered_backends(
+            script_name,
+            kind,
+            capability_id,
+            source_hash=source_hash,
+        )
+    except _RegisteredScriptUnavailable as error:
+        return error.status
+    return "ready"
 
 
-def _resolved_source(extension_id: str, source_hash: str) -> os.PathLike[str] | str:
-    with _resolver_lock:
-        resolvers = tuple(_source_resolvers.values())
-    if not resolvers:
-        raise ExtensionNotFoundError("No extension catalog resolver is configured")
-    for resolver in reversed(resolvers):
-        try:
-            return resolver(extension_id, source_hash)
-        except (FileNotFoundError, KeyError):
-            continue
-    raise ExtensionNotFoundError(
-        f"Extension source {extension_id}:{source_hash} was not found"
-    )
-
-
-def _resolved_script_capability_reference(
-    extension_id: str,
+def _resolve_registered_script_capability(
+    script_name: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
-) -> tuple[os.PathLike[str] | str, str]:
-    """Return the current registered path and function for copied script code."""
-    with _resolver_lock:
-        resolvers = tuple(_script_capability_reference_resolvers.values())
-    for resolver in reversed(resolvers):
-        try:
-            return resolver(extension_id, kind, capability_id)
-        except (FileNotFoundError, KeyError):
-            continue
-    raise ExtensionNotFoundError(
-        f"Current script capability {extension_id}:{capability_id} was not found"
-    )
+) -> _RegisteredScriptCapability:
+    """Return one current local script capability for copied-code generation."""
+    try:
+        return _resolve_from_registered_backends(
+            script_name,
+            kind,
+            capability_id,
+            require_enabled=False,
+        )
+    except _RegisteredScriptUnavailable as error:
+        raise ExtensionNotFoundError(
+            f"Current script capability {script_name}:{capability_id} is unavailable: "
+            f"{error.status}"
+        ) from error
 
 
 def run_routine(
@@ -767,15 +808,15 @@ def run_routine(
     *,
     routine_id: str,
     script: os.PathLike[str] | str | None = None,
-    extension_id: str | None = None,
+    registered_script: str | None = None,
     source_hash: str | None = None,
     parameters: Mapping[str, typing.Any] | None = None,
 ) -> xr.DataArray:
     """Run one decorated routine without manager or Qt knowledge.
 
     Supply ``script`` for a direct notebook call. Manager replay can instead supply
-    ``extension_id`` and ``source_hash`` so the active catalog resolves the recorded
-    source.
+    ``registered_script`` and ``source_hash`` so the active catalog resolves the
+    recorded source.
 
     Parameters
     ----------
@@ -785,8 +826,8 @@ def run_routine(
         Capability identifier.
     script
         Python source file. This is optional when a manager catalog resolver exists.
-    extension_id
-        Catalog extension identifier.
+    registered_script
+        Registered Python script filename.
     source_hash
         Required source SHA-256 hash for catalog-based replay. You can also use it to
         verify a direct script.
@@ -822,19 +863,19 @@ def run_routine(
     """
     if not isinstance(data, xr.DataArray):
         raise TypeError("data must be an xarray.DataArray")
-    source = script
-    func: Callable[..., typing.Any] | None = None
-    if source is None:
-        if extension_id is None or source_hash is None:
+    if script is not None and registered_script is not None:
+        raise ValueError("script and registered_script cannot both be supplied")
+    if script is None:
+        if registered_script is None or source_hash is None:
             raise ExtensionNotFoundError(
-                "script or both extension_id and source_hash are required"
+                "script or both registered_script and source_hash are required"
             )
-        func = _resolved_capability(extension_id, source_hash, "routine", routine_id)
-        if func is None:
-            source = _resolved_source(extension_id, source_hash)
-    if func is None:
+        func = _resolve_registered_capability(
+            registered_script, source_hash, "routine", routine_id
+        )
+    else:
         loaded = load_script(
-            typing.cast("os.PathLike[str] | str", source),
+            script,
             expected_source_hash=source_hash,
         )
         entry = loaded.erlab.routines.get(routine_id)
@@ -861,7 +902,7 @@ def run_loader(
     *,
     loader_id: str,
     script: os.PathLike[str] | str | None = None,
-    extension_id: str | None = None,
+    registered_script: str | None = None,
     source_hash: str | None = None,
     parameters: Mapping[str, typing.Any] | None = None,
 ) -> xr.DataArray | xr.Dataset | xr.DataTree:
@@ -875,8 +916,8 @@ def run_loader(
         Capability identifier.
     script
         Direct Python source path.
-    extension_id
-        Catalog extension identifier.
+    registered_script
+        Registered Python script filename.
     source_hash
         Required source SHA-256 hash for catalog-based replay. You can also use it to
         verify a direct script.
@@ -908,19 +949,19 @@ def run_loader(
     ...     loader_id="load_scan",
     ... )
     """
-    source = script
-    func: Callable[..., typing.Any] | None = None
-    if source is None:
-        if extension_id is None or source_hash is None:
+    if script is not None and registered_script is not None:
+        raise ValueError("script and registered_script cannot both be supplied")
+    if script is None:
+        if registered_script is None or source_hash is None:
             raise ExtensionNotFoundError(
-                "script or both extension_id and source_hash are required"
+                "script or both registered_script and source_hash are required"
             )
-        func = _resolved_capability(extension_id, source_hash, "loader", loader_id)
-        if func is None:
-            source = _resolved_source(extension_id, source_hash)
-    if func is None:
+        func = _resolve_registered_capability(
+            registered_script, source_hash, "loader", loader_id
+        )
+    else:
         loaded = load_script(
-            typing.cast("os.PathLike[str] | str", source),
+            script,
             expected_source_hash=source_hash,
         )
         entry = loaded.erlab.loaders.get(loader_id)

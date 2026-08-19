@@ -1,3 +1,4 @@
+import contextlib
 import json
 import pathlib
 import types
@@ -235,7 +236,13 @@ def _fake_edit_controller(
             execution=types.SimpleNamespace(
                 run_operation=lambda *_args, **_kwargs: pytest.fail(
                     "built-in provenance must not use extension execution"
-                )
+                ),
+                capture_replay_sources=lambda: contextlib.nullcontext(
+                    types.SimpleNamespace(
+                        require_current_for_publication=lambda: None,
+                        publish=lambda: None,
+                    )
+                ),
             ),
         ),
         _available_file_loaders=erlab.interactive.utils.file_loaders,

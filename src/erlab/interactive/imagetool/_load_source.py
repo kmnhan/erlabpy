@@ -495,34 +495,42 @@ def _extension_loader_identity(
     """Return extension identity from a call object or its bound adapter."""
     owner = getattr(loader, "__self__", None)
     source = owner if owner is not None else loader
-    extension_id, source_hash, loader_id = (
+    script_name, source_hash, loader_id = (
         getattr(source, name, None)
         for name in (
-            "extension_id",
+            "script_name",
             "source_hash",
             "loader_id",
         )
     )
     return (
-        extension_id if isinstance(extension_id, str) else None,
+        script_name if isinstance(script_name, str) else None,
         source_hash if isinstance(source_hash, str) else None,
         loader_id if isinstance(loader_id, str) else None,
     )
 
 
-def _extension_loader_expression(
-    *,
-    source_path: object,
-    function_name: str,
-) -> tuple[str, tuple[str, ...]]:
-    """Return a public expression for one registered script loader."""
-    if not isinstance(source_path, (str, pathlib.Path)):
-        raise TypeError("Script extension loader source path is unavailable")
-    expression = f"load_script({str(source_path)!r}).{function_name}"
-    return expression, (
-        "import pathlib",
-        "from erlab.extensions import load_script",
-    )
+def _registered_extension_loader(
+    script_name: str,
+    loader_id: str,
+) -> tuple[pathlib.Path, str, erlab.extensions.LoaderDescriptor] | None:
+    """Resolve one current local script loader for public code and details."""
+    from erlab.extensions import ExtensionNotFoundError
+    from erlab.extensions._api import _resolve_registered_script_capability
+
+    try:
+        reference = _resolve_registered_script_capability(
+            script_name,
+            "loader",
+            loader_id,
+        )
+    except ExtensionNotFoundError:
+        return None
+    descriptor = reference.descriptor
+    if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
+        raise TypeError("Registered extension capability is not a loader")
+    path = pathlib.Path(reference.registered_path).expanduser().resolve()
+    return path, reference.script_name, descriptor
 
 
 def _extension_loader_load_code(
@@ -589,13 +597,13 @@ def _resolve_load_func(
         )
 
     (
-        extension_id,
+        script_name,
         extension_source_hash,
         extension_capability_id,
     ) = _extension_loader_identity(loader)
     if all(
         isinstance(value, str) and value
-        for value in (extension_id, extension_source_hash, extension_capability_id)
+        for value in (script_name, extension_source_hash, extension_capability_id)
     ):
         source = getattr(loader, "__self__", None)
         if source is None:
@@ -603,15 +611,30 @@ def _resolve_load_func(
         descriptor = getattr(source, "descriptor", None)
         if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
             raise ValueError("Extension loader descriptor is unavailable")
-        loader_expr, imports = _extension_loader_expression(
-            source_path=getattr(source, "source_path", None),
-            function_name=descriptor.function_name,
+        registered = _registered_extension_loader(
+            typing.cast("str", script_name),
+            typing.cast("str", extension_capability_id),
         )
+        if registered is None:
+            loader_expr = ""
+            imports = ()
+            current_script_name = typing.cast("str", script_name)
+            current_descriptor = descriptor
+        else:
+            registered_path, current_script_name, current_descriptor = registered
+            loader_expr = (
+                f"load_script({str(registered_path)!r})."
+                f"{current_descriptor.function_name}"
+            )
+            imports = (
+                "import pathlib",
+                "from erlab.extensions import load_script",
+            )
         return _ResolvedLoadFunc(
             kind="extension_loader",
-            target=typing.cast("str", extension_id),
+            target=typing.cast("str", script_name),
             loader_label="Extension Loader",
-            loader_text=f"{extension_id}: {extension_capability_id}",
+            loader_text=(f"{current_script_name}: {current_descriptor.name}"),
             loader_expr=loader_expr,
             imports=imports,
             setup_lines=(),
@@ -750,17 +773,47 @@ def _load_source_details_from_provenance(
 ) -> _LoadSourceDetails:
     """Build manager metadata details from serialized provenance file metadata."""
     load_code = load_source.load_code
-    if (
-        load_source.replay_call is not None
-        and load_source.replay_call.kind == "extension_loader"
-    ):
-        # Registered live tools build this code from their current loader object.
-        # Restored provenance must not expose a sender-local script path.
-        load_code = None
+    loader_text = load_source.loader_text
+    replay_call = load_source.replay_call
+    if replay_call is not None and replay_call.kind == "extension_loader":
+        registered = _registered_extension_loader(
+            replay_call.target,
+            typing.cast("str", replay_call.capability_id),
+        )
+        if registered is None:
+            # An embedded-only source must not expose a path from the sender's system.
+            load_code = None
+        else:
+            registered_path, current_script_name, descriptor = registered
+            loader_expr = (
+                f"load_script({str(registered_path)!r}).{descriptor.function_name}"
+            )
+            resolved = _ResolvedLoadFunc(
+                kind="extension_loader",
+                target=replay_call.target,
+                loader_label=load_source.loader_label,
+                loader_text=f"{current_script_name}: {descriptor.name}",
+                loader_expr=loader_expr,
+                imports=(
+                    "import pathlib",
+                    "from erlab.extensions import load_script",
+                ),
+                setup_lines=(),
+                loader_name=None,
+                kwargs=_deserialize_loader_kwargs(replay_call.kwargs),
+                selection=replay_call.selection,
+                cast_float64=replay_call.cast_float64,
+                extension_source_hash=replay_call.source_hash,
+                extension_capability_id=replay_call.capability_id,
+            )
+            load_code = resolved.load_code(
+                pathlib.Path(load_source.path), assign="data"
+            )
+            loader_text = resolved.loader_text
     return _LoadSourceDetails(
         path=pathlib.Path(load_source.path),
         loader_label=load_source.loader_label,
-        loader_text=load_source.loader_text,
+        loader_text=loader_text,
         kwargs_text=load_source.kwargs_text,
         load_code=load_code,
     )
@@ -802,7 +855,9 @@ def _load_provenance_from_file_details(
             loader_text=details.loader_text,
             kwargs_text=details.kwargs_text,
             replay_call=resolved.replay_call(),
-            load_code=details.load_code,
+            load_code=(
+                None if resolved.kind == "extension_loader" else details.load_code
+            ),
         ),
         steps=replay_steps,
         replay_stages=replay_stages,

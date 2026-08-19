@@ -20,6 +20,7 @@ import typing
 import numpy as np
 import pydantic
 
+from erlab.extensions._models import _script_name_key, _validate_source_hash
 from erlab.interactive.imagetool import _serialization
 
 if typing.TYPE_CHECKING:
@@ -41,6 +42,33 @@ _WORKSPACE_TRANSACTION_GROUP_PREFIX = "__itws_txn_"
 _WORKSPACE_ENCODED_ATTRS_ATTR = "_erlab_workspace_encoded_attrs"
 _WORKSPACE_ENCODED_ATTRS_VERSION = 1
 _WORKSPACE_REPLAY_SOURCE_BLOB_NAME = "<manager-replay-source-data>"
+
+
+class _WorkspaceEmbeddedScriptEntry(pydantic.BaseModel):
+    """One verified script source object owned by a workspace document."""
+
+    script_name: str
+    source_hash: str
+    object_id: str
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    @pydantic.field_validator("script_name")
+    @classmethod
+    def _valid_script_name(cls, value: str) -> str:
+        _script_name_key(value)
+        return value
+
+    @pydantic.field_validator("source_hash")
+    @classmethod
+    def _valid_source_hash(cls, value: str) -> str:
+        return _validate_source_hash(value)
+
+    @pydantic.model_validator(mode="after")
+    def _valid_object_id(self) -> typing.Self:
+        if self.object_id != f"extension-source-{self.source_hash}":
+            raise ValueError("embedded script object ID does not match its source")
+        return self
 
 
 class WorkspaceLoaderState(pydantic.BaseModel):
@@ -225,6 +253,7 @@ def _workspace_manifest_payload(
     option_overrides: Mapping[str, typing.Any] | None = None,
     acquisition_context: Mapping[str, typing.Any] | None = None,
     extension_requirements: Iterable[typing.Any] | None = None,
+    embedded_extension_sources: Iterable[typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -255,6 +284,11 @@ def _workspace_manifest_payload(
     if extension_requirements is not None:
         # Requirements describe exact code without importing it during inspection.
         manifest["extension_requirements"] = copy.deepcopy(list(extension_requirements))
+    if embedded_extension_sources is not None:
+        # Embedded code is document-owned recovery material, not an execution source.
+        manifest["embedded_extension_sources"] = copy.deepcopy(
+            list(embedded_extension_sources)
+        )
     return manifest
 
 

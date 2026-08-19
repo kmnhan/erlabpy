@@ -296,6 +296,7 @@ def test_manager_registry_hides_starting_records(monkeypatch, tmp_path) -> None:
 
     assert record.state == "starting"
     assert registry.live_manager_records() == ()
+    assert registry.live_manager_records(include_starting=True) == (record,)
     assert registry.manager_selection_info()["reason"] == "none"
 
     ready_record = registry.activate_manager_record(
@@ -319,9 +320,20 @@ def test_manager_registry_handles_invalid_records_and_paths(
 
     registry._REGISTRY_PATH.write_text("{", encoding="utf-8")
     assert registry._read_records_unlocked() == []
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="Could not read"):
+        registry.live_manager_records(strict=True)
 
     registry._REGISTRY_PATH.write_text('{"records": []}', encoding="utf-8")
     assert registry._read_records_unlocked() == []
+    with pytest.raises(
+        registry.ImageToolManagerRegistryError, match="must contain a list"
+    ):
+        registry.live_manager_records(strict=True)
+
+    registry._REGISTRY_PATH.write_text('[{"state": "ready"}]', encoding="utf-8")
+    assert registry._read_records_unlocked() == []
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="invalid record"):
+        registry.live_manager_records(strict=True)
 
     record = registry._ManagerRecord(
         internal_id="abc",
@@ -629,7 +641,7 @@ def test_manager_registry_heartbeat_runs_refresh_off_gui_thread(
     def refresh_record(
         internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         calls.append(
@@ -669,7 +681,7 @@ def test_manager_registry_heartbeat_skips_ticks_and_coalesces_workspace_refreshe
     def refresh_record(
         _internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         calls.append(
@@ -720,7 +732,7 @@ def test_manager_registry_heartbeat_logs_failures_without_modal_alerts(
     def refresh_record(
         _internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         raise failures.pop(0)
@@ -765,7 +777,7 @@ def test_manager_registry_heartbeat_stop_is_safe_while_refresh_is_in_flight(
     def refresh_record(
         _internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         started.set()

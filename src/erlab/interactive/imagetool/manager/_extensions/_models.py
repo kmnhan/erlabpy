@@ -2,114 +2,125 @@
 
 from __future__ import annotations
 
+import pathlib
 import typing
 
 import pydantic
 
 from erlab.extensions import LoaderDescriptor, RoutineDescriptor  # noqa: TC001
-from erlab.extensions._models import _validate_source_hash
+from erlab.extensions._models import _script_name_key, _validate_source_hash
 
 
-class _ExtensionSource(pydantic.BaseModel):
-    """Identity and validation result for one registered script."""
+class _ScriptRecord(pydantic.BaseModel):
+    """Persistent state for one registered local Python script."""
 
+    script_name: str
+    source_path: str
     source_hash: str
-    object_name: str
-    source_path: str | None = None
-    source_modified_at: str | None = None
+    source_modified_at: str
     registered_at: str
     approved: bool = False
+    enabled: bool = False
+    embed_policy: typing.Literal["referenced", "always", "never"] = "referenced"
     routines: tuple[RoutineDescriptor, ...] = ()
     loaders: tuple[LoaderDescriptor, ...] = ()
+    record_generation: int = 0
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    @pydantic.field_validator("script_name")
+    @classmethod
+    def _valid_script_name(cls, value: str) -> str:
+        _script_name_key(value)
+        return value
+
+    @pydantic.field_validator("source_path")
+    @classmethod
+    def _valid_source_path(cls, value: str) -> str:
+        path = pathlib.Path(value)
+        if not path.is_absolute():
+            raise ValueError("registered script path must be absolute")
+        return value
 
     @pydantic.field_validator("source_hash")
     @classmethod
     def _valid_source_hash(cls, value: str) -> str:
         return _validate_source_hash(value)
 
+    @pydantic.model_validator(mode="after")
+    def _validate_identity_and_state(self) -> typing.Self:
+        if pathlib.Path(self.source_path).name != self.script_name:
+            raise ValueError("registered path basename must match the script name")
+        if self.enabled and not self.approved:
+            raise ValueError("an enabled extension script must be approved")
+        return self
 
-def _source_loader_name_filters(source: _ExtensionSource) -> tuple[str, ...]:
-    """Return the file-dialog filters owned by one validated source."""
+
+def _script_loader_name_filters(record: _ScriptRecord) -> tuple[str, ...]:
+    """Return the file-dialog filters owned by one validated script."""
     name_filters: list[str] = []
-    for descriptor in source.loaders:
+    for descriptor in record.loaders:
         patterns = " ".join(f"*{suffix}" for suffix in descriptor.extensions) or "*"
         name_filters.append(f"{descriptor.name} ({patterns})")
     return tuple(name_filters)
 
 
-class _ExtensionRecord(pydantic.BaseModel):
-    """Persistent record for one registered script."""
-
-    id: str
-    name: str
-    enabled: bool = False
-    embed_policy: typing.Literal["referenced", "always", "never"] = "referenced"
-    source: _ExtensionSource
-    record_generation: int = 0
-
-    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
-
-    @pydantic.model_validator(mode="after")
-    def _validate_source_identity(self) -> typing.Self:
-        """Require the managed object name to match its content hash."""
-        if self.source.object_name != f"{self.source.source_hash}.py":
-            raise ValueError("a script source object name must match its source hash")
-        if self.enabled and not self.source.approved:
-            raise ValueError("an enabled extension source must be approved")
-        return self
-
-
 class _ExtensionCatalogModel(pydantic.BaseModel):
-    """Validated catalog of registered scripts."""
+    """Validated catalog of registered local scripts."""
 
     schema_version: typing.Literal[1] = 1
     generation: int = 0
-    extensions: dict[str, _ExtensionRecord] = pydantic.Field(default_factory=dict)
+    extensions: dict[str, _ScriptRecord] = pydantic.Field(default_factory=dict)
     routine_favorites: tuple[tuple[str, str], ...] = ()
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     @pydantic.model_validator(mode="after")
-    def _validate_extension_identity(self) -> typing.Self:
-        """Require persisted extension IDs to agree with their catalog keys."""
-        for extension_id, record in self.extensions.items():
-            if record.id != extension_id:
-                raise ValueError("extension key does not match extension ID")
+    def _validate_script_identity(self) -> typing.Self:
+        for script_key, record in self.extensions.items():
+            if script_key != _script_name_key(record.script_name):
+                raise ValueError("extension key does not match the script name")
         if len(set(self.routine_favorites)) != len(self.routine_favorites):
             raise ValueError("routine favorites must be unique")
+        for script_key, _routine_id in self.routine_favorites:
+            if script_key != _script_name_key(script_key):
+                raise ValueError("routine favorite must use a normalized script key")
+            if script_key not in self.extensions:
+                raise ValueError("routine favorite refers to an unknown script")
         return self
 
 
-class _WorkspaceExtensionRequirement(pydantic.BaseModel):
-    """Exact script dependency persisted in workspace schema 6."""
+class _WorkspaceScriptRequirement(pydantic.BaseModel):
+    """Exact local script dependency persisted in a workspace."""
 
-    extension_id: str
+    script_name: str
     capability_id: str
+    capability_name: str
     capability_kind: typing.Literal["routine", "loader"]
     source_hash: str
     extension_api_version: int
-    metadata_snapshot: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    embedded_object_id: str | None = None
     referencing_nodes: tuple[str, ...] = ()
     file_sources: tuple[str, ...] = ()
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
+    @pydantic.field_validator("script_name")
+    @classmethod
+    def _valid_script_name(cls, value: str) -> str:
+        _script_name_key(value)
+        return value
+
+    @pydantic.field_validator("capability_id", "capability_name")
+    @classmethod
+    def _nonempty_capability_value(cls, value: str) -> str:
+        if not value:
+            raise ValueError("capability values must not be empty")
+        return value
+
     @pydantic.field_validator("source_hash")
     @classmethod
     def _valid_source_hash(cls, value: str) -> str:
         return _validate_source_hash(value)
-
-    @pydantic.model_validator(mode="after")
-    def _validate_embedded_object_id(self) -> typing.Self:
-        if (
-            self.embedded_object_id is not None
-            and self.embedded_object_id != f"extension-{self.source_hash}"
-        ):
-            raise ValueError("embedded script object ID does not match its source")
-        return self
 
 
 _WorkspaceRequirementState = typing.Literal[
@@ -124,7 +135,7 @@ _WorkspaceRequirementState = typing.Literal[
 
 
 class _ResolvedWorkspaceRequirement(pydantic.BaseModel):
-    requirement: _WorkspaceExtensionRequirement
+    requirement: _WorkspaceScriptRequirement
     state: _WorkspaceRequirementState
     detail: str = ""
 

@@ -242,7 +242,8 @@ def _write_workspace_generation(
                 if item.blob is not None:
                     with target_store.lock:
                         group = target_store.h5_file.require_group(target_path)
-                        group.attrs["erlab_object_kind"] = item.blob_kind or "blob"
+                        if item.blob_kind is not None:
+                            group.attrs["erlab_object_kind"] = item.blob_kind
                         group.create_dataset(
                             "source",
                             data=np.frombuffer(item.blob, dtype=np.uint8),
@@ -441,7 +442,7 @@ def _compact_workspace_store(
                 for object_id, version in serialized_pins.object_versions.items()
                 if version > discarded_pins.object_versions.get(object_id, -1)
             )
-            optional_missing_extension_ids = (
+            optional_missing_script_source_ids = (
                 extension_object_ids
                 - node_object_ids
                 - set(serialized_pins.object_versions)
@@ -484,7 +485,7 @@ def _compact_workspace_store(
                             None,
                         )
                         if not copied:
-                            if object_id in optional_missing_extension_ids:
+                            if object_id in optional_missing_script_source_ids:
                                 continue
                             raise KeyError(f"Workspace object {object_id!r} is missing")
                 compacted.publish(baseline_manifest)
@@ -499,7 +500,7 @@ def _compact_workspace_store(
                     )
                 if any(
                     compacted.object_path(object_id).strip("/") not in compacted.h5_file
-                    for object_id in object_ids - optional_missing_extension_ids
+                    for object_id in object_ids - optional_missing_script_source_ids
                 ):
                     raise RuntimeError(
                         "Compacted workspace is missing a payload object"

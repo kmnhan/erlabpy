@@ -35,10 +35,16 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
+    from erlab.interactive.imagetool.manager._extensions._models import (
+        _WorkspaceScriptRequirement,
+    )
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.manager._workspace._controller import (
         _WorkspaceController,
+    )
+    from erlab.interactive.imagetool.manager._workspace._state import (
+        _WorkspaceScriptState,
     )
 from erlab.interactive.imagetool.manager._workspace._format import (
     _require_itws_workspace_path,
@@ -50,12 +56,15 @@ _WORKSPACE_SAVE_SUFFIX_ERROR = "ImageTool workspace documents must be saved as .
 
 @dataclass
 class _WorkspaceSaveSnapshot:
+    """One immutable generation and the local state to adopt after publication."""
+
     generation: int
     generation_plan: workspace_storage._WorkspaceGenerationPlan
     compression_mode: WorkspaceCompressionMode
     serialized_tool_data_references: tuple[
         tuple[str, str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
+    embedded_script_sources: tuple[tuple[str, str, bytes], ...] = ()
 
     def close(self) -> None:
         closed: set[int] = set()
@@ -548,8 +557,40 @@ class _WorkspaceSaver:
                 _append(uid)
         return entries
 
-    def _workspace_manifest(self) -> dict[str, typing.Any]:
-        return workspace_format._workspace_manifest_payload(
+    def _workspace_script_snapshot(
+        self,
+    ) -> tuple[
+        tuple[_WorkspaceScriptRequirement, ...],
+        _WorkspaceScriptState,
+        frozenset[tuple[str, str]],
+    ]:
+        """Capture requirements and exact embedded bytes from one manager state."""
+        requirements = tuple(self._manager._extensions.collect_workspace_requirements())
+        scripts = self._manager._workspace_state.extension_scripts.copy()
+        source_keys: set[tuple[str, str]] = set()
+        for (
+            script_name,
+            source_hash,
+            source,
+        ) in self._manager._extensions.collect_workspace_embedded_sources(requirements):
+            scripts.remember_verified_source(script_name, source_hash, source)
+            source_keys.add((script_name, source_hash))
+        return requirements, scripts, frozenset(source_keys)
+
+    def _workspace_manifest(
+        self,
+        *,
+        script_snapshot: tuple[
+            tuple[_WorkspaceScriptRequirement, ...],
+            _WorkspaceScriptState,
+            frozenset[tuple[str, str]],
+        ]
+        | None = None,
+    ) -> dict[str, typing.Any]:
+        if script_snapshot is None:
+            script_snapshot = self._workspace_script_snapshot()
+        requirements, scripts, source_keys = script_snapshot
+        manifest = workspace_format._workspace_manifest_payload(
             root_order=self._workspace_root_indices(),
             nodes=self._workspace_node_manifest_entries(),
             erlab_version=str(erlab.__version__),
@@ -559,10 +600,14 @@ class _WorkspaceSaver:
             standalone_apps=self._workspace_standalone_apps_snapshot(),
             option_overrides=self._workspace_option_overrides_snapshot(),
             acquisition_context=(self._manager._acquisition_context.state_payload()),
-            extension_requirements=(
-                self._manager._extensions.workspace_requirement_payloads()
-            ),
         )
+        manifest["extension_requirements"] = scripts.requirement_manifest_value(
+            requirements
+        )
+        manifest["embedded_extension_sources"] = scripts.source_manifest_value(
+            source_keys
+        )
+        return manifest
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
         return self._manager.effective_interactive_options.io.workspace.compression
@@ -1037,7 +1082,9 @@ class _WorkspaceSaver:
                 if isinstance(uid, str):
                     previous_entries[uid] = entry
 
-        manifest = self._workspace_manifest()
+        script_snapshot = self._workspace_script_snapshot()
+        manifest = self._workspace_manifest(script_snapshot=script_snapshot)
+        _requirements, scripts, source_keys = script_snapshot
         base_entries = [
             dict(entry)
             for entry in workspace_format._iter_workspace_manifest_node_entries(
@@ -1061,13 +1108,9 @@ class _WorkspaceSaver:
         object_writes: dict[str, workspace_storage._WorkspaceObjectWrite] = {}
         final_entries: list[dict[str, typing.Any]] = []
         serialized_datasets: list[xr.Dataset] = []
-        extension_object_ids = {
-            object_id
-            for requirement in manifest.get("extension_requirements", ())
-            if isinstance(requirement, dict)
-            and isinstance(object_id := requirement.get("embedded_object_id"), str)
-            and object_id
-        }
+        extension_object_ids = set(
+            workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
+        )
 
         def _serialize(uid: str) -> xr.Dataset | None:
             node = self._manager._tool_graph.nodes.get(uid)
@@ -1199,24 +1242,13 @@ class _WorkspaceSaver:
                 previous_extension_object_ids = (
                     workspace_storage._existing_workspace_object_ids(
                         source_workspace_path,
-                        workspace_store.WorkspaceStore.manifest_object_ids(
+                        workspace_store.WorkspaceStore.manifest_extension_object_ids(
                             current_manifest
                         ),
                     )
                 )
-        for raw_requirement in manifest.get("extension_requirements", ()):
-            if not isinstance(raw_requirement, dict):
-                continue
-            object_id = raw_requirement.get("embedded_object_id")
-            if not isinstance(object_id, str) or not object_id:
-                continue
-            try:
-                workspace_store.WorkspaceStore.object_path(object_id)
-            except ValueError:
-                logger.warning(
-                    "Preserving an extension requirement with an invalid object ID",
-                    extra={"suppress_ui_alert": True},
-                )
+        for object_id, (source, kind) in scripts.opaque_objects.items():
+            if object_id not in extension_object_ids:
                 continue
             if object_id in node_object_ids:
                 logger.warning(
@@ -1224,42 +1256,43 @@ class _WorkspaceSaver:
                     extra={"suppress_ui_alert": True},
                 )
                 continue
-            extension_id = raw_requirement.get("extension_id")
-            source_hash = raw_requirement.get("source_hash")
-            if (
-                isinstance(extension_id, str)
-                and isinstance(source_hash, str)
-                and object_id == f"extension-{source_hash}"
-            ):
-                try:
-                    source = self._manager._extensions.source_bytes(
-                        extension_id, source_hash
-                    )
-                except (FileNotFoundError, KeyError):
-                    pass
-                else:
-                    object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
-                        object_id,
-                        blob=source,
-                        blob_kind="extension-python-source-v1",
-                    )
-                    continue
-            unresolved_object = (
-                self._manager._extensions._workspace_unresolved_embedded_objects.get(
-                    object_id
-                )
-            )
-            if unresolved_object is not None:
-                source, kind = unresolved_object
-                object_writes.setdefault(
+            object_writes.setdefault(
+                object_id,
+                workspace_storage._WorkspaceObjectWrite(
                     object_id,
-                    workspace_storage._WorkspaceObjectWrite(
-                        object_id,
-                        blob=source,
-                        blob_kind=kind,
-                    ),
+                    blob=source,
+                    blob_kind=kind,
+                ),
+            )
+
+        included_keys = source_keys | scripts.explicit_sources
+        embedded_script_sources: list[tuple[str, str, bytes]] = []
+        for key, (entry, source) in scripts.verified_sources.items():
+            if key not in included_keys or entry.object_id not in extension_object_ids:
+                continue
+            if entry.object_id in node_object_ids:
+                logger.warning(
+                    "Ignoring an extension object ID that conflicts with node data",
+                    extra={"suppress_ui_alert": True},
                 )
                 continue
+            planned_write = object_writes.setdefault(
+                entry.object_id,
+                workspace_storage._WorkspaceObjectWrite(
+                    entry.object_id,
+                    blob=source,
+                    blob_kind="extension-python-source-v1",
+                ),
+            )
+            if (
+                planned_write.blob == source
+                and planned_write.blob_kind == "extension-python-source-v1"
+            ):
+                embedded_script_sources.append(
+                    (entry.script_name, entry.source_hash, source)
+                )
+
+        for object_id in extension_object_ids - object_writes.keys():
             if (
                 source_workspace_path is not None
                 and object_id in previous_extension_object_ids
@@ -1336,4 +1369,5 @@ class _WorkspaceSaver:
             serialized_tool_data_references=(
                 self._serialized_tool_data_references(serialized_datasets)
             ),
+            embedded_script_sources=tuple(embedded_script_sources),
         )
