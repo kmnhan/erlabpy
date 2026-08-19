@@ -41,40 +41,40 @@ data analysis.
 ::::{grid} 1 1 2 2
 :gutter: 1
 
-:::{grid-item-card} Getting started
+:::{grid-item-card} 🚀 Getting started
 :link: getting-started
 :link-type: doc
-Install ERLabPy, verify the installation, and choose a learning path.
+Install and set up ERLabPy.
 :::
 
-:::{grid-item-card} Tutorials
+:::{grid-item-card} 🎓 Tutorials
 :link: tutorials/index
 :link-type: doc
-Learn the Python or Manager workflow through guided lessons.
+Step-by-step tutorials that walk you through the basics of using ERLabPy for ARPES data analysis.
 :::
 
-:::{grid-item-card} Explanation
+:::{grid-item-card} 💡 Explanation
 :link: explanation/index
 :link-type: doc
-Understand ERLabPy design choices and scientific workflows.
+Concepts and design choices to help you understand how ERLabPy works.
 :::
 
-:::{grid-item-card} How-to guides
+:::{grid-item-card} 🛠️ How-to guides
 :link: how-to/index
 :link-type: doc
-Complete a specific analysis, configuration, or GUI task.
+Practical guides for performing specific tasks with ERLabPy.
 :::
 
-:::{grid-item-card} Reference
+:::{grid-item-card} 📖 Reference
 :link: reference
 :link-type: doc
-Look up Python APIs, GUI applications, settings, and supported formats.
+Technical reference for ERLabPy, including Python APIs and GUI applications.
 :::
 
-:::{grid-item-card} Contributing guide
+:::{grid-item-card} 🤝 Contributing guide
 :link: contributing
 :link-type: doc
-The contributing guide contains information on how to contribute to the project.
+Contributing guide for developers and users who want to implement their own features or fix bugs in ERLabPy.
 :::
 ::::
 :::::

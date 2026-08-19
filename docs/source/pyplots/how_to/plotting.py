@@ -96,10 +96,6 @@ def display_energy_in_mev() -> None:
 def mark_core_levels() -> None:
     energy = np.linspace(-65.0, -15.0, 1600)
 
-    # The positions reproduce the pristine Bi2Se3 spectrum in Polyakov et al.
-    # Each d5/2:d3/2 pair has a 3:2 integrated-area ratio. The total Bi:Se
-    # intensity is illustrative because photoionization cross sections and the
-    # instrument response determine it.
     peak_components = []
     for center_5_2, splitting, total_area, sigma, gamma in (
         (-25.0, 3.0, 1.00, 0.23, 0.12),  # Bi 5d
