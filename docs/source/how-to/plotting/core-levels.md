@@ -29,12 +29,6 @@ eplt.plot_core_levels(
    :alt: Synthetic Bi₂Se₃ core-level spectrum with bismuth and selenium reference lines
 ```
 
-The synthetic spectrum uses published Bi₂Se₃ peak positions
-{cite:t}`polyakov2019bi2se3`. Each d doublet has the 3:2 statistical area ratio.
-The Bi-to-Se intensity is illustrative because cross sections and instrument response
-affect it.
-The compound peak positions do not coincide with the tabulated atomic reference lines.
-
 Use `binding_energy_sign="positive"` for a conventional positive XPS binding-energy
 axis. For a kinetic-energy axis, use `energy="kinetic"` and supply the measured photon
 energy with `hv`. Also supply `work_function` when it is needed for the conversion.
