@@ -12984,8 +12984,12 @@ def test_itool_swap_dims_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     assert win.provenance_spec is not None
     display_code = win.provenance_spec.display_code()
     assert display_code is not None
-    assert "swap_dims(x='temperature')" in display_code
     assert "x_idx" not in display_code
+    namespace = _exec_generated_code(display_code, {"data": data})
+    xarray.testing.assert_identical(
+        namespace["derived"],
+        data.swap_dims({"x": "temperature"}),
+    )
 
     win.close()
 

@@ -163,6 +163,19 @@ def test_ftool_1d_param_edit_and_state(qtbot) -> None:
     assert "fit_data" not in code
 
 
+def test_fit1d_copy_code_executes_with_notebook_aliases(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    code = win.copy_code()
+    assert "import erlab.analysis as era" not in code
+    namespace = {"era": erlab.analysis, "data": data}
+    exec(code, namespace, namespace)  # noqa: S102
+
+    assert isinstance(namespace["result"], xr.Dataset)
+
+
 def test_fit1d_tool_status_without_saved_params_uses_model_defaults(
     qtbot, exp_decay_model
 ) -> None:

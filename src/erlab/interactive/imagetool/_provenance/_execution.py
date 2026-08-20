@@ -524,13 +524,9 @@ def can_reload_without_trust(
         return False
     if spec.kind not in {"file", "script"}:
         return False
-    if (
-        has_file_load_source(spec)
-        and file_load_source_status(
-            spec, extension_status_resolver=extension_status_resolver
-        )
-        != "loadable"
-    ):
+    if (spec.kind == "file" or has_file_load_source(spec)) and file_load_source_status(
+        spec, extension_status_resolver=extension_status_resolver
+    ) != "loadable":
         return False
     if spec.kind == "script" and not script_provenance_replayable(spec):
         return False

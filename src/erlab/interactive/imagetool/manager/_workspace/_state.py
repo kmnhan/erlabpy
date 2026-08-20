@@ -139,8 +139,9 @@ class _WorkspaceScriptState:
             opaque_source_container=self.opaque_source_container,
         )
 
-    def has_same_content(self, other: _WorkspaceScriptState) -> bool:
-        """Return whether two document snapshots contain the same script state."""
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _WorkspaceScriptState):
+            return NotImplemented
         return (
             self.requirements == other.requirements
             and self.verified_sources == other.verified_sources

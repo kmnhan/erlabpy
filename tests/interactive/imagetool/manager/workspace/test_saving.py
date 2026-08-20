@@ -442,6 +442,8 @@ def test_workspace_script_state_owns_verified_and_explicit_sources() -> None:
     )
 
     snapshot = scripts.copy()
+    assert snapshot == scripts
+    assert scripts != object()
     scripts.rebase_nodes({"loaded": "loaded-import", "failed": "failed-import"})
     scripts.remove_node_references(("loaded-import",))
     scripts.remap_script("gaussian_tools.py", source_hash, "filters.py")
@@ -459,6 +461,7 @@ def test_workspace_script_state_owns_verified_and_explicit_sources() -> None:
     ]
     assert snapshot.requirements == (requirement,)
     assert snapshot.explicit_sources == {("Gaussian_Tools.py", source_hash)}
+    assert snapshot != scripts
 
     with pytest.raises(ValueError, match="does not match its hash"):
         scripts.remember_verified_source("bad.py", "0" * 64, source)

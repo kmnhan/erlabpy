@@ -3939,10 +3939,10 @@ def test_changed_registered_script_provenance_has_no_copied_code(
 
 
 def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
-    revision = "a" * 64
+    source_hash = "a" * 64
     operation = ExtensionRoutineOperation(
         script_name="lab.py",
-        source_hash=revision,
+        source_hash=source_hash,
         routine_id="normalize",
         routine_name="Normalize",
         parameters={},
@@ -3957,15 +3957,15 @@ def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
     calls: list[tuple[str, str, str, str]] = []
 
     def ready(
-        extension_id: str,
-        source_hash: str,
+        script_name: str,
+        requested_source_hash: str,
         capability_kind: str,
         capability_id: str,
     ) -> typing.Literal["ready"]:
         calls.append(
             (
-                extension_id,
-                source_hash,
+                script_name,
+                requested_source_hash,
                 capability_kind,
                 capability_id,
             )
@@ -3973,7 +3973,7 @@ def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
         return "ready"
 
     assert can_reload_without_trust(spec, extension_status_resolver=ready)
-    assert calls == [("lab.py", revision, "routine", "normalize")]
+    assert calls == [("lab.py", source_hash, "routine", "normalize")]
     assert not can_reload_without_trust(
         spec,
         extension_status_resolver=lambda *_args: "disabled",
@@ -3984,10 +3984,10 @@ def test_managed_reload_reason_uses_the_manager_extension_state(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    revision = "a" * 64
+    source_hash = "a" * 64
     operation = ExtensionRoutineOperation(
         script_name="lab.py",
-        source_hash=revision,
+        source_hash=source_hash,
         routine_id="normalize",
         routine_name="Normalize",
         parameters={},
@@ -4707,13 +4707,13 @@ def test_canceling_workspace_script_review_does_not_register_source(
 ) -> None:
     script_path = tmp_path / "cancelled.py"
     source = _script(script_path)
-    revision = hashlib.sha256(source).hexdigest()
+    source_hash = hashlib.sha256(source).hexdigest()
     requirement = _WorkspaceScriptRequirement(
         script_name="cancelled.py",
         capability_id="scale",
         capability_name="Scale",
         capability_kind="routine",
-        source_hash=revision,
+        source_hash=source_hash,
         extension_api_version=1,
     )
     monkeypatch.setattr(
@@ -4726,10 +4726,10 @@ def test_canceling_workspace_script_review_does_not_register_source(
         _set_workspace_script_state(
             manager,
             (requirement,),
-            sources={(requirement.script_name, revision): source},
+            sources={(requirement.script_name, source_hash): source},
         )
         assert not manager._extensions._save_and_register_embedded_script(
-            requirement.script_name, revision
+            requirement.script_name, source_hash
         )
 
         assert requirement.script_name not in (
@@ -5301,10 +5301,10 @@ def test_removing_node_discards_only_its_workspace_requirements(
 def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
     manager_context,
 ) -> None:
-    revision = "c" * 64
+    source_hash = "c" * 64
     operation = ExtensionRoutineOperation(
         script_name="workspace_routines.py",
-        source_hash=revision,
+        source_hash=source_hash,
         routine_id="normalize",
         routine_name="Normalize",
         parameters={},
@@ -5321,7 +5321,7 @@ def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
             capability_id="normalize",
             capability_name="Normalize",
             capability_kind="routine",
-            source_hash=revision,
+            source_hash=source_hash,
             extension_api_version=1,
             referencing_nodes=(node.uid, "unresolved-node"),
         )
@@ -5346,11 +5346,11 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
     tmp_path: pathlib.Path,
 ) -> None:
     source = b"# embedded extension source\n"
-    revision = hashlib.sha256(source).hexdigest()
+    source_hash = hashlib.sha256(source).hexdigest()
     workspace_path = tmp_path / "merged-requirements.itws"
     operation = ExtensionRoutineOperation(
         script_name="shared_routines.py",
-        source_hash=revision,
+        source_hash=source_hash,
         routine_id="normalize",
         routine_name="Normalize",
         parameters={},
@@ -5368,7 +5368,7 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
             capability_id="normalize",
             capability_name="Normalize",
             capability_kind="routine",
-            source_hash=revision,
+            source_hash=source_hash,
             extension_api_version=1,
             referencing_nodes=("unresolved-existing",),
         )
@@ -5380,7 +5380,7 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
         _set_workspace_script_state(
             manager,
             (base, incoming),
-            sources={(base.script_name, revision): source},
+            sources={(base.script_name, source_hash): source},
         )
 
         collected = manager._extensions.collect_workspace_requirements()
@@ -5400,8 +5400,8 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
     assert manifest["embedded_extension_sources"] == [
         {
             "script_name": "shared_routines.py",
-            "source_hash": revision,
-            "object_id": f"extension-source-{revision}",
+            "source_hash": source_hash,
+            "object_id": f"extension-source-{source_hash}",
         }
     ]
 
@@ -5409,13 +5409,13 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
 def test_collecting_requirements_merges_duplicate_unresolved_loaders(
     manager_context,
 ) -> None:
-    revision = "1" * 64
+    source_hash = "1" * 64
     base = _WorkspaceScriptRequirement(
         script_name="shared_loaders.py",
         capability_id="load_data",
         capability_name="Load data",
         capability_kind="loader",
-        source_hash=revision,
+        source_hash=source_hash,
         extension_api_version=1,
         referencing_nodes=("unresolved-first",),
         file_sources=("first.dat",),
@@ -5444,12 +5444,12 @@ def test_workspace_requirements_include_nested_script_inputs(
     manager_context,
     tmp_path: pathlib.Path,
 ) -> None:
-    revision = "c" * 64
+    source_hash = "c" * 64
     data_path = tmp_path / "nested.txt"
     data_path.write_text("unused")
     operation = ExtensionRoutineOperation(
         script_name="nested_routines.py",
-        source_hash=revision,
+        source_hash=source_hash,
         routine_id="normalize",
         routine_name="Normalize",
         parameters={},
@@ -5465,7 +5465,7 @@ def test_workspace_requirements_include_nested_script_inputs(
             replay_call=FileReplayCall(
                 kind="extension_loader",
                 target="nested_loaders.py",
-                source_hash=revision,
+                source_hash=source_hash,
                 capability_id="nested_loader",
                 selection=FileDataSelection(kind="dataarray"),
             ),
@@ -5646,14 +5646,14 @@ from erlab.extensions import loader
 
 counter = 0
 
-@loader(name="Counter", extensions=("txt",))
+@loader(name="Counter", extensions=("tar.gz",))
 def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
     global counter
     counter += 1
     return xr.DataArray([counter, float(path.read_text()) * scale])
 """
     )
-    value_path = tmp_path / "value.txt"
+    value_path = tmp_path / "value.TAR.GZ"
     value_path.write_text("4")
 
     with manager_context() as manager:
@@ -5705,6 +5705,41 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         xr.testing.assert_identical(isolated_call(value_path), xr.DataArray([1.0, 4.0]))
 
 
+def test_decorated_loader_without_extensions_accepts_arbitrary_path(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "unrestricted_loader.py"
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(name="Any file")
+def unrestricted_loader(path: Path) -> xr.DataArray:
+    return xr.DataArray([path.name])
+"""
+    )
+    arbitrary_path = tmp_path / "value.arbitrary"
+
+    with manager_context() as manager:
+        catalog, _source_hash = manager._extensions.catalog.store.register_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            script_path.name,
+            expected_record_generation=(
+                catalog.extensions[script_path.name].record_generation
+            ),
+        )
+        manager._extensions.catalog.refresh()
+
+        assert tuple(manager._extensions.file_loaders(arbitrary_path)) == (
+            "Any file (*)",
+        )
+
+
 def test_direct_extension_loader_reload_rechecks_catalog_state(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
@@ -5742,13 +5777,13 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
         original_status = manager._extensions.capability_status
 
         def capability_status(
-            extension_id: str,
+            script_name: str,
             source_hash: str,
             kind: str,
             capability_id: str,
         ) -> str:
-            calls.append((extension_id, source_hash, kind, capability_id))
-            return original_status(extension_id, source_hash, kind, capability_id)
+            calls.append((script_name, source_hash, kind, capability_id))
+            return original_status(script_name, source_hash, kind, capability_id)
 
         monkeypatch.setattr(
             manager._extensions,
@@ -7430,13 +7465,13 @@ def test_workspace_registration_selects_the_script_requirement(
 ) -> None:
     source_path = tmp_path / "mixed.py"
     source = _script(source_path)
-    revision = hashlib.sha256(source).hexdigest()
+    source_hash = hashlib.sha256(source).hexdigest()
     base = _WorkspaceScriptRequirement(
         script_name=source_path.name,
         capability_id="scale",
         capability_name="Scale",
         capability_kind="routine",
-        source_hash=revision,
+        source_hash=source_hash,
         extension_api_version=1,
     )
     monkeypatch.setattr(
@@ -7453,16 +7488,16 @@ def test_workspace_registration_selects_the_script_requirement(
 
     with manager_context() as manager:
         scripts = workspace_state._WorkspaceScriptState((base,))
-        scripts.remember_verified_source(base.script_name, revision, source)
+        scripts.remember_verified_source(base.script_name, source_hash, source)
         manager._workspace_state.extension_scripts.replace(scripts)
         assert manager._extensions._save_and_register_embedded_script(
-            base.script_name, revision
+            base.script_name, source_hash
         )
         requirements = manager._extensions.collect_workspace_requirements()
 
         assert (
             manager._extensions.capability_status(
-                destination.name, revision, "routine", "scale"
+                destination.name, source_hash, "routine", "scale"
             )
             == "ready"
         )
@@ -7679,13 +7714,13 @@ def test_workspace_registration_rejects_unusable_workspace_state(
     requirements: tuple[str, ...],
     warning_expected: bool,
 ) -> None:
-    revision = hashlib.sha256(source or b"unused").hexdigest()
+    source_hash = hashlib.sha256(source or b"unused").hexdigest()
     requirement = _WorkspaceScriptRequirement(
         script_name="unusable.py",
         capability_id="analyze",
         capability_name="Analyze",
         capability_kind="routine",
-        source_hash=revision,
+        source_hash=source_hash,
         extension_api_version=1,
     )
     warnings: list[None] = []
@@ -7700,10 +7735,12 @@ def test_workspace_registration_rejects_unusable_workspace_state(
             (requirement,) if requirements else ()
         )
         if source is not None:
-            scripts.remember_verified_source(requirement.script_name, revision, source)
+            scripts.remember_verified_source(
+                requirement.script_name, source_hash, source
+            )
         manager._workspace_state.extension_scripts.replace(scripts)
         assert not manager._extensions._save_and_register_embedded_script(
-            requirement.script_name, revision
+            requirement.script_name, source_hash
         )
 
     assert bool(warnings) is warning_expected
@@ -7716,13 +7753,13 @@ def test_workspace_registration_reports_validation_failure(
 ) -> None:
     source_path = tmp_path / "failure.py"
     source = _script(source_path)
-    revision = hashlib.sha256(source).hexdigest()
+    source_hash = hashlib.sha256(source).hexdigest()
     requirement = _WorkspaceScriptRequirement(
         script_name=source_path.name,
         capability_id="scale",
         capability_name="Scale",
         capability_kind="routine",
-        source_hash=revision,
+        source_hash=source_hash,
         extension_api_version=1,
     )
     failures: list[str] = []
@@ -7745,7 +7782,7 @@ def test_workspace_registration_reports_validation_failure(
 
     with manager_context() as manager:
         scripts = workspace_state._WorkspaceScriptState((requirement,))
-        scripts.remember_verified_source(requirement.script_name, revision, source)
+        scripts.remember_verified_source(requirement.script_name, source_hash, source)
         manager._workspace_state.extension_scripts.replace(scripts)
         monkeypatch.setattr(
             manager._extensions.execution,
@@ -7755,7 +7792,7 @@ def test_workspace_registration_reports_validation_failure(
             ),
         )
         assert not manager._extensions._save_and_register_embedded_script(
-            requirement.script_name, revision
+            requirement.script_name, source_hash
         )
 
     assert failures == ["The saved workspace extension could not be registered."]
@@ -7769,7 +7806,7 @@ def test_missing_workspace_script_recovery_can_repeat(
     _script(script_path)
 
     with manager_context() as manager:
-        catalog, revision = manager._extensions.catalog.store.register_script(
+        catalog, source_hash = manager._extensions.catalog.store.register_script(
             script_path
         )
         _validate_and_enable(
@@ -7786,7 +7823,7 @@ def test_missing_workspace_script_recovery_can_repeat(
             capability_id="scale",
             capability_name="Scale",
             capability_kind="routine",
-            source_hash=revision,
+            source_hash=source_hash,
             extension_api_version=1,
         )
         manager._workspace_state.extension_scripts.replace(
@@ -7810,20 +7847,20 @@ def test_workspace_notification_opens_embedded_script_recovery(
 ) -> None:
     source_path = tmp_path / "workspace_scale.py"
     source = _script(source_path)
-    revision = hashlib.sha256(source).hexdigest()
+    source_hash = hashlib.sha256(source).hexdigest()
     requirement = _WorkspaceScriptRequirement(
         script_name=source_path.name,
         capability_id="scale",
         capability_name="Scale",
         capability_kind="routine",
-        source_hash=revision,
+        source_hash=source_hash,
         extension_api_version=1,
     )
     shown: list[None] = []
 
     with manager_context() as manager:
         scripts = workspace_state._WorkspaceScriptState((requirement,))
-        scripts.remember_verified_source(requirement.script_name, revision, source)
+        scripts.remember_verified_source(requirement.script_name, source_hash, source)
         manager._workspace_state.extension_scripts.replace(scripts)
         monkeypatch.setattr(
             manager._extensions,

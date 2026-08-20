@@ -451,6 +451,50 @@ def test_data_ingress_dataset_creation_error_no_duplicate_alert(
         assert manager._alert_dialogs == []
 
 
+def test_data_ingress_dataset_registration_error_cleans_created_tool(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    created_tools: list[erlab.interactive.imagetool.ImageTool] = []
+    creation_errors: list[None] = []
+
+    def create_tool(
+        dataset: xr.Dataset, **kwargs: typing.Any
+    ) -> erlab.interactive.imagetool.ImageTool:
+        tool = manager_io.ImageTool(dataset["v"], **kwargs)
+        created_tools.append(tool)
+        return tool
+
+    def fail_registration(*_args: object, **_kwargs: object) -> typing.NoReturn:
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(
+        manager_io.ImageTool,
+        "from_dataset",
+        staticmethod(create_tool),
+    )
+
+    with manager_context() as manager:
+        monkeypatch.setattr(manager, "add_imagetool", fail_registration)
+        monkeypatch.setattr(
+            manager._data_ingress,
+            "_error_creating_imagetool",
+            lambda: creation_errors.append(None),
+        )
+        ds = xr.Dataset({"v": xr.DataArray(np.ones((2, 2)), dims=("x", "y"))})
+
+        assert manager._data_ingress.receive_data([ds], {}) == [False]
+        assert manager.ntools == 0
+        assert creation_errors == [None]
+        assert len(created_tools) == 1
+        assert erlab.interactive.utils.qt_is_valid(created_tools[0])
+
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        assert not erlab.interactive.utils.qt_is_valid(created_tools[0])
+
+
 def test_data_ingress_dataarray_creation_error_no_duplicate_alert(
     qtbot,
     monkeypatch,

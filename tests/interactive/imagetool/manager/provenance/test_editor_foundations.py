@@ -1579,7 +1579,7 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
         safe_spec,
         reason="reload this result",
     )
-    assert detailed_texts == ["derived = data\nderived = data + 1"]
+    assert detailed_texts == ["derived = data + 1"]
 
 
 def test_manager_provenance_lightweight_helper_edges() -> None:

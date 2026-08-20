@@ -172,20 +172,22 @@ def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
     assert adaptive_check.isChecked()
     assert step_edge_check.isChecked()
 
-    win._argnames["data"] = "gold"
+    win.data_name = "era"
     provenance = win.current_provenance_spec()
     assert provenance is not None
     replay_kwargs: dict[str, typing.Any] = {}
+    replay_args: tuple[typing.Any, ...] = ()
 
     def capture_poly(*_args: typing.Any, **kwargs: typing.Any) -> xr.Dataset:
+        nonlocal replay_args
+        replay_args = _args
         replay_kwargs.update(kwargs)
         return xr.Dataset()
 
     monkeypatch.setattr(erlab.analysis.gold, "poly", capture_poly)
-    namespace = {"era": erlab.analysis, "gold": gold}
-    exec(  # noqa: S102
-        provenance.display_code(), {"__builtins__": {}}, namespace
-    )
+    namespace = {"era": gold}
+    exec(provenance.display_code(), namespace, namespace)  # noqa: S102
+    assert isinstance(replay_args[0], xr.DataArray)
     assert replay_kwargs["adaptive"] is True
     assert replay_kwargs["use_step_edge"] is True
 
@@ -236,7 +238,7 @@ def test_goldtool(
         namespace = {"era": erlab.analysis, "gold": gold}
 
         exec(  # noqa: S102
-            w.current_provenance_spec().display_code(), {"__builtins__": {}}, namespace
+            w.current_provenance_spec().display_code(), namespace, namespace
         )
 
         xr.testing.assert_identical(
@@ -1469,9 +1471,14 @@ def test_restool(qtbot) -> None:
         assert win.fit_params[k] == v
 
     def check_generated_code(w: ResolutionTool) -> None:
-        namespace = {"era": erlab.analysis, "gold": gold, "data": gold, "result": None}
+        namespace = {
+            "era": erlab.analysis,
+            "gold": gold,
+            "data": gold,
+            "result": None,
+        }
         code = w.copy_code().replace("quick_resolution", "quick_fit")
-        exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
+        exec(code, namespace, namespace)  # noqa: S102
 
         xr.testing.assert_identical(
             w._result_ds.drop_vars("modelfit_results"),

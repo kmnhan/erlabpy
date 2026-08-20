@@ -673,12 +673,11 @@ def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
     assert spec.operations[0].group is None
     code = spec.display_code()
     assert code is not None
-    assert "derived = data.copy(deep=False)" in code
-    assert "derived.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
+    assert ".copy(deep=False)" not in code
+    assert "data.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
     assert "sample_workfunction" not in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
-    assert namespace["derived"].kspace.offsets["delta"] == pytest.approx(2.0)
-    for key, value in original_offsets.items():
+    for key, value in derived.data.kspace.offsets.items():
         assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
 
     converted = derived.kspace.convert()

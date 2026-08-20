@@ -45,19 +45,9 @@ from erlab.interactive.imagetool._provenance._operations import (
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
-    locals_ns = dict(namespace)
-    exec(  # noqa: S102
-        code,
-        {
-            "__builtins__": {"range": range, "slice": slice},
-            "np": np,
-            "xr": xr,
-            "erlab": erlab,
-            "era": erlab.analysis,
-        },
-        locals_ns,
-    )
-    return locals_ns
+    output = dict(namespace)
+    exec(code, output, output)  # noqa: S102
+    return output
 
 
 @pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])
@@ -83,7 +73,11 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         code = w.copy_code()
         namespace = _exec_generated_code(
             code,
-            {"data": data.copy(deep=True), "result": None},
+            {
+                "era": erlab.analysis,
+                "data": data.copy(deep=True),
+                "result": None,
+            },
         )
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
@@ -227,7 +221,9 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     code = win.copy_code()
     assert "\t" not in code
     assert "era.image.gaussian_filter(data" in code
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": data.copy(deep=True)}
+    )
     assert isinstance(namespace["result"], xr.DataArray)
     xr.testing.assert_identical(win.result, namespace["result"])
 
@@ -235,7 +231,7 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     code = win.copy_code()
     assert "\t" not in code
     assert code.count("era.image.gaussian_filter(") == 2
-    assert "processed_data = era.image.gaussian_filter(data" in code
+    assert "processed_data_2 = era.image.gaussian_filter(data" in code
     assert "processed_data = processed_data" not in code
     provenance = win.current_provenance_spec()
     assert provenance is not None
@@ -246,7 +242,9 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
         )
         == 2
     )
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code, {"era": erlab.analysis, "data": data.copy(deep=True)}
+    )
     assert isinstance(namespace["result"], xr.DataArray)
     xr.testing.assert_identical(win.result, namespace["result"])
 

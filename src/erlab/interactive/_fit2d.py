@@ -309,6 +309,9 @@ class Fit2DTool(Fit1DTool):
         ),
     }
 
+    def _script_provenance_input_name(self) -> str:
+        return self._data_name_full
+
     @classmethod
     def _parameter_output_id(cls, output: Output, param_name: str) -> str:
         if output not in (cls.Output.PARAMETER_VALUES, cls.Output.PARAMETER_STDERR):

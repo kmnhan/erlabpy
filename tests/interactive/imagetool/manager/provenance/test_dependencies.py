@@ -1831,9 +1831,21 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             monkeypatch, manager, second_values_uid
         )
         stderr_code = copy_full_code_for_uid(monkeypatch, manager, stderr_uid)
-        assert "prepared_parent = data + 1" in values_code
-        assert "prepared_parent = data + 1" in second_values_code
-        assert "prepared_parent = data + 1" in stderr_code
+
+        def includes_parent_offset(code: str) -> bool:
+            return any(
+                isinstance(node, ast.BinOp)
+                and isinstance(node.left, ast.Name)
+                and node.left.id == "data"
+                and isinstance(node.op, ast.Add)
+                and isinstance(node.right, ast.Constant)
+                and node.right.value == 1
+                for node in ast.walk(ast.parse(code))
+            )
+
+        assert includes_parent_offset(values_code)
+        assert includes_parent_offset(second_values_code)
+        assert includes_parent_offset(stderr_code)
 
         def selected_fit_output(code: str) -> tuple[str, str]:
             for call in (

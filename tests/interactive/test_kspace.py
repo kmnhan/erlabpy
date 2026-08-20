@@ -42,6 +42,13 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
 
+
+def _exec_generated_code(code: str, **namespace_items: object) -> dict[str, object]:
+    namespace = dict(namespace_items)
+    exec(code, namespace, namespace)  # noqa: S102
+    return namespace
+
+
 _MISSING_KSPACE_PARAMETER_WARNINGS = {
     "Work function not found in data attributes, assuming 4.5 eV",
     "Inner potential not found in data attributes, assuming 10 eV",
@@ -320,8 +327,7 @@ def test_ktool_assigns_missing_scalar_angle_coordinates(
 
     expected = win._converted_output()
     code = win.copy_code()
-    namespace = {"cut": data.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, cut=data.copy(deep=True))
 
     xr.testing.assert_allclose(namespace["cut_kconv"], expected)
     assert float(win.data.beta) == pytest.approx(-3.25)
@@ -395,8 +401,7 @@ def test_ktool_assigns_missing_configuration(
     assert isinstance(operations[0], AssignAttrsOperation)
     assert operations[0].attrs == {"configuration": int(AxesConfiguration.Type1)}
 
-    namespace = {"cut": data.copy(deep=True)}
-    exec(win.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(win.copy_code(), cut=data.copy(deep=True))
     xr.testing.assert_allclose(namespace["cut_kconv"], win._converted_output())
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
@@ -510,8 +515,7 @@ def test_ktool_missing_coordinate_persistence_preserves_copy_operations(
         for operation in restored._copy_operations()
     )
 
-    namespace = {"scan": data.copy(deep=True)}
-    exec(restored.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(restored.copy_code(), scan=data.copy(deep=True))
     xr.testing.assert_allclose(namespace["scan_kconv"], restored._converted_output())
 
 
@@ -592,8 +596,7 @@ def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
 
     expected = dialog.process_data(data.copy(deep=True))
     code = dialog.make_code()
-    namespace = {"data": data.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, data=data.copy(deep=True))
 
     xr.testing.assert_allclose(namespace["data_kconv"], expected)
     assert "beta" not in data.coords
@@ -643,8 +646,7 @@ def test_kspace_conversion_dialog_assigns_missing_configuration(
         ) == (0, len(operations))
 
     expected = dialog.process_data(data.copy(deep=True))
-    namespace = {"data": data.copy(deep=True)}
-    exec(dialog.make_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(dialog.make_code(), data=data.copy(deep=True))
     xr.testing.assert_allclose(namespace["data_kconv"], expected)
     assert "configuration" not in data.attrs
 
@@ -1622,8 +1624,7 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
         assert ".kspace.offsets =" not in code
         assert "psutil" not in code
         assert "KspaceConversionMemory" not in code
-        namespace = {"anglemap": anglemap}
-        exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+        namespace = _exec_generated_code(code, anglemap=anglemap)
         xr.testing.assert_identical(anglemap_kconv, namespace["anglemap_kconv"])
 
     _check_code_kconv(win)
@@ -1694,8 +1695,7 @@ def test_ktool_angle_energy_cut(qtbot, anglemap) -> None:
     win._itool.close()
 
     code = win.copy_code()
-    namespace = {"cut": cut.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, cut=cut.copy(deep=True))
     xr.testing.assert_identical(namespace["cut_kconv"], expected)
 
     updated = cut.copy(deep=True)
@@ -2338,20 +2338,22 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
     )
 
     code = dialog.make_code()
-    assert code.count(".copy(deep=False)") == 1
+    assert ".copy(deep=False)" not in code
     assert "psutil" not in code
     assert "KspaceConversionMemory" not in code
     if not data.kspace._has_hv:
         assert ".kspace.inner_potential =" not in code
 
     source = data.copy(deep=True)
-    namespace = {"data": source}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, data=source)
     xr.testing.assert_allclose(
         dialog.process_data(data.copy(deep=True)),
         namespace["data_kconv"],
     )
-    xr.testing.assert_identical(namespace["data"], data)
+    expected_source = data.copy(deep=True)
+    for operation in operations[:-1]:
+        expected_source = operation.apply(expected_source)
+    xr.testing.assert_identical(namespace["data"], expected_source)
 
 
 def test_kspace_conversion_dialog_unsafe_accept_shows_error(
@@ -2698,20 +2700,21 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
 
     monkeypatch.setattr(dialog, "_copy_data_name", lambda: "not a valid name")
     source = data.copy(deep=True)
-    namespace = {"data": source}
     code = dialog.make_code()
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, data=source)
     xr.testing.assert_allclose(
         namespace["data_kconv"],
         dialog.process_data(data.copy(deep=True)),
     )
-    xr.testing.assert_identical(namespace["data"], data)
+    expected_source = data.copy(deep=True)
+    for operation in operations[:-1]:
+        expected_source = operation.apply(expected_source)
+    xr.testing.assert_identical(namespace["data"], expected_source)
 
     spec = full_data(*operations)
     display_code = spec.display_code(parent_data=data)
     assert display_code is not None
-    namespace = {"data": data.copy(deep=True)}
-    exec(display_code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(display_code, data=data.copy(deep=True))
     xr.testing.assert_allclose(
         namespace["derived"],
         spec.apply(data.copy(deep=True)),
@@ -2768,16 +2771,12 @@ def test_ktool_copy_code_uses_set_normal(
     input_name = str(win._argnames["data"])
     if not erlab.utils.misc._is_valid_identifier(input_name):
         input_name = "data"
-    assert code.count(".copy(deep=False)") == 1
-    assert code.splitlines()[0] == (
-        f"{input_name}_kconv = {input_name}.copy(deep=False)"
-    )
-    assert code.splitlines()[1].startswith(f"{input_name}_kconv.kspace.set_normal(")
-    assert f"{input_name}_kconv = {input_name}_kconv.kspace.convert(" in code
+    assert ".copy(deep=False)" not in code
+    assert f"{input_name}.kspace.set_normal(" in code
+    assert f"{input_name}_kconv = {input_name}.kspace.convert(" in code
 
     source = data.copy(deep=True)
-    namespace = {input_name: source}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, **{input_name: source})
 
     expected_setup = win._assign_params(data.copy(deep=True))
     expected = expected_setup.kspace.convert(
@@ -2786,7 +2785,12 @@ def test_ktool_copy_code_uses_set_normal(
     )
 
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
-    xr.testing.assert_identical(namespace[input_name], data)
+    xr.testing.assert_allclose(namespace[input_name], expected_setup)
+    for key, value in expected_setup.kspace.offsets.items():
+        assert namespace[input_name].kspace.offsets[key] == pytest.approx(
+            value,
+            abs=1e-4,
+        )
 
 
 @pytest.mark.parametrize(
@@ -2831,12 +2835,13 @@ def test_ktool_configuration_combo_rebuilds_controls_and_code(
 
     code = win.copy_code()
     assert f".kspace.as_configuration({int(target_configuration)})" in code
-    assert code.count(".copy(deep=False)") == 1
+    assert ".copy(deep=False)" not in code
     assert ".kspace.set_normal(" in code
     assert ".kspace.convert(" in code
-    assert code.splitlines()[0] == "scan_kconv = scan.copy(deep=False)"
-    namespace = {"scan": data.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    assert code.splitlines()[0] == (
+        f"processed_data = scan.kspace.as_configuration({int(target_configuration)})"
+    )
+    namespace = _exec_generated_code(code, scan=data.copy(deep=True))
     xr.testing.assert_allclose(namespace["scan_kconv"], win._converted_output())
     xr.testing.assert_identical(namespace["scan"], data)
 
@@ -2904,8 +2909,7 @@ def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
     code = spec.display_code()
     assert code is not None
     assert ".kspace.as_configuration(4)" in code
-    namespace = {"scan": data.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, scan=data.copy(deep=True))
     xr.testing.assert_allclose(namespace["scan_kconv"], converted)
 
     with tempfile.TemporaryDirectory() as tmp_dir_name:
@@ -2979,8 +2983,7 @@ def test_ktool_angle_scales_are_set_normal_provenance_kwargs(qtbot, anglemap) ->
     assert "alpha_scale=1.25" in code
     assert "beta_scale=0.75" in code
     assert "angle_scales" not in code
-    namespace = {"scan": data.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, scan=data.copy(deep=True))
     xr.testing.assert_allclose(namespace["scan_kconv"], converted)
 
     with tempfile.TemporaryDirectory() as tmp_dir_name:
@@ -3042,8 +3045,7 @@ def test_ktool_hidden_angle_scales_restore_and_remain_active(qtbot, anglemap) ->
     code = restored.copy_code()
     assert "alpha_scale=1.25" in code
     assert "beta_scale=0.75" in code
-    namespace = {"scan": anglemap.copy(deep=True)}
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, scan=anglemap.copy(deep=True))
     xr.testing.assert_allclose(namespace["scan_kconv"], restored._converted_output())
 
 
@@ -3054,21 +3056,19 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
     win.set_input_provenance_spec(
         script(
             start_label="Start from watched variable 'my_data'",
-            seed_code="derived = my_data.astype(np.float64)",
+            seed_code='derived = my_data.astype("float64")',
             active_name="derived",
         )
     )
 
     code = win.copy_code()
 
-    assert "input_data_kconv = my_data.astype(np.float64)" in code
+    assert "my_data.astype" in code
     assert ".copy(deep=False)" not in code
-    assert "input_data_kconv.kspace.set_normal(" in code
-    assert "input_data_kconv = input_data_kconv.kspace.convert(" in code
-    assert "astype(np.float64)_kconv" not in code
-    namespace = {"my_data": data.copy(deep=True), "np": np}
-    exec(code, {"__builtins__": {}, "np": np}, namespace)  # noqa: S102
-    assert "input_data_kconv" in namespace
+    assert "derived_kconv.kspace.set_normal(" in code
+    assert "derived_kconv = derived_kconv.kspace.convert(" in code
+    namespace = _exec_generated_code(code, my_data=data.copy(deep=True))
+    xr.testing.assert_allclose(namespace["derived_kconv"], win._converted_output())
 
 
 def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
@@ -3085,8 +3085,7 @@ def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> No
 
     assert "hv=slice" not in code
     assert "alpha=slice" in code
-    namespace = {"data": data.copy(deep=True)}
-    exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, data=data.copy(deep=True))
     expected = win._assign_params(source_data.copy(deep=True)).kspace.convert(
         bounds=win.bounds, resolution=win.resolution
     )

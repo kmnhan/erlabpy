@@ -125,8 +125,9 @@ class _DataIngressController:
         """Construct manager-owned ImageTools from received arrays or datasets.
 
         An extension loader supplies its pinned publication permit through the
-        private ``_extension_publication`` argument. The permit is checked directly
-        before each manager mutation. Exact script bytes are retained only after the
+        private ``_extension_publication`` argument. Loader results are selected into
+        data arrays before this call. The permit is checked directly before each
+        data-array manager mutation. Exact script bytes are retained only after the
         corresponding ImageTool is inserted.
         """
         flags: list[bool] = []
@@ -141,14 +142,10 @@ class _DataIngressController:
                         _in_manager=True,
                         options_model=self._manager.effective_interactive_options,
                     )
-                    if _extension_publication is not None:
-                        _extension_publication.require_current_for_publication()
                     self._manager.add_imagetool(
                         dataset_tool,
                         activate=True,
                     )
-                    if _extension_publication is not None:
-                        _extension_publication.record_publication()
                 except Exception:
                     if dataset_tool is not None and erlab.interactive.utils.qt_is_valid(
                         dataset_tool

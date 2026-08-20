@@ -2982,7 +2982,7 @@ class _WorkspaceLoader:
             if item.state != "ready"
         ]
         if not replace:
-            return not scripts.has_same_content(previous)
+            return scripts != previous
         self._manager._workspace_state.save_as_only = bool(
             unavailable or incoming_state.has_opaque_content
         )
@@ -2992,4 +2992,4 @@ class _WorkspaceLoader:
         if incoming_state.has_opaque_content:
             reasons.append("unrecognized extension content")
         self._manager._workspace_state.degraded_reasons = tuple(reasons)
-        return not scripts.has_same_content(previous)
+        return scripts != previous

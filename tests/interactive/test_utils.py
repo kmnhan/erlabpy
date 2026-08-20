@@ -1,3 +1,4 @@
+import contextlib
 import enum
 import importlib
 import json
@@ -68,9 +69,9 @@ from erlab.interactive.utils import (
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
-    locals_ns = dict(namespace)
-    exec(code, {"__builtins__": {"slice": slice}}, locals_ns)  # noqa: S102
-    return locals_ns
+    output = dict(namespace)
+    exec(code, output, output)  # noqa: S102
+    return output
 
 
 @pytest.mark.parametrize(
@@ -3996,12 +3997,14 @@ def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> N
 
     single_spec = tool.current_provenance_spec()
     assert single_spec is not None
-    assert single_spec.operations == (operation,)
+    expected_operation = operation.model_copy(update={"framework_owned": True})
+    assert single_spec.operations == (expected_operation,)
+    assert operation.framework_owned is False
 
     tool._operations = [operation]
     sequence_spec = tool.current_provenance_spec()
     assert sequence_spec is not None
-    assert sequence_spec.operations == (operation,)
+    assert sequence_spec.operations == (expected_operation,)
     assert sequence_spec.seed_code == "derived = data"
 
     tool._operations = None
@@ -4816,6 +4819,19 @@ def test_managed_tool_window_node_detached_update_branches(
             self._tool_graph = _ManagerToolGraph()
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+            self._extensions = types.SimpleNamespace(
+                execution=types.SimpleNamespace(
+                    run_operation=lambda *_args, **_kwargs: pytest.fail(
+                        "built-in provenance must not use extension execution"
+                    ),
+                    capture_replay_sources=lambda: contextlib.nullcontext(
+                        types.SimpleNamespace(
+                            require_current_for_publication=lambda: None,
+                            publish=lambda: None,
+                        )
+                    ),
+                )
+            )
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,

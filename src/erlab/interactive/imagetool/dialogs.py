@@ -903,30 +903,21 @@ class DataTransformDialog(_DataManipulationDialog):
             if not erlab.utils.misc._is_valid_identifier(input_name):
                 input_name = "data"
             output_name = f"{input_name}{self.copy_output_suffix}"
-            current_name = output_name
-            lines = [f"{output_name} = {input_name}.copy(deep=False)"]
-            for index, operation in enumerate(operations):
+            current_name = input_name
+            lines: list[str] = []
+            for operation in operations:
                 if operation.statement_mutates_input:
                     lines.append(
                         operation.replay_code(current_name, output_name=current_name)
                     )
                     continue
-                replay_output_name = (
-                    output_name
-                    if lines
-                    or any(
-                        later_operation.statement_mutates_input
-                        for later_operation in operations[index + 1 :]
-                    )
-                    else current_name
-                )
                 lines.append(
                     operation.replay_code(
                         current_name,
-                        output_name=replay_output_name,
+                        output_name=output_name,
                     )
                 )
-                current_name = replay_output_name
+                current_name = output_name
             return "\n".join(lines)
         except Exception:
             return ""

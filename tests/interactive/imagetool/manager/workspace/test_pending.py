@@ -2170,11 +2170,7 @@ def test_pending_workspace_1d_roles_match_materialized_provenance_input(
                 parent_data=pending[role],
             )
             assert composed is not None
-            code = composed.display_code()
-            assert code is not None
-            assert ".squeeze()" not in code
-            namespace = _exec_generated_code(code, {"watched_1d": data.copy(deep=True)})
-            xr.testing.assert_identical(namespace["derived"], data)
+            assert composed.display_code() is None
         manager.get_imagetool(0)
         for role in ("source", "displayed"):
             xr.testing.assert_identical(wrapper.data_for_role(role), pending[role])

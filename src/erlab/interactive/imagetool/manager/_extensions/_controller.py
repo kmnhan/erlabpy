@@ -48,6 +48,7 @@ from erlab.interactive.imagetool.manager._registry import (
     ImageToolManagerRegistryError,
     live_manager_records,
 )
+from erlab.io.dataloader import _filename_matches_extensions
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable
@@ -213,8 +214,7 @@ class _ExtensionController(QtCore.QObject):
                 )
                 name_filter = f"{descriptor.name} ({' '.join(patterns)})"
                 if path_values and not all(
-                    not descriptor.extensions
-                    or path.suffix.casefold() in descriptor.extensions
+                    _filename_matches_extensions(path, descriptor.extensions or None)
                     for path in path_values
                 ):
                     continue
