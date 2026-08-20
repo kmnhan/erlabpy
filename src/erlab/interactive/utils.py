@@ -5283,6 +5283,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),
+            "tool_name": self.tool_name,
             "tool_display_name": self._tool_display_name,
             "tool_window_state": _qt_state.qt_window_state_json(self),
             "erlab_version": erlab.__version__,

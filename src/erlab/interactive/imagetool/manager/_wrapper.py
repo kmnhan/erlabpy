@@ -1165,6 +1165,12 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.tool_window.tool_name
         if self.pending_workspace_tool_payload is not None:
             attrs = self.pending_workspace_payload_attrs or {}
+            tool_name = attrs.get("tool_name")
+            if isinstance(tool_name, bytes):
+                with contextlib.suppress(UnicodeDecodeError):
+                    tool_name = tool_name.decode()
+            if isinstance(tool_name, str) and tool_name:
+                return tool_name
             qualname = attrs.get("tool_cls_qualname")
             if isinstance(qualname, bytes):
                 with contextlib.suppress(UnicodeDecodeError):
