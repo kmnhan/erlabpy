@@ -2130,7 +2130,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                     target = None
                 if target is None:
                     return
-                self._model.manager._show_dependency_reload_dialog(target)
+                self._model.manager._lineage_controller._show_dependency_reload_dialog(
+                    target
+                )
 
     def _show_dask_badge_menu(
         self,

@@ -18,6 +18,7 @@ import re
 import symtable
 import tokenize
 import typing
+import uuid
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 
@@ -38,6 +39,9 @@ from erlab.interactive.imagetool._provenance._code import (
     _validate_script_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
+    ScriptInput,
+    ToolProvenanceSpec,
     _assignment_code,
     _script_input_reference_text,
     parse_tool_provenance_spec,
@@ -49,6 +53,31 @@ if typing.TYPE_CHECKING:
 
 class ReplayGraphError(Exception):
     """Raised when provenance cannot be compiled, emitted, or replayed."""
+
+
+InputProvenanceResolver = Callable[[ScriptInput], ToolProvenanceSpec | None]
+_T = typing.TypeVar("_T")
+_R = typing.TypeVar("_R")
+
+
+def _memoized_by_identity(resolver: Callable[[_T], _R]) -> Callable[[_T], _R]:
+    cache: dict[int, tuple[_T, _R]] = {}
+
+    def resolve(value: _T) -> _R:
+        key = id(value)
+        cached = cache.get(key)
+        if cached is not None and cached[0] is value:
+            return cached[1]
+        result = resolver(value)
+        cache[key] = (value, result)
+        return result
+
+    return resolve
+
+
+def _memoized_input_provenance_resolver() -> InputProvenanceResolver:
+    """Parse each exact input fallback once for one replay decision."""
+    return _memoized_by_identity(ScriptInput.parsed_provenance_spec)
 
 
 class ReplayNode:
@@ -161,6 +190,24 @@ _REPLAY_FRAMEWORK_IMPORTS = {
         for alias, target in _REPLAY_ALIASES.items()
     },
 }
+_REPLAY_PROTECTED_NAMES = {
+    "__builtins__",
+    "lmfit",
+    "load_script",
+    *_REPLAY_FRAMEWORK_IMPORTS,
+    *_SCRIPT_REPLAY_ALLOWED_BUILTINS,
+}
+_REPLAY_CANONICAL_IMPORT_TARGETS = {
+    "erlab": {"module:erlab"},
+    "era": {"module:erlab.analysis", "from:erlab:analysis"},
+    "eri": {"module:erlab.interactive", "from:erlab:interactive"},
+    "eplt": {"module:erlab.plotting", "from:erlab:plotting"},
+    "lmfit": {"module:lmfit"},
+    "np": {"module:numpy"},
+    "numpy": {"module:numpy"},
+    "xr": {"module:xarray"},
+    "xarray": {"module:xarray"},
+}
 _REPLAY_RESERVED_PUBLIC_NAMES = {"data", "derived", "tools"}
 _REPLAY_TEMP_PREFIX = "_itool_replay_"
 _FILE_LOAD_OUTPUT_SENTINEL = "_itool_file_load_output"
@@ -185,16 +232,33 @@ def _is_semantic_replay_name(name: str) -> bool:
     )
 
 
-def _reserved_names_from_spec(spec: typing.Any) -> set[str]:
+def _reserved_names_from_spec(
+    spec: typing.Any,
+    input_provenance_resolver: InputProvenanceResolver,
+    *,
+    external_input_names: Collection[str] = (),
+    live_input_resolver: LiveInputResolver | None = None,
+) -> set[str]:
     names: set[str] = set()
     active_name = getattr(spec, "active_name", None)
     if isinstance(active_name, str):
         names.add(active_name)
     for script_input in getattr(spec, "script_inputs", ()):
         names.add(script_input.name)
-        nested = script_input.parsed_provenance_spec()
+        if script_input.name in external_input_names or (
+            live_input_resolver is not None
+            and live_input_resolver(script_input) is not None
+        ):
+            continue
+        nested = input_provenance_resolver(script_input)
         if nested is not None:
-            names.update(_reserved_names_from_spec(nested))
+            names.update(
+                _reserved_names_from_spec(
+                    nested,
+                    input_provenance_resolver,
+                    live_input_resolver=live_input_resolver,
+                )
+            )
     for binding in getattr(spec, "script_context_bindings", ()):
         names.update(binding.names)
     return names
@@ -522,7 +586,6 @@ def _validate_script_provenance(
         raise ReplayGraphError(
             "Script provenance cannot be replayed without active_name"
         )
-
     builtin_names = set(_SCRIPT_REPLAY_ALLOWED_BUILTINS)
     if not strict_replay_code:
         builtin_names.update(vars(builtins))
@@ -542,6 +605,7 @@ def _validate_script_provenance(
         available_names.update(script_input.name for script_input in spec.script_inputs)
     elif external_input_names is not None:
         available_names.update(external_input_names)
+
     function_dependencies: dict[str, set[str]] = {}
     caller_names: set[str] = set()
     seed_caller_names: set[str] = set()
@@ -898,6 +962,43 @@ def _compile_replay_steps(
     return current_key
 
 
+def _add_external_input_node(
+    graph: ReplayGraph,
+    script_input: typing.Any,
+) -> str:
+    """Add and transform one display-only caller-provided input."""
+    if script_input.name in _REPLAY_PROTECTED_NAMES:
+        raise ReplayGraphError(
+            f"External provenance input {script_input.name!r} conflicts with a replay "
+            "global"
+        )
+    has_stable_identity = script_input.node_snapshot_token is not None
+    identity = (
+        (
+            script_input.node_uid,
+            script_input.data_role,
+            script_input.node_snapshot_token,
+        )
+        if has_stable_identity
+        else uuid.uuid4().hex
+    )
+    input_key = graph.add_node(
+        f"external_input:{identity!r}",
+        "external_input",
+        cacheable=has_stable_identity,
+        payload={"name": script_input.name},
+    )
+    source_spec = script_input.parsed_source_spec()
+    if source_spec is None:
+        return input_key
+    return _compile_replay_steps(
+        graph,
+        input_key,
+        ReplayStep.from_source_spec(source_spec),
+        display=True,
+    )
+
+
 def _script_seed_file_load_parts(
     seed_code: str,
     *,
@@ -961,7 +1062,7 @@ def _operation_replay_code(
             source_name=context_name,
             reserved_names=reserved_names,
         )
-    except (AttributeError, NotImplementedError) as exc:
+    except (AttributeError, NotImplementedError, TypeError, ValueError) as exc:
         raise ReplayGraphError("Operation does not provide replay code") from exc
     if code is None:
         raise ReplayGraphError("Operation does not provide replay code")
@@ -987,10 +1088,16 @@ def _compile_spec(
     external_inputs: Mapping[str, xr.DataArray] | None,
     live_input_resolver: LiveInputResolver | None,
     allow_unresolved_inputs: bool,
+    input_provenance_resolver: InputProvenanceResolver,
 ) -> str:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
+    try:
+        parsed._check_kind_fields()
+    except (TypeError, ValueError) as exc:
+        raise ReplayGraphError(str(exc)) from exc
+
     if parsed.kind == "file":
         load_source = parsed.file_load_source
         if load_source is None:
@@ -1034,30 +1141,41 @@ def _compile_spec(
         if parsed.script_inputs:
             for script_input in parsed.script_inputs:
                 live_data: xr.DataArray | None = None
+                live_key = f"live_input:{uuid.uuid4().hex}"
                 if external_inputs is not None and script_input.name in external_inputs:
                     live_data = external_inputs[script_input.name]
                 elif (
                     live_input_resolver is not None
                     and (resolved := live_input_resolver(script_input)) is not None
                 ):
-                    live_data = resolved[0]
+                    live_data, resolved_input = resolved
+                    if resolved_input.node_snapshot_token is not None:
+                        source_spec = resolved_input.parsed_source_spec()
+                        live_key = _canonical_key(
+                            "live_input",
+                            {
+                                "node_uid": resolved_input.node_uid,
+                                "data_role": resolved_input.data_role,
+                                "node_snapshot_token": (
+                                    resolved_input.node_snapshot_token
+                                ),
+                                "source_spec": (
+                                    None
+                                    if source_spec is None
+                                    else source_spec.model_dump(mode="json")
+                                ),
+                            },
+                        )
 
                 if live_data is not None:
                     input_key = graph.add_node(
-                        _canonical_key(
-                            "live_input",
-                            {
-                                "name": script_input.name,
-                                "node_snapshot_token": script_input.node_snapshot_token,
-                                "node_uid": script_input.node_uid,
-                            },
-                        ),
+                        live_key,
                         "live_input",
                         cacheable=False,
                         payload={"data": live_data},
                     )
                 else:
-                    input_spec = script_input.parsed_provenance_spec()
+                    input_spec = input_provenance_resolver(script_input)
                     if input_spec is None:
                         if allow_unresolved_inputs:
                             input_key = graph.add_node(
@@ -1071,6 +1189,10 @@ def _compile_spec(
                             )
                             bindings.append((script_input.name, input_key))
                             continue
+                        if display:
+                            input_key = _add_external_input_node(graph, script_input)
+                            bindings.append((script_input.name, input_key))
+                            continue
                         input_reference = _script_input_reference_text(script_input)
                         raise ReplayGraphError(
                             f"{input_reference} "
@@ -1082,9 +1204,10 @@ def _compile_spec(
                         display=display,
                         trusted_user_code=trusted_user_code,
                         structured_file_replay=structured_file_replay,
-                        external_inputs=external_inputs,
+                        external_inputs=None,
                         live_input_resolver=live_input_resolver,
                         allow_unresolved_inputs=allow_unresolved_inputs,
+                        input_provenance_resolver=input_provenance_resolver,
                     )
                     if display:
                         graph.add_alias(script_input.name, input_key)
@@ -1092,7 +1215,7 @@ def _compile_spec(
         elif external_inputs:
             for name, data in external_inputs.items():
                 input_key = graph.add_node(
-                    _canonical_key("external_input", {"name": name}),
+                    f"live_input:{uuid.uuid4().hex}",
                     "live_input",
                     cacheable=False,
                     payload={"data": data},
@@ -1490,6 +1613,7 @@ def compile_replay_graph(
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
     allow_unresolved_inputs: bool = False,
+    _input_provenance_resolver: InputProvenanceResolver | None = None,
 ) -> ReplayGraph:
     """Compile provenance for code output or structured runtime execution.
 
@@ -1499,7 +1623,22 @@ def compile_replay_graph(
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
-    reserved_names = _reserved_names_from_spec(parsed)
+    resolve_input_provenance = (
+        _memoized_input_provenance_resolver()
+        if _input_provenance_resolver is None
+        else _input_provenance_resolver
+    )
+    resolve_live = (
+        None
+        if live_input_resolver is None
+        else _memoized_by_identity(live_input_resolver)
+    )
+    reserved_names = _reserved_names_from_spec(
+        parsed,
+        resolve_input_provenance,
+        external_input_names=set(external_inputs or ()),
+        live_input_resolver=resolve_live,
+    )
     if external_inputs:
         reserved_names.update(external_inputs)
     graph = ReplayGraph(
@@ -1514,8 +1653,9 @@ def compile_replay_graph(
         trusted_user_code=trusted_user_code,
         structured_file_replay=structured_file_replay,
         external_inputs=external_inputs,
-        live_input_resolver=live_input_resolver,
+        live_input_resolver=resolve_live,
         allow_unresolved_inputs=allow_unresolved_inputs,
+        input_provenance_resolver=resolve_input_provenance,
     )
     return graph
 
@@ -1529,7 +1669,7 @@ def _node_may_contain_image_tool_dimensions(
 
     def visit(node_key: str) -> bool:
         node = node_by_key[node_key]
-        if node.kind in {"script", "live_input", "caller_input"}:
+        if node.kind in {"script", "live_input", "caller_input", "external_input"}:
             return True
         if node.kind in {"file_load", "setup"}:
             return False
@@ -1557,6 +1697,21 @@ def _source_view_emits_code(graph: ReplayGraph, node: ReplayNode) -> bool:
     if graph.display or node.payload["source_kind"] == "full_data":
         return False
     return _node_may_contain_image_tool_dimensions(graph, node.parents[0])
+
+
+def _emitted_node_key(
+    graph: ReplayGraph,
+    node_by_key: Mapping[str, ReplayNode],
+    key: str,
+) -> str:
+    """Return the node that owns the emitted value for ``key``."""
+    node = node_by_key[key]
+    while node.kind == "relay" or (
+        node.kind == "source_view" and not _source_view_emits_code(graph, node)
+    ):
+        key = node.parents[0]
+        node = node_by_key[key]
+    return key
 
 
 def _dotted_import_root_bindings(code: str) -> set[str]:
@@ -1600,13 +1755,7 @@ def _node_names(
     node_by_key = {node.key: node for node in graph.nodes}
 
     def emitted_key(key: str) -> str:
-        node = node_by_key[key]
-        while node.kind == "relay" or (
-            node.kind == "source_view" and not _source_view_emits_code(graph, node)
-        ):
-            key = node.parents[0]
-            node = node_by_key[key]
-        return key
+        return _emitted_node_key(graph, node_by_key, key)
 
     copied_script_bindings = _copied_script_bindings(graph)
     copied_names_by_key: dict[str, set[str]] = {}
@@ -1616,6 +1765,25 @@ def _node_names(
     for node in graph.nodes:
         if node.kind == "caller_input":
             preferred_names[node.key] = typing.cast("str", node.payload["name"])
+    external_names: set[str] = {
+        *_REPLAY_PROTECTED_NAMES,
+        *(
+            typing.cast("str", node.payload["name"])
+            for node in graph.nodes
+            if node.kind == "caller_input"
+        ),
+    }
+    for node in graph.nodes:
+        if node.kind != "external_input":
+            continue
+        base_name = typing.cast("str", node.payload["name"])
+        external_name = base_name
+        suffix = 2
+        while external_name in external_names:
+            external_name = f"{base_name}_{suffix}"
+            suffix += 1
+        preferred_names[node.key] = external_name
+        external_names.add(external_name)
     for public_name, key in graph.aliases:
         emitted_alias_key = emitted_key(key)
         if public_name not in copied_names_by_key.get(emitted_alias_key, set()):
@@ -1714,15 +1882,15 @@ def _node_names(
         ):
             names[node.key] = names[emitted_key(node.key)]
 
-    data_consumer_counts = Counter(
-        emitted_key(node.parents[0])
-        for node in graph.nodes
-        if node.parents
-        and node.kind not in {"setup", "relay"}
-        and not (
-            node.kind == "source_view" and not _source_view_emits_code(graph, node)
-        )
-    )
+    data_consumer_counts: Counter[str] = Counter()
+    for node in graph.nodes:
+        if (
+            not node.parents
+            or node.kind in {"setup", "relay"}
+            or (node.kind == "source_view" and not _source_view_emits_code(graph, node))
+        ):
+            continue
+        data_consumer_counts[emitted_key(node.parents[0])] += 1
     for node in graph.nodes:
         if node.kind != "operation" or not node.parents:
             continue
@@ -2822,6 +2990,44 @@ def _import_binding_targets(code: str) -> dict[str, str] | None:
     return targets
 
 
+def _emission_chunk_names(code: str) -> _CurrentScopeNames:
+    """Return module-scope names with mutation roots treated as stores."""
+    module = ast.parse(code, mode="exec")
+
+    class EmissionScopeNames(_CurrentScopeNames):
+        def _visit_mutation(self, node: ast.Attribute | ast.Subscript) -> None:
+            root = node.value
+            while isinstance(root, ast.Attribute | ast.Subscript):
+                root = root.value
+            if isinstance(node.ctx, ast.Store | ast.Del) and isinstance(root, ast.Name):
+                self.stores.add(root.id)
+            self.generic_visit(node)
+
+        visit_Attribute = _visit_mutation
+        visit_Subscript = _visit_mutation
+
+        def visit_Import(self, node: ast.Import) -> None:
+            self._visit_import(node)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            self._visit_import(node)
+
+        def _visit_import(self, node: ast.Import | ast.ImportFrom) -> None:
+            bindings = _import_binding_targets(ast.unparse(node))
+            if bindings is None:
+                self.stores.add("*")
+                return
+            for name, target in bindings.items():
+                if target not in _REPLAY_CANONICAL_IMPORT_TARGETS.get(name, ()):
+                    self.stores.add(name)
+
+    names = EmissionScopeNames()
+    names.visit(module)
+    for dependencies in _script_function_dependencies(code).values():
+        names.loads.update(dependencies)
+    return names
+
+
 def _code_name_accesses(code: str) -> tuple[set[str], set[str]]:
     """Return conservatively accessed and rebound names in a code chunk."""
     try:
@@ -3128,7 +3334,45 @@ def emit_replay_code(
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
     extension_references = _extension_script_references(graph)
+    protected_graph = any(node.kind == "external_input" for node in graph.nodes)
     copied_script_bindings = _copied_script_bindings(graph)
+    aliases = list(graph.aliases) if include_all_aliases else []
+    if output_name is not None:
+        if graph.output_key is None:
+            raise ReplayGraphError("Replay graph has no output")
+        output_alias = (output_name, graph.output_key)
+        output_node = node_by_key[graph.output_key]
+        omit_mutating_display_alias = (
+            graph.display
+            and output_node.kind == "operation"
+            and bool(
+                getattr(
+                    output_node.payload["operation"],
+                    "statement_mutates_input",
+                    False,
+                )
+            )
+        )
+        if not omit_mutating_display_alias and output_alias not in aliases:
+            aliases = [*aliases, output_alias]
+    remaining_uses: Counter[str] = Counter()
+    for replay_node in graph.nodes:
+        if replay_node.kind in {"operation", "script"} or (
+            replay_node.kind == "source_view"
+            and _source_view_emits_code(graph, replay_node)
+        ):
+            remaining_uses.update(
+                _emitted_node_key(graph, node_by_key, key)
+                for key in replay_node.parents
+            )
+    remaining_uses.update(
+        _emitted_node_key(graph, node_by_key, key) for _name, key in aliases
+    )
+    owned_names = {
+        names[node.key]: node.key
+        for node in graph.nodes
+        if node.kind == "external_input"
+    }
     chunks: list[tuple[str, bool]] = []
     chunk_external_names: list[tuple[str, ...]] = []
     chunk_implicit_imports: list[bool] = []
@@ -3215,13 +3459,58 @@ def emit_replay_code(
     def append_code(
         code: str,
         *,
+        allowed_accesses: Collection[str] | None = None,
         group_imports: bool = False,
         external_names: tuple[str, ...] = (),
         uses_implicit_framework_imports: bool = True,
     ) -> None:
+        if protected_graph:
+            try:
+                scope_names = _emission_chunk_names(code)
+            except SyntaxError as exc:
+                raise ReplayGraphError(
+                    "Generated replay code is not valid Python"
+                ) from exc
+            stores = scope_names.stores
+            if "*" in stores:
+                raise ReplayGraphError(
+                    "Generated multi-input code contains an opaque namespace import"
+                )
+            if collision := sorted(stores & _REPLAY_PROTECTED_NAMES):
+                raise ReplayGraphError(
+                    "Generated multi-input code would overwrite replay global "
+                    f"{collision[0]!r}"
+                )
+            if allowed_accesses is not None:
+                live_names = {
+                    name
+                    for name, owner_key in owned_names.items()
+                    if remaining_uses[owner_key]
+                }
+                if collision := sorted(
+                    scope_names.loads & live_names - set(allowed_accesses)
+                ):
+                    raise ReplayGraphError(
+                        "Generated multi-input code would access unrelated "
+                        f"provenance name {collision[0]!r}"
+                    )
+            for store_name in stores:
+                owner_key = owned_names.get(store_name)
+                if owner_key is None:
+                    continue
+                if remaining_uses[owner_key]:
+                    raise ReplayGraphError(
+                        "Generated multi-input code would overwrite unrelated "
+                        f"provenance name {store_name!r}"
+                    )
+                owned_names.pop(store_name)
         chunks.append((code, graph.display and group_imports))
         chunk_external_names.append(external_names)
         chunk_implicit_imports.append(uses_implicit_framework_imports)
+
+    def consume(keys: Collection[str]) -> None:
+        for key in keys:
+            remaining_uses[_emitted_node_key(graph, node_by_key, key)] -= 1
 
     def extension_binding(node_key: str) -> tuple[str, str]:
         source_path, function_name = extension_references[node_key]
@@ -3283,6 +3572,7 @@ def emit_replay_code(
                 setup_node = node_by_key[setup_key]
                 append_code(
                     typing.cast("str", setup_node.payload["code"]),
+                    allowed_accesses=(),
                     group_imports=True,
                 )
                 active_setup_key = setup_key
@@ -3292,8 +3582,8 @@ def emit_replay_code(
                 raise ReplayGraphError("File replay code is not valid Python") from exc
             if not _code_stores_name(code, name):
                 raise ReplayGraphError("File replay code does not assign its output")
-            append_code(code, group_imports=True)
-        elif node.kind == "caller_input":
+            append_code(code, allowed_accesses=(), group_imports=True)
+        elif node.kind in {"caller_input", "external_input"}:
             continue
         elif node.kind == "live_input":
             raise ReplayGraphError("Live inputs cannot be emitted as replay code")
@@ -3303,6 +3593,7 @@ def emit_replay_code(
             if dynamic_restore_name is None:
                 raise ReplayGraphError("Public source view has no restore support")
             parent_name = names[node.parents[0]]
+            consume(node.parents)
             append_code(
                 f"{name} = {dynamic_restore_name}({parent_name}.copy(deep=False))"
             )
@@ -3318,18 +3609,25 @@ def emit_replay_code(
                 input_expression = parent_name
                 if getattr(operation, "op", None) == "source_view":
                     input_expression = f"{parent_name}.copy(deep=False)"
-                append_code(f"{name} = {dynamic_restore_name}({input_expression})")
+                consume(node.parents)
+                append_code(
+                    f"{name} = {dynamic_restore_name}({input_expression})",
+                    allowed_accesses=(parent_name,),
+                )
             elif isinstance(operation, ExtensionRoutineOperation):
                 module_name, function_name = extension_binding(node.key)
+                consume(node.parents)
                 append_code(
                     operation._bound_script_statement_code(
                         parent_name,
                         output_name=name,
                         module_name=module_name,
                         function_name=function_name,
-                    )
+                    ),
+                    allowed_accesses=(parent_name,),
                 )
             else:
+                consume(node.parents)
                 append_code(
                     _operation_replay_code(
                         operation,
@@ -3341,7 +3639,8 @@ def emit_replay_code(
                             | reserved_binding_names
                             | set(names.values())
                         ),
-                    )
+                    ),
+                    allowed_accesses=(parent_name, context_name),
                 )
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
@@ -3385,7 +3684,8 @@ def emit_replay_code(
             ):
                 input_names.add(input_name)
                 input_value_name = names[input_key]
-                if (node.key, input_name, input_key) in copied_script_bindings:
+                binding = (node.key, input_name, input_key)
+                if protected_graph or binding in copied_script_bindings:
                     generated_input_name = copied_binding_name(input_name)
                     append_code(
                         f"{generated_input_name} = {input_value_name}.copy(deep=True)"
@@ -3393,7 +3693,6 @@ def emit_replay_code(
                     generated_copy_names.add(generated_input_name)
                     if generated_input_name != input_name:
                         input_replacements[input_name] = generated_input_name
-                    materialized_aliases[input_name] = input_value_name
                     continue
                 if input_name == input_value_name:
                     continue
@@ -3416,6 +3715,7 @@ def emit_replay_code(
                 else:
                     append_code(f"{input_name} = {input_value_name}")
                     materialized_aliases[input_name] = input_value_name
+            consume(node.parents)
             if input_replacements:
                 try:
                     codes = [
@@ -3487,33 +3787,17 @@ def emit_replay_code(
             active_setup_key = None
         else:
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
+        owned_names[name] = node.key
 
-    aliases = list(graph.aliases) if include_all_aliases else []
-    if output_name is not None:
-        if graph.output_key is None:
-            raise ReplayGraphError("Replay graph has no output")
-        output_alias = (output_name, graph.output_key)
-        output_node = node_by_key[graph.output_key]
-        omit_mutating_display_alias = (
-            graph.display
-            and output_node.kind == "operation"
-            and bool(
-                getattr(
-                    output_node.payload["operation"],
-                    "statement_mutates_input",
-                    False,
-                )
-            )
-        )
-        if not omit_mutating_display_alias:
-            aliases = [*aliases, output_alias]
     for public_name, key in aliases:
         planned_name = names[key]
+        consume((key,))
         if (
             public_name != planned_name
             and materialized_aliases.get(public_name) != planned_name
         ):
             append_code(f"{public_name} = {planned_name}")
+            owned_names[public_name] = _emitted_node_key(graph, node_by_key, key)
     module_docstring: str | None = None
     future_prologues: list[str] = []
     for index, (chunk, group_imports) in enumerate(chunks):
@@ -3664,29 +3948,40 @@ def emit_replay_code(
 
 
 def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) -> str:
+    resolve_input_provenance = _memoized_input_provenance_resolver()
     reserved_names: set[str] = set()
     for script_input in script_inputs:
         reserved_names.add(script_input.name)
         reserved_names.update(
-            _reserved_names_from_spec(script_input.parsed_provenance_spec())
+            _reserved_names_from_spec(
+                resolve_input_provenance(script_input),
+                resolve_input_provenance,
+            )
         )
     graph = ReplayGraph(reserved_names=reserved_names, display=display)
     for script_input in script_inputs:
-        input_spec = script_input.parsed_provenance_spec()
+        input_spec = resolve_input_provenance(script_input)
         if input_spec is None:
-            raise ReplayGraphError(
-                f"{_script_input_reference_text(script_input)} "
-                "does not contain recorded source provenance"
+            if not display:
+                raise ReplayGraphError(
+                    f"{_script_input_reference_text(script_input)} "
+                    "does not contain recorded source provenance"
+                )
+            input_key = _add_external_input_node(
+                graph,
+                script_input,
             )
-        input_key = _compile_spec(
-            graph,
-            input_spec,
-            display=display,
-            trusted_user_code=False,
-            structured_file_replay=False,
-            external_inputs=None,
-            live_input_resolver=None,
-            allow_unresolved_inputs=False,
-        )
+        else:
+            input_key = _compile_spec(
+                graph,
+                input_spec,
+                display=display,
+                trusted_user_code=False,
+                structured_file_replay=False,
+                external_inputs=None,
+                live_input_resolver=None,
+                allow_unresolved_inputs=False,
+                input_provenance_resolver=resolve_input_provenance,
+            )
         graph.add_alias(script_input.name, input_key)
     return emit_replay_code(graph, include_all_aliases=True)

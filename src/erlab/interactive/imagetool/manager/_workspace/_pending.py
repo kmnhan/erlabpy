@@ -27,14 +27,8 @@ from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
-    ToolProvenanceSpec,
     mark_promoted_1d_source,
     parse_tool_provenance_operation,
-    parse_tool_provenance_spec,
-    require_live_source_spec,
-)
-from erlab.interactive.imagetool._provenance._operations import (
-    ImageToolSelectionSourceBinding,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_operation_requires_code_trust,
@@ -54,6 +48,7 @@ if typing.TYPE_CHECKING:
     import h5py
     import xarray as xr
 
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._workspace._controller import (
         _WorkspaceController,
     )
@@ -826,57 +821,6 @@ class _PendingWorkspacePayloads:
                 name = name.decode()
         return "" if name is None else str(name)
 
-    def _workspace_tool_source_metadata(
-        self, attrs: Mapping[str, typing.Any]
-    ) -> tuple[
-        ToolProvenanceSpec | None,
-        ImageToolSelectionSourceBinding | None,
-        bool,
-        _ManagedWindowNode._source_state_type,
-    ]:
-        source_spec = None
-        raw_source_spec = attrs.get(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR)
-        if raw_source_spec is not None:
-            try:
-                source_spec = require_live_source_spec(
-                    parse_tool_provenance_spec(
-                        typing.cast(
-                            "Mapping[str, typing.Any]",
-                            json.loads(raw_source_spec),
-                        )
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved tool source provenance",
-                    exc_info=True,
-                )
-        source_binding = None
-        if (
-            source_spec is None
-            and erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in attrs
-        ):
-            try:
-                source_binding = ImageToolSelectionSourceBinding.model_validate(
-                    typing.cast(
-                        "Mapping[str, typing.Any]",
-                        json.loads(
-                            attrs[erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR]
-                        ),
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Ignoring invalid saved tool source binding",
-                    exc_info=True,
-                )
-        return (
-            source_spec,
-            source_binding,
-            bool(attrs.get(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR)),
-            self._loader._workspace_tool_source_state_from_attrs(attrs),
-        )
-
     def _register_pending_workspace_imagetool(
         self,
         ds: xr.Dataset,
@@ -1113,6 +1057,8 @@ class _PendingWorkspacePayloads:
                         _code_trust_entry_locator=entry_locator,
                     )
                 )
+                tool._set_source_auto_update(node.source_auto_update)
+                tool._set_source_state(node.source_state)
                 if node.parent_uid is None:
                     self._loader._require_workspace_root_tool_is_figure(tool)
                     tool.set_input_provenance_spec(None)
@@ -1704,20 +1650,16 @@ class _PendingWorkspacePayloads:
             )
             self._manager._register_child_node(node)
             self._manager.tree_view.childtool_added(node.uid, parent_target)
-        source_spec, source_binding, auto_update, source_state = (
-            self._workspace_tool_source_metadata(attrs)
-        )
-        node.set_restored_source_binding_metadata(
-            source_spec,
-            source_binding,
-            auto_update=auto_update,
-            state=source_state,
-        )
         node.set_pending_workspace_payload(
             "tool",
             *pending_workspace_tool_payload,
             payload_attrs=attrs,
         )
+        node._source_auto_update = bool(
+            attrs.get(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR)
+        )
+        source_state = self._loader._workspace_tool_source_state_from_attrs(attrs)
+        node._source_state = source_state if node.tool_script_inputs else "fresh"
         self._controller._mark_node_added(node.uid)
         self._loader._record_workspace_loaded_node_target(
             ds, node.uid, loaded_targets_by_uid

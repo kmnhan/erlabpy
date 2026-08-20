@@ -18,8 +18,27 @@ import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
+    ScriptInput,
     file_load,
 )
+
+
+def add_source_childtool(
+    manager: typing.Any,
+    tool: erlab.interactive.utils.ToolWindow,
+    source: int | str,
+    **kwargs: typing.Any,
+) -> str:
+    """Register a test ToolWindow that consumes durable displayed ImageTool data."""
+    tool.set_script_inputs(
+        (ScriptInput(name="data", data_role="displayed"),),
+        primary_input="data",
+    )
+    return manager.add_childtool(
+        tool,
+        script_inputs={"data": source},
+        **kwargs,
+    )
 
 
 class _AddedTimeChildState(pydantic.BaseModel):
@@ -33,6 +52,7 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
     def __init__(self, data: xr.DataArray) -> None:
         super().__init__()
         self._data = data
+        self._last_inputs: dict[str, xr.DataArray] = {}
         self._status = _AddedTimeChildState()
 
     @property
@@ -46,6 +66,21 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
     @tool_status.setter
     def tool_status(self, status: _AddedTimeChildState) -> None:
         self._status = status
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        primary = self.primary_input or "data"
+        self._last_inputs = dict(inputs)
+        self._data = inputs[primary]
+
+    def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+        primary = self.primary_input or "data"
+        items = {imagetool_serialization.SAVED_TOOL_DATA_NAME: self._data}
+        items.update(
+            (name, value)
+            for name, value in self._last_inputs.items()
+            if name != primary
+        )
+        return items
 
 
 class _WorkspaceSweepToolState(pydantic.BaseModel):
@@ -100,8 +135,9 @@ class _WorkspaceSweepChildTool(
     def _primary_output_data(self) -> xr.DataArray:
         return self._data
 
-    def update_data(self, new_data: xr.DataArray) -> None:
-        self._data = new_data
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        primary = self.primary_input or "data"
+        self._data = inputs[primary]
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         return {
@@ -113,6 +149,9 @@ class _WorkspaceSweepChildTool(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
         del ds
+        self._data = data_items[imagetool_serialization.SAVED_TOOL_DATA_NAME].rename(
+            self._data.name
+        )
         self._extra_data = data_items["auxiliary"]
 
 

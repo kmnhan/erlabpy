@@ -525,18 +525,20 @@ class _ConcatDialog(QtWidgets.QDialog):
                 result_data = xr.concat(to_concat, **concat_kwargs)
                 replacement_target = self.replacement_target()
                 if replacement_target is None:
-                    created_index = manager._show_multi_input_script_result(
-                        result_data,
-                        selected,
-                        operation_label="Concatenate selected ImageTools",
-                        operation_code=operation_code,
-                        data_role="source",
+                    created_index = (
+                        manager._lineage_controller._show_multi_input_script_result(
+                            result_data,
+                            selected,
+                            operation_label="Concatenate selected ImageTools",
+                            operation_code=operation_code,
+                            data_role="source",
+                        )
                     )
                 else:
                     replacement_node = manager._node_for_target(replacement_target)
                     replacement_node.replace_with_detached_data(
                         result_data,
-                        manager._multi_input_script_provenance(
+                        manager._lineage_controller._multi_input_script_provenance(
                             selected,
                             operation_label="Concatenate selected ImageTools",
                             operation_code=operation_code,

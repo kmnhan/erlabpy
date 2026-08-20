@@ -39,11 +39,7 @@ from erlab.interactive._fit1d import (
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
-    compose_full_provenance,
-    direct_replay_input_name,
-    replay_input_name,
     script,
-    to_replay_provenance_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
@@ -635,7 +631,12 @@ class Fit2DTool(Fit1DTool):
         return data
 
     def _rebuild_ui_for_full_data(
-        self, data: xr.DataArray, params: lmfit.Parameters | None
+        self,
+        data: xr.DataArray,
+        params: lmfit.Parameters | None,
+        *,
+        uncertainty: xr.DataArray | None,
+        direct_weights: xr.DataArray | None,
     ) -> None:
         self._invalidate_fit_result_payload()
         old_cw = self.centralWidget()
@@ -643,8 +644,6 @@ class Fit2DTool(Fit1DTool):
             old_cw.setParent(None)
             old_cw.deleteLater()
 
-        uncertainty = self._uncertainty_full
-        direct_weights = self._direct_weights_full
         self._init_full_data_state(
             data,
             uncertainty=uncertainty if direct_weights is None else None,
@@ -1317,7 +1316,12 @@ class Fit2DTool(Fit1DTool):
         restored_data = self._data_with_saved_dims(self._data_full, state2d)
         if restored_data.dims != self._data_full.dims:
             with self._history_suppressed():
-                self._rebuild_ui_for_full_data(restored_data, self._params.copy())
+                self._rebuild_ui_for_full_data(
+                    restored_data,
+                    self._params.copy(),
+                    uncertainty=self._uncertainty_full,
+                    direct_weights=self._direct_weights_full,
+                )
 
         if state2d is not None:  # pragma: no branch
             y_size = int(self._data_full.sizes[self._y_dim_name])
@@ -2640,42 +2644,62 @@ class Fit2DTool(Fit1DTool):
         super()._mark_fit_fresh(emit_info=emit_info)
         self._update_full_fit_saveable()
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if data.ndim != 2:
             raise ValueError("`data` must be a 2D DataArray")
-        if self._direct_weights_full is not None:
+        validated = {"data": data}
+        if "uncertainty" in inputs:
+            uncertainty = _validate_uncertainty_input(data, inputs["uncertainty"])
+            if uncertainty is not None:
+                validated["uncertainty"] = uncertainty
+        elif self._direct_weights_full is not None:
             _validate_weights_input(data, self._direct_weights_full)
         else:
             _validate_uncertainty_input(data, self._uncertainty_full)
-        return data
+        return validated
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
         had_fit = self._last_result_ds is not None
         status = self._saved_tool_status()
         old_geom = self.saveGeometry()
+        data = self._data_with_saved_dims(inputs["data"], status.state2d)
+        explicit_uncertainty = inputs.get("uncertainty")
+        direct_weights = (
+            None if explicit_uncertainty is not None else self._direct_weights_full
+        )
+        self._rebuild_ui_for_full_data(
+            data,
+            self._params.copy(),
+            uncertainty=(
+                explicit_uncertainty
+                if explicit_uncertainty is not None
+                else self._uncertainty_full
+                if direct_weights is None
+                else None
+            ),
+            direct_weights=direct_weights,
+        )
+        with self._history_suppressed():
+            self.tool_status = status
+        self._refresh_main_image()
+        self._refresh_contents_from_index()
+        self._update_param_plot()
+        self._write_history = True
+        self._reset_history_stack()
+        self._mark_fit_stale()
+        self.restoreGeometry(old_geom)
+        self._notify_data_changed()
 
-        def _apply_update(validated: xr.DataArray) -> bool:
-            validated = self._data_with_saved_dims(validated, status.state2d)
-            self._rebuild_ui_for_full_data(validated, self._params.copy())
-            with self._history_suppressed():
-                self.tool_status = status
-            self._refresh_main_image()
-            self._refresh_contents_from_index()
-            self._update_param_plot()
-            self._write_history = True
-            self._reset_history_stack()
-            self._mark_fit_stale()
-            self.restoreGeometry(old_geom)
-            self._notify_data_changed()
-
-            if had_fit and self.refit_on_source_update_check.isChecked():
-                self._source_refresh_deferred = self.has_source_binding
-                self._run_fit()
-                return False
-            return True
-
-        return self._perform_source_update(new_data, apply_update=_apply_update)
+        if had_fit and self.refit_on_source_update_check.isChecked():
+            if not self._run_fit():
+                return True
+            if self._source_refreshing:
+                self._defer_source_refresh()
+            return False
+        return True
 
     def _update_full_fit_saveable(self) -> None:
         can_save: bool = self._fit_is_current and not any(
@@ -3138,11 +3162,11 @@ class Fit2DTool(Fit1DTool):
     def _full_fit_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         data_name, model_name, _ = self._make_model_code(
-            input_name or self._data_name_full
+            primary_input or self._data_name_full
         )
         input_data_name = data_name
         data_name = self._full_copy_fit_data_name(input_data_name)
@@ -3169,19 +3193,19 @@ class Fit2DTool(Fit1DTool):
     def _checked_full_copy_prelude(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str | None:
-        prelude = self._build_full_copy_prelude(input_name=input_name, warn=True)
+        prelude = self._build_full_copy_prelude(input_name=primary_input, warn=True)
         return prelude or None
 
     def _detached_full_copy_prelude(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str | None:
-        prelude = self._build_full_copy_prelude(input_name=input_name, warn=False)
+        prelude = self._build_full_copy_prelude(input_name=primary_input, warn=False)
         return prelude or None
 
     def current_provenance_spec(
@@ -3199,10 +3223,7 @@ class Fit2DTool(Fit1DTool):
     @QtCore.Slot()
     def copy_code(self) -> str:
         return self._copy_provenance_code(
-            self._resolve_script_provenance(
-                self.COPY_PROVENANCE,
-                include_parent_provenance=False,
-            )
+            self._resolve_script_provenance(self.COPY_PROVENANCE)
         )
 
     @QtCore.Slot()
@@ -3212,10 +3233,7 @@ class Fit2DTool(Fit1DTool):
     @QtCore.Slot()
     def copy_code_1d(self) -> str:
         return self._copy_provenance_code(
-            self._resolve_script_provenance(
-                Fit1DTool.COPY_PROVENANCE,
-                include_parent_provenance=False,
-            )
+            self._resolve_script_provenance(Fit1DTool.COPY_PROVENANCE)
         )
 
     def detached_output_imagetool_provenance(
@@ -3328,7 +3346,7 @@ class Fit2DTool(Fit1DTool):
             warn=False,
             input_name=input_name,
         )
-        fit_expression = self._full_fit_expression(input_name=input_name)
+        fit_expression = self._full_fit_expression(primary_input=input_name)
         if not prelude or not fit_expression:
             return None
         if "lmfit." in prelude:
@@ -3357,7 +3375,8 @@ class Fit2DTool(Fit1DTool):
         data: xr.DataArray,
     ) -> ToolProvenanceSpec | None:
         del data
-        input_provenance = self._effective_input_provenance_spec()
+        input_name = self.primary_input or self._data_name_full
+        seed_code = f"derived = {input_name}"
         model_fit = self._parameter_model_fit_operation(param_name, stderr=stderr)
         assign = "parameter_stderr" if stderr else "parameter_values"
         if model_fit is not None:
@@ -3375,42 +3394,28 @@ class Fit2DTool(Fit1DTool):
                     model_fit,
                 )
             )
-            local_spec = script(
+            return script(
                 *operations,
                 start_label="Start from current fit-tool input data",
-                seed_code=(
-                    "derived = data"
-                    if input_provenance is not None
-                    else f"derived = {self._data_name_full}"
-                ),
+                seed_code=seed_code,
                 active_name=assign,
+                script_inputs=self.script_inputs,
             )
-            return compose_full_provenance(input_provenance, local_spec)
 
-        input_name = replay_input_name(input_provenance) or self._data_name_full
         fallback = self._parameter_output_script_operation(
             param_name,
             stderr=stderr,
-            input_name=input_name,
+            input_name="derived",
         )
         if fallback is None:
             return None
-        local_spec = script(
+        return script(
             fallback,
             start_label="Start from current fit-tool input data",
+            seed_code=seed_code,
             active_name=assign,
+            script_inputs=self.script_inputs,
         )
-        if (
-            input_provenance is not None
-            and direct_replay_input_name(input_provenance) is not None
-        ):
-            replay_spec = to_replay_provenance_spec(local_spec)
-            if replay_spec is None:
-                raise RuntimeError("Could not convert local provenance to replay spec.")
-            return replay_spec.model_copy(
-                update={"start_label": typing.cast("str", input_provenance.start_label)}
-            )
-        return compose_full_provenance(input_provenance, local_spec)
 
     def _parameter_values_output_data(self) -> xr.DataArray | None:
         current = self._current_param_output(stderr=False)

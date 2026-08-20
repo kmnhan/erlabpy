@@ -15,7 +15,7 @@ import erlab
 import erlab.extensions._api as extension_api
 from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
 from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._provenance import _graph
+from erlab.interactive.imagetool._provenance import _execution, _graph
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name,
@@ -24,11 +24,12 @@ from erlab.interactive.imagetool._provenance._code import (
     _replace_code_identifiers,
 )
 from erlab.interactive.imagetool._provenance._execution import (
-    _script_provenance_validates,
     execute_replay_graph,
+    rebuild_script_inputs,
     rebuild_script_provenance,
     replay_script_provenance,
     script_provenance_replayable,
+    script_provenance_requires_trust,
 )
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
@@ -88,6 +89,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SelOperation,
     SortCoordOrderOperation,
     SqueezeOperation,
+    TransposeOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import (
     provenance_replay_graph_code_trust_entries,
@@ -528,26 +530,20 @@ class Child(Base, metaclass=data_5):
         external_input_spec,
         external_input_names={"data"},
     )
-    assert not _script_provenance_validates(
+    assert not script_provenance_requires_trust(
         script(
             start_label="Run script",
             seed_code="derived =",
             active_name="derived",
         ),
-        strict_replay_code=False,
     )
-    assert not _script_provenance_validates(
+    assert not script_provenance_requires_trust(
         script(
             ScriptCodeOperation(label="Broken", code="derived ="),
             start_label="Run script",
             seed_code="derived = 0",
             active_name="derived",
         ),
-        strict_replay_code=False,
-    )
-    assert not _script_provenance_validates(
-        None,
-        strict_replay_code=True,
     )
     assert _single_assignment_output_name("derived: xr.DataArray = data") == "derived"
     assert _single_assignment_output_name("derived =") is None
@@ -938,6 +934,499 @@ def test_script_input_parsing_does_not_affect_model_equality() -> None:
     assert without_provenance.parsed_provenance_spec() is None
 
 
+def test_rebuild_script_inputs_controls_recorded_fallback(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    path = tmp_path / "recorded-input.nc"
+    data.to_netcdf(path)
+    source_spec = selection(TransposeOperation(dims=("y", "x")))
+    fallback = compose_full_provenance(_file_spec(path), source_spec)
+    assert fallback is not None
+    script_input = ScriptInput(
+        name="data",
+        label="Closed input",
+        node_uid="missing-node",
+        source_spec=source_spec,
+        provenance_spec=fallback,
+    )
+    expected = source_spec.apply(data)
+
+    with pytest.raises(ReplayGraphError, match="not available in this Manager"):
+        rebuild_script_inputs(
+            (script_input,),
+            live_input_resolver=lambda _input: None,
+            allow_recorded=False,
+        )
+
+    resolved, refreshed = rebuild_script_inputs(
+        (script_input,),
+        live_input_resolver=lambda _input: None,
+        recorded_input_authorizer=lambda *_args: pytest.fail(
+            "file fallback must not request script authorization"
+        ),
+        allow_recorded=True,
+    )
+
+    xr.testing.assert_identical(resolved["data"], expected)
+    assert refreshed[0].node_uid is None
+
+    fallback_spec = script(
+        start_label="Copy transformed input",
+        seed_code="derived = data",
+        active_name="derived",
+        script_inputs=(script_input,),
+    )
+    xr.testing.assert_identical(
+        execute_replay_graph(compile_replay_graph(fallback_spec)),
+        expected,
+    )
+    code = emit_replay_code(
+        compile_replay_graph(fallback_spec, display=True),
+        output_name="derived",
+    )
+    xr.testing.assert_identical(_exec_generated_code(code)["derived"], expected)
+
+    external_spec = fallback_spec.model_copy(
+        update={
+            "script_inputs": (
+                script_input.model_copy(update={"provenance_spec": None}),
+            )
+        }
+    )
+    external_code = emit_replay_code(
+        compile_replay_graph(external_spec, display=True),
+        output_name="derived",
+    )
+    xr.testing.assert_identical(
+        _exec_generated_code(external_code, {"data": data})["derived"],
+        expected,
+    )
+
+    resolved, refreshed = rebuild_script_inputs(
+        (script_input,),
+        live_input_resolver=lambda item: (expected, item),
+        recorded_input_authorizer=lambda *_args: pytest.fail(
+            "live input must not authorize recorded provenance"
+        ),
+    )
+    xr.testing.assert_identical(resolved["data"], expected)
+    assert refreshed == (script_input,)
+
+    with pytest.raises(ReplayGraphError, match="Duplicate named provenance input"):
+        rebuild_script_inputs(
+            (script_input, script_input),
+            live_input_resolver=lambda _item: pytest.fail(
+                "duplicate names must fail before resolution"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("left_uid", "left_role", "right_uid", "right_role"),
+    [
+        ("shared-node", "source", "shared-node", "displayed"),
+        ("left-node", "displayed", "right-node", "displayed"),
+    ],
+    ids=("data-role", "node-uid"),
+)
+def test_rebuild_script_provenance_cache_separates_live_inputs(
+    left_uid,
+    left_role,
+    right_uid,
+    right_role,
+) -> None:
+    source = xr.DataArray([[1.0, 3.0], [5.0, 7.0]], dims=("x", "y"))
+    displayed = xr.DataArray([[10.0, 30.0], [50.0, 70.0]], dims=("x", "y"))
+    data_by_ref = {
+        (left_uid, left_role): source,
+        (right_uid, right_role): displayed,
+    }
+
+    def nested(node_uid, data_role):
+        return script(
+            AverageOperation(dims=("x",)),
+            start_label="Average input",
+            active_name="data_0",
+            script_inputs=(
+                ScriptInput(
+                    name="data_0",
+                    label=data_role,
+                    node_uid=node_uid,
+                    node_snapshot_token=f"{left_uid}:{right_uid}:snapshot",
+                    data_role=data_role,
+                ),
+            ),
+        )
+
+    spec = script(
+        ScriptCodeOperation(label="Add", code="derived = left + right"),
+        start_label="Add inputs",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="left",
+                label="Source data",
+                provenance_spec=nested(left_uid, left_role),
+            ),
+            ScriptInput(
+                name="right",
+                label="Displayed data",
+                provenance_spec=nested(right_uid, right_role),
+            ),
+        ),
+    )
+
+    def resolve_live(script_input):
+        data = data_by_ref.get((script_input.node_uid, script_input.data_role))
+        return None if data is None else (data, script_input)
+
+    result, _ = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    xr.testing.assert_identical(result, source.mean("x") + displayed.mean("x"))
+
+
+def test_rebuild_cache_separates_live_input_source_transforms() -> None:
+    source = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    snapshot_token = f"snapshot-{id(source)}"
+
+    def nested(start: int) -> ToolProvenanceSpec:
+        source_spec = selection(IselOperation(kwargs={"x": slice(start, start + 2)}))
+        return script(
+            AverageOperation(dims=("y",)),
+            start_label="Average selected input",
+            active_name="data",
+            script_inputs=(
+                ScriptInput(
+                    name="data",
+                    node_uid="shared-node",
+                    node_snapshot_token=snapshot_token,
+                    source_spec=source_spec,
+                ),
+            ),
+        )
+
+    spec = script(
+        ScriptCodeOperation(
+            label="Stack selected inputs",
+            code="result = xr.concat([left, right], dim='branch')",
+        ),
+        start_label="Stack selected inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left", provenance_spec=nested(0)),
+            ScriptInput(name="right", provenance_spec=nested(1)),
+        ),
+    )
+
+    def resolve_live(script_input: ScriptInput):
+        if script_input.node_uid != "shared-node":
+            return None
+        source_spec = script_input.parsed_source_spec()
+        if source_spec is None:
+            return source, script_input
+        return source_spec.apply(source), script_input
+
+    result, _ = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    expected = xr.concat(
+        [
+            source.isel(x=slice(0, 2)).mean("y"),
+            source.isel(x=slice(1, 3)).mean("y"),
+        ],
+        dim="branch",
+    )
+    xr.testing.assert_identical(result, expected)
+
+
+def test_replay_cache_uses_resolved_live_input_snapshot() -> None:
+    source = xr.DataArray([[1.0, 3.0], [5.0, 7.0]], dims=("x", "y"))
+    displayed = xr.DataArray([[10.0, 30.0], [50.0, 70.0]], dims=("x", "y"))
+    live_input = ScriptInput(
+        name="data_0",
+        label="Live input",
+        node_uid="shared-node",
+    )
+    spec = script(
+        AverageOperation(dims=("x",)),
+        start_label="Average input",
+        active_name="data_0",
+        script_inputs=(live_input,),
+    )
+    replay_cache: dict[str, xr.DataArray] = {}
+
+    def execute_with(data):
+        resolved_input = live_input.model_copy(
+            update={"node_snapshot_token": str(id(data))}
+        )
+        graph = compile_replay_graph(
+            spec,
+            live_input_resolver=lambda _item: (data, resolved_input),
+        )
+        return execute_replay_graph(graph, cache=replay_cache)
+
+    xr.testing.assert_identical(execute_with(source), source.mean("x"))
+    xr.testing.assert_identical(execute_with(displayed), displayed.mean("x"))
+
+
+def test_replay_cache_separates_anonymous_external_inputs() -> None:
+    source = xr.DataArray([[1.0, 3.0], [5.0, 7.0]], dims=("x", "y"))
+    displayed = xr.DataArray([[10.0, 30.0], [50.0, 70.0]], dims=("x", "y"))
+    replay_cache: dict[str, xr.DataArray] = {}
+
+    for script_inputs in ((), (ScriptInput(name="data"),)):
+        spec = script(
+            AverageOperation(dims=("x",)),
+            start_label="Average input",
+            seed_code="result = data",
+            active_name="result",
+            script_inputs=script_inputs,
+        )
+        for data in (source, displayed):
+            graph = compile_replay_graph(spec, external_inputs={"data": data})
+            xr.testing.assert_identical(
+                execute_replay_graph(graph, cache=replay_cache),
+                data.mean("x"),
+            )
+
+
+def test_display_graph_uses_external_placeholders_for_unrecorded_inputs() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    weights = xr.DataArray([3.0, 4.0], dims="x")
+    spec = script(
+        ScriptCodeOperation(
+            label="Apply weights",
+            code="result = data * weights",
+        ),
+        start_label="Use external inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                label="ImageTool 0",
+                node_uid="data-node",
+            ),
+            ScriptInput(
+                name="weights",
+                label="ImageTool 1",
+                node_uid="weights-node",
+            ),
+        ),
+    )
+
+    with pytest.raises(ReplayGraphError, match="recorded source provenance"):
+        compile_replay_graph(spec)
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(
+        code,
+        {
+            "data": data.copy(deep=True),
+            "weights": weights.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(namespace["result"], data * weights)
+
+
+def test_display_graph_reuses_placeholder_for_same_live_input() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    snapshot_token = f"snapshot-{id(data)}"
+    shared_input = {
+        "label": "ImageTool 0",
+        "node_uid": "shared-node",
+        "node_snapshot_token": snapshot_token,
+    }
+    spec = script(
+        ScriptCodeOperation(
+            label="Add shared input",
+            code="result = left + right",
+        ),
+        start_label="Use one external input twice",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left", **shared_input),
+            ScriptInput(name="right", **shared_input),
+        ),
+    )
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"left": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["result"], data + data)
+
+
+def test_display_graph_rejects_reserved_external_input_name() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        start_label="Copy external input",
+        seed_code="result = xr",
+        active_name="result",
+        script_inputs=(ScriptInput(name="xr"),),
+    )
+
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"xr": data}),
+        data,
+    )
+    with pytest.raises(ReplayGraphError, match="conflicts with a replay global"):
+        compile_replay_graph(spec, display=True)
+    assert spec.display_code() is None
+
+
+def test_display_graph_does_not_mutate_external_input() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    original = data.copy(deep=True)
+    spec = script(
+        ScriptCodeOperation(
+            label="Increment input",
+            code="data[:] = data + 1.0\nresult = data",
+        ),
+        start_label="Use external input",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data"),),
+    )
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"data": data})
+
+    xr.testing.assert_identical(namespace["result"], original + 1.0)
+    xr.testing.assert_identical(data, original)
+
+
+def test_rebuild_cache_separates_detached_recorded_inputs(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = xr.DataArray([[1.0, 3.0], [5.0, 7.0]], dims=("x", "y"))
+    displayed = xr.DataArray([[10.0, 30.0], [50.0, 70.0]], dims=("x", "y"))
+    source_path = tmp_path / "source.nc"
+    displayed_path = tmp_path / "displayed.nc"
+    source.to_netcdf(source_path)
+    displayed.to_netcdf(displayed_path)
+
+    def nested(path):
+        return script(
+            AverageOperation(dims=("x",)),
+            start_label="Average input",
+            active_name="data_0",
+            script_inputs=(
+                ScriptInput(
+                    name="data_0",
+                    label="Recorded input",
+                    provenance_spec=_file_spec(path),
+                ),
+            ),
+        )
+
+    replay_cache: dict[str, xr.DataArray] = {}
+    source_result, _ = rebuild_script_provenance(
+        nested(source_path),
+        live_input_resolver=lambda item: (source, item),
+        cache=replay_cache,
+    )
+    displayed_result, _ = rebuild_script_provenance(
+        nested(displayed_path),
+        live_input_resolver=lambda item: (displayed, item),
+        cache=replay_cache,
+    )
+
+    xr.testing.assert_identical(source_result, source.mean("x"))
+    xr.testing.assert_identical(displayed_result, displayed.mean("x"))
+
+
+def test_rebuild_executes_nested_script_once(monkeypatch) -> None:
+    calls = 0
+
+    def counted_random():
+        nonlocal calls
+        calls += 1
+        return float(calls)
+
+    monkeypatch.setattr(np.random, "random", counted_random)
+    nested = script(
+        ScriptCodeOperation(
+            label="Create data",
+            code=(
+                "derived = xr.DataArray("
+                "[np.random.random(), np.random.random()], dims=('x',))"
+            ),
+        ),
+        start_label="Create input",
+        active_name="derived",
+    )
+    spec = script(
+        ScriptCodeOperation(label="Copy", code="derived = data"),
+        start_label="Copy input",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                label="Nested input",
+                provenance_spec=nested,
+            ),
+        ),
+    )
+
+    result, _ = rebuild_script_provenance(spec, trusted_user_code=True)
+
+    assert calls == 2
+    xr.testing.assert_identical(
+        result,
+        xr.DataArray([1.0, 2.0], dims=("x",)),
+    )
+
+
+def test_rebuild_validates_all_inputs_before_nested_execution(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    calls = 0
+
+    def counted_random():
+        nonlocal calls
+        calls += 1
+        return 1.0
+
+    monkeypatch.setattr(np.random, "random", counted_random)
+    nested = script(
+        ScriptCodeOperation(
+            label="Create data",
+            code=("left = xr.DataArray([np.random.random(), 2.0], dims=('x',))"),
+        ),
+        start_label="Create left input",
+        active_name="left",
+    )
+    path = tmp_path / "source.nc"
+    xr.DataArray([10.0, 20.0], dims="x").to_netcdf(path)
+    invalid_file = _file_spec(path).model_copy(update={"seed_code": "right ="})
+    spec = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left", provenance_spec=nested),
+            ScriptInput(name="right", provenance_spec=invalid_file),
+        ),
+    )
+
+    with pytest.raises(ReplayGraphError, match="not valid Python"):
+        rebuild_script_provenance(spec, trusted_user_code=True)
+
+    assert calls == 0
+
+
 def test_replay_graph_file_script_input_and_rebuild_edges(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1001,7 +1490,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
         active_name="derived",
         script_inputs=(ScriptInput(name="data_0", label="Closed input"),),
     )
-    with pytest.raises(ReplayGraphError, match="not open"):
+    with pytest.raises(ReplayGraphError, match="recorded source"):
         rebuild_script_provenance(missing_spec)
 
     live_calls = 0
@@ -1146,7 +1635,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
         active_name="derived",
         script_inputs=(unsupported_input,),
     )
-    with pytest.raises(ReplayGraphError, match="cannot be replayed"):
+    with pytest.raises(ReplayGraphError, match="non-replayable"):
         rebuild_script_provenance(unsupported_spec)
 
     full_data_spec = script(
@@ -1161,7 +1650,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
             ),
         ),
     )
-    with pytest.raises(ReplayGraphError, match="reloadable"):
+    with pytest.raises(ReplayGraphError, match="not self-contained"):
         rebuild_script_provenance(full_data_spec)
 
 
@@ -4301,6 +4790,511 @@ def test_replay_graph_trusted_user_code_replays_nested_scripts(
 
     assert rebuilt.kind == "script"
     xr.testing.assert_identical(result, (source + 1) * 2)
+
+
+def test_live_inputs_bypass_unreachable_unsafe_fallback() -> None:
+    left = xr.DataArray([1.0, 2.0], dims="x")
+    right = xr.DataArray([10.0, 20.0], dims="x")
+    unsafe_right_spec = script(
+        ScriptCodeOperation(
+            label="Create right input",
+            code="import os\nright = xr.DataArray([100.0, 200.0], dims='x')",
+        ),
+        start_label="Create right input",
+        active_name="right",
+    )
+    spec = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add inputs",
+        seed_code="result = left",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left", label="Left input"),
+            ScriptInput(
+                name="right",
+                label="Right input",
+                provenance_spec=unsafe_right_spec,
+            ),
+        ),
+    )
+    left_input, right_input = spec.script_inputs
+
+    def resolve_live(script_input: ScriptInput):
+        if script_input is left_input:
+            return left, script_input
+        if script_input is right_input:
+            return right, script_input
+        return None
+
+    assert script_provenance_replayable(spec)
+    assert script_provenance_requires_trust(spec)
+    assert script_provenance_replayable(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+    assert not script_provenance_requires_trust(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    result, _rebuilt_spec = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    xr.testing.assert_identical(result, left + right)
+
+
+@pytest.mark.parametrize("right_fallback", [None, full_data()])
+def test_replay_rejects_unresolved_recorded_input(
+    right_fallback: ToolProvenanceSpec | None,
+) -> None:
+    left = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add inputs",
+        seed_code="result = left",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left"),
+            ScriptInput(name="right", provenance_spec=right_fallback),
+        ),
+    )
+
+    assert script_provenance_replayable(
+        spec,
+        external_input_names={"left"},
+    )
+    with pytest.raises(ReplayGraphError):
+        rebuild_script_provenance(
+            spec,
+            live_input_resolver=lambda item: (
+                (left, item) if item.name == "left" else None
+            ),
+        )
+
+
+def test_live_input_resolution_uses_exact_input_across_nested_scopes() -> None:
+    live_shared = xr.DataArray([1.0, 2.0], dims="x")
+    recorded_shared = script(
+        ScriptCodeOperation(
+            label="Create nested input",
+            code=(
+                "import os\n"
+                "shared = xr.DataArray([10.0, 20.0], dims='x') "
+                "+ int(os.path.exists(os.devnull))"
+            ),
+        ),
+        start_label="Create nested input",
+        active_name="shared",
+    )
+    nested_spec = script(
+        ScriptCodeOperation(label="Copy nested input", code="nested = shared"),
+        start_label="Copy nested input",
+        active_name="nested",
+        script_inputs=(
+            ScriptInput(
+                name="shared",
+                label="Nested shared input",
+                provenance_spec=recorded_shared,
+            ),
+        ),
+    )
+    spec = script(
+        ScriptCodeOperation(
+            label="Add inputs",
+            code="derived = shared + nested",
+        ),
+        start_label="Add inputs",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="shared", label="Live shared input"),
+            ScriptInput(
+                name="nested",
+                label="Nested input",
+                provenance_spec=nested_spec,
+            ),
+        ),
+    )
+    outer_shared_input = spec.script_inputs[0]
+
+    def resolve_live(script_input: ScriptInput):
+        if script_input is outer_shared_input:
+            return live_shared, script_input
+        return None
+
+    assert script_provenance_requires_trust(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    result, _rebuilt_spec = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+        trusted_user_code=True,
+    )
+
+    xr.testing.assert_identical(
+        result,
+        live_shared + xr.DataArray([11.0, 21.0], dims="x"),
+    )
+
+
+def test_rebuild_nested_live_inputs_uses_first_resolution() -> None:
+    left = xr.DataArray([1.0, 2.0], dims="x")
+    right = xr.DataArray([10.0, 20.0], dims="x")
+    nested = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add nested inputs",
+        seed_code="result = left",
+        active_name="result",
+        script_inputs=(ScriptInput(name="left"), ScriptInput(name="right")),
+    )
+    spec = script(
+        start_label="Copy nested result",
+        seed_code="result = nested",
+        active_name="result",
+        script_inputs=(ScriptInput(name="nested", provenance_spec=nested),),
+    )
+    calls: dict[str, int] = {}
+
+    def resolve_live(script_input: ScriptInput):
+        calls[script_input.name] = calls.get(script_input.name, 0) + 1
+        if script_input.name == "nested":
+            return None
+        if calls[script_input.name] > 1:
+            return None
+        data = left if script_input.name == "left" else right
+        return data, script_input
+
+    result, _rebuilt = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    xr.testing.assert_identical(result, left + right)
+    assert calls == {"nested": 1, "left": 1, "right": 1}
+
+
+def test_live_input_bypasses_invalid_recorded_fallback() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    live_input = ScriptInput(
+        name="data",
+        node_uid="live-data",
+        provenance_spec={"kind": "invalid"},
+    )
+    spec = script(
+        start_label="Copy live data",
+        seed_code="result = data",
+        active_name="result",
+        script_inputs=(live_input,),
+    )
+
+    def resolve_live(script_input: ScriptInput):
+        return (data, script_input) if script_input is live_input else None
+
+    assert script_provenance_replayable(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+    result, _rebuilt_spec = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+
+    xr.testing.assert_identical(result, data)
+
+
+def test_external_input_bypasses_invalid_recorded_fallback() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        start_label="Copy external data",
+        seed_code="result = data",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data", provenance_spec={"kind": "invalid"}),),
+    )
+
+    assert script_provenance_replayable(
+        spec,
+        external_input_names={"data"},
+    )
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"data": data}),
+        data,
+    )
+
+
+def test_nested_trust_rejection_precedes_any_input_load(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    loaded = xr.DataArray([1.0, 2.0], dims="x")
+    load_calls: list[str] = []
+
+    def load_dataarray(path: str) -> xr.DataArray:
+        load_calls.append(path)
+        return loaded
+
+    monkeypatch.setattr(xr, "load_dataarray", load_dataarray)
+    source_path = tmp_path / "unused.nc"
+    source_path.touch()
+    unsafe_fallback = script(
+        ScriptCodeOperation(
+            label="Use trusted code",
+            code="import os\nblocked = int(os.path.exists(os.devnull))",
+        ),
+        start_label="Run trusted code",
+        active_name="blocked",
+    )
+    nested_fallback = script(
+        start_label="Copy blocked input",
+        seed_code="blocked = child",
+        active_name="blocked",
+        script_inputs=(ScriptInput(name="child", provenance_spec=unsafe_fallback),),
+    )
+
+    with pytest.raises(ReplayGraphError, match="recorded operation"):
+        rebuild_script_inputs(
+            (
+                ScriptInput(
+                    name="loaded",
+                    provenance_spec=_file_spec(source_path),
+                ),
+                ScriptInput(name="blocked", provenance_spec=nested_fallback),
+            )
+        )
+
+    assert load_calls == []
+
+
+def test_invalid_later_fallback_precedes_any_input_load(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    loaded = xr.DataArray([1.0, 2.0], dims="x")
+    load_calls: list[str] = []
+
+    def load_dataarray(path: str) -> xr.DataArray:
+        load_calls.append(path)
+        return loaded
+
+    monkeypatch.setattr(xr, "load_dataarray", load_dataarray)
+    source_path = tmp_path / "unused.nc"
+    source_path.touch()
+    file_spec = _file_spec(source_path)
+    invalid_file = file_spec.model_copy(update={"seed_code": "child ="})
+    invalid_fallback = script(
+        start_label="Copy invalid input",
+        seed_code="result = child",
+        active_name="result",
+        script_inputs=(ScriptInput(name="child", provenance_spec=invalid_file),),
+    )
+
+    with pytest.raises(ReplayGraphError, match="not valid Python"):
+        rebuild_script_inputs(
+            (
+                ScriptInput(name="loaded", provenance_spec=file_spec),
+                ScriptInput(name="invalid", provenance_spec=invalid_fallback),
+            )
+        )
+
+    assert load_calls == []
+
+
+def test_missing_later_callable_precedes_any_file_load(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.nc"
+    source_path.touch()
+    loaded = xr.DataArray([1.0, 2.0], dims="x")
+    load_calls: list[str] = []
+
+    def load_dataarray(path: str) -> xr.DataArray:
+        load_calls.append(path)
+        return loaded
+
+    monkeypatch.setattr(xr, "load_dataarray", load_dataarray)
+    file_spec = _file_spec(source_path)
+    load_source = file_spec.file_load_source
+    assert load_source is not None
+    replay_call = load_source.replay_call
+    assert replay_call is not None
+    missing_callable_spec = file_spec.model_copy(
+        update={
+            "file_load_source": load_source.model_copy(
+                update={
+                    "replay_call": replay_call.model_copy(
+                        update={
+                            "kind": "callable",
+                            "target": "definitely_missing_replay_loader.load",
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ReplayGraphError, match="loader is not available"):
+        rebuild_script_inputs(
+            (
+                ScriptInput(name="first", provenance_spec=file_spec),
+                ScriptInput(name="second", provenance_spec=missing_callable_spec),
+            )
+        )
+
+    assert load_calls == []
+
+
+def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add live inputs",
+        seed_code="result = left",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left", node_uid="left"),
+            ScriptInput(name="right", node_uid="right"),
+        ),
+    )
+    for level in range(21):
+        spec = script(
+            start_label=f"Copy nested input {level}",
+            seed_code="result = child",
+            active_name="result",
+            script_inputs=(ScriptInput(name="child", provenance_spec=spec),),
+        )
+
+    def resolve_live(script_input: ScriptInput):
+        if script_input.node_uid in {"left", "right"}:
+            return data, script_input
+        return None
+
+    assert not script_provenance_replayable(
+        spec,
+        live_input_resolver=resolve_live,
+    )
+    with pytest.raises(ReplayGraphError, match="maximum reload depth"):
+        rebuild_script_provenance(
+            spec,
+            live_input_resolver=resolve_live,
+        )
+
+
+def test_rebuild_preflight_work_scales_linearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    depth = 12
+    spec = script(
+        start_label="Create leaf input",
+        seed_code="result = xr.DataArray([1.0, 2.0], dims='x')",
+        active_name="result",
+    )
+    for level in range(1, depth):
+        spec = script(
+            start_label=f"Copy nested input {level}",
+            seed_code="result = child",
+            active_name="result",
+            script_inputs=(ScriptInput(name="child", provenance_spec=spec),),
+        )
+
+    capability_calls = 0
+    compile_calls = 0
+    analyze = _execution._analyze_replay_capability
+    compile_graph = _execution.compile_replay_graph
+
+    def counted_analyze(*args, **kwargs):
+        nonlocal capability_calls
+        capability_calls += 1
+        return analyze(*args, **kwargs)
+
+    def counted_compile(*args, **kwargs):
+        nonlocal compile_calls
+        compile_calls += 1
+        return compile_graph(*args, **kwargs)
+
+    monkeypatch.setattr(_execution, "_analyze_replay_capability", counted_analyze)
+    monkeypatch.setattr(_execution, "compile_replay_graph", counted_compile)
+
+    result, _rebuilt = rebuild_script_provenance(spec)
+
+    xr.testing.assert_identical(result, xr.DataArray([1.0, 2.0], dims="x"))
+    assert capability_calls <= 2 * depth
+    assert compile_calls <= 2 * depth
+
+
+def test_external_input_name_does_not_leak_into_nested_fallback(
+    tmp_path: pathlib.Path,
+) -> None:
+    outer_left = xr.DataArray([1.0, 2.0], dims="x")
+    inner_left = xr.DataArray([100.0, 200.0], dims="x")
+    inner_left_path = tmp_path / "inner-left.nc"
+    inner_left.to_netcdf(inner_left_path)
+    right_spec = script(
+        ScriptCodeOperation(label="Offset input", code="right = left + 10.0"),
+        start_label="Create right",
+        active_name="right",
+        script_inputs=(
+            ScriptInput(name="left", provenance_spec=_file_spec(inner_left_path)),
+        ),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add inputs",
+        seed_code="result = left",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left"),
+            ScriptInput(name="right", provenance_spec=right_spec),
+        ),
+    )
+    expected = outer_left + inner_left + 10.0
+
+    assert script_provenance_replayable(
+        spec,
+        external_input_names={"left"},
+    )
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"left": outer_left}),
+        expected,
+    )
+    code = typing.cast("str", spec.display_code())
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"left": outer_left})["result"],
+        expected,
+    )
+
+
+def test_display_graph_rejects_nested_store_over_external_input() -> None:
+    left = xr.DataArray([1.0, 2.0], dims="x")
+    right = xr.DataArray([10.0, 20.0], dims="x")
+    right_spec = script(
+        ScriptCodeOperation(
+            label="Create right",
+            code="left = xr.DataArray([10.0, 20.0], dims='x')\nright = left",
+        ),
+        start_label="Create right",
+        active_name="right",
+    )
+    spec = script(
+        ScriptCodeOperation(label="Add inputs", code="result = left + right"),
+        start_label="Add inputs",
+        seed_code="result = left",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left"),
+            ScriptInput(name="right", provenance_spec=right_spec),
+        ),
+    )
+
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"left": left}),
+        left + right,
+    )
+    with pytest.raises(ReplayGraphError, match="provenance name 'left'"):
+        emit_replay_code(compile_replay_graph(spec, display=True))
+    assert spec.display_code() is None
 
 
 @pytest.mark.parametrize(

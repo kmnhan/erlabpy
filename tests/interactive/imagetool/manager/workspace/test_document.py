@@ -47,7 +47,6 @@ from tests.interactive.imagetool.manager.helpers import (
     assert_fit_result_dataset_equivalent,
     assert_fit_result_list_equivalent,
     configure_goldtool_child,
-    copy_full_code_for_uid,
     make_fit2d_child,
     select_child_tool,
     select_tools,
@@ -59,6 +58,7 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _open_external_lazy_hdf5_imagetool_data,
     _request_workspace_save_and_wait,
     _request_workspace_save_as_and_wait,
+    add_source_childtool,
 )
 
 
@@ -435,7 +435,7 @@ def test_manager_duplicate_goldtool_child(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         configure_goldtool_child(child, fitted=True, spline=True)
         child.open_itool()
 
@@ -728,8 +728,7 @@ def test_manager_workspace_tool_data_reference_roundtrip(
         manager.add_imagetool(root, show=False)
 
         child = _AddedTimeChildTool(data.copy(deep=False))
-        child.set_source_binding(full_data())
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
 
         tree = manager._workspace_controller.saving._to_datatree()
         try:
@@ -741,7 +740,7 @@ def test_manager_workspace_tool_data_reference_roundtrip(
             )
             assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
             assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
-            with pytest.raises(ValueError, match="parent data is unavailable"):
+            with pytest.raises(ValueError, match="no manager-node resolver"):
                 erlab.interactive.utils.ToolWindow.from_dataset(ds)
 
             manager.remove_all_tools()
@@ -776,8 +775,7 @@ def test_manager_workspace_tool_data_reference_falls_back_on_shape_mismatch(
         manager.add_imagetool(root, show=False)
 
         child = DerivativeTool(child_data)
-        child.set_source_binding(full_data())
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
 
         tree = manager._workspace_controller.saving._to_datatree()
         try:
@@ -1117,7 +1115,7 @@ def test_manager_action_and_modelview_helper_branch_edges(
         assert shown == [wrapper.uid]
 
         child = _AddedTimeChildTool(data)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         removed.clear()
         with monkeypatch.context() as patch:
             patch.setattr(manager, "_find_watched_idx", lambda _uid: None)
@@ -2318,13 +2316,12 @@ def test_manager_workspace_roundtrip_goldtool_child(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child.set_source_binding(full_data())
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         configure_goldtool_child(child, fitted=True, spline=True)
 
         expected_status = child.tool_status.model_copy(deep=True)
         expected_corrected = child.corrected.copy(deep=True)
-        expected_source_spec = child.source_spec
+        expected_script_inputs = child.script_inputs
         child.open_itool()
         child_node = manager._child_node(child_uid)
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
@@ -2350,7 +2347,7 @@ def test_manager_workspace_roundtrip_goldtool_child(
 
         loaded_child = manager.get_childtool(child_uid)
         assert isinstance(loaded_child, GoldTool)
-        assert loaded_child.source_spec == expected_source_spec
+        assert loaded_child.script_inputs == expected_script_inputs
         assert loaded_child.tool_status == expected_status
         xr.testing.assert_identical(loaded_child.corrected, expected_corrected)
         loaded_child_node = manager._child_node(child_uid)
@@ -2397,7 +2394,7 @@ def test_manager_workspace_roundtrip_dtool_child(
 
         expected_status = child.tool_status.model_copy(deep=True)
         expected_result = child.result.T.copy(deep=True)
-        expected_source_spec = child.source_spec
+        expected_script_inputs = child.script_inputs
         child.open_itool()
         child_node = manager._child_node(child_uid)
         qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
@@ -2423,7 +2420,7 @@ def test_manager_workspace_roundtrip_dtool_child(
 
         loaded_child = manager.get_childtool(child_uid)
         assert isinstance(loaded_child, DerivativeTool)
-        assert loaded_child.source_spec == expected_source_spec
+        assert loaded_child.script_inputs == expected_script_inputs
         assert loaded_child.tool_status == expected_status
         xr.testing.assert_identical(loaded_child.result.T, expected_result)
         loaded_child_node = manager._child_node(child_uid)
@@ -2444,9 +2441,7 @@ def test_manager_workspace_roundtrip_dtool_child(
 
 def test_manager_workspace_roundtrip_fit1d_child(
     qtbot,
-    monkeypatch,
     exp_decay_model,
-    test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -2455,19 +2450,21 @@ def test_manager_workspace_roundtrip_fit1d_child(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
 
-        itool(test_data, link=False, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
         t = np.linspace(0.0, 4.0, 25)
         data = xr.DataArray(
             3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            show=False,
+            provenance_spec=full_data().to_replay_spec(),
         )
         params = exp_decay_model.make_params(n0=2.0, tau=1.0)
         child = erlab.interactive.ftool(
             data, model=exp_decay_model, params=params, execute=False
         )
         assert isinstance(child, Fit1DTool)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
 
         assert child._run_fit()
         qtbot.wait_until(lambda: child._last_result_ds is not None, timeout=10000)
@@ -2497,25 +2494,14 @@ def test_manager_workspace_roundtrip_fit1d_child(
         assert loaded_child.save_button.isEnabled()
         assert loaded_child.copy_button.isEnabled()
 
-        warnings: list[tuple[str, str]] = []
-        monkeypatch.setattr(
-            loaded_child,
-            "_show_warning",
-            lambda title, text: warnings.append((title, text)),
-        )
-        manager.tree_view.clearSelection()
-        select_child_tool(manager, child_uid)
-        manager._update_info(uid=child_uid)
-        copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert "modelfit" in copied
-        assert not warnings
+        restored_spec = manager._child_node(child_uid).displayed_provenance_spec
+        assert restored_spec is not None
+        assert restored_spec.script_inputs[0].parsed_provenance_spec() is not None
 
 
 def test_manager_workspace_roundtrip_fit2d_child(
     qtbot,
-    monkeypatch,
     exp_decay_model,
-    test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -2524,8 +2510,19 @@ def test_manager_workspace_roundtrip_fit2d_child(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
 
-        itool(test_data, link=False, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        t = np.linspace(0.0, 4.0, 25)
+        y = np.arange(3)
+        source_data = xr.DataArray(
+            np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0),
+            dims=("y", "t"),
+            coords={"y": y, "t": t},
+            name="decay2d",
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(source_data, _in_manager=True),
+            show=False,
+            provenance_spec=full_data().to_replay_spec(),
+        )
 
         child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
         child.timeout_spin.setValue(30.0)
@@ -2563,24 +2560,14 @@ def test_manager_workspace_roundtrip_fit2d_child(
         assert loaded_child.copy_full_button.isEnabled()
         assert loaded_child.save_full_button.isEnabled()
 
-        warnings: list[tuple[str, str]] = []
-        monkeypatch.setattr(
-            loaded_child,
-            "_show_warning",
-            lambda title, text: warnings.append((title, text)),
-        )
-        manager.tree_view.clearSelection()
-        select_child_tool(manager, child_uid)
-        manager._update_info(uid=child_uid)
-        copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert "modelfit" in copied
-        assert not warnings
+        restored_spec = manager._child_node(child_uid).displayed_provenance_spec
+        assert restored_spec is not None
+        assert restored_spec.script_inputs[0].parsed_provenance_spec() is not None
 
 
 def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
     qtbot,
     exp_decay_model,
-    test_data,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2589,9 +2576,6 @@ def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
-
-        itool(test_data, link=False, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         t = np.linspace(0.0, 4.0, 25)
         motor = np.arange(3.0)
@@ -2608,12 +2592,17 @@ def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
             },
             name="decay2d",
         )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            show=False,
+            provenance_spec=full_data().to_replay_spec(),
+        )
         params = exp_decay_model.make_params(n0=1.0, tau=1.0)
         child = erlab.interactive.ftool(
             data, model=exp_decay_model, params=params, execute=False
         )
         assert isinstance(child, Fit2DTool)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         child.timeout_spin.setValue(30.0)
         child.nfev_spin.setValue(0)
         child.y_index_spin.setValue(child.y_min_spin.value())

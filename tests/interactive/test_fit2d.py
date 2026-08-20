@@ -30,7 +30,7 @@ from erlab.interactive._figurecomposer import (
 )
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
-from erlab.interactive.imagetool._provenance._model import script
+from erlab.interactive.imagetool._provenance._model import ScriptInput, script
 from erlab.interactive.imagetool._provenance._operations import (
     ModelFitOperation,
     ScriptCodeOperation,
@@ -515,7 +515,7 @@ def test_ftool_2d_fill_and_transpose(qtbot, accept_dialog) -> None:
     assert win._y_dim_name == win._data_full.dims[0]
 
 
-def test_fit2d_update_data_preserves_transpose_orientation(qtbot) -> None:
+def test_fit2d_update_inputs_preserves_transpose_orientation(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -526,7 +526,7 @@ def test_fit2d_update_data_preserves_transpose_orientation(qtbot) -> None:
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
 
     xr.testing.assert_identical(win.tool_data, updated.transpose("x", "y"))
     assert win._y_dim_name == "x"
@@ -708,7 +708,7 @@ def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> N
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) + 1.0
-    win_roundtripped.update_data(updated)
+    win_roundtripped.update_inputs({"data": updated})
     xr.testing.assert_identical(win_roundtripped.tool_data, updated.transpose("x", "y"))
     qtbot.wait_until(
         lambda: win_roundtripped.cbar.spanRegion() == pytest.approx((0.5, 1.0))
@@ -964,6 +964,29 @@ def test_fit2d_weighted_fit_broadcasts_uncertainty(
     assert restored.scale_covar_check.isChecked() is False
 
 
+def test_fit2d_managed_uncertainty_persistence_preserves_dimensions(qtbot) -> None:
+    data = _make_2d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+    win = erlab.interactive.ftool(data, uncertainty=uncertainty, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    bindings = (ScriptInput(name="data"), ScriptInput(name="uncertainty"))
+    win.set_script_inputs(bindings, primary_input="data")
+
+    items = win._persistence_data_items()
+    assert "uncertainty" in items
+    xr.testing.assert_identical(items["uncertainty"], uncertainty)
+    assert items["uncertainty"].dims == data.dims
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+    assert restored.script_inputs == bindings
+    xr.testing.assert_identical(restored.uncertainty, uncertainty)
+    assert restored.uncertainty is not None
+    assert restored.uncertainty.dims == data.dims
+
+
 def test_fit2d_full_provenance_handles_spaced_fit_axis(qtbot) -> None:
     x = np.linspace(-1.0, 1.0, 5)
     motor = np.array([10.0, 11.0, 12.0])
@@ -989,7 +1012,7 @@ def test_fit2d_full_provenance_handles_spaced_fit_axis(qtbot) -> None:
     win.y_max_spin.setValue(len(params_full) - 1)
 
     assert win.current_provenance_spec() is not None
-    prelude = win._detached_full_copy_prelude(input_name="derived_crop")
+    prelude = win._detached_full_copy_prelude(primary_input="derived_crop")
     assert prelude is not None
     assert "fit_data" not in prelude
 
@@ -1041,7 +1064,7 @@ def test_fit2d_file_roundtrip_preserves_spaced_associated_coord(
     )
 
 
-def test_fit2d_update_data_preserves_state_and_refit(
+def test_fit2d_update_inputs_preserves_state_and_refit(
     qtbot, exp_decay_model, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -1066,7 +1089,7 @@ def test_fit2d_update_data_preserves_state_and_refit(
     status = win.tool_status
     new_data = data.copy(deep=True)
     new_data.data = np.asarray(new_data.data) * 1.1
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win.tool_status == status
     xr.testing.assert_identical(win.tool_data, new_data)
@@ -1077,12 +1100,12 @@ def test_fit2d_update_data_preserves_state_and_refit(
     win.refit_on_source_update_check.setChecked(True)
     newer_data = new_data.copy(deep=True)
     newer_data.data = np.asarray(newer_data.data) * 1.05
-    win.update_data(newer_data)
+    win.update_inputs({"data": newer_data})
 
     assert called == [True]
 
 
-def test_fit2d_update_data_resizes_slice_state_and_keeps_param_sync(
+def test_fit2d_update_inputs_resizes_slice_state_and_keeps_param_sync(
     qtbot, exp_decay_model
 ) -> None:
     data = _make_2d_data()
@@ -1099,7 +1122,7 @@ def test_fit2d_update_data_resizes_slice_state_and_keeps_param_sync(
 
     new_data = data.isel(y=slice(0, 2)).copy(deep=True)
     new_data.data = np.asarray(new_data.data) * 1.1
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win._current_idx == 1
     assert len(win._params_full) == 2
@@ -1113,7 +1136,7 @@ def test_fit2d_update_data_resizes_slice_state_and_keeps_param_sync(
     assert win._params_full[win._current_idx]["n0"].value == pytest.approx(3.0)
 
 
-def test_fit2d_update_data_preserves_initial_params_full_for_reset_all(
+def test_fit2d_update_inputs_preserves_initial_params_full_for_reset_all(
     qtbot, exp_decay_model, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -1137,7 +1160,7 @@ def test_fit2d_update_data_preserves_initial_params_full_for_reset_all(
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
 
     assert win._initial_params_full is not None
     assert win._initial_params_full[0]["n0"].value == pytest.approx(1.0)
@@ -1156,7 +1179,7 @@ def test_fit2d_update_data_preserves_initial_params_full_for_reset_all(
     assert win._params_full[1]["n0"].value == pytest.approx(2.0)
 
 
-def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
+def test_fit2d_validate_update_inputs_invalid_input_keeps_existing_ui(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1166,7 +1189,7 @@ def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     bad_data = _make_1d_data()
 
     with pytest.raises(ValueError, match="2D DataArray"):
-        win.update_data(bad_data)
+        win.validate_update_inputs({"data": bad_data})
 
     assert win.centralWidget() is old_central
     assert old_central is not None
@@ -1174,7 +1197,7 @@ def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_fit2d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+def test_fit2d_apply_inputs_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1206,7 +1229,9 @@ def test_fit2d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> Non
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert stuck_thread.cancel_called
     assert stuck_thread.interrupted
     assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
@@ -1226,7 +1251,7 @@ def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
     assert (
         signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
         == initial_receivers
@@ -1239,7 +1264,7 @@ def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None
     )
 
 
-def test_fit2d_update_data_auto_refit_after_waiting_cancelled_thread(
+def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     qtbot, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -1284,7 +1309,9 @@ def test_fit2d_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted
@@ -1884,7 +1911,7 @@ def test_fit2d_open_weighted_saved_fit_dataset(
     )
     assert workspace_restored._fit_is_current
     updated_data = data * 1.01
-    assert workspace_restored.update_data(updated_data)
+    assert workspace_restored.update_inputs({"data": updated_data})
     xr.testing.assert_identical(
         workspace_restored._direct_weights_full,
         weighted_fit_ds.modelfit_weights,
@@ -3312,10 +3339,19 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
         seed_code="derived = watched_data",
         active_name="derived",
     )
-    win.set_input_provenance_spec(direct_input)
+    win.set_script_inputs(
+        (
+            ScriptInput(
+                name="derived",
+                provenance_spec=direct_input.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="derived",
+    )
     direct_spec = win.output_imagetool_provenance(values_output_id, values)
     assert direct_spec is not None
-    assert direct_spec.start_label == "Start from watched data"
+    assert direct_spec.script_inputs == win.script_inputs
+    assert direct_spec.start_label == "Start from current fit-tool input data"
     direct_code = direct_spec.display_code()
     assert direct_code is not None
     assert "watched_data.isel" in direct_code

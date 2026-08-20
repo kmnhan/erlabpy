@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _restore_nonuniform_dims_expression,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_display_provenance,
@@ -1414,6 +1415,22 @@ class ItoolPlotItem(pg.PlotItem):
             operations.append(SqueezeOperation())
         return selection(*operations)
 
+    @staticmethod
+    def _bind_tool_source_input(
+        tool: QtWidgets.QWidget, source_spec: ToolProvenanceSpec
+    ) -> None:
+        if not isinstance(tool, erlab.interactive.utils.ToolWindow):
+            return
+        tool.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    source_spec=source_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
+
     @property
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
@@ -1684,8 +1701,7 @@ class ItoolPlotItem(pg.PlotItem):
                 tool = erlab.interactive.goldtool(
                     data, data_name=self.get_selection_code(), execute=False
                 )
-                if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                    tool.set_source_binding(self.make_tool_source_spec())
+                self._bind_tool_source_input(tool, self.make_tool_source_spec())
                 self.slicer_area.add_tool_window(tool)
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
@@ -1707,8 +1723,7 @@ class ItoolPlotItem(pg.PlotItem):
             tool = erlab.interactive.restool(
                 data, data_name=self.get_selection_code(), execute=False
             )
-            if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                tool.set_source_binding(self.make_tool_source_spec())
+            self._bind_tool_source_input(tool, self.make_tool_source_spec())
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -1719,8 +1734,9 @@ class ItoolPlotItem(pg.PlotItem):
                 data_name=self.get_selection_code(),
                 execute=False,
             )
-            if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                tool.set_source_binding(self.make_tool_source_spec(transpose=True))
+            self._bind_tool_source_input(
+                tool, self.make_tool_source_spec(transpose=True)
+            )
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -1730,8 +1746,7 @@ class ItoolPlotItem(pg.PlotItem):
             data_name=self.get_selection_code(),
             execute=False,
         )
-        if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(self.make_tool_source_spec(squeeze=True))
+        self._bind_tool_source_input(tool, self.make_tool_source_spec(squeeze=True))
         self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()

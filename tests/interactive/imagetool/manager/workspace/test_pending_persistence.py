@@ -20,11 +20,18 @@ import erlab.interactive.imagetool.manager._workspace._pending as workspace_pend
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
-from erlab.interactive.imagetool._provenance._model import FileDataSelection, full_data
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    compose_display_provenance,
+    compose_full_provenance,
+    full_data,
+    parse_script_inputs,
+)
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
     AverageOperation,
     ImageToolSelectionSourceBinding,
+    IselOperation,
 )
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
@@ -51,8 +58,10 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _open_external_lazy_hdf5_imagetool_data,
     _request_workspace_save_and_wait,
     _request_workspace_save_as_and_wait,
+    _workspace_test_file_spec,
     _WorkspaceManagerReferenceFigureTool,
     _WorkspaceSweepFigureTool,
+    add_source_childtool,
 )
 
 
@@ -1182,7 +1191,7 @@ def test_generation_save_copies_pending_tools_without_construction(
 
         child = _AddedTimeChildTool(data.rename("child"))
         child._tool_display_name = "Pending child"
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         child.hide()
 
         figure = _WorkspaceManagerReferenceFigureTool(
@@ -1360,7 +1369,7 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
         manager.add_imagetool(root, show=False)
 
         child = _AddedTimeChildTool(data)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         child.hide()
 
         fname = tmp_path / "missing-hidden-tool-class.itws"
@@ -1398,7 +1407,7 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
         assert isinstance(skipped[0][1], TypeError)
 
 
-def test_pending_toolwindow_source_metadata_decodes_saved_state(
+def test_pending_toolwindow_legacy_binding_is_materialized_by_saved_input_decoder(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1406,6 +1415,13 @@ def test_pending_toolwindow_source_metadata_decodes_saved_state(
 ) -> None:
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(6.0).reshape(2, 3), dims=("x", "y"), name="source"
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root_node = manager._tool_graph.root_wrappers[0]
         binding = ImageToolSelectionSourceBinding(
             selection_mode="isel",
             selection_indexers={"x": 0},
@@ -1420,24 +1436,166 @@ def test_pending_toolwindow_source_metadata_decodes_saved_state(
             erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR: True,
         }
 
-        source_spec, source_binding, auto_update, state = (
-            manager._workspace_controller.loading.pending._workspace_tool_source_metadata(
-                attrs
+        loader = manager._workspace_controller.loading
+        deferred = loader._workspace_tool_dataset_with_canonical_inputs(
+            xr.Dataset(attrs=attrs),
+            parent_target=0,
+        )
+        script_inputs = parse_script_inputs(
+            deferred.attrs[erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR]
+        )
+        assert len(script_inputs) == 1
+        assert script_inputs[0].data_role == "displayed"
+        assert script_inputs[0].node_uid == root_node.uid
+        assert script_inputs[0].node_snapshot_token == root_node.snapshot_token
+        assert script_inputs[0].source_spec is None
+        assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in deferred.attrs
+
+        assert bool(
+            deferred.attrs.get(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR)
+        )
+        assert loader._workspace_tool_source_state_from_attrs(deferred.attrs) == "stale"
+
+        source_parent_data, _resolver = loader._workspace_tool_restore_references(
+            deferred,
+            parent_target=0,
+        )
+        materialized_inputs, primary_input = (
+            erlab.interactive.utils.ToolWindow._saved_script_input_metadata(
+                deferred.attrs,
+                source_parent_data=source_parent_data,
             )
         )
+        assert primary_input == "data"
+        assert materialized_inputs[0].data_role == "displayed"
+        assert materialized_inputs[0].node_uid == root_node.uid
+        assert materialized_inputs[0].node_snapshot_token == root_node.snapshot_token
+        source_spec = materialized_inputs[0].parsed_source_spec()
+        assert source_spec is not None
+        xr.testing.assert_identical(source_spec.apply(data), data.isel(x=0))
 
-        assert source_spec is None
-        assert source_binding == binding
-        assert auto_update is True
-        assert state == "stale"
+        invalid_attrs = dict(deferred.attrs)
+        invalid_attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "not-valid"
+        assert loader._workspace_tool_source_state_from_attrs(invalid_attrs) == "fresh"
 
-        attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "not-valid"
-        *_, state = (
-            manager._workspace_controller.loading.pending._workspace_tool_source_metadata(
-                attrs
-            )
+
+def test_legacy_toolwindow_reload_applies_source_spec_once(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source_path = tmp_path / "legacy-toolwindow-source.nc"
+    data = xr.DataArray(np.arange(5.0), dims="x", name="source")
+    data.to_netcdf(source_path)
+    parent_provenance = _workspace_test_file_spec(source_path)
+    source_spec = full_data(IselOperation(kwargs={"x": slice(1, None)}))
+    resolved = source_spec.apply(data)
+    legacy_input_provenance = compose_display_provenance(
+        parent_provenance,
+        source_spec,
+        parent_data=data,
+    )
+    assert legacy_input_provenance is not None
+
+    legacy_tool = _AddedTimeChildTool(resolved)
+    qtbot.addWidget(legacy_tool)
+    legacy_ds = legacy_tool.to_dataset()
+    legacy_ds.attrs[erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR] = json.dumps(
+        source_spec.model_dump(mode="json")
+    )
+    legacy_ds.attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+        json.dumps(legacy_input_provenance.model_dump(mode="json"))
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            root,
+            show=False,
+            provenance_spec=parent_provenance,
         )
-        assert state == "fresh"
+
+        child_uid = manager._workspace_controller.loading._load_workspace_tool_dataset(
+            legacy_ds,
+            parent_target=0,
+        )
+        assert isinstance(child_uid, str)
+        child = manager._child_node(child_uid)
+        assert child.tool_window is not None
+        script_input = child.tool_window.script_inputs[0]
+        fallback = script_input.parsed_provenance_spec()
+        assert fallback == compose_full_provenance(parent_provenance, source_spec)
+
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_ensure_script_provenance_trusted",
+            lambda *_args, **_kwargs: False,
+        )
+        child.tool_window.set_script_inputs(
+            (script_input.model_copy(update={"node_uid": "removed-parent"}),),
+            primary_input=child.tool_window.primary_input,
+            auto_update=child.tool_window.source_auto_update,
+            state="stale",
+        )
+        assert manager._lineage_controller._refresh_tool_inputs(
+            child_uid,
+            allow_recorded=True,
+        )
+
+        xr.testing.assert_identical(child.tool_window.tool_data, resolved)
+
+
+def test_legacy_toolwindow_input_provenance_binds_live_parent(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(5.0), dims="x", name="source")
+    input_provenance = full_data().to_replay_spec()
+    legacy_tool = _AddedTimeChildTool(data)
+    qtbot.addWidget(legacy_tool)
+    legacy_ds = legacy_tool.to_dataset()
+    legacy_ds.attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+        json.dumps(input_provenance.model_dump(mode="json"))
+    )
+    legacy_ds.attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] = True
+    legacy_ds.attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "fresh"
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root_node = manager._node_for_target(0)
+
+        child_uid = manager._workspace_controller.loading._load_workspace_tool_dataset(
+            legacy_ds,
+            parent_target=0,
+        )
+        child = manager._child_node(child_uid)
+        assert child.tool_window is not None
+        script_input = child.tool_window.script_inputs[0]
+        assert script_input.node_uid == root_node.uid
+        assert script_input.node_snapshot_token == root_node.snapshot_token
+        assert script_input.parsed_provenance_spec() == input_provenance
+
+        updated = data + 10.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            erlab.interactive.imagetool.manager.replace_data(0, updated)
+        qtbot.wait_until(
+            lambda: (
+                child.tool_window is not None
+                and child.tool_window.tool_data.identical(updated)
+            ),
+            timeout=5000,
+        )
+        assert child.tool_window.source_state == "fresh"
 
 
 def test_manager_duplicate_pending_memory_uses_saved_payload(
@@ -1499,8 +1657,8 @@ def test_manager_duplicate_pending_child_tool_uses_saved_payload(
         child_data = (data + 10.0).rename("child")
         child = _AddedTimeChildTool(child_data)
         child.tool_status = child.StateModel(value=7)
-        child_uid = manager.add_childtool(
-            child, 0, show=False, note="pending child note"
+        child_uid = add_source_childtool(
+            manager, child, 0, show=False, note="pending child note"
         )
         child.hide()
 
@@ -1559,7 +1717,7 @@ def test_manager_duplicate_pending_mixed_subtree_is_complete(
         tool_data = (data + 20.0).rename("tool child")
         tool_child = _AddedTimeChildTool(tool_data)
         tool_child.tool_status = tool_child.StateModel(value=9)
-        tool_uid = manager.add_childtool(tool_child, 0, show=False)
+        tool_uid = add_source_childtool(manager, tool_child, 0, show=False)
 
         for window in (root, image_child, tool_child):
             window.hide()
@@ -1805,7 +1963,7 @@ def test_manager_save_as_rebinds_external_lazy_tool_data(
         ).to_netcdf(external_path, engine="h5netcdf", invalid_netcdf=True)
         external = _open_external_lazy_hdf5_imagetool_data(external_path)
         try:
-            loaded_figure.update_data(external + 0.0)
+            loaded_figure.update_inputs({"data": external + 0.0})
             manager._workspace_controller._mark_node_data_dirty(figure_uid)
             monkeypatch.setattr(
                 manager._workspace_controller,

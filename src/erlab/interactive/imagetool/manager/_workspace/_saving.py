@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -404,8 +405,8 @@ class _WorkspaceSaver:
                 if node.display_text:
                     message += f": {node.display_text!r}"
                 message += f" ({node.uid})"
-                unavailable_uids = (
-                    self._pending_workspace_tool_unavailable_reference_uids(node)
+                _, unavailable_uids = self._pending_workspace_tool_reference_status(
+                    node
                 )
                 if unavailable_uids:
                     message += ". Unavailable manager-node references: " + ", ".join(
@@ -418,7 +419,10 @@ class _WorkspaceSaver:
             with tool._save_tool_data_reference_context(
                 self._manager._tool_graph.nodes,
                 reference_validator=(
-                    self._controller._tool_data_reference_matches_current_data
+                    functools.partial(
+                        self._controller._tool_data_reference_matches_current_data,
+                        owner_node=node,
+                    )
                 ),
             ):
                 ds = tool.to_dataset()
@@ -737,7 +741,7 @@ class _WorkspaceSaver:
             if node.is_imagetool:
                 continue
             if node.pending_workspace_tool_payload is not None:
-                if not self._pending_workspace_tool_references_available(node):
+                if not self._pending_workspace_tool_reference_status(node)[0]:
                     rewrite_uids.append(uid)
                 continue
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
@@ -751,19 +755,14 @@ class _WorkspaceSaver:
             references = node._workspace_tool_data_references
             if not references:
                 continue
-            if not self._workspace_tool_references_match_current_snapshots(
-                references.values()
+            if not all(
+                self._controller._tool_data_reference_matches_current_snapshot(
+                    reference
+                )
+                for reference in references.values()
             ):
                 rewrite_uids.append(uid)
         return sorted(rewrite_uids, key=self._workspace_node_path)
-
-    def _workspace_tool_references_match_current_snapshots(
-        self, references: Iterable[Mapping[str, typing.Any]]
-    ) -> bool:
-        return all(
-            self._controller._tool_data_reference_matches_current_snapshot(reference)
-            for reference in references
-        )
 
     def _save_workspace_document(
         self,
@@ -942,21 +941,38 @@ class _WorkspaceSaver:
         else:
             attrs["tool_title"] = node.name
 
-        source_spec = node.source_spec
-        if source_spec is None:
-            attrs.pop(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR, None)
-        else:
-            attrs[erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR] = json.dumps(
-                source_spec.model_dump(mode="json")
+        script_inputs = node.tool_script_inputs
+        references = self._pending_workspace_tool_references(attrs) or {}
+        has_legacy_parent_reference = any(
+            isinstance(reference, dict) and reference.get("kind") == "parent_source"
+            for reference in references.values()
+        )
+        if script_inputs:
+            primary_input = node.tool_primary_input
+            attrs.update(
+                erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+                    script_inputs, primary_input
+                )
             )
-        source_binding = node.source_binding
-        if source_spec is not None or source_binding is None:
-            attrs.pop(erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR, None)
-        else:
-            attrs[erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR] = json.dumps(
-                source_binding.model_dump(mode="json")
+            if not has_legacy_parent_reference:
+                attrs.pop(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR, None)
+            if not any(
+                item.name == primary_input and item.source_spec is None
+                for item in script_inputs
+            ):
+                attrs.pop(erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR, None)
+            attrs.pop(erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR, None)
+        elif erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR not in attrs:
+            attrs.pop(erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR, None)
+        has_saved_inputs = bool(script_inputs) or any(
+            key in attrs
+            for key in (
+                erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR,
+                erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
+                erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR,
             )
-        if node.has_source_binding:
+        )
+        if has_saved_inputs:
             attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = node.source_state
             attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(
                 node.source_auto_update
@@ -1000,88 +1016,68 @@ class _WorkspaceSaver:
             case _:
                 return None
 
-    def _pending_workspace_tool_references_available(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> bool:
-        attrs = node.pending_workspace_payload_attrs
+    @staticmethod
+    def _pending_workspace_tool_references(
+        attrs: Mapping[str, typing.Any] | None,
+    ) -> dict[str, typing.Any] | None:
+        """Decode pending ToolWindow references, or return ``None`` if invalid."""
         if attrs is None:
-            return True
-        payload = attrs.get(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR)
+            return {}
+        payload = workspace_format._decode_workspace_attr_text(
+            attrs.get(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR)
+        )
         if payload is None:
-            return True
-        if isinstance(payload, bytes):
-            with contextlib.suppress(UnicodeDecodeError):
-                payload = payload.decode()
-        if not isinstance(payload, str):
-            return False
+            return (
+                {}
+                if erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in attrs
+                else None
+            )
         try:
             references = json.loads(payload)
-        except Exception:
-            return False
-        if not isinstance(references, dict):
-            return False
-        for reference in references.values():
-            if not isinstance(reference, dict):
-                return False
-            kind = reference.get("kind")
-            if kind == "parent_source":
-                if (
-                    node.parent_uid is None
-                    or node.parent_uid not in self._manager._tool_graph.nodes
-                ):
-                    return False
-                continue
-            if kind != "manager_node":
-                return False
-            if not self._controller._tool_data_reference_matches_current_snapshot(
-                reference
-            ):
-                return False
-        return True
+        except (TypeError, ValueError):
+            return None
+        return references if isinstance(references, dict) else None
 
-    def _pending_workspace_tool_unavailable_reference_uids(
+    def _pending_workspace_tool_reference_status(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> tuple[str, ...]:
-        attrs = node.pending_workspace_payload_attrs
-        if attrs is None:
-            return ()
-        payload = attrs.get(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR)
-        if isinstance(payload, bytes):
-            with contextlib.suppress(UnicodeDecodeError):
-                payload = payload.decode()
-        if not isinstance(payload, str):
-            return ()
-        try:
-            references = json.loads(payload)
-        except Exception:
-            return ()
-        if not isinstance(references, dict):
-            return ()
+    ) -> tuple[bool, tuple[str, ...]]:
+        """Return reference availability and unavailable node UIDs."""
+        references = self._pending_workspace_tool_references(
+            node.pending_workspace_payload_attrs
+        )
+        if references is None:
+            return False, ()
+
+        available = True
         unavailable_uids: set[str] = set()
         for reference in references.values():
             if not isinstance(reference, dict):
+                available = False
                 continue
             kind = reference.get("kind")
             if kind == "parent_source":
                 parent_uid = node.parent_uid
                 if (
-                    isinstance(parent_uid, str)
-                    and parent_uid not in self._manager._tool_graph.nodes
+                    parent_uid is None
+                    or parent_uid not in self._manager._tool_graph.nodes
                 ):
-                    unavailable_uids.add(parent_uid)
+                    available = False
+                    if isinstance(parent_uid, str):
+                        unavailable_uids.add(parent_uid)
                 continue
             if kind != "manager_node":
+                available = False
                 continue
             node_uid = reference.get("node_uid")
-            if (
-                isinstance(node_uid, str)
-                and node_uid
-                and not self._controller._tool_data_reference_matches_current_snapshot(
-                    reference
-                )
+            if not isinstance(node_uid, str) or not node_uid:
+                available = False
+                continue
+            if not self._controller._tool_data_reference_matches_current_snapshot(
+                reference
             ):
+                available = False
                 unavailable_uids.add(node_uid)
-        return tuple(sorted(unavailable_uids))
+        return available, tuple(sorted(unavailable_uids))
 
     def _workspace_save_snapshot(
         self, fname: str | os.PathLike[str]

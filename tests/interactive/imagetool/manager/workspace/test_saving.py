@@ -32,9 +32,10 @@ from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
-from erlab.interactive.imagetool._provenance._model import full_data
+from erlab.interactive.imagetool._provenance._model import ScriptInput, full_data
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
+    IselOperation,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
@@ -64,6 +65,7 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _request_workspace_save_as_and_wait,
     _rich_workspace_attr_value,
     _write_transaction_test_workspace,
+    add_source_childtool,
 )
 
 
@@ -96,7 +98,8 @@ def test_manager_workspace_saves_added_time_for_all_node_kinds(
             show=False,
             created_time=child_added,
         )
-        tool_uid = manager.add_childtool(
+        tool_uid = add_source_childtool(
+            manager,
             _AddedTimeChildTool(test_data),
             root_index,
             show=False,
@@ -156,13 +159,17 @@ def test_manager_workspace_restores_hidden_ktool_angle_scales(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False)
+        manager.add_imagetool(
+            root,
+            show=False,
+            provenance_spec=full_data().to_replay_spec(),
+        )
 
         kspace_tool = KspaceTool(data, data_name="scan", options_model=options_model)
         kspace_tool._angle_scale_spins["alpha"].setValue(1.25)
         kspace_tool._angle_scale_spins["beta"].setValue(0.75)
         expected = kspace_tool._converted_output()
-        tool_uid = manager.add_childtool(kspace_tool, 0, show=False)
+        tool_uid = add_source_childtool(manager, kspace_tool, 0, show=False)
 
         workspace_path = tmp_path / "hidden-ktool-scales.itws"
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
@@ -1805,25 +1812,25 @@ def test_workspace_gc_worker_reports_contention_and_errors() -> None:
     assert "cleanup failed" in results[0][1]
 
 
-def test_pending_workspace_tool_attrs_update_source_metadata() -> None:
+def test_pending_workspace_tool_attrs_update_script_inputs() -> None:
     saver = workspace_saving._WorkspaceSaver.__new__(workspace_saving._WorkspaceSaver)
     pending_base = {
         "tool_display_name": "old",
         "tool_title": "prefix old",
         erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR: "stale",
         erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR: "legacy",
+        erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR: "data",
     }
     saver._pending_workspace_node_attrs = types.MethodType(
         lambda _self, _node, _attrs, *, kind: dict(pending_base),
         saver,
     )
-    model = types.SimpleNamespace(model_dump=lambda **_kwargs: {"value": 1})
+    script_input = ScriptInput(name="data", node_uid="source", source_spec=full_data())
     node = types.SimpleNamespace(
         pending_workspace_payload_attrs={},
         name="new",
-        source_spec=model,
-        source_binding=None,
-        has_source_binding=True,
+        tool_script_inputs=(script_input,),
+        tool_primary_input="data",
         source_state="valid",
         source_auto_update=True,
     )
@@ -1831,22 +1838,42 @@ def test_pending_workspace_tool_attrs_update_source_metadata() -> None:
     attrs = saver._pending_workspace_tool_attrs(node)
 
     assert attrs["tool_title"] == "prefix new"
-    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR in attrs
+    assert json.loads(attrs[erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR]) == [
+        script_input.model_dump(mode="json")
+    ]
+    assert attrs[erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR] == "data"
+    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR not in attrs
     assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR not in attrs
     assert attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] == "valid"
     assert attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] is True
     assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
 
+    pending_base.clear()
+    pending_base.update(
+        {
+            erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR: json.dumps(
+                full_data().model_dump(mode="json")
+            ),
+            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    erlab.interactive.utils._SAVED_TOOL_DATA_NAME: {
+                        "kind": "parent_source"
+                    }
+                }
+            ),
+        }
+    )
+    attrs = saver._pending_workspace_tool_attrs(node)
+    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR in attrs
+
     node.name = "plain"
-    node.source_spec = None
-    node.source_binding = model
-    node.has_source_binding = False
+    node.tool_script_inputs = ()
     pending_base.clear()
     attrs = saver._pending_workspace_tool_attrs(node)
 
     assert attrs["tool_title"] == "plain"
-    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR not in attrs
-    assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in attrs
+    assert erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR not in attrs
+    assert erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR not in attrs
     assert erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR not in attrs
     assert erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR not in attrs
 
@@ -1874,6 +1901,33 @@ def test_workspace_reference_uid_detection_and_invalid_reader_path() -> None:
     )
     saver._close_workspace_idle_readers("workspace.itws")
     assert closed == ["closed"]
+
+
+def test_manager_node_reference_validation_applies_source_spec(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims="x", name="source")
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            show=False,
+        )
+        node = manager._tool_graph.root_wrappers[0]
+        source_spec = full_data(IselOperation(kwargs={"x": slice(1, None)}))
+        reference = {
+            "kind": "manager_node",
+            "node_uid": node.uid,
+            "node_snapshot_token": node.snapshot_token,
+            "source_spec": source_spec.model_dump(mode="json"),
+        }
+
+        controller = manager._workspace_controller
+        assert controller._tool_data_reference_matches_current_data(
+            reference, data.isel(x=slice(1, None))
+        )
+        assert not controller._tool_data_reference_matches_current_data(reference, data)
 
 
 def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
@@ -1987,7 +2041,7 @@ def test_pending_workspace_unavailable_reference_uids(
         parent_uid=parent_uid,
     )
 
-    assert saver._pending_workspace_tool_unavailable_reference_uids(node) == expected
+    assert saver._pending_workspace_tool_reference_status(node)[1] == expected
 
 
 def test_serialize_workspace_node_error_without_optional_metadata() -> None:
@@ -5376,7 +5430,7 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         manager.add_imagetool(root, show=False)
         root_uid = manager._tool_graph.root_wrappers[0].uid
         tool = DerivativeTool(data)
-        tool_uid = manager.add_childtool(tool, 0, show=False)
+        tool_uid = add_source_childtool(manager, tool, 0, show=False)
 
         root.setWindowTitle("stale root title[*]")
         manager._tool_graph.root_wrappers[0].update_title()
@@ -5617,7 +5671,7 @@ def test_manager_workspace_child_save_shortcuts_use_background_save(
         child_save[0].activated.emit()
 
         tool = DerivativeTool(data)
-        manager.add_childtool(tool, 0, show=False)
+        add_source_childtool(manager, tool, 0, show=False)
         tool_save = [
             shortcut
             for shortcut in tool.findChildren(QtWidgets.QShortcut)

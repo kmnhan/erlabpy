@@ -1,7 +1,6 @@
 import contextlib
 import dataclasses
 import datetime
-import json
 import logging
 import pathlib
 import types
@@ -23,6 +22,7 @@ from erlab.interactive.imagetool._load_source import (
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     ToolProvenanceSpec,
     full_data,
 )
@@ -71,19 +71,17 @@ def test_wrapper_provenance_value_remap_requires_valid_specs() -> None:
             provenance, lambda _value: typing.cast("ToolProvenanceSpec", object())
         )
 
-    encoded = json.dumps(provenance.model_dump(mode="json"))
-    assert (
-        _ManagedWindowNode._pending_tool_provenance({"source": encoded}, "source")
-        == provenance
+    script_input = ScriptInput(
+        name="data",
+        source_spec=provenance.model_dump(mode="json"),
+        provenance_spec=provenance.model_dump(mode="json"),
     )
-    assert (
-        _ManagedWindowNode._pending_tool_provenance({"source": b"\xff"}, "source")
-        is None
+    remapped = _ManagedWindowNode._remap_script_input(
+        script_input,
+        lambda _value: ToolProvenanceSpec(kind="public_data"),
     )
-    assert _ManagedWindowNode._pending_tool_provenance({"source": 1}, "source") is None
-    assert (
-        _ManagedWindowNode._pending_tool_provenance({"source": "{"}, "source") is None
-    )
+    assert remapped.parsed_source_spec() == ToolProvenanceSpec(kind="public_data")
+    assert remapped.parsed_provenance_spec() == ToolProvenanceSpec(kind="public_data")
 
 
 def test_wrapper_materializes_source_binding_without_changing_provenance() -> None:
@@ -171,14 +169,27 @@ def test_wrapper_provenance_owner_remap_rolls_back_atomically(
         node.commit_provenance_owner_remap()
 
 
-def test_wrapper_applies_tool_owned_source_provenance() -> None:
+def test_wrapper_applies_tool_owned_script_inputs() -> None:
     changed: list[None] = []
+    previous = ScriptInput(name="data", source_spec=full_data().model_dump(mode="json"))
+    replacement = ScriptInput(
+        name="data",
+        source_spec=ToolProvenanceSpec(kind="public_data").model_dump(mode="json"),
+        provenance_spec=ToolProvenanceSpec(kind="public_data").model_dump(mode="json"),
+    )
 
     class _Tool:
-        source_spec = full_data()
-        input_provenance_spec = None
-        _source_spec = source_spec
-        _input_provenance_snapshot_from_parent = False
+        _script_inputs = (previous,)
+        _primary_input = "data"
+        _pending_script_inputs = (previous,)
+
+        @property
+        def script_inputs(self):
+            return self._script_inputs
+
+        @property
+        def primary_input(self):
+            return self._primary_input
 
         @staticmethod
         def _coalesce_provenance_changes():
@@ -206,9 +217,9 @@ def test_wrapper_applies_tool_owned_source_provenance() -> None:
         pending_payload_kind=None,
         node_source_spec=None,
         node_provenance_spec=None,
-        tool_source_spec=ToolProvenanceSpec(kind="public_data"),
-        tool_input_provenance_spec=None,
-        tool_input_from_parent=False,
+        tool_script_inputs=(replacement,),
+        tool_primary_input="data",
+        tool_pending_script_inputs=(replacement,),
         pending_payload_attrs=None,
     )
 
@@ -216,7 +227,9 @@ def test_wrapper_applies_tool_owned_source_provenance() -> None:
         typing.cast("_ManagedWindowNode", node), snapshot
     )
 
-    assert tool._source_spec == ToolProvenanceSpec(kind="public_data")
+    assert tool.script_inputs == (replacement,)
+    assert tool.primary_input == "data"
+    assert tool._pending_script_inputs == (replacement,)
     assert changed == [None]
 
 
@@ -634,7 +647,7 @@ def test_take_window_clears_and_reattach_restores_manager_execution_host(
         assert tool.slicer_area._in_manager
 
 
-def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
+def test_wrapper_source_data_replaced_uses_parent_fallback(
     qtbot,
     monkeypatch,
     test_data,
@@ -649,28 +662,22 @@ def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_chi
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        parent_tool = manager.get_imagetool(0)
-        parent_tool.slicer_area.images[0].open_in_dtool()
-        qtbot.wait_until(
-            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
-            timeout=5000,
-        )
-
         wrapper = manager._tool_graph.root_wrappers[0]
-        _, child = next(iter(wrapper._childtools.items()))
         updated = test_data.copy(deep=True)
         updated.data = np.asarray(updated.data) * 7
-        handled: list[xr.DataArray] = []
+        propagated: list[tuple[str, xr.DataArray]] = []
 
         monkeypatch.setattr(
             wrapper.slicer_area, "_tool_source_parent_data", lambda: updated
         )
         monkeypatch.setattr(
-            child, "handle_parent_source_replaced", lambda data: handled.append(data)
+            manager._lineage_controller,
+            "_propagate_source_change_from_uid",
+            lambda uid, data: propagated.append((uid, data)),
         )
-        wrapper._childtool_indices.append("missing")
 
         wrapper._handle_source_data_replaced(object())
 
-        assert len(handled) == 1
-        xr.testing.assert_identical(handled[0], updated)
+        assert len(propagated) == 1
+        assert propagated[0][0] == wrapper.uid
+        xr.testing.assert_identical(propagated[0][1], updated)

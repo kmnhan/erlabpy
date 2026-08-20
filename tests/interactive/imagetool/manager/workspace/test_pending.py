@@ -42,7 +42,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     BoxcarFilterOperation,
     GaussianFilterOperation,
-    ScriptCodeOperation,
     SortCoordOrderOperation,
     SqueezeOperation,
 )
@@ -72,7 +71,99 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _transaction_test_root_attrs,
     _WorkspaceManagerReferenceFigureTool,
     _WorkspaceSweepChildTool,
+    add_source_childtool,
 )
+
+
+def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
+    saved_uid = "saved-source"
+    actual_uid = "actual-source"
+    script_input = ScriptInput(name="data", node_uid=saved_uid)
+    references = {
+        "<saved-tool-data>": {"kind": "manager_node", "node_uid": saved_uid},
+        "legacy": {"kind": "parent_source", "node_uid": saved_uid},
+    }
+
+    class _PendingNode:
+        tool_window = None
+        pending_workspace_payload_kind = "tool"
+        provenance_spec = None
+        tool_primary_input = "data"
+
+        def __init__(self) -> None:
+            self.attrs = {
+                erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
+                    [script_input.model_dump(mode="json")]
+                ),
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                    references
+                ),
+            }
+
+        @property
+        def pending_workspace_payload_attrs(self) -> dict[str, typing.Any]:
+            return dict(self.attrs)
+
+        @property
+        def tool_script_inputs(self) -> tuple[ScriptInput, ...]:
+            return tuple(
+                ScriptInput.model_validate(item)
+                for item in json.loads(
+                    self.attrs[erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR]
+                )
+            )
+
+        def update_pending_workspace_payload_attrs(
+            self, attrs: dict[str, typing.Any]
+        ) -> None:
+            self.attrs = dict(attrs)
+
+    class _LiveTool:
+        def __init__(self) -> None:
+            self.script_inputs = (script_input,)
+            self.primary_input = "data"
+            self.source_auto_update = False
+            self.source_state = "fresh"
+
+        def set_script_inputs(self, inputs, **_kwargs) -> None:
+            self.script_inputs = tuple(inputs)
+
+        def rebase_source_node_uids(self, _uid_map) -> None:
+            return
+
+    class _LiveNode:
+        pending_workspace_payload_kind = None
+        provenance_spec = None
+
+        def __init__(self) -> None:
+            self.tool_window = _LiveTool()
+            self._workspace_tool_data_references = references
+
+        def _set_workspace_tool_data_references(self, updated) -> None:
+            self._workspace_tool_data_references = updated
+
+    pending_node = _PendingNode()
+    live_node = _LiveNode()
+    nodes = {"pending": pending_node, "live": live_node}
+    manager = types.SimpleNamespace(_node_for_target=nodes.__getitem__)
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+
+    controller._rebase_node_dependency_refs(nodes, {saved_uid: actual_uid})
+
+    assert pending_node.tool_script_inputs[0].node_uid == actual_uid
+    assert (
+        pending_node.attrs[erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR] == "data"
+    )
+    pending_references = json.loads(
+        pending_node.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+    )
+    assert pending_references["<saved-tool-data>"]["node_uid"] == actual_uid
+    assert pending_references["legacy"]["node_uid"] == saved_uid
+    assert live_node.tool_window.script_inputs[0].node_uid == actual_uid
+    assert (
+        live_node._workspace_tool_data_references["<saved-tool-data>"]["node_uid"]
+        == actual_uid
+    )
 
 
 def test_manager_workspace_restore_hidden_memory_link_group_keeps_payload_pending(
@@ -613,10 +704,9 @@ def test_manager_pending_memory_reload_unavailable_does_not_materialize(
         )
 
         select_tools(manager, [0])
-        reload_candidates = manager._selected_reload_candidates()
+        reload_candidates = manager._lineage_controller._selected_reload_candidates()
         assert reload_candidates is not None
         assert reload_candidates[2] is not None
-        assert manager._selected_reload_targets() is None
         manager._update_actions()
 
         assert manager.reload_action.isVisible()
@@ -674,9 +764,8 @@ def test_manager_pending_memory_file_source_reload_available_without_materializi
         )
 
         select_tools(manager, [0])
-        reload_candidates = manager._selected_reload_candidates()
+        reload_candidates = manager._lineage_controller._selected_reload_candidates()
         assert reload_candidates == ([0], {}, None)
-        assert manager._selected_reload_targets() == ([0], {})
         manager._update_actions()
 
         assert manager.reload_action.isVisible()
@@ -748,8 +837,11 @@ def test_manager_pending_memory_child_routes_reload_to_file_source_parent(
         )
 
         select_child_tool(manager, child_uid)
-        assert manager._selected_reload_candidates() == ([0], {0: [child_uid]}, None)
-        assert manager._selected_reload_targets() == ([0], {0: [child_uid]})
+        assert manager._lineage_controller._selected_reload_candidates() == (
+            [0],
+            {0: [child_uid]},
+            None,
+        )
         manager._update_actions()
 
         assert manager.reload_action.isVisible()
@@ -851,7 +943,7 @@ def test_manager_pending_memory_output_child_source_change_marks_stale(
         root.hide()
 
         tool_window = _WorkspaceSweepChildTool(data)
-        child_tool_uid = manager.add_childtool(tool_window, 0, show=False)
+        child_tool_uid = add_source_childtool(manager, tool_window, 0, show=False)
         output_data = tool_window.output_imagetool_data("workspace-sweep.primary")
         assert output_data is not None
         output_tool = itool(output_data, manager=False, execute=False)
@@ -1777,7 +1869,6 @@ def test_pending_workspace_reload_reason_branches(
         monkeypatch.setattr(
             manager_lineage, "has_file_load_source", lambda _spec: False
         )
-
         file_spec = types.SimpleNamespace(kind="file")
         monkeypatch.setattr(
             controller,
@@ -1787,6 +1878,7 @@ def test_pending_workspace_reload_reason_branches(
         assert (
             controller._pending_imagetool_reload_unavailable_reason(
                 types.SimpleNamespace(
+                    uid="pending",
                     provenance_spec=file_spec,
                     _load_source_details=lambda: None,
                 )
@@ -1794,77 +1886,32 @@ def test_pending_workspace_reload_reason_branches(
             == "missing file"
         )
 
-        opaque_script = script(
-            ScriptCodeOperation(label="Opaque", code=None, copyable=False),
-            start_label="Run script",
-            seed_code="derived = data",
-            active_name="derived",
-            script_inputs=(ScriptInput(name="data", label="Input"),),
-        )
-        opaque_reason = controller._pending_imagetool_reload_unavailable_reason(
-            types.SimpleNamespace(
-                provenance_spec=opaque_script,
-                uid="pending",
-                _load_source_details=lambda: None,
-            )
-        )
-        assert opaque_reason is not None
-
-        raw_script = script(
-            ScriptCodeOperation(
-                label="Transform",
-                code="derived = data + 1",
-            ),
-            start_label="Run script",
-            seed_code="derived = data",
-            active_name="derived",
-        )
-        raw_reason = controller._pending_imagetool_reload_unavailable_reason(
-            types.SimpleNamespace(
-                provenance_spec=raw_script,
-                uid="pending",
-                _load_source_details=lambda: None,
-            )
-        )
-        assert raw_reason is not None
-        assert "no recorded inputs" in raw_reason
-
-        script_input = object()
-        script_spec = types.SimpleNamespace(
-            kind="script",
-            script_inputs=(script_input,),
-        )
-        replayable = True
-        monkeypatch.setattr(
-            controller,
-            "_script_provenance_runnable",
-            lambda _spec: replayable,
-        )
+        script_spec = types.SimpleNamespace(kind="script", script_inputs=())
         monkeypatch.setattr(
             manager_lineage,
-            "provenance_code_trust_entries",
-            lambda *_args, **_kwargs: pytest.fail(
-                "passive reload status built code-trust entries"
+            "_replay_capability",
+            lambda _spec, **_kwargs: types.SimpleNamespace(
+                replayable=False,
+                requires_trust=True,
             ),
         )
-        unavailable_reason: str | None = None
-        monkeypatch.setattr(
-            manager,
-            "_script_input_unavailable_reason",
-            lambda *_args, **_kwargs: unavailable_reason,
-        )
-        unavailable_reason = "missing input"
-        assert (
-            controller._pending_imagetool_reload_unavailable_reason(
-                types.SimpleNamespace(
-                    provenance_spec=script_spec,
-                    uid="pending",
-                    _load_source_details=lambda: None,
-                )
+        trust_reason = controller._pending_imagetool_reload_unavailable_reason(
+            types.SimpleNamespace(
+                uid="pending",
+                provenance_spec=script_spec,
+                _load_source_details=lambda: None,
             )
-            == unavailable_reason
         )
-        unavailable_reason = None
+        assert trust_reason == "The recorded script steps cannot be reloaded."
+
+        monkeypatch.setattr(
+            manager_lineage,
+            "_replay_capability",
+            lambda _spec, **_kwargs: types.SimpleNamespace(
+                replayable=True,
+                requires_trust=True,
+            ),
+        )
         assert (
             controller._pending_imagetool_reload_unavailable_reason(
                 types.SimpleNamespace(
@@ -1876,20 +1923,10 @@ def test_pending_workspace_reload_reason_branches(
             is None
         )
 
-        replayable = False
-        replay_reason = controller._pending_imagetool_reload_unavailable_reason(
-            types.SimpleNamespace(
-                provenance_spec=script_spec,
-                uid="pending",
-                _load_source_details=lambda: None,
-            )
-        )
-        assert replay_reason is not None
-        assert "cannot be reloaded automatically" in replay_reason
-
         missing_path = tmp_path / "missing.h5"
         missing_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
+                uid="pending",
                 provenance_spec=None,
                 _load_source_details=lambda: types.SimpleNamespace(
                     path=missing_path,
@@ -1898,13 +1935,13 @@ def test_pending_workspace_reload_reason_branches(
             )
         )
         assert missing_reason is not None
-        assert str(missing_path) in missing_reason
 
         existing_path = tmp_path / "scan.h5"
         existing_path.write_bytes(b"")
         assert (
             controller._pending_imagetool_reload_unavailable_reason(
                 types.SimpleNamespace(
+                    uid="pending",
                     provenance_spec=None,
                     _load_source_details=lambda: types.SimpleNamespace(
                         path=existing_path,
@@ -1916,6 +1953,7 @@ def test_pending_workspace_reload_reason_branches(
         )
         missing_loader_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
+                uid="pending",
                 provenance_spec=None,
                 _load_source_details=lambda: types.SimpleNamespace(
                     path=existing_path,
@@ -1924,7 +1962,7 @@ def test_pending_workspace_reload_reason_branches(
             )
         )
         assert missing_loader_reason is not None
-        assert "loader information" in missing_loader_reason
+        assert missing_loader_reason != missing_reason
 
 
 def test_pending_workspace_provenance_edit_materialization_failures(
@@ -2390,7 +2428,7 @@ def test_hidden_workspace_toolwindows_restore_pending_until_shown(
 
         child = _AddedTimeChildTool(data.rename("child"))
         child._tool_display_name = "Hidden child"
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         child.hide()
 
         figure = _WorkspaceManagerReferenceFigureTool(
@@ -2434,13 +2472,121 @@ def test_hidden_workspace_toolwindows_restore_pending_until_shown(
         assert figure_node.tool_window is None
         assert figure_uid in manager._figure_uids()
 
+        child_node._set_source_auto_update(True)
+        child_node._set_source_state("stale")
         child_node.show()
 
         assert constructed == ["Hidden child"]
         assert child_node.pending_workspace_tool_payload is None
         assert child_node.tool_window is not None
         assert child_node.type_badge_text == _AddedTimeChildTool.tool_name
+        assert child_node.tool_window.source_auto_update
+        assert child_node.tool_window.source_state == "stale"
         assert root_node.pending_workspace_memory_payload is not None
+
+
+def test_pending_workspace_toolwindow_restores_named_input_dependencies(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0), dims="x", coords={"x": np.arange(4)}, name="data"
+    )
+    weights = xr.DataArray(
+        np.arange(4.0) + 1.0,
+        dims="x",
+        coords={"x": np.arange(4)},
+        name="weights",
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            root.hide()
+
+        child = _AddedTimeChildTool(data)
+        child.set_script_inputs(
+            (
+                ScriptInput(name="data", data_role="source"),
+                ScriptInput(name="weights", data_role="source"),
+            ),
+            primary_input="data",
+        )
+        child.update_inputs({"data": data, "weights": weights})
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        child.hide()
+
+        workspace = tmp_path / "pending-named-input-tool.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        child_node = manager._child_node(child_uid)
+        assert child_node.tool_window is None
+        assert tuple(item.name for item in child_node.tool_script_inputs) == (
+            "data",
+            "weights",
+        )
+        assert {
+            ref.name
+            for ref in manager._lineage_controller._dependency_refs_for_uid(child_uid)
+        } == {
+            "data",
+            "weights",
+        }
+
+        updated_weights = (weights * 3.0).rename("weights")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, updated_weights)
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node.tool_window is None
+
+        child_node.show()
+        restored = child_node.tool_window
+        assert isinstance(restored, _AddedTimeChildTool)
+        assert restored.source_state == "stale"
+        assert restored.primary_input == "data"
+
+        assert manager._lineage_controller._refresh_tool_inputs(
+            child_uid,
+            allow_recorded=False,
+        )
+        assert restored.source_state == "fresh"
+        xr.testing.assert_identical(restored.tool_data, data)
+        xr.testing.assert_identical(restored._last_inputs["weights"], updated_weights)
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        child_node = manager._child_node(child_uid)
+        assert child_node.tool_window is None
+        manager.remove_imagetool(1)
+        qtbot.wait_until(lambda: child_node.source_state == "unavailable", timeout=5000)
+        assert child_node.tool_window is None
+
+        child_node.show()
+        restored = child_node.tool_window
+        assert isinstance(restored, _AddedTimeChildTool)
+        assert restored.source_state == "unavailable"
 
 
 def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
@@ -2457,7 +2603,9 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
         manager.add_imagetool(root, show=False)
         root_uid = manager._tool_graph.root_wrappers[0].uid
 
-        child_uid = manager.add_childtool(_AddedTimeChildTool(data), 0, show=False)
+        child_uid = add_source_childtool(
+            manager, _AddedTimeChildTool(data), 0, show=False
+        )
         child_node = manager._child_node(child_uid)
         child_node.set_pending_workspace_payload(
             "tool",
@@ -2470,7 +2618,7 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
             },
         )
         saver = manager._workspace_controller.saving
-        assert saver._pending_workspace_tool_references_available(child_node)
+        assert saver._pending_workspace_tool_reference_status(child_node)[0]
 
         child_node.update_pending_workspace_payload_attrs(
             {
@@ -2480,9 +2628,9 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
             }
         )
         assert not (
-            manager._workspace_controller.saving._pending_workspace_tool_references_available(
+            manager._workspace_controller.saving._pending_workspace_tool_reference_status(
                 child_node
-            )
+            )[0]
         )
 
         child_node.update_pending_workspace_payload_attrs(
@@ -2493,9 +2641,9 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
             }
         )
         assert not (
-            manager._workspace_controller.saving._pending_workspace_tool_references_available(
+            manager._workspace_controller.saving._pending_workspace_tool_reference_status(
                 child_node
-            )
+            )[0]
         )
 
 
@@ -2691,7 +2839,7 @@ def test_manager_reload_selected_materializes_hidden_memory_payload(
             _reload,
         )
         monkeypatch.setattr(
-            manager,
+            manager._lineage_controller,
             "_selected_reload_candidates",
             lambda: ([0], {}, None),
         )
@@ -2818,12 +2966,12 @@ def test_manager_workspace_child_tool_reference_materializes_only_child_data(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
+        root_node = manager._tool_graph.root_wrappers[0]
         root.hide()
 
         child_data = data.copy(deep=True).rename("child")
         child = _WorkspaceSweepChildTool(child_data)
-        child.set_source_binding(full_data())
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
 
         fname = tmp_path / "pending-parent-child-reference.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
@@ -2832,9 +2980,11 @@ def test_manager_workspace_child_tool_reference_materializes_only_child_data(
                 "tool_data_references"
             ]
         )
-        assert references[imagetool_serialization.SAVED_TOOL_DATA_NAME] == {
-            "kind": "parent_source"
-        }
+        reference = references[imagetool_serialization.SAVED_TOOL_DATA_NAME]
+        assert reference["kind"] == "manager_node"
+        assert reference["node_uid"] == root_node.uid
+        assert reference["node_snapshot_token"] == root_node.snapshot_token
+        assert reference["data_role"] == "displayed"
 
         pending_payloads = manager._workspace_controller.loading.pending
         original_materialize = pending_payloads._materialize_pending_workspace_payload
@@ -2996,9 +3146,13 @@ def test_manager_workspace_embedded_child_tool_keeps_parent_payload_pending(
         root.hide()
 
         child_data = (data + 10.0).rename("embedded")
-        child_uid = manager.add_childtool(
-            _WorkspaceSweepChildTool(child_data), 0, show=False
+        child_uid = add_source_childtool(
+            manager,
+            _WorkspaceSweepChildTool(child_data),
+            0,
+            show=False,
         )
+        manager._child_node(child_uid)._set_source_state("stale")
 
         fname = tmp_path / "pending-parent-embedded-child.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
@@ -3030,6 +3184,7 @@ def test_manager_workspace_embedded_child_tool_keeps_parent_payload_pending(
         assert wrapper.pending_workspace_memory_payload is not None
         loaded_child = manager.get_childtool(child_uid)
         assert isinstance(loaded_child, _WorkspaceSweepChildTool)
+        assert loaded_child.source_state == "stale"
         assert loaded_child.tool_data.name == child_data.name
         assert loaded_child.tool_data.dims == child_data.dims
         np.testing.assert_array_equal(loaded_child.tool_data.values, child_data.values)

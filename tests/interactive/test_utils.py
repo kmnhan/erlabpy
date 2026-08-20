@@ -1,3 +1,4 @@
+import builtins
 import contextlib
 import enum
 import importlib
@@ -8,6 +9,7 @@ import tempfile
 import types
 import typing
 import warnings
+from collections.abc import Mapping
 
 import lmfit
 import numpy as np
@@ -36,8 +38,15 @@ from erlab.interactive._file_loaders import (
     builtin_file_loader_for_name_filter,
 )
 from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
 from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ScriptInput,
     ToolProvenanceSpec,
+    compose_full_provenance,
+    file_load,
     full_data,
     script,
     selection,
@@ -88,7 +97,7 @@ from erlab.interactive.utils import (
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
-    output = dict(namespace)
+    output = {"__builtins__": vars(builtins), **namespace}
     exec(code, output, output)  # noqa: S102
     return output
 
@@ -230,8 +239,38 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
     def tool_data(self) -> xr.DataArray:
         return self._data
 
-    def update_data(self, new_data: xr.DataArray) -> None:
-        self._data = new_data
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self._data = inputs["data"]
+
+
+class _TwoInputPersistentTool(_PersistentTool):
+    def __init__(
+        self,
+        data: xr.DataArray,
+        weights: xr.DataArray | None = None,
+    ) -> None:
+        super().__init__(data)
+        self.weights = xr.zeros_like(data) if weights is None else weights
+        self.result = data + self.weights
+        self.update_calls = 0
+
+    def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+        return {
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self._data,
+            "weights": self.weights,
+        }
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self.update_calls += 1
+        self._data = inputs["data"]
+        self.weights = inputs["weights"]
+        self.result = self._data + self.weights
+
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        return ds.assign(cached_result=self.result)
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        self.result = ds["cached_result"]
 
 
 def _expression_fit_operation(expression: str = "2 * c0") -> ModelFitOperation:
@@ -287,6 +326,29 @@ class _PlotPersistentTool(_PersistentTool):
         self.graphics.addItem(self.colorbar, row=0, col=1)
         self._register_plot_appearance("data", self.colorbar)
         return old_colorbar
+
+
+class _DeferredInputTool(_PersistentTool):
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__(data)
+        self.pending_data: xr.DataArray | None = None
+        self.update_calls = 0
+        self.events: list[str] = []
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+        self.update_calls += 1
+        self.events.append(f"update-{self.update_calls}")
+        self.pending_data = inputs["data"]
+        self._defer_source_refresh()
+        return False
+
+    def finish_deferred_update(self) -> None:
+        if self.pending_data is None:
+            raise RuntimeError("No deferred update is pending")
+        self._data = self.pending_data
+        self.pending_data = None
+        self.finalize_source_refresh()
+        self.events.append(f"cleanup-{self.update_calls}")
 
 
 class _DeferredRestoreToolState(pydantic.BaseModel):
@@ -349,8 +411,8 @@ class _DeferredRestoreTool(
     def tool_data(self) -> xr.DataArray:
         return self._data
 
-    def update_data(self, new_data: xr.DataArray) -> None:
-        self._data = new_data
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self._data = inputs["data"]
 
     def _run_deferred_restore_task(self) -> None:
         if self.fail_next_deferred_restore:
@@ -361,10 +423,10 @@ class _DeferredRestoreTool(
     def _copy_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        del input_name, data
+        del primary_input, data
         return f"data + {self.deferred_runs}"
 
     def _result_output_data(self) -> xr.DataArray:
@@ -526,30 +588,58 @@ def test_tool_window_provenance_setters_advance_revision_once(qtbot) -> None:
     win.sigProvenanceChanged.connect(
         lambda: provenance_changes.append(win.provenance_revision)
     )
-    provenance = full_data(IselOperation(kwargs={"x": slice(0, 2)}))
+    source_spec = full_data(IselOperation(kwargs={"x": slice(0, 2)}))
+    first_snapshot = "first"
+    second_snapshot = "second"
+    script_input = ScriptInput(
+        name="data",
+        data_role="source",
+        source_spec=source_spec.model_dump(mode="json"),
+        node_snapshot_token=first_snapshot,
+    )
 
-    win.set_input_provenance_spec(provenance)
+    win.set_script_inputs((script_input,), primary_input="data")
     first_revision = win.provenance_revision
-    win.set_input_provenance_spec(provenance)
+    win.set_script_inputs(
+        (script_input.model_copy(update={"node_snapshot_token": second_snapshot}),),
+        primary_input="data",
+    )
     second_revision = win.provenance_revision
 
     assert first_revision == 1
     assert second_revision == first_revision + 1
     assert provenance_changes == [first_revision, second_revision]
 
-    win.set_source_binding(provenance, state="fresh")
-    third_revision = win.provenance_revision
-    win.set_source_binding(provenance, state="fresh")
-    fourth_revision = win.provenance_revision
+    win.set_script_inputs(win.script_inputs, primary_input="data")
+    assert win.provenance_revision == second_revision
+    assert provenance_changes == [first_revision, second_revision]
 
-    assert third_revision == second_revision + 1
-    assert fourth_revision == third_revision + 1
-    assert provenance_changes == [
-        first_revision,
-        second_revision,
-        third_revision,
-        fourth_revision,
-    ]
+
+def test_tool_window_script_input_transforms_are_defensive_copies(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+    binding = ScriptInput(
+        name="data",
+        source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})).model_dump(
+            mode="json"
+        ),
+    )
+    expected = binding.model_copy(deep=True)
+
+    tool.set_script_inputs((binding,), primary_input="data")
+    assert binding.source_spec is not None
+    binding.source_spec["operations"].clear()
+    assert tool.script_inputs == (expected,)
+
+    exposed = tool.script_inputs[0]
+    assert exposed.source_spec is not None
+    exposed.source_spec["operations"].clear()
+    assert tool.script_inputs == (expected,)
+
+    refreshed = expected.model_copy(update={"node_snapshot_token": "new"})
+    assert tool._apply_inputs({"data": data}, (refreshed,))
+    assert tool.script_inputs == (refreshed,)
 
 
 def test_tool_window_custom_history_cannot_skip_provenance_signal(
@@ -573,48 +663,6 @@ def test_tool_window_custom_history_cannot_skip_provenance_signal(
 
     assert provenance_changes == [None]
     assert recorded_changes == [None]
-
-
-@pytest.mark.parametrize(
-    ("setter_name", "attribute_name"),
-    [
-        (
-            "set_input_provenance_parent_fetcher",
-            "_input_provenance_parent_fetcher",
-        ),
-        ("set_source_parent_fetcher", "_source_parent_fetcher"),
-    ],
-)
-def test_tool_window_fetcher_replacement_commits_revision_after_sync_failure(
-    qtbot,
-    monkeypatch,
-    setter_name: str,
-    attribute_name: str,
-) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    win = _PersistentTool(data)
-    qtbot.addWidget(win)
-    win._source_spec = full_data()
-
-    def callback() -> xr.DataArray:
-        return data
-
-    def fail_sync() -> None:
-        raise RuntimeError("snapshot sync failed")
-
-    monkeypatch.setattr(win, "_sync_input_provenance_snapshot", fail_sync)
-    initial_revision = win.provenance_revision
-    provenance_changes: list[int] = []
-    win.sigProvenanceChanged.connect(
-        lambda: provenance_changes.append(win.provenance_revision)
-    )
-
-    with pytest.raises(RuntimeError, match="snapshot sync failed"):
-        getattr(win, setter_name)(callback)
-
-    assert getattr(win, attribute_name) is callback
-    assert win.provenance_revision == initial_revision + 1
-    assert provenance_changes == [win.provenance_revision]
 
 
 def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
@@ -3528,8 +3576,8 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def _result_output_data(self) -> xr.DataArray:
             return self._data + 1
@@ -3537,7 +3585,7 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
         def _result_output_label(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             return "Compute dummy output"
@@ -3545,11 +3593,11 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
         def _result_output_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'} + 1"
+            return f"{primary_input or 'data'} + 1"
 
     tool = _DummyTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
@@ -3588,66 +3636,7 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
         tool.output_imagetool_data("dummy.unknown")
 
 
-def test_tool_window_script_provenance_preserves_status_name_and_avoids_reserved_input(
-    qtbot,
-) -> None:
-    class _DummyState(pydantic.BaseModel):
-        data_name: str = "xr"
-
-    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
-        StateModel = _DummyState
-        tool_name = "dummy"
-
-        def __init__(self) -> None:
-            super().__init__()
-            self._data = xr.DataArray([1.0], dims=("x",))
-
-        @property
-        def tool_status(self) -> _DummyState:
-            return _DummyState()
-
-        @tool_status.setter
-        def tool_status(self, status: _DummyState) -> None:
-            del status
-
-        @property
-        def tool_data(self) -> xr.DataArray:
-            return self._data
-
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
-
-        def _expression(self, *, input_name, data) -> str:
-            del data
-            return f"{input_name} + 1"
-
-    tool = _DummyTool()
-    qtbot.addWidget(tool)
-    definition = erlab.interactive.utils.ToolScriptProvenanceDefinition(
-        start_label="Start",
-        label="Add one",
-        expression_method="_expression",
-        assign="result",
-    )
-
-    assert tool._script_provenance_input_name() == "xr"
-    spec = tool._build_script_provenance(
-        definition,
-        input_name="xr",
-        data=tool.tool_data,
-    )
-
-    assert spec is not None
-    assert spec.seed_code == "input_data = xr"
-    assert len(spec.steps) == 1
-    operation = spec.steps[0].operation
-    assert isinstance(operation, ScriptCodeOperation)
-    assert operation.code == "result = input_data + 1"
-
-
-def test_tool_window_copy_code_ignores_parent_provenance_but_keeps_source(
-    qtbot,
-) -> None:
+def test_tool_window_copy_code_uses_canonical_script_input(qtbot) -> None:
 
     class _DummyState(pydantic.BaseModel):
         value: int = 0
@@ -3695,8 +3684,8 @@ def test_tool_window_copy_code_ignores_parent_provenance_but_keeps_source(
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def _result_output_data(self) -> xr.DataArray:
             return self._data.mean()
@@ -3704,26 +3693,32 @@ def test_tool_window_copy_code_ignores_parent_provenance_but_keeps_source(
         def _result_output_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'}.mean()"
+            return f"{primary_input or 'data'}.mean()"
 
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
-    parent_provenance = selection(IselOperation(kwargs={"x": slice(0, 2)}))
     source = selection(IselOperation(kwargs={"y": slice(1, 3)}))
     tool = _DummyTool(source.apply(data))
     qtbot.addWidget(tool)
-    tool.set_source_binding(source)
-    tool.set_input_provenance_parent_fetcher(lambda: parent_provenance)
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                data_role="source",
+                source_spec=source.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+    )
 
     code = tool.copy_code()
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     result = namespace["result"]
     assert isinstance(result, xr.DataArray)
     xr.testing.assert_identical(result, data.isel(y=slice(1, 3)).mean())
-    assert "x=slice" not in code
     assert "y=slice" in code
 
 
@@ -3886,16 +3881,16 @@ def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def _invalid_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
-            del input_name, data
+            del primary_input, data
             return "result = data + 1"
 
     tool = _DummyTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
@@ -3938,85 +3933,97 @@ def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) 
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def _dynamic_label(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            assert input_name == "watched"
+            assert primary_input == "watched"
             return "Build dynamic outputs"
 
         def _dynamic_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            assert input_name == "watched"
+            assert primary_input == "watched"
             return "(watched * scale, watched + 1)"
 
         def _dynamic_assign(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> tuple[str, str]:
-            del input_name, data
+            del primary_input, data
             return ("left", "right")
 
         def _dynamic_prelude(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
-            del input_name, data
+            del primary_input, data
             return "scale = 2"
 
         def _dynamic_active_name(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
-            del input_name, data
+            del primary_input, data
             return "right"
 
         def _dynamic_seed_code(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
-            del input_name, data
+            del primary_input, data
             return "derived = watched"
 
     tool = _DynamicTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
-    tool.set_input_provenance_spec(
-        script(
-            start_label="Start from watched data",
-            seed_code="derived = watched",
-            active_name="derived",
-        )
+    input_spec = script(
+        start_label="Start from watched data",
+        seed_code="derived = watched",
+        active_name="derived",
+    )
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="watched",
+                provenance_spec=input_spec.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="watched",
     )
 
     spec = tool.current_provenance_spec()
 
     assert spec is not None
-    assert spec.start_label == "Start from watched data"
+    assert spec.start_label == "Start from dynamic input"
+    input_provenance = spec.script_inputs[0].parsed_provenance_spec()
+    assert input_provenance is not None
+    assert input_provenance.start_label == "Start from watched data"
     assert spec.active_name == "right"
     code = spec.display_code()
     assert code is not None
     assert "derived = watched" not in code
-    assert "scale = 2" in code
-    assert "left, right = (watched * scale, watched + 1)" in code
+    namespace = {"watched": tool.tool_data}
+    exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["left"], tool.tool_data * 2)
+    xr.testing.assert_identical(namespace["right"], tool.tool_data + 1)
 
 
 def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> None:
@@ -4053,34 +4060,34 @@ def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> N
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def _dynamic_operations(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> object:
-            del input_name, data
+            del primary_input, data
             return self._operations
 
         def _dynamic_active_name(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
-            del input_name, data
+            del primary_input, data
             return "derived"
 
         def _dynamic_seed_code(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
-            del input_name, data
+            del primary_input, data
             return "derived = data"
 
     operation = ScriptCodeOperation(
@@ -4262,7 +4269,7 @@ def test_tool_window_prompt_existing_output_choices(qtbot, monkeypatch) -> None:
         assert tool._prompt_existing_output_imagetool() == choice
 
 
-def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> None:
+def test_tool_window_dataset_roundtrips_transformed_script_input(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data)
     qtbot.addWidget(tool)
@@ -4274,24 +4281,46 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
         seed_code="derived = watched",
         active_name="derived",
     )
-    tool.set_source_binding(source_spec, auto_update=True, state="stale")
-    tool.set_input_provenance_spec(input_spec)
+    inputs = (
+        ScriptInput(
+            name="watched",
+            data_role="source",
+            source_spec=source_spec.model_dump(mode="json"),
+            provenance_spec=input_spec.model_dump(mode="json"),
+        ),
+    )
+    tool.set_script_inputs(
+        inputs,
+        primary_input="watched",
+        auto_update=True,
+        state="stale",
+    )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
     qtbot.addWidget(restored)
 
     assert isinstance(restored, _PersistentTool)
-    assert restored.source_spec == source_spec
+    assert restored.script_inputs == inputs
+    assert restored.primary_input == "watched"
     assert restored.source_auto_update is True
     assert restored.source_state == "stale"
-    assert restored.input_provenance_spec == input_spec.to_replay_spec()
 
 
 def test_tool_window_dataset_normalizes_invalid_source_state(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data)
     qtbot.addWidget(tool)
-    tool.set_source_binding(full_data(), auto_update=True, state="stale")
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                source_spec=full_data().model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+        auto_update=True,
+        state="stale",
+    )
     saved = tool.to_dataset()
     saved.attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "unknown"
 
@@ -4304,6 +4333,702 @@ def test_tool_window_dataset_normalizes_invalid_source_state(qtbot) -> None:
 
 def test_tool_window_dataset_prefers_source_spec_over_legacy_binding(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
+    source_spec = ImageToolSelectionSourceBinding(
+        selection_mode="isel",
+        selection_indexers={"x": slice(1, 3)},
+    ).materialize(data)
+    tool = _PersistentTool(source_spec.apply(data))
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                source_spec=source_spec.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+        auto_update=True,
+        state="stale",
+    )
+
+    saved = tool.to_dataset()
+    assert "tool_source_binding" not in saved.attrs
+    saved.attrs["tool_source_binding"] = json.dumps(
+        ImageToolSelectionSourceBinding(
+            selection_mode="isel",
+            selection_indexers={"x": 0},
+        ).model_dump(mode="json")
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _source_parent_data=data,
+    )
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _PersistentTool)
+    assert restored.script_inputs[0].parsed_source_spec() == source_spec
+    assert restored.source_auto_update is True
+    assert restored.source_state == "stale"
+
+
+def test_tool_window_dataset_roundtrips_script_inputs(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims="x")
+    weights = xr.ones_like(data).rename("weights")
+    tool = _TwoInputPersistentTool(data, weights)
+    qtbot.addWidget(tool)
+    inputs = (
+        ScriptInput(name="data", label="Data", node_uid="old-data"),
+        ScriptInput(name="weights", label="Weights", node_uid="old-weights"),
+    )
+    tool.set_script_inputs(
+        inputs,
+        primary_input="data",
+        auto_update=True,
+        state="stale",
+    )
+
+    saved = tool.to_dataset()
+    saved["cached_result"] = xr.full_like(data, 99.0)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _TwoInputPersistentTool)
+    assert restored.update_calls == 1
+    xr.testing.assert_identical(restored.weights, weights)
+    xr.testing.assert_identical(
+        restored.result,
+        xr.full_like(data, 99.0).rename("cached_result"),
+    )
+    assert restored.script_inputs == inputs
+    assert restored.primary_input == "data"
+    assert restored.source_auto_update is True
+    assert restored.source_state == "stale"
+
+    missing = _PersistentTool(data)
+    qtbot.addWidget(missing)
+    missing.set_script_inputs(inputs, primary_input="data")
+    with pytest.raises(ValueError, match="canonical input item 'weights'"):
+        missing.to_dataset()
+
+
+def test_tool_window_named_input_update_validates_before_mutation(qtbot) -> None:
+    class _MultiInputTool(_PersistentTool):
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__(data)
+            self.update_calls = 0
+
+        def validate_update_inputs(
+            self, inputs: Mapping[str, xr.DataArray]
+        ) -> Mapping[str, xr.DataArray]:
+            validated = dict(super().validate_update_inputs(inputs))
+            if validated["data"].sizes != validated["weights"].sizes:
+                raise ValueError("input sizes differ")
+            return validated
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self.update_calls += 1
+            self._data = inputs["data"] * inputs["weights"]
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    tool = _MultiInputTool(data)
+    qtbot.addWidget(tool)
+    bindings = (ScriptInput(name="data"), ScriptInput(name="weights"))
+    tool.set_script_inputs(bindings, primary_input="data", auto_update=True)
+
+    with pytest.raises(ValueError, match="input sizes differ"):
+        tool._apply_inputs(
+            {"data": data, "weights": xr.DataArray([2.0], dims="x")},
+            bindings,
+        )
+    assert tool.update_calls == 0
+    xr.testing.assert_identical(tool.tool_data, data)
+    assert tool.source_state == "fresh"
+
+    weights = xr.DataArray([3.0, 4.0], dims="x")
+    assert tool._apply_inputs(
+        {"data": data, "weights": weights},
+        bindings,
+    )
+    assert tool.update_calls == 1
+    xr.testing.assert_identical(tool.tool_data, data * weights)
+    assert tool.source_state == "fresh"
+
+
+def test_tool_window_persistence_replacement_uses_complete_named_inputs(
+    qtbot,
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+
+    class _TwoInputPersistenceTool(_PersistentTool):
+        def __init__(
+            self,
+            data: xr.DataArray,
+            weights: xr.DataArray,
+            auxiliary: xr.DataArray,
+        ) -> None:
+            super().__init__(data)
+            self.weights = weights
+            self.auxiliary = auxiliary
+
+        def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+            return {
+                erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self._data,
+                "weights": self.weights,
+                "auxiliary": self.auxiliary,
+            }
+
+        def validate_update_inputs(
+            self, inputs: Mapping[str, xr.DataArray]
+        ) -> Mapping[str, xr.DataArray]:
+            events.append("validate")
+            if set(inputs) != {"data", "weights"}:
+                raise ValueError("incomplete inputs")
+            return dict(inputs)
+
+        def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+            assert timeout_ms == self.BACKGROUND_TASK_TIMEOUT_MS
+            events.append("cancel")
+            return True
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            events.append("update")
+            self._data = inputs["data"]
+            self.weights = inputs["weights"]
+
+        def _restore_persistence_data_items(
+            self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+        ) -> None:
+            assert ds.attrs["marker"] == "replacement"
+            events.append("restore")
+            self.auxiliary = data_items["auxiliary"]
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("y", "x"), name="data")
+    weights = xr.full_like(data, 0.5).rename("weights")
+    auxiliary = xr.DataArray(1.0)
+    tool = _TwoInputPersistenceTool(data, weights, auxiliary)
+    qtbot.addWidget(tool)
+    bindings = (
+        ScriptInput(name="data", node_uid="data-node"),
+        ScriptInput(name="weights", node_uid="weights-node"),
+    )
+    tool.set_script_inputs(
+        bindings,
+        primary_input="data",
+        auto_update=True,
+        state="stale",
+    )
+
+    saved_name = erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    replacement_data = (data + 10.0).rename("stored-data")
+    replacement_weights = (weights + 1.0).rename("stored-weights")
+    replacement_auxiliary = xr.DataArray(2.0)
+    replacement_ds = xr.Dataset(attrs={"marker": "replacement"})
+
+    for incomplete, missing in (
+        ({saved_name: replacement_data}, "weights"),
+        ({"weights": replacement_weights}, saved_name),
+    ):
+        with pytest.raises(ValueError, match=rf"missing '{missing}'"):
+            tool._replace_persistence_data_items(incomplete, replacement_ds)
+    assert events == []
+
+    tool._replace_persistence_data_items(
+        {
+            saved_name: replacement_data,
+            "weights": replacement_weights,
+            "auxiliary": replacement_auxiliary,
+        },
+        replacement_ds,
+    )
+
+    assert events == ["validate", "cancel", "update", "restore"]
+    xr.testing.assert_identical(tool.tool_data, replacement_data.rename(data.name))
+    xr.testing.assert_identical(tool.weights, replacement_weights)
+    xr.testing.assert_identical(tool.auxiliary, replacement_auxiliary)
+    assert tool.script_inputs == bindings
+    assert tool.primary_input == "data"
+    assert tool.source_auto_update is True
+    assert tool.source_state == "stale"
+
+    monkeypatch.setattr(tool, "update_inputs", lambda _inputs: False)
+    with pytest.raises(RuntimeError, match="replacement was deferred"):
+        tool._replace_persistence_data_items(
+            {saved_name: replacement_data, "weights": replacement_weights},
+            replacement_ds,
+        )
+
+
+def test_source_free_persistence_replacement_requires_direct_restore(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x")
+    saved_name = erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+    with pytest.raises(NotImplementedError, match="_restore_persistence_data_items"):
+        tool._replace_persistence_data_items({saved_name: data + 1.0}, xr.Dataset())
+
+    class _DirectRestoreTool(_PersistentTool):
+        def _restore_persistence_data_items(
+            self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+        ) -> None:
+            del ds
+            self._data = data_items[saved_name]
+
+    direct = _DirectRestoreTool(data)
+    qtbot.addWidget(direct)
+    replacement = data + 2.0
+    direct._replace_persistence_data_items({saved_name: replacement}, xr.Dataset())
+    xr.testing.assert_identical(direct.tool_data, replacement)
+
+
+def test_tool_window_deferred_named_input_update_commits_current_bindings(
+    qtbot,
+) -> None:
+    class _DeferredMultiInputTool(_PersistentTool):
+        def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+            return {
+                erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self._data,
+                "weights": self.weights,
+            }
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.weights = inputs["weights"]
+            self._data = inputs["data"] * inputs["weights"]
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    weights = xr.DataArray([3.0, 4.0], dims="x")
+    old_bindings = tuple(
+        ScriptInput(
+            name=name,
+            node_uid=f"{name}-node",
+            node_snapshot_token=f"old-{name}",
+        )
+        for name in ("data", "weights")
+    )
+    refreshed_bindings = tuple(
+        item.model_copy(
+            update={"node_snapshot_token": f"new-{item.name}"},
+        )
+        for item in old_bindings
+    )
+    tool = _DeferredMultiInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        old_bindings,
+        primary_input="data",
+        auto_update=True,
+    )
+
+    assert not tool._apply_inputs(
+        {"data": data, "weights": weights},
+        refreshed_bindings,
+    )
+    assert tool.source_state == "stale"
+    assert tool.script_inputs == old_bindings
+    saved_inputs = json.loads(tool.to_dataset().attrs["tool_script_inputs"])
+    assert tuple(item["node_snapshot_token"] for item in saved_inputs) == (
+        "old-data",
+        "old-weights",
+    )
+
+    tool.finalize_source_refresh()
+
+    assert tool.source_state == "fresh"
+    assert tool.script_inputs == refreshed_bindings
+    xr.testing.assert_identical(tool.tool_data, data * weights)
+
+
+def test_tool_window_false_update_discards_pending_bindings(qtbot) -> None:
+    class _RejectedInputTool(_PersistentTool):
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            del inputs
+            return False
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _RejectedInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((old_binding,), primary_input="data")
+
+    assert not tool._apply_inputs({"data": data + 1.0}, (refreshed_binding,))
+    assert tool.source_state == "stale"
+    assert tool.script_inputs == (old_binding,)
+    assert tool._pending_script_inputs is None
+    assert tool._source_refresh_deferred is False
+
+
+def test_tool_window_false_update_clears_reentrant_rerun(qtbot) -> None:
+    class _ReentrantRejectedInputTool(_PersistentTool):
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__(data)
+            self.update_calls = 0
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            del inputs
+            self.update_calls += 1
+            self.handle_input_sources_replaced()
+            return False
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _ReentrantRejectedInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data", auto_update=True)
+    tool._set_input_resolver(lambda: ({"data": data + 2.0}, (refreshed_binding,)))
+
+    assert not tool._apply_inputs({"data": data + 1.0}, (refreshed_binding,))
+
+    assert tool.update_calls == 1
+    assert tool.source_state == "stale"
+    assert tool._source_refresh_rerun_requested is False
+    assert tool._pending_script_inputs is None
+
+
+def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
+    qtbot,
+) -> None:
+    class _DeferredInputTool(_PersistentTool):
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            del inputs
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((old_binding,), primary_input="data")
+    data_changes: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+    revision = tool.provenance_revision
+
+    assert not tool._apply_inputs({"data": data + 1.0}, (refreshed_binding,))
+    tool.abort_source_refresh()
+
+    assert tool.source_state == "stale"
+    assert tool.script_inputs == (old_binding,)
+    assert tool._pending_script_inputs is None
+    assert tool._source_refresh_deferred is False
+    assert tool.provenance_revision == revision
+    assert data_changes == []
+
+
+def test_tool_window_standalone_deferred_refresh_coalesces_latest_input(
+    qtbot,
+) -> None:
+    initial = xr.DataArray([1.0, 2.0], dims="x")
+    first = initial + 10.0
+    latest = initial + 20.0
+    initial_snapshot = "initial"
+    binding = ScriptInput(name="data", node_snapshot_token=initial_snapshot)
+    resolved: dict[str, typing.Any] = {"data": first, "snapshot": "first"}
+
+    def resolve_inputs() -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
+        return {"data": resolved["data"]}, (
+            binding.model_copy(update={"node_snapshot_token": resolved["snapshot"]}),
+        )
+
+    tool = _DeferredInputTool(initial)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        (binding,),
+        primary_input="data",
+        auto_update=True,
+    )
+    tool._set_input_resolver(resolve_inputs)
+
+    tool.handle_input_sources_replaced()
+    assert tool.update_calls == 1
+    latest_snapshot = "latest"
+    resolved["data"] = latest
+    resolved["snapshot"] = latest_snapshot
+    tool.handle_input_sources_replaced()
+    assert tool.update_calls == 1
+
+    tool.finish_deferred_update()
+    assert tool.update_calls == 1
+    assert tool.events == ["update-1", "cleanup-1"]
+    qtbot.wait_until(lambda: tool.update_calls == 2)
+    assert tool.events == ["update-1", "cleanup-1", "update-2"]
+    assert tool._source_refresh_deferred is True
+    tool.finish_deferred_update()
+
+    assert tool.source_state == "fresh"
+    assert tool.script_inputs[0].node_snapshot_token == latest_snapshot
+    xr.testing.assert_identical(tool.tool_data, latest)
+
+
+def test_tool_window_standalone_rerun_stops_when_auto_update_is_disabled(
+    qtbot,
+) -> None:
+    initial = xr.DataArray([1.0, 2.0], dims="x")
+    completed = initial + 10.0
+    latest = initial + 20.0
+    initial_snapshot = "initial"
+    completed_snapshot = "completed"
+    binding = ScriptInput(name="data", node_snapshot_token=initial_snapshot)
+    resolved: dict[str, typing.Any] = {
+        "data": completed,
+        "snapshot": completed_snapshot,
+    }
+
+    def resolve_inputs() -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
+        return {"data": resolved["data"]}, (
+            binding.model_copy(update={"node_snapshot_token": resolved["snapshot"]}),
+        )
+
+    tool = _DeferredInputTool(initial)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data", auto_update=True)
+    tool._set_input_resolver(resolve_inputs)
+
+    tool.handle_input_sources_replaced()
+    resolved["data"] = latest
+    resolved["snapshot"] = "latest"
+    tool.handle_input_sources_replaced()
+    tool.finish_deferred_update()
+    tool._set_source_auto_update(False)
+    qtbot.wait(10)
+
+    assert tool.events == ["update-1", "cleanup-1"]
+    assert tool.update_calls == 1
+    assert tool.source_state == "stale"
+    assert tool.script_inputs[0].node_snapshot_token == completed_snapshot
+    xr.testing.assert_identical(tool.tool_data, completed)
+
+
+@pytest.mark.parametrize(
+    "started_automatically",
+    [False, True],
+    ids=["manual-update", "disabled-during-update"],
+)
+def test_tool_window_deferred_refresh_respects_disabled_auto_update(
+    qtbot,
+    started_automatically: bool,
+) -> None:
+    initial = xr.DataArray([1.0, 2.0], dims="x")
+    first = initial + 10.0
+    latest = initial + 20.0
+    initial_snapshot = "initial"
+    first_snapshot = "first"
+    latest_snapshot = "latest"
+    binding = ScriptInput(name="data", node_snapshot_token=initial_snapshot)
+    resolved: dict[str, typing.Any] = {
+        "data": first,
+        "snapshot": first_snapshot,
+    }
+
+    def resolve_inputs() -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
+        return {"data": resolved["data"]}, (
+            binding.model_copy(update={"node_snapshot_token": resolved["snapshot"]}),
+        )
+
+    tool = _DeferredInputTool(initial)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        (binding,),
+        primary_input="data",
+        auto_update=started_automatically,
+    )
+    tool._set_input_resolver(resolve_inputs)
+
+    if started_automatically:
+        tool.handle_input_sources_replaced()
+        tool._set_source_auto_update(False)
+    else:
+        assert not tool._update_from_input_source()
+    assert tool.update_calls == 1
+
+    resolved["data"] = latest
+    resolved["snapshot"] = latest_snapshot
+    tool.handle_input_sources_replaced()
+    tool.finish_deferred_update()
+    qtbot.wait(10)
+
+    assert tool.update_calls == 1
+    assert tool.source_state == "stale"
+    assert tool._source_refresh_rerun_requested is False
+    assert tool.script_inputs[0].node_snapshot_token == first_snapshot
+    xr.testing.assert_identical(tool.tool_data, first)
+
+
+@pytest.mark.parametrize("auto_update", [False, True])
+def test_tool_window_standalone_abort_rerun_waits_for_event_loop(
+    qtbot,
+    auto_update: bool,
+) -> None:
+    class _DeferredInputTool(_PersistentTool):
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__(data)
+            self.update_calls = 0
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            del inputs
+            self.update_calls += 1
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data", auto_update=auto_update)
+    tool._set_input_resolver(lambda: ({"data": data + 1.0}, (refreshed_binding,)))
+
+    if auto_update:
+        tool.handle_input_sources_replaced()
+    else:
+        assert not tool._update_from_input_source()
+    tool.handle_input_sources_replaced()
+    assert tool.update_calls == 1
+
+    tool.abort_source_refresh()
+    assert tool.update_calls == 1
+    if not auto_update:
+        qtbot.wait(10)
+        assert tool.source_state == "stale"
+        assert tool._source_refresh_rerun_requested is False
+        return
+    qtbot.wait_until(lambda: tool.update_calls == 2)
+
+    assert tool._source_refresh_deferred is True
+    assert tool.script_inputs == (binding,)
+    tool.abort_source_refresh()
+
+
+def test_tool_window_failed_named_input_update_discards_pending_bindings(qtbot) -> None:
+    class _FailingMultiInputTool(_PersistentTool):
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            raise RuntimeError("update failed")
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_bindings = tuple(
+        ScriptInput(name=name, node_snapshot_token=f"old-{name}")
+        for name in ("data", "weights")
+    )
+    refreshed_bindings = tuple(
+        item.model_copy(update={"node_snapshot_token": f"new-{item.name}"})
+        for item in old_bindings
+    )
+    tool = _FailingMultiInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(old_bindings, primary_input="data")
+
+    with pytest.raises(RuntimeError, match="update failed"):
+        tool._apply_inputs(
+            {"data": data, "weights": data},
+            refreshed_bindings,
+        )
+
+    assert tool.script_inputs == old_bindings
+    assert tool._pending_script_inputs is None
+
+
+def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> None:
+    class _DeferredMultiInputTool(_PersistentTool):
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_bindings = tuple(
+        ScriptInput(name=name, node_snapshot_token=f"old-{name}")
+        for name in ("data", "weights")
+    )
+    refreshed_bindings = tuple(
+        item.model_copy(
+            update={"node_snapshot_token": f"new-{item.name}"},
+        )
+        for item in old_bindings
+    )
+    replacement_bindings = tuple(
+        item.model_copy(
+            update={"node_snapshot_token": f"replacement-{item.name}"},
+        )
+        for item in old_bindings
+    )
+    tool = _DeferredMultiInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        old_bindings,
+        primary_input="data",
+        auto_update=True,
+    )
+
+    assert not tool._apply_inputs(
+        {"data": data, "weights": data},
+        refreshed_bindings,
+    )
+    pending_bindings = tool._pending_script_inputs
+    invalid_contracts = (
+        (
+            (old_bindings[0].model_copy(update={"name": "renamed"}), old_bindings[1]),
+            "data",
+        ),
+        (tuple(reversed(old_bindings)), "data"),
+        (
+            (
+                old_bindings[0],
+                old_bindings[1].model_copy(update={"data_role": "source"}),
+            ),
+            "data",
+        ),
+        (
+            (
+                old_bindings[0],
+                old_bindings[1].model_copy(
+                    update={"source_spec": full_data().model_dump(mode="json")}
+                ),
+            ),
+            "data",
+        ),
+        ((), None),
+        (old_bindings, "weights"),
+    )
+    for invalid_bindings, primary_input in invalid_contracts:
+        with pytest.raises(ValueError, match="fixed"):
+            tool.set_script_inputs(
+                invalid_bindings,
+                primary_input=primary_input,
+                auto_update=True,
+            )
+        assert tool.script_inputs == old_bindings
+        assert tool._pending_script_inputs == pending_bindings
+
+    invalid_refresh = (
+        refreshed_bindings[0],
+        refreshed_bindings[1].model_copy(update={"data_role": "source"}),
+    )
+    with pytest.raises(ValueError, match="fixed input binding"):
+        tool._apply_inputs(
+            {"data": data, "weights": data},
+            invalid_refresh,
+        )
+    assert tool._pending_script_inputs == pending_bindings
+
+    tool.set_script_inputs(
+        replacement_bindings,
+        primary_input="data",
+        auto_update=True,
+    )
+    tool.finalize_source_refresh()
+
+    assert tool.script_inputs == replacement_bindings
+
+
+def test_tool_window_dataset_migrates_legacy_input_metadata(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data.isel(x=slice(1, 3)))
     qtbot.addWidget(tool)
 
@@ -4312,16 +5037,8 @@ def test_tool_window_dataset_prefers_source_spec_over_legacy_binding(qtbot) -> N
         selection_indexers={"x": slice(1, 3)},
     )
     source_spec = source_binding.materialize(data)
-    tool.set_source_binding(
-        source_spec,
-        source_binding=source_binding,
-        auto_update=True,
-        state="stale",
-    )
-    assert tool.source_binding is None
-
     saved = tool.to_dataset()
-    assert "tool_source_binding" not in saved.attrs
+    saved.attrs["tool_source_spec"] = json.dumps(source_spec.model_dump(mode="json"))
     saved.attrs["tool_source_binding"] = json.dumps(
         ImageToolSelectionSourceBinding(
             selection_mode="isel",
@@ -4333,21 +5050,78 @@ def test_tool_window_dataset_prefers_source_spec_over_legacy_binding(qtbot) -> N
     qtbot.addWidget(restored)
 
     assert isinstance(restored, _PersistentTool)
-    assert restored.source_spec == source_spec
-    assert restored.source_binding is None
-    assert restored.source_auto_update is True
-    assert restored.source_state == "stale"
+    assert restored.primary_input == "data"
+    assert len(restored.script_inputs) == 1
+    assert restored.script_inputs[0].parsed_source_spec() == source_spec
 
     legacy = _PersistentTool(data.isel(x=slice(1, 3))).to_dataset()
     legacy.attrs["tool_source_binding"] = json.dumps(
         source_binding.model_dump(mode="json")
     )
-    legacy_restored = erlab.interactive.utils.ToolWindow.from_dataset(legacy)
+    legacy_restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        legacy,
+        _source_parent_data=data,
+    )
     qtbot.addWidget(legacy_restored)
 
     assert isinstance(legacy_restored, _PersistentTool)
-    assert legacy_restored.source_spec is None
-    assert legacy_restored.source_binding == source_binding
+    assert legacy_restored.primary_input == "data"
+    assert len(legacy_restored.script_inputs) == 1
+    assert legacy_restored.script_inputs[0].parsed_source_spec() == source_spec
+
+    legacy.attrs["tool_source_spec"] = "{not-json"
+    legacy.attrs["tool_input_provenance_spec"] = "{not-json"
+    fallback_restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        legacy,
+        _source_parent_data=data,
+    )
+    qtbot.addWidget(fallback_restored)
+
+    assert fallback_restored.script_inputs[0].parsed_source_spec() == source_spec
+
+
+def test_tool_window_legacy_input_fallback_replays_source_transform_once(
+    qtbot,
+    tmp_path,
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0),
+        dims=("x",),
+        coords={"x": np.arange(6)},
+        name="data",
+    )
+    path = tmp_path / "legacy-input.nc"
+    data.to_netcdf(path)
+    source_spec = selection(IselOperation(kwargs={"x": slice(1, 5, 2)}))
+    parent_spec = file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+    complete_fallback = compose_full_provenance(parent_spec, source_spec)
+    assert complete_fallback is not None
+    expected = source_spec.apply(data)
+    saved = _PersistentTool(expected).to_dataset()
+    saved.attrs["tool_source_spec"] = json.dumps(source_spec.model_dump(mode="json"))
+    saved.attrs["tool_input_provenance_spec"] = json.dumps(
+        complete_fallback.model_dump(mode="json")
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    resolved, _refreshed = rebuild_script_inputs(restored.script_inputs)
+
+    xr.testing.assert_identical(resolved["data"], expected)
 
 
 def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> None:
@@ -4381,8 +5155,19 @@ def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> N
         is True
     )
 
-    tool.set_source_parent_fetcher(lambda: parent_data)
-    tool.set_source_binding(full_data(), state="fresh")
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                node_uid="parent",
+                source_spec=full_data(
+                    IselOperation(kwargs={"x": slice(0, 2)})
+                ).model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+        state="fresh",
+    )
     with tool._save_tool_data_reference_context(available_node_uids=frozenset()):
         assert (
             tool._tool_data_reference_payload(
@@ -4404,17 +5189,17 @@ def test_tool_window_dataset_ignores_invalid_saved_provenance(
     ds.attrs["tool_source_spec"] = "{not-json"
     ds.attrs["tool_source_binding"] = "{not-json"
     ds.attrs["tool_input_provenance_spec"] = "{not-json"
+    ds.attrs["tool_script_inputs"] = "{not-json"
 
     with caplog.at_level("WARNING", logger="erlab.interactive.utils"):
         restored = erlab.interactive.utils.ToolWindow.from_dataset(ds)
     qtbot.addWidget(restored)
 
     assert isinstance(restored, _PersistentTool)
-    assert restored.source_spec is None
-    assert restored.input_provenance_spec is None
-    assert "Ignoring invalid saved tool source provenance" in caplog.text
-    assert "Ignoring invalid saved tool source binding" in caplog.text
-    assert "Ignoring invalid saved tool input provenance" in caplog.text
+    assert restored.script_inputs == ()
+    assert restored.primary_input is None
+    assert "Ignoring invalid saved ToolWindow script inputs" in caplog.text
+    assert "Ignoring invalid legacy ToolWindow input metadata" in caplog.text
 
 
 def test_application_quit_requested_handles_missing_and_closing_app(
@@ -4530,22 +5315,28 @@ def test_tool_window_rejects_unreplayable_saved_source_reference() -> None:
     tool = _PersistentTool(data)
     ds = tool.to_dataset()
 
-    with pytest.raises(TypeError, match="missing source provenance"):
-        erlab.interactive.utils.ToolWindow._saved_source_spec_from_attrs(ds)
-
-    ds.attrs["tool_source_spec"] = json.dumps(None)
-    with pytest.raises(ValueError, match="not replayable"):
-        erlab.interactive.utils.ToolWindow._saved_source_spec_from_attrs(ds)
-
-    ds.attrs["tool_source_spec"] = json.dumps(
-        script(
-            ScriptCodeOperation(label="derive", code="out = data"),
-            start_label="Start from data",
-            active_name="out",
-        ).model_dump(mode="json")
-    )
-    with pytest.raises(TypeError, match="must be a live"):
-        erlab.interactive.utils.ToolWindow._saved_source_spec_from_attrs(ds)
+    for raw_source_spec in (
+        None,
+        json.dumps(None),
+        json.dumps(
+            script(
+                ScriptCodeOperation(label="derive", code="out = data"),
+                start_label="Start from data",
+                active_name="out",
+            ).model_dump(mode="json")
+        ),
+    ):
+        if raw_source_spec is None:
+            ds.attrs.pop("tool_source_spec", None)
+        else:
+            ds.attrs["tool_source_spec"] = raw_source_spec
+        with pytest.raises(ValueError, match="not replayable"):
+            erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+                {"kind": "parent_source"},
+                ds,
+                source_parent_data=data,
+                reference_resolver=None,
+            )
 
 
 def test_tool_window_resolves_saved_reference_errors() -> None:
@@ -4868,7 +5659,7 @@ def test_tool_window_materializes_referenced_data_without_mutating_source() -> N
     xr.testing.assert_identical(data_items[variable_name], source.compute())
 
 
-def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None:
+def test_tool_window_without_inputs_has_no_source_controls(qtbot) -> None:
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
 
@@ -4876,17 +5667,9 @@ def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None
     assert tool.show_source_update_dialog() == int(
         QtWidgets.QDialog.DialogCode.Rejected
     )
-    with pytest.raises(TypeError, match="source_binding must be"):
-        tool.set_source_binding(
-            None,
-            source_binding=typing.cast(
-                "ImageToolSelectionSourceBinding",
-                object(),
-            ),
-        )
 
 
-def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) -> None:
+def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -> None:
 
     class _FakeTreeView:
         def __init__(self) -> None:
@@ -4918,6 +5701,18 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
                 _configure_tool_code_trust=lambda _tool, **_kwargs: None,
                 _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
             )
+            self._lineage_controller = types.SimpleNamespace(
+                _propagate_source_change_from_uid=(
+                    self._propagate_source_change_from_uid
+                ),
+                _propagate_source_state_from_uid=(
+                    self._propagate_source_state_from_uid
+                ),
+                _resume_pending_source_refreshes=(
+                    self._resume_pending_source_refreshes
+                ),
+                _refresh_tool_inputs=self._refresh_tool_inputs,
+            )
 
         def _handle_node_change(
             self,
@@ -4939,14 +5734,20 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         ) -> None:
             self.propagated.append((uid, parent_data))
 
-        def _mark_descendants_source_state(self, uid: str, state: str) -> None:
+        def _propagate_source_state_from_uid(self, uid: str, state: str) -> None:
             self.marked.append((uid, state))
-
-        def _mark_descendants_source_unavailable(self, uid: str) -> None:
-            self.unavailable.append(uid)
+            node = self._tool_graph.nodes.get(uid)
+            if node is not None:
+                node._set_source_state(state)
+            if state == "unavailable":
+                self.unavailable.append(uid)
 
         def _resume_pending_source_refreshes(self, uid: str) -> None:
             self.updated.append(f"resumed:{uid}")
+
+        def _refresh_tool_inputs(self, uid: str, **_kwargs) -> bool:
+            self.updated.append(f"reload:{uid}")
+            return True
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
@@ -5005,10 +5806,25 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     )
     manager._tool_graph.nodes["child"] = node
 
+    with pytest.raises(TypeError, match="ImageTool nodes"):
+        node.set_source_binding(full_data())
+    with pytest.raises(TypeError, match="ImageTool nodes"):
+        node.set_output_binding("out")
+    with pytest.raises(TypeError, match="ImageTool nodes"):
+        node.set_detached_provenance(None, replay_source_data=None)
+
+    image_node = _ManagedWindowNode(
+        manager,
+        "image-child",
+        None,
+        None,
+        window_kind="imagetool",
+    )
+    manager._tool_graph.nodes["image-child"] = image_node
     with pytest.raises(TypeError, match="source_spec must be"):
-        node.set_source_binding(typing.cast("object", {"kind": "full_data"}))
+        image_node.set_source_binding(typing.cast("object", {"kind": "full_data"}))
     with pytest.raises(TypeError, match="source_binding must be"):
-        node.set_source_binding(
+        image_node.set_source_binding(
             None,
             source_binding=typing.cast(
                 "ImageToolSelectionSourceBinding",
@@ -5016,33 +5832,38 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             ),
         )
     with pytest.raises(ValueError, match="output_id must not be None"):
-        node.set_output_binding(typing.cast("str", None))
+        image_node.set_output_binding(typing.cast("str", None))
     with pytest.raises(TypeError, match="output_id must be a string"):
-        node.set_output_binding(typing.cast("str", 1))
+        image_node.set_output_binding(typing.cast("str", 1))
     with pytest.raises(ValueError, match="output_id must not be empty"):
-        node.set_output_binding("")
+        image_node.set_output_binding("")
     with pytest.raises(TypeError, match="provenance_spec must be"):
-        node.set_output_binding(
+        image_node.set_output_binding(
             "out",
             provenance_spec=typing.cast("object", {"kind": "script"}),
         )
 
-    node.set_output_binding("out", auto_update=True, state="stale")
-    assert node.output_id == "out"
-    assert node._source_state == "stale"
-    assert node._source_auto_update is True
-    assert node._output_id == "out"
-    assert manager.tree_view.refreshed[-1] == "child"
+    image_node.set_output_binding("out", auto_update=True, state="stale")
+    assert image_node.output_id == "out"
+    assert image_node._source_state == "stale"
+    assert image_node._source_auto_update is True
+    assert image_node._output_id == "out"
+    assert manager.tree_view.refreshed[-1] == "image-child"
 
-    source_binding = ImageToolSelectionSourceBinding()
     source_spec = full_data()
-    tool.set_source_binding(
-        source_spec,
-        source_binding=source_binding,
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                source_spec=source_spec.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
         auto_update=True,
         state="stale",
     )
-    assert node.source_spec == source_spec
+    assert node.source_spec is None
+    assert node.tool_script_inputs[0].parsed_source_spec() == source_spec
     assert node.source_binding is None
     assert node.source_state == "stale"
     assert node.source_auto_update is True
@@ -5056,7 +5877,11 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     node._handle_tool_data_changed()
     assert manager.marked[-1] == ("child", "stale")
 
-    tool.set_source_binding(source_spec, state="fresh")
+    tool.set_script_inputs(
+        tool.script_inputs,
+        primary_input="data",
+        state="fresh",
+    )
     node._handle_tool_data_changed()
     assert manager.propagated[-1] == ("child", None)
 
@@ -5076,15 +5901,13 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     manager._tool_graph.nodes["unbound"] = unbound_node
     assert not unbound_node.handle_parent_source_replaced(tool.tool_data)
 
-    updated = xr.DataArray(np.arange(4.0) + 10.0, dims=("x",), name="updated")
-    tool.set_source_binding(source_spec, state="stale")
-    assert not node._update_from_parent_source()
-    assert manager.marked[-1] == ("child", "stale")
-
-    tool.set_source_parent_fetcher(lambda: updated)
-    assert node._update_from_parent_source()
-    xr.testing.assert_identical(tool.tool_data, updated)
-    assert manager.propagated[-1] == ("child", None)
+    tool.set_script_inputs(
+        tool.script_inputs,
+        primary_input="data",
+        state="stale",
+    )
+    assert node.reload_source_data()
+    assert manager.updated[-1] == "reload:child"
 
     node.window = None
     assert node._detach_imagetool() is None
@@ -5109,10 +5932,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     assert node.imagetool is None
 
 
-def test_managed_tool_window_node_detached_update_branches(
-    qtbot,
-    monkeypatch,
-) -> None:
+def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
     parent_data = xr.DataArray(np.arange(4.0), dims=("x",), name="parent")
 
     class _FakeTreeView:
@@ -5174,9 +5994,20 @@ def test_managed_tool_window_node_detached_update_branches(
                 _configure_tool_code_trust=lambda _tool, **_kwargs: None,
                 _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
             )
+            self._lineage_controller = types.SimpleNamespace(
+                _parent_source_data_for_uid=self._parent_source_data_for_uid,
+                _propagate_source_state_from_uid=(
+                    self._propagate_source_state_from_uid
+                ),
+                _refresh_source_chain_to_uid=self._refresh_source_chain_to_uid,
+                _resume_pending_source_refreshes=(
+                    self._resume_pending_source_refreshes
+                ),
+            )
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,
+                displayed_provenance_spec=None,
                 current_source_data=lambda: parent_tool.tool_data,
             )
 
@@ -5190,11 +6021,13 @@ def test_managed_tool_window_node_detached_update_branches(
             assert uid == "child"
             return typing.cast("_OutputTool", self.parent_node.tool_window).tool_data
 
-        def _mark_descendants_source_state(self, uid: str, state: str) -> None:
+        def _propagate_source_state_from_uid(self, uid: str, state: str) -> None:
             self.marked.append((uid, state))
-
-        def _mark_descendants_source_unavailable(self, uid: str) -> None:
-            self.unavailable.append(uid)
+            node = self._tool_graph.nodes.get(uid)
+            if node is not None:
+                node._set_source_state(state)
+            if state == "unavailable":
+                self.unavailable.append(uid)
 
         def _resume_pending_source_refreshes(self, uid: str) -> None:
             self.updated.append(f"resumed:{uid}")
@@ -5250,15 +6083,18 @@ def test_managed_tool_window_node_detached_update_branches(
 
     parent_tool = _OutputTool(parent_data)
     qtbot.addWidget(parent_tool)
+    parent_tool.set_script_inputs(
+        (ScriptInput(name="data"),),
+        primary_input="data",
+    )
     manager = _FakeManager(parent_tool)
     qtbot.addWidget(manager)
-    tool = _PersistentTool(parent_data)
-    qtbot.addWidget(tool)
     node = _ManagedWindowNode(
         manager,
         "child",
         "parent",
-        tool,
+        None,
+        window_kind="imagetool",
     )
     manager._tool_graph.nodes["child"] = node
     with pytest.raises(RuntimeError, match="not bound"):
@@ -5268,13 +6104,12 @@ def test_managed_tool_window_node_detached_update_branches(
         selection_mode="isel",
         selection_indexers={"x": slice(0, 2)},
     )
-    bound_tool = _PersistentTool(parent_data.isel(x=slice(0, 2)))
-    qtbot.addWidget(bound_tool)
     bound_node = _ManagedWindowNode(
         manager,
         "bound",
         "parent",
-        bound_tool,
+        None,
+        window_kind="imagetool",
         source_binding=source_binding,
     )
     manager._tool_graph.nodes["bound"] = bound_node
@@ -5319,12 +6154,20 @@ def test_managed_tool_window_node_detached_update_branches(
     node.show()
 
     node.set_output_binding("out", state="fresh")
-    parent_tool.set_source_binding(full_data(), state="stale")
+    parent_tool.set_script_inputs(
+        parent_tool.script_inputs,
+        primary_input="data",
+        state="stale",
+    )
     assert not node._update_from_parent_source()
     assert node.source_state == "stale"
     assert manager.marked[-1] == ("child", "stale")
 
-    parent_tool.set_source_binding(full_data(), state="fresh")
+    parent_tool.set_script_inputs(
+        parent_tool.script_inputs,
+        primary_input="data",
+        state="fresh",
+    )
     parent_tool.output_data = None
     assert not node._update_from_parent_source()
     assert node.source_state == "unavailable"
@@ -5348,51 +6191,6 @@ def test_managed_tool_window_node_detached_update_branches(
 
     node.set_detached_provenance(None, replay_source_data=None)
     assert not node.handle_parent_source_replaced(parent_data)
-
-    node.set_source_binding(
-        full_data(IselOperation(kwargs={"missing": 0})),
-        state="stale",
-    )
-    assert not node.handle_parent_source_replaced(parent_data)
-    assert node.source_state == "stale"
-
-    node.set_source_binding(full_data(), auto_update=True, state="stale")
-    assert not node.handle_parent_source_replaced(parent_data)
-    assert node.source_state == "stale"
-
-    node.set_detached_provenance(None, replay_source_data=None)
-    assert node.show_source_update_dialog(parent=manager) == int(
-        QtWidgets.QDialog.DialogCode.Rejected
-    )
-
-    class _FakeSourceUpdateDialog:
-        def __init__(
-            self,
-            parent: QtWidgets.QWidget,
-            *,
-            state: str,
-            auto_update: bool,
-        ) -> None:
-            assert parent is manager
-            assert state == "stale"
-            assert auto_update is False
-            self.update_requested = True
-            self.auto_update_check = types.SimpleNamespace(isChecked=lambda: True)
-
-        def exec(self) -> int:
-            return int(QtWidgets.QDialog.DialogCode.Accepted)
-
-    monkeypatch.setattr(
-        erlab.interactive.utils,
-        "_ToolSourceUpdateDialog",
-        _FakeSourceUpdateDialog,
-    )
-    node.set_output_binding("out", auto_update=False, state="stale")
-    assert node.show_source_update_dialog(parent=manager) == int(
-        QtWidgets.QDialog.DialogCode.Accepted
-    )
-    assert node.source_auto_update is True
-    assert manager.updated[-1] == "refresh:child"
 
 
 def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) -> None:
@@ -5624,8 +6422,8 @@ def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_sepa
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def _result_output_data(self) -> xr.DataArray:
             return self._data + 1
@@ -5633,7 +6431,7 @@ def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_sepa
         def _result_output_label(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             return "Compute dummy output"
@@ -5641,11 +6439,11 @@ def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_sepa
         def _result_output_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'} + 1"
+            return f"{primary_input or 'data'} + 1"
 
     tool = _DummyTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
@@ -5732,8 +6530,8 @@ def test_tool_window_managed_detached_output_preserves_provenance(
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
     root_data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
     output_data = xr.DataArray(np.arange(3.0), dims=("x",), name="detached")
@@ -5754,7 +6552,12 @@ def test_tool_window_managed_detached_output_preserves_provenance(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         tool = _DummyTool(root_data)
-        child_uid = manager.add_childtool(tool, 0, show=False)
+        tool.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
         assert manager._child_node(child_uid).tool_window is tool
 
         launched = tool._launch_detached_output_imagetool(
@@ -5798,8 +6601,8 @@ def test_tool_window_unbound_launches_open_distinct_windows(qtbot) -> None:
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
     tool = _DummyTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)

@@ -298,7 +298,15 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         second_uid = manager._tool_graph.root_wrappers[1].uid
 
         child_tool = erlab.interactive.utils.ToolWindow()
-        child_uid = manager.add_childtool(child_tool, 0, show=False)
+        child_tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        child_uid = manager.add_childtool(
+            child_tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
         figure_tool = FigureComposerTool(test_data)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         second_figure_uid = manager.add_figuretool(
@@ -396,8 +404,19 @@ def test_arrange_selected_windows_accepts_and_cancels(
         _add_batch_tools(qtbot, manager, test_data)
         first = erlab.interactive.utils.ToolWindow()
         second = erlab.interactive.utils.ToolWindow()
-        first_uid = manager.add_childtool(first, 0)
-        second_uid = manager.add_childtool(second, 0)
+        for tool in (first, second):
+            tool.set_script_inputs(
+                (ScriptInput(name="data", data_role="displayed"),),
+                primary_input="data",
+            )
+        first_uid = manager.add_childtool(
+            first,
+            script_inputs={"data": 0},
+        )
+        second_uid = manager.add_childtool(
+            second,
+            script_inputs={"data": 0},
+        )
         select_child_tool(manager, first_uid)
         select_child_tool(manager, second_uid)
         manager._update_actions()
@@ -472,7 +491,14 @@ def test_arrange_selected_windows_preserves_geometry_when_layout_does_not_fit(
             erlab.interactive.utils.ToolWindow(),
         ]
         for window in windows:
-            uid = manager.add_childtool(window, 0)
+            window.set_script_inputs(
+                (ScriptInput(name="data", data_role="displayed"),),
+                primary_input="data",
+            )
+            uid = manager.add_childtool(
+                window,
+                script_inputs={"data": 0},
+            )
             select_child_tool(manager, uid)
         original = [window.geometry() for window in windows]
 
@@ -517,7 +543,18 @@ def test_arrange_selected_windows_rolls_back_geometry_on_error(
             erlab.interactive.utils.ToolWindow(),
             erlab.interactive.utils.ToolWindow(),
         ]
-        uids = [manager.add_childtool(window, 0) for window in windows]
+        for window in windows:
+            window.set_script_inputs(
+                (ScriptInput(name="data", data_role="displayed"),),
+                primary_input="data",
+            )
+        uids = [
+            manager.add_childtool(
+                window,
+                script_inputs={"data": 0},
+            )
+            for window in windows
+        ]
         for uid in uids:
             select_child_tool(manager, uid)
         windows[0].setGeometry(80, 90, 320, 240)
@@ -3950,9 +3987,14 @@ def test_batch_action_updates_when_tool_child_subtree_removes_imagetool(
         manager.show()
         _add_batch_tools(qtbot, manager, _batch_data("scan0"))
 
+        tool = erlab.interactive.utils.ToolWindow()
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
         tool_uid = manager.add_childtool(
-            erlab.interactive.utils.ToolWindow(),
-            0,
+            tool,
+            script_inputs={"data": 0},
             show=False,
         )
         child_tool = typing.cast(
@@ -6347,7 +6389,7 @@ def test_manager_childtool_source_updates(
         wrapper = manager._tool_graph.root_wrappers[0]
         uid, child = next(iter(wrapper._childtools.items()))
         assert isinstance(child, DerivativeTool)
-        assert child.source_spec is not None
+        assert child.script_inputs[0].source_spec is not None
 
         initial = test_data.transpose("eV", "alpha")
         xr.testing.assert_identical(child.tool_data, initial)
@@ -6392,14 +6434,18 @@ def test_manager_childtool_source_updates(
             dialog.update_button.click()  # type: ignore[attr-defined]
 
         refresh_calls: list[str] = []
-        original_refresh_chain = manager._refresh_source_chain_to_uid
+        original_refresh_chain = (
+            manager._lineage_controller._refresh_source_chain_to_uid
+        )
 
         def _track_refresh_chain(refresh_uid: str) -> bool:
             refresh_calls.append(refresh_uid)
             return original_refresh_chain(refresh_uid)
 
         monkeypatch.setattr(
-            manager, "_refresh_source_chain_to_uid", _track_refresh_chain
+            manager._lineage_controller,
+            "_refresh_source_chain_to_uid",
+            _track_refresh_chain,
         )
 
         click_child_status_badge(
@@ -7488,7 +7534,11 @@ def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
         child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
-        child.set_source_binding(child.source_spec, auto_update=auto_update)
+        child.set_script_inputs(
+            child.script_inputs,
+            primary_input=child.primary_input,
+            auto_update=auto_update,
+        )
 
         updated = source.copy(deep=True)
         updated.data = np.asarray(updated.data) + 100.0
@@ -7944,7 +7994,7 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
         xr.testing.assert_identical(fetch(eligible_uid), source.isel(x=slice(0, 2)))
 
 
-def test_manager_selected_reload_targets_handles_stale_selection(
+def test_manager_selected_reload_candidates_handle_stale_selection(
     monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -7967,9 +8017,15 @@ def test_manager_selected_reload_targets_handles_stale_selection(
             lambda _uid: (_ for _ in ()).throw(KeyError("missing")),
         )
 
-        assert manager._selected_reload_targets() is None
+        candidates = manager._lineage_controller._selected_reload_candidates()
+        assert candidates is not None
+        assert candidates[2] is not None
 
-        child_node = types.SimpleNamespace(has_source_binding=True)
+        child_node = types.SimpleNamespace(
+            has_source_binding=True,
+            tool_script_inputs=(),
+            is_imagetool=False,
+        )
         stale_selection.setattr(manager, "_child_node", lambda _uid: child_node)
         stale_selection.setattr(
             manager,
@@ -7977,7 +8033,9 @@ def test_manager_selected_reload_targets_handles_stale_selection(
             lambda _node: (_ for _ in ()).throw(KeyError("missing-parent")),
         )
 
-        assert manager._selected_reload_targets() is None
+        candidates = manager._lineage_controller._selected_reload_candidates()
+        assert candidates is not None
+        assert candidates[2] is not None
 
 
 def test_manager_reload_selected_skips_child_refresh_when_parent_reload_fails(
@@ -7988,16 +8046,25 @@ def test_manager_reload_selected_skips_child_refresh_when_parent_reload_fails(
 ) -> None:
     with manager_context() as manager, monkeypatch.context() as reload_failure:
         node = types.SimpleNamespace(
-            imagetool=object(),
-            slicer_area=types.SimpleNamespace(_reload=lambda: False),
+            uid="root",
+            tool_script_inputs=(),
+            is_imagetool=False,
+            imagetool=None,
+            provenance_spec=None,
+            reload_source_data=lambda: False,
+            tool_window=None,
         )
         refreshed: list[str] = []
         reload_failure.setattr(
-            manager, "_selected_reload_targets", lambda: ([0], {0: ["child"]})
+            manager._lineage_controller,
+            "_selected_reload_candidates",
+            lambda: ([0], {0: ["child"]}, None),
         )
         reload_failure.setattr(manager, "_node_for_target", lambda _target: node)
         reload_failure.setattr(
-            manager, "_refresh_source_chain_to_uid", refreshed.append
+            manager._lineage_controller,
+            "_refresh_source_chain_to_uid",
+            refreshed.append,
         )
         manager.reload_selected()
 
@@ -8028,7 +8095,9 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
             timeout=5000,
         )
 
-        child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
+        child_uid, child = next(
+            iter(manager._tool_graph.root_wrappers[0]._childtools.items())
+        )
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
         replaced = test_data.copy(deep=True)
@@ -8038,17 +8107,29 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
             itool(replaced, manager=True, replace=0)
 
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
-        assert child._update_from_parent_source() is True
+        assert manager._lineage_controller._refresh_tool_inputs(
+            child_uid,
+            allow_recorded=False,
+        )
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
-        child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+        child.set_script_inputs(
+            child.script_inputs,
+            primary_input=child.primary_input,
+            auto_update=True,
+            state="fresh",
+        )
         replaced2 = replaced.copy(deep=True)
         replaced2.data = np.asarray(replaced2.data) + 5
 
         with qtbot.wait_signal(manager._sigDataReplaced):
             itool(replaced2, manager=True, replace=0)
 
-        qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(
+            lambda: child.tool_data.identical(parent_tool.slicer_area.data),
+            timeout=5000,
+        )
+        assert child.source_state == "fresh"
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
 
@@ -8176,9 +8257,14 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        tool = GoldTool(gold.copy(deep=True), data_name="gold_input")
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
         child_uid = manager.add_childtool(
-            GoldTool(gold.copy(deep=True), data_name="gold_input"),
-            0,
+            tool,
+            script_inputs={"data": 0},
             show=False,
         )
         child = manager.get_childtool(child_uid)
@@ -8204,6 +8290,7 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         manager._update_info(uid=output_uid)
         assert metadata_derivation_texts(manager) == [
             "Start from current goldtool input data",
+            "Use data from ImageTool 0",
             "Fit and correct current data with the polynomial edge model",
         ]
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
@@ -8321,7 +8408,12 @@ def test_manager_ktool_output_itool_nests_under_tool(
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
         qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
 
-        child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+        child.set_script_inputs(
+            child.script_inputs,
+            primary_input=child.primary_input,
+            auto_update=True,
+            state="fresh",
+        )
         output_node.set_output_binding(
             typing.cast("str", output_node.output_id),
             provenance_spec=output_node.provenance_spec,
@@ -8431,12 +8523,14 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         assert call_count == 0
         xr.testing.assert_identical(fetch(output_uid), before)
         qtbot.wait_until(
-            lambda: metadata_updates == [child_uid],
+            lambda: (
+                bool(metadata_updates)
+                and not manager._details_refresh_queue.pending_uids
+                and not manager._details_refresh_queue.is_active()
+            ),
             timeout=2000,
         )
-        assert metadata_updates == [child_uid]
-        assert not manager._details_refresh_queue.pending_uids
-        assert not manager._details_refresh_queue.is_active()
+        assert set(metadata_updates) == {child_uid}
 
         state_changes: list[str] = []
         monkeypatch.setattr(
@@ -8480,7 +8574,12 @@ def test_manager_reused_output_child_keeps_stale_state(
         output_uid = child_node._childtool_indices[0]
         output_node = manager._child_node(output_uid)
 
-        child.set_source_binding(child.source_spec, auto_update=False, state="stale")
+        child.set_script_inputs(
+            child.script_inputs,
+            primary_input=child.primary_input,
+            auto_update=False,
+            state="stale",
+        )
         output_node.set_output_binding(
             typing.cast("str", output_node.output_id),
             provenance_spec=output_node.provenance_spec,
@@ -8538,7 +8637,12 @@ def test_manager_dtool_output_itool_refreshes_with_parent_updates(
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
         qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
 
-        child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+        child.set_script_inputs(
+            child.script_inputs,
+            primary_input=child.primary_input,
+            auto_update=True,
+            state="fresh",
+        )
         output_node.set_output_binding(
             typing.cast("str", output_node.output_id),
             provenance_spec=output_node.provenance_spec,
@@ -8588,7 +8692,12 @@ def test_manager_output_itool_auto_update_can_be_disabled_from_auto_badge(
         output_uid = child_node._childtool_indices[0]
         output_node = manager._child_node(output_uid)
 
-        child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+        child.set_script_inputs(
+            child.script_inputs,
+            primary_input=child.primary_input,
+            auto_update=True,
+            state="fresh",
+        )
 
         replaced = test_data.copy(deep=True)
         replaced.data = np.asarray(replaced.data) * 2

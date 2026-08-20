@@ -34,6 +34,7 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     ToolProvenanceSpec,
     compose_display_provenance,
     full_data,
@@ -66,6 +67,7 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _WorkspaceSweepChildTool,
     _WorkspaceSweepFigureTool,
     _WorkspaceSweepToolState,
+    add_source_childtool,
 )
 
 
@@ -1321,6 +1323,10 @@ def _workspace_sweep_node_snapshot(
         snapshot["imagetool_data_name"] = node.slicer_area._data.name
     else:
         tool = typing.cast("_WorkspaceSweepChildTool", node.tool_window)
+        snapshot["script_inputs"] = [
+            item.model_dump(mode="json") for item in tool.script_inputs
+        ]
+        snapshot["primary_input"] = tool.primary_input
         snapshot["tool_status"] = tool.tool_status.model_dump(mode="json")
         snapshot["tool_data_name"] = tool.tool_data.name
         snapshot["tool_display_name"] = tool._tool_display_name
@@ -1424,6 +1430,7 @@ def _workspace_sweep_h5_attr_payload(
         "tool_source_spec",
         "tool_source_binding",
         "tool_input_provenance_spec",
+        "tool_script_inputs",
         "tool_data_references",
     }
     node_path, _separator, _kind = payload_path.rpartition("/")
@@ -1488,7 +1495,8 @@ def test_manager_workspace_load_preserves_added_time(
             show=False,
             created_time=child_added,
         )
-        tool_uid = manager.add_childtool(
+        tool_uid = add_source_childtool(
+            manager,
             _AddedTimeChildTool(test_data),
             root_index,
             show=False,
@@ -1806,7 +1814,12 @@ def test_pending_tool_reference_reads_owner_workspace(
         loader = manager._workspace_controller.loading
         manager._workspace_state.path = tmp_path / "associated.itws"
         imported_path = tmp_path / "imported.itws"
-        reference = {"kind": "manager_node", "node_uid": "removed-source"}
+        source_spec = full_data(RenameOperation(name="transformed"))
+        reference = {
+            "kind": "manager_node",
+            "node_uid": "removed-source",
+            "source_spec": source_spec.model_dump(mode="json"),
+        }
         ds = xr.Dataset(
             attrs={
                 erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
@@ -1838,7 +1851,9 @@ def test_pending_tool_reference_reads_owner_workspace(
             owner_node=owner_node,
         )
 
-        assert resolver(reference) is resolved
+        restored = resolver(reference)
+        assert restored is not None
+        xr.testing.assert_identical(restored, resolved.rename("transformed"))
         assert workspace_paths == [imported_path]
 
 
@@ -2197,16 +2212,22 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             weights=[0.25, 0.5, 0.75],
             options={"snap": True, "labels": ["alpha", "beta"]},
         )
-        child_window.set_source_binding(
-            tool_source_spec,
-            source_binding=tool_binding,
+        child_window.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    data_role="source",
+                    source_spec=tool_source_spec,
+                    provenance_spec=root_provenance,
+                ),
+            ),
+            primary_input="data",
             auto_update=True,
             state="unavailable",
         )
-        child_window.set_input_provenance_spec(root_provenance)
         child_tool_uid = manager.add_childtool(
             child_window,
-            0,
+            script_inputs={"data": 0},
             show=False,
             uid="sweep-child-tool",
             snapshot_token=child_tool_marker,
@@ -2423,11 +2444,14 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         )
         assert tool_payload["tool_source_state"] == "unavailable"
         assert tool_payload["tool_source_auto_update"] is True
-        assert tool_payload["tool_source_spec"] == tool_source_spec.model_dump(
-            mode="json"
-        )
+        assert tool_payload["tool_script_inputs"] == [
+            item.model_dump(mode="json") for item in child_window.script_inputs
+        ]
+        assert tool_payload["tool_primary_input"] == "data"
+        assert "tool_source_spec" not in tool_payload
         assert "tool_source_binding" not in tool_payload
         assert "manager_node_provenance_spec" not in figure_payload
+        assert "tool_input_provenance_spec" not in tool_payload
         with h5py.File(fname, "r") as h5_file:
             tool_group = h5_file[
                 _current_workspace_payload_path(fname, "0/childtools/sweep-child-tool")
@@ -2988,8 +3012,7 @@ def test_manager_load_workspace_tool_dataset_materializes_reference(
         manager.add_imagetool(parent, show=False)
 
         child = _WorkspaceSweepChildTool(data.rename("child"))
-        child.set_source_binding(full_data())
-        manager.add_childtool(child, 0, show=False)
+        add_source_childtool(manager, child, 0, show=False)
         with child._save_tool_data_reference_context(manager._tool_graph.nodes):
             ds = child.to_dataset()
 
@@ -3040,7 +3063,7 @@ def test_manager_workspace_partially_loads_corrupted_child_with_warning(
         manager.add_imagetool(root, show=False)
 
         child = DerivativeTool(data)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
 
         tree = manager._workspace_controller.saving._to_datatree()
         try:
@@ -3051,6 +3074,7 @@ def test_manager_workspace_partially_loads_corrupted_child_with_warning(
                 "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
             ).to_dataset(inherit=False)
             child_ds = child_ds.copy(deep=True)
+            child_ds.attrs.pop(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR, None)
             saved_data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
             child_ds[saved_data_name] = xr.DataArray(
                 np.arange(50.0).reshape(2, 5, 5),
@@ -3107,7 +3131,7 @@ def test_manager_workspace_roundtrips_child_plot_appearance(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         child = DerivativeTool(data)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = add_source_childtool(manager, child, 0, show=False)
         manager._workspace_controller._mark_workspace_clean()
 
         histogram = child.hists[0]
@@ -3810,8 +3834,8 @@ def test_manager_workspace_selected_import_uses_manifest_fast_path(
         root_a = itool(data, manager=False, execute=False)
         assert isinstance(root_a, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root_a, show=False)
-        child_uid = manager.add_childtool(
-            _WorkspaceSweepChildTool(data + 10), 0, show=False
+        child_uid = add_source_childtool(
+            manager, _WorkspaceSweepChildTool(data + 10), 0, show=False
         )
         root_b = itool(data + 1, manager=False, execute=False)
         assert isinstance(root_b, erlab.interactive.imagetool.ImageTool)
