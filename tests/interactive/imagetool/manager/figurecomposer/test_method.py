@@ -53,6 +53,7 @@ from ._common import (
     _finish_tick_params_edit,
     _select_operation_rows,
     _selected_operation_rows,
+    _set_figure_stylesheets,
     _set_tick_params_button,
 )
 
@@ -1745,6 +1746,43 @@ def test_figure_composer_text_methods_share_artist_controls(family, name) -> Non
         )
     else:
         assert controls["horizontalalignment"].exclusive_group is None
+
+
+def test_figure_composer_set_titles_default_location_uses_stylesheet(qtbot) -> None:
+    _set_figure_stylesheets(["erlab.general"])
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="set_titles",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"text_values": ("Styled title",)})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_editor.select_section("method")
+    location_combo = tool.operation_editor.stack.currentWidget().findChild(
+        QtWidgets.QComboBox,
+        "figureComposerERLabSetTitlesLocCombo",
+    )
+    assert location_combo is not None
+    assert location_combo.currentData() is None
+    assert tool.tool_status.operations[0].method_kwargs == {}
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool.figure.axes[0].get_title(loc="left") == "Styled title"
+
+    _activate_combo_index(location_combo, location_combo.findData("right"))
+    assert tool.tool_status.operations[0].method_kwargs == {"loc": "right"}
+
+    _activate_combo_index(location_combo, location_combo.findData(None))
+    assert tool.tool_status.operations[0].method_kwargs == {}
 
 
 def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None:
