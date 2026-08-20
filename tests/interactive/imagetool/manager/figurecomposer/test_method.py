@@ -12,8 +12,10 @@ import xarray as xr
 from matplotlib.text import Text
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive._figurecomposer._completion_values as completion_values
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
+import erlab.interactive._figurecomposer._ui._completion as completion_widgets
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
 import erlab.plotting as eplt
@@ -1499,11 +1501,13 @@ def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
                     family=FigureMethodFamily.AXES,
                     name="set_title",
                     args=("left",),
+                    kwargs={"fontsize": 8},
                 ),
                 FigureOperationState.method(
                     family=FigureMethodFamily.AXES,
                     name="set_title",
                     args=("right",),
+                    kwargs={"fontsize": 10},
                 ),
                 FigureOperationState.method(
                     family=FigureMethodFamily.AXES,
@@ -1525,10 +1529,24 @@ def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
     assert title_edit is not None
     assert title_edit.toPlainText() == ""
     assert title_edit.placeholderText() == "(multiple values)"
+    font_size_edit = method_page.findChild(
+        completion_widgets.CompletingLineEdit,
+        "figureComposerAxesMethodTitleFontSizeEdit",
+    )
+    assert font_size_edit is not None
+    assert font_size_edit.text() == ""
+    assert font_size_edit.placeholderText() == "(multiple values)"
 
     title_edit.textChanged.emit()
     assert tool.tool_status.operations[0].method_args == ("left",)
     assert tool.tool_status.operations[1].method_args == ("right",)
+
+    font_size_edit.completion_completer.activated[str].emit("large")
+    assert font_size_edit.isModified()
+    font_size_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs == {"fontsize": "large"}
+    assert tool.tool_status.operations[1].method_kwargs == {"fontsize": "large"}
+    assert tool.tool_status.operations[2].method_kwargs == {}
 
     title_edit.setPlainText("shared")
     assert tool.tool_status.operations[0].method_args == ("shared",)
@@ -1564,14 +1582,25 @@ def test_figure_composer_method_text_args_accept_real_newlines(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    label_edit = tool.operation_editor.stack.currentWidget().findChild(
-        QtWidgets.QPlainTextEdit, "figureComposerAxesMethodXLabelEdit"
+    label_input = tool.operation_editor.stack.currentWidget().findChild(
+        completion_widgets.CompletingPlainTextEdit,
+        "figureComposerAxesMethodXLabelEdit",
     )
-    assert label_edit is not None
-    assert label_edit.toPlainText() == r"h\nu"
+    assert label_input is not None
+    assert label_input.toPlainText() == r"h\nu"
 
-    label_edit.setPlainText("Energy\n(eV)")
+    label_input.selectAll()
+    qtbot.keyClicks(label_input, "Energy")
+    qtbot.keyClick(label_input, QtCore.Qt.Key.Key_Return)
+    qtbot.keyClicks(label_input, "(eV)")
     assert tool.tool_status.operations[0].method_args == ("Energy\n(eV)",)
+    assert label_input.toPlainText() == "Energy\n(eV)"
+    figurecomposer_rendering._render_into_figure(
+        tool,
+        tool.figure,
+        sync_visible=False,
+    )
+    assert tool.figure.axes[0].get_xlabel() == "Energy\n(eV)"
     restored_status = FigureRecipeState.model_validate_json(
         tool.tool_status.model_dump_json()
     )
@@ -1581,8 +1610,215 @@ def test_figure_composer_method_text_args_accept_real_newlines(qtbot) -> None:
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert namespace["fig"].axes[0].get_xlabel() == "Energy\n(eV)"
 
-    label_edit.setPlainText(r"h\nu")
+    label_input.selectAll()
+    qtbot.keyClicks(label_input, r"h\nu")
     assert tool.tool_status.operations[0].method_args == (r"h\nu",)
+
+
+def test_figure_composer_label_completion_accepts_current_line(qtbot) -> None:
+    label_input = completion_widgets.CompletingPlainTextEdit(
+        "first\n",
+        completions=completion_values.LABEL_COMPLETIONS,
+    )
+    qtbot.addWidget(label_input)
+    label_input.show()
+    label_input.setFocus()
+    cursor = label_input.textCursor()
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+    label_input.setTextCursor(cursor)
+
+    qtbot.keyClicks(label_input, "$E-E")
+    qtbot.waitUntil(label_input.completer_popup.isVisible)
+    qtbot.keyClick(label_input.completer_popup, QtCore.Qt.Key.Key_Return)
+
+    assert (
+        label_input.toPlainText() == f"first\n{completion_values.LABEL_COMPLETIONS[0]}"
+    )
+    assert not label_input.completer_popup.isVisible()
+
+    label_input.undo()
+    assert label_input.toPlainText() == "first\n$E-E"
+    label_input.completion_shortcut.activated.emit()
+    assert label_input.completion_completer.completionPrefix() == ""
+    assert label_input.completion_completer.completionCount() == len(
+        completion_values.LABEL_COMPLETIONS
+    )
+
+
+def test_figure_composer_line_edit_completion_accepts_font_size_name(
+    qtbot,
+) -> None:
+    class FontSizeLineEdit(completion_widgets.CompletingLineEdit):
+        COMPLETIONS = completion_values.FONT_SIZE_COMPLETIONS
+
+    edit = FontSizeLineEdit()
+    qtbot.addWidget(edit)
+    edit.show()
+    edit.setFocus()
+
+    qtbot.keyClicks(edit, "l")
+    qtbot.waitUntil(edit.completer_popup.isVisible)
+    edit.completion_completer.activated[str].emit("large")
+
+    assert edit.text() == "large"
+    assert edit.isModified()
+    assert edit.isUndoAvailable()
+    assert not edit.completer_popup.isVisible()
+
+    edit.undo()
+    assert edit.text() == "l"
+    edit.redo()
+    assert edit.text() == "large"
+
+    edit.setModified(False)
+    edit.completion_completer.activated[str].emit("large")
+    assert edit.text() == "large"
+    assert edit.isModified()
+
+    edit.clear()
+    edit.completion_shortcut.activated.emit()
+    assert edit.completion_completer.completionPrefix() == ""
+    assert edit.completion_completer.completionCount() == len(
+        completion_values.FONT_SIZE_COMPLETIONS
+    )
+
+    empty_edit = completion_widgets.CompletingLineEdit()
+    qtbot.addWidget(empty_edit)
+    empty_edit.show_all_completions()
+    assert not empty_edit.completer_popup.isVisible()
+
+
+def test_figure_composer_completion_literal_values() -> None:
+    completions = completion_values.FONT_SIZE_COMPLETIONS
+
+    assert (
+        completion_values._format_completion_literal(None, completions=completions)
+        == ""
+    )
+    assert (
+        completion_values._format_completion_literal("large", completions=completions)
+        == "large"
+    )
+    assert (
+        completion_values._format_completion_literal("custom", completions=completions)
+        == '"custom"'
+    )
+    assert (
+        completion_values._completion_literal_from_text("", completions=completions)
+        is None
+    )
+    assert (
+        completion_values._completion_literal_from_text(
+            "large", completions=completions
+        )
+        == "large"
+    )
+    assert completion_values._completion_literal_from_text(
+        "9.5", completions=completions
+    ) == pytest.approx(9.5)
+
+
+@pytest.mark.parametrize(
+    ("family", "name"),
+    [
+        (FigureMethodFamily.AXES, "set_xlabel"),
+        (FigureMethodFamily.AXES, "set_ylabel"),
+        (FigureMethodFamily.FIGURE, "supxlabel"),
+        (FigureMethodFamily.FIGURE, "supylabel"),
+    ],
+)
+def test_figure_composer_label_methods_offer_curated_manual_input(
+    qtbot, family, name
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    initial_label = completion_values.LABEL_COMPLETIONS[-1]
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=family,
+                    name=name,
+                    args=(initial_label,),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_editor.select_section("method")
+    label_input = tool.operation_editor.stack.currentWidget().findChild(
+        completion_widgets.CompletingPlainTextEdit
+    )
+    assert label_input is not None
+    assert not label_input.isReadOnly()
+    assert label_input.toPlainText() == initial_label
+    assert label_input.completion_completer.widget() is label_input
+    assert (
+        label_input.completion_completer.completionMode()
+        == QtWidgets.QCompleter.CompletionMode.PopupCompletion
+    )
+
+    selected_label = completion_values.LABEL_COMPLETIONS[0]
+    label_input.selectAll()
+    qtbot.keyClicks(label_input, "$E-E")
+    assert label_input.completion_completer.completionPrefix() == "$E-E"
+    label_input.completion_completer.activated[str].emit(selected_label)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.method_args == (selected_label,)
+
+    label_input.show_all_completions()
+    assert label_input.completion_completer.completionPrefix() == ""
+    assert label_input.completion_completer.completionCount() == len(
+        completion_values.LABEL_COMPLETIONS
+    )
+
+    label_input.selectAll()
+    qtbot.keyClicks(label_input, "Manual label")
+    operation = tool.tool_status.operations[0]
+    assert operation.method_args == ("Manual label",)
+
+
+@pytest.mark.parametrize("name", ["set_xlabels", "set_ylabels"])
+def test_figure_composer_plural_label_methods_offer_completion(qtbot, name) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name=name,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_editor.select_section("method")
+    page = tool.operation_editor.stack.currentWidget()
+    label_input = page.findChild(
+        completion_widgets.CompletingPlainTextEdit,
+        "figureComposerMethodTextValuesEdit",
+    )
+    assert label_input is not None
+    label_input.setPlainText("first\n")
+    cursor = label_input.textCursor()
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+    label_input.setTextCursor(cursor)
+    qtbot.keyClicks(label_input, "$E-E")
+
+    selected_label = completion_values.LABEL_COMPLETIONS[0]
+    assert label_input.completion_completer.completionPrefix() == "$E-E"
+    label_input.completion_completer.activated[str].emit(selected_label)
+
+    assert label_input.toPlainText() == f"first\n{selected_label}"
+    assert tool.tool_status.operations[0].text_values == ("first", selected_label)
 
 
 @pytest.mark.parametrize(
@@ -1723,10 +1959,8 @@ def test_figure_composer_loaded_method_preserves_semantic_none() -> None:
 )
 def test_figure_composer_text_methods_share_artist_controls(family, name) -> None:
     operation = FigureOperationState.method(family=family, name=name)
-    controls = {
-        control.key: control
-        for control in method_catalog._method_spec(operation).controls
-    }
+    spec = method_catalog._method_spec(operation)
+    controls = {control.key: control for control in spec.controls}
 
     assert {
         "color",
@@ -1737,6 +1971,7 @@ def test_figure_composer_text_methods_share_artist_controls(family, name) -> Non
         "rotation_mode",
     } <= controls.keys()
     assert controls["fontsize"].kind == method_catalog.MethodControlKind.LITERAL_KWARG
+    assert controls["fontsize"].completions == completion_values.FONT_SIZE_COMPLETIONS
     assert controls["color"].aliases == ("c",)
     assert controls["horizontalalignment"].aliases == ("ha",)
     assert controls["verticalalignment"].aliases == ("va",)
@@ -1748,6 +1983,11 @@ def test_figure_composer_text_methods_share_artist_controls(family, name) -> Non
         )
     else:
         assert controls["horizontalalignment"].exclusive_group is None
+    assert spec.text_values_completions == (
+        completion_values.LABEL_COMPLETIONS
+        if name in {"set_xlabels", "set_ylabels"}
+        else ()
+    )
 
 
 def test_figure_composer_set_titles_default_location_uses_stylesheet(qtbot) -> None:
@@ -1841,6 +2081,7 @@ def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None
     assert rotation_edit is not None
     assert rotation_mode_combo is not None
     assert font_size_edit is not None
+    assert isinstance(font_size_edit, completion_widgets.CompletingLineEdit)
     assert extra_edit is not None
     assert color_edit.text() == "navy"
     assert horizontal_combo.currentData() == "left"
@@ -1849,6 +2090,16 @@ def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None
     assert rotation_mode_combo.currentData() == "anchor"
     assert font_size_edit.text() == "8"
     assert extra_edit.text() == ""
+
+    font_size_edit.setText("large")
+    font_size_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["fontsize"] == "large"
+
+    font_size_edit.setText("9.5")
+    font_size_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["fontsize"] == pytest.approx(
+        9.5
+    )
 
     font_size_edit.setText("9")
     font_size_edit.editingFinished.emit()
@@ -3146,6 +3397,14 @@ def test_figure_composer_tick_params_editor_edge_commits(qtbot) -> None:
     qtbot.addWidget(editor)
     emitted: list[dict[str, typing.Any]] = []
     editor.sigTickParamsChanged.connect(emitted.append)
+    label_size_edit = editor.findChild(
+        completion_widgets.CompletingLineEdit,
+        "figureComposerAxesMethodTickParamsLabelSizeEdit",
+    )
+    assert label_size_edit is not None
+    assert label_size_edit.completion_model.stringList() == list(
+        completion_values.FONT_SIZE_COMPLETIONS
+    )
 
     editor.setToolTip("ignored")
     assert editor.toolTip() == ""
@@ -3184,7 +3443,7 @@ def test_figure_composer_tick_params_editor_edge_commits(qtbot) -> None:
     )
     assert emitted == []
     _finish_tick_params_edit(
-        editor, "figureComposerAxesMethodTickParamsLabelSizeEdit", "'small'"
+        editor, "figureComposerAxesMethodTickParamsLabelSizeEdit", "small"
     )
     assert emitted[-1]["labelsize"] == "small"
     _finish_tick_params_edit(

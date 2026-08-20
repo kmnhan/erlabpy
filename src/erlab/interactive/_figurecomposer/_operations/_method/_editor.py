@@ -8,6 +8,10 @@ import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from erlab.interactive._figurecomposer._completion_values import (
+    _completion_literal_from_text,
+    _format_completion_literal,
+)
 from erlab.interactive._figurecomposer._line_style import (
     color_kw_value_from_text,
     normalize_style_value,
@@ -94,6 +98,7 @@ from erlab.interactive._figurecomposer._text import (
     _text_tuple_from_text,
 )
 from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._completion import CompletingPlainTextEdit
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
 
@@ -141,9 +146,14 @@ def _method_plain_text_edit(
     mixed: bool,
     object_name: str,
     parent: QtWidgets.QWidget | None,
+    completions: Sequence[str] = (),
 ) -> QtWidgets.QPlainTextEdit:
-    edit = QtWidgets.QPlainTextEdit(parent)
-    edit.setPlainText(text)
+    edit: QtWidgets.QPlainTextEdit
+    if completions:
+        edit = CompletingPlainTextEdit(text, parent, completions=completions)
+    else:
+        edit = QtWidgets.QPlainTextEdit(parent)
+        edit.setPlainText(text)
     editor.apply_mixed_plain_text_edit(edit, mixed)
     edit.setMaximumHeight(70)
     edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -256,17 +266,14 @@ def _build_method_editor(
             lambda target: target.text_values,
             lambda value: "\n".join(typing.cast("Sequence[str]", value)),
         )
-        text_edit = QtWidgets.QPlainTextEdit(page)
-        text_edit.setPlainText(text_values_text)
-        editor.apply_mixed_plain_text_edit(text_edit, text_values_mixed)
-        text_edit.setMaximumHeight(70)
-        text_edit.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        text_edit = _method_plain_text_edit(
+            editor,
+            text_values_text,
+            mixed=text_values_mixed,
+            object_name="figureComposerMethodTextValuesEdit",
+            parent=page,
+            completions=spec.text_values_completions,
         )
-        text_edit.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        text_edit.setObjectName("figureComposerMethodTextValuesEdit")
         editor.connect_plain_text_changed(
             text_edit,
             lambda text: _update_current_method_text_values(editor, text),
@@ -514,6 +521,7 @@ def _add_method_control_row(
                 mixed=mixed,
                 object_name=control.object_name,
                 parent=layout.parentWidget(),
+                completions=control.completions,
             )
             editor.connect_plain_text_changed(
                 edit,
@@ -527,7 +535,11 @@ def _add_method_control_row(
                 lambda target: _method_arg_value(target, spec, index, control.default),
                 _format_literal_value,
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -550,7 +562,11 @@ def _add_method_control_row(
                     else repr(value)
                 ),
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -577,7 +593,11 @@ def _add_method_control_row(
                     else ""
                 ),
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -591,7 +611,11 @@ def _add_method_control_row(
                 lambda target: _method_float_pair_args(editor, target, spec),
                 _format_limit_pair,
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -606,7 +630,11 @@ def _add_method_control_row(
                 lambda target: _method_arg_value(target, spec, index, control.default),
                 _format_aspect_value,
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -783,7 +811,11 @@ def _add_method_control_row(
                     lambda target: _method_kwarg_value(target, key, control.default),
                     _format_int_value,
                 )
-                edit = editor.line_edit(text, parent=layout.parentWidget())
+                edit = editor.line_edit(
+                    text,
+                    parent=layout.parentWidget(),
+                    completions=control.completions,
+                )
                 editor.apply_mixed_line_edit(edit, mixed)
                 edit.setObjectName(control.object_name)
                 editor.connect_line_edit_finished(
@@ -830,7 +862,11 @@ def _add_method_control_row(
                     lambda target: _method_kwarg_value(target, key, control.default),
                     _format_float_value,
                 )
-                edit = editor.line_edit(text, parent=layout.parentWidget())
+                edit = editor.line_edit(
+                    text,
+                    parent=layout.parentWidget(),
+                    completions=control.completions,
+                )
                 editor.apply_mixed_line_edit(edit, mixed)
                 edit.setObjectName(control.object_name)
                 editor.connect_line_edit_finished(
@@ -876,7 +912,11 @@ def _add_method_control_row(
                 lambda target: _method_kwarg_value(target, key, control.default),
                 lambda value: str(value or ""),
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -915,12 +955,32 @@ def _add_method_control_row(
             editor.add_form_row(layout, control.label, color_edit, control.tooltip)
         case MethodControlKind.LITERAL_KWARG:
             key = _control_key(control)
+            formatter = (
+                functools.partial(
+                    _format_completion_literal,
+                    completions=control.completions,
+                )
+                if control.completions
+                else _format_literal_value
+            )
+            parser = (
+                functools.partial(
+                    _completion_literal_from_text,
+                    completions=control.completions,
+                )
+                if control.completions
+                else _optional_literal_from_text
+            )
             text, mixed = editor.batch_text(
                 operation,
                 lambda target: _method_kwarg_value(target, key, control.default),
-                _format_literal_value,
+                formatter,
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -928,7 +988,7 @@ def _add_method_control_row(
                 _parsed_method_kwarg_update_callback(
                     editor,
                     key,
-                    _optional_literal_from_text,
+                    parser,
                 ),
             )
             editor.add_form_row(layout, control.label, edit, control.tooltip)
@@ -943,7 +1003,11 @@ def _add_method_control_row(
                     else ""
                 ),
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
@@ -962,7 +1026,11 @@ def _add_method_control_row(
                 lambda target: _method_kwarg_value(target, key, control.default),
                 _format_pair,
             )
-            edit = editor.line_edit(text, parent=layout.parentWidget())
+            edit = editor.line_edit(
+                text,
+                parent=layout.parentWidget(),
+                completions=control.completions,
+            )
             editor.apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             editor.connect_line_edit_finished(
