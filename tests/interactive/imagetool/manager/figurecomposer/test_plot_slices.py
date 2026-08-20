@@ -4302,8 +4302,13 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     erlab_method_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerERLabMethodKwEdit"
     )
+    font_size_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerERLabSetTitlesFontSizeEdit"
+    )
     assert erlab_method_kwargs_edit is not None
-    assert erlab_method_kwargs_edit.text() == "fontsize=9"
+    assert font_size_edit is not None
+    assert font_size_edit.text() == "9"
+    assert erlab_method_kwargs_edit.text() == ""
 
 
 def test_figure_composer_imagetool_norm_parser_uses_structured_fields() -> None:
