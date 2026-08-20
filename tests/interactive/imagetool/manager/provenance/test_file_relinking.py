@@ -1104,7 +1104,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
 
     controller = _fake_edit_controller(
         _fake_edit_node(script_with_structured_step),
-        script_input_can_reload=lambda *_args, **_kwargs: False,
+        script_input_unavailable_reason=lambda *_args, **_kwargs: "Unavailable",
     )
     assert controller.can_edit_row(structured_row) == (True, "")
 
@@ -1146,7 +1146,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     active_row = active_filter_spec.display_rows()[3]
     controller = _fake_edit_controller(
         _fake_edit_node(active_filter_spec, active_filter=active_filter),
-        script_input_can_reload=lambda *_args, **_kwargs: False,
+        script_input_unavailable_reason=lambda *_args, **_kwargs: "Unavailable",
     )
     assert controller.can_edit_row(active_row) == (True, "")
 
@@ -2618,7 +2618,7 @@ def test_manager_provenance_script_file_revert_reports_missing_source(
         _RecordingMessageDialog,
     )
     monkeypatch.setattr(
-        controller._manager,
+        controller._manager._lineage_controller,
         "_rebuild_script_provenance",
         raise_missing_rebuild,
     )

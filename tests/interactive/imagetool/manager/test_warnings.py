@@ -20,7 +20,10 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
-from tests.interactive.imagetool.manager.workspace._support import _AddedTimeChildTool
+from tests.interactive.imagetool.manager.workspace._support import (
+    _AddedTimeChildTool,
+    add_source_childtool,
+)
 
 from .helpers import _UnserializableChildTool, select_child_tool
 
@@ -176,7 +179,8 @@ def test_manager_duplicate_unserializable_child_shows_error(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        child_uid = manager.add_childtool(
+        child_uid = add_source_childtool(
+            manager,
             _UnserializableChildTool(gold.copy(deep=True)),
             0,
             show=False,
@@ -206,12 +210,14 @@ def test_manager_duplicate_failure_rolls_back_partial_subtree(
         root = itool(gold, link=False, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        serializable_uid = manager.add_childtool(
+        serializable_uid = add_source_childtool(
+            manager,
             _AddedTimeChildTool(gold.rename("serializable child")),
             0,
             show=False,
         )
-        manager.add_childtool(
+        add_source_childtool(
+            manager,
             _UnserializableChildTool(gold.copy(deep=True)),
             serializable_uid,
             show=False,
@@ -278,7 +284,8 @@ def test_manager_duplicate_mark_failure_restores_workspace_state(
         root = itool(gold, link=False, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        manager.add_childtool(
+        add_source_childtool(
+            manager,
             _AddedTimeChildTool(gold.rename("child")),
             0,
             show=False,
@@ -329,7 +336,8 @@ def test_manager_duplicate_materialization_failure_is_not_reported_twice(
         root = itool(gold, link=False, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        child_uid = manager.add_childtool(
+        child_uid = add_source_childtool(
+            manager,
             _UnserializableChildTool(gold.copy(deep=True)),
             0,
             show=False,
@@ -387,7 +395,8 @@ def test_manager_save_unserializable_child_shows_error(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        manager.add_childtool(
+        add_source_childtool(
+            manager,
             _UnserializableChildTool(gold.copy(deep=True)),
             0,
             show=False,

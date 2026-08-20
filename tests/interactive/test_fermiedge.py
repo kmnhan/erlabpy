@@ -24,7 +24,7 @@ from erlab.interactive.fermiedge import (
     goldtool,
     restool,
 )
-from erlab.interactive.imagetool._provenance._model import full_data
+from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.io.exampledata import generate_gold_edge
 
 
@@ -581,7 +581,7 @@ def test_goldtool_close_skips_deferred_fit_snapshot(qtbot, gold, monkeypatch) ->
     assert not restored._flush_restore_work(key=GoldTool._PERSISTED_FIT_SNAPSHOT_KEY)
 
 
-def test_goldtool_deferred_restore_update_data_refits_pending_fit(
+def test_goldtool_deferred_restore_update_inputs_refits_pending_fit(
     qtbot, gold, monkeypatch
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
@@ -598,16 +598,22 @@ def test_goldtool_deferred_restore_update_data_refits_pending_fit(
     assert restored._pending_persisted_fit_snapshot is not None
 
     called: list[bool] = []
-    monkeypatch.setattr(restored, "perform_edge_fit", lambda: called.append(True))
+
+    def start_fit() -> None:
+        called.append(True)
+        restored._fit_task = typing.cast("EdgeFitTask", object())
+
+    monkeypatch.setattr(restored, "perform_edge_fit", start_fit)
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.02
 
-    assert restored.update_data(new_gold) is False
+    assert restored.update_inputs({"data": new_gold}) is False
 
     assert called == [True]
     assert restored._pending_persisted_fit_snapshot is None
     assert not hasattr(restored, "edge_center")
     xr.testing.assert_identical(restored.data, new_gold)
+    restored._fit_task = None
 
 
 @pytest.mark.parametrize("defer_restore_work", [False, True])
@@ -653,15 +659,24 @@ def test_goldtool_handles_missing_cpu_count(qtbot, gold, monkeypatch) -> None:
     assert cpu_widget.maximum() == 1
 
 
-def test_goldtool_cancel_background_work_stops_pending_update(qtbot, gold) -> None:
+def test_goldtool_cancel_background_work_aborts_fit_task(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
 
-    win._pending_update_timer.start(1000)
+    class _DummyTask:
+        def __init__(self) -> None:
+            self.aborted = False
+            self.signals = EdgeFitSignals()
 
-    assert win._pending_update_timer.isActive()
+        def abort_fit(self) -> None:
+            self.aborted = True
+
+    task = _DummyTask()
+    win._fit_task = task
+
     assert win._cancel_background_work(timeout_ms=0)
-    assert not win._pending_update_timer.isActive()
+    assert task.aborted
+    assert win._fit_task is None
 
 
 def test_goldtool_duplicate_roundtrip(qtbot, gold) -> None:
@@ -731,7 +746,23 @@ def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:
     assert y1 == pytest.approx(-0.5)
 
 
-def test_goldtool_update_data_invalidates_fit_and_can_refit(
+def test_goldtool_update_inputs_preserves_constructor_data_corr(qtbot, gold) -> None:
+    corrected = gold.copy(deep=True)
+    corrected.data = np.asarray(corrected.data) * 1.02
+    win: GoldTool = goldtool(gold, data_corr=corrected, execute=False)
+    qtbot.addWidget(win)
+
+    updated = gold.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.05
+    validated = win.validate_update_inputs({"data": updated})
+
+    assert tuple(validated) == ("data",)
+    assert win.update_inputs(validated)
+    xr.testing.assert_identical(win.data, updated)
+    xr.testing.assert_identical(win.data_corr, corrected)
+
+
+def test_goldtool_update_inputs_invalidates_fit_and_can_refit(
     qtbot, gold, monkeypatch
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
@@ -754,7 +785,7 @@ def test_goldtool_update_data_invalidates_fit_and_can_refit(
 
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.05
-    win.update_data(new_gold)
+    win.update_inputs({"data": new_gold})
 
     assert win.params_edge.values["T (K)"] == pytest.approx(45.0)
     assert win.params_poly.values["Degree"] == 3
@@ -769,12 +800,12 @@ def test_goldtool_update_data_invalidates_fit_and_can_refit(
 
     newer_gold = new_gold.copy(deep=True)
     newer_gold.data = np.asarray(newer_gold.data) * 1.02
-    win.update_data(newer_gold)
+    win.update_inputs({"data": newer_gold})
 
     assert called == [True]
 
 
-def test_goldtool_update_data_ignores_late_results_from_aborted_task(
+def test_goldtool_apply_inputs_ignores_late_results_from_aborted_task(
     qtbot, gold, monkeypatch
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
@@ -796,7 +827,9 @@ def test_goldtool_update_data_ignores_late_results_from_aborted_task(
 
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.01
-    win.update_data(new_gold)
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    win._apply_inputs({"data": new_gold}, (script_input,))
 
     assert stale_task.aborted is True
     assert win._fit_task is None
@@ -1045,16 +1078,9 @@ def test_goldtool_late_task_results_do_not_update_while_closing(qtbot, gold) -> 
     assert not hasattr(win, "edge_center")
 
 
-def test_goldtool_perform_edge_fit_ignores_pending_or_closing_updates(
-    qtbot, gold
-) -> None:
+def test_goldtool_perform_edge_fit_ignores_closing_updates(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-
-    win._pending_update_request = object()  # type: ignore[assignment]
-    win.perform_edge_fit()
-
-    assert win._fit_task is None
 
     class _ThreadPoolDouble:
         def __init__(self) -> None:
@@ -1067,7 +1093,6 @@ def test_goldtool_perform_edge_fit_ignores_pending_or_closing_updates(
             self.started_tasks.append(task)
 
     threadpool = _ThreadPoolDouble()
-    win._pending_update_request = None
     win._fit_closing = False
     win._threadpool = threadpool  # type: ignore[assignment]
     win.perform_edge_fit()
@@ -1228,7 +1253,7 @@ def test_goldtool_handle_fit_failed_ignores_stale_and_closing_tasks(
     assert len(critical_calls) == 2
 
 
-def test_goldtool_update_data_defers_until_fit_worker_drains(
+def test_goldtool_apply_inputs_stops_fit_worker_before_update(
     qtbot, gold, monkeypatch
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
@@ -1245,76 +1270,33 @@ def test_goldtool_update_data_defers_until_fit_worker_drains(
     stale_task = _DummyTask()
     win._fit_task = stale_task
 
-    active_counts = iter((1, 0))
+    wait_timeouts: list[int] = []
     monkeypatch.setattr(
-        win._threadpool,
-        "activeThreadCount",
-        lambda: next(active_counts, 0),
+        type(win),
+        "_wait_for_threadpool",
+        staticmethod(
+            lambda _threadpool, *, timeout_ms: wait_timeouts.append(timeout_ms) or True
+        ),
     )
 
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.02
-    win.update_data(new_gold)
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
 
+    assert win._apply_inputs({"data": new_gold}, (script_input,))
     assert stale_task.aborted is True
-    assert win._pending_update_request is not None
-    xr.testing.assert_identical(win.data, gold)
-
-    win._pending_update_timer.stop()
-    win._flush_pending_update()
-
-    assert win._pending_update_request is None
-    xr.testing.assert_identical(win.data, new_gold)
-
-
-def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
-    qtbot, gold, monkeypatch
-) -> None:
-    win: GoldTool = goldtool(gold, execute=False)
-    qtbot.addWidget(win)
-    win.set_source_binding(
-        full_data(),
-        auto_update=True,
-    )
-
-    class _DummyTask:
-        def __init__(self) -> None:
-            self.aborted = False
-            self.signals = EdgeFitSignals()
-
-        def abort_fit(self) -> None:
-            self.aborted = True
-
-    stale_task = _DummyTask()
-    win._fit_task = stale_task
-
-    active_counts = iter((1, 0))
-    monkeypatch.setattr(
-        win._threadpool,
-        "activeThreadCount",
-        lambda: next(active_counts, 0),
-    )
-
-    new_gold = gold.copy(deep=True)
-    new_gold.data = np.asarray(new_gold.data) * 1.02
-    win.handle_parent_source_replaced(new_gold)
-
-    assert stale_task.aborted is True
-    assert win.source_state == "stale"
-    xr.testing.assert_identical(win.data, gold)
-
-    win._pending_update_timer.stop()
-    win._flush_pending_update()
-
-    assert win.source_state == "fresh"
+    assert wait_timeouts == [win.BACKGROUND_TASK_TIMEOUT_MS]
     xr.testing.assert_identical(win.data, new_gold)
 
 
 def test_goldtool_auto_source_update_emits_one_data_change(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    win.set_source_binding(
-        full_data(),
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=True,
     )
 
@@ -1323,7 +1305,7 @@ def test_goldtool_auto_source_update_emits_one_data_change(qtbot, gold) -> None:
 
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.02
-    win.handle_parent_source_replaced(new_gold)
+    assert win._apply_inputs({"data": new_gold}, (script_input,))
 
     assert win.source_state == "fresh"
     assert emissions == [True]
@@ -1336,17 +1318,24 @@ def test_goldtool_auto_source_update_with_refit_stays_stale_until_fit_finishes(
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     _configure_goldtool_state(win, fitted=True)
-    win.set_source_binding(
-        full_data(),
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=True,
     )
 
     fit_started: list[bool] = []
-    monkeypatch.setattr(win, "perform_edge_fit", lambda: fit_started.append(True))
+
+    def start_fit() -> None:
+        fit_started.append(True)
+        win._fit_task = typing.cast("EdgeFitTask", object())
+
+    monkeypatch.setattr(win, "perform_edge_fit", start_fit)
 
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.02
-    win.handle_parent_source_replaced(new_gold)
+    assert not win._apply_inputs({"data": new_gold}, (script_input,))
 
     assert fit_started == [True]
     assert win.source_state == "stale"
@@ -1384,14 +1373,14 @@ def test_goldtool_close_event_ignored_if_threadpool_does_not_quiesce(
     win.close()
 
 
-def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
+def test_goldtool_update_inputs_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
 
     win.params_roi.modify_roi(x0=-12.0, x1=-8.0, y0=-0.45, y1=-0.3)
     narrowed = gold.sel(alpha=slice(-2.5, 2.5), eV=slice(-0.1, 0.05))
 
-    win.update_data(narrowed)
+    win.update_inputs({"data": narrowed})
 
     x0, y0, x1, y1 = win.params_roi.roi_limits
     xmin, ymin, xmax, ymax = win.params_roi.max_bounds
@@ -1407,17 +1396,21 @@ def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> Non
     assert selected.sizes["eV"] > 0
 
 
-def test_goldtool_validate_update_data_transposes_and_rejects_invalid(
+def test_goldtool_validate_update_inputs_transposes_and_rejects_invalid(
     qtbot, gold
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
 
-    transposed = win.validate_update_data(gold.transpose(*reversed(gold.dims)))
+    transposed = win.validate_update_inputs(
+        {"data": gold.transpose(*reversed(gold.dims))}
+    )["data"]
     assert transposed.dims[0] == "eV"
 
     with pytest.raises(ValueError, match="2D DataArray with an `eV` dimension"):
-        win.validate_update_data(xr.DataArray(np.arange(5), dims=("alpha",)))
+        win.validate_update_inputs(
+            {"data": xr.DataArray(np.arange(5), dims=("alpha",))}
+        )
 
 
 def test_goldtool_undo_redo_state_change(qtbot, gold) -> None:
@@ -1621,7 +1614,9 @@ def test_restool_loads_legacy_saved_state_without_source_update_flag(qtbot) -> N
         assert win_restored.refit_on_source_update_check.isChecked() is False
 
 
-def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -> None:
+def test_restool_update_inputs_invalidates_fit_and_can_refit(
+    qtbot, monkeypatch
+) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
     )
@@ -1653,7 +1648,7 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     status = win.tool_status
     new_gold = gold.copy(deep=True)
     new_gold.data = np.asarray(new_gold.data) * 1.03
-    win.update_data(new_gold)
+    win.update_inputs({"data": new_gold})
 
     expected = status.model_copy(
         update={"results": ("No fit results", "—", "—", "—", "—")}
@@ -1670,14 +1665,14 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     win.refit_on_source_update_check.setChecked(True)
     newer_gold = new_gold.copy(deep=True)
     newer_gold.data = np.asarray(newer_gold.data) * 1.01
-    win.update_data(newer_gold)
+    win.update_inputs({"data": newer_gold})
 
     xr.testing.assert_identical(
         fit_inputs[0], newer_gold.sel({win.y_dim: slice(*win.y_range)}).mean(win.y_dim)
     )
 
 
-def test_restool_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+def test_restool_apply_inputs_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
     )
@@ -1710,7 +1705,9 @@ def test_restool_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> N
     updated = gold.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.01
 
-    assert win.update_data(updated) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert stuck_thread.cancel_called
     assert stuck_thread.interrupted
     assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
@@ -1718,7 +1715,7 @@ def test_restool_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> N
     win._fit_thread = None
 
 
-def test_restool_update_data_auto_refit_after_waiting_cancelled_thread(
+def test_restool_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     qtbot, monkeypatch
 ) -> None:
     gold = generate_gold_edge(
@@ -1764,7 +1761,9 @@ def test_restool_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = gold.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.01
 
-    assert win.update_data(updated) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted
@@ -1804,18 +1803,22 @@ def test_restool_queue_fit_action_ignores_stale_thread(qtbot) -> None:
     assert win._pending_fit_action is None
 
 
-def test_restool_validate_update_data_transposes_and_rejects_invalid(qtbot) -> None:
+def test_restool_validate_update_inputs_transposes_and_rejects_invalid(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
     )
     win = restool(gold, execute=False)
     qtbot.addWidget(win)
 
-    transposed = win.validate_update_data(gold.transpose(*reversed(gold.dims)))
+    transposed = win.validate_update_inputs(
+        {"data": gold.transpose(*reversed(gold.dims))}
+    )["data"]
     assert transposed.dims[-1] == "eV"
 
     with pytest.raises(ValueError, match="2D and have an 'eV' dimension"):
-        win.validate_update_data(xr.DataArray(np.arange(5), dims=("alpha",)))
+        win.validate_update_inputs(
+            {"data": xr.DataArray(np.arange(5), dims=("alpha",))}
+        )
 
 
 def test_restool_fit_thread_loads_result_before_emit(monkeypatch) -> None:
@@ -2295,7 +2298,9 @@ def test_restool_queue_fit_action_runs_immediately_when_no_thread(qtbot) -> None
     assert win._pending_fit_action is None
 
 
-def test_restool_finalize_fit_thread_drops_actions_while_closing(qtbot) -> None:
+def test_restool_finalize_fit_thread_drops_actions_while_closing(
+    qtbot, monkeypatch
+) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
     )
@@ -2315,11 +2320,145 @@ def test_restool_finalize_fit_thread_drops_actions_while_closing(qtbot) -> None:
     win._pending_fit_action = lambda: called.append("action")
     win._fit_queued = True
     win._fit_closing = True
+    source_refreshes: list[bool] = []
+    monkeypatch.setattr(
+        win, "finalize_source_refresh", lambda: source_refreshes.append(True)
+    )
 
     win._finalize_fit_thread(thread)  # type: ignore[arg-type]
 
     assert called == []
+    assert source_refreshes == []
     assert win._fit_thread is None
+    assert not win._fit_queued
+    assert thread.deleted
+
+
+@pytest.mark.parametrize("outcome", ["success", "timeout", "error"])
+def test_restool_stale_fit_terminal_finalizes_deferred_source_refresh(
+    qtbot, monkeypatch, outcome: str
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _ThreadPlaceholder()
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_signature_current = ("current",)
+    win._source_refresh_deferred = True
+    finalized: list[bool] = []
+
+    def _finalize_source_refresh() -> None:
+        finalized.append(True)
+        win._source_refresh_deferred = False
+
+    monkeypatch.setattr(win, "finalize_source_refresh", _finalize_source_refresh)
+    actions = {
+        "success": lambda: win._handle_fit_success(xr.Dataset(), 0.1, ("stale",)),
+        "timeout": lambda: win._handle_fit_timeout(0.1, ("stale",)),
+        "error": lambda: win._handle_fit_error("boom", ("stale",)),
+    }
+    win._pending_fit_action = actions[outcome]
+
+    win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+
+    assert finalized == [True]
+    assert win._result_ds is None
+    assert thread.deleted
+
+
+def test_restool_fit_action_exception_finalizes_deferred_source_refresh(
+    qtbot, monkeypatch
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _ThreadPlaceholder()
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_signature_displayed = ("stale",)
+    win._result_ds = xr.Dataset()
+    win.live_check.setChecked(True)
+    win._source_refresh_deferred = True
+    finalized: list[bool] = []
+
+    def _finalize_source_refresh() -> None:
+        finalized.append(True)
+        win._source_refresh_deferred = False
+
+    def _raise() -> None:
+        raise RuntimeError("broken fit result")
+
+    monkeypatch.setattr(win, "finalize_source_refresh", _finalize_source_refresh)
+    win._pending_fit_action = _raise
+
+    win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+
+    assert finalized == [True]
+    assert win._result_ds is None
+    assert win._fit_signature_displayed is None
+    assert not win.live_check.isChecked()
+    assert thread.deleted
+
+
+@pytest.mark.parametrize(("restart_started", "finalize_count"), [(False, 1), (True, 0)])
+def test_restool_deferred_source_refresh_follows_queued_restart(
+    qtbot, monkeypatch, restart_started: bool, finalize_count: int
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _ThreadPlaceholder()
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_queued = True
+    win._source_refresh_deferred = True
+    finalized: list[bool] = []
+    starts: list[bool] = []
+
+    def _finalize_source_refresh() -> None:
+        finalized.append(True)
+        win._source_refresh_deferred = False
+
+    def _start_fit_worker() -> bool:
+        starts.append(True)
+        return restart_started
+
+    monkeypatch.setattr(win, "finalize_source_refresh", _finalize_source_refresh)
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+
+    assert starts == [True]
+    assert len(finalized) == finalize_count
+    assert win._source_refresh_deferred is restart_started
     assert not win._fit_queued
     assert thread.deleted
 

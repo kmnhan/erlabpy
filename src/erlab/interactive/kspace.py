@@ -1278,9 +1278,9 @@ class KspaceTool(KspaceToolGUI):
             self.calculate_bounds()
             self.calculate_resolution()
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
         status = self.tool_status
-        parsed_new_data = erlab.interactive.utils.parse_data(new_data)
+        parsed_new_data = inputs["data"]
         if not parsed_new_data.kspace._interactive_compatible:
             raise ValueError(
                 "Updated data is not compatible with the interactive tool."
@@ -1295,7 +1295,7 @@ class KspaceTool(KspaceToolGUI):
                 parent=self,
             )
             if source_result is None:
-                return
+                return False
             source_configuration, source_values, source_edited_names = source_result
             control_data = _kspace_conversion.assign_kspace_input_coordinates(
                 _kspace_conversion.assign_kspace_configuration(
@@ -1321,7 +1321,7 @@ class KspaceTool(KspaceToolGUI):
             parent=self,
         )
         if resolved_input_coordinates is None:
-            return
+            return False
         _, input_coordinates, edited_names = resolved_input_coordinates
         edited_names = frozenset((*source_edited_names, *edited_names)) & set(
             input_coordinates
@@ -1346,7 +1346,7 @@ class KspaceTool(KspaceToolGUI):
                 ),
             },
         )
-        new_data = self.validate_update_data(
+        new_data = self._validate_data_input(
             _kspace_conversion.assign_kspace_input_coordinates(
                 control_data,
                 input_coordinates,
@@ -1388,8 +1388,14 @@ class KspaceTool(KspaceToolGUI):
             self.tool_status = status
         self._notify_data_changed()
         self._reset_history_stack()
+        return True
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        return {"data": self._validate_data_input(inputs["data"])}
+
+    def _validate_data_input(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
         current_offset_keys = tuple(self.data.kspace._valid_offset_keys)
         current_momentum_axes = tuple(self.data.kspace.momentum_axes)
@@ -1797,16 +1803,16 @@ class KspaceTool(KspaceToolGUI):
     def _copy_seed_code(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        input_reference = self._copy_input_reference(input_name)
-        return f"{self._copy_assign_target(input_name)} = {input_reference}"
+        input_reference = self._copy_input_reference(primary_input)
+        return f"{self._copy_assign_target(primary_input)} = {input_reference}"
 
     def _copy_operations(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> tuple[ToolProvenanceOperation, ...]:
         alpha_normal, beta_normal = self._current_normal_emission_angles()
@@ -1828,11 +1834,11 @@ class KspaceTool(KspaceToolGUI):
 
     def _copy_assign_target(
         self,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         *,
         data: xr.DataArray | None = None,
     ) -> str:
-        input_ref = self._copy_input_reference(input_name)
+        input_ref = self._copy_input_reference(primary_input)
         input_data_name = (
             input_ref
             if erlab.utils.misc._is_valid_identifier(input_ref)

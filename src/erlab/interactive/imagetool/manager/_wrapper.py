@@ -5,6 +5,7 @@ from __future__ import annotations
 from erlab.interactive.imagetool._provenance._code import _replace_code_identifiers
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ScriptInput,
     ScriptInputDataRole,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
@@ -315,9 +316,9 @@ class _NodePersistenceView:
 class _NodeProvenanceOwnerSnapshot:
     """Exact provenance state owned by one managed node.
 
-    A ToolWindow owns its live source and input provenance. Pending ToolWindow
-    payloads own the serialized input copy. The managed node owns all other source
-    and displayed provenance. Keeping these values in one snapshot makes a script
+    A ToolWindow owns its live and pending named inputs. Pending ToolWindow payloads
+    own the serialized input copy. The managed node owns all other source and
+    displayed provenance. Keeping these values in one snapshot makes a script
     identity change atomic across those owners.
     """
 
@@ -327,9 +328,9 @@ class _NodeProvenanceOwnerSnapshot:
     pending_payload_kind: typing.Literal["imagetool", "tool"] | None
     node_source_spec: ToolProvenanceSpec | None
     node_provenance_spec: ToolProvenanceSpec | None
-    tool_source_spec: ToolProvenanceSpec | None
-    tool_input_provenance_spec: ToolProvenanceSpec | None
-    tool_input_from_parent: bool
+    tool_script_inputs: tuple[ScriptInput, ...] | None
+    tool_primary_input: str | None
+    tool_pending_script_inputs: tuple[ScriptInput, ...] | None
     pending_payload_attrs: dict[str, typing.Any] | None
 
 
@@ -610,6 +611,10 @@ class _ManagedWindowNode(QtCore.QObject):
                 old.sigProvenanceChanged.disconnect(
                     self._handle_tool_provenance_changed
                 )
+            with contextlib.suppress(TypeError, RuntimeError):
+                old._sigSourceRefreshAborted.disconnect(
+                    self._handle_tool_source_refresh_aborted
+                )
             destroyed_callback = self._tool_window_destroyed_callback
             if destroyed_callback is not None:
                 with contextlib.suppress(TypeError, RuntimeError):
@@ -620,8 +625,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old._set_managed_source_reload(None)
             old._set_managed_secondary_window_callback(None)
             old._set_managed_reveal_callback(None)
-            old.set_source_parent_fetcher(None)
-            old.set_input_provenance_parent_fetcher(None)
+            old._set_input_resolver(None)
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
@@ -683,6 +687,7 @@ class _ManagedWindowNode(QtCore.QObject):
         tool.sigStateChanged.connect(self._handle_tool_state_changed)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
         tool.sigProvenanceChanged.connect(self._handle_tool_provenance_changed)
+        tool._sigSourceRefreshAborted.connect(self._handle_tool_source_refresh_aborted)
         self._tool_window_destroyed_callback = functools.partial(
             self._handle_tool_window_destroyed,
             tool,
@@ -924,6 +929,29 @@ class _ManagedWindowNode(QtCore.QObject):
             return None
         return dict(self._pending_workspace_payload_attrs)
 
+    def _tool_input_metadata(self) -> tuple[tuple[ScriptInput, ...], str | None]:
+        """Return live or deferred canonical ToolWindow input metadata."""
+        if self.tool_window is not None:
+            return self.tool_window.script_inputs, self.tool_window.primary_input
+        if (
+            self._pending_workspace_payload_kind != "tool"
+            or self._pending_workspace_payload_attrs is None
+        ):
+            return (), None
+        return erlab.interactive.utils.ToolWindow._saved_script_input_metadata(
+            self._pending_workspace_payload_attrs
+        )
+
+    @property
+    def tool_script_inputs(self) -> tuple[ScriptInput, ...]:
+        """Return live or deferred canonical inputs for a ToolWindow node."""
+        return self._tool_input_metadata()[0]
+
+    @property
+    def tool_primary_input(self) -> str | None:
+        """Return the primary input for a live or deferred ToolWindow node."""
+        return self._tool_input_metadata()[1]
+
     def update_pending_workspace_payload_attrs(
         self, attrs: Mapping[str, typing.Any]
     ) -> None:
@@ -936,6 +964,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
         self._notify_info_and_type_badge_change(previous_type_badge)
+        self._notify_change(_ManagedNodeChange.DEPENDENCY_INDEX)
 
     def set_pending_workspace_payload(
         self,
@@ -960,6 +989,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
         self._notify_info_and_type_badge_change(previous_type_badge)
+        self._notify_change(_ManagedNodeChange.DEPENDENCY_INDEX)
 
     def set_pending_workspace_memory_payload(
         self,
@@ -1502,12 +1532,14 @@ class _ManagedWindowNode(QtCore.QObject):
             pending_payload_kind=self._pending_workspace_payload_kind,
             node_source_spec=self._source_spec,
             node_provenance_spec=self._provenance_spec,
-            tool_source_spec=None if tool is None else tool.source_spec,
-            tool_input_provenance_spec=(
-                None if tool is None else tool.input_provenance_spec
-            ),
-            tool_input_from_parent=(
-                False if tool is None else tool._input_provenance_snapshot_from_parent
+            tool_script_inputs=None if tool is None else tool.script_inputs,
+            tool_primary_input=None if tool is None else tool.primary_input,
+            tool_pending_script_inputs=(
+                None
+                if tool is None or tool._pending_script_inputs is None
+                else tuple(
+                    item.model_copy(deep=True) for item in tool._pending_script_inputs
+                )
             ),
             pending_payload_attrs=(
                 None
@@ -1532,23 +1564,35 @@ class _ManagedWindowNode(QtCore.QObject):
             return require_live_source_spec(remapped)
         return remapped
 
-    @staticmethod
-    def _pending_tool_provenance(
-        attrs: Mapping[str, typing.Any], key: str
-    ) -> ToolProvenanceSpec | None:
-        """Parse one valid pending ToolWindow provenance attribute."""
-        value = attrs.get(key)
-        if isinstance(value, bytes):
-            try:
-                value = value.decode()
-            except UnicodeDecodeError:
-                return None
-        if not isinstance(value, str):
-            return None
-        try:
-            return parse_tool_provenance_spec(json.loads(value))
-        except (TypeError, ValueError):
-            return None
+    @classmethod
+    def _remap_script_input(
+        cls,
+        script_input: ScriptInput,
+        remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+    ) -> ScriptInput:
+        """Remap both provenance values owned by one named tool input."""
+        source_spec = script_input.parsed_source_spec()
+        provenance_spec = script_input.parsed_provenance_spec()
+        remapped_source = cls._remap_provenance_value(
+            source_spec, remap, live_source=True
+        )
+        remapped_provenance = cls._remap_provenance_value(provenance_spec, remap)
+        if remapped_source == source_spec and remapped_provenance == provenance_spec:
+            return script_input
+        return script_input.model_copy(
+            update={
+                "source_spec": (
+                    None
+                    if remapped_source is None
+                    else remapped_source.model_dump(mode="json")
+                ),
+                "provenance_spec": (
+                    None
+                    if remapped_provenance is None
+                    else remapped_provenance.model_dump(mode="json")
+                ),
+            }
+        )
 
     def _apply_provenance_owner_snapshot(
         self, snapshot: _NodeProvenanceOwnerSnapshot
@@ -1569,6 +1613,8 @@ class _ManagedWindowNode(QtCore.QObject):
         provenance_attr_keys = (
             erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
             erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+            erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR,
+            erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR,
         )
         current_attrs = self._pending_workspace_payload_attrs or {}
         replacement_attrs = snapshot.pending_payload_attrs or {}
@@ -1585,21 +1631,29 @@ class _ManagedWindowNode(QtCore.QObject):
 
         tool = snapshot.tool_window
         if tool is not None:
-            source_changed = tool.source_spec != snapshot.tool_source_spec
             input_changed = (
-                tool.input_provenance_spec != snapshot.tool_input_provenance_spec
-                or tool._input_provenance_snapshot_from_parent
-                != snapshot.tool_input_from_parent
+                tool.script_inputs != snapshot.tool_script_inputs
+                or tool.primary_input != snapshot.tool_primary_input
+                or tool._pending_script_inputs != snapshot.tool_pending_script_inputs
             )
-            with tool._coalesce_provenance_changes():
-                if source_changed:
-                    tool._source_spec = snapshot.tool_source_spec
-                    tool._notify_provenance_changed()
-                if input_changed:
-                    tool._set_input_provenance_snapshot(
-                        snapshot.tool_input_provenance_spec,
-                        from_parent=snapshot.tool_input_from_parent,
+            if input_changed:
+                script_inputs = typing.cast(
+                    "tuple[ScriptInput, ...]", snapshot.tool_script_inputs
+                )
+                with tool._coalesce_provenance_changes():
+                    tool._script_inputs = tuple(
+                        item.model_copy(deep=True) for item in script_inputs
                     )
+                    tool._primary_input = snapshot.tool_primary_input
+                    tool._pending_script_inputs = (
+                        None
+                        if snapshot.tool_pending_script_inputs is None
+                        else tuple(
+                            item.model_copy(deep=True)
+                            for item in snapshot.tool_pending_script_inputs
+                        )
+                    )
+                    tool._notify_provenance_changed()
 
         if snapshot.imagetool is not None and node_provenance_changed:
             snapshot.imagetool.set_provenance_spec(self.provenance_spec)
@@ -1624,11 +1678,21 @@ class _ManagedWindowNode(QtCore.QObject):
         node_provenance_spec = self._remap_provenance_value(
             before.node_provenance_spec, remap
         )
-        tool_source_spec = self._remap_provenance_value(
-            before.tool_source_spec, remap, live_source=True
+        tool_script_inputs = (
+            None
+            if before.tool_script_inputs is None
+            else tuple(
+                self._remap_script_input(script_input, remap)
+                for script_input in before.tool_script_inputs
+            )
         )
-        tool_input_provenance_spec = self._remap_provenance_value(
-            before.tool_input_provenance_spec, remap
+        tool_pending_script_inputs = (
+            None
+            if before.tool_pending_script_inputs is None
+            else tuple(
+                self._remap_script_input(script_input, remap)
+                for script_input in before.tool_pending_script_inputs
+            )
         )
 
         attrs = (
@@ -1638,35 +1702,30 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         pending_attrs_changed = False
         if attrs is not None and before.pending_payload_kind == "tool":
-            source_key = erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR
-            if node_source_spec != before.node_source_spec and source_key in attrs:
-                # A remap cannot remove a provenance value. It returns a validated
-                # ToolProvenanceSpec for every non-null input.
-                attrs[source_key] = json.dumps(
-                    typing.cast("ToolProvenanceSpec", node_source_spec).model_dump(
-                        mode="json"
+            pending_inputs, pending_primary_input = (
+                erlab.interactive.utils.ToolWindow._saved_script_input_metadata(attrs)
+            )
+            remapped_pending_inputs = tuple(
+                self._remap_script_input(script_input, remap)
+                for script_input in pending_inputs
+            )
+            if remapped_pending_inputs != pending_inputs:
+                attrs.update(
+                    erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+                        remapped_pending_inputs, pending_primary_input
                     )
                 )
-                pending_attrs_changed = True
-
-            input_key = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
-            pending_input = self._pending_tool_provenance(attrs, input_key)
-            remapped_pending_input = self._remap_provenance_value(pending_input, remap)
-            if remapped_pending_input != pending_input:
-                # The changed case starts from a non-null parsed value, so the remap
-                # result is also a validated ToolProvenanceSpec.
-                attrs[input_key] = json.dumps(
-                    typing.cast(
-                        "ToolProvenanceSpec", remapped_pending_input
-                    ).model_dump(mode="json")
+                attrs.pop(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR, None)
+                attrs.pop(
+                    erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR, None
                 )
                 pending_attrs_changed = True
 
         changed = (
             node_source_spec != before.node_source_spec
             or node_provenance_spec != before.node_provenance_spec
-            or tool_source_spec != before.tool_source_spec
-            or tool_input_provenance_spec != before.tool_input_provenance_spec
+            or tool_script_inputs != before.tool_script_inputs
+            or tool_pending_script_inputs != before.tool_pending_script_inputs
             or pending_attrs_changed
         )
         if not changed:
@@ -1679,9 +1738,9 @@ class _ManagedWindowNode(QtCore.QObject):
             pending_payload_kind=before.pending_payload_kind,
             node_source_spec=node_source_spec,
             node_provenance_spec=node_provenance_spec,
-            tool_source_spec=tool_source_spec,
-            tool_input_provenance_spec=tool_input_provenance_spec,
-            tool_input_from_parent=before.tool_input_from_parent,
+            tool_script_inputs=tool_script_inputs,
+            tool_primary_input=before.tool_primary_input,
+            tool_pending_script_inputs=tool_pending_script_inputs,
             pending_payload_attrs=attrs,
         )
         try:
@@ -1707,8 +1766,6 @@ class _ManagedWindowNode(QtCore.QObject):
     def source_spec(
         self,
     ) -> ToolProvenanceSpec | None:
-        if self.tool_window is not None:
-            return self.tool_window.source_spec
         return self._source_spec
 
     @property
@@ -1724,8 +1781,6 @@ class _ManagedWindowNode(QtCore.QObject):
     def source_binding(
         self,
     ) -> ImageToolSelectionSourceBinding | None:
-        if self.tool_window is not None:
-            return self.tool_window.source_binding
         return self._source_binding
 
     @property
@@ -1952,8 +2007,20 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.provenance_spec
         return self.displayed_provenance_spec
 
-    def data_for_role(self, data_role: ScriptInputDataRole) -> xr.DataArray:
+    def data_for_role(
+        self,
+        data_role: ScriptInputDataRole,
+        *,
+        owner_node: _ManagedWindowNode | None = None,
+    ) -> xr.DataArray:
         """Return the live array represented by a script-input data role."""
+        if self.pending_workspace_memory_payload is not None:
+            loader = self.manager._workspace_controller.loading
+            return loader._workspace_tool_reference_source_data(
+                self.uid,
+                data_role=data_role,
+                owner_node=self if owner_node is None else owner_node,
+            )
         if (
             self.pending_workspace_payload is not None
             and not self.materialize_pending_workspace_payload()
@@ -2094,7 +2161,9 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def has_source_binding(self) -> bool:
         if self.tool_window is not None:
-            return self.tool_window.has_source_binding
+            return bool(self.tool_window.script_inputs)
+        if not self.is_imagetool:
+            return bool(self.tool_script_inputs)
         return (
             self._source_spec is not None
             or self._source_binding is not None
@@ -2262,6 +2331,8 @@ class _ManagedWindowNode(QtCore.QObject):
         state
             Current refresh state for manager status UI.
         """
+        if not self.is_imagetool:
+            raise TypeError("Source bindings are only valid for ImageTool nodes")
         if source_spec is not None and not isinstance(
             source_spec,
             ToolProvenanceSpec,
@@ -2310,33 +2381,6 @@ class _ManagedWindowNode(QtCore.QObject):
         self._set_source_state(state if self.has_source_binding else "fresh")
         self.manager._mark_node_state_dirty(self.uid)
 
-    def set_restored_source_binding_metadata(
-        self,
-        source_spec: ToolProvenanceSpec | None,
-        source_binding: ImageToolSelectionSourceBinding | None,
-        *,
-        auto_update: bool,
-        state: _source_state_type,
-    ) -> None:
-        """Restore saved source metadata without reading parent data."""
-        if source_spec is not None and not isinstance(
-            source_spec,
-            ToolProvenanceSpec,
-        ):
-            raise TypeError("source_spec must be a ToolProvenanceSpec or None")
-        if source_binding is not None and not isinstance(
-            source_binding,
-            ImageToolSelectionSourceBinding,
-        ):
-            raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
-        self._replay_source_data = None
-        self._replay_source_pending = False
-        self._source_spec = require_live_source_spec(source_spec)
-        self._invalidate_provenance_derived_state()
-        self._source_binding = None if self._source_spec is not None else source_binding
-        self._source_auto_update = bool(auto_update)
-        self._source_state = state if self.has_source_binding else "fresh"
-
     def set_output_binding(
         self,
         output_id: str,
@@ -2345,6 +2389,8 @@ class _ManagedWindowNode(QtCore.QObject):
         auto_update: bool = False,
         state: _source_state_type = "fresh",
     ) -> None:
+        if not self.is_imagetool:
+            raise TypeError("Output bindings are only valid for ImageTool nodes")
         if output_id is None:
             raise ValueError("output_id must not be None")
         if not isinstance(output_id, str):
@@ -2377,6 +2423,8 @@ class _ManagedWindowNode(QtCore.QObject):
         *,
         replay_source_data: xr.DataArray | None,
     ) -> None:
+        if not self.is_imagetool:
+            raise TypeError("Detached provenance is only valid for ImageTool nodes")
         if provenance_spec is not None and not isinstance(
             provenance_spec,
             ToolProvenanceSpec,
@@ -2486,14 +2534,18 @@ class _ManagedWindowNode(QtCore.QObject):
             None if replay_source_data is None else replay_source_data.copy(deep=False)
         )
         self._replay_source_pending = False
-        self._advance_snapshot_token()
+        self._advance_snapshot_token(defer_refresh=not propagate_descendants)
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
         if propagate_descendants:
             if state == "fresh":
-                self.manager._propagate_source_change_from_uid(self.uid)
+                self.manager._lineage_controller._propagate_source_change_from_uid(
+                    self.uid
+                )
             else:
-                self.manager._mark_descendants_source_state(self.uid, state)
+                self.manager._lineage_controller._propagate_source_state_from_uid(
+                    self.uid, state
+                )
 
     def replace_with_detached_data(
         self,
@@ -2518,15 +2570,38 @@ class _ManagedWindowNode(QtCore.QObject):
         )
 
     def _handle_tool_data_changed(self) -> None:
+        manager = self.manager
+        if (
+            not self._suspend_descendant_signal_propagation
+            and manager._dependency_tracker.source_refresh_queued(self.uid, self.uid)
+        ):
+            manager._queue_idle_work(
+                ("tool-source-rerun", self.uid),
+                functools.partial(self._resume_tool_source_refresh, self.uid),
+            )
+            return
         self._sync_tool_provenance_revision()
-        self.manager._mark_node_data_dirty(self.uid)
+        manager._mark_node_data_dirty(self.uid)
         self._advance_snapshot_token(defer_refresh=True)
         if self._suspend_descendant_signal_propagation:
             return
-        self.manager._queue_idle_work(
+        manager._queue_idle_work(
             ("tool-data-refresh", self.uid),
             functools.partial(self._flush_tool_data_changed, self.uid),
         )
+
+    def _resume_tool_source_refresh(self, uid: str) -> None:
+        """Resume a queued self-refresh after its prior callback has returned."""
+        if uid != self.uid:
+            return
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        if manager._lineage_controller._resume_pending_source_refreshes(self.uid):
+            return
+        self._handle_tool_data_changed()
 
     def _flush_tool_data_changed(self, uid: str) -> None:
         if uid != self.uid:
@@ -2540,11 +2615,35 @@ class _ManagedWindowNode(QtCore.QObject):
         if tool_window is None:
             return
         if tool_window.source_state == "fresh":
-            manager._propagate_source_change_from_uid(self.uid)
+            manager._lineage_controller._propagate_source_change_from_uid(self.uid)
         else:
-            manager._mark_descendants_source_state(self.uid, tool_window.source_state)
+            manager._lineage_controller._propagate_source_state_from_uid(
+                self.uid,
+                tool_window.source_state,
+            )
         if tool_window.source_state == "fresh":
-            manager._resume_pending_source_refreshes(self.uid)
+            manager._lineage_controller._resume_pending_source_refreshes(self.uid)
+
+    @QtCore.Slot()
+    def _handle_tool_source_refresh_aborted(self) -> None:
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        if manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        tool_window = self.tool_window
+        if tool_window is None:
+            return
+        if self._suspend_descendant_signal_propagation:
+            return
+        manager._lineage_controller._propagate_source_state_from_uid(
+            self.uid,
+            tool_window.source_state,
+        )
+        manager._lineage_controller._resume_pending_source_refreshes(
+            self.uid,
+            require_self_refresh=True,
+        )
 
     def _set_source_auto_update(self, value: bool) -> None:
         self._source_auto_update = bool(value)
@@ -2552,9 +2651,12 @@ class _ManagedWindowNode(QtCore.QObject):
         self.manager._mark_node_state_dirty(self.uid)
 
     def _set_source_state(self, state: _source_state_type) -> None:
-        if self._source_state == state:
+        tool = self.tool_window
+        if self._source_state == state and (tool is None or tool.source_state == state):
             return
         self._source_state = state
+        if tool is not None and tool.source_state != state:
+            tool._set_source_state(state)
         self._notify_change(_ManagedNodeChange.ROW)
         self.manager._mark_node_state_dirty(self.uid)
 
@@ -2592,7 +2694,7 @@ class _ManagedWindowNode(QtCore.QObject):
         raise ValueError("Managed node is not available")
 
     def parent_source_data(self) -> xr.DataArray:
-        return self.manager._parent_source_data_for_uid(self.uid)
+        return self.manager._lineage_controller._parent_source_data_for_uid(self.uid)
 
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
@@ -2687,24 +2789,35 @@ class _ManagedWindowNode(QtCore.QObject):
             self.slicer_area.reload()
 
     def reload_source_data(self) -> bool:
+        """Reload this node through its one applicable framework path."""
         if self.tool_window is None:
-            return False
-        return self.manager._reload_source_chain_for_child(self.uid)
-
-    def can_reload_source_data(self) -> bool:
-        return (
-            self.tool_window is not None
-            and self.manager._reload_target_for_child(self.uid) is not None
+            if not self.is_imagetool:
+                return False
+            try:
+                tool = self.manager.get_imagetool(self.uid)
+            except (KeyError, ValueError):
+                return False
+            return tool.slicer_area._reload()
+        return self.manager._lineage_controller._refresh_tool_inputs(
+            self.uid,
+            allow_recorded=True,
+            force_live_reload=True,
         )
 
-    def reload_unavailable_reason(self) -> str | None:
-        if self.tool_window is None:
-            return "The selected tool is no longer available. Select an open item."
-        return self.manager._reload_unavailable_reason_for_child(self.uid)
+    def can_reload_source_data(self) -> bool:
+        if self.tool_window is not None:
+            return self.reload_unavailable_reason() is None
+        return False
 
-    @QtCore.Slot()
-    def _refresh_node_info(self) -> None:
-        self._notify_change(_ManagedNodeChange.ROW)
+    def reload_unavailable_reason(self) -> str | None:
+        tool = self.tool_window
+        if tool is None:
+            return "The selected tool is no longer available. Select an open item."
+        return self.manager._lineage_controller._input_resolution_plan(
+            tool.script_inputs,
+            target_node_uid=self.uid,
+            force_live_reload=True,
+        ).unavailable_reason
 
     @QtCore.Slot()
     def _handle_tool_info_changed(self) -> None:
@@ -2764,24 +2877,17 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:
-            with self._suspend_descendant_propagation():
-                updated = self.tool_window._update_from_parent_source()
-            if updated and self.tool_window.source_state == "fresh":
-                self.manager._propagate_source_change_from_uid(self.uid)
-            elif self.tool_window.source_state != "fresh":
-                self.manager._mark_descendants_source_state(
-                    self.uid, self.tool_window.source_state
-                )
-            self._notify_change(_ManagedNodeChange.ROW)
-            return updated
+            return self.manager._lineage_controller._refresh_tool_inputs(
+                self.uid,
+                allow_recorded=True,
+            )
 
         with self.manager._extensions.execution.capture_replay_sources() as publication:
             try:
                 if self._output_id is not None:
                     parent_tool = self.manager._parent_node(self).tool_window
                     if parent_tool is not None and parent_tool.source_state != "fresh":
-                        self._set_source_state(parent_tool.source_state)
-                        self.manager._mark_descendants_source_state(
+                        self.manager._lineage_controller._propagate_source_state_from_uid(
                             self.uid, parent_tool.source_state
                         )
                         return False
@@ -2815,8 +2921,9 @@ class _ManagedWindowNode(QtCore.QObject):
                     preserve_filter=True,
                 )
             except Exception:
-                self._set_source_state("unavailable")
-                self.manager._mark_descendants_source_unavailable(self.uid)
+                self.manager._lineage_controller._propagate_source_state_from_uid(
+                    self.uid, "unavailable"
+                )
                 return False
             publication.publish()
 
@@ -2824,11 +2931,9 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> bool:
         if self.tool_window is not None:
-            if not self.tool_window.has_source_binding:
-                return False
-            with self._suspend_descendant_propagation():
-                self.tool_window.handle_parent_source_replaced(parent_data)
-            return self.tool_window.source_state == "fresh"
+            # The dependency tracker owns every ToolWindow input edge. The tree
+            # parent controls placement only.
+            return False
 
         if self._output_id is not None and (
             not self._source_auto_update or self.imagetool is None
@@ -2909,7 +3014,7 @@ class _ManagedWindowNode(QtCore.QObject):
             else:
                 self._set_source_auto_update(dialog.auto_update_check.isChecked())
             if dialog.update_requested and self.source_state == "stale":
-                self.manager._refresh_source_chain_to_uid(self.uid)
+                self.manager._lineage_controller._refresh_source_chain_to_uid(self.uid)
         return result
 
     @QtCore.Slot(object)
@@ -2926,9 +3031,14 @@ class _ManagedWindowNode(QtCore.QObject):
             try:
                 parent_data = self.current_source_data()
             except Exception:
-                self.manager._mark_descendants_source_unavailable(self.uid)
+                self.manager._lineage_controller._propagate_source_state_from_uid(
+                    self.uid,
+                    "unavailable",
+                )
                 return
-        self.manager._propagate_source_change_from_uid(self.uid, parent_data)
+        self.manager._lineage_controller._propagate_source_change_from_uid(
+            self.uid, parent_data
+        )
 
 
 class _ImageToolWrapper(_ManagedWindowNode):

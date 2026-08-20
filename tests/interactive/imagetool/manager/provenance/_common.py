@@ -17,6 +17,9 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.utils
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._execution import (
+    script_provenance_requires_trust,
+)
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
@@ -29,6 +32,21 @@ from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
+
+
+def _authorize_required_script_provenance(
+    spec: ToolProvenanceSpec,
+    *,
+    reason: str,
+    external_input_names: set[str] | None = None,
+    live_input_resolver: Callable[..., typing.Any] | None = None,
+) -> bool:
+    del reason
+    return script_provenance_requires_trust(
+        spec,
+        external_input_names=external_input_names,
+        live_input_resolver=live_input_resolver,
+    )
 
 
 def _manager_provenance_file_spec(path: pathlib.Path):
@@ -201,6 +219,8 @@ def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -
     child._result_ds_full = [
         _fit2d_param_result_dataset(params) for params in params_list
     ]
+    child._fit_is_current = True
+    child._update_full_fit_saveable()
     child._update_param_plot_options()
 
 
@@ -210,7 +230,7 @@ def _fake_edit_controller(
     parent: typing.Any | None = None,
     nodes: dict[str, typing.Any] | None = None,
     metadata_uid: str | None = None,
-    script_input_can_reload: Callable[..., bool] | None = None,
+    script_input_unavailable_reason: Callable[..., str | None] | None = None,
 ) -> provenance_edit_controller._ProvenanceEditController:
     graph_nodes = (
         nodes if nodes is not None else ({} if node is None else {"node": node})
@@ -223,6 +243,18 @@ def _fake_edit_controller(
             raise RuntimeError("missing parent")
         return parent
 
+    lineage_controller = types.SimpleNamespace(
+        _script_input_unavailable_reason=(
+            script_input_unavailable_reason
+            if script_input_unavailable_reason is not None
+            else lambda *_args, **_kwargs: None
+        ),
+        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
+            data=xr.DataArray([1.0], dims=("x",)),
+            provenance_spec=spec,
+        ),
+        _ensure_script_provenance_trusted=_authorize_required_script_provenance,
+    )
     manager = types.SimpleNamespace(
         _metadata_node_uid=metadata_uid,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
@@ -245,17 +277,7 @@ def _fake_edit_controller(
                 ),
             ),
         ),
-        _available_file_loaders=erlab.interactive.utils.file_loaders,
-        _script_input_can_reload=(
-            script_input_can_reload
-            if script_input_can_reload is not None
-            else lambda *_args, **_kwargs: True
-        ),
-        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
-            data=xr.DataArray([1.0], dims=("x",)),
-            provenance_spec=spec,
-        ),
-        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
+        _lineage_controller=lineage_controller,
         _update_info=lambda **_kwargs: None,
     )
     return provenance_edit_controller._ProvenanceEditController(

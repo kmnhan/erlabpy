@@ -20,7 +20,11 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
-from erlab.interactive.imagetool._provenance._model import FileDataSelection, full_data
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ScriptInput,
+    full_data,
+)
 from erlab.interactive.imagetool._provenance._operations import AverageOperation
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
@@ -942,7 +946,15 @@ def test_manager_goldtool_child_side_panel(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=False,
+        )
         configure_goldtool_child(child, fitted=True, spline=True)
 
         manager.tree_view.clearSelection()
@@ -973,7 +985,15 @@ def test_manager_goldtool_child_side_panel_live_refresh(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=False,
+        )
         configure_goldtool_child(child, fitted=True, spline=False)
 
         manager.tree_view.clearSelection()
@@ -1004,9 +1024,14 @@ def test_manager_restool_child_side_panel(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        child = ResolutionTool(gold.copy(deep=True), data_name="gold_input")
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
         child_uid = manager.add_childtool(
-            ResolutionTool(gold.copy(deep=True), data_name="gold_input"),
-            0,
+            child,
+            script_inputs={"data": 0},
             show=False,
         )
 
@@ -1037,13 +1062,16 @@ def test_manager_restool_child_side_panel_live_refresh(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        child = ResolutionTool(gold.copy(deep=True), data_name="gold_input")
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
         child_uid = manager.add_childtool(
-            ResolutionTool(gold.copy(deep=True), data_name="gold_input"),
-            0,
+            child,
+            script_inputs={"data": 0},
             show=False,
         )
-        child = manager.get_childtool(child_uid)
-        assert isinstance(child, ResolutionTool)
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
@@ -1076,9 +1104,14 @@ def test_manager_meshtool_child_side_panel(
         itool(test_data, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        child = MeshTool(test_data.copy(deep=True), data_name="mesh_input")
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
         child_uid = manager.add_childtool(
-            MeshTool(test_data.copy(deep=True), data_name="mesh_input"),
-            0,
+            child,
+            script_inputs={"data": 0},
             show=False,
         )
 
@@ -1109,13 +1142,16 @@ def test_manager_meshtool_child_side_panel_live_refresh(
         itool(test_data, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        child = MeshTool(test_data.copy(deep=True), data_name="mesh_input")
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
         child_uid = manager.add_childtool(
-            MeshTool(test_data.copy(deep=True), data_name="mesh_input"),
-            0,
+            child,
+            script_inputs={"data": 0},
             show=False,
         )
-        child = manager.get_childtool(child_uid)
-        assert isinstance(child, MeshTool)
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
@@ -1375,9 +1411,8 @@ def test_manager_dependency_summary_coalesces_matching_input_name_and_label() ->
         data_role="displayed",
     )
     manager = types.SimpleNamespace(
-        _dependency_refs_for_uid=lambda _uid: (ref,),
+        _dependency_tracker=types.SimpleNamespace(refs_for_uid=lambda _uid: (ref,)),
         _tool_graph=types.SimpleNamespace(nodes={}),
-        _dependency_ref_has_recorded_file=lambda _spec, _ref: False,
     )
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
 

@@ -284,9 +284,11 @@ class _ProvenanceEditController:
             if external_input_names is not None and not node.has_replay_source:
                 return "The original replay source is no longer available."
             for script_input in spec.script_inputs:
-                reason = self._manager._script_input_unavailable_reason(
-                    script_input,
-                    target_node_uid=node.uid,
+                reason = (
+                    self._manager._lineage_controller._script_input_unavailable_reason(
+                        script_input,
+                        target_node_uid=node.uid,
+                    )
                 )
                 if reason is not None:
                     return reason
@@ -641,12 +643,13 @@ class _ProvenanceEditController:
             replay_source_data = node.resolved_replay_source_data()
             try:
                 if local.kind == "script":
-                    trusted_user_code = script_provenance_requires_trust(local)
-                    if trusted_user_code:
-                        self._manager._ensure_script_provenance_trusted(
+                    lineage_controller = self._manager._lineage_controller
+                    trusted_user_code = (
+                        lineage_controller._ensure_script_provenance_trusted(
                             local,
                             reason="paste these provenance steps",
                         )
+                    )
                     data = replay_script_provenance(
                         local,
                         {
@@ -872,10 +875,11 @@ class _ProvenanceEditController:
             if not self._script_spec_replayable_for_node(node, candidate):
                 return False, "This script step cannot be replayed."
             if not all(
-                self._manager._script_input_can_reload(
+                self._manager._lineage_controller._script_input_unavailable_reason(
                     script_input,
                     target_node_uid=node.uid,
                 )
+                is None
                 for script_input in candidate.script_inputs
             ):
                 return False, "This script step has unavailable inputs."
@@ -2161,16 +2165,13 @@ class _ProvenanceEditController:
                 if source_data is None:
                     raise RuntimeError("Script provenance needs its replay source")
                 replay_inputs = dict.fromkeys(external_input_names, source_data)
-                trusted_user_code = script_provenance_requires_trust(
-                    spec,
-                    external_input_names=set(replay_inputs),
-                )
-                if trusted_user_code:
-                    self._manager._ensure_script_provenance_trusted(
+                trusted_user_code = (
+                    self._manager._lineage_controller._ensure_script_provenance_trusted(
                         spec,
                         reason="apply this provenance order",
                         external_input_names=set(replay_inputs),
                     )
+                )
                 return (
                     replay_script_provenance(
                         spec,
@@ -2185,7 +2186,7 @@ class _ProvenanceEditController:
                     ),
                     spec,
                 )
-            result = self._manager._rebuild_script_provenance(
+            result = self._manager._lineage_controller._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
             )
@@ -2230,16 +2231,13 @@ class _ProvenanceEditController:
                 "derived": data,
                 "parent_data": parent_data,
             }
-            trusted_user_code = script_provenance_requires_trust(
-                step_spec,
-                external_input_names=set(replay_inputs),
-            )
-            if trusted_user_code:
-                self._manager._ensure_script_provenance_trusted(
+            trusted_user_code = (
+                self._manager._lineage_controller._ensure_script_provenance_trusted(
                     step_spec,
                     reason="apply this provenance step",
                     external_input_names=set(replay_inputs),
                 )
+            )
             data = replay_script_provenance(
                 step_spec,
                 replay_inputs,

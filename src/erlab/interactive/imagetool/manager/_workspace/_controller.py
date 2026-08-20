@@ -136,6 +136,11 @@ class _WorkspaceController:
         )
         try:
             resolved = node.data_for_role(data_role)
+            resolved = (
+                erlab.interactive.utils.ToolWindow._apply_saved_tool_data_reference(
+                    reference, resolved
+                )
+            )
         except Exception:
             return False
         return erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(

@@ -4,7 +4,7 @@ import json
 import pathlib
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pydantic
@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive._fit2d import Fit2DTool
@@ -22,9 +23,11 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
+from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     FileDataSelection,
+    ScriptInput,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     full_data,
@@ -67,6 +70,165 @@ from ._common import (
     _set_selection_point,
     _set_selection_range,
 )
+
+
+class _ManagedInputTestState(pydantic.BaseModel):
+    pass
+
+
+class _ManagedSumTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestState]):
+    StateModel = _ManagedInputTestState
+    tool_name = "managed-sum-test"
+
+    def __init__(self, data: xr.DataArray, weights: xr.DataArray | None = None) -> None:
+        super().__init__()
+        self._input_data = data
+        self._input_weights = xr.zeros_like(data) if weights is None else weights
+        self._data = data + self._input_weights
+        self._status = _ManagedInputTestState()
+        self.set_script_inputs(
+            (
+                ScriptInput(name="data", data_role="source"),
+                ScriptInput(name="weights", data_role="source"),
+            ),
+            primary_input="data",
+        )
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def tool_status(self) -> _ManagedInputTestState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _ManagedInputTestState) -> None:
+        self._status = status
+
+    def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+        return {
+            "<saved-tool-data>": self._input_data,
+            "weights": self._input_weights,
+        }
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self._input_data = inputs["data"]
+        self._input_weights = inputs["weights"]
+        self._data = self._input_data + self._input_weights
+
+
+class _ReloadCountingManagedSumTool(_ManagedSumTool):
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__(data)
+        self.update_calls = 0
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self.update_calls += 1
+        super().update_inputs(inputs)
+
+
+class _ManagedUnaryTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestState]):
+    StateModel = _ManagedInputTestState
+    tool_name = "managed-unary-test"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _ManagedInputTestState()
+        self.update_calls = 0
+        self.set_script_inputs(
+            (ScriptInput(name="data", data_role="source"),),
+            primary_input="data",
+        )
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def tool_status(self) -> _ManagedInputTestState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _ManagedInputTestState) -> None:
+        self._status = status
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self.update_calls += 1
+        self._data = inputs["data"]
+
+
+class _DeferredManagedSumTool(_ManagedSumTool):
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__(data)
+        self.pending_inputs: dict[str, xr.DataArray] | None = None
+        self.update_calls = 0
+        self.defer_updates = True
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+        self.update_calls += 1
+        if not self.defer_updates:
+            return False
+        self.pending_inputs = dict(inputs)
+        self._defer_source_refresh()
+        return False
+
+    def finish_deferred_update(self) -> None:
+        if self.pending_inputs is None:
+            raise RuntimeError("No deferred inputs are pending")
+        self._data = self.pending_inputs["data"] + self.pending_inputs["weights"]
+        self.pending_inputs = None
+        self.finalize_source_refresh()
+
+
+def _add_deferred_intermediate_managed_chain(
+    manager: erlab.interactive.imagetool.manager.ImageToolManager,
+    data: xr.DataArray,
+    weights: xr.DataArray,
+) -> tuple[
+    _DeferredManagedSumTool,
+    _ManagedUnaryTool,
+    _ManagedUnaryTool,
+    str,
+]:
+    for value in (data, weights):
+        root = itool(value, manager=False, execute=False)
+        if not isinstance(root, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected ImageTool test input")
+        manager.add_imagetool(root, show=False)
+
+    upstream = _DeferredManagedSumTool(data + weights)
+    upstream_uid = manager.add_childtool(
+        upstream,
+        script_inputs={"data": 0, "weights": 1},
+        show=False,
+    )
+    upstream.set_script_inputs(
+        upstream.script_inputs,
+        primary_input="data",
+        auto_update=False,
+    )
+
+    intermediate = _ManagedUnaryTool(upstream.tool_data)
+    intermediate_uid = manager.add_childtool(
+        intermediate,
+        script_inputs={"data": upstream_uid},
+        show=False,
+    )
+
+    target = _ManagedUnaryTool(intermediate.tool_data)
+    target_uid = manager.add_childtool(
+        target,
+        script_inputs={"data": intermediate_uid},
+        show=False,
+    )
+    target.set_script_inputs(
+        target.script_inputs,
+        primary_input="data",
+        auto_update=False,
+    )
+    return upstream, intermediate, target, target_uid
 
 
 def test_elided_value_label_keeps_full_text_during_resize(qtbot) -> None:
@@ -289,8 +451,10 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
 
         child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
-        assert child.input_provenance_spec is not None
-        display_code = child.input_provenance_spec.display_code()
+        assert child.script_inputs[0].data_role == "displayed"
+        input_provenance = child.script_inputs[0].parsed_provenance_spec()
+        assert input_provenance is not None
+        display_code = input_provenance.display_code()
         assert display_code is not None
         assert "gaussian_filter" in display_code
         namespace = {"data": data.copy(deep=True)}
@@ -590,6 +754,10 @@ def test_manager_operation_filter_preserves_output_binding(
             super().__init__()
             self._data = data
             self._status = _OutputToolState()
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),),
+                primary_input="data",
+            )
 
         @property
         def tool_status(self) -> _OutputToolState:
@@ -602,6 +770,9 @@ def test_manager_operation_filter_preserves_output_binding(
         @property
         def tool_data(self) -> xr.DataArray:
             return self._data
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
         def output_imagetool_data(
             self, output_id: str | enum.Enum
@@ -636,7 +807,11 @@ def test_manager_operation_filter_preserves_output_binding(
         manager.add_imagetool(root_tool, show=False)
 
         child = _OutputTool(data)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=False,
+        )
         child_node = manager._child_node(child_uid)
         assert child_node.displayed_source_spec == child_node.source_spec
         initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
@@ -697,6 +872,10 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
             self._data = data
             self._status = _StaticToolState()
             self._provenance_spec = provenance_spec
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),),
+                primary_input="data",
+            )
 
         @property
         def tool_status(self) -> _StaticToolState:
@@ -710,8 +889,8 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> bool:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self._data = inputs["data"]
             return True
 
         def current_provenance_spec(
@@ -738,12 +917,2489 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
 
         child_uid = manager.add_childtool(
             _StaticTool(data, provenance_spec),
-            0,
+            script_inputs={"data": 0},
             show=False,
         )
         child_node = manager._child_node(child_uid)
 
         assert child_node.displayed_provenance_spec == provenance_spec
+
+
+def test_manager_toolwindow_named_inputs_refresh_atomically(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _MultiInputToolState(pydantic.BaseModel):
+        value: int = 0
+
+    class _MultiInputTool(erlab.interactive.utils.ToolWindow[_MultiInputToolState]):
+        StateModel = _MultiInputToolState
+        tool_name = "multi-input-dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+            self._status = _MultiInputToolState()
+            self.update_calls = 0
+            self.set_script_inputs(
+                (
+                    ScriptInput(name="data", data_role="source"),
+                    ScriptInput(name="weights", data_role="source"),
+                ),
+                primary_input="data",
+            )
+
+        @property
+        def tool_status(self) -> _MultiInputToolState:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _MultiInputToolState) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self.update_calls += 1
+            self._data = inputs["data"] + inputs["weights"]
+
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("y", "x"),
+        name="data",
+    )
+    weights = xr.ones_like(data).rename("weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights, data + 100.0):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        rejected_tool = _MultiInputTool(data)
+        qtbot.addWidget(rejected_tool)
+        with pytest.raises(KeyError):
+            manager.add_childtool(
+                rejected_tool,
+                script_inputs={"data": 0, "weights": "missing"},
+                show=False,
+            )
+        assert all(item.node_uid is None for item in rejected_tool.script_inputs)
+        with pytest.raises(ValueError, match="must match the ToolWindow"):
+            manager.add_childtool(
+                rejected_tool,
+                script_inputs={"data": 0},
+                show=False,
+            )
+        with pytest.raises(KeyError):
+            manager.add_childtool(
+                rejected_tool,
+                script_inputs={"data": 0, "weights": 1},
+                parent="missing",
+                show=False,
+            )
+        with pytest.raises(ValueError, match="one of the named input targets"):
+            manager.add_childtool(
+                rejected_tool,
+                script_inputs={"data": 0, "weights": 1},
+                parent=2,
+                show=False,
+            )
+        assert all(item.node_uid is None for item in rejected_tool.script_inputs)
+
+        tool = _MultiInputTool(data + weights)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        tool.set_script_inputs(
+            tool.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+
+        child_node = manager._child_node(child_uid)
+        assert child_node.parent_uid == manager._node_for_target(0).uid
+        assert {
+            ref.name
+            for ref in manager._lineage_controller._dependency_refs_for_uid(child_uid)
+        } == {
+            "data",
+            "weights",
+        }
+
+        updated_weights = (weights * 3).rename("weights")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, updated_weights)
+        qtbot.wait_until(lambda: tool.update_calls == 1, timeout=5000)
+        xr.testing.assert_identical(tool.tool_data, data + updated_weights)
+        assert tool.source_state == "fresh"
+
+        auto_updated_data = (data + 10).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, auto_updated_data)
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        assert tool.update_calls == 2
+        xr.testing.assert_identical(tool.tool_data, auto_updated_data + updated_weights)
+        assert tool.source_state == "fresh"
+
+        tool.set_script_inputs(
+            tool.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+
+        downstream = _ManagedUnaryTool(tool.tool_data)
+        downstream_uid = manager.add_childtool(
+            downstream,
+            script_inputs={"data": child_uid},
+            show=False,
+        )
+        downstream.set_script_inputs(
+            downstream.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+
+        updated_data = (data + 20).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: tool.source_state == "stale", timeout=5000)
+        assert tool.update_calls == 2
+        assert downstream.source_state == "stale"
+
+        late_downstream = _ManagedUnaryTool(tool.tool_data)
+        late_downstream_uid = manager.add_childtool(
+            late_downstream,
+            script_inputs={"data": child_uid},
+            show=False,
+        )
+        assert late_downstream.source_state == "stale"
+
+        assert manager._lineage_controller._refresh_source_chain_to_uid(downstream_uid)
+        assert tool.update_calls == 3
+        assert downstream.update_calls == 1
+        xr.testing.assert_equal(tool.tool_data, updated_data + updated_weights)
+        xr.testing.assert_identical(
+            downstream.tool_data,
+            updated_data + updated_weights,
+        )
+        assert downstream.source_state == "fresh"
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        assert downstream.update_calls == 1
+
+        tree_parent = _ManagedUnaryTool(updated_data)
+        tree_parent_uid = manager.add_childtool(
+            tree_parent,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        nested_tool = _MultiInputTool(updated_data + updated_weights)
+        manager.add_childtool(
+            nested_tool,
+            script_inputs={"data": tree_parent_uid, "weights": 1},
+            show=False,
+        )
+        nested_tool.set_script_inputs(
+            nested_tool.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+
+        nested_data = (updated_data + 5).rename("data")
+        tree_parent._data = nested_data
+        tree_parent.sigDataChanged.emit()
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        assert nested_tool.update_calls == 1
+        xr.testing.assert_identical(
+            nested_tool.tool_data,
+            nested_data + updated_weights,
+        )
+
+        manager.remove_imagetool(1)
+        qtbot.wait_until(lambda: tool.source_state == "unavailable", timeout=5000)
+        qtbot.wait_until(
+            lambda: downstream.source_state == "unavailable",
+            timeout=5000,
+        )
+        assert late_downstream.source_state == "unavailable"
+        assert child_uid in manager._tool_graph.nodes
+        assert downstream_uid in manager._tool_graph.nodes
+        assert late_downstream_uid in manager._tool_graph.nodes
+
+
+def test_managed_input_ancestor_refreshes_descendant_from_current_inputs(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        parent = _ManagedSumTool(data + weights)
+        parent_uid = manager.add_childtool(
+            parent,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        parent.set_script_inputs(
+            parent.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+
+        descendant = _ManagedUnaryTool(parent.tool_data)
+        descendant_uid = manager.add_childtool(
+            descendant,
+            script_inputs={"data": parent_uid},
+            show=False,
+        )
+        descendant_node = manager._child_node(descendant_uid)
+
+        updated_data = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: parent.source_state == "stale", timeout=5000)
+        qtbot.wait_until(
+            lambda: descendant.source_state == "stale",
+            timeout=5000,
+        )
+
+        assert manager._reload_target_for_child(descendant_uid) is None
+        assert manager._lineage_controller._refresh_source_chain_to_uid(descendant_uid)
+        xr.testing.assert_equal(parent.tool_data, updated_data + weights)
+        xr.testing.assert_equal(descendant.tool_data, updated_data + weights)
+        assert parent.source_state == "fresh"
+        assert descendant.source_state == "fresh"
+
+        manager.remove_imagetool(1)
+        qtbot.wait_until(
+            lambda: parent.source_state == "unavailable",
+            timeout=5000,
+        )
+        assert (
+            manager._lineage_controller._reload_boundary_for_child(descendant_uid)
+            is descendant_node
+        )
+        assert manager._reload_target_for_child(descendant_uid) is None
+
+
+@pytest.mark.parametrize("reload_mode", ["direct", "selected"])
+def test_deferred_managed_reload_resumes_selected_descendant(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    reload_mode: str,
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        paths = (tmp_path / "data.h5", tmp_path / "weights.h5")
+        for index, (value, path) in enumerate(
+            zip((data, weights), paths, strict=True),
+            start=1,
+        ):
+            value.to_netcdf(path, engine="h5netcdf")
+            itool(
+                value,
+                manager=True,
+                file_path=path,
+                load_func=(
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            )
+            qtbot.wait_until(
+                lambda expected_count=index: manager.ntools == expected_count,
+                timeout=5000,
+            )
+
+        parent = _DeferredManagedSumTool(data + weights)
+        parent_uid = manager.add_childtool(
+            parent,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        parent.set_script_inputs(
+            parent.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+        descendant = _ManagedUnaryTool(parent.tool_data)
+        descendant_uid = manager.add_childtool(
+            descendant,
+            script_inputs={"data": parent_uid},
+            show=False,
+        )
+
+        updated_data = (data + 100.0).rename("data")
+        updated_data.to_netcdf(paths[0], engine="h5netcdf")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: parent.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: descendant.source_state == "stale", timeout=5000)
+
+        if reload_mode == "direct":
+            assert not manager._child_node(descendant_uid).reload_source_data()
+        else:
+            manager.tree_view.selectionModel().clearSelection()
+            select_child_tool(manager, descendant_uid)
+            manager.reload_selected()
+
+        assert parent.pending_inputs is not None
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        parent.finish_deferred_update()
+
+        qtbot.wait_until(lambda: parent.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: descendant.source_state == "fresh", timeout=5000)
+        xr.testing.assert_equal(parent.tool_data, updated_data + weights)
+        xr.testing.assert_equal(descendant.tool_data, updated_data + weights)
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_unrelated_pending_refresh_does_not_defer_failed_input_plan(
+    monkeypatch,
+) -> None:
+    pending = {("unrelated", "dependent")}
+    tracker = types.SimpleNamespace(
+        has_pending_source_refreshes=lambda: bool(pending),
+        source_refresh_queued=lambda blocker, target: (blocker, target) in pending,
+    )
+    source = types.SimpleNamespace(
+        source_state="stale",
+        tool_window=types.SimpleNamespace(_source_refresh_deferred=False),
+    )
+    manager = types.SimpleNamespace(
+        _dependency_tracker=tracker,
+        _tool_graph=types.SimpleNamespace(nodes={"source": source}),
+    )
+    controller = manager_lineage._LineageController(manager)
+    monkeypatch.setattr(
+        controller,
+        "_refresh_tool_inputs",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_reload_boundary_for_child",
+        lambda _uid: None,
+    )
+    plan = manager_lineage._InputResolutionPlan(
+        "target",
+        (),
+        (("apply", "source"),),
+        frozenset(),
+        None,
+    )
+
+    assert (
+        controller._execute_input_resolution_plan(
+            plan,
+            allow_recorded=True,
+            reloaded_uids=set(),
+        )
+        == "failed"
+    )
+
+
+def test_input_resolution_plan_classifies_each_live_fallback_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live_input = ScriptInput(name="live", node_uid="live")
+    recorded = script(
+        ScriptCodeOperation(
+            label="Use trusted code",
+            code="import os\nresult = live + int(os.path.exists(os.devnull))",
+        ),
+        start_label="Build recorded input",
+        active_name="result",
+        script_inputs=(live_input,),
+    )
+    controller = manager_lineage._LineageController(types.SimpleNamespace())
+    calls: dict[str, int] = {}
+
+    def resolve_live(script_input: ScriptInput, **_kwargs):
+        calls[script_input.name] = calls.get(script_input.name, 0) + 1
+        return object() if script_input.name == "live" else None
+
+    monkeypatch.setattr(controller, "_live_script_input_node", resolve_live)
+
+    plan = controller._input_resolution_plan(
+        (ScriptInput(name="recorded", provenance_spec=recorded),),
+        target_node_uid="target",
+    )
+
+    assert plan.unavailable_reason is None
+    assert calls == {"recorded": 1, "live": 2}
+
+
+def test_pending_script_reload_rejects_missing_recorded_input() -> None:
+    spec = script(
+        start_label="Copy missing input",
+        seed_code="result = missing",
+        active_name="result",
+        script_inputs=(ScriptInput(name="missing"),),
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={}),
+    )
+    controller = manager_lineage._LineageController(manager)
+    node = types.SimpleNamespace(
+        uid="pending",
+        is_imagetool=True,
+        tool_window=None,
+        imagetool=None,
+        pending_workspace_memory_payload=object(),
+        provenance_spec=spec,
+    )
+
+    reason = controller._node_reload_unavailable_reason(node)
+
+    assert reason is not None
+    assert "no recorded reload source" in reason
+
+
+def test_deferred_live_managed_input_resumes_downstream_once(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        source = _DeferredManagedSumTool(data + weights)
+        source_uid = manager.add_childtool(
+            source,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        source.set_script_inputs(
+            source.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+        downstream = _ManagedUnaryTool(source.tool_data)
+        downstream_uid = manager.add_childtool(
+            downstream,
+            script_inputs={"data": source_uid},
+            show=False,
+        )
+        downstream.set_script_inputs(
+            downstream.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+        descendant = _ManagedUnaryTool(downstream.tool_data)
+        descendant_uid = manager.add_childtool(
+            descendant,
+            script_inputs={"data": downstream_uid},
+            show=False,
+        )
+
+        updated_data = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: source.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: downstream.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: descendant.source_state == "stale", timeout=5000)
+
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(
+            descendant_uid
+        )
+        assert source.pending_inputs is not None
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+        assert source.update_calls == 1
+        assert downstream.update_calls == 0
+
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(
+            downstream_uid
+        )
+        assert source.update_calls == 1
+
+        source.finish_deferred_update()
+
+        expected = updated_data + weights
+        qtbot.wait_until(lambda: source.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: downstream.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: descendant.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        xr.testing.assert_identical(source.tool_data, expected)
+        xr.testing.assert_identical(downstream.tool_data, expected)
+        xr.testing.assert_identical(descendant.tool_data, expected)
+        assert downstream.update_calls == 1
+        assert descendant.update_calls == 1
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+@pytest.mark.parametrize("queued_update", ["deferred", "rejected"])
+def test_deferred_managed_self_rerun_publication_order(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    queued_update: str,
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        source = _DeferredManagedSumTool(data + weights)
+        source_uid = manager.add_childtool(
+            source,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        source.set_script_inputs(
+            source.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+        source_node = manager._child_node(source_uid)
+        initial_snapshot = source_node.snapshot_token
+
+        named = _ManagedUnaryTool(source.tool_data)
+        named_uid = manager.add_childtool(
+            named,
+            script_inputs={"data": source_uid},
+            show=False,
+        )
+        named.set_script_inputs(
+            named.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+
+        tree_tool = itool(source.tool_data, manager=False, execute=False)
+        assert isinstance(tree_tool, erlab.interactive.imagetool.ImageTool)
+        tree_uid = manager.add_imagetool_child(
+            tree_tool,
+            source_uid,
+            show=False,
+            source_spec=full_data(),
+            source_auto_update=True,
+        )
+        tree_node = manager._child_node(tree_uid)
+        tree_updates: list[xr.DataArray] = []
+        replace_tree_data = tree_node.handle_parent_source_replaced
+
+        def record_tree_update(parent_data: xr.DataArray) -> bool:
+            tree_updates.append(parent_data.copy(deep=True))
+            return replace_tree_data(parent_data)
+
+        monkeypatch.setattr(
+            tree_node,
+            "handle_parent_source_replaced",
+            record_tree_update,
+        )
+
+        first = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, first)
+        qtbot.wait_until(lambda: source.update_calls == 1, timeout=5000)
+        assert source._source_refresh_deferred is True
+
+        latest = (data + 200.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, latest)
+        qtbot.wait_until(
+            lambda: manager._dependency_tracker.source_refresh_queued(
+                source_uid,
+                source_uid,
+            ),
+            timeout=5000,
+        )
+
+        dirty_uids: list[str] = []
+        mark_node_data_dirty = manager._mark_node_data_dirty
+
+        def record_node_data_dirty(uid: str) -> None:
+            dirty_uids.append(uid)
+            mark_node_data_dirty(uid)
+
+        monkeypatch.setattr(manager, "_mark_node_data_dirty", record_node_data_dirty)
+        if queued_update == "rejected":
+            source.defer_updates = False
+        source.finish_deferred_update()
+
+        assert source.update_calls == 1
+        qtbot.wait_until(lambda: source.update_calls == 2, timeout=5000)
+        if queued_update == "rejected":
+            qtbot.wait_until(
+                lambda: not manager._interaction_gate.pending_keys,
+                timeout=5000,
+            )
+            expected = first + weights
+            assert source._source_refresh_deferred is False
+            assert source.source_state == "stale"
+            assert source_node.snapshot_token != initial_snapshot
+            assert dirty_uids.count(source_uid) == 1
+            assert named.update_calls == 0
+            assert tree_updates == []
+            assert manager._dependency_tracker.status_for_uid(named_uid) == "changed"
+            xr.testing.assert_identical(source.tool_data, expected)
+            xr.testing.assert_identical(named.tool_data, data + weights)
+            xr.testing.assert_identical(fetch(tree_uid), data + weights)
+            assert not manager._dependency_tracker.has_pending_source_refreshes()
+            return
+
+        assert source._source_refresh_deferred is True
+        assert source_node.snapshot_token == initial_snapshot
+        assert source_uid not in dirty_uids
+        assert named.update_calls == 0
+        assert tree_updates == []
+        xr.testing.assert_identical(named.tool_data, data + weights)
+        xr.testing.assert_identical(fetch(tree_uid), data + weights)
+
+        source.finish_deferred_update()
+
+        qtbot.wait_until(lambda: named.update_calls == 1, timeout=5000)
+        qtbot.wait_until(lambda: len(tree_updates) == 1, timeout=5000)
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        expected = latest + weights
+        xr.testing.assert_identical(source.tool_data, expected)
+        xr.testing.assert_identical(named.tool_data, expected)
+        xr.testing.assert_identical(fetch(tree_uid), expected)
+        xr.testing.assert_identical(tree_updates[0], expected)
+        assert named.update_calls == 1
+        assert len(tree_updates) == 1
+        assert source_node.snapshot_token != initial_snapshot
+        assert dirty_uids.count(source_uid) == 1
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+@pytest.mark.parametrize("manual_reload", [False, True])
+def test_deferred_managed_self_rerun_respects_disabled_auto_update(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    manual_reload: bool,
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        source, _intermediate, target, target_uid = (
+            _add_deferred_intermediate_managed_chain(manager, data, weights)
+        )
+        source_uid = manager._node_uid_from_window(source)
+        assert source_uid is not None
+        source.set_script_inputs(
+            source.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, (data + 100.0).rename("data"))
+        qtbot.wait_until(lambda: source.update_calls == 1, timeout=5000)
+        assert source._source_refresh_deferred
+
+        latest = (data + 200.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, latest)
+        qtbot.wait_until(
+            lambda: manager._dependency_tracker.source_refresh_queued(
+                source_uid,
+                source_uid,
+            ),
+            timeout=5000,
+        )
+
+        source._set_source_auto_update(False)
+        if manual_reload:
+            assert not manager._lineage_controller._reload_target_with_continuations(
+                source_uid,
+                (target_uid,),
+            )
+
+        source.finish_deferred_update()
+
+        if not manual_reload:
+            qtbot.wait_until(
+                lambda: not manager._interaction_gate.pending_keys,
+                timeout=5000,
+            )
+            assert source.update_calls == 1
+            assert source.source_state == "stale"
+            assert target.source_state == "stale"
+            assert not manager._dependency_tracker.has_pending_source_refreshes()
+            return
+
+        expected = latest + weights
+        qtbot.wait_until(lambda: source.update_calls == 2, timeout=5000)
+        assert source._source_refresh_deferred
+        source.finish_deferred_update()
+        qtbot.wait_until(lambda: target.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(source.tool_data, expected)
+        xr.testing.assert_identical(target.tool_data, expected)
+        assert source.update_calls == 2
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_deferred_reload_resumes_managed_target_after_intermediate_update(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        upstream, intermediate, target, target_uid = (
+            _add_deferred_intermediate_managed_chain(manager, data, weights)
+        )
+
+        updated_data = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: upstream.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: intermediate.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: target.source_state == "stale", timeout=5000)
+
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(target_uid)
+        assert upstream.pending_inputs is not None
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        upstream.finish_deferred_update()
+
+        qtbot.wait_until(lambda: target.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        expected = updated_data + weights
+        xr.testing.assert_identical(upstream.tool_data, expected)
+        xr.testing.assert_identical(intermediate.tool_data, expected)
+        xr.testing.assert_identical(target.tool_data, expected)
+        assert intermediate.update_calls == 1
+        assert target.update_calls == 1
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_deferred_abort_runs_newest_input_before_descendant_continuations(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        upstream, intermediate, target, target_uid = (
+            _add_deferred_intermediate_managed_chain(manager, data, weights)
+        )
+        upstream_uid = manager._node_uid_from_window(upstream)
+        assert upstream_uid is not None
+        upstream.set_script_inputs(
+            upstream.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+        upstream_node = manager._child_node(upstream_uid)
+        initial_snapshot = upstream_node.snapshot_token
+
+        first = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, first)
+        qtbot.wait_until(lambda: upstream.update_calls == 1, timeout=5000)
+        assert upstream._source_refresh_deferred is True
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(target_uid)
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        latest = (data + 200.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, latest)
+        qtbot.wait_until(
+            lambda: (
+                upstream_uid
+                in manager._dependency_tracker._pending_source_refresh_targets.get(
+                    upstream_uid, set()
+                )
+            ),
+            timeout=5000,
+        )
+
+        upstream.abort_source_refresh()
+
+        assert upstream.update_calls == 2
+        assert upstream._source_refresh_deferred is True
+        assert upstream_node.snapshot_token == initial_snapshot
+        assert intermediate.update_calls == 0
+        assert target.update_calls == 0
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        upstream.finish_deferred_update()
+
+        expected = latest + weights
+        qtbot.wait_until(lambda: target.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(upstream.tool_data, expected)
+        xr.testing.assert_identical(intermediate.tool_data, expected)
+        xr.testing.assert_identical(target.tool_data, expected)
+        assert intermediate.update_calls == 1
+        assert target.update_calls == 1
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_deferred_abort_discards_descendant_continuations_without_rerun(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        upstream, intermediate, target, target_uid = (
+            _add_deferred_intermediate_managed_chain(manager, data, weights)
+        )
+        upstream_uid = manager._node_uid_from_window(upstream)
+        assert upstream_uid is not None
+        upstream_node = manager._child_node(upstream_uid)
+        initial_snapshot = upstream_node.snapshot_token
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, (data + 100.0).rename("data"))
+        qtbot.wait_until(lambda: target.source_state == "stale", timeout=5000)
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(target_uid)
+        assert upstream._source_refresh_deferred is True
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        upstream.abort_source_refresh()
+
+        assert upstream_node.snapshot_token == initial_snapshot
+        assert upstream.source_state == "stale"
+        assert intermediate.source_state == "stale"
+        assert target.source_state == "stale"
+        assert intermediate.update_calls == 0
+        assert target.update_calls == 0
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_deferred_reload_clears_managed_target_after_intermediate_failure(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        upstream, intermediate, target, target_uid = (
+            _add_deferred_intermediate_managed_chain(manager, data, weights)
+        )
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 100.0)
+        qtbot.wait_until(lambda: upstream.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: intermediate.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: target.source_state == "stale", timeout=5000)
+
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(target_uid)
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        def fail_update(_inputs: Mapping[str, xr.DataArray]) -> None:
+            raise RuntimeError("intermediate update failed")
+
+        monkeypatch.setattr(intermediate, "update_inputs", fail_update)
+        upstream.finish_deferred_update()
+
+        qtbot.wait_until(
+            lambda: intermediate.source_state == "unavailable", timeout=5000
+        )
+        assert target.source_state == "unavailable"
+        assert target.update_calls == 0
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_deferred_managed_input_failure_clears_descendant_continuation(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        source = _DeferredManagedSumTool(data + weights)
+        source_uid = manager.add_childtool(
+            source,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        source.set_script_inputs(
+            source.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+        target = _ManagedUnaryTool(source.tool_data)
+        target_uid = manager.add_childtool(
+            target,
+            script_inputs={"data": source_uid},
+            show=False,
+        )
+        target.set_script_inputs(
+            target.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+        descendant = _ManagedUnaryTool(target.tool_data)
+        descendant_uid = manager.add_childtool(
+            descendant,
+            script_inputs={"data": target_uid},
+            show=False,
+        )
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 100.0)
+        qtbot.wait_until(lambda: source.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: target.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: descendant.source_state == "stale", timeout=5000)
+
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(
+            descendant_uid
+        )
+        assert manager._dependency_tracker.has_pending_source_refreshes()
+
+        def fail_update(_inputs: Mapping[str, xr.DataArray]) -> None:
+            raise RuntimeError("target update failed")
+
+        monkeypatch.setattr(target, "update_inputs", fail_update)
+        source.finish_deferred_update()
+
+        qtbot.wait_until(lambda: target.source_state == "unavailable", timeout=5000)
+        assert descendant.source_state == "unavailable"
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_failed_live_input_reload_does_not_detach_to_recorded_fallback(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+    recorded_fallback = script(
+        start_label="Create fallback data",
+        seed_code="data = xr.DataArray([-1.0, -2.0], dims='x')",
+        active_name="data",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        source = _ManagedSumTool(data + weights)
+        source_uid = manager.add_childtool(
+            source,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        source.set_script_inputs(
+            source.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+        downstream = _ManagedUnaryTool(source.tool_data)
+        downstream_uid = manager.add_childtool(
+            downstream,
+            script_inputs={"data": source_uid},
+            show=False,
+        )
+        binding = downstream.script_inputs[0].model_copy(
+            update={"provenance_spec": recorded_fallback.model_dump(mode="json")}
+        )
+        downstream.set_script_inputs(
+            (binding,),
+            primary_input="data",
+            auto_update=False,
+        )
+
+        updated_data = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: source.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: downstream.source_state == "stale", timeout=5000)
+        original = downstream.tool_data
+        monkeypatch.setattr(
+            manager._child_node(source_uid),
+            "reload_source_data",
+            lambda: False,
+        )
+
+        assert not manager._child_node(downstream_uid).reload_source_data()
+        assert downstream.source_state == "stale"
+        assert downstream.update_calls == 0
+        assert downstream.script_inputs[0].node_uid == source_uid
+        xr.testing.assert_identical(downstream.tool_data, original)
+
+
+def test_managed_input_reload_cycle_fails_without_recursion(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        first = _ManagedUnaryTool(data)
+        first_uid = manager.add_childtool(
+            first,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        second = _ManagedUnaryTool(data)
+        second_uid = manager.add_childtool(
+            second,
+            script_inputs={"data": 0},
+            show=False,
+        )
+
+        first.set_script_inputs(
+            (
+                first.script_inputs[0].model_copy(
+                    update={
+                        "node_uid": second_uid,
+                        "node_snapshot_token": "stale",
+                        "provenance_spec": None,
+                    }
+                ),
+            ),
+            primary_input="data",
+            state="stale",
+        )
+        second.set_script_inputs(
+            (
+                second.script_inputs[0].model_copy(
+                    update={
+                        "node_uid": first_uid,
+                        "node_snapshot_token": "stale",
+                        "provenance_spec": None,
+                    }
+                ),
+            ),
+            primary_input="data",
+            state="stale",
+        )
+
+        assert not manager._child_node(first_uid).reload_source_data()
+        assert first.source_state == "stale"
+        assert second.source_state == "stale"
+
+
+def test_managed_input_self_cycle_does_not_use_recorded_fallback(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    fallback = script(
+        start_label="Create fallback data",
+        seed_code="data = xr.DataArray([-1.0, -2.0], dims='x')",
+        active_name="data",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        tool = _ManagedUnaryTool(data)
+        uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        tool.set_script_inputs(
+            (
+                tool.script_inputs[0].model_copy(
+                    update={
+                        "node_uid": uid,
+                        "node_snapshot_token": "stale",
+                        "provenance_spec": fallback.model_dump(mode="json"),
+                    }
+                ),
+            ),
+            primary_input="data",
+            state="stale",
+        )
+        node = manager._child_node(uid)
+
+        assert "cycle" in (node.reload_unavailable_reason() or "").lower()
+        assert not node.reload_source_data()
+        assert tool.update_calls == 0
+        assert tool.script_inputs[0].node_uid == uid
+        xr.testing.assert_identical(tool.tool_data, data)
+
+
+def test_script_imagetool_self_cycle_is_not_reported_as_reloadable(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    fallback = script(
+        start_label="Create fallback data",
+        seed_code="data = xr.DataArray([-1.0, -2.0], dims='x')",
+        active_name="data",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        target = manager.add_imagetool(tool, show=False)
+        node = manager._node_for_target(target)
+        node.set_displayed_provenance(
+            script(
+                start_label="Copy input",
+                seed_code="derived = data",
+                active_name="derived",
+                script_inputs=(
+                    ScriptInput(
+                        name="data",
+                        node_uid=node.uid,
+                        provenance_spec=fallback.model_dump(mode="json"),
+                    ),
+                ),
+            )
+        )
+
+        reason = manager._lineage_controller._node_reload_unavailable_reason(node)
+        assert reason is not None
+        assert "cycle" in reason.lower()
+        assert not node.slicer_area.reloadable
+        assert not node.reload_source_data()
+        xr.testing.assert_identical(node.current_public_data(), data)
+
+        updated = data + 10.0
+        source_path = tmp_path / "source.h5"
+        updated.to_netcdf(source_path, engine="h5netcdf")
+        node.slicer_area._file_path = source_path
+        node.slicer_area._load_func = (
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        )
+        node.set_displayed_provenance(
+            script(
+                start_label="Copy input",
+                seed_code="derived = data",
+                active_name="derived",
+                script_inputs=(ScriptInput(name="data", node_uid=node.uid),),
+            )
+        )
+
+        assert manager._lineage_controller._node_reload_unavailable_reason(node) is None
+        assert node.slicer_area.reloadable
+        assert node.reload_source_data()
+        xr.testing.assert_identical(node.current_public_data(), updated)
+
+
+def test_managed_input_state_keeps_unavailable_over_stale(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        data_input = _ManagedUnaryTool(data)
+        data_input_uid = manager.add_childtool(
+            data_input,
+            script_inputs={"data": 0},
+            show=False,
+        )
+
+        dependent = _ManagedSumTool(data + weights)
+        dependent_uid = manager.add_childtool(
+            dependent,
+            script_inputs={"data": data_input_uid, "weights": 1},
+            show=False,
+        )
+        dependent.set_script_inputs(
+            dependent.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+        downstream = _ManagedUnaryTool(dependent.tool_data)
+        manager.add_childtool(
+            downstream,
+            script_inputs={"data": dependent_uid},
+            show=False,
+        )
+
+        manager.remove_imagetool(1)
+        qtbot.wait_until(
+            lambda: dependent.source_state == "unavailable",
+            timeout=5000,
+        )
+        qtbot.wait_until(
+            lambda: downstream.source_state == "unavailable",
+            timeout=5000,
+        )
+
+        updated_data = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_data)
+        qtbot.wait_until(lambda: data_input.source_state == "stale", timeout=5000)
+
+        assert dependent.source_state == "unavailable"
+        assert downstream.source_state == "unavailable"
+
+
+def test_managed_inputs_refresh_once_after_sibling_outputs_update(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _State(pydantic.BaseModel):
+        pass
+
+    class _OutputTool(erlab.interactive.utils.ToolWindow[_State]):
+        StateModel = _State
+        tool_name = "multi-output-dummy"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._generation = 0
+            self._status = _State()
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),),
+                primary_input="data",
+            )
+
+        @property
+        def tool_status(self) -> _State:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _State) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return xr.DataArray([self._generation], dims="x")
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            del inputs
+
+        def output_imagetool_data(
+            self, output_id: str | enum.Enum
+        ) -> xr.DataArray | None:
+            offset = {"values": 0.0, "uncertainty": 10.0}[str(output_id)]
+            return xr.DataArray(
+                [self._generation + offset], dims="x", name=str(output_id)
+            )
+
+        def output_imagetool_provenance(
+            self, output_id: str | enum.Enum, data: xr.DataArray
+        ) -> ToolProvenanceSpec | None:
+            del output_id, data
+            return None
+
+    class _ConsumerTool(erlab.interactive.utils.ToolWindow[_State]):
+        StateModel = _State
+        tool_name = "multi-input-consumer-dummy"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._status = _State()
+            self._data = xr.DataArray([10.0], dims="x")
+            self.update_calls = 0
+            self.seen: list[tuple[float, float]] = []
+            self.set_script_inputs(
+                (
+                    ScriptInput(name="values", data_role="source"),
+                    ScriptInput(name="uncertainty", data_role="source"),
+                ),
+                primary_input="values",
+            )
+
+        @property
+        def tool_status(self) -> _State:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _State) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self.update_calls += 1
+            self.seen.append(
+                (
+                    float(inputs["values"].item()),
+                    float(inputs["uncertainty"].item()),
+                )
+            )
+            self._data = inputs["values"] + inputs["uncertainty"]
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root = itool(xr.DataArray([0.0], dims="x"), manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        output_tool = _OutputTool()
+        output_tool_uid = manager.add_childtool(
+            output_tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        output_uids: dict[str, str] = {}
+        output_imagetools: list[erlab.interactive.imagetool.ImageTool] = []
+        for output_id in ("values", "uncertainty"):
+            output_data = typing.cast(
+                "xr.DataArray", output_tool.output_imagetool_data(output_id)
+            )
+            output_imagetool = itool(output_data, manager=False, execute=False)
+            assert isinstance(output_imagetool, erlab.interactive.imagetool.ImageTool)
+            output_imagetools.append(output_imagetool)
+            output_uids[output_id] = manager.add_imagetool_child(
+                output_imagetool,
+                output_tool_uid,
+                show=False,
+                source_auto_update=True,
+                output_id=output_id,
+            )
+
+        consumer = _ConsumerTool()
+        manager.add_childtool(
+            consumer,
+            script_inputs=output_uids,
+            parent=output_uids["values"],
+            show=False,
+        )
+        consumer.set_script_inputs(
+            consumer.script_inputs,
+            primary_input="values",
+            auto_update=True,
+        )
+
+        output_tool._generation = 1
+        output_tool.sigDataChanged.emit()
+        qtbot.wait_until(
+            lambda: float(fetch(output_uids["uncertainty"]).item()) == 11.0,
+            timeout=5000,
+        )
+        qtbot.wait_until(lambda: consumer.update_calls == 1, timeout=5000)
+
+        assert consumer.update_calls == 1
+        assert consumer.seen == [(1.0, 11.0)]
+
+
+def test_managed_input_reload_resolves_live_data_before_trust(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    recorded_spec = script(
+        ScriptCodeOperation(
+            label="Evaluate recorded expression",
+            code=("import os\nwith open(os.devnull):\n    pass\nderived = data"),
+        ),
+        start_label="Start from data",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data", label="Input"),),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False, provenance_spec=recorded_spec)
+
+        tool = _ManagedUnaryTool(data)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        tool.set_script_inputs(
+            tool.script_inputs,
+            primary_input="data",
+            state="stale",
+        )
+        trust_requests: list[ToolProvenanceSpec] = []
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_prompt_trusted_script_replay",
+            lambda spec, **_kwargs: trust_requests.append(spec) or True,
+        )
+
+        assert manager._lineage_controller._refresh_source_chain_to_uid(child_uid)
+        assert trust_requests == []
+        assert tool.source_state == "fresh"
+
+
+def test_manager_reload_ignores_unreachable_unsafe_live_input_fallback(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    left = xr.DataArray([1.0, 2.0], dims="x")
+    right = xr.DataArray([10.0, 20.0], dims="x")
+    unsafe_fallback = script(
+        ScriptCodeOperation(
+            label="Create recorded right input",
+            code=("import os\nright = xr.DataArray([100.0, 200.0], dims='x')"),
+        ),
+        start_label="Create right input",
+        active_name="right",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (left, right):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        left_input = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target(0)
+        ).model_copy(update={"name": "left"})
+        right_input = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target(1)
+        ).model_copy(
+            update={
+                "name": "right",
+                "provenance_spec": unsafe_fallback.model_dump(mode="json"),
+            }
+        )
+        derived_spec = script(
+            ScriptCodeOperation(label="Add live inputs", code="result = left + right"),
+            start_label="Add live inputs",
+            seed_code="result = left",
+            active_name="result",
+            script_inputs=(left_input, right_input),
+        )
+        derived = itool(left + right, manager=False, execute=False)
+        assert isinstance(derived, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            derived,
+            show=False,
+            provenance_spec=derived_spec,
+        )
+        trust_requests: list[ToolProvenanceSpec] = []
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_prompt_trusted_script_replay",
+            lambda spec, **_kwargs: trust_requests.append(spec) or True,
+        )
+
+        derived_node = manager._node_for_target(2)
+        assert manager._lineage_controller._node_can_reload_script_inputs(derived_node)
+        updated_left = left + 100.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_left)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_node.uid) == "changed",
+            timeout=5000,
+        )
+
+        assert derived_node.reload_source_data()
+        xr.testing.assert_identical(
+            derived_node.current_public_data().rename(None),
+            (updated_left + right).rename(None),
+        )
+        assert trust_requests == []
+
+
+def test_managed_input_recorded_fallback_tracks_nested_live_dependency(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root_node = manager._node_for_target(0)
+
+        nested_input = manager._lineage_controller._script_input_for_node(
+            root_node
+        ).model_copy(update={"name": "source"})
+        fallback = script(
+            ScriptCodeOperation(
+                label="Increment source",
+                code="derived = source + 1",
+            ),
+            start_label="Start from source",
+            active_name="derived",
+            script_inputs=(nested_input,),
+        )
+
+        tool = _ManagedUnaryTool(data)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        tool.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    label="Missing derived input",
+                    node_uid="missing-node",
+                    data_role="source",
+                    provenance_spec=fallback,
+                ),
+            ),
+            primary_input="data",
+            auto_update=False,
+            state="stale",
+        )
+
+        assert {
+            ref.node_uid
+            for ref in manager._lineage_controller._dependency_refs_for_uid(child_uid)
+        } == {"missing-node"}
+        assert manager._child_node(child_uid).reload_source_data()
+        xr.testing.assert_identical(tool.tool_data, data + 1)
+
+        refreshed_input = tool.script_inputs[0]
+        assert refreshed_input.node_uid is None
+        refreshed_fallback = refreshed_input.parsed_provenance_spec()
+        assert refreshed_fallback is not None
+        assert refreshed_fallback.script_inputs[0].node_uid == root_node.uid
+        assert {
+            ref.node_uid
+            for ref in manager._lineage_controller._dependency_refs_for_uid(child_uid)
+        } == {root_node.uid}
+
+        updated = (data + 10).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        qtbot.wait_until(lambda: tool.source_state == "stale", timeout=5000)
+
+
+def test_live_managed_input_fallback_includes_source_transform(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0),
+        dims="x",
+        coords={"x": np.arange(6)},
+        name="data",
+    )
+    path = tmp_path / "transformed-input.h5"
+    data.to_netcdf(path, engine="h5netcdf")
+    source_spec = selection(IselOperation(kwargs={"x": slice(1, 5, 2)}))
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(
+            data,
+            manager=True,
+            file_path=path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        script_input = manager._lineage_controller._script_input_for_node(
+            root
+        ).model_copy(
+            update={
+                "name": "data",
+                "source_spec": source_spec.model_dump(mode="json"),
+            }
+        )
+
+        resolved = manager._lineage_controller._resolve_live_script_input_for_reload(
+            script_input
+        )
+        assert resolved is not None
+        live_data, refreshed_input = resolved
+        expected = source_spec.apply(data)
+        xr.testing.assert_equal(live_data, expected)
+
+        recorded_input = refreshed_input.model_copy(
+            update={"node_uid": None, "node_snapshot_token": None}
+        )
+        rebuilt, _refreshed = rebuild_script_inputs((recorded_input,))
+        xr.testing.assert_identical(rebuilt["data"], expected)
+
+
+def test_managed_input_auto_refresh_uses_fresh_live_script_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    other = xr.DataArray([10.0, 20.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data, other], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._lineage_controller._show_multi_input_script_result(
+                data + other,
+                (0, 1),
+                operation_label="Add inputs",
+                operation_code="derived = data_0 + data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        tool = _ManagedUnaryTool(data + other)
+        tool._set_source_auto_update(True)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 2},
+            show=False,
+        )
+        binding_before = tool.script_inputs[0]
+        source = manager._tool_graph.root_wrappers[2]
+
+        updated = data + 100.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(source.uid) == "changed",
+            timeout=5000,
+        )
+
+        manager.get_imagetool(2).slicer_area.reload()
+        expected = updated + other
+        qtbot.wait_until(
+            lambda: tool.source_state == "fresh" and tool.tool_data.equals(expected),
+            timeout=5000,
+        )
+        xr.testing.assert_equal(tool.tool_data.rename(None), expected.rename(None))
+
+        binding_after = tool.script_inputs[0]
+        assert binding_after.node_snapshot_token == source.snapshot_token
+        assert binding_after.node_snapshot_token != binding_before.node_snapshot_token
+        fallback = binding_after.parsed_provenance_spec()
+        assert fallback is not None
+        assert fallback.script_inputs[0].node_snapshot_token == (
+            manager._tool_graph.root_wrappers[0].snapshot_token
+        )
+        assert manager.dependency_status_for_uid(child_uid) == "current"
+
+
+def test_managed_input_reload_refreshes_script_source_once(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    other = xr.DataArray([10.0, 20.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data, other], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        source_index = manager._lineage_controller._show_multi_input_script_result(
+            data + other,
+            (0, 1),
+            operation_label="Add inputs",
+            operation_code="derived = data_0 + data_1",
+        )
+        assert source_index == 2
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        consumer = _ManagedUnaryTool(data + other)
+        consumer_uid = manager.add_childtool(
+            consumer,
+            script_inputs={"data": source_index},
+            show=False,
+        )
+        consumer.set_script_inputs(
+            consumer.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+
+        updated = data + 100.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        source = manager._node_for_target(source_index)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(source.uid) == "changed",
+            timeout=5000,
+        )
+
+        assert manager._child_node(consumer_uid).reload_source_data()
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
+        xr.testing.assert_equal(consumer.tool_data, updated + other)
+        assert consumer.update_calls == 1
+
+
+def test_managed_reload_resumes_after_deferred_script_result_input(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="data")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="weights")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        source = _DeferredManagedSumTool(data + weights)
+        source_uid = manager.add_childtool(
+            source,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        source.set_script_inputs(
+            source.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+        source_input = manager._lineage_controller._script_input_for_node(
+            manager._child_node(source_uid),
+            name="data",
+        )
+        source_input = source_input.model_copy(
+            update={
+                "provenance_spec": script(
+                    start_label="Create recorded fallback",
+                    seed_code="data = xr.DataArray([-1.0, -2.0], dims='x')",
+                    active_name="data",
+                ).model_dump(mode="json")
+            }
+        )
+        derived_spec = script(
+            ScriptCodeOperation(
+                label="Increment managed input",
+                code="derived = data + 1.0",
+            ),
+            start_label="Start from managed input",
+            active_name="derived",
+            script_inputs=(source_input,),
+        )
+        derived = itool(source.tool_data + 1.0, manager=False, execute=False)
+        assert isinstance(derived, erlab.interactive.imagetool.ImageTool)
+        derived_index = manager.add_imagetool(
+            derived,
+            show=False,
+            provenance_spec=derived_spec,
+        )
+        derived_node = manager._node_for_target(derived_index)
+        consumer = _ManagedUnaryTool(derived_node.current_public_data())
+        consumer_uid = manager.add_childtool(
+            consumer,
+            script_inputs={"data": derived_index},
+            show=False,
+        )
+        consumer.set_script_inputs(
+            consumer.script_inputs,
+            primary_input="data",
+            auto_update=False,
+        )
+
+        updated = (data + 100.0).rename("data")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        qtbot.wait_until(lambda: source.source_state == "stale", timeout=5000)
+
+        assert not manager._child_node(consumer_uid).reload_source_data()
+        assert source.pending_inputs is not None
+        assert manager._dependency_tracker.source_refresh_queued(
+            source_uid,
+            derived_node.uid,
+        )
+        assert manager._dependency_tracker.source_refresh_queued(
+            derived_node.uid,
+            consumer_uid,
+        )
+
+        source.finish_deferred_update()
+
+        expected = updated + weights + 1.0
+        qtbot.wait_until(
+            lambda: (
+                consumer.source_state == "fresh" and consumer.tool_data.equals(expected)
+            ),
+            timeout=5000,
+        )
+        xr.testing.assert_identical(source.tool_data, updated + weights)
+        xr.testing.assert_identical(derived_node.current_public_data(), expected)
+        xr.testing.assert_identical(consumer.tool_data, expected)
+        assert consumer.update_calls == 1
+        assert derived_node.provenance_spec is not None
+        assert derived_node.provenance_spec.script_inputs[0].node_uid == source_uid
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+def test_managed_multi_input_reload_refreshes_all_file_sources_once(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="value")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="value")
+    paths = (tmp_path / "data.h5", tmp_path / "weights.h5")
+    for value, path in zip((data, weights), paths, strict=True):
+        value.to_netcdf(path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for index, (value, path) in enumerate(
+            zip((data, weights), paths, strict=True),
+            start=1,
+        ):
+            itool(
+                value,
+                manager=True,
+                file_path=path,
+                load_func=(
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            )
+            qtbot.wait_until(
+                lambda expected_count=index: manager.ntools == expected_count,
+                timeout=5000,
+            )
+
+        tool = _ReloadCountingManagedSumTool(data + weights)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        tool.set_script_inputs(
+            tool.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+
+        updated_data = data + 100.0
+        updated_weights = weights + 1000.0
+        for value, path in zip((updated_data, updated_weights), paths, strict=True):
+            value.to_netcdf(path, engine="h5netcdf")
+
+        assert manager._child_node(child_uid).reload_source_data()
+
+        xr.testing.assert_identical(fetch(0), updated_data)
+        xr.testing.assert_identical(fetch(1), updated_weights)
+        xr.testing.assert_equal(tool.tool_data, updated_data + updated_weights)
+        assert tool.update_calls == 1
+
+
+def test_managed_input_reload_uses_detached_child_file_source(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="value")
+    file_path = tmp_path / "detached-child.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child = itool(
+            data,
+            manager=False,
+            execute=False,
+            file_path=file_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(child, 0, show=False)
+        child_node = manager._child_node(child_uid)
+        assert not child_node.has_source_binding
+
+        consumer = _ManagedUnaryTool(data)
+        consumer_uid = manager.add_childtool(
+            consumer,
+            script_inputs={"data": child_uid},
+            show=False,
+        )
+        updated = data + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        consumer_node = manager._child_node(consumer_uid)
+        assert consumer_node.reload_unavailable_reason() is None
+        assert consumer_node.reload_source_data()
+
+        xr.testing.assert_identical(fetch(child_uid), updated)
+        xr.testing.assert_identical(consumer.tool_data, updated)
+        assert consumer.update_calls == 1
+
+
+def test_selected_script_results_dedupe_nested_file_reload(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(
+        np.arange(12.0).reshape(6, 2),
+        dims=("x", "y"),
+        name="value",
+    )
+    source_path = tmp_path / "source.h5"
+    source.to_netcdf(source_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(
+            source,
+            manager=True,
+            file_path=source_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uids: list[str] = []
+        derived_targets: list[int] = []
+        slices = (slice(0, 3), slice(3, 6))
+        for indexer in slices:
+            source_spec = selection(IselOperation(kwargs={"x": indexer}))
+            child_data = source_spec.apply(source)
+            child = itool(child_data, manager=False, execute=False)
+            assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+            child_uid = manager.add_imagetool_child(
+                child,
+                0,
+                show=False,
+                source_spec=source_spec,
+                source_auto_update=False,
+            )
+            child_uids.append(child_uid)
+
+            script_input = manager._lineage_controller._script_input_for_node(
+                manager._child_node(child_uid)
+            )
+            derived = itool(child_data, manager=False, execute=False)
+            assert isinstance(derived, erlab.interactive.imagetool.ImageTool)
+            derived_targets.append(
+                manager.add_imagetool(
+                    derived,
+                    show=False,
+                    provenance_spec=script(
+                        ScriptCodeOperation(
+                            label="Copy child input",
+                            code=f"derived = {script_input.name}",
+                        ),
+                        start_label="Start from child input",
+                        active_name="derived",
+                        script_inputs=(script_input,),
+                    ),
+                )
+            )
+
+        root = manager._tool_graph.root_wrappers[0]
+        reload_source = root.slicer_area._reload
+        reload_calls = 0
+
+        def count_reload() -> bool:
+            nonlocal reload_calls
+            reload_calls += 1
+            return reload_source()
+
+        monkeypatch.setattr(root.slicer_area, "_reload", count_reload)
+        updated = source + 100.0
+        updated.to_netcdf(source_path, engine="h5netcdf")
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        qtbot.wait_until(
+            lambda: all(
+                manager._child_node(uid).source_state == "stale" for uid in child_uids
+            ),
+            timeout=5000,
+        )
+
+        manager.tree_view.selectionModel().clearSelection()
+        select_tools(manager, derived_targets)
+        manager.reload_selected()
+
+        assert reload_calls == 1
+        for target, indexer in zip(derived_targets, slices, strict=True):
+            xr.testing.assert_identical(fetch(target), updated.isel(x=indexer))
+
+
+def test_selected_managed_tools_dedupe_shared_file_input(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    inputs = (
+        xr.DataArray([1.0, 2.0], dims="x", name="value"),
+        xr.DataArray([10.0, 20.0], dims="x", name="value"),
+        xr.DataArray([100.0, 200.0], dims="x", name="value"),
+    )
+    paths = tuple(tmp_path / name for name in ("shared.h5", "left.h5", "right.h5"))
+    for value, path in zip(inputs, paths, strict=True):
+        value.to_netcdf(path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for index, (value, path) in enumerate(
+            zip(inputs, paths, strict=True),
+            start=1,
+        ):
+            itool(
+                value,
+                manager=True,
+                file_path=path,
+                load_func=(
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            )
+            qtbot.wait_until(
+                lambda expected_count=index: manager.ntools == expected_count,
+                timeout=5000,
+            )
+
+        first = _ReloadCountingManagedSumTool(inputs[0] + inputs[1])
+        first_uid = manager.add_childtool(
+            first,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        second = _ReloadCountingManagedSumTool(inputs[0] + inputs[2])
+        second_uid = manager.add_childtool(
+            second,
+            script_inputs={"data": 0, "weights": 2},
+            show=False,
+        )
+
+        reload_calls: list[int] = []
+        for root in manager._tool_graph.root_wrappers.values():
+            original_reload = root.slicer_area._reload
+
+            def track_reload(
+                *,
+                index: int = root.index,
+                reload_source: Callable[[], bool] = original_reload,
+            ) -> bool:
+                reload_calls.append(index)
+                return reload_source()
+
+            monkeypatch.setattr(root.slicer_area, "_reload", track_reload)
+
+        updated = tuple(value + 1000.0 for value in inputs)
+        for value, path in zip(updated, paths, strict=True):
+            value.to_netcdf(path, engine="h5netcdf")
+
+        manager.tree_view.selectionModel().clearSelection()
+        select_child_tool(manager, first_uid)
+        select_child_tool(manager, second_uid)
+        manager.reload_selected()
+
+        assert reload_calls.count(0) == 1
+        assert reload_calls.count(1) == 1
+        assert reload_calls.count(2) == 1
+        xr.testing.assert_equal(first.tool_data, updated[0] + updated[1])
+        xr.testing.assert_equal(second.tool_data, updated[0] + updated[2])
+        assert first.update_calls == 1
+        assert second.update_calls == 1
+
+
+def test_managed_multi_input_reload_rejects_mixed_file_and_raw_sources(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x", name="value")
+    weights = xr.DataArray([10.0, 20.0], dims="x", name="value")
+    file_path = tmp_path / "data.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        itool(weights, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        tool = _ReloadCountingManagedSumTool(data + weights)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+        child_node = manager._child_node(child_uid)
+
+        updated_data = data + 100.0
+        updated_data.to_netcdf(file_path, engine="h5netcdf")
+
+        assert child_node.reload_unavailable_reason() is not None
+        assert not child_node.can_reload_source_data()
+        assert not child_node.reload_source_data()
+        xr.testing.assert_identical(fetch(0), data)
+        xr.testing.assert_identical(tool.tool_data, data + weights)
+        assert tool.update_calls == 0
+
+
+def test_selected_upstream_reload_updates_managed_descendant_once(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    other = xr.DataArray([10.0, 20.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data, other], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        source_index = manager._lineage_controller._show_multi_input_script_result(
+            data + other,
+            (0, 1),
+            operation_label="Add inputs",
+            operation_code="derived = data_0 + data_1",
+        )
+        assert source_index == 2
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        consumer = _ManagedUnaryTool(data + other)
+        consumer_uid = manager.add_childtool(
+            consumer,
+            script_inputs={"data": source_index},
+            show=False,
+        )
+        consumer.set_script_inputs(
+            consumer.script_inputs,
+            primary_input="data",
+            auto_update=True,
+        )
+        descendant = _ManagedUnaryTool(consumer.tool_data)
+        descendant_uid = manager.add_childtool(
+            descendant,
+            script_inputs={"data": consumer_uid},
+            show=False,
+        )
+
+        updated = data + 100.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        source = manager._node_for_target(source_index)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(source.uid) == "changed",
+            timeout=5000,
+        )
+
+        manager.tree_view.selectionModel().clearSelection()
+        select_tools(manager, [source_index])
+        select_child_tool(manager, descendant_uid)
+        manager.reload_selected()
+
+        expected = updated + other
+        qtbot.wait_until(
+            lambda: (
+                consumer.source_state == "fresh" and descendant.source_state == "fresh"
+            ),
+            timeout=5000,
+        )
+        xr.testing.assert_equal(consumer.tool_data, expected)
+        xr.testing.assert_equal(descendant.tool_data, expected)
+        assert consumer.update_calls == 1
+        assert descendant.update_calls == 1
+
+
+def test_managed_input_reload_cancellation_preserves_state(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    recorded_spec = script(
+        ScriptCodeOperation(
+            label="Evaluate recorded expression",
+            code=("import os\nwith open(os.devnull):\n    pass\nderived = data"),
+        ),
+        start_label="Start from data",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data", label="Input"),),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False, provenance_spec=recorded_spec)
+
+        tool = _ManagedUnaryTool(data)
+        child_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        tool.set_script_inputs(
+            tool.script_inputs,
+            primary_input="data",
+            state="stale",
+        )
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_resolve_live_script_input_for_reload",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def _cancel_trust(*_args, **_kwargs) -> bool:
+            raise manager_widgets._TrustedScriptReplayCancelled
+
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_ensure_script_provenance_trusted",
+            _cancel_trust,
+        )
+
+        assert not manager._child_node(child_uid).reload_source_data()
+        assert tool.source_state == "stale"
+
+
+def test_duplicate_subtree_rebases_managed_input_dependencies(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    weights = xr.DataArray([3.0, 4.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for value in (data, weights):
+            root = itool(value, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+        tool = _ManagedSumTool(data, weights)
+        original_uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": 0, "weights": 1},
+            show=False,
+        )
+
+        original_parent = manager._node_for_target(0)
+        duplicated_index = manager.duplicate_imagetool(0)
+        duplicated_parent = manager._node_for_target(duplicated_index)
+        assert duplicated_parent.snapshot_token == original_parent.snapshot_token
+        assert (
+            duplicated_parent.source_snapshot_token
+            == original_parent.source_snapshot_token
+        )
+        assert len(duplicated_parent._childtool_indices) == 1
+        duplicated_uid = duplicated_parent._childtool_indices[0]
+        duplicated_tool = manager.get_childtool(duplicated_uid)
+        duplicated_inputs = {item.name: item for item in duplicated_tool.script_inputs}
+
+        assert duplicated_inputs["data"].node_uid == duplicated_parent.uid
+        assert (
+            duplicated_inputs["data"].node_snapshot_token
+            == duplicated_parent.snapshot_token
+        )
+        weights_node = manager._node_for_target(1)
+        assert duplicated_inputs["weights"].node_uid == weights_node.uid
+        assert (
+            duplicated_inputs["weights"].node_snapshot_token
+            == weights_node.snapshot_token
+        )
+        assert manager.dependency_status_for_uid(duplicated_uid) == "current"
+        assert duplicated_tool.source_state == "fresh"
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 10.0)
+        qtbot.wait_until(lambda: tool.source_state == "stale", timeout=5000)
+
+        assert manager.dependency_status_for_uid(original_uid) == "changed"
+        assert manager.dependency_status_for_uid(duplicated_uid) == "current"
+        assert duplicated_tool.source_state == "fresh"
 
 
 def test_manager_goldtool_output_itool_stales_when_fit_results_change(
@@ -760,13 +3416,13 @@ def test_manager_goldtool_output_itool_stales_when_fit_results_change(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+        child = GoldTool(gold.copy(deep=True), data_name="gold_input")
+        child.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
         child_uid = manager.add_childtool(
-            GoldTool(gold.copy(deep=True), data_name="gold_input"),
-            0,
+            child,
+            script_inputs={"data": 0},
             show=False,
         )
-        child = manager.get_childtool(child_uid)
-        assert isinstance(child, GoldTool)
         configure_goldtool_child(child, fitted=True, spline=False)
         child.open_itool()
 
@@ -946,11 +3602,27 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
 
-        derivation = metadata_derivation_texts(manager)
-        assert derivation[0] == "Start from selected parent ImageTool data"
-        assert not any(line == "isel()" for line in derivation)
-        assert not any("Sort coordinates" in line for line in derivation)
-        assert any(line.startswith("transpose(") for line in derivation)
+        child_node = manager._child_node(child_uid)
+        displayed_spec = child_node.passive_displayed_provenance_spec
+        assert displayed_spec is not None
+        assert displayed_spec.kind == "script"
+        assert len(displayed_spec.script_inputs) == 1
+        assert displayed_spec.script_inputs[0].node_uid == parent_node.uid
+
+        start_item = manager.metadata_derivation_list.conceptual_item(0)
+        input_item = manager.metadata_derivation_list.conceptual_item(1)
+        assert start_item is not None
+        assert input_item is not None
+        start_row = start_item.data(manager_widgets._METADATA_DERIVATION_ROW_ROLE)
+        input_row = input_item.data(manager_widgets._METADATA_DERIVATION_ROW_ROLE)
+        assert isinstance(start_row, _ProvenanceDisplayRow)
+        assert isinstance(input_row, _ProvenanceDisplayRow)
+        assert start_row.replay_ref is not None
+        assert start_row.replay_ref.kind == "start"
+        assert input_row.replay_ref is not None
+        assert input_row.replay_ref.kind == "script_input"
+        assert input_row.replay_ref.script_input_index == 0
+        assert input_row.script_input_path == ()
 
         monkeypatch.setattr(
             type(parent_node),
@@ -1334,6 +4006,10 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
             self._data = data
             self._status = _DeferredToolState()
             self.pending_data: xr.DataArray | None = None
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),),
+                primary_input="data",
+            )
 
         @property
         def tool_status(self) -> _DeferredToolState:
@@ -1347,9 +4023,9 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> bool:
-            self.pending_data = new_data
-            self._source_refresh_deferred = self.has_source_binding
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.pending_data = inputs["data"]
+            self._defer_source_refresh()
             return False
 
         def finish_deferred_update(self) -> None:
@@ -1376,8 +4052,11 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
         manager.add_imagetool(root_tool, show=False)
 
         parent_tool = _DeferredTool(root_data)
-        parent_uid = manager.add_childtool(parent_tool, 0, show=False)
-        parent_tool.set_source_binding(full_data(), auto_update=False)
+        parent_uid = manager.add_childtool(
+            parent_tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
 
         leaf_tool = itool(root_data.isel(y=slice(0, 2)), manager=False, execute=False)
         assert isinstance(leaf_tool, erlab.interactive.imagetool.ImageTool)
@@ -1399,7 +4078,9 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
         qtbot.wait_until(lambda: parent_node.source_state == "stale", timeout=5000)
         qtbot.wait_until(lambda: leaf_node.source_state == "stale", timeout=5000)
 
-        assert manager._refresh_source_chain_to_uid(leaf_uid) is False
+        assert (
+            manager._lineage_controller._refresh_source_chain_to_uid(leaf_uid) is False
+        )
         assert parent_tool.pending_data is not None
         xr.testing.assert_identical(fetch(leaf_uid), root_data.isel(y=slice(0, 2)))
 
@@ -1722,17 +4403,24 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
 def test_manager_fit2d_output_itools_use_distinct_output_ids(
     qtbot,
     monkeypatch,
-    exp_decay_model,
-    test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    fit_input = xr.DataArray(
+        np.stack([((1.0 + 0.5 * index) * np.exp(-t / 2.0)) for index in y]),
+        dims=("y", "t"),
+        coords={"y": y, "t": t},
+        name="decay2d",
+    )
+
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        itool(test_data, manager=True)
+        itool(fit_input, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         parent_tool = manager.get_imagetool(0)
         parent_tool.set_provenance_spec(
@@ -1746,7 +4434,8 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             )
         )
 
-        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
+        model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+        child_uid, child = make_fit2d_child(manager, 0, model)
         monkeypatch.setattr(
             child,
             "_prompt_existing_output_imagetool",
@@ -1847,6 +4536,19 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         assert includes_parent_offset(second_values_code)
         assert includes_parent_offset(stderr_code)
 
+        for code, active_name in (
+            (values_code, "parameter_values"),
+            (second_values_code, "parameter_values"),
+            (stderr_code, "parameter_stderr"),
+        ):
+            namespace = _exec_generated_code(
+                code,
+                {"data": fit_input.copy(deep=True)},
+            )
+            generated = namespace[active_name]
+            assert isinstance(generated, xr.DataArray)
+            assert generated.dims == ("y",)
+
         def selected_fit_output(code: str) -> tuple[str, str]:
             for call in (
                 node for node in ast.walk(ast.parse(code)) if isinstance(node, ast.Call)
@@ -1908,6 +4610,10 @@ def test_manager_output_refresh_updates_stale_parent_source(
             self._data = data
             self._status = _OutputToolState()
             self.refreshed_inputs: list[xr.DataArray] = []
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="source"),),
+                primary_input="data",
+            )
 
         @property
         def tool_status(self) -> _OutputToolState:
@@ -1921,9 +4627,9 @@ def test_manager_output_refresh_updates_stale_parent_source(
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def update_data(self, new_data: xr.DataArray) -> bool:
-            self.refreshed_inputs.append(new_data)
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.refreshed_inputs.append(inputs["data"])
+            self._data = inputs["data"]
             return True
 
         def output_imagetool_data(
@@ -1958,8 +4664,11 @@ def test_manager_output_refresh_updates_stale_parent_source(
         manager.add_imagetool(root_tool, show=False)
 
         child = _OutputTool(data)
-        child_uid = manager.add_childtool(child, 0, show=False)
-        child.set_source_binding(full_data(), auto_update=False)
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=False,
+        )
 
         initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
         output_tool = itool(initial_output, manager=False, execute=False)
@@ -1984,7 +4693,9 @@ def test_manager_output_refresh_updates_stale_parent_source(
         qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
         xr.testing.assert_identical(fetch(output_uid), initial_output)
 
-        assert manager._refresh_source_chain_to_uid(output_uid) is True
+        assert (
+            manager._lineage_controller._refresh_source_chain_to_uid(output_uid) is True
+        )
         assert child.refreshed_inputs
         assert child.source_state == "fresh"
         assert output_node.source_state == "fresh"
@@ -2555,7 +5266,7 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         )
         xr.testing.assert_identical(fetch(child_uid), child_before)
         xr.testing.assert_identical(
-            manager._parent_source_data_for_uid(nested_uid),
+            manager._lineage_controller._parent_source_data_for_uid(nested_uid),
             manager.get_imagetool(promoted_index).slicer_area._data,
         )
 

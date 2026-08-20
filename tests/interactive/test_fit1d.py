@@ -13,6 +13,7 @@ from erlab.interactive._fit1d import (
     _ParameterEditDelegate,
     _ParameterTableModel,
 )
+from erlab.interactive.imagetool._provenance._model import ScriptInput
 from tests._qt_helpers import signal_receiver_count
 
 
@@ -512,6 +513,69 @@ def test_fit1d_uncertainty_persistence_roundtrip(qtbot) -> None:
     assert restored.scale_covar_check.isChecked() is False
 
 
+def test_fit1d_managed_uncertainty_uses_named_persistence_input(qtbot) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+    win = erlab.interactive.ftool(data, uncertainty=uncertainty, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+    bindings = (ScriptInput(name="data"), ScriptInput(name="uncertainty"))
+    win.set_script_inputs(bindings, primary_input="data", state="stale")
+
+    items = win._persistence_data_items()
+    assert "uncertainty" in items
+    assert fit1d._PERSISTED_UNCERTAINTY_VAR not in items
+    xr.testing.assert_identical(items["uncertainty"], uncertainty)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit1DTool)
+    assert restored.script_inputs == bindings
+    xr.testing.assert_identical(restored.uncertainty, uncertainty)
+
+    replacement_data = data + 1.0
+    replacement_uncertainty = uncertainty + 0.1
+    win._replace_persistence_data_items(
+        {
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: replacement_data,
+            "uncertainty": replacement_uncertainty,
+        },
+        xr.Dataset(),
+    )
+    xr.testing.assert_identical(win.tool_data, replacement_data)
+    xr.testing.assert_identical(win.uncertainty, replacement_uncertainty)
+    assert win.script_inputs == bindings
+    assert win.source_state == "stale"
+
+
+def test_fit1d_legacy_uncertainty_and_direct_weights_persistence(qtbot) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+    legacy = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(legacy)
+    assert isinstance(legacy, Fit1DTool)
+    legacy._restore_persistence_data_items(
+        {fit1d._PERSISTED_UNCERTAINTY_VAR: uncertainty}, xr.Dataset()
+    )
+    xr.testing.assert_identical(legacy.uncertainty, uncertainty)
+
+    weights = xr.full_like(data, 2.0).rename("weights")
+    weighted = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(weighted)
+    assert isinstance(weighted, Fit1DTool)
+    weighted._set_direct_weights(weights)
+    items = weighted._persistence_data_items()
+    assert fit1d._PERSISTED_WEIGHTS_VAR in items
+    assert "uncertainty" not in items
+    xr.testing.assert_identical(items[fit1d._PERSISTED_WEIGHTS_VAR], weights)
+
+    restored = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit1DTool)
+    restored._restore_persistence_data_items(items, xr.Dataset())
+    xr.testing.assert_identical(restored._direct_weights, weights)
+
+
 def test_fit1d_tool_status_without_saved_params_uses_model_defaults(
     qtbot, exp_decay_model
 ) -> None:
@@ -767,7 +831,7 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     )
     assert workspace_restored._fit_is_current
     updated_data = data * 1.01
-    assert workspace_restored.update_data(updated_data)
+    assert workspace_restored.update_inputs({"data": updated_data})
     xr.testing.assert_identical(
         workspace_restored._direct_weights, weighted_fit_ds.modelfit_weights
     )
@@ -948,7 +1012,7 @@ def test_fit1d_persistence_roundtrip_preserves_stale_fit(
     assert not win_restored.copy_button.isEnabled()
 
 
-def test_fit1d_update_data_preserves_state_and_refit(
+def test_fit1d_update_inputs_preserves_state_and_refit(
     qtbot, exp_decay_model, monkeypatch
 ):
     data = _make_1d_data()
@@ -977,7 +1041,7 @@ def test_fit1d_update_data_preserves_state_and_refit(
         coords=data.coords,
         name=data.name,
     )
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win.tool_status == status
     xr.testing.assert_identical(win.tool_data, new_data)
@@ -988,12 +1052,12 @@ def test_fit1d_update_data_preserves_state_and_refit(
     win.refit_on_source_update_check.setChecked(True)
     newer_data = new_data.copy(deep=True)
     newer_data.data = np.asarray(newer_data.data) * 1.1
-    win.update_data(newer_data)
+    win.update_inputs({"data": newer_data})
 
     assert called == [True]
 
 
-def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
+def test_fit1d_validate_update_inputs_invalid_input_keeps_existing_ui(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1003,7 +1067,7 @@ def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     bad_data = xr.DataArray(np.arange(6).reshape((2, 3)), dims=("y", "x"))
 
     with pytest.raises(ValueError, match="1D DataArray"):
-        win.update_data(bad_data)
+        win.validate_update_inputs({"data": bad_data})
 
     assert win.centralWidget() is old_central
     assert old_central is not None
@@ -1011,7 +1075,7 @@ def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> None:
+def test_fit1d_update_inputs_drops_missing_coord_backed_param_bindings(qtbot) -> None:
     data = _make_1d_data().assign_coords(offset=1.25)
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1030,7 +1094,7 @@ def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> N
     assert not (win.param_model.flags(value_index) & QtCore.Qt.ItemFlag.ItemIsEditable)
 
     new_data = data.drop_vars("offset")
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert param_name not in win._params_from_coord
     value_index = win.param_model.index(0, 1)
@@ -1038,7 +1102,7 @@ def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> N
     assert win.param_mode_combo.currentText() == "Manual"
 
 
-def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+def test_fit1d_apply_inputs_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1074,7 +1138,9 @@ def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> Non
         name=data.name,
     )
 
-    assert win.update_data(new_data) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": new_data}, (script_input,)) is False
     assert stuck_thread.cancel_called
     assert stuck_thread.interrupted
     assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
@@ -1084,7 +1150,7 @@ def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> Non
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_fit1d_update_data_keeps_fit_finished_receivers_constant(qtbot) -> None:
+def test_fit1d_update_inputs_keeps_fit_finished_receivers_constant(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -1094,14 +1160,14 @@ def test_fit1d_update_data_keeps_fit_finished_receivers_constant(qtbot) -> None:
     for scale in (1.1, 1.2, 1.3):
         updated = data.copy(deep=True)
         updated.data = np.asarray(data.data) * scale
-        win.update_data(updated)
+        win.update_inputs({"data": updated})
         assert (
             signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
             == initial_receivers
         )
 
 
-def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
+def test_fit1d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     qtbot, monkeypatch
 ) -> None:
     data = _make_1d_data()
@@ -1146,12 +1212,62 @@ def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted
     assert old_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
     assert old_thread.deleted is True
+
+
+def test_fit1d_refit_start_failure_commits_published_input(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    updated = data * 1.1
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    monkeypatch.setattr(win, "_run_fit", lambda: False)
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    win.set_script_inputs((old_binding,), primary_input="data")
+
+    assert win._apply_inputs({"data": updated}, (refreshed_binding,)) is True
+
+    assert win.source_state == "fresh"
+    assert win.script_inputs == (refreshed_binding,)
+    assert win._pending_script_inputs is None
+    xr.testing.assert_identical(win.tool_data, updated)
+
+
+def test_fit1d_async_refit_failure_commits_published_input(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    updated = data * 1.1
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    monkeypatch.setattr(win, "_run_fit", lambda: True)
+    monkeypatch.setattr(win, "_show_error", lambda *_args, **_kwargs: None)
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    win.set_script_inputs((old_binding,), primary_input="data")
+
+    assert win._apply_inputs({"data": updated}, (refreshed_binding,)) is False
+    assert win._source_refresh_deferred is True
+    win._fit_errored("fit failed")
+
+    assert win.source_state == "fresh"
+    assert win.script_inputs == (refreshed_binding,)
+    assert win._pending_script_inputs is None
+    assert win._source_refresh_deferred is False
+    xr.testing.assert_identical(win.tool_data, updated)
 
 
 def test_fit1d_queue_fit_action_ignores_stale_thread(qtbot) -> None:

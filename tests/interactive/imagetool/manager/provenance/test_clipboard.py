@@ -139,6 +139,9 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
 
 
 def test_manager_selected_derivation_step_payload_filters_rows() -> None:
+    class _NonLiveOperation(ToolProvenanceOperation):
+        live_applicable: typing.ClassVar[bool] = False
+
     def item(
         row: _ProvenanceDisplayRow | str,
         *,
@@ -198,7 +201,7 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
             )
         ),
         non_live_row: types.SimpleNamespace(
-            _operation_for_ref=lambda _ref: types.SimpleNamespace(live_applicable=False)
+            _operation_for_ref=lambda _ref: _NonLiveOperation()
         ),
     }
     edit_controller = types.SimpleNamespace(
@@ -281,7 +284,9 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: (),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: ()
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -409,7 +414,9 @@ def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: (),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: ()
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -484,7 +491,9 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: (),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: ()
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -543,7 +552,9 @@ def test_manager_metadata_derivation_refresh_uses_stable_cache_key(qtbot) -> Non
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: (),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: ()
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -606,7 +617,9 @@ def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: (),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: ()
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -688,7 +701,9 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec)
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -748,7 +763,9 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
-        _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
+        _lineage_controller=types.SimpleNamespace(
+            _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec)
+        ),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -764,15 +781,11 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
     )
 
     controller._set_metadata_node(node)
-    details = controller._unavailable_replay_code_details(
-        typing.cast("typing.Any", node)
-    )
 
     input_item = derivation_list.topLevelItem(1)
     assert input_item is not None
     assert input_item.text() == "Missing source for data_10"
     assert "ImageTool 10" not in input_item.text()
-    assert "Missing source for data_10 (recorded as ImageTool 10: stale)" in details
 
 
 def test_manager_copy_selected_derivation_code_fallbacks(

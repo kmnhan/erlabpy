@@ -19,7 +19,6 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
-import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive.imagetool._load_source import (
@@ -83,6 +82,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 )
 
 from ._common import (
+    _authorize_required_script_provenance,
     _fake_edit_controller,
     _fake_edit_node,
     _manager_provenance_file_spec,
@@ -1375,11 +1375,13 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
             ),
         ),
     )
-    manager._script_input_can_reload = lambda *_args, **_kwargs: True
-    manager._rebuild_script_provenance = lambda *_args, **_kwargs: pytest.fail(
-        "selection edit should not rebuild script provenance"
+    manager._lineage_controller = types.SimpleNamespace(
+        _script_input_unavailable_reason=lambda *_args, **_kwargs: None,
+        _rebuild_script_provenance=lambda *_args, **_kwargs: pytest.fail(
+            "selection edit should not rebuild script provenance"
+        ),
+        _ensure_script_provenance_trusted=_authorize_required_script_provenance,
     )
-    manager._ensure_script_provenance_trusted = lambda *_args, **_kwargs: None
     manager._update_info = lambda **_kwargs: None
     controller = provenance_edit_controller._ProvenanceEditController(
         typing.cast("typing.Any", manager)
@@ -1535,8 +1537,12 @@ def test_manager_trusted_script_replay_prompt_is_session_scoped(
         lambda _spec, *, reason: prompts.append(reason) or True,
     )
 
-    controller._ensure_script_provenance_trusted(spec, reason="reload this result")
-    controller._ensure_script_provenance_trusted(spec, reason="reload this result")
+    assert controller._ensure_script_provenance_trusted(
+        spec, reason="reload this result"
+    )
+    assert controller._ensure_script_provenance_trusted(
+        spec, reason="reload this result"
+    )
     changed_spec = spec.model_copy(
         update={
             "operations": (
@@ -1550,9 +1556,50 @@ def test_manager_trusted_script_replay_prompt_is_session_scoped(
             ),
         }
     )
-    controller._ensure_script_provenance_trusted(changed_spec, reason="reload")
+    assert controller._ensure_script_provenance_trusted(changed_spec, reason="reload")
 
     assert prompts == ["reload this result", "reload"]
+
+
+def test_manager_trust_boundary_uses_one_live_resolution_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = types.SimpleNamespace(_trusted_script_replay_keys=set())
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    script_input = ScriptInput(
+        name="data",
+        provenance_spec={"kind": "invalid"},
+    )
+    spec = script(
+        ScriptCodeOperation(
+            label="User code",
+            code="import os\nderived = data + int(os.path.exists(os.devnull))",
+        ),
+        start_label="Run user code",
+        seed_code="derived = data",
+        active_name="derived",
+        script_inputs=(script_input,),
+    )
+    calls = 0
+
+    def resolve_live(item: ScriptInput):
+        nonlocal calls
+        calls += 1
+        return (data, item) if calls == 1 else None
+
+    monkeypatch.setattr(
+        controller,
+        "_prompt_trusted_script_replay",
+        lambda _spec, *, reason: True,
+    )
+
+    assert controller._ensure_script_provenance_trusted(
+        spec,
+        reason="reload",
+        live_input_resolver=resolve_live,
+    )
+    assert calls == 1
 
 
 def test_manager_trusted_script_replay_prompt_cancel(
@@ -1590,7 +1637,7 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
         lambda *_args, **_kwargs: pytest.fail("safe replay should not prompt"),
     )
 
-    controller._ensure_script_provenance_trusted(safe_spec, reason="reload")
+    assert not controller._ensure_script_provenance_trusted(safe_spec, reason="reload")
     prompt_controller = manager_lineage._LineageController(
         typing.cast("typing.Any", manager)
     )
@@ -1713,41 +1760,6 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
         is None
     )
 
-    forwarded: list[
-        tuple[
-            ToolProvenanceSpec,
-            str,
-            set[str] | None,
-        ]
-    ] = []
-    spec = script(
-        start_label="Run script",
-        active_name="derived",
-    )
-
-    def ensure_script_provenance_trusted(
-        spec_arg: ToolProvenanceSpec,
-        *,
-        reason: str,
-        external_input_names: set[str] | None = None,
-    ) -> None:
-        forwarded.append((spec_arg, reason, external_input_names))
-
-    manager = types.SimpleNamespace(
-        _lineage_controller=types.SimpleNamespace(
-            _ensure_script_provenance_trusted=ensure_script_provenance_trusted
-        )
-    )
-
-    manager_mainwindow.ImageToolManager._ensure_script_provenance_trusted(
-        typing.cast("typing.Any", manager),
-        spec,
-        reason="reload this result",
-        external_input_names={"data_0"},
-    )
-
-    assert forwarded == [(spec, "reload this result", {"data_0"})]
-
 
 def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     monkeypatch: pytest.MonkeyPatch,
@@ -1767,13 +1779,18 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
                 )
             ),
         ),
-        _script_input_can_reload=lambda *_args, **_kwargs: True,
-        _ensure_script_provenance_trusted=lambda _spec, *, reason: ensured.append(
-            reason
-        ),
-        _resolve_live_script_input_for_reload=lambda *_args, **_kwargs: None,
     )
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    monkeypatch.setattr(
+        controller,
+        "_ensure_script_provenance_trusted",
+        lambda _spec, **kwargs: ensured.append(kwargs["reason"]) or True,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_node_reload_unavailable_reason",
+        lambda *_args, **_kwargs: None,
+    )
     node = types.SimpleNamespace(
         is_imagetool=True,
         imagetool=object(),

@@ -291,6 +291,8 @@ class _DetailsPanelController:
         same_node = self._manager._metadata_node_uid == node.uid
         self._set_notes_node(node)
         displayed_spec = node.passive_displayed_provenance_spec
+        if displayed_spec is None and node.tool_window is not None:
+            displayed_spec = node.displayed_provenance_spec
         self._manager._metadata_full_code_available = (
             displayed_spec is not None or node.tool_window is not None
         )
@@ -372,7 +374,7 @@ class _DetailsPanelController:
         graph = self._manager._tool_graph
         keys: list[tuple[str, str | None]] = []
         seen: set[str] = set()
-        for ref in self._manager._dependency_refs_for_uid(node.uid):
+        for ref in self._manager._lineage_controller._dependency_refs_for_uid(node.uid):
             if ref.node_uid in seen:
                 continue
             seen.add(ref.node_uid)
@@ -1511,7 +1513,9 @@ class _DetailsPanelController:
         imagetool_targets = self._manager._selected_imagetool_targets()
         promotable_child_uid = self._manager._selected_promotable_child_imagetool_uid()
         source_update_child_uid = self._manager._selected_source_update_child_uid()
-        reload_candidates = self._manager._selected_reload_candidates()
+        reload_candidates = (
+            self._manager._lineage_controller._selected_reload_candidates()
+        )
 
         selection_watched: list[int] = []
         selection_offloadable: list[int | str] = []

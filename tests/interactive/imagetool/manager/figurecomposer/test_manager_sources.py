@@ -738,7 +738,7 @@ def test_manager_figure_source_picker_selects_imagetool_rows_only(
         root_uid = manager._tool_graph.root_wrappers[0].uid
         dummy_uid = manager.add_childtool(
             _SourcePickerDummyTool(root_data.rename("dummy")),
-            0,
+            script_inputs={"data": 0},
             show=False,
         )
         child_uid = manager.add_imagetool_child(

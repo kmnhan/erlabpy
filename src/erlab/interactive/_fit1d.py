@@ -3246,7 +3246,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if direct_weights is not None:
             items[_PERSISTED_WEIGHTS_VAR] = direct_weights
         elif self.uncertainty is not None:
-            items[_PERSISTED_UNCERTAINTY_VAR] = self.uncertainty
+            uncertainty_key = _PERSISTED_UNCERTAINTY_VAR
+            if any(item.name == "uncertainty" for item in self.script_inputs):
+                uncertainty_key = "uncertainty"
+            items[uncertainty_key] = self.uncertainty
         return items
 
     def _restore_persistence_data_items(
@@ -3256,7 +3259,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if _PERSISTED_WEIGHTS_VAR in data_items:
             self._set_direct_weights(data_items[_PERSISTED_WEIGHTS_VAR])
         else:
-            self._set_uncertainty(data_items.get(_PERSISTED_UNCERTAINTY_VAR))
+            self._set_uncertainty(
+                data_items.get(
+                    "uncertainty", data_items.get(_PERSISTED_UNCERTAINTY_VAR)
+                )
+            )
             self._refresh_weighting_ui()
 
     def _restore_persisted_fit_result_blob(
@@ -3313,6 +3320,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_fit_stats(None)
         self._set_elapsed_status(elapsed, timed_out=True)
         self._mark_fit_stale()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _fit_errored(self, detailed_text: str | None = None) -> None:
         self._show_error(
@@ -3320,6 +3329,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         self._set_fit_stats(None)
         self._mark_fit_stale()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _fit_start_errored(self, *, multi: bool) -> None:
         self._fit_thread = None
@@ -3469,6 +3480,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._finish_multi_fit()
         else:
             self._set_fit_running(False, multi=self._fit_running_multi)
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _run_fit(self) -> bool:
         def _on_success(result_ds: xr.Dataset) -> None:
@@ -3839,11 +3852,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _copy_prelude(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         data_name, model_name, lines = self._make_model_code(
-            input_name or self._data_name
+            primary_input or self._data_name
         )
 
         self._copy_fit_data_name(data_name, lines=lines)
@@ -3895,10 +3908,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _fit_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        data_name, model_name, _ = self._make_model_code(input_name or self._data_name)
+        data_name, model_name, _ = self._make_model_code(
+            primary_input or self._data_name
+        )
         input_data_name = data_name
         data_name = self._copy_fit_data_name(input_data_name)
         weights_name = self._copy_fit_weights_name(
@@ -4422,59 +4437,72 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if emit_info:
             self._emit_info_changed()
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if data.ndim != 1:
             raise ValueError("`data` must be a 1D DataArray")
-        if self._direct_weights is not None:
+        validated = {"data": data}
+        if "uncertainty" in inputs:
+            uncertainty = _validate_uncertainty_input(data, inputs["uncertainty"])
+            if uncertainty is not None:
+                validated["uncertainty"] = uncertainty
+        elif self._direct_weights is not None:
             _validate_weights_input(data, self._direct_weights)
         else:
             _validate_uncertainty_input(data, self._uncertainty)
-        return data
+        return validated
 
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
         return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
+        old_cw = self.centralWidget()
+        if old_cw is not None:
+            old_cw.setParent(None)
+            old_cw.deleteLater()
 
-        def _apply_update(validated: xr.DataArray) -> bool:
-            old_cw = self.centralWidget()
-            if old_cw is not None:
-                old_cw.setParent(None)
-                old_cw.deleteLater()
+        explicit_uncertainty = inputs.get("uncertainty")
+        direct_weights = (
+            None if explicit_uncertainty is not None else self._direct_weights
+        )
+        self._reset_fit_state(
+            inputs["data"],
+            self._model,
+            self._params.copy(),
+            uncertainty=(
+                explicit_uncertainty
+                if explicit_uncertainty is not None
+                else self._uncertainty
+                if direct_weights is None
+                else None
+            ),
+            direct_weights=direct_weights,
+            data_name=self._data_name,
+            model_name=self._model_name,
+        )
+        self._build_ui()
+        with self._history_suppressed():
+            self.tool_status = status
+        self._set_fit_stats(None)
+        self._update_fit_curve()
+        self._write_history = True
+        self._reset_history_stack()
+        self._mark_fit_stale()
+        self.restoreGeometry(old_geom)
+        self._notify_data_changed()
 
-            self._reset_fit_state(
-                validated,
-                self._model,
-                self._params.copy(),
-                uncertainty=(
-                    self._uncertainty if self._direct_weights is None else None
-                ),
-                direct_weights=self._direct_weights,
-                data_name=self._data_name,
-                model_name=self._model_name,
-            )
-            self._build_ui()
-            with self._history_suppressed():
-                self.tool_status = status
-            self._set_fit_stats(None)
-            self._update_fit_curve()
-            self._write_history = True
-            self._reset_history_stack()
-            self._mark_fit_stale()
-            self.restoreGeometry(old_geom)
-            self._notify_data_changed()
-
-            if had_fit and self.refit_on_source_update_check.isChecked():
-                self._source_refresh_deferred = self.has_source_binding
-                self._run_fit()
-                return False
-            return True
-
-        return self._perform_source_update(new_data, apply_update=_apply_update)
+        if had_fit and self.refit_on_source_update_check.isChecked():
+            if not self._run_fit():
+                return True
+            if self._source_refreshing:
+                self._defer_source_refresh()
+            return False
+        return True
 
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)

@@ -50,14 +50,20 @@ from erlab.interactive.imagetool._figurecomposer_adapter import (
     _PlotOperationBuilder,
     build_figure_composer_operation,
 )
-from erlab.interactive.imagetool._provenance._execution import replay_file_provenance
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
+)
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
     ReplayStage,
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
+    compose_display_provenance,
+    compose_full_provenance,
     file_load,
     full_data,
     script,
@@ -5146,13 +5152,72 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     win.slicer_area.open_in_meshtool()
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
     child = next(iter(win.slicer_area._associated_tools.values()))
-    assert child.source_spec == full_data()
+    assert child.script_inputs[0].data_role == "displayed"
+    assert child.script_inputs[0].parsed_source_spec() == full_data()
     assert child.source_state == "fresh"
 
     new_data = data.copy(deep=True)
     new_data.data = np.asarray(new_data.data) * 2
     win.slicer_area.set_data(new_data)
     assert child.source_state == "fresh"
+
+
+def test_standalone_transformed_tool_input_records_resolved_fallback(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape((3, 4, 2)),
+        dims=("alpha", "eV", "beta"),
+        name="source",
+    )
+    source_spec = selection(IselOperation(kwargs={"beta": 0}))
+    resolved = source_spec.apply(data)
+    parent = itool(data, manager=False, execute=False)
+    assert isinstance(parent, ImageTool)
+    qtbot.addWidget(parent)
+
+    def add_child() -> DerivativeTool:
+        child = dtool(resolved, execute=False)
+        qtbot.addWidget(child)
+        child.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    source_spec=source_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
+        parent.slicer_area.add_tool_window(child, transfer_to_manager=False)
+        return child
+
+    memory_child = add_child()
+    assert memory_child.script_inputs[0].parsed_provenance_spec() is None
+    namespace = _exec_generated_code(
+        memory_child.copy_code(),
+        {"data": data.copy(deep=True)},
+    )
+    xarray.testing.assert_identical(namespace["result"], memory_child.result)
+
+    parent_provenance = script(
+        ScriptCodeOperation(
+            label="Create parent input",
+            code=(
+                "source = xr.DataArray(np.arange(24.0).reshape((3, 4, 2)), "
+                "dims=('alpha', 'eV', 'beta'), name='source')"
+            ),
+        ),
+        start_label="Create parent input",
+        active_name="source",
+    )
+    parent.set_provenance_spec(parent_provenance)
+    provenance_child = add_child()
+    fallback = provenance_child.script_inputs[0].parsed_provenance_spec()
+    assert fallback == compose_full_provenance(parent_provenance, source_spec)
+    xarray.testing.assert_identical(
+        replay_script_provenance(fallback, {}),
+        resolved,
+    )
+
+    parent.close()
 
 
 def test_child_tool_from_gaussian_filtered_itool_keeps_display_provenance(
@@ -5175,12 +5240,37 @@ def test_child_tool_from_gaussian_filtered_itool_keeps_display_provenance(
     child = next(iter(win.slicer_area._associated_tools.values()))
 
     xarray.testing.assert_identical(child.tool_data, expected)
-    assert child.input_provenance_spec is not None
-    display_code = child.input_provenance_spec.display_code()
+    input_provenance = child.script_inputs[0].parsed_provenance_spec()
+    assert input_provenance is not None
+    display_code = input_provenance.display_code()
     assert display_code is not None
     assert "gaussian_filter" in display_code
     namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
     xarray.testing.assert_identical(namespace["derived"], expected)
+
+    win.close()
+
+
+def test_standalone_child_tool_refreshes_from_displayed_filter(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
+    expected = operation.apply(data)
+
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+
+    win.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+    assert child.source_state == "stale"
+    assert child._update_from_input_source()
+    xr.testing.assert_identical(child.tool_data, expected)
 
     win.close()
 
@@ -5357,7 +5447,24 @@ def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
         execute=False,
     )
     qtbot.addWidget(derivative)
-    derivative.set_source_binding(image.make_tool_source_spec(transpose=True))
+    source_spec = image.make_tool_source_spec(transpose=True)
+    input_provenance = compose_display_provenance(
+        None,
+        source_spec,
+        parent_data=win.slicer_area.data,
+    )
+    assert input_provenance is not None
+    derivative.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                data_role="source",
+                source_spec=source_spec.model_dump(mode="json"),
+                provenance_spec=input_provenance.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+    )
 
     derivative_code = derivative.copy_code()
     assert ".isel()" not in derivative_code
@@ -5370,8 +5477,24 @@ def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
         execute=False,
     )
     qtbot.addWidget(squeezed_child)
-    squeezed_child.set_source_parent_fetcher(lambda: _TEST_DATA["2D"].copy())
-    squeezed_child.set_source_binding(selection(SqueezeOperation()))
+    source_spec = selection(SqueezeOperation())
+    input_provenance = compose_display_provenance(
+        None,
+        source_spec,
+        parent_data=_TEST_DATA["2D"],
+    )
+    assert input_provenance is not None
+    squeezed_child.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                data_role="source",
+                source_spec=source_spec.model_dump(mode="json"),
+                provenance_spec=input_provenance.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+    )
 
     squeezed_code = squeezed_child.copy_code()
     assert ".isel()" not in squeezed_code
@@ -5396,7 +5519,24 @@ def test_child_tool_copy_code_keeps_meaningful_parent_selection(qtbot) -> None:
         execute=False,
     )
     qtbot.addWidget(child)
-    child.set_source_binding(image.make_tool_source_spec(transpose=True))
+    source_spec = image.make_tool_source_spec(transpose=True)
+    input_provenance = compose_display_provenance(
+        None,
+        source_spec,
+        parent_data=win.slicer_area.data,
+    )
+    assert input_provenance is not None
+    child.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                data_role="source",
+                source_spec=source_spec.model_dump(mode="json"),
+                provenance_spec=input_provenance.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+    )
 
     code = child.copy_code()
     assert "sort_coord_order" not in code
@@ -8735,7 +8875,7 @@ def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -
 
     win.slicer_area.open_in_ktool()
 
-    assert child.source_spec == full_data()
+    assert child.script_inputs[0].parsed_source_spec() == full_data()
     assert child.source_state == "fresh"
 
     win.close()
@@ -8829,8 +8969,9 @@ def test_itool_open_in_ftool_sets_squeezed_source_spec(qtbot, monkeypatch) -> No
     image = win.slicer_area.images[0]
     image.open_in_ftool()
 
-    assert child.source_spec == image.make_tool_source_spec(squeeze=True)
-    assert child.source_binding is None
+    assert child.script_inputs[0].parsed_source_spec() == image.make_tool_source_spec(
+        squeeze=True
+    )
     assert child.source_state == "fresh"
 
     win.close()
@@ -8848,10 +8989,10 @@ def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
     profile = win.slicer_area.profiles[0]
     profile.open_in_ftool()
 
-    assert child.source_spec is not None
+    source_spec = child.script_inputs[0].parsed_source_spec()
+    assert source_spec is not None
     assert not any(
-        isinstance(operation, SqueezeOperation)
-        for operation in child.source_spec.operations
+        isinstance(operation, SqueezeOperation) for operation in source_spec.operations
     )
 
     child.close()
@@ -12136,10 +12277,15 @@ def test_itool_full_data_child_updates_follow_transposed_view(qtbot) -> None:
         win.slicer_area.replace_source_data(replaced)
 
     qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
-    assert child._update_from_parent_source() is True
+    assert child._update_from_input_source() is True
     xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
 
-    child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+    child.set_script_inputs(
+        child.script_inputs,
+        primary_input=child.primary_input,
+        auto_update=True,
+        state="fresh",
+    )
     replaced2 = replaced.copy(deep=True)
     replaced2.data = np.asarray(replaced2.data) + 5
 

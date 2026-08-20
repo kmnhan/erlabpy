@@ -4,7 +4,7 @@ import sys
 import types
 import typing
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pytest
@@ -28,13 +28,13 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ScriptInput,
-    ScriptInputDependencyRef,
     compose_full_provenance,
     file_load,
     full_data,
     operation_group_range,
     script,
     selection,
+    to_replay_provenance_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
@@ -132,6 +132,26 @@ def test_manager_file_source_extension_status_reason(
 
     assert reason is not None
     assert expected in reason
+
+
+class _ScriptInputTreeTool(erlab.interactive.utils.ToolWindow):
+    tool_name = "dtool"
+
+    def __init__(self, data: xr.DataArray, *, tool_name: str = "dtool") -> None:
+        super().__init__()
+        self.tool_name = tool_name
+        self._data = data
+        self.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self._data = inputs["data"]
 
 
 def test_manager_console(
@@ -261,9 +281,6 @@ def test_store_selected_supports_root_and_nested_child_imagetools(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class _StoreTreeTool(erlab.interactive.utils.ToolWindow):
-        tool_name = "dtool"
-
     root_data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -278,7 +295,11 @@ def test_store_selected_supports_root_and_nested_child_imagetools(
         manager.add_imagetool(root_tool, show=False)
         root_uid = manager._tool_graph.root_wrappers[0].uid
 
-        intermediate_uid = manager.add_childtool(_StoreTreeTool(), 0, show=False)
+        intermediate_uid = manager.add_childtool(
+            _ScriptInputTreeTool(root_data),
+            script_inputs={"data": 0},
+            show=False,
+        )
         child_tool = itool(child_data, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
         child_uid = manager.add_imagetool_child(
@@ -857,6 +878,31 @@ def test_resolve_console_namespace_patches_before_lazy_import(monkeypatch) -> No
         "plt": "module:matplotlib.pyplot",
         "era": "module:erlab.analysis",
     }
+
+
+def test_tool_namespace_script_input_delegates_to_lineage() -> None:
+    expected = ScriptInput(name="canonical")
+    calls: list[tuple[object, str | None]] = []
+
+    class _Lineage:
+        def _script_input_for_node(
+            self, node: object, *, name: str | None = None
+        ) -> ScriptInput:
+            calls.append((node, name))
+            return expected
+
+    class _Manager:
+        _lineage_controller = _Lineage()
+
+    class _Wrapper:
+        manager = _Manager()
+        index = 4
+
+    wrapper = _Wrapper()
+    namespace = ToolNamespace(wrapper)  # type: ignore[arg-type]
+
+    assert namespace._script_input() is expected
+    assert calls == [(wrapper, "data_4")]
 
 
 def test_tool_namespace_get_data_item(
@@ -2041,9 +2087,6 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class _ConsoleTreeTool(erlab.interactive.utils.ToolWindow):
-        tool_name = "dtool"
-
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2065,8 +2108,12 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        intermediate_tool = _ConsoleTreeTool()
-        intermediate_uid = manager.add_childtool(intermediate_tool, 0, show=False)
+        intermediate_tool = _ScriptInputTreeTool(data0)
+        intermediate_uid = manager.add_childtool(
+            intermediate_tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
         intermediate_node = manager._child_node(intermediate_uid)
         intermediate_node.name = "Derivative"
         child_tool = itool(child_data, manager=False, execute=False)
@@ -2233,9 +2280,6 @@ def test_manager_reload_script_input_uses_public_nested_1d_child_data(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class _ConsoleTreeTool(erlab.interactive.utils.ToolWindow):
-        tool_name = "ftool"
-
     x = np.arange(3.0)
     eV = np.arange(5.0)
     data = xr.DataArray(
@@ -2261,8 +2305,12 @@ def test_manager_reload_script_input_uses_public_nested_1d_child_data(
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        intermediate_tool = _ConsoleTreeTool()
-        intermediate_uid = manager.add_childtool(intermediate_tool, 0, show=False)
+        intermediate_tool = _ScriptInputTreeTool(data, tool_name="ftool")
+        intermediate_uid = manager.add_childtool(
+            intermediate_tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
         manager._child_node(intermediate_uid).name = "Fit"
         child_tool = itool(shift, manager=False, execute=False)
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
@@ -2301,7 +2349,7 @@ def test_manager_reload_script_input_uses_public_nested_1d_child_data(
 
         child_tool.slicer_area.replace_source_data(updated_shift)
 
-        rebuilt = manager._rebuild_script_provenance(
+        rebuilt = manager._lineage_controller._rebuild_script_provenance(
             spec,
             target_node_uid=manager._tool_graph.root_wrappers[shifted_index].uid,
         )
@@ -2902,10 +2950,9 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             None,
             manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
-        assert (
-            replacement_provenance.script_inputs[0].parsed_provenance_spec()
-            == old_root_provenance
-        )
+        assert replacement_provenance.script_inputs[
+            0
+        ].parsed_provenance_spec() == to_replay_provenance_spec(old_root_provenance)
 
         dialog = manager._actions_controller._concat_dialog
         dialog._result_combo.setCurrentIndex(
@@ -3107,7 +3154,7 @@ def test_manager_displayed_script_inputs_track_and_reload_filters(
             operation,
             emit_edited=True,
         )
-        created_index = manager._show_multi_input_script_result(
+        created_index = manager._lineage_controller._show_multi_input_script_result(
             filtered0 + data1,
             (0, 1),
             operation_label="Add displayed ImageTools",
@@ -3160,7 +3207,7 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -3252,7 +3299,7 @@ def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
         itool([data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data.mean("y"),
                 (0,),
                 operation_label="Average input",
@@ -3275,7 +3322,7 @@ def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
         )
 
         monkeypatch.setattr(
-            manager,
+            manager._lineage_controller,
             "_prompt_incompatible_reload_commit",
             lambda _details: pytest.fail("compatible 1D reload prompted"),
         )
@@ -3324,7 +3371,7 @@ def test_manager_reload_script_derived_target_reports_runtime_error(
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data.copy(deep=True),
                 (0,),
                 operation_label="Runtime failure",
@@ -3334,13 +3381,15 @@ def test_manager_reload_script_derived_target_reports_runtime_error(
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        assert not manager._reload_script_derived_target(1)
+        assert not manager._lineage_controller._reload_script_derived_target(1)
 
     assert len(critical_calls) == 1
     assert "ValueError" in str(critical_calls[0][1].get("detailed_text", ""))
 
 
-def test_manager_reload_script_derived_target_honors_trust_cancel() -> None:
+def test_manager_reload_script_derived_target_honors_trust_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     spec = script(
         ScriptCodeOperation(label="Copy", code="derived = data"),
         start_label="Run script",
@@ -3352,18 +3401,18 @@ def test_manager_reload_script_derived_target_honors_trust_cancel() -> None:
         raise manager_widgets._TrustedScriptReplayCancelled
 
     manager = types.SimpleNamespace(
+        _dependency_tracker=types.SimpleNamespace(),
         _node_for_target=lambda _target: node,
-        _rebuild_script_provenance=rebuild,
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(
                 capture_replay_sources=lambda: contextlib.nullcontext(object())
             )
         ),
     )
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    monkeypatch.setattr(controller, "_rebuild_script_provenance", rebuild)
 
-    assert not manager_lineage._LineageController(
-        typing.cast("typing.Any", manager)
-    )._reload_script_derived_target("node")
+    assert not controller._reload_script_derived_target("node")
 
 
 def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
@@ -3385,15 +3434,29 @@ def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
     )
     dialogs: list[str] = []
     manager = types.SimpleNamespace(
+        _dependency_tracker=types.SimpleNamespace(),
         _node_for_target=lambda _target: node,
-        _rebuild_script_provenance=lambda *_args, **_kwargs: result,
-        _reload_incompatibility_details=lambda *_args: "incompatible",
-        _prompt_incompatible_reload_commit=lambda _details: "new",
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(
                 capture_replay_sources=lambda: contextlib.nullcontext(object())
             )
         ),
+    )
+    controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
+    monkeypatch.setattr(
+        controller,
+        "_rebuild_script_provenance",
+        lambda *_args, **_kwargs: result,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_reload_incompatibility_details",
+        lambda *_args: "incompatible",
+    )
+    monkeypatch.setattr(
+        controller,
+        "_prompt_incompatible_reload_commit",
+        lambda _details: "new",
     )
     monkeypatch.setattr(erlab.interactive, "itool", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
@@ -3402,9 +3465,7 @@ def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
         lambda _parent, _title, text, **_kwargs: dialogs.append(text),
     )
 
-    assert not manager_lineage._LineageController(
-        typing.cast("typing.Any", manager)
-    )._reload_script_derived_target("node")
+    assert not controller._reload_script_derived_target("node")
     assert dialogs == ["An error occurred while opening reloaded data."]
 
 
@@ -3428,7 +3489,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager.get_imagetool(0).slicer_area.data.dims == ("x_idx", "y")
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data + 1.0,
                 (0,),
                 operation_label="Offset restored input",
@@ -3448,7 +3509,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         )
 
         monkeypatch.setattr(
-            manager,
+            manager._lineage_controller,
             "_prompt_incompatible_reload_commit",
             lambda _details: pytest.fail("compatible nonuniform reload prompted"),
         )
@@ -3483,7 +3544,7 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -3493,7 +3554,7 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 (data0 - data1) + data0,
                 (2, 0),
                 operation_label="Add derived input",
@@ -3522,8 +3583,11 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         assert manager.dependency_status_for_uid(final_uid) == "current"
         rebuilt_spec = manager._tool_graph.root_wrappers[3].provenance_spec
         assert rebuilt_spec is not None
-        assert rebuilt_spec.script_inputs[0].node_uid is None
-        nested_spec = rebuilt_spec.script_inputs[0].parsed_provenance_spec()
+        rebuilt_input = rebuilt_spec.script_inputs[0]
+        nested_wrapper = manager._tool_graph.root_wrappers[2]
+        assert rebuilt_input.node_uid == nested_wrapper.uid
+        assert rebuilt_input.node_snapshot_token == nested_wrapper.snapshot_token
+        nested_spec = rebuilt_input.parsed_provenance_spec()
         assert nested_spec is not None
         assert [source.node_uid for source in nested_spec.script_inputs] == [
             manager._tool_graph.root_wrappers[0].uid,
@@ -3550,7 +3614,7 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -3630,7 +3694,7 @@ def test_manager_reload_script_inputs_incompatible_prompt_paths(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -3647,14 +3711,18 @@ def test_manager_reload_script_inputs_incompatible_prompt_paths(
         select_tools(manager, [2])
 
         monkeypatch.setattr(
-            manager, "_prompt_incompatible_reload_commit", lambda _details: "cancel"
+            manager._lineage_controller,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: "cancel",
         )
         manager.reload_selected()
         assert manager.ntools == 3
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
 
         monkeypatch.setattr(
-            manager, "_prompt_incompatible_reload_commit", lambda _details: "new"
+            manager._lineage_controller,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: "new",
         )
         manager.reload_selected()
         qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
@@ -3664,7 +3732,9 @@ def test_manager_reload_script_inputs_incompatible_prompt_paths(
         manager.tree_view.deselect_all()
         select_tools(manager, [2])
         monkeypatch.setattr(
-            manager, "_prompt_incompatible_reload_commit", lambda _details: "replace"
+            manager._lineage_controller,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: "replace",
         )
         manager.reload_selected()
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
@@ -3710,7 +3780,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
             replay_source_data=None,
         )
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -3887,7 +3957,7 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
             replay_source_data=None,
         )
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 left_data - right_data,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -3912,11 +3982,11 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         manager.remove_imagetool(1)
         manager.remove_imagetool(0)
         monkeypatch.setattr(
-            manager,
+            manager._lineage_controller,
             "_prompt_incompatible_reload_commit",
             lambda _details: "replace",
         )
-        assert manager._reload_script_derived_target(2)
+        assert manager._lineage_controller._reload_script_derived_target(2)
 
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data,
@@ -3954,7 +4024,7 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -4059,7 +4129,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert (
-            manager._show_multi_input_script_result(
+            manager._lineage_controller._show_multi_input_script_result(
                 data0 - data1,
                 (0, 1),
                 operation_label="Subtract inputs",
@@ -4083,41 +4153,16 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert manager.dependency_status_badge_for_uid("missing") is None
         assert manager.dependency_status_tooltip_for_uid("missing") is None
         assert manager.dependency_input_summary_for_uid("missing") is None
-        assert not manager._missing_dependencies_have_recorded_file("missing")
-        assert manager._script_provenance_inputs_current(script_spec)
-        stale_input = script_spec.script_inputs[0].model_copy(
-            update={"node_snapshot_token": "stale"}
-        )
-        stale_spec = script_spec.model_copy(
-            update={"script_inputs": (stale_input, *script_spec.script_inputs[1:])}
-        )
-        missing_input = script_spec.script_inputs[0].model_copy(
-            update={"node_uid": "missing-parent"}
-        )
-        missing_spec = script_spec.model_copy(
-            update={"script_inputs": (missing_input, *script_spec.script_inputs[1:])}
-        )
-        assert not manager._script_provenance_inputs_current(stale_spec)
-        assert not manager._script_provenance_inputs_current(missing_spec)
 
         full_data_input = ScriptInput(
             name="full",
             label="Full data",
             provenance_spec=full_data().model_dump(mode="json"),
         )
-        assert not manager._script_input_can_reload(full_data_input)
-        assert manager._script_input_unavailable_reason(full_data_input) is not None
-        file_without_source_input = types.SimpleNamespace(
-            name="file_without_source",
-            node_uid=None,
-            label="File without source",
-            parsed_provenance_spec=lambda: file_spec.model_copy(
-                update={"file_load_source": None}
-            ),
-        )
-        assert not manager._script_input_can_reload(file_without_source_input)
         assert (
-            manager._script_input_unavailable_reason(file_without_source_input)
+            manager._lineage_controller._script_input_unavailable_reason(
+                full_data_input
+            )
             is not None
         )
         missing_file_input = ScriptInput(
@@ -4131,9 +4176,10 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 }
             ).model_dump(mode="json"),
         )
-        assert not manager._script_input_has_recorded_file(missing_file_input)
-        missing_file_reason = manager._script_input_unavailable_reason(
-            missing_file_input
+        missing_file_reason = (
+            manager._lineage_controller._script_input_unavailable_reason(
+                missing_file_input
+            )
         )
         assert missing_file_reason is not None
         assert str(tmp_path / "missing.nc") in missing_file_reason
@@ -4147,21 +4193,27 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             label="No replay call",
             parsed_provenance_spec=lambda: file_spec.model_copy(
                 update={
+                    "kind": "script",
                     "file_load_source": load_source.model_copy(
                         update={"replay_call": None}
-                    )
+                    ),
                 }
             ),
         )
-        assert not manager._script_input_can_reload(no_replay_call_input)
-        assert manager._script_input_unavailable_reason(no_replay_call_input)
+        assert manager._lineage_controller._script_input_unavailable_reason(
+            no_replay_call_input
+        )
         valid_file_input = ScriptInput(
             name="valid_file",
             label="Valid file",
             provenance_spec=file_spec.model_dump(mode="json"),
         )
-        assert manager._script_input_can_reload(valid_file_input)
-        assert manager._script_input_unavailable_reason(valid_file_input) is None
+        assert (
+            manager._lineage_controller._script_input_unavailable_reason(
+                valid_file_input
+            )
+            is None
+        )
 
         script_file_spec = script(
             start_label="Load recorded",
@@ -4174,9 +4226,12 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             label="Script-backed file",
             provenance_spec=script_file_spec.model_dump(mode="json"),
         )
-        assert manager._script_input_has_recorded_file(script_file_input)
-        assert manager._script_input_can_reload(script_file_input)
-        assert manager._script_input_unavailable_reason(script_file_input) is None
+        assert (
+            manager._lineage_controller._script_input_unavailable_reason(
+                script_file_input
+            )
+            is None
+        )
 
         missing_script_file = tmp_path / "missing-script.nc"
         missing_script_file_input = ScriptInput(
@@ -4190,10 +4245,10 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 }
             ).model_dump(mode="json"),
         )
-        assert not manager._script_input_has_recorded_file(missing_script_file_input)
-        assert not manager._script_input_can_reload(missing_script_file_input)
-        missing_script_reason = manager._script_input_unavailable_reason(
-            missing_script_file_input
+        missing_script_reason = (
+            manager._lineage_controller._script_input_unavailable_reason(
+                missing_script_file_input
+            )
         )
         assert missing_script_reason is not None
         assert str(missing_script_file) in missing_script_reason
@@ -4219,8 +4274,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 }
             ).model_dump(mode="json"),
         )
-        assert not manager._script_input_can_reload(missing_loader_input)
-        reason = manager._script_input_unavailable_reason(missing_loader_input)
+        reason = manager._lineage_controller._script_input_unavailable_reason(
+            missing_loader_input
+        )
         assert reason is not None
         assert missing_loader in reason
 
@@ -4234,9 +4290,10 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 script_inputs=(valid_file_input,),
             ).model_dump(mode="json"),
         )
-        assert not manager._script_input_can_reload(nonreplayable_script_input)
         assert (
-            manager._script_input_unavailable_reason(nonreplayable_script_input)
+            manager._lineage_controller._script_input_unavailable_reason(
+                nonreplayable_script_input
+            )
             is not None
         )
         nested_missing_input = ScriptInput(
@@ -4249,7 +4306,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 script_inputs=(missing_file_input,),
             ).model_dump(mode="json"),
         )
-        nested_reason = manager._script_input_unavailable_reason(nested_missing_input)
+        nested_reason = manager._lineage_controller._script_input_unavailable_reason(
+            nested_missing_input
+        )
         assert nested_reason is not None
         assert str(tmp_path / "missing.nc") in nested_reason
         nested_valid_input = ScriptInput(
@@ -4262,7 +4321,12 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 script_inputs=(valid_file_input,),
             ).model_dump(mode="json"),
         )
-        assert manager._script_input_unavailable_reason(nested_valid_input) is None
+        assert (
+            manager._lineage_controller._script_input_unavailable_reason(
+                nested_valid_input
+            )
+            is None
+        )
 
         file_marker = "file-marker"
         child_marker = "child-marker"
@@ -4280,23 +4344,10 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             active_name="derived",
             script_inputs=(file_input,),
         )
-        nested_input = ScriptInput(
-            name="nested",
-            label="Nested input",
-            provenance_spec=nested_spec.model_dump(mode="json"),
-        )
-        ref = ScriptInputDependencyRef(
-            name="file_input",
-            label="File input",
-            node_uid="missing-file-node",
-            node_snapshot_token=file_marker,
-        )
-        assert manager._script_input_has_recorded_file(file_input)
-        assert manager._script_input_has_recorded_file(nested_input)
-        assert manager._dependency_ref_has_recorded_file(nested_spec, ref)
-        assert not manager._dependency_ref_has_recorded_file(None, ref)
         derived_wrapper.set_displayed_provenance(nested_spec)
-        assert manager._missing_dependencies_have_recorded_file(derived_uid)
+        tooltip = manager.dependency_status_tooltip_for_uid(derived_uid)
+        assert tooltip is not None
+        assert "Recorded source files found" in tooltip
 
         fake_child = types.SimpleNamespace(
             uid="1 child-node",
@@ -4310,14 +4361,14 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             provenance_for_role=lambda _role: file_spec,
             type_badge_text="tool",
         )
-        script_input = manager._script_input_for_node(fake_child)
+        script_input = manager._lineage_controller._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")
         assert script_input.label == "Child node"
         assert script_input.parsed_provenance_spec() == file_spec
 
         monkeypatch.setattr(manager_mainwindow.QtWidgets, "QMessageBox", FakeMessageBox)
         FakeMessageBox.instances.clear()
-        manager._show_dependency_reload_dialog(0)
+        manager._lineage_controller._show_dependency_reload_dialog(0)
         assert not FakeMessageBox.instances
 
         with monkeypatch.context() as patch:
@@ -4326,9 +4377,11 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 manager, "dependency_input_summary_for_uid", lambda _uid: None
             )
             patch.setattr(
-                manager, "_node_can_reload_script_inputs", lambda _node: False
+                manager._lineage_controller,
+                "_node_can_reload_script_inputs",
+                lambda _node: False,
             )
-            manager._show_dependency_reload_dialog(0)
+            manager._lineage_controller._show_dependency_reload_dialog(0)
         assert (
             FakeMessageBox.instances[-1].standard_buttons
             is FakeMessageBox.StandardButton.Close
@@ -4340,14 +4393,20 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             patch.setattr(
                 manager, "dependency_input_summary_for_uid", lambda _uid: "details"
             )
-            patch.setattr(manager, "_node_can_reload_script_inputs", lambda _node: True)
             patch.setattr(
-                manager, "_reload_script_derived_target", reload_targets.append
+                manager._lineage_controller,
+                "_node_can_reload_script_inputs",
+                lambda _node: True,
+            )
+            patch.setattr(
+                manager._lineage_controller,
+                "_reload_script_derived_target",
+                reload_targets.append,
             )
             FakeMessageBox.clicked_index = 0
-            manager._show_dependency_reload_dialog(0)
+            manager._lineage_controller._show_dependency_reload_dialog(0)
             FakeMessageBox.clicked_index = 1
-            manager._show_dependency_reload_dialog(0)
+            manager._lineage_controller._show_dependency_reload_dialog(0)
         assert reload_targets == [0]
 
         for clicked_index, expected in (
@@ -4357,9 +4416,14 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             (None, "cancel"),
         ):
             FakeMessageBox.clicked_index = clicked_index
-            assert manager._prompt_incompatible_reload_commit("details") == expected
+            assert (
+                manager._lineage_controller._prompt_incompatible_reload_commit(
+                    "details"
+                )
+                == expected
+            )
 
-        details = manager._reload_incompatibility_details(
+        details = manager._lineage_controller._reload_incompatibility_details(
             data0,
             data0.rename({"x": "energy"}).assign_coords(y=[10.0, 11.0]),
         )
@@ -4371,7 +4435,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 erlab.interactive, "itool", lambda *_args, **_kwargs: object()
             )
             assert (
-                manager._show_multi_input_script_result(
+                manager._lineage_controller._show_multi_input_script_result(
                     data0,
                     (0,),
                     operation_label="No tool",
@@ -4385,15 +4449,21 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             assert not manager._script_reload_from_slicer_area(object(), execute=False)
         with monkeypatch.context() as patch:
             patch.setattr(manager, "target_from_slicer_area", lambda _area: 0)
-            patch.setattr(manager, "_node_can_reload_script_inputs", lambda _node: True)
+            patch.setattr(
+                manager._lineage_controller,
+                "_node_can_reload_script_inputs",
+                lambda _node: True,
+            )
             assert manager._script_reload_from_slicer_area(object(), execute=False)
 
         lineage = manager._lineage_controller
         non_imagetool_node = types.SimpleNamespace(is_imagetool=False)
         assert lineage._node_reload_unavailable_reason(non_imagetool_node)
         closed_imagetool_node = types.SimpleNamespace(
+            uid="closed",
             is_imagetool=True,
             imagetool=None,
+            tool_window=None,
             pending_workspace_memory_payload=None,
         )
         assert lineage._node_reload_unavailable_reason(closed_imagetool_node)
@@ -4401,6 +4471,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             uid="pending-memory",
             is_imagetool=True,
             imagetool=None,
+            tool_window=None,
             pending_workspace_memory_payload=(
                 tmp_path / "workspace.itws",
                 "0/imagetool",
@@ -4413,6 +4484,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             uid="pending-file",
             is_imagetool=True,
             imagetool=None,
+            tool_window=None,
             pending_workspace_memory_payload=(
                 tmp_path / "workspace.itws",
                 "0/imagetool",
@@ -4424,6 +4496,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             uid="script-no-inputs",
             is_imagetool=True,
             imagetool=object(),
+            tool_window=None,
             slicer_area=types.SimpleNamespace(
                 _direct_reloadable=lambda: False,
                 _provenance_reloadable=lambda: False,
@@ -4440,6 +4513,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             uid="script-file-input",
             is_imagetool=True,
             imagetool=object(),
+            tool_window=None,
             slicer_area=script_no_inputs_node.slicer_area,
             provenance_spec=script(
                 ScriptCodeOperation(label="Use file", code="derived = valid_file"),
@@ -4451,23 +4525,34 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert lineage._node_reload_unavailable_reason(script_file_input_node) is None
 
         with monkeypatch.context() as patch:
-            patch.setattr(manager, "_selected_reload_candidates", lambda: None)
-            assert manager._selected_reload_targets() is None
+            patch.setattr(
+                manager._lineage_controller,
+                "_selected_reload_candidates",
+                lambda: None,
+            )
             manager.reload_selected()
         with monkeypatch.context() as patch:
             patch.setattr(
-                manager,
+                manager._lineage_controller,
                 "_selected_reload_candidates",
                 lambda: ([0], {}, "blocked"),
             )
-            assert manager._selected_reload_targets() is None
+            assert manager._lineage_controller._selected_reload_candidates() == (
+                [0],
+                {},
+                "blocked",
+            )
         with monkeypatch.context() as patch:
             patch.setattr(
-                manager,
+                manager._lineage_controller,
                 "_selected_reload_candidates",
                 lambda: ([0], {}, None),
             )
-            assert manager._selected_reload_targets() == ([0], {})
+            assert manager._lineage_controller._selected_reload_candidates() == (
+                [0],
+                {},
+                None,
+            )
         with monkeypatch.context() as patch:
             patch.setattr(
                 manager,
@@ -4477,11 +4562,19 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             assert manager._reload_unavailable_reason_for_target(0)
         with monkeypatch.context() as patch:
             patch.setattr(manager, "_node_for_target", lambda _target: object())
-            patch.setattr(manager, "_reload_target_for_child", lambda _uid: 0)
-            assert manager._reload_unavailable_reason_for_target("child") is None
-            patch.setattr(manager, "_reload_target_for_child", lambda _uid: None)
             patch.setattr(
-                manager,
+                manager._lineage_controller,
+                "_reload_target_for_child",
+                lambda _uid: 0,
+            )
+            assert manager._reload_unavailable_reason_for_target("child") is None
+            patch.setattr(
+                manager._lineage_controller,
+                "_reload_target_for_child",
+                lambda _uid: None,
+            )
+            patch.setattr(
+                manager._lineage_controller,
                 "_reload_unavailable_reason_for_child",
                 lambda _uid: "child reason",
             )
@@ -4503,10 +4596,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
                 ),
             )
         )
-        assert manager._workspace_loaded_uid_map(
-            {old_parent_uid: 0, "missing": "missing"}
-        ) == {old_parent_uid: manager._tool_graph.root_wrappers[0].uid}
-        manager._rebase_loaded_workspace_dependency_refs(
+        manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
             {old_parent_uid: 0, derived_wrapper.uid: 2, "missing": "missing"}
         )
         rebased_spec = derived_wrapper.provenance_spec
@@ -4608,7 +4698,7 @@ def test_manager_reload_raw_self_replacement_unavailable(
         manager.tree_view.deselect_all()
         select_tools(manager, [0])
         manager._update_actions()
-        assert not manager._node_can_reload_script_inputs(wrapper)
+        assert not manager._lineage_controller._node_can_reload_script_inputs(wrapper)
         assert manager.reload_action.isVisible()
         assert manager.reload_action.isEnabled()
 
@@ -4724,7 +4814,9 @@ def test_manager_reload_data_explains_non_replayable_script_provenance(
                 ),
                 start_label="Run opaque code",
                 active_name="derived",
-                script_inputs=(manager._script_input_for_node(wrapper),),
+                script_inputs=(
+                    manager._lineage_controller._script_input_for_node(wrapper),
+                ),
             ),
             replay_source_data=None,
         )

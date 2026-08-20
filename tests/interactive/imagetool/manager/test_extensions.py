@@ -7614,8 +7614,22 @@ def test_workspace_script_remap_updates_node_provenance_owners(
             source_state="stale",
         )
         input_tool = _ExtensionInputTool(xr.DataArray([3.0]))
-        input_tool.set_input_provenance_spec(old_spec)
-        tool_uid = manager.add_childtool(input_tool, 0, show=False)
+        input_tool.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    source_spec=old_spec.model_dump(mode="json"),
+                    provenance_spec=old_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
+        tool_uid = manager.add_childtool(
+            input_tool,
+            script_inputs={"data": child_uid},
+            show=False,
+        )
+        input_tool._pending_script_inputs = input_tool.script_inputs
         manager._workspace_state.mark_clean()
 
         manager._extensions._remap_workspace_script(
@@ -7629,13 +7643,34 @@ def test_workspace_script_remap_updates_node_provenance_owners(
         child_display = typing.cast(
             "ExtensionRoutineOperation", child.provenance_spec.operations[-1]
         )
+        tool_source_spec = input_tool.script_inputs[0].parsed_source_spec()
+        tool_input_spec = input_tool.script_inputs[0].parsed_provenance_spec()
+        pending_inputs = input_tool._pending_script_inputs
+        pending_tool_input_spec = (
+            None
+            if pending_inputs is None
+            else pending_inputs[0].parsed_provenance_spec()
+        )
+        if (
+            tool_source_spec is None
+            or tool_input_spec is None
+            or pending_tool_input_spec is None
+        ):
+            raise RuntimeError("ToolWindow input provenance was discarded")
+        tool_source = typing.cast(
+            "ExtensionRoutineOperation", tool_source_spec.operations[-1]
+        )
         tool_input = typing.cast(
-            "ExtensionRoutineOperation",
-            input_tool.input_provenance_spec.operations[-1],
+            "ExtensionRoutineOperation", tool_input_spec.operations[-1]
+        )
+        pending_tool_input = typing.cast(
+            "ExtensionRoutineOperation", pending_tool_input_spec.operations[-1]
         )
         assert child_source.script_name == "local_routines.py"
         assert child_display.script_name == "local_routines.py"
+        assert tool_source.script_name == "local_routines.py"
         assert tool_input.script_name == "local_routines.py"
+        assert pending_tool_input.script_name == "local_routines.py"
         assert {child_uid, tool_uid}.issubset(manager._workspace_state.dirty_state)
 
 
@@ -7714,12 +7749,16 @@ def test_workspace_script_remap_updates_pending_tool_provenance(
         parameters={},
     )
     old_spec = full_data(operation)
-    source_key = erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR
-    input_key = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
-    attrs = {
-        source_key: json.dumps(old_spec.model_dump(mode="json")),
-        input_key: json.dumps(old_spec.model_dump(mode="json")),
-    }
+    attrs = erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+        (
+            ScriptInput(
+                name="data",
+                source_spec=old_spec.model_dump(mode="json"),
+                provenance_spec=old_spec.model_dump(mode="json"),
+            ),
+        ),
+        "data",
+    )
 
     with manager_context() as manager:
         manager.add_imagetool(
@@ -7735,12 +7774,6 @@ def test_workspace_script_remap_updates_pending_tool_provenance(
             name="Pending extension tool",
         )
         manager._register_child_node(node)
-        node.set_restored_source_binding_metadata(
-            old_spec,
-            None,
-            auto_update=False,
-            state="stale",
-        )
         node.set_pending_workspace_payload(
             "tool",
             tmp_path / "workspace.itws",
@@ -7756,12 +7789,16 @@ def test_workspace_script_remap_updates_pending_tool_provenance(
         pending_attrs = node.pending_workspace_payload_attrs
         if pending_attrs is None:
             raise RuntimeError("Pending ToolWindow attributes were discarded")
-        source_spec = ToolProvenanceSpec.model_validate(
-            json.loads(pending_attrs[source_key])
+        script_inputs, primary_input = (
+            erlab.interactive.utils.ToolWindow._saved_script_input_metadata(
+                pending_attrs
+            )
         )
-        input_spec = ToolProvenanceSpec.model_validate(
-            json.loads(pending_attrs[input_key])
-        )
+        assert primary_input == "data"
+        source_spec = script_inputs[0].parsed_source_spec()
+        input_spec = script_inputs[0].parsed_provenance_spec()
+        if source_spec is None or input_spec is None:
+            raise RuntimeError("Pending ToolWindow provenance was discarded")
         assert (
             typing.cast(
                 "ExtensionRoutineOperation", source_spec.operations[-1]
