@@ -66,6 +66,10 @@ import typing
 import matplotlib
 import matplotlib.scale
 
+from erlab.interactive._figurecomposer._completion_values import (
+    FONT_SIZE_COMPLETIONS,
+    LABEL_COMPLETIONS,
+)
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_DEFAULT_LABEL,
@@ -187,6 +191,7 @@ class MethodControlSpec:
     none_label: str | None = None
     exclusive_group: str | None = None
     none_is_unset: bool = False
+    completions: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -203,6 +208,7 @@ class MethodSpec:
     controls: tuple[MethodControlSpec, ...] = ()
     allow_extra_kwargs: bool = True
     text_values_policy: MethodTextValuesPolicy = MethodTextValuesPolicy.NONE
+    text_values_completions: tuple[str, ...] = ()
     text_values_kwarg: str = "values"
     preserves_empty_text: bool = False
     callable_name: str | None = None
@@ -291,6 +297,8 @@ def _text_arg(
     index: int,
     object_name: str,
     tooltip: str,
+    *,
+    completions: Sequence[str] = (),
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.TEXT_ARG,
@@ -298,6 +306,22 @@ def _text_arg(
         arg_index=index,
         object_name=object_name,
         tooltip=tooltip,
+        completions=tuple(completions),
+    )
+
+
+def _label_arg(
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
+) -> MethodControlSpec:
+    return _text_arg(
+        label,
+        index,
+        object_name,
+        tooltip,
+        completions=LABEL_COMPLETIONS,
     )
 
 
@@ -596,6 +620,7 @@ def _literal_kwarg(
     tooltip: str,
     *,
     default: typing.Any = None,
+    completions: Sequence[str] = (),
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.LITERAL_KWARG,
@@ -604,6 +629,22 @@ def _literal_kwarg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+        completions=tuple(completions),
+    )
+
+
+def _font_size_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+) -> MethodControlSpec:
+    return _literal_kwarg(
+        label,
+        key,
+        object_name,
+        tooltip,
+        completions=FONT_SIZE_COMPLETIONS,
     )
 
 
@@ -824,13 +865,13 @@ def _text_artist_controls(
         horizontalalignment_tooltip += "\nSelecting this value clears Location."
     return (
         _text_color_control(f"{object_name_prefix}ColorEdit", description),
-        _literal_kwarg(
+        _font_size_kwarg(
             "Font size",
             "fontsize",
             f"{object_name_prefix}FontSizeEdit",
             (
                 f"Font size for {description}.\n"
-                "Use a number or a quoted named size such as 'large'."
+                "Use a number or a named size such as large."
             ),
         ),
         _kwarg_combo(
@@ -972,11 +1013,11 @@ def _label_subplots_text_controls(
                 f"{object_name_prefix}FontWeightCombo",
                 "Font weight for subplot labels.",
             ),
-            _literal_kwarg(
+            _font_size_kwarg(
                 "Font size",
                 "fontsize",
                 f"{object_name_prefix}FontSizeEdit",
-                "Matplotlib font size. Use 8 or quoted names such as 'large'.",
+                "Matplotlib font size. Use 8 or a named size such as large.",
             ),
         )
     )
@@ -1015,17 +1056,17 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "Show or hide the legend frame.",
             default=True,
         ),
-        _text_kwarg(
+        _font_size_kwarg(
             "Font size",
             "fontsize",
             f"figureComposer{prefix}MethodLegendFontSizeEdit",
-            "Legend text size.\nUse a named size or a numeric value.",
+            "Legend text size.\nUse a number or a named size.",
         ),
-        _text_kwarg(
+        _font_size_kwarg(
             "Title size",
             "title_fontsize",
             f"figureComposer{prefix}MethodLegendTitleFontSizeEdit",
-            "Legend title text size.\nUse a named size or a numeric value.",
+            "Legend title text size.\nUse a number or a named size.",
         ),
         _float_kwarg(
             "Marker scale",
@@ -1526,7 +1567,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
         default_args=("x",),
         controls=(
-            _text_arg(
+            _label_arg(
                 "Label",
                 0,
                 "figureComposerAxesMethodXLabelEdit",
@@ -1554,7 +1595,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
         default_args=("y",),
         controls=(
-            _text_arg(
+            _label_arg(
                 "Label",
                 0,
                 "figureComposerAxesMethodYLabelEdit",
@@ -1792,7 +1833,7 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.BOUND_FIGURE,
         default_args=("x label",),
         controls=(
-            _text_arg(
+            _label_arg(
                 "Text",
                 0,
                 "figureComposerFigureMethodTextEdit",
@@ -1812,7 +1853,7 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.BOUND_FIGURE,
         default_args=("y label",),
         controls=(
-            _text_arg(
+            _label_arg(
                 "Text",
                 0,
                 "figureComposerFigureMethodTextEdit",
@@ -2316,6 +2357,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.POSITIONAL,
+        text_values_completions=LABEL_COMPLETIONS,
         preserves_empty_text=True,
         controls=(
             _kwarg_combo(
@@ -2338,6 +2380,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.POSITIONAL,
+        text_values_completions=LABEL_COMPLETIONS,
         preserves_empty_text=True,
         controls=(
             _kwarg_combo(

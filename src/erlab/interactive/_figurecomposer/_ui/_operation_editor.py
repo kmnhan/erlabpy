@@ -11,6 +11,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._ui._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
@@ -902,10 +903,19 @@ class FigureOperationEditor(QtWidgets.QWidget):
         text: str = "",
         *,
         parent: QtWidgets.QWidget | None = None,
+        completions: Sequence[str] = (),
     ) -> QtWidgets.QLineEdit:
-        edit = QtWidgets.QLineEdit(parent or self._current_page() or self)
+        edit_parent = parent or self._current_page() or self
+        edit: QtWidgets.QLineEdit
+        if completions:
+            edit = CompletingLineEdit(
+                text,
+                edit_parent,
+                completions=completions,
+            )
+        else:
+            edit = QtWidgets.QLineEdit(text, edit_parent)
         self.mark_control(edit)
-        edit.setText(text)
         return edit
 
     def mixed_value_widget(

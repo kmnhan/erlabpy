@@ -6,6 +6,11 @@ import typing
 
 from qtpy import QtCore, QtWidgets
 
+from erlab.interactive._figurecomposer._completion_values import (
+    FONT_SIZE_COMPLETIONS,
+    _completion_literal_from_text,
+    _format_completion_literal,
+)
 from erlab.interactive._figurecomposer._line_style import (
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
@@ -14,8 +19,8 @@ from erlab.interactive._figurecomposer._operations._method._catalog import (
     TICK_PARAMS_CONTROLLED_KWARGS,
     TICK_PARAMS_DEFAULT_KWARGS,
 )
-from erlab.interactive._figurecomposer._text import _code_args, _literal_from_text
 from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._completion import CompletingLineEdit
 from erlab.interactive._figurecomposer._ui._line_style import (
     configure_style_combo,
     style_combo_value,
@@ -82,7 +87,11 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self.width_edit = _line_edit(f"{object_prefix}WidthEdit", self)
         self.pad_edit = _line_edit(f"{object_prefix}PadEdit", self)
         self.label_rotation_edit = _line_edit(f"{object_prefix}LabelRotationEdit", self)
-        self.label_size_edit = _line_edit(f"{object_prefix}LabelSizeEdit", self)
+        self.label_size_edit = _line_edit(
+            f"{object_prefix}LabelSizeEdit",
+            self,
+            completions=FONT_SIZE_COMPLETIONS,
+        )
         self.label_font_edit = _line_edit(f"{object_prefix}LabelFontEdit", self)
         self.zorder_edit = _line_edit(f"{object_prefix}ZOrderEdit", self)
         self.grid_alpha_edit = _line_edit(f"{object_prefix}GridAlphaEdit", self)
@@ -157,7 +166,11 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
                 _format_float(self._kwargs.get("labelrotation")),
             )
             self._set_line_edit(
-                self.label_size_edit, _format_literal(self._kwargs.get("labelsize"))
+                self.label_size_edit,
+                _format_completion_literal(
+                    self._kwargs.get("labelsize"),
+                    completions=FONT_SIZE_COMPLETIONS,
+                ),
             )
             self._set_line_edit(
                 self.label_font_edit, str(self._kwargs.get("labelfontfamily") or "")
@@ -372,7 +385,7 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
             lambda: self._commit_float(self.label_rotation_edit, "labelrotation")
         )
         self.label_size_edit.editingFinished.connect(
-            lambda: self._commit_literal(self.label_size_edit, "labelsize")
+            lambda: self._commit_font_size(self.label_size_edit)
         )
         self.label_font_edit.editingFinished.connect(
             lambda: self._commit_text(self.label_font_edit, "labelfontfamily")
@@ -440,16 +453,16 @@ class TickParamsEditorWidget(QtWidgets.QWidget):
         self._set_line_edit(edit, _format_float(value))
         self._set_kwarg(key, value)
 
-    def _commit_literal(self, edit: QtWidgets.QLineEdit, key: str) -> None:
+    def _commit_font_size(self, edit: QtWidgets.QLineEdit) -> None:
         text = edit.text().strip()
-        if not text:
-            self._set_kwarg(key, None)
-            return
         try:
-            value = _literal_from_text(text)
+            value = _completion_literal_from_text(
+                text,
+                completions=FONT_SIZE_COMPLETIONS,
+            )
         except ValueError:
             return
-        self._set_kwarg(key, value)
+        self._set_kwarg("labelsize", value)
 
     def _commit_text(self, edit: QtWidgets.QLineEdit, key: str) -> None:
         self._set_kwarg(key, edit.text().strip() or None)
@@ -601,8 +614,17 @@ class _DisclosureWidget(QtWidgets.QWidget):
         self._button.setToolTip(text)
 
 
-def _line_edit(object_name: str, parent: QtWidgets.QWidget) -> QtWidgets.QLineEdit:
-    edit = QtWidgets.QLineEdit(parent)
+def _line_edit(
+    object_name: str,
+    parent: QtWidgets.QWidget,
+    *,
+    completions: Sequence[str] = (),
+) -> QtWidgets.QLineEdit:
+    edit: QtWidgets.QLineEdit
+    if completions:
+        edit = CompletingLineEdit(parent=parent, completions=completions)
+    else:
+        edit = QtWidgets.QLineEdit(parent)
     edit.setObjectName(object_name)
     edit.setPlaceholderText("Auto")
     edit.setMaximumWidth(80)
@@ -633,12 +655,6 @@ def _add_labeled_widget(
 
 def _format_float(value: typing.Any) -> str:
     return "" if value is None else f"{float(value):g}"
-
-
-def _format_literal(value: typing.Any) -> str:
-    if value is None:
-        return ""
-    return _code_args((value,))
 
 
 def _tri_state_text(value: bool | None) -> str:
