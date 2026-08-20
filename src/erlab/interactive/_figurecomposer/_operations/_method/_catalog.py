@@ -793,9 +793,10 @@ def _title_location_control(object_name: str, tooltip: str) -> MethodControlSpec
         "Location",
         "loc",
         ("center", "left", "right"),
-        "center",
+        None,
         object_name,
         tooltip,
+        none_label="Default",
     )
 
 
