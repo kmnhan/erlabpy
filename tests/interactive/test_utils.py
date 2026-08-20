@@ -4184,6 +4184,21 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
     assert restored.input_provenance_spec == input_spec.to_replay_spec()
 
 
+def test_tool_window_dataset_normalizes_invalid_source_state(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+    tool.set_source_binding(full_data(), auto_update=True, state="stale")
+    saved = tool.to_dataset()
+    saved.attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "unknown"
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _PersistentTool)
+    assert restored.source_state == "fresh"
+
+
 def test_tool_window_dataset_prefers_source_spec_over_legacy_binding(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data.isel(x=slice(1, 3)))

@@ -2357,6 +2357,7 @@ def test_hidden_workspace_toolwindows_restore_pending_until_shown(
         assert root_node.pending_workspace_memory_payload is not None
         assert child_node.pending_workspace_tool_payload is not None
         assert child_node.tool_window is None
+        assert child_node.type_badge_text == _AddedTimeChildTool.tool_name
         assert figure_node.pending_workspace_tool_payload is not None
         assert figure_node.tool_window is None
         assert figure_uid in manager._figure_uids()
@@ -2366,6 +2367,7 @@ def test_hidden_workspace_toolwindows_restore_pending_until_shown(
         assert constructed == ["Hidden child"]
         assert child_node.pending_workspace_tool_payload is None
         assert child_node.tool_window is not None
+        assert child_node.type_badge_text == _AddedTimeChildTool.tool_name
         assert root_node.pending_workspace_memory_payload is not None
 
 

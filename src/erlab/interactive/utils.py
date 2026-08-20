@@ -1100,6 +1100,21 @@ _TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
 _TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
 _TOOL_DATA_BLOB_NAME_ATTR = "tool_data_blob_name"
 _SAVED_TOOL_DATA_NAME = "<saved-tool-data>"
+
+
+def _normalize_tool_source_state(
+    value: typing.Any,
+) -> typing.Literal["fresh", "stale", "unavailable"]:
+    if isinstance(value, bytes):
+        try:
+            value = value.decode()
+        except UnicodeDecodeError:
+            return "fresh"
+    if isinstance(value, str) and value in {"fresh", "stale", "unavailable"}:
+        return typing.cast("typing.Literal['fresh', 'stale', 'unavailable']", value)
+    return "fresh"
+
+
 _SAVED_TOOL_DATA_REFERENCE_DIM = "<saved-tool-data-reference>"
 _SAVED_TOOL_DATA_BLOB_DIM_PREFIX = "<saved-tool-data-blob-"
 _NONE_TOOL_DATA_NAME = "<none-value>"
@@ -5283,6 +5298,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),
+            "tool_name": self.tool_name,
             "tool_display_name": self._tool_display_name,
             "tool_window_state": _qt_state.qt_window_state_json(self),
             "erlab_version": erlab.__version__,
@@ -5768,9 +5784,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     auto_update=bool(
                         ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)
                     ),
-                    state=typing.cast(
-                        "typing.Literal['fresh', 'stale', 'unavailable']",
-                        ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
+                    state=_normalize_tool_source_state(
+                        ds.attrs.get(_TOOL_SOURCE_STATE_ATTR)
                     ),
                 )
             if _TOOL_INPUT_PROVENANCE_SPEC_ATTR in ds.attrs:
