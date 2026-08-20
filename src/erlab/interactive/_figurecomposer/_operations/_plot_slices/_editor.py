@@ -25,7 +25,6 @@ from erlab.interactive._figurecomposer._line_style import (
     LINE_STYLE_DEFAULT_LABEL,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
-    extra_line_kw,
     line_kw_float,
     line_kw_style_value,
     line_kw_text,
@@ -89,9 +88,9 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
 from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._ui._line_style import (
+    add_extra_line_kw_control,
     optional_positive_spinbox,
     optional_positive_spinbox_value,
-    update_current_extra_line_kw,
     update_current_line_kw,
 )
 from erlab.interactive._figurecomposer._ui._line_transform import (
@@ -974,21 +973,15 @@ def _build_plot_slices_editor(
             "Marker face and edge colors for 1D plot_slices panels.",
         )
 
-        line_kwargs_text, line_kwargs_mixed = editor.batch_text(
-            operation, extra_line_kw, _format_dict
-        )
-        line_kwargs_edit = editor.line_edit(line_kwargs_text, parent=colors_page)
-        editor.apply_mixed_line_edit(line_kwargs_edit, line_kwargs_mixed)
-        line_kwargs_edit.setObjectName("figureComposerPlotSlicesLineKwEdit")
-        editor.connect_line_edit_finished(
-            line_kwargs_edit,
-            lambda text: update_current_extra_line_kw(editor, _dict_from_text(text)),
-        )
-        editor.add_form_row(
+        add_extra_line_kw_control(
+            editor,
+            operation,
+            colors_page,
             colors_layout,
-            "Kwargs",
-            line_kwargs_edit,
-            "Additional Matplotlib Line2D kwargs not covered by the controls above.",
+            object_name="figureComposerPlotSlicesLineKwEdit",
+            tooltip=(
+                "Additional Matplotlib Line2D kwargs not covered by the controls above."
+            ),
         )
 
         add_line_transform_controls(

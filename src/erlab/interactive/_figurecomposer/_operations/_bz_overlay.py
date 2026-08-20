@@ -13,6 +13,7 @@ from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_c
 from erlab.interactive._figurecomposer._line_style import (
     LINE_STYLE_DEFAULT_LABEL,
     LINE_STYLE_OPTIONS,
+    STROKE_LINE_KW_KEYS,
     color_kw_value_from_text,
     line_kw_float,
     line_kw_style_value,
@@ -43,6 +44,7 @@ from erlab.interactive._figurecomposer._text import (
 )
 from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
 from erlab.interactive._figurecomposer._ui._line_style import (
+    add_extra_line_kw_control,
     optional_positive_spinbox,
     optional_positive_spinbox_value,
     update_current_line_kw,
@@ -60,6 +62,19 @@ if typing.TYPE_CHECKING:
 
 
 _CENTERING_TYPES = ("P", "A", "B", "C", "F", "I", "R")
+_RESERVED_LINE_KW_KEYS = frozenset(
+    (
+        "angle",
+        "ax",
+        "bounds",
+        "k_parallel",
+        "kz",
+        "midpoint_kwargs",
+        "midpoints",
+        "vertex_kwargs",
+        "vertices",
+    )
+)
 _MODE_LABELS = {
     "in_plane": "In-plane",
     "out_of_plane": "Out-of-plane",
@@ -703,6 +718,19 @@ def _build_style_editor(
             ),
         ),
         "Line style controls for BZ boundaries.",
+    )
+    add_extra_line_kw_control(
+        editor,
+        operation,
+        page,
+        layout,
+        object_name="figureComposerBZLineKwEdit",
+        tooltip=(
+            "Additional Matplotlib Line2D kwargs for BZ boundaries not covered by "
+            "the controls above."
+        ),
+        controlled_keys=STROKE_LINE_KW_KEYS,
+        reserved_keys=_RESERVED_LINE_KW_KEYS,
     )
 
     vertices_mixed = editor.batch_is_mixed(operation, lambda target: target.bz_vertices)

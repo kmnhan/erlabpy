@@ -9,7 +9,7 @@ import matplotlib.lines
 import matplotlib.markers
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
 
     from erlab.interactive._figurecomposer._model._state import FigureOperationState
 
@@ -33,7 +33,7 @@ def _style_options(values: Iterable[typing.Any]) -> tuple[str, ...]:
 LINE_STYLE_OPTIONS = _style_options(matplotlib.lines.lineStyles)
 LINE_MARKER_OPTIONS = _style_options(matplotlib.markers.MarkerStyle.markers)
 LINE_STYLE_DEFAULT_LABEL = "None"
-CONTROLLED_LINE_KW_KEYS = frozenset(
+STROKE_LINE_KW_KEYS = frozenset(
     (
         "c",
         "color",
@@ -41,6 +41,10 @@ CONTROLLED_LINE_KW_KEYS = frozenset(
         "linestyle",
         "lw",
         "linewidth",
+    )
+)
+MARKER_LINE_KW_KEYS = frozenset(
+    (
         "marker",
         "ms",
         "markersize",
@@ -50,6 +54,7 @@ CONTROLLED_LINE_KW_KEYS = frozenset(
         "markeredgecolor",
     )
 )
+CONTROLLED_LINE_KW_KEYS = STROKE_LINE_KW_KEYS | MARKER_LINE_KW_KEYS
 
 
 def color_kw_value_from_text(text: str) -> typing.Any:
@@ -107,9 +112,14 @@ def line_kw_float(
         return None
 
 
-def extra_line_kw(operation: FigureOperationState) -> dict[str, typing.Any]:
+def extra_line_kw(
+    operation: FigureOperationState,
+    *,
+    controlled_keys: Collection[str] = CONTROLLED_LINE_KW_KEYS,
+    reserved_keys: Collection[str] = (),
+) -> dict[str, typing.Any]:
     return {
         key: value
         for key, value in operation.line_kw.items()
-        if key not in CONTROLLED_LINE_KW_KEYS
+        if key not in controlled_keys and key not in reserved_keys
     }
