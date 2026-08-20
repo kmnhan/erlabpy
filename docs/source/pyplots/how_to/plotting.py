@@ -50,6 +50,20 @@ def combine_maps_and_cuts() -> None:
     eplt.clean_labels(axes)
 
 
+def share_reference_color_limits() -> None:
+    data = generate_data(bandshift=-0.2, seed=1).T
+    _, axes = eplt.plot_slices(
+        [data],
+        ky=[0.0, 0.1, 0.3],
+        gamma=0.5,
+        figsize=(6.4, 2.2),
+        annotate=False,
+    )
+    eplt.unify_clim(axes, target=axes.flat[1])
+    eplt.label_subplot_properties(axes, values={"ky": [0.0, 0.1, 0.3]})
+    eplt.clean_labels(axes)
+
+
 def annotate_arpes_figure() -> None:
     data = generate_data(bandshift=-0.2, seed=1).T
     cut = data.qsel(ky=0.3)
@@ -176,6 +190,29 @@ def overlay_brillouin_zone() -> None:
         edgecolor="tab:purple",
         linestyle="--",
         linewidth=1.2,
+    )
+
+
+def draw_in_plane_brillouin_zone() -> None:
+    avec = erlab.lattice.abc2avec(6.0, 10.0, 25.0, 90.0, 90.0, 90.0)
+    avec_primitive = erlab.lattice.to_primitive(avec, centering_type="F")
+    bvec = erlab.lattice.to_reciprocal(avec_primitive)
+
+    _, ax = plt.subplots(figsize=(3.0, 3.0), layout="compressed")
+    eplt.plot_in_plane_bz(
+        bvec,
+        kz=0.2,
+        angle=60.0,
+        bounds=(-1.5, 1.5, -1.5, 1.5),
+        ax=ax,
+        vertices=True,
+        color="tab:purple",
+        linewidth=1.5,
+    )
+    ax.set(
+        xlabel=r"$k_x$ (Å$^{-1}$)",
+        ylabel=r"$k_y$ (Å$^{-1}$)",
+        aspect="equal",
     )
 
 
