@@ -1280,7 +1280,7 @@ def test_figure_composer_method_transfer_edge_contracts(
         method_catalog.AXES_METHODS["set_xlabel"],
         default_axis=None,
     )
-    assert axis_label_updates["method_kwargs"] == {"loc": "right"}
+    assert axis_label_updates["method_kwargs"] == {"loc": "right", "fontsize": 9}
 
     plot_operation = FigureOperationState.method(
         family=FigureMethodFamily.AXES,
@@ -1730,11 +1730,13 @@ def test_figure_composer_text_methods_share_artist_controls(family, name) -> Non
 
     assert {
         "color",
+        "fontsize",
         "horizontalalignment",
         "verticalalignment",
         "rotation",
         "rotation_mode",
     } <= controls.keys()
+    assert controls["fontsize"].kind == method_catalog.MethodControlKind.LITERAL_KWARG
     assert controls["color"].aliases == ("c",)
     assert controls["horizontalalignment"].aliases == ("ha",)
     assert controls["verticalalignment"].aliases == ("va",)
@@ -1829,21 +1831,30 @@ def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None
     rotation_mode_combo = page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodTextRotationModeCombo"
     )
+    font_size_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTextFontSizeEdit"
+    )
     extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     assert color_edit is not None
     assert horizontal_combo is not None
     assert vertical_combo is not None
     assert rotation_edit is not None
     assert rotation_mode_combo is not None
+    assert font_size_edit is not None
     assert extra_edit is not None
     assert color_edit.text() == "navy"
     assert horizontal_combo.currentData() == "left"
     assert vertical_combo.currentData() == "top"
     assert rotation_edit.text() == "30"
     assert rotation_mode_combo.currentData() == "anchor"
-    assert extra_edit.text() == "fontsize=8"
+    assert font_size_edit.text() == "8"
+    assert extra_edit.text() == ""
 
-    extra_edit.setText('ha="right", va="bottom", fontsize=9')
+    font_size_edit.setText("9")
+    font_size_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["fontsize"] == 9
+
+    extra_edit.setText('ha="right", va="bottom"')
     extra_edit.editingFinished.emit()
 
     assert tool.tool_status.operations[0].method_kwargs == {
@@ -1867,12 +1878,17 @@ def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None
     rebuilt_extra_edit = rebuilt_page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit"
     )
+    rebuilt_font_size_edit = rebuilt_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTextFontSizeEdit"
+    )
     assert rebuilt_horizontal_combo is not None
     assert rebuilt_vertical_combo is not None
+    assert rebuilt_font_size_edit is not None
     assert rebuilt_extra_edit is not None
     assert rebuilt_horizontal_combo.currentData() == "right"
     assert rebuilt_vertical_combo.currentData() == "bottom"
-    assert rebuilt_extra_edit.text() == "fontsize=9"
+    assert rebuilt_font_size_edit.text() == "9"
+    assert rebuilt_extra_edit.text() == ""
 
 
 @pytest.mark.parametrize(
@@ -1917,10 +1933,18 @@ def test_figure_composer_loaded_text_none_alignments_are_unset(
         QtWidgets.QComboBox,
         "figureComposerAxesMethodTextVerticalAlignmentCombo",
     )
+    font_size_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTextFontSizeEdit"
+    )
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     assert horizontal_combo is not None
     assert vertical_combo is not None
+    assert font_size_edit is not None
+    assert extra_edit is not None
     assert horizontal_combo.currentData() is None
     assert vertical_combo.currentData() is None
+    assert font_size_edit.text() == "8"
+    assert extra_edit.text() == ""
     assert not tool._operation_render_errors
 
     namespace: dict[str, typing.Any] = {}
@@ -2067,8 +2091,16 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
     qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
     page = tool.operation_editor.stack.currentWidget()
     extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    font_size_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodXLabelFontSizeEdit"
+    )
     assert extra_edit is not None
-    extra_edit.setText('ha="left", fontsize=9')
+    assert font_size_edit is not None
+    assert font_size_edit.text() == "8"
+    assert extra_edit.text() == ""
+    font_size_edit.setText("9")
+    font_size_edit.editingFinished.emit()
+    extra_edit.setText('ha="left"')
     extra_edit.editingFinished.emit()
     assert tool.tool_status.operations[0].method_kwargs == {
         "horizontalalignment": "left",
@@ -2082,16 +2114,23 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
         "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
     )
     extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    font_size_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodXLabelFontSizeEdit"
+    )
     assert horizontal_combo is not None
     assert extra_edit is not None
+    assert font_size_edit is not None
     assert horizontal_combo.currentData() == "left"
-    assert extra_edit.text() == "fontsize=9"
+    assert font_size_edit.text() == "9"
+    assert extra_edit.text() == ""
 
     namespace: dict[str, typing.Any] = {}
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert namespace["fig"].axes[0].xaxis.label.get_horizontalalignment() == "left"
 
-    extra_edit.setText("ha=None, fontsize=10")
+    font_size_edit.setText("10")
+    font_size_edit.editingFinished.emit()
+    extra_edit.setText("ha=None")
     extra_edit.editingFinished.emit()
     assert tool.tool_status.operations[0].method_kwargs == {"fontsize": 10}
 
@@ -2102,10 +2141,15 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
         "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
     )
     extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    font_size_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodXLabelFontSizeEdit"
+    )
     assert horizontal_combo is not None
     assert extra_edit is not None
+    assert font_size_edit is not None
     assert horizontal_combo.currentData() is None
-    assert extra_edit.text() == "fontsize=10"
+    assert font_size_edit.text() == "10"
+    assert extra_edit.text() == ""
 
     namespace = {}
     exec(tool.generated_code(), namespace)  # noqa: S102
@@ -2272,7 +2316,8 @@ def test_figure_composer_method_controls_restore_literal_kwargs(qtbot) -> None:
         combo_box(page, "figureComposerAxesMethodTextRotationModeCombo").currentData()
         == "anchor"
     )
-    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == "fontsize=8"
+    assert line_edit(page, "figureComposerAxesMethodTextFontSizeEdit").text() == "8"
+    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == ""
     assert tool.tool_status.operations[0].method_kwargs == {
         "color": "tab:purple",
         "horizontalalignment": "left",
@@ -2346,7 +2391,8 @@ def test_figure_composer_method_controls_restore_literal_kwargs(qtbot) -> None:
         combo_box(page, "figureComposerERLabSetTitlesRotationModeCombo").currentData()
         == "anchor"
     )
-    assert line_edit(page, "figureComposerERLabMethodKwEdit").text() == "fontsize=9"
+    assert line_edit(page, "figureComposerERLabSetTitlesFontSizeEdit").text() == "9"
+    assert line_edit(page, "figureComposerERLabMethodKwEdit").text() == ""
     _activate_combo_text(title_loc, "left")
     assert tool.tool_status.operations[5].method_kwargs == {
         "order": "F",

@@ -824,6 +824,15 @@ def _text_artist_controls(
         horizontalalignment_tooltip += "\nSelecting this value clears Location."
     return (
         _text_color_control(f"{object_name_prefix}ColorEdit", description),
+        _literal_kwarg(
+            "Font size",
+            "fontsize",
+            f"{object_name_prefix}FontSizeEdit",
+            (
+                f"Font size for {description}.\n"
+                "Use a number or a quoted named size such as 'large'."
+            ),
+        ),
         _kwarg_combo(
             "Horizontal alignment",
             "horizontalalignment",
