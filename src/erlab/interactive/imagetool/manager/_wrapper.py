@@ -1177,12 +1177,6 @@ class _ManagedWindowNode(QtCore.QObject):
                     qualname = qualname.decode()
             if isinstance(qualname, str) and qualname:
                 return qualname.rsplit(":", maxsplit=1)[-1].rsplit(".", maxsplit=1)[-1]
-            display_name = attrs.get("tool_display_name")
-            if isinstance(display_name, bytes):
-                with contextlib.suppress(UnicodeDecodeError):
-                    display_name = display_name.decode()
-            if isinstance(display_name, str) and display_name:
-                return display_name
         return None
 
     @property

@@ -1060,7 +1060,7 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
                 "figure_composer_preview_cache_png": "not valid base64",
             }
         )
-        assert node.type_badge_text == "Display Tool"
+        assert node.type_badge_text is None
         text_without_data = loader.pending._pending_workspace_tool_info_text(node)
         assert text_without_data is not None
         assert "Data:" not in text_without_data

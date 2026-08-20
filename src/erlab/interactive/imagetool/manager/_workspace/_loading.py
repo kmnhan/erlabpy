@@ -694,9 +694,7 @@ class _WorkspaceLoader:
         source_state = workspace_format._decode_workspace_attr_text(
             attrs.get(erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR)
         )
-        if source_state in {"fresh", "stale", "unavailable"}:
-            return typing.cast("_ManagedWindowNode._source_state_type", source_state)
-        return "fresh"
+        return erlab.interactive.utils._normalize_tool_source_state(source_state)
 
     def _root_workspace_imagetool_kwargs(
         self, ds: xr.Dataset, kwargs: dict[str, typing.Any]
