@@ -7,6 +7,58 @@ import erlab.plotting as eplt
 from erlab.io.exampledata import generate_data
 
 
+def mask_momentum_region() -> None:
+    data = generate_data(seed=1).T
+    constant_energy_map = data.qsel(eV=-0.2, eV_width=0.02)
+    vertices = np.array(
+        [
+            [-0.60, -0.15],
+            [-0.25, -0.55],
+            [0.25, -0.55],
+            [0.60, 0.15],
+            [0.25, 0.55],
+            [-0.25, 0.55],
+        ]
+    )
+    masked_map = era.mask.mask_with_polygon(
+        constant_energy_map,
+        vertices,
+        dims=("kx", "ky"),
+    )
+    closed_vertices = np.vstack([vertices, vertices[0]])
+
+    _, axes = plt.subplots(
+        1,
+        2,
+        figsize=(6.4, 3.0),
+        layout="compressed",
+        sharex=True,
+        sharey=True,
+    )
+    for ax, map_data in zip(
+        axes,
+        (constant_energy_map, masked_map),
+        strict=True,
+    ):
+        eplt.plot_array(
+            map_data,
+            ax=ax,
+            cmap="Greys",
+            gamma=0.5,
+            aspect="equal",
+        )
+
+    axes[0].plot(
+        closed_vertices[:, 0],
+        closed_vertices[:, 1],
+        color="tab:red",
+        linewidth=1.2,
+    )
+    eplt.unify_clim(axes)
+    eplt.clean_labels(axes)
+    eplt.set_titles(axes, ["Polygon boundary", "Masked data"])
+
+
 def compare_radial_neighborhoods() -> None:
     data = generate_data(seed=1).T
     kx_center = 0.52

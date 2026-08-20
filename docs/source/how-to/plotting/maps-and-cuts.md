@@ -55,6 +55,31 @@ The number of axes in each row must match the number of requested slices. Use sh
 limits within a row when intensity differences between its panels must remain visible.
 Use independent limits when the task is only to compare feature positions.
 
+### Reference color limits
+
+Use one panel as the intensity reference when its color limits are suitable for all
+slices:
+
+```python
+figure, axes = eplt.plot_slices(
+    [data],
+    ky=[0.0, 0.1, 0.3],
+    gamma=0.5,
+    annotate=False,
+)
+eplt.unify_clim(axes, target=axes.flat[1])
+```
+
+```{eval-rst}
+.. plot:: how_to/plotting.py share_reference_color_limits
+   :include-source: false
+   :alt: Three energy-momentum cuts with color limits taken from the middle cut
+```
+
+The `target` axes supplies the color limits. Without `target`,
+{func}`unify_clim <erlab.plotting.unify_clim>` uses the lowest and highest color limits
+among the plotted mappables.
+
 ## Figure Composer
 
 1. **Layout:** In {guilabel}`Layout`, set {guilabel}`Rows` to `2` and

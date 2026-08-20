@@ -15,6 +15,9 @@ with plt.style.context(["erlab.general", "erlab.nature", "erlab.arial"]):
     eplt.plot_array(data, cmap="Greys", gamma=0.5)
 ```
 
+See the {ref}`bundled style-sheet table <reference-plotting-styles>` to select a style
+or font combination.
+
 Confirm that every requested font is installed. Save and inspect the figure in its
 final output format because font substitution and line widths can differ from the
 notebook display.

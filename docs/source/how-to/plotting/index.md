@@ -71,6 +71,20 @@ figure-styles
 ```
 ::::
 
+::::{grid-item-card} Polygon masking
+:link: how-to-python-mask-polygon
+:link-type: ref
+:class-card: plotting-gallery-card
+
+```{eval-rst}
+.. plot:: how_to/inspection_and_selection.py mask_momentum_region
+   :include-source: false
+   :show-source-link: false
+   :class: plotting-gallery-preview
+   :alt: Constant energy map with a polygon boundary and the resulting masked map
+```
+::::
+
 :::::
 
 ## Momentum-space plots
@@ -215,6 +229,20 @@ figure-styles
    :show-source-link: false
    :class: plotting-gallery-preview
    :alt: Constant energy map with a Brillouin zone boundary
+```
+::::
+
+::::{grid-item-card} In-plane sections
+:link: how-to-plotting-in-plane-brillouin-zone-sections
+:link-type: ref
+:class-card: plotting-gallery-card
+
+```{eval-rst}
+.. plot:: how_to/plotting.py draw_in_plane_brillouin_zone
+   :include-source: false
+   :show-source-link: false
+   :class: plotting-gallery-preview
+   :alt: In-plane Brillouin zone section with marked vertices
 ```
 ::::
 
