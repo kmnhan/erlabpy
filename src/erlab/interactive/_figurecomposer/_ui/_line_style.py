@@ -6,13 +6,18 @@ import typing
 
 from qtpy import QtWidgets
 
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_STYLE_DEFAULT_LABEL,
+    extra_line_kw,
     normalize_style_value,
 )
+from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Collection
+
     from erlab.interactive._figurecomposer._model._state import FigureOperationState
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -101,17 +106,65 @@ def update_current_line_kw(
 
 
 def update_current_extra_line_kw(
-    editor: FigureOperationEditor, extra_line_kw: dict[str, typing.Any]
+    editor: FigureOperationEditor,
+    extra_line_kw: dict[str, typing.Any],
+    *,
+    controlled_keys: Collection[str] = CONTROLLED_LINE_KW_KEYS,
+    reserved_keys: Collection[str] = (),
 ) -> None:
+    invalid_keys = sorted(
+        extra_line_kw.keys() & (set(controlled_keys) | set(reserved_keys))
+    )
+    if invalid_keys:
+        names = ", ".join(invalid_keys)
+        raise FigureComposerInputError(
+            f"These line kwargs have dedicated controls or operation fields: {names}."
+        )
+
     def update_operation(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
         line_kw = {
             key: value
             for key, value in operation.line_kw.items()
-            if key in CONTROLLED_LINE_KW_KEYS
+            if key in controlled_keys
         }
         line_kw.update(extra_line_kw)
         return operation.model_copy(update={"line_kw": line_kw})
 
     editor.request_transform(update_operation)
+
+
+def add_extra_line_kw_control(
+    editor: FigureOperationEditor,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+    layout: QtWidgets.QFormLayout,
+    *,
+    object_name: str,
+    tooltip: str,
+    controlled_keys: Collection[str] = CONTROLLED_LINE_KW_KEYS,
+    reserved_keys: Collection[str] = (),
+) -> None:
+    kwargs_text, kwargs_mixed = editor.batch_text(
+        operation,
+        lambda target: extra_line_kw(
+            target,
+            controlled_keys=controlled_keys,
+            reserved_keys=reserved_keys,
+        ),
+        _format_dict,
+    )
+    kwargs_edit = editor.line_edit(kwargs_text, parent=page)
+    editor.apply_mixed_line_edit(kwargs_edit, kwargs_mixed)
+    kwargs_edit.setObjectName(object_name)
+    editor.connect_line_edit_finished(
+        kwargs_edit,
+        lambda text: update_current_extra_line_kw(
+            editor,
+            _dict_from_text(text),
+            controlled_keys=controlled_keys,
+            reserved_keys=reserved_keys,
+        ),
+    )
+    editor.add_form_row(layout, "Line kwargs", kwargs_edit, tooltip)

@@ -400,6 +400,7 @@ def test_figure_composer_line_profile_operation_uses_semantic_sections(
                 "figureComposerLineMarkerSizeSpin",
                 "figureComposerLineMarkerFaceColorEdit",
                 "figureComposerLineMarkerEdgeColorEdit",
+                "figureComposerLineKwEdit",
                 "figureComposerLineGradientCheck",
             ),
         ),
@@ -790,6 +791,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     marker_edge_edit = style_page.findChild(
         QtWidgets.QLineEdit, "figureComposerLineMarkerEdgeColorEdit"
     )
+    line_kw_edit = style_page.findChild(QtWidgets.QLineEdit, "figureComposerLineKwEdit")
     gradient_check = style_page.findChild(
         QtWidgets.QCheckBox, "figureComposerLineGradientCheck"
     )
@@ -808,6 +810,11 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert marker_face_button is not None
     assert marker_edge_edit is not None
     assert marker_edge_edit.text() == "black"
+    assert line_kw_edit is not None
+    assert line_kw_edit.text() == ""
+    line_kw_edit.setText("dashes=[4, 2], alpha=0.75")
+    line_kw_edit.setModified(True)
+    line_kw_edit.editingFinished.emit()
     assert gradient_check is not None
     assert gradient_check.isChecked()
 
@@ -944,6 +951,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         assert line.get_markersize() == 6.0
         assert line.get_markerfacecolor() == "yellow"
         assert line.get_markeredgecolor() == "black"
+        assert line._unscaled_dash_pattern == (0, [4, 2])
+        assert line.get_alpha() == 0.75
         np.testing.assert_allclose(
             fig.axes[0].images[index].cmap(1.0),
             mcolors.to_rgba(line.get_color()),
@@ -982,6 +991,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         assert line.get_markersize() == 6.0
         assert line.get_markerfacecolor() == "yellow"
         assert line.get_markeredgecolor() == "black"
+        assert line._unscaled_dash_pattern == (0, [4, 2])
+        assert line.get_alpha() == 0.75
         np.testing.assert_allclose(
             namespace["fig"].axes[0].images[index].cmap(1.0),
             mcolors.to_rgba(line.get_color()),

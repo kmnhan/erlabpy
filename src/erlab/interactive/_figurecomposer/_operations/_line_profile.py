@@ -96,6 +96,7 @@ from erlab.interactive._figurecomposer._ui._color_widgets import (
 )
 from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._ui._line_style import (
+    add_extra_line_kw_control,
     optional_positive_spinbox,
     optional_positive_spinbox_value,
     update_current_line_kw,
@@ -1156,6 +1157,18 @@ def _add_line_style_controls(
             ),
         ),
         "Marker face and edge colors for the extracted profiles.",
+    )
+    add_extra_line_kw_control(
+        editor,
+        operation,
+        page,
+        layout,
+        object_name="figureComposerLineKwEdit",
+        tooltip=(
+            "Additional Matplotlib Line2D kwargs for the extracted profiles not "
+            "covered by the controls above."
+        ),
+        reserved_keys=("label",),
     )
 
 

@@ -138,6 +138,7 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     line_width_spin = page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerBZLineWidthSpin"
     )
+    line_kw_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZLineKwEdit")
     vertices_check = page.findChild(
         QtWidgets.QCheckBox, "figureComposerBZVerticesCheck"
     )
@@ -145,6 +146,7 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     assert color_edit is not None
     assert line_style_combo is not None
     assert line_width_spin is not None
+    assert line_kw_edit is not None
     assert vertices_check is not None
     assert vertex_kw_edit is not None
 
@@ -152,6 +154,8 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     color_edit.editingFinished.emit()
     _activate_combo_text(line_style_combo, "-.")
     line_width_spin.setValue(1.5)
+    line_kw_edit.setText("dashes=[4, 2], alpha=0.75, marker='o'")
+    line_kw_edit.editingFinished.emit()
     vertices_check.setChecked(True)
     vertex_kw_edit.setText("s=12, color='tab:green'")
     vertex_kw_edit.editingFinished.emit()
@@ -174,6 +178,9 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
         "color": "tab:red",
         "linestyle": "-.",
         "linewidth": 1.5,
+        "dashes": [4, 2],
+        "alpha": 0.75,
+        "marker": "o",
     }
 
 
@@ -212,6 +219,55 @@ def test_figure_composer_bz_overlay_restores_mode_control_visibility(
     assert layout.isRowVisible(k_parallel_spin) is k_parallel_visible
 
 
+def test_figure_composer_batch_bz_overlay_line_kwargs_preserve_controls(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [-1.0, 1.0], "ky": [-1.0, 1.0]},
+        name="data",
+    )
+    operations = tuple(
+        FigureOperationState.bz_overlay(
+            label=label,
+            axes=FigureAxesSelectionState(axes=((0, 0),)),
+        ).model_copy(
+            update={
+                "line_kw": {"color": color, "dashes": dashes},
+            }
+        )
+        for label, color, dashes in (
+            ("first", "tab:red", [2, 1]),
+            ("second", "tab:blue", [4, 2]),
+        )
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=operations,
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool.operation_editor.select_section("style")
+    page = tool.operation_editor.stack.currentWidget()
+    line_kw_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZLineKwEdit")
+    assert line_kw_edit is not None
+    assert line_kw_edit.text() == ""
+    assert line_kw_edit.placeholderText() == "(multiple values)"
+
+    line_kw_edit.setText("alpha=0.5")
+    line_kw_edit.setModified(True)
+    line_kw_edit.editingFinished.emit()
+
+    assert [operation.line_kw for operation in tool.tool_status.operations] == [
+        {"color": "tab:red", "alpha": 0.5},
+        {"color": "tab:blue", "alpha": 0.5},
+    ]
+
+
 def test_figure_composer_bz_overlay_state_round_trip() -> None:
     operation = FigureOperationState.bz_overlay(
         axes=FigureAxesSelectionState(axes=((0, 0),)),
@@ -227,7 +283,7 @@ def test_figure_composer_bz_overlay_state_round_trip() -> None:
             "bz_bounds": (-1.0, 1.0, -2.0, 2.0),
             "bz_vertices": True,
             "bz_midpoint_kw": {"color": "tab:blue"},
-            "line_kw": {"color": "tab:red"},
+            "line_kw": {"color": "tab:red", "dashes": [4, 2]},
         }
     )
     recipe = FigureRecipeState(
@@ -242,7 +298,10 @@ def test_figure_composer_bz_overlay_state_round_trip() -> None:
     assert restored.operations[0].bz_centering_type == "I"
     assert restored.operations[0].bz_bounds == (-1.0, 1.0, -2.0, 2.0)
     assert restored.operations[0].bz_midpoint_kw == {"color": "tab:blue"}
-    assert restored.operations[0].line_kw == {"color": "tab:red"}
+    assert restored.operations[0].line_kw == {
+        "color": "tab:red",
+        "dashes": [4, 2],
+    }
 
 
 def test_figure_composer_bz_overlay_render_matches_plotting_helper(qtbot) -> None:
@@ -292,7 +351,11 @@ def test_figure_composer_bz_overlay_out_of_plane_render_and_code(qtbot) -> None:
             "bz_midpoints": True,
             "bz_vertex_kw": {"s": 11},
             "bz_midpoint_kw": {"s": 13},
-            "line_kw": {"color": "tab:orange"},
+            "line_kw": {
+                "color": "tab:orange",
+                "dashes": [4, 2],
+                "alpha": 0.75,
+            },
         }
     )
     data = xr.DataArray(
@@ -327,6 +390,8 @@ def test_figure_composer_bz_overlay_out_of_plane_render_and_code(qtbot) -> None:
     for axis in figure.axes:
         _assert_bz_lines_match_segments(axis.lines, segments)
         assert all(line.get_color() == "tab:orange" for line in axis.lines)
+        assert all(line._unscaled_dash_pattern == (0, [4, 2]) for line in axis.lines)
+        assert all(line.get_alpha() == 0.75 for line in axis.lines)
         assert len(axis.collections) == 1
         np.testing.assert_allclose(axis.collections[0].get_offsets(), midpoints)
         assert axis.collections[0].get_sizes()[0] == 13
@@ -336,6 +401,9 @@ def test_figure_composer_bz_overlay_out_of_plane_render_and_code(qtbot) -> None:
     namespace = _exec_generated_code(code, {"data": tool.source_data()["data"]})
     assert len(namespace["fig"].axes) == 2
     assert all(axis.lines for axis in namespace["fig"].axes)
+    for axis in namespace["fig"].axes:
+        assert all(line._unscaled_dash_pattern == (0, [4, 2]) for line in axis.lines)
+        assert all(line.get_alpha() == 0.75 for line in axis.lines)
 
 
 def test_figure_composer_bz_overlay_text_parsers() -> None:
@@ -735,6 +803,9 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     line_width_spin = page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerPhotonEnergyLineWidthSpin"
     )
+    line_kw_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPhotonEnergyLineKwEdit"
+    )
     legend_check = page.findChild(
         QtWidgets.QCheckBox, "figureComposerPhotonEnergyLegendCheck"
     )
@@ -747,6 +818,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     assert color_edit is not None
     assert line_style_combo is not None
     assert line_width_spin is not None
+    assert line_kw_edit is not None
     assert legend_check is not None
     assert legend_kw_edit is not None
     assert label_edit is not None
@@ -755,6 +827,8 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     color_edit.editingFinished.emit()
     _activate_combo_text(line_style_combo, "--")
     line_width_spin.setValue(1.5)
+    line_kw_edit.setText("dashes=[4, 2], alpha=0.75, marker='o'")
+    line_kw_edit.editingFinished.emit()
     legend_check.setChecked(False)
     legend_kw_edit.setText("title='Photon energy', frameon=False")
     legend_kw_edit.editingFinished.emit()
@@ -772,6 +846,9 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
         "color": "tab:red",
         "linestyle": "--",
         "linewidth": 1.5,
+        "dashes": [4, 2],
+        "alpha": 0.75,
+        "marker": "o",
     }
 
 
@@ -786,7 +863,11 @@ def test_figure_composer_photon_energy_overlay_state_round_trip() -> None:
             "show_legend": False,
             "legend_kw": {"title": "Photon energy", "frameon": False},
             "label_template": "hv={hv:g}",
-            "line_kw": {"color": "tab:green", "linewidth": 1.25},
+            "line_kw": {
+                "color": "tab:green",
+                "linewidth": 1.25,
+                "dashes": [4, 2],
+            },
         }
     )
     recipe = FigureRecipeState(
@@ -810,6 +891,7 @@ def test_figure_composer_photon_energy_overlay_state_round_trip() -> None:
     assert restored.operations[0].line_kw == {
         "color": "tab:green",
         "linewidth": 1.25,
+        "dashes": [4, 2],
     }
 
 
@@ -827,7 +909,12 @@ def test_figure_composer_photon_energy_overlay_render_and_code(
     ).model_copy(
         update={
             "photon_energies": hv_values,
-            "line_kw": {"color": "tab:blue", "linewidth": 1.5},
+            "line_kw": {
+                "color": "tab:blue",
+                "linewidth": 1.5,
+                "dashes": [4, 2],
+                "alpha": 0.75,
+            },
             "legend_kw": {"title": "Photon energy", "frameon": False},
         }
     )
@@ -846,6 +933,8 @@ def test_figure_composer_photon_energy_overlay_render_and_code(
     assert axis.get_legend().get_frame_on() is False
     assert all(line.get_color() == "tab:blue" for line in axis.lines)
     assert all(line.get_linewidth() == 1.5 for line in axis.lines)
+    assert all(line._unscaled_dash_pattern == (0, [4, 2]) for line in axis.lines)
+    assert all(line.get_alpha() == 0.75 for line in axis.lines)
 
     code = tool.generated_code()
     assert "import erlab" in code
@@ -861,6 +950,10 @@ def test_figure_composer_photon_energy_overlay_render_and_code(
     assert generated_axis.get_legend() is not None
     assert generated_axis.get_legend().get_title().get_text() == "Photon energy"
     assert generated_axis.get_legend().get_frame_on() is False
+    assert all(
+        line._unscaled_dash_pattern == (0, [4, 2]) for line in generated_axis.lines
+    )
+    assert all(line.get_alpha() == 0.75 for line in generated_axis.lines)
 
 
 def test_figure_composer_photon_energy_overlay_multiple_axes_code(qtbot) -> None:

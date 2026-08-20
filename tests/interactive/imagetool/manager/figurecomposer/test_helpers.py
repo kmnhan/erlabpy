@@ -99,10 +99,20 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     operation = FigureOperationState.plot_slices(
         label="line-slices",
         sources=("data",),
-    ).model_copy(update={"line_kw": {"lw": "2", "custom": 1}, "cmap": "magma"})
+    ).model_copy(
+        update={
+            "line_kw": {"lw": "2", "marker": "o", "custom": 1},
+            "cmap": "magma",
+        }
+    )
     assert figurecomposer_line_style.line_kw_text(operation, "linewidth", "lw") == "2"
     assert figurecomposer_line_style.line_kw_float(operation, "linewidth", "lw") == 2.0
     assert figurecomposer_line_style.extra_line_kw(operation) == {"custom": 1}
+    assert figurecomposer_line_style.extra_line_kw(
+        operation,
+        controlled_keys=figurecomposer_line_style.STROKE_LINE_KW_KEYS,
+        reserved_keys=("custom",),
+    ) == {"marker": "o"}
     bad_operation = operation.model_copy(update={"line_kw": {"linewidth": "bad"}})
     assert figurecomposer_line_style.line_kw_float(bad_operation, "linewidth") is None
 
@@ -152,8 +162,21 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert tool.tool_status.operations[0].line_kw == {
         "lw": "2",
         "color": "red",
+        "marker": "o",
         "zorder": 5,
     }
+    with pytest.raises(ValueError, match=r"dedicated controls.*angle"):
+        figurecomposer_line_style_ui.update_current_extra_line_kw(
+            tool.operation_editor,
+            {"angle": 30.0},
+            controlled_keys=figurecomposer_line_style.STROKE_LINE_KW_KEYS,
+            reserved_keys=("angle",),
+        )
+    with pytest.raises(ValueError, match=r"dedicated controls.*linewidth"):
+        figurecomposer_line_style_ui.update_current_extra_line_kw(
+            tool.operation_editor,
+            {"linewidth": 3.0},
+        )
 
 
 def test_figure_composer_step_editor_section_headers_are_native_subgroups(
