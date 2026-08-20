@@ -900,17 +900,17 @@ def test_explorer_workspace_state_missing_root_is_empty(
     assert not explorer._model_index_for_path(missing_path).isValid()
 
 
-def test_explorer_extension_loader_matches_uppercase_file_suffix(
+def test_explorer_extension_loader_matches_uppercase_compound_suffix(
     qtbot,
     tmp_path: pathlib.Path,
 ) -> None:
     class _TextLoader:
-        extensions = (".txt",)
+        extensions = (".tar.gz",)
         always_single = False
         description = ""
 
-    matching_path = tmp_path / "values.TXT"
-    unsupported_path = tmp_path / "values.csv"
+    matching_path = tmp_path / "values.TAR.GZ"
+    unsupported_path = tmp_path / "values.gz"
     matching_path.touch()
     unsupported_path.touch()
     explorer = _DataExplorer(

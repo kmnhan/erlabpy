@@ -75,6 +75,36 @@ def test_default_infer_index(example_loader, name: str, expected: int | None) ->
     assert LoaderBase.infer_index(example_loader, name) == (expected, {})
 
 
+def test_loader_matches_uppercase_compound_filename(tmp_path: pathlib.Path) -> None:
+    class _ArchiveLoader(LoaderBase):
+        name = "archive"
+        description = "Test archive loader"
+        extensions: typing.ClassVar[set[str]] = {"", ".tar.gz"}
+        skip_validate = True
+
+        def load_single(self, file_path, **kwargs) -> xr.DataArray:
+            return xr.DataArray(pathlib.Path(file_path).read_text())
+
+    matching_path = tmp_path / "values.TAR.GZ"
+    suffixless_path = tmp_path / "README"
+    unsupported_path = tmp_path / "values.gz"
+    matching_path.write_text("match")
+    suffixless_path.write_text("suffixless")
+    unsupported_path.write_text("no match")
+    loader = _ArchiveLoader()
+
+    xr.testing.assert_identical(
+        loader.load(matching_path),
+        xr.DataArray("match", attrs={"data_loader_name": "archive"}),
+    )
+    xr.testing.assert_identical(
+        loader.load(suffixless_path),
+        xr.DataArray("suffixless", attrs={"data_loader_name": "archive"}),
+    )
+    with pytest.raises(UnsupportedFileError):
+        loader.load(unsupported_path)
+
+
 def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> None:
     wrong_file = example_data_dir / "data_010.nc"
 

@@ -24,6 +24,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.io.dataloader import _filename_matches_extensions
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable
@@ -310,12 +311,12 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
 
         if index.isValid():
             flags = QtCore.Qt.ItemFlag.ItemIsDragEnabled | default_flags
-            ext = self.get_fs(index).path.suffix.casefold()
+            path = self.get_fs(index).path
             loader = self.file_browser._loader(self.file_browser.loader_name)
             if (
                 loader.extensions is not None
-                and ext != ""
-                and ext not in loader.extensions
+                and path.is_file()
+                and not _filename_matches_extensions(path, loader.extensions)
             ):
                 flags = flags & ~QtCore.Qt.ItemFlag.ItemIsEnabled
             return flags
