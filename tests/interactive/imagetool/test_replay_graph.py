@@ -13,6 +13,8 @@ import xarray as xr
 
 import erlab
 import erlab.extensions._api as extension_api
+from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
+from erlab.interactive.imagetool._load_source import _register_local_callable_loader
 from erlab.interactive.imagetool._provenance import _graph
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
@@ -23,13 +25,10 @@ from erlab.interactive.imagetool._provenance._code import (
 )
 from erlab.interactive.imagetool._provenance._execution import (
     _script_provenance_validates,
-    _script_trust_payload,
     execute_replay_graph,
     rebuild_script_provenance,
     replay_script_provenance,
     script_provenance_replayable,
-    script_provenance_requires_trust,
-    script_provenance_trust_key,
 )
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
@@ -90,6 +89,17 @@ from erlab.interactive.imagetool._provenance._operations import (
     SortCoordOrderOperation,
     SqueezeOperation,
 )
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_replay_graph_code_trust_entries,
+    provenance_requires_code_trust,
+)
+
+
+def _authorize_execution(entries: tuple[typing.Any, ...]) -> object:
+    _trust, capability = issue_execution_capability(new_document_trust(), entries)
+    if capability is None:  # pragma: no cover - local trust always issues one.
+        raise RuntimeError("Could not issue test execution capability")
+    return capability
 
 
 def _exec_generated_code(
@@ -154,6 +164,7 @@ def _file_replay_source(
     selected_index: int = 0,
     load_code: str | None = None,
 ):
+    _register_local_callable_loader(xr.load_dataarray)
     return FileLoadSource(
         path=str(path),
         loader_label="xarray.load_dataarray",
@@ -198,7 +209,7 @@ def test_script_compiler_assigns_final_output_after_pending_seed() -> None:
         external_input_names={"data"},
     )
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data": data}),
+        replay_script_provenance(spec, {"data": data}, authorize=_authorize_execution),
         data.squeeze(),
     )
 
@@ -542,7 +553,6 @@ class Child(Base, metaclass=data_5):
     assert _single_assignment_output_name("derived =") is None
     assert _single_assignment_output_name("obj.value = data") is None
     assert _single_assignment_output_name("first = data\nsecond = data") is None
-    assert script_provenance_trust_key(None) is None
 
 
 @pytest.mark.parametrize("alias", ["derived", "source_data", "seed_result"])
@@ -595,7 +605,7 @@ def test_replay_graph_preserves_annotated_seed_alias() -> None:
     namespace = _exec_generated_code(code, {"watched": data})
 
     assert "source_data: object = watched" in code
-    assert namespace["__annotations__"] == {"source_data": object}
+    assert namespace["source_data"] is data
     xr.testing.assert_identical(namespace["result"], data + 1.0)
 
 
@@ -747,6 +757,7 @@ def test_replay_graph_script_context_binding_error_paths() -> None:
     rebound_graph = compile_replay_graph(
         rebound_input,
         external_inputs={"data_0": data},
+        trusted_user_code=True,
     )
     rebound_display_graph = compile_replay_graph(
         rebound_input,
@@ -754,7 +765,7 @@ def test_replay_graph_script_context_binding_error_paths() -> None:
         external_inputs={"data_0": data},
     )
     xr.testing.assert_identical(
-        execute_replay_graph(rebound_graph),
+        execute_replay_graph(rebound_graph, authorize=_authorize_execution),
         data + 1,
     )
     assert rebound_display_graph.output_key is not None
@@ -774,10 +785,11 @@ def test_replay_graph_script_context_binding_error_paths() -> None:
     active_graph = compile_replay_graph(
         active_relay,
         external_inputs={"data": data},
+        trusted_user_code=True,
     )
 
     xr.testing.assert_identical(
-        execute_replay_graph(active_graph),
+        execute_replay_graph(active_graph, authorize=_authorize_execution),
         data,
     )
     assert _remove_noop_assignments("derived =") == "derived ="
@@ -827,7 +839,7 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         (("other = xr.DataArray([1.0], dims=('x',))",), "did not create"),
         (("derived = 1",), "did not produce"),
     ):
-        script_graph = ReplayGraph()
+        script_graph = ReplayGraph(trusted_user_code=True)
         script_key = script_graph.add_node(
             f"script-{message}",
             "script",
@@ -835,7 +847,7 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         )
         script_graph.output_key = script_key
         with pytest.raises(ReplayGraphError, match=message):
-            execute_replay_graph(script_graph)
+            execute_replay_graph(script_graph, authorize=_authorize_execution)
 
     unknown_graph = ReplayGraph()
     unknown_key = unknown_graph.add_node("unknown", "unknown")
@@ -850,6 +862,62 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         emit_replay_code(empty_graph, output_name="derived")
     with pytest.raises(ReplayGraphError, match="no output"):
         execute_replay_graph(empty_graph)
+
+
+def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    graph = ReplayGraph()
+    input_key = graph.add_node("input", "live_input", payload={"data": data})
+    external_operation = types.SimpleNamespace(
+        op="model_fit",
+        parameters={
+            "dependent": types.SimpleNamespace(expr="2 * independent"),
+        },
+    )
+    external_key = graph.add_node(
+        "external-expression",
+        "operation",
+        parents=(input_key,),
+        payload={"operation": external_operation},
+    )
+    local_key = graph.add_node(
+        "local-script",
+        "script",
+        parents=(external_key,),
+        cacheable=False,
+        payload={
+            "active_name": "derived",
+            "bindings": (("cached", external_key),),
+            "codes": ("derived = cached + 1",),
+            "stored_code": ("derived = cached + 1",),
+            "hoist_imports": (False,),
+        },
+    )
+    graph.output_key = local_key
+    entries = provenance_replay_graph_code_trust_entries(
+        graph,
+        location_prefix="runtime",
+    )
+    local_entries = tuple(
+        entry for entry in entries if entry.feature == "erlab.provenance.script-code"
+    )
+    _trust, partial_capability = issue_execution_capability(
+        new_document_trust(),
+        local_entries,
+    )
+    assert partial_capability is not None
+
+    with pytest.raises(ReplayGraphError, match="not trusted"):
+        execute_replay_graph(graph, authorization=partial_capability)
+
+    xr.testing.assert_identical(
+        execute_replay_graph(
+            graph,
+            cache={external_key: data + 1},
+            authorization=partial_capability,
+        ),
+        data + 2,
+    )
 
 
 def test_script_input_parsing_does_not_affect_model_equality() -> None:
@@ -919,7 +987,9 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
             ),
         ),
     )
-    rebuilt, rebuilt_spec = rebuild_script_provenance(script_spec)
+    rebuilt, rebuilt_spec = rebuild_script_provenance(
+        script_spec, authorize=_authorize_execution
+    )
     xr.testing.assert_identical(rebuilt, data + 1.0)
     assert rebuilt_spec.script_inputs[0].node_uid is None
 
@@ -960,6 +1030,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     live_rebuilt, live_rebuilt_spec = rebuild_script_provenance(
         live_spec,
         live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
     )
     xr.testing.assert_identical(live_rebuilt, data * 2.0)
     assert live_calls == 1
@@ -1024,6 +1095,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     mixed_role_result, mixed_role_rebuilt = rebuild_script_provenance(
         mixed_role_spec,
         live_input_resolver=resolve_role,
+        authorize=_authorize_execution,
     )
     xr.testing.assert_identical(mixed_role_result, source_data + displayed_data)
     rebuilt_displayed = mixed_role_rebuilt.script_inputs[1].parsed_provenance_spec()
@@ -1052,6 +1124,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     rebuilt_from_miss, _rebuilt_from_miss_spec = rebuild_script_provenance(
         duplicate_file_spec,
         live_input_resolver=miss_live,
+        authorize=_authorize_execution,
     )
     xr.testing.assert_identical(rebuilt_from_miss, data)
     assert miss_calls == 2
@@ -1335,7 +1408,7 @@ def test_replay_graph_preserves_shared_script_input_ownership(
         ),
     )
 
-    expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+    expected = replay_script_provenance(spec, {}, authorize=_authorize_execution)
     code = typing.cast("str", spec.display_code())
 
     assert code.count("xr.load_dataarray") == 1
@@ -1384,7 +1457,7 @@ def test_replay_graph_isolates_mutation_across_shared_source_views(
         ),
     )
 
-    expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+    expected = replay_script_provenance(spec, {}, authorize=_authorize_execution)
     code = typing.cast("str", spec.display_code())
 
     assert code.count("xr.load_dataarray") == 1
@@ -1422,7 +1495,7 @@ def test_replay_graph_preserves_shared_script_input_identity(
         ),
     )
 
-    expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+    expected = replay_script_provenance(spec, {}, authorize=_authorize_execution)
     code = typing.cast("str", spec.display_code())
 
     assert code.count("xr.load_dataarray") == 1
@@ -1461,7 +1534,7 @@ def test_replay_graph_replays_script_with_preserved_file_steps(
     assert spec.kind == "script"
     assert any(isinstance(step.operation, AverageOperation) for step in spec.steps)
 
-    replayed = replay_script_provenance(spec, {})
+    replayed = replay_script_provenance(spec, {}, authorize=_authorize_execution)
 
     expected_input = AverageOperation(dims=("x",)).apply(source)
     xr.testing.assert_identical(replayed, expected_input - expected_input.mean())
@@ -1487,7 +1560,9 @@ def test_replay_graph_display_code_preserves_script_mutation_order() -> None:
         active_name="derived",
     )
 
-    replayed = replay_script_provenance(spec, {"data": data})
+    replayed = replay_script_provenance(
+        spec, {"data": data}, authorize=_authorize_execution
+    )
     code = typing.cast("str", spec.display_code())
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
 
@@ -1553,7 +1628,9 @@ def test_replay_graph_composes_local_script_stage_after_script_parent() -> None:
         "script_code",
     ]
 
-    replayed = replay_script_provenance(spec, {"data": source})
+    replayed = replay_script_provenance(
+        spec, {"data": source}, authorize=_authorize_execution
+    )
 
     expected = source.isel(x=slice(0, 2)).qsel.mean(("x",)) + 1
     xr.testing.assert_identical(replayed, expected)
@@ -1837,7 +1914,7 @@ def test_replay_graph_handles_structured_script_operations(
 
     graph = compile_replay_graph(spec)
     xr.testing.assert_identical(
-        execute_replay_graph(graph),
+        execute_replay_graph(graph, authorize=_authorize_execution),
         data.qsel.mean("alpha"),
     )
 
@@ -1892,7 +1969,11 @@ def test_replay_graph_preserves_script_inputs_after_structured_operation() -> No
         script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
 
-    graph = compile_replay_graph(spec, external_inputs={"data_0": data})
+    graph = compile_replay_graph(
+        spec,
+        external_inputs={"data_0": data},
+        trusted_user_code=True,
+    )
     script_nodes = [node for node in graph.nodes if node.kind == "script"]
 
     assert script_nodes
@@ -1902,7 +1983,7 @@ def test_replay_graph_preserves_script_inputs_after_structured_operation() -> No
         for input_name, _key in node.payload["bindings"]
     )
     xr.testing.assert_identical(
-        execute_replay_graph(graph),
+        execute_replay_graph(graph, authorize=_authorize_execution),
         data.qsel.average("x") + data.qsel.average("x"),
     )
 
@@ -1921,7 +2002,11 @@ def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
         script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
 
-    graph = compile_replay_graph(spec, external_inputs={"data_0": data})
+    graph = compile_replay_graph(
+        spec,
+        external_inputs={"data_0": data},
+        trusted_user_code=True,
+    )
     script_nodes = [node for node in graph.nodes if node.kind == "script"]
 
     assert len(script_nodes) == 1
@@ -1931,7 +2016,7 @@ def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
         for code in script_nodes[0].payload["codes"]
     )
     xr.testing.assert_identical(
-        execute_replay_graph(graph),
+        execute_replay_graph(graph, authorize=_authorize_execution),
         (data + 1).qsel.average("x")
         + (data + 1).qsel.average("x")
         + data.qsel.average("x"),
@@ -1960,7 +2045,9 @@ def test_replay_graph_omits_cosmetic_coordinate_sort_operation() -> None:
     assert spec.operations == ()
     assert "sort_coord_order" not in inlined_code
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data_0": data}),
+        replay_script_provenance(
+            spec, {"data_0": data}, authorize=_authorize_execution
+        ),
         data + 1,
     )
 
@@ -2027,7 +2114,7 @@ def test_replay_graph_shares_structured_console_alias_prefixes(
     )
 
     code = typing.cast("str", spec.derivation_code())
-    graph = compile_replay_graph(spec)
+    graph = compile_replay_graph(spec, trusted_user_code=True)
 
     assert code.count("xr.load_dataarray") == 1
     assert code.count(".qsel.mean") == 1
@@ -2041,7 +2128,10 @@ def test_replay_graph_shares_structured_console_alias_prefixes(
     )
     expected = source.qsel.mean("k") - source.qsel.mean("k")
     xr.testing.assert_identical(_exec_generated_code(code)["derived"], expected)
-    xr.testing.assert_identical(execute_replay_graph(graph), expected)
+    xr.testing.assert_identical(
+        execute_replay_graph(graph, authorize=_authorize_execution),
+        expected,
+    )
 
 
 def test_replay_graph_display_normalizes_nested_derived_console_code(
@@ -2526,7 +2616,7 @@ def test_replay_graph_display_restores_dimensions_left_by_recorded_mapping(
         ),
     )
 
-    runtime_graph = compile_replay_graph(spec)
+    runtime_graph = compile_replay_graph(spec, trusted_user_code=True)
     display_graph = compile_replay_graph(spec, display=True)
     display_code = emit_replay_code(display_graph, output_name="derived")
     runtime_expected = source.swap_dims({"x_idx": "x", "y_idx": "y"}).drop_vars(
@@ -2538,7 +2628,7 @@ def test_replay_graph_display_restores_dimensions_left_by_recorded_mapping(
 
     assert "def _restore_image_tool_dimensions" not in display_code
     xr.testing.assert_identical(
-        execute_replay_graph(runtime_graph),
+        execute_replay_graph(runtime_graph, authorize=_authorize_execution),
         runtime_expected,
     )
     xr.testing.assert_identical(
@@ -2583,7 +2673,10 @@ def test_replay_graph_runtime_restores_script_seeded_internal_source_views(
     assert code.count("def _restore_image_tool_dimensions") == 1
     assert "erlab.utils.array._restore_nonuniform_dims" not in code
     assert "erlab.interactive.imagetool.slicer" not in code
-    xr.testing.assert_identical(execute_replay_graph(graph), source.qsel(x=0.2))
+    xr.testing.assert_identical(
+        execute_replay_graph(graph, authorize=_authorize_execution),
+        source.qsel(x=0.2),
+    )
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2))
 
 
@@ -3129,7 +3222,9 @@ def test_replay_graph_display_keeps_alias_before_import_rebinding() -> None:
         active_name="result",
     )
 
-    replayed = replay_script_provenance(spec, {"data": source})
+    replayed = replay_script_provenance(
+        spec, {"data": source}, authorize=_authorize_execution
+    )
     code = typing.cast("str", spec.display_code())
     generated = _exec_generated_code(code, {"data": source})["result"]
 
@@ -3294,7 +3389,11 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
         script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
 
-    graph = compile_replay_graph(spec, external_inputs={"data_0": data})
+    graph = compile_replay_graph(
+        spec,
+        external_inputs={"data_0": data},
+        trusted_user_code=True,
+    )
     replayed = execute_replay_graph(graph)
 
     assert any(node.kind == "relay" for node in graph.nodes)
@@ -3317,10 +3416,14 @@ def test_replay_graph_disables_numbagg_only_during_execution() -> None:
         active_name="derived",
         script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
-    graph = compile_replay_graph(spec, external_inputs={"data_0": data})
+    graph = compile_replay_graph(
+        spec,
+        external_inputs={"data_0": data},
+        trusted_user_code=True,
+    )
 
     with xr.set_options(use_numbagg=True):
-        replayed = execute_replay_graph(graph)
+        replayed = execute_replay_graph(graph, authorize=_authorize_execution)
         assert xr.get_options()["use_numbagg"] is True
 
     assert replayed.attrs["use_numbagg_during_replay"] is False
@@ -4119,14 +4222,14 @@ def test_replay_graph_trusted_user_code_executes_blocked_constructs() -> None:
     )
 
     assert not script_provenance_replayable(spec)
-    assert script_provenance_requires_trust(spec)
+    assert provenance_requires_code_trust(spec)
     with pytest.raises(ReplayGraphError, match="unsupported Import"):
         compile_replay_graph(spec, external_inputs={"data": data})
 
     result = replay_script_provenance(
         spec,
         {"data": data},
-        trusted_user_code=True,
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(result, data + 1)
@@ -4144,7 +4247,7 @@ def test_replay_graph_trusted_user_code_still_validates_result_type() -> None:
         replay_script_provenance(
             spec,
             {"data": data},
-            trusted_user_code=True,
+            authorize=_authorize_execution,
         )
 
 
@@ -4187,32 +4290,13 @@ def test_replay_graph_trusted_user_code_replays_nested_scripts(
     )
 
     assert script_provenance_replayable(spec)
-    assert script_provenance_requires_trust(spec)
-    trust_payload = _script_trust_payload(spec)
-    assert trust_payload is not None
-    assert trust_payload["inputs"][0]["name"] == "data_1"
-    assert trust_payload["inputs"][0]["payload"]["operations"][0]["code"].startswith(
-        "import os"
-    )
-    mixed_payload = _script_trust_payload(
-        spec.model_copy(
-            update={
-                "operations": (
-                    AverageOperation(dims=("x",)),
-                    *spec.operations,
-                )
-            }
-        )
-    )
-    assert mixed_payload is not None
-    assert len(mixed_payload["operations"]) == len(trust_payload["operations"])
-    assert script_provenance_trust_key(spec) is not None
-    with pytest.raises(ReplayGraphError, match="recorded operation"):
+    assert provenance_requires_code_trust(spec)
+    with pytest.raises(ReplayGraphError, match="not trusted"):
         rebuild_script_provenance(spec)
 
     result, rebuilt = rebuild_script_provenance(
         spec,
-        trusted_user_code=True,
+        authorize=_authorize_execution,
     )
 
     assert rebuilt.kind == "script"

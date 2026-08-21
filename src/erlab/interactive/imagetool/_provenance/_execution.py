@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import builtins
-import hashlib
 import importlib
-import json
 import pathlib
 import typing
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import xarray as xr
 
 import erlab
 from erlab.extensions._api import _registered_script_capability_status
+from erlab.interactive._code_trust import execution_capability_allows
+from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
+    _registered_local_callable_loader,
+)
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
@@ -39,9 +42,14 @@ from erlab.interactive.imagetool._provenance._model import (
     iter_operation_refs,
     parse_tool_provenance_spec,
 )
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_replay_graph_code_trust_entries,
+    provenance_replay_node_code_trust_entries,
+    provenance_requires_code_trust,
+)
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
     from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive.imagetool._provenance._operations import (
@@ -51,6 +59,9 @@ if typing.TYPE_CHECKING:
     _CapabilityStatusResolver = Callable[
         [str, str, typing.Literal["routine", "loader"], str], _CapabilityStatus
     ]
+
+
+ExecutionAuthorizer = Callable[[tuple[typing.Any, ...]], object | None]
 
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
@@ -211,41 +222,11 @@ def _semantic_file_data_selection(
     return FileDataSelection(kind="sequence_index", value=index)
 
 
-def _resolve_importable_callable(target: str) -> Callable[..., typing.Any]:
-    parts = target.split(".")
-    if len(parts) < 2:
-        raise ValueError(f"Importable callable target {target!r} must be dotted")
-
-    module = None
-    attr_start = 0
-    for idx in range(len(parts) - 1, 0, -1):
-        module_name = ".".join(parts[:idx])
-        try:
-            module = importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            if exc.name != module_name:
-                raise
-            continue
-        attr_start = idx
-        break
-    if module is None:
-        raise ModuleNotFoundError(target)
-
-    obj: typing.Any = module
-    for attr in parts[attr_start:]:
-        obj = getattr(obj, attr)
-    if not callable(obj):
-        raise TypeError(f"Importable target {target!r} is not callable")
-    return typing.cast("Callable[..., typing.Any]", obj)
-
-
 def _load_file_source_object(
     load_source: FileLoadSource,
     *,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> typing.Any:
-    from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
-
     call = load_source.replay_call
     if call is None:
         raise ValueError("File load source does not define replay metadata")
@@ -263,7 +244,11 @@ def _load_file_source_object(
             parameters=_deserialize_loader_kwargs(call.kwargs),
         )
     else:
-        func = _resolve_importable_callable(call.target)
+        func = _registered_local_callable_loader(call.target)
+        if func is None:
+            raise ValueError(
+                f"Callable file loader {call.target!r} is not registered locally"
+            )
 
     return func(file_path, **_deserialize_loader_kwargs(call.kwargs))
 
@@ -300,15 +285,20 @@ def execute_replay_graph(
     extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    authorization: object | None = None,
+    authorize: ExecutionAuthorizer | None = None,
 ) -> xr.DataArray:
     # Replay runs from manager actions; avoid optional native reduction accelerators
     # that can crash PySide6/Python 3.14 while Qt threads are alive.
+    if authorization is None:
+        authorization = _authorize_replay_graph(graph, authorize)
     with xr.set_options(use_numbagg=False):
         return _execute_replay_graph(
             graph,
             cache=cache,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
+            authorization=authorization,
         )
 
 
@@ -319,11 +309,12 @@ def _execute_replay_graph(
     extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    authorization: object | None = None,
 ) -> xr.DataArray:
     replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
 
-    for node in graph.nodes:
+    for node_index, node in enumerate(graph.nodes):
         if node.cacheable and node.key in replay_cache:
             values[node.key] = replay_cache[node.key].copy(deep=False)
             continue
@@ -349,14 +340,36 @@ def _execute_replay_graph(
             operation = node.payload["operation"]
             if extension_executor is not None and operation.op == "extension_routine":
                 data = extension_executor(operation, values[node.parents[0]])
-            elif node.payload.get("legacy_parent_context", False):
-                data = operation._apply_schema_v2(
-                    values[node.parents[0]],
-                    parent_data=values[node.parents[1]],
-                )
             else:
-                data = operation.apply(values[node.parents[0]])
+                entries = provenance_replay_node_code_trust_entries(
+                    node,
+                    location_prefix=f"runtime/nodes/{node_index}",
+                )
+                if not execution_capability_allows(authorization, entries):
+                    raise ReplayGraphError(
+                        "Recorded provenance contains Python content that is not "
+                        "trusted"
+                    )
+                if node.payload.get("legacy_parent_context", False):
+                    data = operation._apply_schema_v2(
+                        values[node.parents[0]],
+                        parent_data=values[node.parents[1]],
+                        authorization=authorization,
+                    )
+                elif entries:
+                    data = operation.apply(
+                        values[node.parents[0]],
+                        authorization=authorization,
+                    )
+                else:
+                    data = operation.apply(values[node.parents[0]])
         elif node.kind == "script":
+            entries = provenance_replay_node_code_trust_entries(
+                node,
+                location_prefix=f"runtime/nodes/{node_index}",
+            )
+            if not execution_capability_allows(authorization, entries):
+                raise ReplayGraphError("Recorded Python code is not trusted")
             codes = typing.cast("tuple[str, ...]", node.payload["codes"])
             compiled_codes = tuple(
                 compile(code, "<ImageTool script provenance>", "exec")
@@ -429,6 +442,20 @@ def _execute_replay_graph(
     return output
 
 
+def _authorize_replay_graph(
+    graph: ReplayGraph,
+    authorize: ExecutionAuthorizer | None,
+) -> object | None:
+    """Authorize the exact compiled graph once and return its opaque capability."""
+    entries = provenance_replay_graph_code_trust_entries(
+        graph,
+        location_prefix="runtime",
+    )
+    if not entries or authorize is None:
+        return None
+    return authorize(entries)
+
+
 def replay_file_provenance(
     spec: typing.Any,
     *,
@@ -436,15 +463,21 @@ def replay_file_provenance(
     extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    authorize: ExecutionAuthorizer | None = None,
 ) -> xr.DataArray:
     """Replay structured file provenance without executing generated Python."""
     try:
-        graph = compile_replay_graph(spec, structured_file_replay=True)
+        graph = compile_replay_graph(
+            spec,
+            trusted_user_code=True,
+            structured_file_replay=True,
+        )
         return execute_replay_graph(
             graph,
             cache=cache,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
+            authorize=authorize,
         )
     except ReplayGraphError as exc:
         raise TypeError("Expected structured file provenance") from exc
@@ -474,11 +507,11 @@ def file_load_source_status(
         and replay_call.target not in erlab.io.loaders
     ):
         return "missing-loader"
-    if replay_call.kind == "callable":
-        try:
-            _resolve_importable_callable(replay_call.target)
-        except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
-            return "missing-loader"
+    if (
+        replay_call.kind == "callable"
+        and _registered_local_callable_loader(replay_call.target) is None
+    ):
+        return "missing-loader"
     if replay_call.kind == "extension_loader":
         capability_status = (
             _registered_script_capability_status
@@ -507,14 +540,17 @@ def file_load_source_status(
     return "loadable"
 
 
-def can_reload_without_trust(
+def _can_reload_provenance(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     *,
+    allow_code: bool,
     extension_status_resolver: _CapabilityStatusResolver | None = None,
 ) -> bool:
     """Return whether provenance can replay with the selected extension scope."""
     spec = parse_tool_provenance_spec(value)
     if spec is None:
+        return False
+    if not allow_code and provenance_requires_code_trust(spec):
         return False
     if spec.kind not in {"file", "script"}:
         return False
@@ -522,7 +558,10 @@ def can_reload_without_trust(
         spec, extension_status_resolver=extension_status_resolver
     ) != "loadable":
         return False
-    if spec.kind == "script" and not script_provenance_replayable(spec):
+    if spec.kind == "script" and not _script_provenance_validates(
+        spec,
+        strict_replay_code=not allow_code,
+    ):
         return False
     capability_status = (
         _registered_script_capability_status
@@ -545,29 +584,53 @@ def can_reload_without_trust(
             return False
     for script_input in spec.script_inputs:
         input_spec = script_input.parsed_provenance_spec()
-        if not can_reload_without_trust(
-            input_spec, extension_status_resolver=extension_status_resolver
+        if not _can_reload_provenance(
+            input_spec,
+            allow_code=allow_code,
+            extension_status_resolver=extension_status_resolver,
         ):
             return False
     return True
+
+
+def can_reload_without_trust(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
+) -> bool:
+    """Return whether recorded provenance can replay without trusted user code."""
+    return _can_reload_provenance(
+        value,
+        allow_code=False,
+        extension_status_resolver=extension_status_resolver,
+    )
+
+
+def can_reload_with_trusted_code(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
+) -> bool:
+    """Return whether trusted recorded provenance can rebuild its data."""
+    return _can_reload_provenance(
+        value,
+        allow_code=True,
+        extension_status_resolver=extension_status_resolver,
+    )
 
 
 def script_provenance_replayable(
     spec: typing.Any,
     *,
     external_input_names: set[str] | None = None,
+    allow_code: bool = False,
 ) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None:
-        return False
-    try:
-        _validate_script_provenance(
-            parsed,
-            external_input_names=external_input_names,
-        )
-    except (ReplayGraphError, TypeError, ValueError):
-        return False
-    return True
+    """Return whether a script can replay with the supplied input namespace."""
+    return _script_provenance_validates(
+        spec,
+        external_input_names=external_input_names,
+        strict_replay_code=not allow_code,
+    )
 
 
 def _script_provenance_validates(
@@ -590,93 +653,28 @@ def _script_provenance_validates(
     return True
 
 
-def script_provenance_requires_trust(
-    spec: typing.Any,
-    *,
-    external_input_names: set[str] | None = None,
-) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
-    strict_replayable = _script_provenance_validates(
-        parsed,
-        external_input_names=external_input_names,
-        strict_replay_code=True,
-    )
-    trusted_replayable = _script_provenance_validates(
-        parsed,
-        external_input_names=external_input_names,
-        strict_replay_code=False,
-    )
-    current_requires_trust = not strict_replayable and trusted_replayable
-    if current_requires_trust:
-        return True
-    if not strict_replayable:
-        return False
-    for script_input in parsed.script_inputs:
-        input_spec = script_input.parsed_provenance_spec()
-        if script_provenance_requires_trust(input_spec):
-            return True
-    return False
-
-
-def _script_trust_payload(spec: typing.Any) -> dict[str, typing.Any] | None:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return None
-    operations = []
-    for operation in parsed.operations:
-        if getattr(operation, "op", None) != "script_code":
-            continue
-        operations.append(
-            {
-                "code": getattr(operation, "code", None),
-                "copyable": bool(getattr(operation, "copyable", False)),
-            }
-        )
-    inputs = []
-    for script_input in parsed.script_inputs:
-        input_payload = _script_trust_payload(script_input.parsed_provenance_spec())
-        if input_payload is None:
-            continue
-        inputs.append({"name": script_input.name, "payload": input_payload})
-    return {
-        "active_name": parsed.active_name,
-        "inputs": inputs,
-        "operations": operations,
-        "seed_code": parsed.seed_code,
-    }
-
-
-def script_provenance_trust_key(spec: typing.Any) -> str | None:
-    payload = _script_trust_payload(spec)
-    if payload is None:
-        return None
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def replay_script_provenance(
     spec: typing.Any,
     inputs: Mapping[str, xr.DataArray],
     *,
-    trusted_user_code: bool = False,
     extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    authorize: ExecutionAuthorizer | None = None,
 ) -> xr.DataArray:
     """Execute script provenance from already resolved input arrays."""
     try:
         graph = compile_replay_graph(
             spec,
             external_inputs=inputs,
-            trusted_user_code=trusted_user_code,
+            trusted_user_code=True,
             structured_file_replay=True,
         )
         return execute_replay_graph(
             graph,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
+            authorize=authorize,
         )
     except ReplayGraphError as exc:
         if "non-replayable" in str(exc):
@@ -690,10 +688,10 @@ def rebuild_script_provenance(
     live_input_resolver: LiveInputResolver | None = None,
     cache: dict[str, xr.DataArray] | None = None,
     depth: int = 0,
-    trusted_user_code: bool = False,
     extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    authorize: ExecutionAuthorizer | None = None,
 ) -> tuple[xr.DataArray, typing.Any]:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
@@ -702,13 +700,10 @@ def rebuild_script_provenance(
         raise ReplayGraphError(
             "Nested script provenance exceeded the maximum reload depth"
         )
-    if trusted_user_code:
-        replayable = _script_provenance_validates(
-            parsed,
-            strict_replay_code=False,
-        )
-    else:
-        replayable = script_provenance_replayable(parsed)
+    replayable = _script_provenance_validates(
+        parsed,
+        strict_replay_code=False,
+    )
     if not replayable:
         raise ReplayGraphError(
             "The recorded operation cannot be replayed automatically"
@@ -768,13 +763,10 @@ def rebuild_script_provenance(
                 )
                 continue
             if input_spec.kind == "script":
-                if trusted_user_code:
-                    input_replayable = _script_provenance_validates(
-                        input_spec,
-                        strict_replay_code=False,
-                    )
-                else:
-                    input_replayable = script_provenance_replayable(input_spec)
+                input_replayable = _script_provenance_validates(
+                    input_spec,
+                    strict_replay_code=False,
+                )
                 if not input_replayable:
                     raise ReplayGraphError(
                         "The recorded operation cannot be replayed automatically"
@@ -801,7 +793,7 @@ def rebuild_script_provenance(
     graph = compile_replay_graph(
         rebuilt_spec,
         live_input_resolver=resolve_live,
-        trusted_user_code=trusted_user_code,
+        trusted_user_code=True,
         structured_file_replay=True,
     )
     return (
@@ -810,6 +802,7 @@ def rebuild_script_provenance(
             cache=cache,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
+            authorize=authorize,
         ),
         rebuilt_spec,
     )

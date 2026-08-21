@@ -10,7 +10,6 @@ from __future__ import annotations
 import collections
 import contextlib
 import copy
-import importlib
 import logging
 import os
 import pathlib
@@ -34,16 +33,18 @@ from erlab.interactive.imagetool._load_source import (
     _extension_loader_identity,
     _LoadFunc,
     _parse_serialized_file_data_selection,
+    _register_local_callable_loader,
+    _registered_local_callable_loader,
     _serialize_loader_kwargs,
 )
 from erlab.interactive.imagetool._provenance._execution import (
     _select_replay_input,
     _semantic_file_data_selection,
+    can_reload_with_trusted_code,
     can_reload_without_trust,
     file_load_source_status,
     replay_file_provenance,
     replay_script_provenance,
-    script_provenance_requires_trust,
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -54,6 +55,10 @@ from erlab.interactive.imagetool._provenance._model import (
     has_file_load_source,
     parse_tool_provenance_operation,
     require_live_source_spec,
+)
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_operation_requires_code_trust,
+    provenance_requires_code_trust,
 )
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
@@ -343,6 +348,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._axes_signals_connected = False
         self._axes_signal_connected_indices: set[int] = set()
         self._workspace_load_profiler = _workspace_load_profiler
+        self._stored_code_authorizer: (
+            Callable[[tuple[typing.Any, ...]], object | None] | None
+        ) = None
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -784,13 +792,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         load_func = self._load_func
         if load_func is not None:
             fn = load_func[0]
-            func_name = f"{fn.__module__}:{fn.__qualname__}" if callable(fn) else fn
-            selection = load_func[2].model_dump(mode="json")
-            load_func = (
-                func_name,
-                _serialize_loader_kwargs(load_func[1]),
-                selection,
-            )
+            func_name = _register_local_callable_loader(fn) if callable(fn) else fn
+            if func_name is None:
+                load_func = None
+            else:
+                selection = load_func[2].model_dump(mode="json")
+                load_func = (
+                    func_name,
+                    _serialize_loader_kwargs(load_func[1]),
+                    selection,
+                )
         state: ImageSlicerState = {
             "color": self.colormap_properties,
             "slice": self.array_slicer.state,
@@ -888,47 +899,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if file_path is not None:
                 self._file_path = pathlib.Path(file_path)
 
-            load_func = state.get("load_func", None)
-            if load_func is not None:
-                fn: str = load_func[0]
-                try:
-                    selection = _parse_serialized_file_data_selection(load_func[2])
-                    restored_kwargs = _deserialize_loader_kwargs(load_func[1])
-                except Exception:
-                    self._load_func = None
-                    selection = None
-                    restored_kwargs = None
-                if ":" in fn:
-                    try:
-                        mod_name, qual = fn.split(":")
-                        mod = importlib.import_module(mod_name)
-                        func_obj = mod
-                        for attr in qual.split("."):
-                            func_obj = getattr(func_obj, attr)
-                        if selection is not None:
-                            self._load_func = (
-                                typing.cast("Callable", func_obj),
-                                typing.cast("dict[str, typing.Any]", restored_kwargs),
-                                selection,
-                            )
-                    except Exception:
-                        self._load_func = None
-                elif (
-                    fn in erlab.io.loaders
-                    and selection is not None
-                    and restored_kwargs is not None
-                ):
-                    self._load_func = (
-                        fn,
-                        restored_kwargs,
-                        selection,
-                    )
-                else:
-                    self._load_func = None
+            self._restore_serialized_load_func(state.get("load_func"))
 
             if file_path is not None and not self._state_refresh_deferred():
                 self.sigDataChanged.emit()
-                logger.debug("Restored file path")
+            logger.debug("Restored file path")
 
         with self._workspace_load_stage("imagetool state restore: filter"):
             self._restore_filter_operation_from_state(
@@ -959,6 +934,31 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ax.set_cursor_colors(self.cursor_colors)
             self.sigCursorColorsChanged.emit()
             logger.debug("Reapplied saved cursor colors")
+
+    def _restore_serialized_load_func(
+        self,
+        load_func: typing.Any,
+    ) -> bool:
+        """Restore one saved loader reference."""
+        self._load_func = None
+        if not isinstance(load_func, list | tuple) or len(load_func) != 3:
+            return False
+        target, serialized_kwargs, selection_payload = load_func
+        try:
+            selection = _parse_serialized_file_data_selection(selection_payload)
+            restored_kwargs = _deserialize_loader_kwargs(serialized_kwargs)
+        except Exception:
+            return False
+
+        if isinstance(target, str) and target in erlab.io.loaders:
+            self._load_func = (target, restored_kwargs, selection)
+            return True
+        if isinstance(target, str):
+            func = _registered_local_callable_loader(target)
+            if func is not None:
+                self._load_func = (func, restored_kwargs, selection)
+                return True
+        return False
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
@@ -1399,6 +1399,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         operation: ToolProvenanceOperation,
         dims: tuple[Hashable, ...],
     ) -> xr.DataArray:
+        if provenance_operation_requires_code_trust(operation):
+            raise TypeError(
+                "Operations that can execute stored Python cannot be used as display "
+                "filters"
+            )
         return self._normalize_filter_result_for_source_dims(
             data,
             operation.apply(data),
@@ -2499,6 +2504,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 isinstance(value, str) and value for value in extension_identity[:3]
             ):
                 func = func_instance.name
+            elif callable(func):
+                _register_local_callable_loader(func)
             self._load_func = (func, load_func[1], selection)
         else:
             self._load_func = None
@@ -2681,25 +2688,37 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
                 self.refresh_colormap()
 
+    def _set_stored_code_authorizer(
+        self,
+        authorize: Callable[[tuple[typing.Any, ...]], object | None] | None,
+    ) -> None:
+        """Set the document host callback for stored provenance execution."""
+        self._stored_code_authorizer = authorize
+
     @property
     def reloadable(self) -> bool:
         """Check if the displayed data can be reloaded.
 
         Managed child ImageTools reload through the manager when they can refresh
         from a reloadable ancestor. Direct file-backed windows reload from their
-        stored loader. Detached file-rooted provenance reloads by replaying its
-        self-contained code. Managed script-derived ImageTools reload through the
-        manager from their recorded inputs.
+        stored loader. Standalone ImageTools replay only provenance that does not
+        contain stored code. Managed ImageTools can ask their document host to
+        authorize stored code.
 
         Returns
         -------
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
-        if (
-            self._managed_source_chain_reload_target() is not None
-            or self._direct_reloadable()
-            or self._provenance_reloadable()
+        provenance_spec = self.provenance_spec
+        stored_code_without_host = (
+            provenance_spec is not None
+            and provenance_requires_code_trust(provenance_spec)
+            and self._stored_code_authorizer is None
+        )
+        if self._managed_source_chain_reload_target() is not None or (
+            not stored_code_without_host
+            and (self._direct_reloadable() or self._provenance_reloadable())
         ):
             return True
         manager = self._manager_instance if self._in_manager else None
@@ -2773,11 +2792,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
         manager = self._manager_instance if self._in_manager else None
+        extension_status_resolver = (
+            None if manager is None else manager._extensions.capability_status
+        )
         return can_reload_without_trust(
             self.provenance_spec,
-            extension_status_resolver=(
-                None if manager is None else manager._extensions.capability_status
-            ),
+            extension_status_resolver=extension_status_resolver,
+        ) or (
+            self._stored_code_authorizer is not None
+            and can_reload_with_trusted_code(
+                self.provenance_spec,
+                extension_status_resolver=extension_status_resolver,
+            )
         )
 
     def _direct_reload_unavailable_reason(self) -> str | None:
@@ -2903,14 +2929,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
             extension_status_resolver=extension_status_resolver,
         ):
             return None
-        if provenance_spec.kind == "script":
-            if script_provenance_requires_trust(provenance_spec):
-                return (
-                    "This data includes recorded script code that needs trust "
-                    "confirmation before replay. Reload it in ImageTool Manager, "
-                    "or recreate it from reloadable inputs to enable standalone "
-                    "reload."
+        if provenance_requires_code_trust(provenance_spec):
+            if (
+                self._stored_code_authorizer is not None
+                and can_reload_with_trusted_code(
+                    provenance_spec,
+                    extension_status_resolver=extension_status_resolver,
                 )
+            ):
+                return None
+            if can_reload_with_trusted_code(
+                provenance_spec,
+                extension_status_resolver=extension_status_resolver,
+            ):
+                return (
+                    "This data includes recorded code that standalone ImageTool "
+                    "does not execute. Open it in ImageTool Manager to review the "
+                    "code and reload the data."
+                )
+            return (
+                "This data was created from recorded script steps that cannot "
+                "be reloaded automatically from the saved provenance. Reopen "
+                "or recreate it from reloadable inputs to enable reload."
+            )
+        if provenance_spec.kind == "script":
             return (
                 "This data was created from recorded script steps that cannot be "
                 "reloaded automatically from the saved provenance. Reopen or "
@@ -2920,6 +2962,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _local_reload_unavailable_reason(self) -> str | None:
         """Return why this slicer area cannot reload without manager routing."""
+        provenance_spec = self.provenance_spec
+        if (
+            provenance_spec is not None
+            and provenance_requires_code_trust(provenance_spec)
+            and self._stored_code_authorizer is None
+        ):
+            return self._provenance_reload_unavailable_reason()
         if self._direct_reloadable() or self._provenance_reloadable():
             return None
         reason = self._direct_reload_unavailable_reason()
@@ -2938,9 +2987,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Return why Reload Data cannot run, or `None` when reload is available."""
         if self._managed_source_chain_reload_target() is not None:
             return None
+        manager = self._manager_instance if self._in_manager else None
+        provenance_spec = self.provenance_spec
+        if (
+            manager is None
+            and provenance_spec is not None
+            and provenance_requires_code_trust(provenance_spec)
+            and self._stored_code_authorizer is None
+        ):
+            return self._provenance_reload_unavailable_reason()
         if self._direct_reloadable() or self._provenance_reloadable():
             return None
-        manager = self._manager_instance if self._in_manager else None
         if manager is not None:
             target = manager.target_from_slicer_area(self)
             if target is not None:
@@ -2970,7 +3027,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             selection,
         )
 
-    def _fetch_for_provenance_reload(self) -> xr.DataArray:
+    def _fetch_for_provenance_reload(
+        self,
+        *,
+        authorize: Callable[[tuple[typing.Any, ...]], object | None] | None = None,
+    ) -> xr.DataArray:
         """Replay file-rooted provenance and return the active displayed data."""
         provenance_spec = self.provenance_spec
         if provenance_spec is None:
@@ -2986,10 +3047,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         if load_source is not None and source_status == "missing-file":
             raise FileNotFoundError(pathlib.Path(load_source.path))
-        if not can_reload_without_trust(
-            provenance_spec,
-            extension_status_resolver=extension_status_resolver,
-        ):
+        reloadable = (
+            can_reload_without_trust(
+                provenance_spec,
+                extension_status_resolver=extension_status_resolver,
+            )
+            if authorize is None
+            else can_reload_with_trusted_code(
+                provenance_spec,
+                extension_status_resolver=extension_status_resolver,
+            )
+        )
+        if not reloadable:
             raise RuntimeError("Data cannot be reloaded from provenance")
         extension_executor = (
             None if manager is None else manager._extensions.execution.run_operation
@@ -3002,6 +3071,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 provenance_spec,
                 extension_executor=extension_executor,
                 extension_loader_executor=extension_loader_executor,
+                authorize=authorize,
             )
         if provenance_spec.kind == "script":
             return replay_script_provenance(
@@ -3009,12 +3079,34 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 {},
                 extension_executor=extension_executor,
                 extension_loader_executor=extension_loader_executor,
+                authorize=authorize,
             )
         raise RuntimeError("Data cannot be reloaded from provenance")
 
-    def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
+    def _fetch_reload_data(
+        self,
+        *,
+        authorize: Callable[[tuple[typing.Any, ...]], object | None] | None = None,
+    ) -> tuple[xr.DataArray, dict[str, typing.Any]]:
         """Return reload data and replacement kwargs for the active reload source."""
         provenance_spec = self.provenance_spec
+        if (
+            provenance_spec is not None
+            and provenance_requires_code_trust(provenance_spec)
+            and authorize is None
+        ):
+            raise RuntimeError(
+                "Recorded code requires authorization from ImageTool Manager"
+            )
+        if (
+            provenance_spec is not None
+            and authorize is not None
+            and provenance_requires_code_trust(provenance_spec)
+        ):
+            return (
+                self._fetch_for_provenance_reload(authorize=authorize),
+                {},
+            )
         if (
             provenance_spec is not None
             and (provenance_spec.kind == "script" or bool(provenance_spec.steps))
@@ -3045,7 +3137,38 @@ class ImageSlicerArea(QtWidgets.QWidget):
             and manager._script_reload_from_slicer_area(self, execute=False)
         ):
             return manager._script_reload_from_slicer_area(self, execute=True)
-        if self._direct_reloadable() or self._provenance_reloadable():
+        provenance_spec = self.provenance_spec
+        if (
+            provenance_spec is not None
+            and provenance_requires_code_trust(provenance_spec)
+            and self._stored_code_authorizer is None
+        ):
+            if manager is not None:
+                return manager._script_reload_from_slicer_area(self, execute=True)
+            return False
+        authorization_blocked = False
+
+        def authorize(entries: tuple[typing.Any, ...]) -> object | None:
+            nonlocal authorization_blocked
+            if self._stored_code_authorizer is None:
+                authorization_blocked = True
+                return None
+            capability = self._stored_code_authorizer(entries)
+            authorization_blocked = capability is None
+            return capability
+
+        execution_authorizer = (
+            authorize
+            if provenance_spec is not None
+            and provenance_requires_code_trust(provenance_spec)
+            and self._stored_code_authorizer is not None
+            else None
+        )
+        if (
+            execution_authorizer is not None
+            or self._direct_reloadable()
+            or self._provenance_reloadable()
+        ):
             try:
                 replay_capture = (
                     contextlib.nullcontext(None)
@@ -3053,13 +3176,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     else manager._extensions.execution.capture_replay_sources()
                 )
                 with replay_capture as publication:
-                    data, kwargs = self._fetch_reload_data()
+                    data, kwargs = self._fetch_reload_data(
+                        authorize=execution_authorizer
+                    )
                     if publication is not None:
                         publication.require_current_for_publication()
                     self._replace_reload_data(data, kwargs)
                     if publication is not None:
                         publication.publish()
             except Exception:
+                if authorization_blocked:
+                    return False
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."
                 )

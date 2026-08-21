@@ -256,6 +256,26 @@ That is the minimum `ToolWindow` surface to keep in your head:
 
 Everything below is optional integration that you add when the tool needs it.
 
+### Make an installed tool available during workspace restore
+
+A workspace records the class that created each saved tool. ERLab does not import the
+recorded module name directly because the workspace can come from an untrusted source.
+Instead, a fresh manager process accepts built-in classes and classes declared by
+locally installed packages.
+
+Add this entry point to the package that provides your tool:
+
+```toml
+[project.entry-points."erlab.interactive.tool_windows"]
+my-tool = "my_package.tools:MyTool"
+```
+
+The entry-point value must match the module and qualified class name stored by
+`ToolWindow`. ERLab reads installed entry-point metadata first. It imports the package
+only when a workspace requests that exact registered class. A class defined in a
+notebook or an ordinary script remains available after its module is imported in the
+current process, but a fresh manager cannot discover it automatically.
+
 ### Full example: a tool that works well inside the manager
 
 The next example uses the same core `ToolWindow` interface, but it also implements the
@@ -326,9 +346,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         # This example shows two image layers: the filtered output and the reference.
         self.plot = pg.PlotWidget()
         self.filtered_image = erlab.interactive.utils.xImageItem(axisOrder="row-major")
-        self.reference_image = erlab.interactive.utils.xImageItem(
-            axisOrder="row-major"
-        )
+        self.reference_image = erlab.interactive.utils.xImageItem(axisOrder="row-major")
         self.window_spin = QtWidgets.QSpinBox()
         self.reference_check = QtWidgets.QCheckBox("Show reference")
         self.copy_btn = QtWidgets.QPushButton("Copy Code")
@@ -437,13 +455,9 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         del data
         input_expr = input_name or "data"
         window = self._filter_window()
-        rolling_kwargs = ", ".join(
-            f"{dim}={window}" for dim in self.tool_data.dims
-        )
+        rolling_kwargs = ", ".join(f"{dim}={window}" for dim in self.tool_data.dims)
         return (
-            f"{input_expr}.rolling("
-            f"{rolling_kwargs}, center=True, min_periods=1"
-            ").mean()"
+            f"{input_expr}.rolling({rolling_kwargs}, center=True, min_periods=1).mean()"
         )
 
     @QtCore.Slot()

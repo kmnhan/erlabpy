@@ -561,6 +561,35 @@ def test_added_time_helpers_use_aware_datetimes(caplog) -> None:
     )
 
 
+def test_take_window_clears_and_reattach_restores_manager_execution_host(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(tool, show=False)
+        wrapper = manager._tool_graph.root_wrappers[index]
+
+        assert tool.slicer_area._stored_code_authorizer is not None
+        assert tool.slicer_area._in_manager
+
+        detached = wrapper.take_window()
+
+        assert detached is tool
+        assert tool.slicer_area._stored_code_authorizer is None
+        assert not tool.slicer_area._in_manager
+
+        wrapper.window = tool
+
+        assert tool.slicer_area._stored_code_authorizer is not None
+        assert tool.slicer_area._in_manager
+
+
 def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
     qtbot,
     monkeypatch,

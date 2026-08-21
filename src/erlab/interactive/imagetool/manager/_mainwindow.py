@@ -12,7 +12,9 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive._code_trust._ui import create_code_trust_banner
 from erlab.interactive._dask import DaskMenu
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._acquisition_context import (
@@ -255,7 +257,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         # This map is the single coalescing boundary for expensive node-derived work.
         self._pending_node_changes: dict[str, _ManagedNodeChange] = {}
-        self._trusted_script_replay_keys: set[str] = set()
         self._lineage_controller = _LineageController(self)
         self._provenance_edit_controller = _ProvenanceEditController(self)
         self._details_panel = _DetailsPanelController(self)
@@ -774,7 +775,19 @@ class ImageToolManager(_ImageToolManagerBase):
         # Initialize GUI
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.main_splitter.splitterMoved.connect(self._mark_workspace_layout_dirty)
-        self.setCentralWidget(self.main_splitter)
+        central_widget = QtWidgets.QWidget(self)
+        central_layout = QtWidgets.QVBoxLayout(central_widget)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        self.code_trust_banner = create_code_trust_banner(central_widget)
+        self.code_trust_banner.setObjectName("manager_code_trust_banner")
+        self.code_trust_banner.review_requested.connect(
+            self._workspace_controller.review_and_approve_workspace_code_trust
+        )
+        self.code_trust_banner.hide()
+        central_layout.addWidget(self.code_trust_banner)
+        central_layout.addWidget(self.main_splitter, 1)
+        self.setCentralWidget(central_widget)
 
         # Construct left side of splitter
         left_container = QtWidgets.QWidget()
@@ -2459,23 +2472,40 @@ class ImageToolManager(_ImageToolManagerBase):
         spec: ToolProvenanceSpec,
         *,
         target_node_uid: str | None = None,
+        authorization: object | None = None,
     ) -> _ScriptRebuildResult:
         return self._lineage_controller._rebuild_script_provenance(
             spec,
             target_node_uid=target_node_uid,
+            authorization=authorization,
         )
 
-    def _ensure_script_provenance_trusted(
+    def _authorize_provenance_execution(
         self,
-        spec: ToolProvenanceSpec,
+        entries: tuple[typing.Any, ...],
         *,
         reason: str,
-        external_input_names: set[str] | None = None,
-    ) -> None:
-        self._lineage_controller._ensure_script_provenance_trusted(
-            spec,
+        raise_on_block: bool = True,
+    ) -> object | None:
+        return self._lineage_controller._authorize_provenance_execution(
+            entries,
             reason=reason,
-            external_input_names=external_input_names,
+            raise_on_block=raise_on_block,
+        )
+
+    def _apply_provenance(
+        self,
+        spec: ToolProvenanceSpec,
+        data: xr.DataArray,
+        *,
+        reason: str,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        return self._lineage_controller._apply_provenance(
+            spec,
+            data,
+            reason=reason,
+            authorization=authorization,
         )
 
     def _node_can_reload_script_inputs(
@@ -2878,6 +2908,7 @@ class ImageToolManager(_ImageToolManagerBase):
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
+        tool.set_input_provenance_spec(None)
         node = _ManagedWindowNode(
             self,
             self._next_node_uid(uid),
@@ -3032,6 +3063,13 @@ class ImageToolManager(_ImageToolManagerBase):
         int
             Index of the added ImageTool window.
         """
+        if provenance_spec is None and tool.provenance_spec is not None:
+            self._workspace_controller.adopt_external_code(
+                provenance_code_trust_entries(
+                    tool.provenance_spec,
+                    location_prefix="imported-imagetool/provenance",
+                )
+            )
         if provenance_spec is not None:
             tool.set_provenance_spec(provenance_spec)
         if index is None or index in self._tool_graph.root_wrappers:

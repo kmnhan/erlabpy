@@ -28,6 +28,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
     RestoreNonuniformDimsOperation,
 )
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
     _ConcatDialog,
@@ -665,11 +666,10 @@ class _ActionsController:
             source_spec,
         ) in preflight_plan:
             try:
-                processed = source_spec.apply(
+                processed = self._manager._apply_provenance(
+                    source_spec,
                     slicer_area.data,
-                    extension_executor=(
-                        self._manager._extensions.execution.run_operation
-                    ),
+                    reason="apply this batch operation",
                 ).rename(input_name)
                 erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
                     processed
@@ -1608,6 +1608,18 @@ class _ActionsController:
             )
 
         parent = self._manager._node_for_target(index)
+
+        def _parent_source_fetcher(parent_uid: str = parent.uid) -> xr.DataArray:
+            return self._manager._node_for_target(parent_uid).current_source_data()
+
+        def _parent_provenance_fetcher(
+            parent_uid: str = parent.uid,
+        ) -> ToolProvenanceSpec | None:
+            return self._manager._node_for_target(parent_uid).displayed_provenance_spec
+
+        tool.set_input_provenance_spec(None)
+        tool.set_source_parent_fetcher(_parent_source_fetcher)
+        tool.set_input_provenance_parent_fetcher(_parent_provenance_fetcher)
         node = _ManagedWindowNode(
             self._manager,
             self._manager._next_node_uid(uid),
@@ -1620,17 +1632,6 @@ class _ActionsController:
         )
         if not tool._tool_display_name:
             tool._tool_display_name = parent.name
-
-        def _parent_source_fetcher(parent_uid: str = parent.uid) -> xr.DataArray:
-            return self._manager._node_for_target(parent_uid).current_source_data()
-
-        def _parent_provenance_fetcher(
-            parent_uid: str = parent.uid,
-        ) -> ToolProvenanceSpec | None:
-            return self._manager._node_for_target(parent_uid).displayed_provenance_spec
-
-        tool.set_source_parent_fetcher(_parent_source_fetcher)
-        tool.set_input_provenance_parent_fetcher(_parent_provenance_fetcher)
         self._manager._register_child_node(node)
         self._manager.tree_view.childtool_added(node.uid, index)
         self._manager._mark_node_added(node.uid)
@@ -1661,6 +1662,19 @@ class _ActionsController:
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
+        if (
+            provenance_spec is None
+            and source_spec is None
+            and source_binding is None
+            and output_id is None
+            and tool.provenance_spec is not None
+        ):
+            self._manager._workspace_controller.adopt_external_code(
+                provenance_code_trust_entries(
+                    tool.provenance_spec,
+                    location_prefix="imported-imagetool/provenance",
+                )
+            )
         parent_node = self._manager._node_for_target(parent)
         if source_spec is None and source_binding is not None:
             source_spec = source_binding.materialize(parent_node.current_source_data())

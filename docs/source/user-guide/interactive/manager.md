@@ -398,6 +398,94 @@ their variable-name badges. The rows stay disconnected until a notebook defines 
 matching variables and reconnects them, as described in
 {ref}`imagetool-manager-reconnect-watches`.
 
+(imagetool-manager-code-trust)=
+
+### Code trust
+
+A `.itws` file stores more than arrays and window positions. It can also preserve
+arbitrary user code that makes a figure or reproduces an analysis step. Treat a shared
+workspace in the same way as a notebook that you received from another person.
+
+Code from a workspace can run at four boundaries:
+
+1. **Script provenance.** The manager can record Python entered in its console. This
+   code is executed upon replaying the recorded result, for example when you select
+   {guilabel}`Reload Data`.
+2. **Figure Composer Python.** A figure recipe can contain a {guilabel}`Python` step or
+   a custom `transform` expression. ERLab runs these items every time it renders the
+   figure.
+3. **Saved lmfit model or result code.** A serialized lmfit model or result can contain
+   executable model content. This includes an {class}`lmfit.models.ExpressionModel`
+   expression or initialization script, and a serialized callable fallback. This content
+   can run while ERLab restores {ref}`ftool <guide-ftool>`, when lmfit evaluates a
+   model, or when provenance replays a recorded edge correction that embeds a fit
+   result.
+4. **lmfit parameter expressions.** A fitting tool or recorded fitting operation can
+   store expressions that constrain parameters. lmfit evaluates these expressions
+   during restoration, replay, parameter updates, and fitting.
+
+These are the only places where an `.itws` file can run unrestricted stored Python or
+deserialize stored callable content.
+
+Registered extension routines and loaders use a separate approval check. A workspace
+can identify an extension by its script name, source digest, and capability ID. It
+cannot execute the recovery copy stored in the workspace. The manager runs the
+operation only when the same script is installed, enabled, approved separately, and
+unchanged. See {ref}`imagetool-manager-extensions`.
+
+When ERLab cannot verify a workspace, it pauses execution at these four boundaries.
+This lets you inspect the safe parts of the workspace without first granting stored code
+access to your computer.
+
+Code that you add or change with an ERLab code editor is local work. ERLab does not ask
+you to approve that new code. Code from the opened workspace that you did not change
+must still pass the workspace trust check.
+
+A Figure Composer preview can be incomplete while code is paused. ERLab also prevents
+export of that incomplete figure.
+
+Stored script provenance runs only through ImageTool Manager. A standalone ImageTool
+does not run script provenance restored from a file. Open the original workspace in
+ImageTool Manager when you need to review and replay that code.
+
+To approve the workspace:
+
+1. Confirm that the file came from a source that you trust.
+2. Select {guilabel}`Review and Trust…` in the warning banner. You can also open
+   {menuselection}`File --> Workspace Properties` and select the same action there.
+3. Review the source text and execution context shown in the dialog. The headings
+   identify the figure, provenance, or fitting item that owns each block. When an lmfit
+   payload cannot show the original source for a serialized callable, the dialog
+   identifies the payload and shows a digest of its executable fragments.
+4. Select {guilabel}`Trust Workspace and Run Code` only when you are prepared to run
+   all listed content.
+
+If a provenance replay was blocked, run that action again after approval. If you are not
+ready to approve the code, close the dialog. The safe parts of the workspace remain
+available.
+
+Approval applies immediately to the open workspace. ERLab stores durable approval only
+after it saves a workspace with trusted local lineage. The local signature covers the
+executable code and the controls that change its execution. It does not cover array
+values, previews, window names, or the workspace ID. An unchanged workspace then opens
+without another review. A failed save or a save from untrusted lineage does not create a
+signature.
+
+A workspace created before this feature normally needs one review after upgrade. Save
+the approved workspace once to make later unchanged opens automatic. Use
+{guilabel}`Reset Saved Trust…` in {guilabel}`Settings` → {guilabel}`Security` when you
+want all signed workspaces to require review again.
+
+#### Using a trusted workspace folder
+
+For a folder that only you or your laboratory controls, you can choose to trust every
+`.itws` file in that folder and its subfolders. This is useful for an analysis directory
+that repeatedly produces new workspaces.
+
+Configure these folders in {guilabel}`Settings` → {guilabel}`Security`. See
+{ref}`options-trusted-workspace-folders` for the procedure and permission guidance. A
+trusted folder deliberately skips the code review and local-signature check.
+
 (imagetool-manager-nested-results)=
 
 ## Nested windows
@@ -479,7 +567,8 @@ If those recorded files moved, edit the file load row in the operation history a
 {guilabel}`Also relink selected file loads` to update the moved inputs together.
 
 For results from console scripts, {guilabel}`Reload Data` replays the recorded code in
-the console if possible. Only reload derived results from workspaces you trust.
+the console if possible. Execution is paused until you approve code from an unverified
+workspace. See {ref}`imagetool-manager-code-trust`.
 
 (imagetool-manager-replay-code)=
 
@@ -573,9 +662,11 @@ many of the same operations and keep track of the manager history. For example:
   # xarray module calls also keep manager inputs when they receive tool handles
   xr.concat([tools[0], tools[1]], dim="scan")
 
+
   # Simple helper functions defined in the console can receive tool handles directly
   def normalize(data):
       return data / data.max()
+
 
   normalize(tools[0])
 
@@ -771,7 +862,11 @@ If you are using VS Code (or other editor that supports VS Code extensions), the
 If you wish to integrate the manager into custom workflows, you can programmatically load data and control ImageTool windows in the manager. Use the public functions exported from {mod}`erlab.interactive.imagetool.manager`:
 
 ```python
-from erlab.interactive.imagetool.manager import load_in_manager, replace_data, show_in_manager
+from erlab.interactive.imagetool.manager import (
+    load_in_manager,
+    replace_data,
+    show_in_manager,
+)
 
 # Open raw files and let the manager choose the loader interactively
 load_in_manager(["scan1.pxt", "scan2.pxt"])

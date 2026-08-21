@@ -137,6 +137,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
     _live_layout_axes,
+    _operation_will_render,
     _render_error_text,
     _render_into_figure,
     _render_preview,
@@ -144,6 +145,10 @@ from erlab.interactive._figurecomposer._rendering import (
     _set_preview_draw_error,
 )
 from erlab.interactive._figurecomposer._text import _format_axes_tuple
+from erlab.interactive._figurecomposer._trust import (
+    figure_code_trust_entries,
+    figure_operation_execution_entries,
+)
 from erlab.interactive._figurecomposer._ui._axes_widgets import (
     _AxesSelectorWidget,
     _gridspec_target_preview_descriptor,
@@ -363,8 +368,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     tool_name = "fig"
     manager_collection = "figures"
     _PROVENANCE_IS_MODEL_OWNED = True
+    _CODE_TRUST_DOMAIN = "erlab.figure-composer-file"
+    _CODE_TRUST_POLICY_VERSION = 5
 
     StateModel = FigureRecipeState
+
+    @classmethod
+    def _code_trust_entries_from_status(cls, status: FigureRecipeState):
+        return figure_code_trust_entries(status, location_prefix="figure")
+
+    def _code_trust_changed(self) -> None:
+        if hasattr(self, "_document"):
+            _render_preview(self, show_window=True)
 
     def sizeHint(self) -> QtCore.QSize:
         hint = super().sizeHint()
@@ -453,6 +468,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_data=initial_source_data,
             changed_callback=self._document_changed,
         )
+        self._code_trust_recipe_entries = figure_code_trust_entries(
+            self._document.recipe,
+            location_prefix="figure",
+        )
         self._output_recipe_payload = self._output_recipe_state(self._document.recipe)
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
@@ -478,6 +497,32 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         """Publish each committed document mutation through the manager boundary."""
         if not erlab.interactive.utils.qt_is_valid(self):
             return
+        if recipe_changed:
+            entries = figure_code_trust_entries(
+                self._document.recipe,
+                location_prefix="figure",
+            )
+            previous_entries = self._code_trust_recipe_entries
+            self._code_trust_recipe_entries = entries
+            if not self._restoring_from_dataset:
+                previous_identities = tuple(
+                    entry.document_identity() for entry in previous_entries
+                )
+                previous_identity_set = frozenset(previous_identities)
+                edited_entries = tuple(
+                    entry
+                    for entry in entries
+                    if entry.document_identity() not in previous_identity_set
+                )
+                if (
+                    tuple(entry.document_identity() for entry in entries)
+                    != previous_identities
+                ):
+                    with self._local_code_edit(
+                        entries,
+                        edited_entries=edited_entries,
+                    ):
+                        pass
         output_recipe_payload = self._output_recipe_state(self._document.recipe)
         output_recipe_changed = output_recipe_payload != self._output_recipe_payload
         self._output_recipe_payload = output_recipe_payload
@@ -524,7 +569,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if any(
             operation.enabled
             and operation.kind == FigureOperationKind.CUSTOM
-            and operation.trusted
             and bool(operation.code.strip())
             for operation in self._document.recipe.operations
         ):
@@ -4344,6 +4388,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._warn_invalid_operation_targets():
             return
         self.operation_editor.flush_pending_commits()
+        for operation_index, operation in enumerate(self._document.recipe.operations):
+            if not _operation_will_render(self, operation):
+                continue
+            if not self._authorize_code_execution(
+                functools.partial(
+                    figure_operation_execution_entries,
+                    self._document.recipe,
+                    operation_index,
+                    location_prefix="figure",
+                ),
+                focus_on_block=True,
+            ):
+                return
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Export Figure",
@@ -4602,7 +4659,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _saved_tool_status(self) -> FigureRecipeState:
         self._flush_pending_figure_resize_history_write()
-        status = self.tool_status
+        status = super()._saved_tool_status()
         allowed_uids = self._save_tool_data_reference_node_uids
         if allowed_uids is None:
             return status
@@ -5263,9 +5320,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         used_code_names.update(
             bound_name
             for operation in self._document.recipe.operations
-            if operation.enabled
-            and operation.kind == FigureOperationKind.CUSTOM
-            and operation.trusted
+            if operation.enabled and operation.kind == FigureOperationKind.CUSTOM
             for bound_name in _custom_code_bound_names(operation.code)
         )
         if self._document.recipe.setup.layout_mode == "gridspec":

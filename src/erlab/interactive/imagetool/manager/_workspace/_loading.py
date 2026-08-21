@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import hashlib
 import json
 import logging
@@ -869,6 +870,7 @@ class _WorkspaceLoader:
             self._controller._set_node_window_modified(uid, uid in dirty_uids)
         self._controller._update_workspace_window_title()
         self._controller._refresh_manager_record()
+        self._controller._refresh_code_trust_ui()
 
     def _load_workspace_imagetool_dataset(
         self,
@@ -990,7 +992,6 @@ class _WorkspaceLoader:
                 ds = ds.copy(deep=False)
                 ds.attrs["itool_name"] = ""
             ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
-
             if pending_workspace_memory_payload is not None:
                 pending_ds = self._workspace_dataset_with_reserved_uid(
                     ds, reserved_uids
@@ -1105,6 +1106,21 @@ class _WorkspaceLoader:
             )
             return target
 
+        ds = self._tool_dataset_without_saved_input_provenance(ds)
+        uid = self._manager._next_node_uid(self._workspace_saved_uid_from_dataset(ds))
+        if parent_target is None:
+            location_prefix = f"figures/{uid}"
+        else:
+            parent_node = self._manager._node_for_target(parent_target)
+            location_prefix = (
+                f"{self._controller.saving._workspace_node_path_for_node(parent_node)}"
+                f"/childtools/{uid}"
+            )
+        entry_locator = functools.partial(
+            self._controller._locate_tool_code_trust_entries,
+            location_getter=lambda: location_prefix,
+        )
+
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
         try:
             with _workspace_load_stage(profiler, "tool reference restore"):
@@ -1125,6 +1141,8 @@ class _WorkspaceLoader:
                         _tool_data_reference_resolver=tool_data_reference_resolver,
                         _materialize_tool_data_references=True,
                         _defer_restore_work=True,
+                        _code_trust=self._manager._workspace_state.code_trust,
+                        _code_trust_entry_locator=entry_locator,
                     )
                 )
             with _workspace_load_stage(profiler, "tool manager registration"):
@@ -1180,6 +1198,17 @@ class _WorkspaceLoader:
             raise
         self._record_workspace_loaded_node_target(ds, target, loaded_targets_by_uid)
         return target
+
+    @staticmethod
+    def _tool_dataset_without_saved_input_provenance(ds: xr.Dataset) -> xr.Dataset:
+        """Remove the legacy duplicate input-provenance snapshot before restore."""
+        attr_name = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+        if attr_name not in ds.attrs:
+            return ds
+        restored = ds.copy(deep=False)
+        restored.attrs = dict(ds.attrs)
+        restored.attrs.pop(attr_name, None)
+        return restored
 
     @staticmethod
     def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
@@ -2577,6 +2606,9 @@ class _WorkspaceLoader:
                         )
                         and manifest is not None
                     ):
+                        current_manifest = typing.cast(
+                            "Mapping[str, typing.Any]", manifest
+                        )
                         load_store = None
                         owns_load_store = False
                         store_adopted = False
@@ -2592,7 +2624,7 @@ class _WorkspaceLoader:
                             if select:
                                 with profiler.stage("selection dialog setup"):
                                     dialog = _ChooseFromWorkspaceManifestDialog(
-                                        self._manager, manifest
+                                        self._manager, current_manifest
                                     )
                                 if (
                                     dialog.exec()
@@ -2602,17 +2634,28 @@ class _WorkspaceLoader:
                                 selected_paths = dialog.selected_paths()
                             incoming_extension_state = self._prepare_extension_scripts(
                                 access.path,
-                                manifest,
+                                current_manifest,
                                 selected_paths=selected_paths,
                             )
-                            loaded = self._from_h5py_workspace_file(
-                                access.path,
-                                manifest,
+                            incoming_trust = (
+                                self._controller._loaded_workspace_code_trust(
+                                    access.path,
+                                    current_manifest,
+                                    selected_paths=selected_paths,
+                                )
+                            )
+                            loaded = self._controller._load_with_code_trust(
+                                incoming_trust,
                                 replace=replace,
-                                mark_dirty=mark_dirty,
-                                selected_paths=selected_paths,
-                                profiler=profiler,
-                                incoming_extension_state=incoming_extension_state,
+                                load=lambda: self._from_h5py_workspace_file(
+                                    access.path,
+                                    current_manifest,
+                                    replace=replace,
+                                    mark_dirty=mark_dirty,
+                                    selected_paths=selected_paths,
+                                    profiler=profiler,
+                                    incoming_extension_state=(incoming_extension_state),
+                                ),
                             )
                             if loaded and associate:
                                 self._controller._associate_loaded_workspace_file(
@@ -2671,13 +2714,20 @@ class _WorkspaceLoader:
                                 tree.attrs
                             )
                         )
-                    loaded = self._from_datatree(
-                        tree,
+                    incoming_trust = self._controller._legacy_workspace_code_trust(
+                        access.path
+                    )
+                    loaded = self._controller._load_with_code_trust(
+                        incoming_trust,
                         replace=replace,
-                        mark_dirty=mark_dirty,
-                        select=select,
-                        workspace_file_path=access.path,
-                        profiler=profiler,
+                        load=lambda: self._from_datatree(
+                            tree,
+                            replace=replace,
+                            mark_dirty=mark_dirty,
+                            select=select,
+                            workspace_file_path=access.path,
+                            profiler=profiler,
+                        ),
                     )
                     if replace:
                         self._manager._workspace_state.save_as_only = False

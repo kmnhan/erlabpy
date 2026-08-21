@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool._load_source as imagetool_load_source
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._console as manager_console
@@ -26,9 +27,11 @@ import erlab.interactive.imagetool.manager._workspace._pending as workspace_pend
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._load_source import _register_local_callable_loader
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     ToolProvenanceOperation,
     compose_display_provenance,
     full_data,
@@ -39,6 +42,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     BoxcarFilterOperation,
     GaussianFilterOperation,
+    ScriptCodeOperation,
     SortCoordOrderOperation,
     SqueezeOperation,
 )
@@ -1574,6 +1578,9 @@ def test_wrapper_pending_workspace_branch_helpers(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
+    for loader in (xr.load_dataarray, xr.load_dataset, xr.load_datatree):
+        _register_local_callable_loader(loader)
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
@@ -1606,22 +1613,25 @@ def test_wrapper_pending_workspace_branch_helpers(
         assert wrapper._load_func_from_serialized_state(["bad", {}, None]) is None
         assert (
             wrapper._load_func_from_serialized_state(
-                ["math:missing", {}, serialized_selection]
+                ["attacker.module:missing", {}, serialized_selection]
             )
             is None
         )
         assert (
             wrapper._load_func_from_serialized_state(
-                ["math:pi", {}, serialized_selection]
+                ["attacker.module:callable", {}, serialized_selection]
             )
             is None
         )
-        assert (
-            wrapper._load_func_from_serialized_state(
-                ["math:sqrt", {}, serialized_selection]
-            )[0].__name__
-            == "sqrt"
-        )
+        assert wrapper._load_func_from_serialized_state(
+            ["xarray:load_dataarray", {}, serialized_selection]
+        ) == (xr.load_dataarray, {}, dataarray_selection)
+        assert wrapper._load_func_from_serialized_state(
+            ["xarray:load_dataset", {}, serialized_selection]
+        ) == (xr.load_dataset, {}, dataarray_selection)
+        assert wrapper._load_func_from_serialized_state(
+            ["xarray:load_datatree", {}, serialized_selection]
+        ) == (xr.load_datatree, {}, dataarray_selection)
         assert wrapper._load_func_from_serialized_state(
             ["da30", {}, serialized_selection]
         ) == ("da30", {}, dataarray_selection)
@@ -1784,29 +1794,93 @@ def test_pending_workspace_reload_reason_branches(
             == "missing file"
         )
 
-        script_spec = types.SimpleNamespace(kind="script")
-        monkeypatch.setattr(
-            manager_lineage,
-            "script_provenance_requires_trust",
-            lambda _spec: True,
+        opaque_script = script(
+            ScriptCodeOperation(label="Opaque", code=None, copyable=False),
+            start_label="Run script",
+            seed_code="derived = data",
+            active_name="derived",
+            script_inputs=(ScriptInput(name="data", label="Input"),),
         )
-        trust_reason = controller._pending_imagetool_reload_unavailable_reason(
+        opaque_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
-                provenance_spec=script_spec,
+                provenance_spec=opaque_script,
+                uid="pending",
                 _load_source_details=lambda: None,
             )
         )
-        assert trust_reason is not None
-        assert "trust confirmation" in trust_reason
+        assert opaque_reason is not None
 
+        raw_script = script(
+            ScriptCodeOperation(
+                label="Transform",
+                code="derived = data + 1",
+            ),
+            start_label="Run script",
+            seed_code="derived = data",
+            active_name="derived",
+        )
+        raw_reason = controller._pending_imagetool_reload_unavailable_reason(
+            types.SimpleNamespace(
+                provenance_spec=raw_script,
+                uid="pending",
+                _load_source_details=lambda: None,
+            )
+        )
+        assert raw_reason is not None
+        assert "no recorded inputs" in raw_reason
+
+        script_input = object()
+        script_spec = types.SimpleNamespace(
+            kind="script",
+            script_inputs=(script_input,),
+        )
+        replayable = True
+        monkeypatch.setattr(
+            controller,
+            "_script_provenance_runnable",
+            lambda _spec: replayable,
+        )
         monkeypatch.setattr(
             manager_lineage,
-            "script_provenance_requires_trust",
-            lambda _spec: False,
+            "provenance_code_trust_entries",
+            lambda *_args, **_kwargs: pytest.fail(
+                "passive reload status built code-trust entries"
+            ),
         )
+        unavailable_reason: str | None = None
+        monkeypatch.setattr(
+            manager,
+            "_script_input_unavailable_reason",
+            lambda *_args, **_kwargs: unavailable_reason,
+        )
+        unavailable_reason = "missing input"
+        assert (
+            controller._pending_imagetool_reload_unavailable_reason(
+                types.SimpleNamespace(
+                    provenance_spec=script_spec,
+                    uid="pending",
+                    _load_source_details=lambda: None,
+                )
+            )
+            == unavailable_reason
+        )
+        unavailable_reason = None
+        assert (
+            controller._pending_imagetool_reload_unavailable_reason(
+                types.SimpleNamespace(
+                    provenance_spec=script_spec,
+                    uid="pending",
+                    _load_source_details=lambda: None,
+                )
+            )
+            is None
+        )
+
+        replayable = False
         replay_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
                 provenance_spec=script_spec,
+                uid="pending",
                 _load_source_details=lambda: None,
             )
         )

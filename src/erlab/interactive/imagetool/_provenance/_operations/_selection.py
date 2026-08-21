@@ -215,6 +215,7 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
         data: xr.DataArray,
         *,
         parent_data: xr.DataArray,
+        authorization: object | None = None,
     ) -> xr.DataArray:
         """Replay the schema-v2 form that omitted ``coord_order``."""
         if self.coord_order is None:

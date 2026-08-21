@@ -35,6 +35,7 @@ from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ToolProvenanceSpec,
+    compose_display_provenance,
     full_data,
     script,
 )
@@ -43,6 +44,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     GaussianFilterOperation,
     ImageToolSelectionSourceBinding,
     RenameOperation,
+    ScriptCodeOperation,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._dialogs import (
@@ -65,6 +67,26 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _WorkspaceSweepFigureTool,
     _WorkspaceSweepToolState,
 )
+
+
+class _ManagedInputAuthorityTool(_AddedTimeChildTool):
+    tool_name = "managed-input-authority"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from the managed tool input",
+            label="Create the tool result",
+            expression_method="_copy_expression",
+            assign="result",
+        )
+    )
+
+    def _copy_expression(
+        self, *, input_name: str | None, data: xr.DataArray | None
+    ) -> str | None:
+        del data
+        if input_name is None:
+            return None
+        return f"{input_name}.rename('tool-result')"
 
 
 def _workspace_sweep_json(value: typing.Any) -> typing.Any:
@@ -1047,6 +1069,161 @@ def _workspace_sweep_data(name: str, *, offset: float = 0.0) -> xr.DataArray:
         attrs={"sample": name, "acquisition": {"pass": int(offset)}},
         name=name,
     )
+
+
+def _injected_input_provenance() -> ToolProvenanceSpec:
+    return script(
+        ScriptCodeOperation(
+            label="Injected input",
+            code="derived = data.pipe(attacker)",
+        ),
+        start_label="Run injected input code",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+
+
+def test_managed_tool_rebuilds_input_provenance_from_parent(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(6.0), dims=("x",), name="source")
+    parent_provenance = full_data(RenameOperation(name="parent-result"))
+    source_spec = full_data(RenameOperation(name="tool-input"))
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(data, _in_manager=True)
+        manager.add_imagetool(
+            root,
+            show=False,
+            provenance_spec=parent_provenance,
+        )
+        child = _ManagedInputAuthorityTool(source_spec.apply(data))
+        child.set_source_binding(source_spec)
+        child.set_input_provenance_spec(_injected_input_provenance())
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        expected = compose_display_provenance(
+            manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
+            source_spec,
+            parent_data=data,
+        )
+        assert child._effective_input_provenance_spec() == expected
+        current = child.current_provenance_spec()
+        assert current is not None
+        assert "attacker" not in current.display_code()
+
+        figure = _WorkspaceSweepFigureTool(data)
+        figure.set_input_provenance_spec(_injected_input_provenance())
+        figure_uid = manager.add_figuretool(figure, show=False)
+        assert figure._effective_input_provenance_spec() is None
+
+        fname = tmp_path / "managed-input-authority.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        node_path = f"0/childtools/{child_uid}"
+        attrs = _current_workspace_payload_attrs(fname, node_path)
+        assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
+        with h5py.File(fname, "r") as h5_file:
+            payload = h5_file[_current_workspace_payload_path(fname, node_path)]
+            assert (
+                erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+                not in payload.attrs
+            )
+        figure_path = f"figures/{figure_uid}"
+        figure_attrs = _current_workspace_payload_attrs(fname, figure_path)
+        assert (
+            erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in figure_attrs
+        )
+
+
+def test_legacy_tool_input_provenance_is_not_raw_copied(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    monkeypatch.setattr(
+        QtWidgets.QDialog,
+        "exec",
+        lambda dialog: pytest.fail(
+            f"Unexpected dialog: {type(dialog).__name__} {dialog.windowTitle()!r}"
+        ),
+    )
+    data = xr.DataArray(np.arange(6.0), dims=("x",), name="source")
+    parent_provenance = full_data(RenameOperation(name="parent-result"))
+    source_spec = full_data(RenameOperation(name="tool-input"))
+    fname = tmp_path / "legacy-managed-input.itws"
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(data, _in_manager=True)
+        manager.add_imagetool(
+            root,
+            show=False,
+            provenance_spec=parent_provenance,
+        )
+        child = _ManagedInputAuthorityTool(source_spec.apply(data))
+        child.set_source_binding(source_spec)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+
+    node_path = f"0/childtools/{child_uid}"
+    encoded_injection = json.dumps(_injected_input_provenance().model_dump(mode="json"))
+    with _edit_current_workspace_payload_attrs(fname, node_path) as attrs:
+        attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+            encoded_injection
+        )
+    with h5py.File(fname, "a") as h5_file:
+        payload = h5_file[_current_workspace_payload_path(fname, node_path)]
+        payload.attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+            encoded_injection
+        )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        child_node = manager._child_node(child_uid)
+        assert child_node.pending_workspace_tool_payload is not None
+        assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR in (
+            child_node.pending_workspace_payload_attrs or {}
+        )
+
+        manager._workspace_controller.saving._save_workspace_document(fname)
+
+        assert child_node.pending_workspace_tool_payload is None
+        restored = typing.cast("_ManagedInputAuthorityTool", child_node.tool_window)
+        expected = compose_display_provenance(
+            manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
+            restored.source_spec,
+            parent_data=manager._tool_graph.root_wrappers[0].current_source_data(),
+        )
+        assert restored._effective_input_provenance_spec() == expected
+        current = restored.current_provenance_spec()
+        assert current is not None
+        assert "attacker" not in current.display_code()
+
+        attrs = _current_workspace_payload_attrs(fname, node_path)
+        assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
+        with h5py.File(fname, "r") as h5_file:
+            payload = h5_file[_current_workspace_payload_path(fname, node_path)]
+            assert (
+                erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+                not in payload.attrs
+            )
+        manager._workspace_controller._drain_workspace_deferred_events()
+        manager._workspace_controller._mark_workspace_clean()
 
 
 def _configure_workspace_sweep_imagetool(
@@ -2238,6 +2415,9 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         tool_payload = _workspace_sweep_h5_attr_payload(
             fname, "0/childtools/sweep-child-tool/tool"
         )
+        figure_payload = _workspace_sweep_h5_attr_payload(
+            fname, f"figures/{figure_uid}/tool"
+        )
         assert tool_payload["tool_state"] == child_window.tool_status.model_dump(
             mode="json"
         )
@@ -2247,6 +2427,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             mode="json"
         )
         assert "tool_source_binding" not in tool_payload
+        assert "manager_node_provenance_spec" not in figure_payload
         with h5py.File(fname, "r") as h5_file:
             tool_group = h5_file[
                 _current_workspace_payload_path(fname, "0/childtools/sweep-child-tool")

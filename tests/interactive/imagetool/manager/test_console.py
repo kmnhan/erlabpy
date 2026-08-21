@@ -3349,7 +3349,7 @@ def test_manager_reload_script_derived_target_honors_trust_cancel() -> None:
     node = types.SimpleNamespace(uid="node", provenance_spec=spec)
 
     def rebuild(*_args, **_kwargs):
-        raise manager_widgets._TrustedScriptReplayCancelled
+        raise manager_widgets._TrustedProvenanceReplayCancelled
 
     manager = types.SimpleNamespace(
         _node_for_target=lambda _target: node,

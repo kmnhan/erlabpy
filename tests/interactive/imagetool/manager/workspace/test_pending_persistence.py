@@ -1395,7 +1395,7 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
         assert child_uid not in manager._tool_graph.nodes
         assert skipped
         assert skipped[0][0] == f"0/childtools/{child_uid}"
-        assert isinstance(skipped[0][1], ModuleNotFoundError)
+        assert isinstance(skipped[0][1], TypeError)
 
 
 def test_pending_toolwindow_source_metadata_decodes_saved_state(

@@ -761,8 +761,6 @@ def test_figure_composer_method_helper_edge_contracts(
     assert tool.tool_status.operations[1].method_kwargs == {}
     method_editor._update_current_method_kwarg(tool.operation_editor, "pad", 0.3)
     assert tool.tool_status.operations[1].method_kwargs == {"pad": 0.3}
-    method_editor._operation_trust_update_callback(tool.operation_editor)(True)
-    assert tool.tool_status.operations[1].trusted is True
     method_editor._method_float_pair_args_update_callback(tool.operation_editor)("0, 1")
     assert tool.tool_status.operations[1].method_args == (0.0, 1.0)
     method_editor._update_current_method_family(
@@ -1919,10 +1917,10 @@ def test_figure_composer_loaded_method_canonicalizes_control_aliases(
 
     if name == "suptitle":
         loaded = method_state._loaded_operation(
-            operation.model_copy(update={"method_transform": "custom", "trusted": True})
+            operation.model_copy(update={"method_transform": "custom"})
         )
         assert loaded.method_kwargs == expected
-        assert not loaded.trusted
+        assert "trusted" not in loaded.model_dump()
 
 
 def test_figure_composer_loaded_method_preserves_semantic_none() -> None:

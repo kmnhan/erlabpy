@@ -129,6 +129,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/manager/workspace/test_pending_preview.py",
         "tests/interactive/imagetool/manager/workspace/test_storage.py",
         "tests/interactive/imagetool/manager/workspace/test_store.py",
+        "tests/interactive/imagetool/manager/workspace/test_trust.py",
     ),
     "cov-qt-manager-provenance-console": (
         "tests/interactive/imagetool/manager/provenance",
@@ -152,6 +153,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/test_mesh.py",
     ),
     "cov-qt-ux": (
+        "tests/interactive/test_code_trust.py",
         "tests/interactive/test_colors.py",
         "tests/interactive/test_options.py",
         "tests/interactive/test_options_parameters.py",

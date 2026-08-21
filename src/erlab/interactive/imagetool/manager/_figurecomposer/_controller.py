@@ -698,7 +698,6 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                     FigureOperationState.custom(
                         label=title or "custom code",
                         code=custom_code,
-                        trusted=True,
                     ),
                     source_name_map,
                 )

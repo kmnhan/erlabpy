@@ -27,6 +27,7 @@ import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+from erlab.interactive._code_trust import new_document_trust
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
@@ -641,6 +642,7 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
                 dirty_added=set(),
                 dirty_state=set(),
                 path=source_path.resolve(),
+                code_trust=new_document_trust(),
             ),
             _tool_graph=types.SimpleNamespace(nodes={}),
         )
@@ -716,6 +718,7 @@ def test_committed_generation_merges_embedded_source_into_live_state(
             legacy_reader_rebindings=(("/legacy/imagetool", "payload"),),
         ),
         compression_mode="none",
+        trusted_lineage=True,
         embedded_script_sources=(("embedded.py", embedded_hash, embedded_source),),
     )
 
@@ -1627,6 +1630,7 @@ def _workspace_save_test_snapshot(
             objects=(),
         ),
         compression_mode="none",
+        trusted_lineage=True,
     )
 
 
@@ -1660,6 +1664,7 @@ def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
             ),
         ),
         compression_mode="none",
+        trusted_lineage=True,
     )
     worker = workspace_saving._WorkspaceSaveWorker(target, snapshot)
     results: list[tuple[float, workspace_saving._WorkspaceSaveError | None]] = []
@@ -1706,6 +1711,7 @@ def test_workspace_save_worker_classifies_publication_errors(
             objects=(),
         ),
         compression_mode="none",
+        trusted_lineage=True,
     )
     monkeypatch.setattr(
         workspace_storage,
@@ -1742,6 +1748,7 @@ def test_workspace_save_worker_closes_readers_only_after_contention(
             objects=(),
         ),
         compression_mode="none",
+        trusted_lineage=True,
     )
     close_calls: list[None] = []
 
@@ -1804,6 +1811,7 @@ def test_pending_workspace_tool_attrs_update_source_metadata() -> None:
         "tool_display_name": "old",
         "tool_title": "prefix old",
         erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR: "stale",
+        erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR: "legacy",
     }
     saver._pending_workspace_node_attrs = types.MethodType(
         lambda _self, _node, _attrs, *, kind: dict(pending_base),
@@ -1827,6 +1835,7 @@ def test_pending_workspace_tool_attrs_update_source_metadata() -> None:
     assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR not in attrs
     assert attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] == "valid"
     assert attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] is True
+    assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
 
     node.name = "plain"
     node.source_spec = None
@@ -2676,10 +2685,16 @@ def test_manager_background_workspace_save_failure_restores_state(
 
     with manager_context() as manager:
         operation_errors: list[tuple[str, str]] = []
+        trust_records: list[dict[str, typing.Any]] = []
         monkeypatch.setattr(
             manager,
             "_show_operation_error",
             lambda title, text: operation_errors.append((title, text)),
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_record_saved_workspace_code_trust",
+            lambda manifest, **_kwargs: trust_records.append(manifest),
         )
         _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
         errors: list[workspace_saving._WorkspaceSaveError] = []
@@ -2707,6 +2722,7 @@ def test_manager_background_workspace_save_failure_restores_state(
         assert manager.import_workspace_action.isEnabled()
         assert manager.is_workspace_modified
         assert not operation_errors
+        assert not trust_records
         manager._workspace_controller._mark_workspace_clean()
         manager._workspace_state.path = None
 
@@ -5072,6 +5088,7 @@ def test_workspace_save_and_save_as_error_continuation_branches(
                 objects=(),
             ),
             compression_mode="none",
+            trusted_lineage=True,
         )
 
     with manager_context() as manager:
@@ -5214,6 +5231,7 @@ def test_workspace_save_completion_ignores_inactive_document(
                 objects=(),
             ),
             compression_mode="none",
+            trusted_lineage=True,
         )
         monkeypatch.setattr(
             controller.saving, "_workspace_save_snapshot", lambda _path: snapshot
@@ -5277,6 +5295,7 @@ def test_workspace_save_as_completion_ignores_inactive_document(
                     objects=(),
                 ),
                 compression_mode="none",
+                trusted_lineage=True,
             ),
         )
 

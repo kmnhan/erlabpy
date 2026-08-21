@@ -45,6 +45,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     RenameOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive.imagetool._provenance._trust import (
+    script_replay_source_input_names,
+)
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as manager_provenance_controller,
 )
@@ -58,7 +61,9 @@ from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
     _ProvenanceReorderListModel,
     _ProvenanceReorderListView,
 )
-from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
+from erlab.interactive.imagetool.manager._widgets import (
+    _TrustedProvenanceReplayCancelled,
+)
 from tests.interactive.imagetool.manager.helpers import (
     select_metadata_items,
     select_metadata_rows,
@@ -67,6 +72,7 @@ from tests.interactive.imagetool.manager.helpers import (
 
 from ._common import (
     _add_file_replay_tool,
+    _authorize_execution,
     _manager_replay_file_spec,
     _provenance_paste_test_data,
     _set_aggregate,
@@ -909,14 +915,13 @@ def test_manager_provenance_reorder_requires_available_replay(
 
         root.set_detached_provenance(detached_script, replay_source_data=data)
         manager._update_info()
-        assert manager._provenance_edit_controller._script_replay_source_input_names(
-            detached_script
-        ) == ("data",)
+        assert script_replay_source_input_names(detached_script) == ("data",)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
         root.set_detached_provenance(trusted_script, replay_source_data=None)
         manager._update_info()
-        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+        available, reason = manager._provenance_edit_controller.can_reorder_steps()
+        assert available, reason
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         assert manager._metadata_reorder_steps_action.isEnabled()
@@ -948,6 +953,9 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
                     )
                 ),
             ),
+        ),
+        _authorize_provenance_execution=lambda entries, **_kwargs: _authorize_execution(
+            entries
         ),
     )
     controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
@@ -1130,7 +1138,9 @@ def test_manager_detached_watched_provenance_reorder_uses_retained_source(
         seed_code=seed_code,
         active_name="derived",
     )
-    displayed = replay_script_provenance(spec, {"my_data": source})
+    displayed = replay_script_provenance(
+        spec, {"my_data": source}, authorize=_authorize_execution
+    )
 
     with manager_context() as manager:
         tool = typing.cast(
@@ -1347,7 +1357,7 @@ def test_manager_provenance_reorder_cancelled_replay_restores_dialog(
     )
 
     def cancel_replay(*_args, **_kwargs) -> None:
-        raise _TrustedScriptReplayCancelled
+        raise _TrustedProvenanceReplayCancelled
 
     monkeypatch.setattr(controller, "_validate_and_replace", cancel_replay)
 
@@ -2023,7 +2033,7 @@ def test_manager_provenance_script_structured_row_can_revert(
             ),
         ),
     )
-    initial = replay_script_provenance(spec, {})
+    initial = replay_script_provenance(spec, {}, authorize=_authorize_execution)
 
     with manager_context() as manager:
         manager.show()

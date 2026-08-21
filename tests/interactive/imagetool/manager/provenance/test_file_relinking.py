@@ -3410,7 +3410,9 @@ def test_manager_provenance_file_replay_validation_prechecks_missing_path(
     monkeypatch.setattr(
         provenance_edit_controller,
         "replay_file_provenance",
-        lambda _spec: pytest.fail("missing files should fail before loader replay"),
+        lambda _spec, **_kwargs: pytest.fail(
+            "missing files should fail before loader replay"
+        ),
     )
 
     with pytest.raises(FileNotFoundError, match="no longer accessible"):
@@ -3434,6 +3436,7 @@ def test_manager_provenance_file_replay_validation_captures_loader_warnings(
         *,
         extension_executor: typing.Any = None,
         extension_loader_executor: typing.Any = None,
+        **_kwargs: typing.Any,
     ) -> xr.DataArray:
         assert extension_executor is not None
         assert extension_loader_executor is not None

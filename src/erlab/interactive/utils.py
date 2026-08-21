@@ -43,7 +43,33 @@ import xarray as xr
 from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
-from erlab.interactive import _qt_state
+from erlab.interactive import _qt_state, _saved_tools
+from erlab.interactive._code_trust import (
+    approve_document_trust,
+    commit_local_edit_trust,
+    create_manifest,
+    document_trust_is_trusted,
+    execution_capability_allows,
+    external_document_trust,
+    issue_complete_execution_capability,
+    issue_execution_capability,
+    issue_local_edit_capability,
+    manifest_has_code,
+    new_document_trust,
+    verify_document_payload_entries,
+)
+from erlab.interactive._code_trust._application import (
+    load_document_trust,
+    save_document_trust,
+)
+from erlab.interactive._code_trust._payloads import (
+    code_payload_entries_from_metadata,
+    store_code_payload_entries,
+)
+from erlab.interactive._code_trust._ui import (
+    confirm_code_trust,
+    create_code_trust_banner,
+)
 from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
 from erlab.interactive._plot_state import TOOL_VIEW_STATE_ATTR, ToolPlotStateRegistry
 from erlab.interactive._widgets import _Separator
@@ -63,6 +89,12 @@ if typing.TYPE_CHECKING:
     import varname
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
+    from erlab.interactive._code_trust._api import _DocumentTrust
+    from erlab.interactive._code_trust._core import (
+        CodeTrustEntry,
+        CodeTrustEntrySource,
+        CodeTrustManifest,
+    )
     from erlab.interactive.imagetool._provenance._model import (
         ToolProvenanceOperation,
         ToolProvenanceSpec,
@@ -3351,6 +3383,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     # for every mutation. It prevents later history and semantic signals from counting
     # the same mutation again.
     _PROVENANCE_IS_MODEL_OWNED: typing.ClassVar[bool] = False
+    _CODE_TRUST_DOMAIN: typing.ClassVar[str | None] = None
+    _CODE_TRUST_POLICY_VERSION: typing.ClassVar[int] = 1
     __tool_display_name: str = ""
 
     StateModel: type[M]
@@ -3363,6 +3397,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def __init_subclass__(cls, **kwargs: typing.Any) -> None:
         """Put each concrete status setter inside the mutation boundary."""
         super().__init_subclass__(**kwargs)
+        _saved_tools.register_saved_tool_class(cls)
         status_property = cls.__dict__.get("tool_status")
         if not isinstance(status_property, property) or status_property.fset is None:
             return
@@ -3409,7 +3444,21 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._source_status_layout.addWidget(self._source_status_button, 0)
         self._source_status_layout.addStretch(1)
         self._tool_root_layout.addWidget(self._source_status_bar, 0)
+
+        self._code_trust_banner = create_code_trust_banner(self._tool_root_widget)
+        self._code_trust_banner.review_requested.connect(self._review_code_trust)
+        self._code_trust_banner.hide()
+        self._tool_root_layout.addWidget(self._code_trust_banner, 0)
         QtWidgets.QMainWindow.setCentralWidget(self, self._tool_root_widget)
+
+        self._document_trust = new_document_trust()
+        self._code_trust_capability_issuer: Callable[..., object | None] | None = None
+        self._code_trust_local_edit_context: Callable[..., typing.Any] | None = None
+        self._code_trust_local_edit_capability: object | None = None
+        self._code_trust_state_getter: Callable[[], _DocumentTrust] | None = None
+        self._code_trust_entry_locator: (
+            Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
+        ) = None
 
         self._source_spec: ToolProvenanceSpec | None = None
         self._source_binding: ImageToolSelectionSourceBinding | None = None
@@ -3823,10 +3872,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         already produced the data that a queued restore callback would produce. This
         prevents stale restore-time previews or caches from running later.
         """
-        if not self._flushing_restore_work:
-            task_key = self._restore_work_key(callback, key=key)
-            if task_key is not None:
-                self._deferred_restore_work.pop(task_key, None)
+        task_key = self._restore_work_key(callback, key=key)
+        if task_key is not None:
+            self._deferred_restore_work.pop(task_key, None)
 
     def _flush_restore_work(
         self,
@@ -3854,7 +3902,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             tasks = [(task_key, self._deferred_restore_work[task_key])]
         else:
             return False
-        for pending_key, (pending_callback, run_on_show) in tasks:
+        for pending_key, pending_work in tasks:
+            if self._deferred_restore_work.get(pending_key) is not pending_work:
+                continue
+            pending_callback, run_on_show = pending_work
             if pending_key in skip_keys:
                 continue
             if run_on_show_only and not run_on_show:
@@ -3864,7 +3915,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 pending_callback()
             finally:
                 self._flushing_restore_work = False
-            self._deferred_restore_work.pop(pending_key, None)
+            if self._deferred_restore_work.get(pending_key) is pending_work:
+                self._deferred_restore_work.pop(pending_key)
             flushed = True
         return flushed
 
@@ -5121,7 +5173,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def _resolve_source_data(self, parent_data: xr.DataArray) -> xr.DataArray:
         """Apply the current source spec or selection state to ``parent_data``."""
-        return self._materialized_source_spec(parent_data).apply(parent_data)
+        source_spec = self._materialized_source_spec(parent_data)
+        capability = self._issue_code_execution_capability(
+            lambda: self._source_spec_code_trust_entries(source_spec)
+        )
+        if capability is None:
+            raise PermissionError("Tool source provenance contains untrusted code")
+        return source_spec.apply(parent_data, authorization=capability)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         """Validate or normalize source data before `update_data` consumes it.
@@ -5363,6 +5421,17 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return the state model to serialize for this tool."""
         return self.tool_status
 
+    def _code_trust_payload_entries(self) -> Iterable[CodeTrustEntry]:
+        """Return executable opaque-payload entries for the current tool state."""
+        return ()
+
+    def _code_trust_payload_entries_from_dataset(
+        self, ds: xr.Dataset
+    ) -> Iterable[CodeTrustEntry]:
+        """Return executable opaque-payload entries already serialized in ``ds``."""
+        del ds
+        return self._code_trust_payload_entries()
+
     @classmethod
     def can_save_and_load(cls) -> bool:
         """Check if this tool can be saved and restored."""
@@ -5470,7 +5539,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             return None
         try:
             parent_data = self._source_parent_fetcher()
-            resolved = self._materialized_source_spec(parent_data).apply(parent_data)
+            resolved = self._resolve_source_data(parent_data)
             resolved = self.validate_update_data(resolved)
         except Exception:
             return None
@@ -5542,7 +5611,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._flush_restore_work_for_save()
         self._flush_pending_history_write()
         ds = self._saved_tool_data_dataset()
-        return self._append_persistence_payload(ds)
+        ds = self._append_persistence_payload(ds)
+        store_code_payload_entries(
+            ds.attrs,
+            self._code_trust_payload_entries_from_dataset(ds),
+        )
+        return ds
 
     @staticmethod
     def _saved_tool_data_references(
@@ -5568,15 +5642,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return references
 
     @staticmethod
-    def _saved_source_spec_from_attrs(
-        ds: xr.Dataset,
+    def _saved_source_spec_from_metadata(
+        attrs: Mapping[str, typing.Any],
     ) -> ToolProvenanceSpec:
         from erlab.interactive.imagetool._provenance._model import (
             parse_tool_provenance_spec,
             require_live_source_spec,
         )
 
-        payload = ds.attrs.get(_TOOL_SOURCE_SPEC_ATTR)
+        payload = attrs.get(_TOOL_SOURCE_SPEC_ATTR)
         if not isinstance(payload, str):
             raise TypeError("Referenced tool data is missing source provenance")
         source_spec = parse_tool_provenance_spec(
@@ -5588,6 +5662,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return live_source_spec
 
     @classmethod
+    def _saved_source_spec_from_attrs(
+        cls,
+        ds: xr.Dataset,
+    ) -> ToolProvenanceSpec:
+        return cls._saved_source_spec_from_metadata(ds.attrs)
+
+    @classmethod
     def _resolve_saved_tool_data_reference(
         cls,
         reference: Mapping[str, typing.Any],
@@ -5596,6 +5677,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         source_parent_data: xr.DataArray | None,
         reference_resolver: Callable[[Mapping[str, typing.Any]], xr.DataArray | None]
         | None,
+        document_trust: _DocumentTrust | None = None,
+        entry_locator: (
+            Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
+        ) = None,
     ) -> xr.DataArray:
         kind = reference.get("kind")
         if kind == "parent_source":
@@ -5604,7 +5689,24 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     "Saved tool data references parent ImageTool data, but the "
                     "parent data is unavailable."
                 )
-            return cls._saved_source_spec_from_attrs(ds).apply(source_parent_data)
+            source_spec = cls._saved_source_spec_from_attrs(ds)
+            capability = None
+            if document_trust is not None:
+                entries = tuple(cls._source_spec_code_trust_entries(source_spec))
+                if entry_locator is not None:
+                    entries = entry_locator(entries)
+                _trust, capability = issue_complete_execution_capability(
+                    document_trust,
+                    entries,
+                )
+                if capability is None:
+                    raise _MissingSavedToolDataReferenceError(
+                        "Saved tool source provenance contains untrusted code"
+                    )
+            return source_spec.apply(
+                source_parent_data,
+                authorization=capability,
+            )
         if kind == "manager_node":
             if reference_resolver is None:
                 raise _MissingSavedToolDataReferenceError(
@@ -5640,6 +5742,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         source_parent_data: xr.DataArray | None,
         reference_resolver: Callable[[Mapping[str, typing.Any]], xr.DataArray | None]
         | None,
+        document_trust: _DocumentTrust | None = None,
+        entry_locator: (
+            Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
+        ) = None,
         variable_names: Collection[str] | None = None,
         materialize_references: bool = False,
     ) -> dict[str, xr.DataArray]:
@@ -5655,6 +5761,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     ds,
                     source_parent_data=source_parent_data,
                     reference_resolver=reference_resolver,
+                    document_trust=document_trust,
+                    entry_locator=entry_locator,
                 )
                 if materialize_references:
                     resolved = resolved.copy(deep=False).load()
@@ -5689,18 +5797,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         qualname = ds.attrs.get("tool_cls_qualname")
         if not isinstance(qualname, str):
             raise TypeError("Saved tool dataset is missing a valid tool class")
-        try:
-            mod_name, qual = qualname.split(":", maxsplit=1)
-        except ValueError as exc:
-            raise TypeError("Saved tool dataset is missing a valid tool class") from exc
-        if not mod_name or not qual:
+        mod_name, separator, qual = qualname.partition(":")
+        if not separator or not mod_name or not qual or ":" in qual:
             raise TypeError("Saved tool dataset is missing a valid tool class")
 
-        mod = importlib.import_module(mod_name)
-        cls_obj: object = mod
-        for attr in qual.split("."):
-            cls_obj = getattr(cls_obj, attr)
-        if not isinstance(cls_obj, type) or not issubclass(cls_obj, ToolWindow):
+        try:
+            cls_obj = _saved_tools.resolve_saved_tool_class(qualname)
+        except LookupError as exc:
+            raise TypeError("Saved tool class is not registered") from exc
+        if not issubclass(cls_obj, ToolWindow):
             raise TypeError("Saved tool class is not a ToolWindow subclass")
         return cls_obj
 
@@ -5734,6 +5839,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             kwargs.pop("_materialize_tool_data_references", False)
         )
         defer_restore_work = bool(kwargs.pop("_defer_restore_work", False))
+        document_trust = typing.cast(
+            "_DocumentTrust | None", kwargs.pop("_code_trust", None)
+        )
+        entry_locator = typing.cast(
+            "Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None",
+            kwargs.pop("_code_trust_entry_locator", None),
+        )
         ds = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
 
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
@@ -5747,11 +5859,24 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         cls_obj = typing.cast(
             "type[typing.Self]", cls._saved_tool_class_from_dataset(ds)
         )
+        saved_status = cls_obj.StateModel.model_validate_json(ds.attrs["tool_state"])
+        saved_code_payload_entries = (
+            ()
+            if cls_obj._CODE_TRUST_DOMAIN is None
+            else code_payload_entries_from_metadata(ds.attrs)
+        )
+        if document_trust is None:
+            manifest = cls_obj._code_trust_manifest_from_saved_metadata(
+                saved_status, ds.attrs
+            )
+            document_trust = external_document_trust(manifest)
         data_items = cls_obj._tool_data_items_from_dataset(
             ds,
             source_parent_data=source_parent_data,
             reference_resolver=reference_resolver,
             materialize_references=materialize_data_references,
+            document_trust=document_trust,
+            entry_locator=entry_locator,
         )
 
         # Instantiate the class and set the status
@@ -5767,14 +5892,28 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             _TOOL_WINDOW_RESTORE_DEFER.reset(token)
         previous_restoring = False
         previous_defer_restore = False
+        tool._code_trust_entry_locator = entry_locator
         tool._restoring_from_dataset = True
         tool._defer_restored_tool_work = defer_restore_work
         restore_succeeded = False
         try:
+            actual_code_payload_entries = (
+                ()
+                if cls_obj._CODE_TRUST_DOMAIN is None
+                else tuple(tool._code_trust_payload_entries_from_dataset(ds))
+            )
+            if entry_locator is not None:
+                saved_code_payload_entries = entry_locator(saved_code_payload_entries)
+                actual_code_payload_entries = entry_locator(actual_code_payload_entries)
+            verified_document_trust = verify_document_payload_entries(
+                document_trust,
+                saved_code_payload_entries,
+                actual_code_payload_entries,
+            )
+            document_trust = verified_document_trust
+            tool.set_document_trust(document_trust, notify=False)
             with tool._history_suppressed():
-                tool.tool_status = cls_obj.StateModel.model_validate_json(
-                    ds.attrs["tool_state"]
-                )
+                tool.tool_status = saved_status
             tool._tool_display_name = ds.attrs.get("tool_display_name", "")
             source_spec = None
             if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
@@ -5883,9 +6022,25 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """
         from erlab.interactive.imagetool import _serialization
 
-        _serialization.encode_private_coords(
-            self.to_dataset(), _SAVED_TOOL_DATA_NAME
-        ).to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+        dataset = self.to_dataset()
+        saved_status = self.StateModel.model_validate_json(dataset.attrs["tool_state"])
+        manifest = self._code_trust_manifest_from_saved_metadata(
+            saved_status, dataset.attrs
+        )
+        _serialization.encode_private_coords(dataset, _SAVED_TOOL_DATA_NAME).to_netcdf(
+            filename, engine="h5netcdf", invalid_netcdf=True
+        )
+        if manifest is not None:
+            saved_trust, signature_stored = save_document_trust(
+                self._current_document_trust(),
+                manifest,
+            )
+            if self._code_trust_state_getter is None:
+                self.set_document_trust(saved_trust, notify=False)
+            if not signature_stored:
+                logger.warning(
+                    "Tool file was saved, but durable code trust could not be stored",
+                )
 
     @classmethod
     def from_file(cls, filename: str | os.PathLike, **kwargs) -> typing.Self:
@@ -5898,7 +6053,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         **kwargs
             Additional keyword arguments passed to the constructor.
         """
-        return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
+        with xr.open_dataset(filename, engine="h5netcdf") as opened:
+            cls_obj = cls._saved_tool_class_from_dataset(opened)
+            status = cls_obj.StateModel.model_validate_json(opened.attrs["tool_state"])
+            manifest = cls_obj._code_trust_manifest_from_saved_metadata(
+                status, opened.attrs
+            )
+            document_trust = (
+                external_document_trust(None)
+                if manifest is None
+                else load_document_trust(manifest)
+            )
+            dataset = opened.load()
+        kwargs["_code_trust"] = document_trust
+        return cls.from_dataset(dataset, **kwargs)
 
     def duplicate(self, **kwargs) -> typing.Self:
         """Create a duplicate of the current tool window.
@@ -5917,7 +6085,312 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             The duplicated tool window.
 
         """
+        kwargs["_code_trust"] = self._current_document_trust()
         return self.from_dataset(self.to_dataset(), **kwargs)
+
+    @classmethod
+    def _code_trust_manifest_from_saved_metadata(
+        cls,
+        status: M,
+        attrs: Mapping[str, typing.Any],
+    ) -> CodeTrustManifest | None:
+        """Return executable content from saved state and opaque-payload metadata."""
+        if cls._CODE_TRUST_DOMAIN is None:
+            return None
+        source_spec = (
+            cls._saved_source_spec_from_metadata(attrs)
+            if _TOOL_SOURCE_SPEC_ATTR in attrs
+            else None
+        )
+        return create_manifest(
+            cls._CODE_TRUST_DOMAIN,
+            cls._CODE_TRUST_POLICY_VERSION,
+            (
+                *cls._code_trust_entries_from_status(status),
+                *code_payload_entries_from_metadata(attrs),
+                *cls._source_spec_code_trust_entries(source_spec),
+            ),
+        )
+
+    def _current_code_trust_manifest(self) -> CodeTrustManifest | None:
+        """Return executable content for the current in-memory document."""
+        if self._CODE_TRUST_DOMAIN is None:
+            return None
+        return create_manifest(
+            self._CODE_TRUST_DOMAIN,
+            self._CODE_TRUST_POLICY_VERSION,
+            (
+                *self._code_trust_entries_from_status(self._saved_tool_status()),
+                *self._code_trust_payload_entries(),
+                *self._source_spec_code_trust_entries(self._source_spec),
+            ),
+        )
+
+    @staticmethod
+    def _source_spec_code_trust_entries(
+        source_spec: ToolProvenanceSpec | None,
+    ) -> Iterable[CodeTrustEntry]:
+        if source_spec is None:
+            return ()
+        from erlab.interactive.imagetool._provenance._trust import (
+            provenance_code_trust_entries,
+        )
+
+        return provenance_code_trust_entries(
+            source_spec,
+            location_prefix="tool-source/provenance",
+        )
+
+    @classmethod
+    def _code_trust_entries_from_status(cls, status: M) -> Iterable[CodeTrustEntry]:
+        """Return feature entries included in the document trust manifest."""
+        return ()
+
+    def _current_document_trust(self) -> _DocumentTrust:
+        """Return trust from the current document host."""
+        if self._code_trust_state_getter is not None:
+            return self._code_trust_state_getter()
+        return self._document_trust
+
+    def _set_code_trust_host(
+        self,
+        issue_capability: Callable[..., object | None],
+        *,
+        local_edit_context: Callable[..., typing.Any],
+        state_getter: Callable[[], _DocumentTrust],
+        entry_locator: (
+            Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
+        ) = None,
+    ) -> None:
+        """Use one document host for all managed code-trust decisions."""
+        previous_trust = self._current_document_trust()
+        self._code_trust_capability_issuer = issue_capability
+        self._code_trust_local_edit_context = local_edit_context
+        self._code_trust_state_getter = state_getter
+        self._code_trust_entry_locator = entry_locator
+        self._code_trust_banner.hide()
+        if self._current_document_trust() != previous_trust:
+            self._code_trust_changed()
+
+    @contextlib.contextmanager
+    def _local_code_edit(
+        self,
+        execution_entries: CodeTrustEntrySource,
+        *,
+        edited_entries: CodeTrustEntrySource,
+        focus_on_block: bool = False,
+    ) -> Iterator[object | None]:
+        """Authorize one explicit local edit and commit lineage on success."""
+        resolved_execution_entries = tuple(
+            execution_entries() if callable(execution_entries) else execution_entries
+        )
+        resolved_edited_entries = tuple(
+            edited_entries() if callable(edited_entries) else edited_entries
+        )
+        if self._code_trust_local_edit_context is not None:
+            if self._code_trust_entry_locator is not None:
+                resolved_execution_entries = self._code_trust_entry_locator(
+                    resolved_execution_entries
+                )
+                resolved_edited_entries = self._code_trust_entry_locator(
+                    resolved_edited_entries
+                )
+            with self._code_trust_local_edit_context(
+                resolved_execution_entries,
+                edited_entries=resolved_edited_entries,
+                focus_on_block=focus_on_block,
+            ) as capability:
+                yield capability
+            return
+
+        previous = self._document_trust
+        prospective, capability = issue_local_edit_capability(
+            previous,
+            resolved_execution_entries,
+            edited_entries=resolved_edited_entries,
+        )
+        previous_manifest = (
+            self._current_code_trust_manifest() if prospective != previous else None
+        )
+        if capability is None and focus_on_block:
+            self._code_trust_banner.setFocus()
+        previous_capability = self._code_trust_local_edit_capability
+        self._code_trust_local_edit_capability = capability
+        try:
+            yield capability
+        finally:
+            self._code_trust_local_edit_capability = previous_capability
+        if prospective != previous and self._document_trust == previous:
+            manifest = self._current_code_trust_manifest()
+            committed = commit_local_edit_trust(
+                previous,
+                capability,
+                () if previous_manifest is None else previous_manifest.entries,
+                () if manifest is None else manifest.entries,
+                edited_entries=resolved_edited_entries,
+            )
+            if committed != previous:
+                self.set_document_trust(committed)
+
+    def _authorize_code_execution(
+        self,
+        entries: CodeTrustEntrySource,
+        *,
+        focus_on_block: bool = False,
+    ) -> bool:
+        """Authorize executable entries with the current document decision."""
+        return (
+            self._issue_code_execution_capability(
+                entries, focus_on_block=focus_on_block
+            )
+            is not None
+        )
+
+    def _apply_local_code_inventory_change(
+        self,
+        previous_entries: CodeTrustEntrySource,
+        candidate_entries: CodeTrustEntrySource,
+        evaluation_entries: CodeTrustEntrySource,
+        change: Callable[[], None],
+        *,
+        focus_on_block: bool = False,
+    ) -> bool:
+        """Authorize evaluation, then apply and commit a code inventory change."""
+        resolved_previous = tuple(
+            previous_entries() if callable(previous_entries) else previous_entries
+        )
+        resolved_candidate = tuple(
+            candidate_entries() if callable(candidate_entries) else candidate_entries
+        )
+        resolved_evaluation = tuple(
+            evaluation_entries() if callable(evaluation_entries) else evaluation_entries
+        )
+        previous_identities = tuple(
+            entry.document_identity() for entry in resolved_previous
+        )
+        previous_identity_set = frozenset(previous_identities)
+        edited_entries = tuple(
+            entry
+            for entry in resolved_candidate
+            if entry.document_identity() not in previous_identity_set
+        )
+        with self._local_code_edit(
+            resolved_candidate,
+            edited_entries=edited_entries,
+            focus_on_block=focus_on_block,
+        ) as capability:
+            if not execution_capability_allows(capability, resolved_evaluation):
+                if focus_on_block:
+                    self._code_trust_banner.setFocus()
+                return False
+            change()
+        return True
+
+    def _review_code_candidate(
+        self,
+        entries: CodeTrustEntrySource,
+        *,
+        document_name: str,
+        object_name: str,
+        window_title: str,
+    ) -> object | None:
+        """Review external code and return a capability for only that candidate."""
+        resolved_entries = tuple(entries() if callable(entries) else entries)
+        if not resolved_entries:
+            return None
+        if self._CODE_TRUST_DOMAIN is None:
+            raise RuntimeError("Code candidate review requires a trust domain")
+        manifest = create_manifest(
+            self._CODE_TRUST_DOMAIN,
+            self._CODE_TRUST_POLICY_VERSION,
+            resolved_entries,
+        )
+        candidate_trust = approve_document_trust(
+            external_document_trust(manifest), manifest
+        )
+        _trust, capability = issue_execution_capability(
+            candidate_trust, resolved_entries
+        )
+        if not confirm_code_trust(
+            self,
+            manifest,
+            document_name=document_name,
+            object_name=object_name,
+            window_title=window_title,
+        ):
+            return None
+        return capability
+
+    def _issue_code_execution_capability(
+        self,
+        entries: CodeTrustEntrySource,
+        *,
+        focus_on_block: bool = False,
+    ) -> object | None:
+        """Issue a capability that allows the complete execution request."""
+        resolved_entries = tuple(entries() if callable(entries) else entries)
+        if self._code_trust_local_edit_capability is not None and (
+            execution_capability_allows(
+                self._code_trust_local_edit_capability,
+                resolved_entries,
+            )
+        ):
+            return self._code_trust_local_edit_capability
+        document_entries = resolved_entries
+        if self._code_trust_entry_locator is not None:
+            document_entries = self._code_trust_entry_locator(resolved_entries)
+        if self._code_trust_capability_issuer is not None:
+            capability = self._code_trust_capability_issuer(
+                document_entries, focus_on_block=focus_on_block
+            )
+        else:
+            trust, capability = issue_complete_execution_capability(
+                self._document_trust,
+                document_entries,
+            )
+            self.set_document_trust(trust, notify=False)
+        if execution_capability_allows(capability, document_entries):
+            return capability
+        if focus_on_block:
+            self._code_trust_banner.setFocus()
+        return None
+
+    def set_document_trust(
+        self,
+        trust: _DocumentTrust,
+        *,
+        notify: bool = True,
+    ) -> _DocumentTrust:
+        """Set standalone document trust and notify the feature when it changes."""
+        changed = trust != self._document_trust
+        self._document_trust = trust
+        if self._code_trust_state_getter is None:
+            self._code_trust_banner.setVisible(not document_trust_is_trusted(trust))
+        if changed and notify:
+            self._code_trust_changed()
+        return trust
+
+    def _code_trust_changed(self) -> None:
+        """React after document trust changes."""
+
+    def _review_code_trust(self) -> None:
+        manifest = self._current_code_trust_manifest()
+        if manifest is None:
+            return
+        if not manifest_has_code(manifest):
+            self.set_document_trust(
+                approve_document_trust(self._document_trust, manifest)
+            )
+            return
+        if not confirm_code_trust(
+            self,
+            manifest,
+            document_name="Document",
+            object_name="tool_code_trust_review_dialog",
+            window_title="Review Stored Code",
+        ):
+            return
+        self.set_document_trust(approve_document_trust(self._document_trust, manifest))
 
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         self._flush_restore_work(run_on_show_only=True)

@@ -1,4 +1,6 @@
+import contextlib
 import gc
+import json
 
 import lmfit
 import numpy as np
@@ -8,10 +10,27 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive import _fit1d as fit1d
+from erlab.interactive._code_trust import (
+    authorize_document_execution,
+    create_entry,
+    document_trust_has_trusted_lineage,
+    execution_capability_allows,
+    external_document_trust,
+    issue_local_edit_capability,
+    new_document_trust,
+    untrusted_document_trust,
+)
+from erlab.interactive._code_trust._api import _document_trust_after_save
 from erlab.interactive._fit1d import (
     Fit1DTool,
     _ParameterEditDelegate,
     _ParameterTableModel,
+)
+from erlab.interactive._fit_code_trust import (
+    lmfit_expression_model_code_entries,
+    lmfit_model_code_entry,
+    lmfit_parameter_expression_entries,
+    lmfit_result_code_entry,
 )
 from tests._qt_helpers import signal_receiver_count
 
@@ -22,8 +41,43 @@ def _make_1d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("x",), coords={"x": x}, name="spec")
 
 
+def _make_linear_fit1d_tool(
+    qtbot, *, expression: bool = False
+) -> tuple[Fit1DTool, xr.DataArray, lmfit.Model, lmfit.Parameters]:
+    data = _make_1d_data()
+    model = lmfit.models.LinearModel()
+    params = model.make_params(slope=1.0, intercept=2.0 if expression else 0.0)
+    if expression:
+        params["intercept"].expr = "2 * slope"
+    tool = erlab.interactive.ftool(data, model=model, params=params, execute=False)
+    qtbot.addWidget(tool)
+    if not isinstance(tool, Fit1DTool):  # pragma: no cover
+        raise TypeError("Expected Fit1DTool")
+    return tool, data, model, params
+
+
+def _set_signed_fit_trust(tool: Fit1DTool) -> None:
+    manifest = tool._current_code_trust_manifest()
+    assert manifest is not None
+    signed = _document_trust_after_save(
+        new_document_trust(),
+        manifest,
+        saved_trusted_lineage=True,
+        signature_stored=True,
+    )
+    tool.set_document_trust(signed, notify=False)
+
+
+def _trust_allows_local_code_edit(trust) -> bool:
+    entry = create_entry("test.local-edit", "test", "result = source")
+    return authorize_document_execution(trust, (entry,))[1]
+
+
 def _assert_fit_result_dataset_equivalent(
-    actual: xr.Dataset, expected: xr.Dataset
+    actual: xr.Dataset,
+    expected: xr.Dataset,
+    *,
+    require_model_type: bool = True,
 ) -> None:
     xr.testing.assert_identical(
         actual.drop_vars("modelfit_results"),
@@ -31,7 +85,8 @@ def _assert_fit_result_dataset_equivalent(
     )
     actual_result = actual.modelfit_results.compute().item()
     expected_result = expected.modelfit_results.compute().item()
-    assert type(actual_result.model) is type(expected_result.model)
+    if require_model_type:
+        assert type(actual_result.model) is type(expected_result.model)
     assert list(actual_result.params.keys()) == list(expected_result.params.keys())
     for name, expected_param in expected_result.params.items():
         actual_param = actual_result.params[name]
@@ -45,16 +100,29 @@ def _assert_fit_result_dataset_equivalent(
 
 
 def _fit_result_dataset(params: lmfit.Parameters, *, nfev: int = 1) -> xr.Dataset:
-    class _Result:
-        def __init__(self) -> None:
-            self.params = params.copy()
-            self.nfev = nfev
-            self.redchi = 1.0
-            self.rsquared = 0.9
-            self.aic = 1.0
-            self.bic = 2.0
+    params = params.copy()
+    param_args = ", ".join(("x", *params.keys()))
+    namespace = {"np": np}
+    exec(  # noqa: S102
+        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
+        namespace,
+    )
+    model = lmfit.Model(namespace["_model_func"])
+    result = lmfit.model.ModelResult(
+        model,
+        params,
+        data=np.zeros(3),
+        fcn_args=(np.arange(3, dtype=float),),
+        max_nfev=nfev,
+    )
+    result.params = params.copy()
+    result.nfev = nfev
+    result.redchi = 1.0
+    result.rsquared = 0.9
+    result.aic = 1.0
+    result.bic = 2.0
 
-    return xr.Dataset({"modelfit_results": xr.DataArray(_Result(), dims=())})
+    return xr.Dataset({"modelfit_results": xr.DataArray(result, dims=())})
 
 
 @pytest.mark.parametrize(
@@ -194,6 +262,375 @@ def test_fit1d_tool_status_without_saved_params_uses_model_defaults(
 
     assert list(win_restored._params) == ["n0", "tau"]
     assert win_restored.tool_status.params
+
+
+def test_fit1d_saved_model_restore_waits_for_document_approval(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_1d_data()
+    source = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(source)
+    saved = source.to_dataset()
+    saved_status = Fit1DTool.StateModel.model_validate_json(saved.attrs["tool_state"])
+
+    calls: list[str] = []
+    original_loads = lmfit.model.Model.loads
+
+    def tracked_loads(model, state, **kwargs):
+        calls.append(state)
+        return original_loads(model, state, **kwargs)
+
+    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, Fit1DTool)
+    assert calls == []
+    assert not document_trust_has_trusted_lineage(restored._document_trust)
+    assert restored._saved_tool_status() == saved_status
+
+    restored.set_document_trust(new_document_trust())
+
+    assert calls == [saved_status.model_state[1]]
+    assert restored.tool_status.model_name == saved_status.model_name
+
+
+@pytest.mark.parametrize("ndim", [1, 2])
+def test_signed_parameterless_model_restore_preserves_saved_identity(
+    qtbot, monkeypatch, ndim: int
+) -> None:
+    data = _make_1d_data()
+    if ndim == 2:
+        data = xr.concat([data, data + 1.0], dim="y")
+    source = erlab.interactive.ftool(
+        data,
+        model=lmfit.Model(lambda x: x, independent_vars=["x"]),
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    assert not source._params
+    _set_signed_fit_trust(source)
+    signed_trust = source._document_trust
+    saved_model_state = source._serialized_model_state
+    saved_entries = source._fit_code_entries
+    saved = source.to_dataset()
+    dump_calls = 0
+    original_loads = lmfit.model.Model.loads
+
+    def tracked_loads(model, state, **kwargs):
+        loaded = original_loads(model, state, **kwargs)
+
+        def unexpected_dump(*_args, **_kwargs):
+            nonlocal dump_calls
+            dump_calls += 1
+            return lmfit.models.ExpressionModel("changed * x").dumps()
+
+        monkeypatch.setattr(loaded, "dumps", unexpected_dump)
+        return loaded
+
+    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _code_trust=signed_trust,
+    )
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, Fit1DTool)
+    assert dump_calls == 0
+    assert restored._serialized_model_state == saved_model_state
+    assert restored._fit_code_entries == saved_entries
+    assert restored._document_trust == signed_trust
+
+
+def test_fit1d_saved_model_class_does_not_import_document_target(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    module_name = "unregistered_saved_fit_model"
+    marker = tmp_path / "imported.txt"
+    (tmp_path / f"{module_name}.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+        "class SavedModel:\n    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    source = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(source)
+    saved = source.to_dataset()
+    status = Fit1DTool.StateModel.model_validate_json(saved.attrs["tool_state"])
+    saved.attrs["tool_state"] = status.model_copy(
+        update={
+            "model_state": (
+                f"{module_name}:SavedModel",
+                status.model_state[1],
+            )
+        }
+    ).model_dump_json()
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _code_trust=new_document_trust(),
+    )
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, Fit1DTool)
+    assert not marker.exists()
+    assert type(restored._model).__module__ != module_name
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_code"),
+    [
+        pytest.param(lmfit.models.ExponentialModel(), None, id="lmfit-library"),
+        pytest.param(erlab.analysis.fit.models.TLLModel(), None, id="erlab-library"),
+        pytest.param(
+            lmfit.models.ExpressionModel("amplitude * exp(-x / decay)"),
+            "amplitude * exp(-x / decay)",
+            id="expression",
+        ),
+        pytest.param(
+            lmfit.Model(lambda x, amplitude: amplitude * x),
+            "serialized-callable",
+            id="custom-callable",
+        ),
+        pytest.param(
+            erlab.analysis.fit.models.FermiEdgeModel(),
+            "serialized-callable",
+            id="embedded-library-callable",
+        ),
+    ],
+)
+def test_lmfit_code_trust_classifies_models_without_loading(
+    model: lmfit.Model, expected_code: str | None
+) -> None:
+    entry = lmfit_model_code_entry(
+        model.dumps(),
+        feature="test.lmfit-model",
+        location="model",
+    )
+
+    if expected_code is None:
+        assert entry is None
+    else:
+        assert entry is not None
+        assert expected_code in entry.code
+
+
+def test_expression_model_local_entry_matches_saved_model_identity() -> None:
+    expression = "amplitude * exp(-x / decay)"
+    model = lmfit.models.ExpressionModel(expression)
+    local_entries = lmfit_expression_model_code_entries(
+        expression,
+        "constant = 1",
+        feature="test.lmfit-model",
+        location="model",
+    )
+    saved_entry = lmfit_model_code_entry(
+        model.dumps(),
+        feature="test.lmfit-model",
+        location="model",
+    )
+
+    assert saved_entry is not None
+    assert local_entries[0] == saved_entry
+    assert local_entries[1].code == "constant = 1"
+
+
+def test_lmfit_code_trust_tracks_every_saved_parameter_expression() -> None:
+    entries = lmfit_parameter_expression_entries(
+        [
+            ("plain", None),
+            ("constrained", "2 * plain"),
+        ],
+        feature="test.lmfit-parameter",
+        location_prefix="parameters",
+    )
+
+    assert len(entries) == 1
+    assert entries[0].location == "parameters/constrained"
+    assert entries[0].code == "2 * plain"
+    assert entries[0].context == {"parameter": "constrained"}
+
+
+def test_lmfit_parameter_expression_locations_are_stable_and_escaped() -> None:
+    original = lmfit_parameter_expression_entries(
+        [("first/parameter", "scale * 2"), ("second", "scale * 3")],
+        feature="test.lmfit-parameter",
+        location_prefix="parameters",
+    )
+    inserted = lmfit_parameter_expression_entries(
+        [
+            ("added", "scale * 4"),
+            ("first/parameter", "scale * 2"),
+            ("second", "scale * 3"),
+        ],
+        feature="test.lmfit-parameter",
+        location_prefix="parameters",
+    )
+
+    assert original == inserted[1:]
+    assert [entry.location for entry in inserted] == [
+        "parameters/added",
+        "parameters/first%2Fparameter",
+        "parameters/second",
+    ]
+
+
+def _custom_lmfit_json(*, dill_value: str, numeric_value: float) -> str:
+    return json.dumps(
+        {
+            "chisqr": numeric_value,
+            "model": {
+                "__class__": "Callable",
+                "__name__": "custom_model",
+                "importer": "unavailable.user_module",
+                "pyversion": "3.14",
+                "value": dill_value,
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("payload_kind", ["model", "result"])
+def test_lmfit_entries_digest_only_executable_fragments(payload_kind: str) -> None:
+    def entry(*, dill_value: str, numeric_value: float):
+        serialized = _custom_lmfit_json(
+            dill_value=dill_value, numeric_value=numeric_value
+        )
+        if payload_kind == "model":
+            return lmfit_model_code_entry(
+                serialized,
+                feature="test.lmfit-model",
+                location="model",
+            )
+        payload = xr.Dataset(
+            {
+                "modelfit_results": xr.DataArray(serialized),
+                "numeric_result": xr.DataArray(numeric_value),
+            }
+        ).to_netcdf(path=None, engine="h5netcdf")
+        return lmfit_result_code_entry(
+            bytes(payload),
+            feature="test.lmfit-result",
+            location="fit-result",
+        )
+
+    original = entry(dill_value="dill-a", numeric_value=1.0)
+
+    assert original is not None
+    assert original == entry(dill_value="dill-a", numeric_value=2.0)
+    assert original != entry(dill_value="dill-b", numeric_value=1.0)
+
+
+def test_lmfit_code_trust_classifies_result_payload_without_loading_it() -> None:
+    x = np.linspace(0.0, 2.0, 11)
+    model = lmfit.models.ExponentialModel()
+    params = model.make_params(amplitude=1.0, decay=1.0)
+    result = model.fit(np.exp(-x), params, x=x)
+    payload = xr.Dataset({"modelfit_results": xr.DataArray(result.dumps())}).to_netcdf(
+        path=None, engine="h5netcdf"
+    )
+
+    entry = lmfit_result_code_entry(
+        bytes(payload),
+        feature="test.lmfit-result",
+        location="fit-result",
+    )
+
+    assert entry is None
+
+
+def test_fit1d_saved_library_model_and_result_restore_without_approval(qtbot) -> None:
+    x = np.linspace(0.0, 2.0, 25)
+    values = 1.2 * np.exp(-x / 0.8) + 0.005 * np.sin(5.0 * x)
+    data = xr.DataArray(values, dims=("x",), coords={"x": x})
+    model = lmfit.models.ExponentialModel()
+    source = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(amplitude=1.0, decay=1.0),
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    assert source._run_fit()
+    qtbot.waitUntil(lambda: source._last_result_ds is not None, timeout=10000)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(source.to_dataset())
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, Fit1DTool)
+    assert restored._pending_fit_status is None
+    assert restored._pending_persisted_fit_is_current is None
+    assert restored._model.func is lmfit.lineshapes.exponential
+    assert restored._last_result_ds is not None
+
+
+def test_fit1d_code_trust_tracks_parameter_expressions(qtbot) -> None:
+    tool = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(tool)
+    status = tool.tool_status
+    parameter_state = list(status.params[0])
+    parameter_state[3] = "other_parameter + 1"
+    changed_params = list(status.params)
+    changed_params[0] = tuple(parameter_state)
+    changed = status.model_copy(update={"params": changed_params})
+
+    baseline_entries = tuple(type(tool)._code_trust_entries_from_status(status))
+    changed_entries = tuple(type(tool)._code_trust_entries_from_status(changed))
+
+    assert baseline_entries != changed_entries
+    expression_entry = next(
+        entry
+        for entry in changed_entries
+        if entry.feature == tool._PARAMETER_CODE_TRUST_FEATURE
+    )
+    assert expression_entry.location == f"parameters/{parameter_state[0]}"
+    assert expression_entry.code == "other_parameter + 1"
+    assert expression_entry.context == {"parameter": parameter_state[0]}
+
+
+def test_fit1d_empty_model_state_does_not_bypass_expression_trust(
+    qtbot, monkeypatch
+) -> None:
+    source = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(source)
+    saved = source.to_dataset()
+    status = Fit1DTool.StateModel.model_validate_json(saved.attrs["tool_state"])
+    parameter_state = list(status.params[0])
+    parameter_state[3] = "1 + 1"
+    params = list(status.params)
+    params[0] = tuple(parameter_state)
+    modified_status = status.model_copy(
+        update={
+            "model_state": (status.model_state[0], ""),
+            "normalize_mean": not status.normalize_mean,
+            "params": params,
+        }
+    )
+    saved.attrs["tool_state"] = modified_status.model_dump_json()
+
+    calls: list[object] = []
+    original = Fit1DTool._deserialize_params
+
+    def tracked_deserialize(state, **kwargs):
+        calls.append(state)
+        return original(state, **kwargs)
+
+    monkeypatch.setattr(
+        Fit1DTool,
+        "_deserialize_params",
+        staticmethod(tracked_deserialize),
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+
+    assert calls == []
+    assert not document_trust_has_trusted_lineage(restored._document_trust)
+    assert restored.normalize_check.isChecked() is modified_status.normalize_mean
+    assert tuple(type(restored)._code_trust_entries_from_status(modified_status))
 
 
 def test_fit1d_undo_redo(qtbot, exp_decay_model) -> None:
@@ -345,7 +782,9 @@ def test_fit1d_persistence_roundtrip_preserves_fit_result(
     expected_fit_ds = win._last_result_ds.copy(deep=True)
     expected_status = win.tool_status.model_dump()
 
-    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset(), _code_trust=new_document_trust()
+    )
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit1DTool)
 
@@ -383,7 +822,9 @@ def test_fit1d_persistence_roundtrip_preserves_stale_fit(
     expected_fit_ds = win._last_result_ds.copy(deep=True)
     expected_status = win.tool_status.model_dump()
 
-    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset(), _code_trust=new_document_trust()
+    )
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit1DTool)
 
@@ -393,6 +834,60 @@ def test_fit1d_persistence_roundtrip_preserves_stale_fit(
     assert win_restored._fit_is_current is False
     assert not win_restored.save_button.isEnabled()
     assert not win_restored.copy_button.isEnabled()
+
+
+def test_fit1d_persisted_result_digest_blocks_swapped_payload(
+    qtbot, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    model = lmfit.models.ExponentialModel()
+    source = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(amplitude=2.0, decay=1.0),
+        execute=False,
+    )
+    qtbot.addWidget(source)
+    assert source._run_fit()
+    qtbot.waitUntil(lambda: source._last_result_ds is not None, timeout=10000)
+    qtbot.waitUntil(lambda: not source._fit_running(), timeout=10000)
+
+    tampered = source.to_dataset().copy(deep=True)
+    payload = np.asarray(tampered[source._PERSISTED_FIT_RESULT_VAR].values).copy()
+    payload[-1] ^= np.uint8(1)
+    tampered[source._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
+        payload,
+        dims=(source._PERSISTED_FIT_RESULT_DIM,),
+    )
+
+    decode_calls: list[None] = []
+
+    def fail_if_decoded(_payload):
+        decode_calls.append(None)
+        raise AssertionError("tampered fit result was decoded")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_deserialize_fit_dataset_blob",
+        fail_if_decoded,
+    )
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        tampered,
+        _code_trust=new_document_trust(),
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+
+    assert decode_calls == []
+    assert not document_trust_has_trusted_lineage(restored._document_trust)
+
+    duplicate = restored.duplicate()
+    qtbot.addWidget(duplicate)
+    assert decode_calls == []
+    assert not document_trust_has_trusted_lineage(duplicate._document_trust)
 
 
 def test_fit1d_update_data_preserves_state_and_refit(
@@ -1573,6 +2068,330 @@ def test_fit1d_user_and_file_models(qtbot, tmp_path) -> None:
     code = win.copy_code()
     assert "load_model" in code
     assert str(model_path) in code
+
+
+def test_fit1d_model_file_reviews_exact_candidate_before_decode(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    _set_signed_fit_trust(tool)
+    candidate = lmfit.models.ExpressionModel("amplitude * x + offset")
+    serialized = candidate.dumps()
+    model_path = tmp_path / "candidate.model"
+    model_path.write_text(serialized)
+    file_index = tool.model_combo.findData("__file")
+    events: list[str] = []
+    reviewed_manifests = []
+    review_options: list[dict[str, object]] = []
+    original_loads = lmfit.model.Model.loads
+
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(model_path), ""),
+    )
+
+    def confirm_candidate(_parent, manifest, **kwargs) -> bool:
+        events.append("review")
+        reviewed_manifests.append(manifest)
+        review_options.append(kwargs)
+        model_path.write_text(
+            lmfit.models.ExpressionModel("different * x + baseline").dumps()
+        )
+        return True
+
+    def tracked_loads(model, text, *args, **kwargs):
+        events.append("decode")
+        assert text == serialized
+        return original_loads(model, text, *args, **kwargs)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", confirm_candidate
+    )
+    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(file_index)
+
+    tool._on_model_choice_changed(file_index)
+
+    assert events == ["review", "decode"]
+    assert len(reviewed_manifests) == 1
+    assert reviewed_manifests[0].entries == (
+        tool._model_code_trust_entry(("", serialized)),
+    )
+    assert review_options[0]["object_name"] == (
+        "fit_model_file_code_trust_review_dialog"
+    )
+    assert isinstance(tool._model, lmfit.models.ExpressionModel)
+    assert tool._model.expr == candidate.expr
+    assert tool._model_load_path == str(model_path)
+    assert _trust_allows_local_code_edit(tool._document_trust)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_reviews", "expected_decodes"),
+    [
+        pytest.param("cancel", 0, 0, id="file-dialog-cancel"),
+        pytest.param("deny", 1, 0, id="review-deny"),
+        pytest.param("entry-mutation", 1, 0, id="candidate-entry-mutation"),
+        pytest.param("failure", 1, 1, id="decode-failure"),
+    ],
+)
+def test_fit1d_model_file_cancel_deny_and_failure_preserve_state(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    outcome: str,
+    expected_reviews: int,
+    expected_decodes: int,
+) -> None:
+    tool, _data, old_model, _params = _make_linear_fit1d_tool(qtbot)
+    old_trust = tool._document_trust
+    old_model_state = tool._serialized_model_state
+    candidate = lmfit.models.ExpressionModel("amplitude * x + offset")
+    model_path = tmp_path / "candidate.model"
+    model_path.write_text(candidate.dumps())
+    file_index = tool.model_combo.findData("__file")
+    review_calls = 0
+    decode_calls = 0
+    errors: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (
+            ("", "") if outcome == "cancel" else (str(model_path), "")
+        ),
+    )
+
+    def confirm_candidate(_parent, manifest, **_kwargs) -> bool:
+        nonlocal review_calls
+        review_calls += 1
+        if outcome == "entry-mutation":
+            manifest.entries[0].context["changed-during-review"] = True
+        return outcome != "deny"
+
+    def tracked_loads(*_args, **_kwargs):
+        nonlocal decode_calls
+        decode_calls += 1
+        raise RuntimeError("invalid model")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", confirm_candidate
+    )
+    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+    monkeypatch.setattr(tool, "_show_error", lambda *args: errors.append(args))
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(file_index)
+
+    tool._on_model_choice_changed(file_index)
+
+    assert review_calls == expected_reviews
+    assert decode_calls == expected_decodes
+    assert bool(errors) is (outcome == "failure")
+    assert tool._model is old_model
+    assert tool._serialized_model_state == old_model_state
+    assert tool._model_load_path is None
+    assert tool._document_trust == old_trust
+
+
+def test_fit1d_model_file_application_failure_preserves_state(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    tool, _data, old_model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    _set_signed_fit_trust(tool)
+    old_trust = tool._document_trust
+    old_params = tool._params
+    old_model_state = tool._serialized_model_state
+    old_entries = tool._fit_code_entries
+    candidate = lmfit.models.ExpressionModel("amplitude * x + offset")
+    model_path = tmp_path / "candidate.model"
+    model_path.write_text(candidate.dumps())
+    file_index = tool.model_combo.findData("__file")
+    original_loads = lmfit.model.Model.loads
+    errors: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(model_path), ""),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "confirm_code_trust",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def tracked_loads(model, text, *args, **kwargs):
+        loaded = original_loads(model, text, *args, **kwargs)
+
+        def fail_make_params(*_args, **_kwargs):
+            raise RuntimeError("parameter creation failed")
+
+        monkeypatch.setattr(loaded, "make_params", fail_make_params)
+        return loaded
+
+    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+    monkeypatch.setattr(tool, "_show_error", lambda *args: errors.append(args))
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(file_index)
+
+    tool._on_model_choice_changed(file_index)
+
+    assert errors
+    assert tool._model is old_model
+    assert tool._params is old_params
+    assert tool._serialized_model_state == old_model_state
+    assert tool._model_load_path is None
+    assert tool._fit_code_entries is old_entries
+    assert tool._document_trust == old_trust
+
+
+def test_fit1d_model_file_keeps_reviewed_state_without_second_dump(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    tool, _data, _old_model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    _set_signed_fit_trust(tool)
+    candidate = lmfit.models.ExpressionModel("reviewed * x + offset")
+    serialized = candidate.dumps()
+    model_path = tmp_path / "candidate.model"
+    model_path.write_text(serialized)
+    different_serialized = lmfit.models.ExpressionModel(
+        "changed * x + offset", init_script="constant = 1"
+    ).dumps()
+    file_index = tool.model_combo.findData("__file")
+    review_calls = 0
+    dump_calls = 0
+    original_loads = lmfit.model.Model.loads
+
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(model_path), ""),
+    )
+
+    def confirm_candidate(*_args, **_kwargs) -> bool:
+        nonlocal review_calls
+        review_calls += 1
+        return True
+
+    def tracked_dumps(*args, **kwargs):
+        nonlocal dump_calls
+        dump_calls += 1
+        return different_serialized
+
+    def tracked_loads(model, text, *args, **kwargs):
+        loaded = original_loads(model, text, *args, **kwargs)
+        monkeypatch.setattr(loaded, "dumps", tracked_dumps)
+        return loaded
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", confirm_candidate
+    )
+    monkeypatch.setattr(
+        lmfit.model.Model,
+        "loads",
+        tracked_loads,
+    )
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(file_index)
+
+    tool._on_model_choice_changed(file_index)
+
+    assert review_calls == 1
+    assert dump_calls == 0
+    assert isinstance(tool._model, lmfit.models.ExpressionModel)
+    assert tool._model.expr == candidate.expr
+    assert tool._serialized_model_state == (
+        fit1d._model_class_reference(type(tool._model)),
+        serialized,
+    )
+    assert tool._model_load_path == str(model_path)
+    assert _trust_allows_local_code_edit(tool._document_trust)
+
+
+def test_fit1d_safe_model_file_loads_without_review(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot)
+    serialized = lmfit.models.LinearModel().dumps()
+    model_path = tmp_path / "linear.model"
+    model_path.write_text(serialized)
+    file_index = tool.model_combo.findData("__file")
+    original_loads = lmfit.model.Model.loads
+    decoded: list[str] = []
+
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(model_path), ""),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "confirm_code_trust",
+        lambda *_args, **_kwargs: pytest.fail("safe model requested code review"),
+    )
+
+    def tracked_loads(model, text, *args, **kwargs):
+        decoded.append(text)
+        return original_loads(model, text, *args, **kwargs)
+
+    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(file_index)
+
+    tool._on_model_choice_changed(file_index)
+
+    assert decoded == [serialized]
+    assert tool._model_load_path == str(model_path)
+    assert (
+        tool.model_combo.currentData(role=QtCore.Qt.ItemDataRole.UserRole) == "__file"
+    )
+
+
+def test_fit1d_model_file_review_does_not_admit_unrelated_code(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    old_model = lmfit.models.ExpressionModel("slope * x + intercept")
+    old_params = old_model.make_params(slope=1.0, intercept=0.0)
+    old_params["intercept"].expr = "2 * slope"
+    tool = erlab.interactive.ftool(
+        _make_1d_data(), model=old_model, params=old_params, execute=False
+    )
+    qtbot.addWidget(tool)
+    tool.set_document_trust(untrusted_document_trust())
+    old_trust = tool._document_trust
+    candidate = lmfit.models.ExpressionModel("amplitude * x + offset")
+    serialized = candidate.dumps()
+    model_path = tmp_path / "candidate.model"
+    model_path.write_text(serialized)
+    file_index = tool.model_combo.findData("__file")
+    reviewed_manifests = []
+
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (str(model_path), ""),
+    )
+
+    def confirm_candidate(_parent, manifest, **_kwargs) -> bool:
+        reviewed_manifests.append(manifest)
+        return True
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", confirm_candidate
+    )
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(file_index)
+
+    tool._on_model_choice_changed(file_index)
+
+    assert len(reviewed_manifests) == 1
+    assert len(reviewed_manifests[0].entries) == 1
+    assert "2 * slope" not in reviewed_manifests[0].entries[0].code
+    assert tool._model is old_model
+    assert tool._params["intercept"].expr == "2 * slope"
+    assert tool._document_trust == old_trust
 
 
 def test_fit1d_expression_editing_and_validation(qtbot, monkeypatch) -> None:
@@ -3013,3 +3832,416 @@ def test_merge_params_composite_model_with_prefixes() -> None:
     assert new_params["g1_sigma"].value == pytest.approx(0.1)
     assert new_params["g2_center"].value == pytest.approx(2.0)
     assert new_params["g2_sigma"].value == pytest.approx(0.2)
+
+
+def test_fit1d_trust_revocation_blocks_expression_execution(qtbot, monkeypatch) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    tool.set_document_trust(untrusted_document_trust())
+    assert tool._params["intercept"].expr == "2 * slope"
+
+    def fail_if_executed(*_args, **_kwargs):
+        raise AssertionError("untrusted fit code was executed")
+
+    monkeypatch.setattr(tool._model, "eval", fail_if_executed)
+    monkeypatch.setattr(tool._model, "guess", fail_if_executed)
+    monkeypatch.setattr(fit1d, "_FitWorker", fail_if_executed)
+    monkeypatch.setattr(lmfit.Parameter, "_getval", fail_if_executed)
+
+    value_index = tool.param_model.index(
+        tool.param_model._param_names.index("intercept"), 1
+    )
+    assert tool.param_model.data(value_index) == "2"
+    tool._update_fit_curve()
+    tool._guess_params()
+    assert not tool._run_fit()
+
+
+def test_fit1d_untrusted_host_attachment_clears_cached_capability(qtbot) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    assert tool._current_fit_execution_allowed()
+    assert tool._fit_execution_capability is not None
+
+    host_trust = untrusted_document_trust()
+    tool._set_code_trust_host(
+        lambda *_args, **_kwargs: None,
+        local_edit_context=lambda *_args, **_kwargs: contextlib.nullcontext(None),
+        state_getter=lambda: host_trust,
+    )
+
+    assert tool._fit_execution_capability is None
+    assert not tool._current_fit_execution_allowed()
+
+
+def test_fit1d_result_deserialization_waits_for_approval(qtbot, monkeypatch) -> None:
+    tool, data, _safe_model, _safe_params = _make_linear_fit1d_tool(qtbot)
+
+    unsafe_model = lmfit.models.ExpressionModel("slope * x + intercept")
+    unsafe_params = unsafe_model.make_params(slope=1.0, intercept=0.0)
+    result_ds = data.xlm.modelfit("x", model=unsafe_model, params=unsafe_params).load()
+    blob = erlab.interactive.utils._serialize_fit_dataset_blob(result_ds)
+    deserialize_calls: list[np.ndarray] = []
+    original_deserialize = erlab.interactive.utils._deserialize_fit_dataset_blob
+
+    def tracked_deserialize(payload):
+        deserialize_calls.append(np.asarray(payload))
+        return original_deserialize(payload)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_deserialize_fit_dataset_blob",
+        tracked_deserialize,
+    )
+
+    tool.set_document_trust(untrusted_document_trust())
+    tool._restore_persisted_fit_result_blob(blob, fit_is_current=True)
+
+    assert deserialize_calls == []
+    assert tool._last_result_ds is None
+    assert np.array_equal(tool._serialized_fit_result_blob, blob)
+    assert tool._pending_persisted_fit_is_current is True
+
+    tool.set_document_trust(new_document_trust())
+
+    assert len(deserialize_calls) == 1
+    assert tool._pending_persisted_fit_is_current is None
+    assert tool._last_result_ds is not None
+    _assert_fit_result_dataset_equivalent(
+        tool._last_result_ds,
+        result_ds,
+        require_model_type=False,
+    )
+
+
+def test_fit1d_safe_result_can_serialize_in_untrusted_document(
+    qtbot, monkeypatch
+) -> None:
+    tool, data, model, params = _make_linear_fit1d_tool(qtbot)
+    tool._last_result_ds = data.xlm.modelfit("x", model=model, params=params).load()
+    tool._fit_is_current = True
+    tool._cache_fit_result_payload()
+    assert not tuple(tool._code_trust_payload_entries())
+
+    tool.set_document_trust(untrusted_document_trust())
+    tool._serialized_fit_result_blob = None
+    original_serialize = erlab.interactive.utils._serialize_fit_dataset_blob
+    serialize_calls: list[xr.Dataset] = []
+
+    def tracked_serialize(dataset: xr.Dataset) -> np.ndarray:
+        serialize_calls.append(dataset)
+        return original_serialize(dataset)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_serialize_fit_dataset_blob",
+        tracked_serialize,
+    )
+
+    saved = tool.to_dataset()
+
+    assert len(serialize_calls) == 1
+    assert tool._PERSISTED_FIT_RESULT_VAR in saved
+
+
+def test_fit1d_local_code_edits_use_one_scoped_capability(qtbot, monkeypatch) -> None:
+    model = lmfit.models.ExpressionModel("a * x + b")
+    tool = erlab.interactive.ftool(
+        _make_1d_data(),
+        model=model,
+        params=model.make_params(a=1.0, b=0.0),
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    _set_signed_fit_trust(tool)
+    tool.expr_edit.setPlainText("scale * x + offset")
+    tool.expr_init_script_dialog.text_edit.setPlainText("constant = 1")
+
+    original_init = lmfit.models.ExpressionModel.__init__
+    boundary_events: list[str] = []
+    edit_scope_active = False
+    original_local_code_edit = tool._local_code_edit
+
+    @contextlib.contextmanager
+    def tracked_local_code_edit(*args, **kwargs):
+        nonlocal edit_scope_active
+        with original_local_code_edit(*args, **kwargs) as capability:
+            edit_scope_active = True
+            try:
+                yield capability
+            finally:
+                edit_scope_active = False
+
+    def tracked_init(expression_model, *args, **kwargs):
+        assert edit_scope_active
+        boundary_events.append("model")
+        original_init(expression_model, *args, **kwargs)
+
+    monkeypatch.setattr(tool, "_local_code_edit", tracked_local_code_edit)
+    monkeypatch.setattr(lmfit.models.ExpressionModel, "__init__", tracked_init)
+    expression_index = tool.model_combo.findData("ExpressionModel")
+    with QtCore.QSignalBlocker(tool.model_combo):
+        tool.model_combo.setCurrentIndex(expression_index)
+
+    tool._on_model_choice_changed(expression_index)
+
+    assert boundary_events == ["model"]
+    assert isinstance(tool._model, lmfit.models.ExpressionModel)
+    assert tool._model.expr == "scale * x + offset"
+
+    _set_signed_fit_trust(tool)
+    tool.expr_edit.setPlainText("2 * scale * x + offset")
+    tool._refresh_expression_model()
+
+    assert boundary_events == ["model", "model"]
+    assert tool._model.expr == "2 * scale * x + offset"
+
+    _set_signed_fit_trust(tool)
+    original_validate = tool._validate_param_expr
+
+    def tracked_validate(param, expression):
+        assert edit_scope_active
+        boundary_events.append("parameter-edit")
+        return original_validate(param, expression)
+
+    monkeypatch.setattr(tool, "_validate_param_expr", tracked_validate)
+    tool._set_param_expr(tool.param_model._param_names.index("offset"), "2 * scale")
+
+    assert boundary_events == ["model", "model", "parameter-edit"]
+    assert tool._params["offset"].expr == "2 * scale"
+    assert tool._current_fit_execution_allowed()
+
+
+def test_fit1d_first_local_code_edit_promotes_code_free_external_document(
+    qtbot,
+) -> None:
+    model = lmfit.models.LinearModel()
+    tool = erlab.interactive.ftool(
+        _make_1d_data(), model=model, params=model.make_params(), execute=False
+    )
+    qtbot.addWidget(tool)
+    tool.set_document_trust(external_document_trust(None), notify=False)
+    assert not _trust_allows_local_code_edit(tool._document_trust)
+
+    tool.expr_edit.setPlainText("a * x + b")
+    tool._refresh_expression_model()
+
+    assert isinstance(tool._model, lmfit.models.ExpressionModel)
+    assert tool._model.expr == "a * x + b"
+    assert _trust_allows_local_code_edit(tool._document_trust)
+
+
+def test_fit1d_model_option_edit_preserves_trusted_lineage(qtbot, monkeypatch) -> None:
+    tool = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(tool)
+    _set_signed_fit_trust(tool)
+    npeaks = tool.npeaks_spin.value() + 1
+    redraws = 0
+    original_update = tool._update_fit_curve
+
+    def tracked_update() -> None:
+        nonlocal redraws
+        redraws += 1
+        original_update()
+
+    monkeypatch.setattr(tool, "_update_fit_curve", tracked_update)
+
+    tool.npeaks_spin.setValue(npeaks)
+
+    assert tool._model.func.npeaks == npeaks
+    assert _trust_allows_local_code_edit(tool._document_trust)
+    assert redraws == 1
+
+
+def test_fit1d_stored_status_rejects_partial_host_capability(
+    qtbot, monkeypatch
+) -> None:
+    model = lmfit.models.ExpressionModel("a * x + b")
+    params = model.make_params(a=1.0, b=0.0)
+    params["b"].expr = "2 * a"
+    tool = erlab.interactive.ftool(
+        _make_1d_data(), model=model, params=params, execute=False
+    )
+    qtbot.addWidget(tool)
+    entries = tool._fit_code_entries
+    assert len(entries) >= 2
+    trust = untrusted_document_trust()
+    _prospective, partial_capability = issue_local_edit_capability(
+        trust,
+        entries,
+        edited_entries=(entries[0],),
+    )
+    assert execution_capability_allows(partial_capability, (entries[0],))
+    assert not execution_capability_allows(partial_capability, entries)
+    tool._set_code_trust_host(
+        lambda *_args, **_kwargs: partial_capability,
+        local_edit_context=lambda *_args, **_kwargs: contextlib.nullcontext(
+            partial_capability
+        ),
+        state_getter=lambda: trust,
+    )
+    status = tool.tool_status
+    monkeypatch.setattr(
+        fit1d,
+        "_load_lmfit_for_ftool_restore",
+        lambda *_args, **_kwargs: pytest.fail(
+            "partially authorized status was decoded"
+        ),
+    )
+
+    tool._restoring_from_dataset = True
+    try:
+        tool.tool_status = status
+    finally:
+        tool._restoring_from_dataset = False
+
+    assert tool._pending_fit_status is status
+    assert not tool._current_fit_execution_allowed()
+
+
+def test_fit1d_local_edit_does_not_authorize_untrusted_mixed_content(
+    qtbot, monkeypatch
+) -> None:
+    model = lmfit.models.ExpressionModel("a * x + b")
+    params = model.make_params(a=1.0, b=0.0)
+    params["b"].expr = "2 * a"
+    tool = erlab.interactive.ftool(
+        _make_1d_data(), model=model, params=params, execute=False
+    )
+    qtbot.addWidget(tool)
+    tool.set_document_trust(untrusted_document_trust())
+    original_expression = tool._model.expr
+    tool.expr_edit.setPlainText("3 * a * x + b")
+
+    monkeypatch.setattr(
+        lmfit.models.ExpressionModel,
+        "__init__",
+        lambda *_args, **_kwargs: pytest.fail("blocked candidate was evaluated"),
+    )
+
+    tool._refresh_expression_model()
+
+    assert tool._model.expr == original_expression
+    assert not document_trust_has_trusted_lineage(tool._document_trust)
+
+
+def test_fit1d_failed_local_expression_validation_rolls_back_signed_trust(
+    qtbot, monkeypatch
+) -> None:
+    model = lmfit.models.ExpressionModel("a * x + b")
+    tool = erlab.interactive.ftool(
+        _make_1d_data(),
+        model=model,
+        params=model.make_params(a=1.0, b=0.0),
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    _set_signed_fit_trust(tool)
+    assert not _trust_allows_local_code_edit(tool._document_trust)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(tool, "_show_warning", lambda *args: warnings.append(args))
+
+    tool._set_param_expr(tool.param_model._param_names.index("b"), "missing +")
+
+    assert warnings
+    assert tool._params["b"].expr is None
+    assert not _trust_allows_local_code_edit(tool._document_trust)
+
+
+def test_fit1d_clear_parameter_expression_is_local_edit(qtbot) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    _set_signed_fit_trust(tool)
+    assert not _trust_allows_local_code_edit(tool._document_trust)
+
+    tool._clear_param_expr(tool.param_model._param_names.index("intercept"))
+
+    assert tool._params["intercept"].expr is None
+    assert _trust_allows_local_code_edit(tool._document_trust)
+
+
+def test_fit1d_status_parameter_expression_change_is_local_edit(qtbot) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot, expression=True)
+    status = tool.tool_status
+    params = list(status.params)
+    intercept_index = next(
+        index for index, state in enumerate(params) if state[0] == "intercept"
+    )
+    intercept = list(params[intercept_index])
+    intercept[3] = "3 * slope"
+    params[intercept_index] = tuple(intercept)
+    changed = status.model_copy(update={"params": params})
+    _set_signed_fit_trust(tool)
+
+    tool.tool_status = changed
+
+    assert tool._params["intercept"].expr == "3 * slope"
+    assert _trust_allows_local_code_edit(tool._document_trust)
+
+
+def test_fit1d_expression_model_code_generation_does_not_run_init_script(qtbot) -> None:
+    model = lmfit.models.ExpressionModel("a * x")
+    tool = erlab.interactive.ftool(
+        _make_1d_data(),
+        model=model,
+        params=model.make_params(a=1.0),
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    tool.expr_init_script_dialog.text_edit.setPlainText(
+        "raise RuntimeError('generated code must not run while copying')"
+    )
+
+    _data_name, _model_name, lines = tool._make_model_code("data")
+
+    assert lines
+
+
+def test_fit1d_numeric_fit_result_reuses_code_inventory(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    model = lmfit.models.ExpressionModel("a * x + b")
+    params = model.make_params(a=1.0, b=0.0)
+    tool = erlab.interactive.ftool(data, model=model, params=params, execute=False)
+    qtbot.addWidget(tool)
+    _set_signed_fit_trust(tool)
+    admitted_entries = tool._fit_code_entries
+    result_ds = data.xlm.modelfit("x", model=model, params=params, max_nfev=1).load()
+    invalidation_calls = 0
+    original_invalidate = tool._invalidate_fit_result_payload
+
+    def tracked_invalidate() -> None:
+        nonlocal invalidation_calls
+        invalidation_calls += 1
+        original_invalidate()
+
+    monkeypatch.setattr(tool, "_invalidate_fit_result_payload", tracked_invalidate)
+
+    tool._set_fit_ds(result_ds, fit1d.time.perf_counter())
+
+    assert invalidation_calls == 1
+    assert tool._fit_code_entries is admitted_entries
+    assert tool._current_fit_execution_allowed()
+
+
+def test_fit1d_source_replacement_discards_pending_result_retry(qtbot) -> None:
+    tool, data, _safe_model, _safe_params = _make_linear_fit1d_tool(qtbot)
+    unsafe_model = lmfit.models.ExpressionModel("a * x + b")
+    unsafe_result = data.xlm.modelfit(
+        "x",
+        model=unsafe_model,
+        params=unsafe_model.make_params(a=1.0, b=0.0),
+        max_nfev=1,
+    ).load()
+    blob = erlab.interactive.utils._serialize_fit_dataset_blob(unsafe_result)
+
+    tool.set_document_trust(untrusted_document_trust(), notify=False)
+
+    tool._restore_persisted_fit_result_blob(blob, fit_is_current=True)
+    assert np.array_equal(tool._serialized_fit_result_blob, blob)
+    assert tool._pending_persisted_fit_is_current is True
+    assert tool._last_result_ds is None
+
+    assert tool.update_data(data + 1.0)
+    tool.set_document_trust(new_document_trust())
+
+    assert tool._serialized_fit_result_blob is None
+    assert tool._pending_persisted_fit_is_current is None
+    assert tool._last_result_ds is None
+    assert tool._PERSISTED_FIT_RESULT_VAR not in tool.to_dataset()

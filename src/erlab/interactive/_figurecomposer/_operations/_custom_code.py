@@ -1,4 +1,4 @@
-"""Trusted custom-code operation editor and renderer."""
+"""Custom-code operation editor and renderer."""
 
 from __future__ import annotations
 
@@ -115,19 +115,6 @@ def _build_custom_code_editor(
     editor: FigureOperationEditor, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
     page, layout = editor.new_form_page("figureComposerCodePage")
-    trust = editor.check_box(
-        operation.trusted,
-        lambda checked: editor.request_update(trusted=checked),
-        parent=page,
-    )
-    trust.setObjectName("figureComposerCustomCodeTrustedCheck")
-    editor.add_form_row(
-        layout,
-        "Trusted",
-        trust,
-        "Allow this custom Python step to execute during rendering.",
-    )
-
     code_edit = erlab.interactive.utils.PythonCodeEditor(page)
     code_edit.setObjectName("figureComposerCustomCodeEdit")
     code_edit.setPlainText(operation.code)
@@ -160,15 +147,13 @@ def _render_custom(
     code = operation.code.strip()
     if not code:
         return
-    if not operation.trusted:
-        raise ValueError("Custom code is not trusted. Enable Trusted to render it.")
     namespace = _source_namespace(tool, fig, axs)
-    # Custom code is the explicit trusted escape hatch in the recipe pipeline.
+    # The whole-recipe renderer checks document trust before it calls this function.
     exec(operation.code, namespace)  # noqa: S102
 
 
 def _create_custom_operation(_tool: FigureComposerTool) -> FigureOperationState:
-    return FigureOperationState.custom(label="custom code", code="", trusted=True)
+    return FigureOperationState.custom(label="custom code", code="")
 
 
 def _display_text(_tool: FigureComposerTool, operation: FigureOperationState) -> str:
@@ -176,7 +161,7 @@ def _display_text(_tool: FigureComposerTool, operation: FigureOperationState) ->
 
 
 def _tooltip(_tool: FigureComposerTool, _operation: FigureOperationState) -> str:
-    return "Runs trusted custom Python code.\nTargets: none"
+    return "Runs custom Python code.\nTargets: none"
 
 
 def _editor_sections(
@@ -187,7 +172,7 @@ def _editor_sections(
             key,
             title,
             page,
-            "Edit the trusted custom Python code for this step.",
+            "Edit the custom Python code for this step.",
         )
         for key, title, page in _build_custom_code_editor(editor, operation)
     )
@@ -196,14 +181,12 @@ def _editor_sections(
 def _section_summary(
     _tool: FigureComposerTool, key: str, operation: FigureOperationState
 ) -> str:
-    if key == "code":
-        return "trusted" if operation.trusted else "not trusted"
     return ""
 
 
 def _code_lines(tool: FigureComposerTool, operation: FigureOperationState) -> list[str]:
     code = operation.code.strip()
-    if not operation.trusted or not code:
+    if not code:
         return []
     names = _custom_code_names(code)
     lines: list[str] = []
@@ -219,7 +202,7 @@ def _required_imports(
     _tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
     code = operation.code.strip()
-    if not operation.trusted or not code:
+    if not code:
         return ()
     names = _custom_code_names(code)
     imports: list[str] = []
@@ -260,17 +243,13 @@ def _custom_first_axis_code(tool: FigureComposerTool) -> str:
     return axes_code[0] if axes_code else "None"
 
 
-def _loaded_operation(operation: FigureOperationState) -> FigureOperationState:
-    return operation.model_copy(update={"trusted": False})
-
-
 SPEC = OperationSpec(
     kind=FigureOperationKind.CUSTOM,
     add_actions=(
         AddStepActionSpec(
             action_id=FigureOperationKind.CUSTOM.value,
             text="Python",
-            tooltip="Add a trusted custom Python step.",
+            tooltip="Add a custom Python step.",
             create_operation=_create_custom_operation,
         ),
     ),
@@ -285,5 +264,4 @@ SPEC = OperationSpec(
     render=_render_custom,
     code_lines=_code_lines,
     required_imports=_required_imports,
-    loaded_operation=_loaded_operation,
 )

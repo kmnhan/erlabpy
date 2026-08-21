@@ -22,6 +22,7 @@ import erlab.interactive.imagetool.manager._workspace._format as workspace_forma
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive import _qt_state
+from erlab.interactive._code_trust import document_trust_has_trusted_lineage
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
@@ -61,6 +62,7 @@ class _WorkspaceSaveSnapshot:
     generation: int
     generation_plan: workspace_storage._WorkspaceGenerationPlan
     compression_mode: WorkspaceCompressionMode
+    trusted_lineage: bool
     serialized_tool_data_references: tuple[
         tuple[str, str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
@@ -328,10 +330,12 @@ class _WorkspaceSaver:
                 persistence.replay_source_data,
                 blob_name,
             )
-        if provenance_spec is not None:
+        if kind == "imagetool" and provenance_spec is not None:
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 provenance_spec.model_dump(mode="json")
             )
+        else:
+            ds.attrs.pop("manager_node_provenance_spec", None)
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
             ds.attrs["manager_node_source_input_ndim"] = int(node.source_input_ndim)
         if isinstance(node, _ImageToolWrapper) and node.watched:
@@ -418,6 +422,10 @@ class _WorkspaceSaver:
                 ),
             ):
                 ds = tool.to_dataset()
+            ds.attrs.pop(
+                erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+                None,
+            )
             ds.attrs["tool_title"] = _strip_workspace_modified_placeholder(
                 ds.attrs.get("tool_title", "")
             )
@@ -467,14 +475,25 @@ class _WorkspaceSaver:
         return tree
 
     def _workspace_node_path(self, uid: str) -> str:
-        node = self._manager._tool_graph.nodes[uid]
+        return self._workspace_node_path_for_node(self._manager._tool_graph.nodes[uid])
+
+    def _workspace_node_path_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str:
+        """Return the path for a node before or after graph registration."""
         if isinstance(node, _ImageToolWrapper):
             return str(node.index)
-        if self._manager._is_figure_node(node):
-            return f"figures/{uid}"
+        if (
+            self._manager._tool_graph.nodes.get(node.uid) is node
+            and self._manager._is_figure_node(node)
+        ) or (
+            node.tool_window is not None
+            and node.tool_window.manager_collection == "figures"
+        ):
+            return f"figures/{node.uid}"
         if node.parent_uid is None:
-            raise KeyError(f"Node {uid!r} has no parent")
-        return f"{self._workspace_node_path(node.parent_uid)}/childtools/{uid}"
+            raise KeyError(f"Node {node.uid!r} has no parent")
+        return f"{self._workspace_node_path(node.parent_uid)}/childtools/{node.uid}"
 
     def _workspace_payload_path(self, uid: str) -> str:
         node = self._manager._tool_graph.nodes[uid]
@@ -793,6 +812,10 @@ class _WorkspaceSaver:
                 snapshot,
                 manifest=committed_generation.manifest,
             )
+            self._controller._record_saved_workspace_code_trust(
+                committed_generation.manifest,
+                trusted_lineage=snapshot.trusted_lineage,
+            )
         finally:
             if snapshot is not None:
                 snapshot.close()
@@ -941,7 +964,30 @@ class _WorkspaceSaver:
         else:
             attrs.pop(erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR, None)
             attrs.pop(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR, None)
+        attrs.pop(erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR, None)
+        attrs.pop("manager_node_provenance_spec", None)
         return attrs
+
+    @staticmethod
+    def _tool_payload_has_saved_input_provenance(
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        previous: Mapping[str, typing.Any] | None,
+    ) -> bool:
+        """Return whether a reusable tool payload has legacy input provenance."""
+        attr_name = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+        pending_attrs = node.pending_workspace_payload_attrs
+        if pending_attrs is not None and attr_name in pending_attrs:
+            return True
+        if previous is None:
+            return False
+        payload_attrs = previous.get("payload_attrs")
+        if payload_attrs is None:
+            return False
+        try:
+            attrs = workspace_format._restore_workspace_manifest_attrs(payload_attrs)
+        except Exception:
+            return True
+        return attr_name in attrs
 
     def _pending_workspace_payload_attrs_for_save(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -1135,11 +1181,15 @@ class _WorkspaceSaver:
             previous_object_id = (
                 previous.get("payload_object_id") if previous is not None else None
             )
+            has_saved_input_provenance = kind == "tool" and (
+                self._tool_payload_has_saved_input_provenance(node, previous)
+            )
             can_reuse_object = (
                 isinstance(previous_object_id, str)
                 and bool(previous_object_id)
                 and previous_object_id not in extension_object_ids
                 and uid not in dirty_data
+                and not has_saved_input_provenance
             )
 
             dataset: xr.Dataset | None = None
@@ -1147,7 +1197,10 @@ class _WorkspaceSaver:
                 previous.get("payload_attrs") if previous is not None else None
             )
             needs_current_attrs = (
-                attrs_payload is None or uid in dirty_state or uid in dirty_data
+                attrs_payload is None
+                or uid in dirty_state
+                or uid in dirty_data
+                or has_saved_input_provenance
             )
             if needs_current_attrs:
                 pending_attrs = (
@@ -1197,7 +1250,10 @@ class _WorkspaceSaver:
                     and uid not in self._manager._workspace_state.dirty_data
                     and (
                         kind != "tool"
-                        or self._pending_workspace_tool_references_available(node)
+                        or (
+                            not has_saved_input_provenance
+                            and self._pending_workspace_tool_references_available(node)
+                        )
                     )
                 )
                 if use_pending:
@@ -1345,6 +1401,11 @@ class _WorkspaceSaver:
                 legacy_reader_rebindings=legacy_reader_rebindings,
             ),
             compression_mode=self._workspace_compression_mode(),
+            trusted_lineage=(
+                document_trust_has_trusted_lineage(
+                    self._manager._workspace_state.code_trust
+                )
+            ),
             serialized_tool_data_references=(
                 self._serialized_tool_data_references(serialized_datasets)
             ),

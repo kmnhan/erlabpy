@@ -133,7 +133,6 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
                         "method_args": ((0.0, 0.25, 1.0),),
                         "method_transform": "custom",
                         "method_transform_expression": "ax.transAxes",
-                        "trusted": True,
                     }
                 ),
             ),
@@ -226,9 +225,8 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
         QtWidgets.QCheckBox, "figureComposerMethodTransformTrustedCheck"
     )
     assert custom_transform_edit is not None
-    assert custom_transform_trusted is not None
+    assert custom_transform_trusted is None
     assert custom_transform_edit.text() == "ax.transAxes"
-    assert custom_transform_trusted.isChecked()
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)

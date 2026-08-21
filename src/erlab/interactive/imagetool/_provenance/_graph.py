@@ -44,7 +44,6 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.imagetool._provenance._model import FileLoadSource
     from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 
 
@@ -987,12 +986,15 @@ def _compile_spec(
     structured_file_replay: bool,
     external_inputs: Mapping[str, xr.DataArray] | None,
     live_input_resolver: LiveInputResolver | None,
+    allow_unresolved_inputs: bool,
 ) -> str:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
     if parsed.kind == "file":
-        load_source = typing.cast("FileLoadSource", parsed.file_load_source)
+        load_source = parsed.file_load_source
+        if load_source is None:
+            raise ReplayGraphError("File provenance has no load source")
         active_name = typing.cast("str", parsed.active_name)
         structured_replay = load_source.replay_call is not None
         extension_loader = _is_extension_loader_source(load_source)
@@ -1057,6 +1059,18 @@ def _compile_spec(
                 else:
                     input_spec = script_input.parsed_provenance_spec()
                     if input_spec is None:
+                        if allow_unresolved_inputs:
+                            input_key = graph.add_node(
+                                _canonical_key(
+                                    "unresolved_input",
+                                    {"name": script_input.name},
+                                ),
+                                "live_input",
+                                cacheable=False,
+                                payload={"data": None},
+                            )
+                            bindings.append((script_input.name, input_key))
+                            continue
                         input_reference = _script_input_reference_text(script_input)
                         raise ReplayGraphError(
                             f"{input_reference} "
@@ -1070,6 +1084,7 @@ def _compile_spec(
                         structured_file_replay=structured_file_replay,
                         external_inputs=external_inputs,
                         live_input_resolver=live_input_resolver,
+                        allow_unresolved_inputs=allow_unresolved_inputs,
                     )
                     if display:
                         graph.add_alias(script_input.name, input_key)
@@ -1103,6 +1118,7 @@ def _compile_spec(
         pending_code_hoist_imports: list[bool] = []
         pending_code_external_names: list[tuple[str, ...]] = []
         pending_code_framework_owned: list[bool] = []
+        pending_stored_code: list[str | None] = []
 
         def relay_key(source_key: str) -> str:
             return graph.add_node(
@@ -1170,7 +1186,7 @@ def _compile_spec(
         def flush_script() -> None:
             nonlocal current_bindings, current_name, pending_code_hoist_imports
             nonlocal pending_code_external_names, pending_code_framework_owned
-            nonlocal pending_codes, script_current_key
+            nonlocal pending_codes, pending_stored_code, script_current_key
             if not pending_codes:
                 return
             if len(pending_codes) > 1:
@@ -1182,6 +1198,7 @@ def _compile_spec(
                         del pending_code_external_names[0]
                         del pending_code_framework_owned[0]
                         del pending_code_hoist_imports[0]
+                        del pending_stored_code[0]
             output_name = _script_codes_output_name(
                 pending_codes,
                 active_name=active_name,
@@ -1198,6 +1215,7 @@ def _compile_spec(
                         "codes": tuple(pending_codes),
                         "external_names": tuple(pending_code_external_names),
                         "framework_owned": tuple(pending_code_framework_owned),
+                        "stored_code": tuple(pending_stored_code),
                         "hoist_imports": tuple(pending_code_hoist_imports),
                     },
                 ),
@@ -1210,6 +1228,7 @@ def _compile_spec(
                     "codes": tuple(pending_codes),
                     "external_names": tuple(pending_code_external_names),
                     "framework_owned": tuple(pending_code_framework_owned),
+                    "stored_code": tuple(pending_stored_code),
                     "hoist_imports": tuple(pending_code_hoist_imports),
                 },
             )
@@ -1221,6 +1240,7 @@ def _compile_spec(
             pending_code_external_names = []
             pending_code_framework_owned = []
             pending_code_hoist_imports = []
+            pending_stored_code = []
 
         def apply_context_binding(names: Sequence[str]) -> None:
             nonlocal current_bindings, current_name, script_current_key
@@ -1260,6 +1280,7 @@ def _compile_spec(
                     pending_code_external_names.append(tuple(sorted(seed_caller_names)))
                     pending_code_framework_owned.append(False)
                     pending_code_hoist_imports.append(False)
+                    pending_stored_code.append(parsed.seed_code)
             else:
                 seed_setup_code, seed_load_code, seed_output_name = seed_file_load_parts
                 script_current_key = _add_file_load_node(
@@ -1301,6 +1322,9 @@ def _compile_spec(
                     )
                     pending_code_hoist_imports.append(
                         bool(getattr(script_operation, "hoist_imports", False))
+                    )
+                    pending_stored_code.append(
+                        None if script_operation.framework_owned else operation_code
                     )
                 previous_input_policy = None
                 continue
@@ -1397,6 +1421,7 @@ def _compile_spec(
                     pending_code_external_names.append(())
                     pending_code_framework_owned.append(True)
                     pending_code_hoist_imports.append(False)
+                    pending_stored_code.append(None)
                     continue
 
             ensure_script_current_key()
@@ -1460,6 +1485,7 @@ def compile_replay_graph(
     structured_file_replay: bool = False,
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
+    allow_unresolved_inputs: bool = False,
 ) -> ReplayGraph:
     """Compile provenance for code output or structured runtime execution.
 
@@ -1485,6 +1511,7 @@ def compile_replay_graph(
         structured_file_replay=structured_file_replay,
         external_inputs=external_inputs,
         live_input_resolver=live_input_resolver,
+        allow_unresolved_inputs=allow_unresolved_inputs,
     )
     return graph
 
@@ -3655,6 +3682,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
             structured_file_replay=False,
             external_inputs=None,
             live_input_resolver=None,
+            allow_unresolved_inputs=False,
         )
         graph.add_alias(script_input.name, input_key)
     return emit_replay_code(graph, include_all_aliases=True)

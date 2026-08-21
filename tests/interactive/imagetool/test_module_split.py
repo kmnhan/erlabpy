@@ -137,7 +137,7 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
             label="plot", source="data"
         )
         custom_operation = FigureOperationState.custom(
-            label="custom", code="result = data.mean()", trusted=True
+            label="custom", code="result = data.mean()"
         )
 
         assert document.operation_source_names(plot_operation) == ("data",)

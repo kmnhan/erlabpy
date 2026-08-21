@@ -115,6 +115,19 @@ def test_make_parameter_round_trips_builtin_default_loader() -> None:
     assert parameter_to_options(param).io.default_loader == loader_id
 
 
+def test_make_parameter_round_trips_trusted_folders() -> None:
+    options = AppOptions.model_validate(
+        {"security": {"trusted_workspace_folders": ["~/workspaces"]}}
+    )
+    param = make_parameter(options)
+
+    trusted_param = param.child("security").child("trusted_workspace_folders")
+    assert trusted_param.opts["type"] == "trusted_folders"
+    assert trusted_param.value() == ["~/workspaces"]
+
+    assert parameter_to_options(param).security == options.security
+
+
 def test_make_parameter_workspace_compression_uses_display_labels() -> None:
     param = make_parameter()
     compression_param = param.child("io").child("workspace").child("compression")

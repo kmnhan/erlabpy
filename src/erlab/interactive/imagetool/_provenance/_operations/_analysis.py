@@ -1205,12 +1205,37 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
 
     @property
     def decoded_edge_fit(self) -> xr.Dataset:
-        return typing.cast("xr.Dataset", self._decode_stored_field(self.edge_fit))
+        return self._decode_edge_fit()
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
+    def _decode_edge_fit(
+        self,
+        authorization: object | None = None,
+    ) -> xr.Dataset:
+        from erlab.interactive._code_trust import execution_capability_allows
+        from erlab.interactive.imagetool._provenance._trust import (
+            provenance_operation_code_trust_entries,
+        )
+
+        entries = provenance_operation_code_trust_entries(
+            self,
+            location_prefix="operation",
+        )
+        if not execution_capability_allows(authorization, entries):
+            raise PermissionError("The serialized lmfit result is not authorized")
+        return typing.cast(
+            "xr.Dataset",
+            decode_provenance_value(self.edge_fit, allow_code_payload=True),
+        )
+
+    def apply(
+        self,
+        data: xr.DataArray,
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
         return erlab.analysis.gold.correct_with_edge(
             data,
-            self.decoded_edge_fit,
+            self._decode_edge_fit(authorization),
             shift_coords=self.shift_coords,
         )
 

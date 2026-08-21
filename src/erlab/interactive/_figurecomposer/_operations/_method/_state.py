@@ -529,6 +529,4 @@ def _loaded_operation(operation: FigureOperationState) -> FigureOperationState:
     )
     if kwargs != operation.method_kwargs:
         updates["method_kwargs"] = kwargs
-    if operation.method_transform == "custom":
-        updates["trusted"] = False
     return operation.model_copy(update=updates) if updates else operation

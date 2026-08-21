@@ -24,8 +24,36 @@ import erlab.interactive.imagetool.manager._workspace._saving as workspace_savin
 import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
+from erlab.interactive._code_trust import (
+    approve_document_trust,
+    bind_document_trust_manifest,
+    commit_local_edit_trust,
+    create_manifest,
+    document_trust_description,
+    document_trust_has_trusted_lineage,
+    document_trust_is_trusted,
+    document_trust_needs_review,
+    execution_capability_allows,
+    external_document_trust,
+    issue_complete_execution_capability,
+    issue_execution_capability,
+    issue_local_edit_capability,
+    manifest_has_code,
+    merge_document_trust,
+    relocate_document_trust,
+    relocate_manifest_entries,
+    trusted_location_document_trust,
+    untrusted_document_trust,
+)
+from erlab.interactive._code_trust._application import (
+    load_document_trust,
+    load_imported_document_trust,
+    save_document_trust,
+)
+from erlab.interactive._code_trust._ui import confirm_code_trust
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -45,11 +73,18 @@ if typing.TYPE_CHECKING:
     import h5py
     import xarray as xr
 
+    from erlab.interactive._code_trust._api import _DocumentTrust
+    from erlab.interactive._code_trust._core import CodeTrustEntry, CodeTrustEntrySource
+    from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
         _WorkspaceStateSnapshot,
     )
-    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
+    from erlab.interactive.imagetool.manager._wrapper import (
+        _ImageToolWrapper,
+        _ManagedWindowNode,
+    )
+    from erlab.interactive.utils import ToolWindow
 else:
     import lazy_loader as _lazy
 
@@ -74,6 +109,7 @@ def _show_itws_workspace_warning(parent: QtWidgets.QWidget) -> None:
 class _WorkspaceController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
+        self._local_edit_capability: object | None = None
         self._loader_state = workspace_format.WorkspaceLoaderState()
         self.loading = workspace_loading._WorkspaceLoader(manager, self)
         self.saving = workspace_saving._WorkspaceSaver(manager, self)
@@ -99,6 +135,390 @@ class _WorkspaceController:
             workspace_saving._WorkspaceGcResultReceiver | None
         ) = None
         self._workspace_gc_requested = False
+
+    def _loaded_workspace_code_trust(
+        self,
+        path: str | os.PathLike[str],
+        manifest: Mapping[str, typing.Any],
+        *,
+        selected_paths: set[str] | None,
+    ) -> _DocumentTrust:
+        if workspace_trust.workspace_path_is_trusted(path):
+            return trusted_location_document_trust()
+        try:
+            imported_manifest = workspace_trust.workspace_code_trust_manifest(
+                manifest, selected_paths=selected_paths
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "Workspace Python content could not be inspected",
+                exc_info=True,
+            )
+            return untrusted_document_trust()
+        if selected_paths is None:
+            return load_document_trust(imported_manifest)
+        try:
+            code_manifest = workspace_trust.workspace_code_trust_manifest(manifest)
+        except (TypeError, ValueError):
+            # An unavailable unselected tool must not prevent a safe selected import.
+            return load_document_trust(imported_manifest)
+        return load_imported_document_trust(code_manifest, imported_manifest)
+
+    def _legacy_workspace_code_trust(
+        self, path: str | os.PathLike[str]
+    ) -> _DocumentTrust:
+        if workspace_trust.workspace_path_is_trusted(path):
+            return trusted_location_document_trust()
+        return untrusted_document_trust()
+
+    def _load_with_code_trust(
+        self,
+        incoming: _DocumentTrust,
+        *,
+        replace: bool,
+        load: Callable[[], bool],
+    ) -> bool:
+        """Apply incoming trust while payloads load, and roll it back on failure."""
+        previous = self._manager._workspace_state.code_trust
+        if (
+            not replace
+            and document_trust_needs_review(previous)
+            and document_trust_has_trusted_lineage(incoming)
+        ):
+            # Imported node paths can be rebased after this merge. Do not let a
+            # signed pre-rebase location authorize an equal existing location.
+            incoming = untrusted_document_trust(incoming.manifest)
+        self._merge_workspace_code_trust(incoming, replace=replace)
+        try:
+            loaded = load()
+        except Exception:
+            self._set_workspace_code_trust(previous)
+            raise
+        if not loaded:
+            self._set_workspace_code_trust(previous)
+        return loaded
+
+    def _set_workspace_code_trust(self, trust: _DocumentTrust) -> None:
+        """Set one manager-owned decision and notify executable features."""
+        state = self._manager._workspace_state
+        previous = state.code_trust
+        if previous == trust:
+            return
+        state.code_trust = trust
+        self._refresh_code_trust_ui()
+        self._notify_code_trust_changed()
+
+    def _merge_workspace_code_trust(
+        self, incoming: _DocumentTrust, *, replace: bool = False
+    ) -> None:
+        self._set_workspace_code_trust(
+            merge_document_trust(
+                self._manager._workspace_state.code_trust,
+                incoming,
+                replace=replace,
+            )
+        )
+
+    def adopt_external_code(self, entries: CodeTrustEntrySource) -> None:
+        """Merge executable content imported from outside the manager document."""
+        resolved_entries = tuple(entries() if callable(entries) else entries)
+        if not resolved_entries:
+            return
+        self._merge_workspace_code_trust(
+            external_document_trust(
+                create_manifest(
+                    workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN,
+                    workspace_trust.WORKSPACE_CODE_TRUST_POLICY_VERSION,
+                    resolved_entries,
+                )
+            )
+        )
+
+    def _notify_code_trust_changed(self) -> None:
+        for node in self._manager._tool_graph.nodes.values():
+            if node.tool_window is not None:
+                try:
+                    node.tool_window._code_trust_changed()
+                except Exception:
+                    logger.exception(
+                        "Could not update %s after the workspace trust changed",
+                        node.uid,
+                    )
+
+    def _record_saved_workspace_code_trust(
+        self,
+        manifest: Mapping[str, typing.Any],
+        *,
+        trusted_lineage: bool,
+        current_document: bool = True,
+    ) -> None:
+        state = self._manager._workspace_state
+        try:
+            code_manifest = workspace_trust.workspace_code_trust_manifest(manifest)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Saved workspace Python content could not be inspected",
+                exc_info=True,
+            )
+            self._manager._status_bar.showMessage(
+                "Workspace saved, but its Python content could not be inspected",
+                5000,
+            )
+            if current_document:
+                self._set_workspace_code_trust(untrusted_document_trust())
+            return
+        saved_trust, signature_stored = save_document_trust(
+            state.code_trust,
+            code_manifest,
+            saved_trusted_lineage=trusted_lineage,
+        )
+        if not signature_stored:
+            self._manager._status_bar.showMessage(
+                "Workspace saved, but code trust could not be stored", 5000
+            )
+        if current_document:
+            self._set_workspace_code_trust(saved_trust)
+
+    def review_and_approve_workspace_code_trust(self) -> None:
+        """Review the current executable bundle and approve it as one unit."""
+        try:
+            manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
+            )
+        except (TypeError, ValueError):
+            QtWidgets.QMessageBox.warning(
+                self._manager,
+                "Stored Code Cannot Be Reviewed",
+                "ERLab cannot inspect the saved executable content of one or more "
+                "tools. Install the missing tool extension or remove the affected "
+                "tool before you trust this workspace.",
+            )
+            return
+        if manifest_has_code(manifest) and not confirm_code_trust(
+            self._manager,
+            manifest,
+            document_name="Workspace",
+            object_name="manager_code_trust_review_dialog",
+            window_title="Review Workspace Code",
+        ):
+            return
+        self._set_workspace_code_trust(
+            approve_document_trust(self._manager._workspace_state.code_trust, manifest)
+        )
+
+    def issue_code_execution_capability(
+        self,
+        entries: CodeTrustEntrySource,
+        *,
+        focus_on_block: bool = False,
+        allow_partial: bool = False,
+    ) -> object | None:
+        """Issue a capability for one exact workspace execution inventory.
+
+        Graph replay can request a partial capability because it checks each entry at
+        its execution boundary. All other callers require the complete inventory.
+        """
+        resolved_entries = tuple(entries() if callable(entries) else entries)
+        if self._local_edit_capability is not None and (
+            execution_capability_allows(
+                self._local_edit_capability,
+                resolved_entries,
+            )
+            or (
+                allow_partial
+                and any(
+                    execution_capability_allows(
+                        self._local_edit_capability,
+                        (entry,),
+                    )
+                    for entry in resolved_entries
+                )
+            )
+        ):
+            return self._local_edit_capability
+        issuer = (
+            issue_execution_capability
+            if allow_partial
+            else issue_complete_execution_capability
+        )
+        trust, capability = issuer(
+            self._manager._workspace_state.code_trust,
+            resolved_entries,
+        )
+        self._set_workspace_code_trust(trust)
+        if capability is None and focus_on_block:
+            self._manager.code_trust_banner.setFocus()
+        return capability
+
+    @contextlib.contextmanager
+    def local_code_edit(
+        self,
+        execution_entries: CodeTrustEntrySource,
+        *,
+        edited_entries: CodeTrustEntrySource,
+        focus_on_block: bool = False,
+    ) -> Iterator[object | None]:
+        """Authorize one explicit local edit and commit lineage on success."""
+        state = self._manager._workspace_state
+        previous = state.code_trust
+        resolved_execution_entries = tuple(
+            execution_entries() if callable(execution_entries) else execution_entries
+        )
+        resolved_edited_entries = tuple(
+            edited_entries() if callable(edited_entries) else edited_entries
+        )
+        prospective, capability = issue_local_edit_capability(
+            previous,
+            resolved_execution_entries,
+            edited_entries=resolved_edited_entries,
+        )
+        if not execution_capability_allows(capability, resolved_edited_entries):
+            capability = None
+        previous_manifest = previous.manifest
+        if prospective != previous and (
+            previous_manifest is None
+            or previous_manifest.domain != workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN
+            or previous_manifest.policy_version
+            != workspace_trust.WORKSPACE_CODE_TRUST_POLICY_VERSION
+        ):
+            previous_manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
+            )
+        if capability is None and focus_on_block:
+            self._manager.code_trust_banner.setFocus()
+        previous_capability = self._local_edit_capability
+        self._local_edit_capability = capability
+        try:
+            yield capability
+        finally:
+            self._local_edit_capability = previous_capability
+        if prospective != previous and state.code_trust == previous:
+            try:
+                manifest = workspace_trust.current_workspace_code_trust_manifest(
+                    self._manager
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Edited workspace Python content could not be inspected",
+                    exc_info=True,
+                )
+                return
+            committed = commit_local_edit_trust(
+                previous,
+                capability,
+                () if previous_manifest is None else previous_manifest.entries,
+                manifest.entries,
+                edited_entries=resolved_edited_entries,
+                document_manifest=manifest,
+            )
+            if committed != previous:
+                self._set_workspace_code_trust(committed)
+
+    def _refresh_code_trust_ui(self) -> None:
+        trust = self._manager._workspace_state.code_trust
+        banner = getattr(self._manager, "code_trust_banner", None)
+        if banner is None:
+            return
+        banner.setVisible(not document_trust_is_trusted(trust))
+
+    def _bind_current_workspace_manifest_if_review_needed(self) -> None:
+        """Bind the full inventory after a node changes a paused workspace."""
+        trust = self._manager._workspace_state.code_trust
+        if not document_trust_needs_review(trust):
+            return
+        try:
+            manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
+            )
+        except (TypeError, ValueError):
+            return
+        self._set_workspace_code_trust(bind_document_trust_manifest(trust, manifest))
+
+    @staticmethod
+    def _locate_tool_code_trust_entries(
+        entries: Iterable[CodeTrustEntry], *, location_getter: Callable[[], str]
+    ) -> tuple[CodeTrustEntry, ...]:
+        """Map feature-relative tool entries to exact workspace locations."""
+        return relocate_manifest_entries(
+            create_manifest("erlab.workspace-tool-location", 1, entries),
+            location_prefix=location_getter(),
+        )
+
+    def _configure_tool_code_trust(
+        self,
+        tool: ToolWindow,
+        *,
+        location_getter: Callable[[], str] | None = None,
+    ) -> None:
+        """Connect one materialized tool to the manager-owned trust decision."""
+        incoming_trust = tool._document_trust
+        current_trust = self._manager._workspace_state.code_trust
+        if incoming_trust == current_trust:
+            incoming_trust = None
+        elif location_getter is not None:
+            manifest = tool._current_code_trust_manifest()
+            if manifest is not None:
+                incoming_trust = relocate_document_trust(
+                    incoming_trust,
+                    manifest,
+                    location_prefix=location_getter(),
+                )
+        if incoming_trust is not None:
+            self._merge_workspace_code_trust(incoming_trust)
+        tool._set_code_trust_host(
+            self.issue_code_execution_capability,
+            local_edit_context=self.local_code_edit,
+            state_getter=lambda: self._manager._workspace_state.code_trust,
+            entry_locator=(
+                None
+                if location_getter is None
+                else functools.partial(
+                    self._locate_tool_code_trust_entries,
+                    location_getter=location_getter,
+                )
+            ),
+        )
+
+    def _locate_imagetool_code_trust_entries(
+        self,
+        entries: Iterable[CodeTrustEntry],
+        *,
+        node_getter: Callable[[], _ImageToolWrapper | _ManagedWindowNode],
+    ) -> tuple[CodeTrustEntry, ...]:
+        """Map runtime provenance entries to one ImageTool document location."""
+        node = node_getter()
+        location_prefix = (
+            f"{self.saving._workspace_node_path_for_node(node)}/provenance"
+        )
+        return relocate_manifest_entries(
+            create_manifest("erlab.workspace-imagetool-location", 1, entries),
+            location_prefix=location_prefix,
+            remove_location_prefix="runtime/",
+        )
+
+    def _configure_imagetool_code_trust(
+        self,
+        tool: ImageTool,
+        *,
+        node_getter: (
+            Callable[[], _ImageToolWrapper | _ManagedWindowNode] | None
+        ) = None,
+    ) -> None:
+        """Connect one ImageTool to the manager-owned trust decision."""
+
+        def issue(entries: Iterable[CodeTrustEntry]) -> object | None:
+            if node_getter is not None:
+                entries = self._locate_imagetool_code_trust_entries(
+                    entries,
+                    node_getter=node_getter,
+                )
+            return self.issue_code_execution_capability(
+                entries,
+                focus_on_block=True,
+                allow_partial=True,
+            )
+
+        tool.slicer_area._set_stored_code_authorizer(issue)
 
     def _tool_data_reference_matches_current_snapshot(
         self, reference: Mapping[str, typing.Any]
@@ -465,13 +885,17 @@ class _WorkspaceController:
         _WorkspacePropertiesDialog(
             self._manager.workspace_path,
             state=self._workspace_properties_state(),
+            review_code_callback=self.review_and_approve_workspace_code_trust,
             parent=self._manager,
         ).exec()
 
     def _workspace_properties_state(self) -> _WorkspacePropertiesState:
+        trust = self._manager._workspace_state.code_trust
         return _WorkspacePropertiesState(
             is_modified=self._manager.is_workspace_modified,
             top_level_window_count=self._manager.ntools,
+            code_trust_text=document_trust_description(trust),
+            code_trust_review_available=document_trust_needs_review(trust),
         )
 
     @property
@@ -1008,6 +1432,14 @@ class _WorkspaceController:
                             replace_ds,
                             source_parent_data=source_parent_data,
                             reference_resolver=reference_resolver,
+                            document_trust=self._manager._workspace_state.code_trust,
+                            entry_locator=functools.partial(
+                                self._locate_tool_code_trust_entries,
+                                location_getter=functools.partial(
+                                    self.saving._workspace_node_path_for_node,
+                                    node,
+                                ),
+                            ),
                             variable_names=rebind_names,
                         )
                         for name in rebind_names:
@@ -1431,7 +1863,11 @@ class _WorkspaceController:
         return dirty_changed
 
     def _mark_node_added(self, uid: str) -> bool:
-        return self._mark_workspace_dirty(uid=uid, added=True, structure="Added window")
+        changed = self._mark_workspace_dirty(
+            uid=uid, added=True, structure="Added window"
+        )
+        self._bind_current_workspace_manifest_if_review_needed()
+        return changed
 
     def _mark_node_data_dirty(self, uid: str) -> bool:
         changed = self._mark_workspace_dirty(uid=uid, data=True)
@@ -2112,6 +2548,11 @@ class _WorkspaceController:
                 else "Workspace saved"
             )
         self._manager._status_bar.showMessage(message, 5000)
+        self._record_saved_workspace_code_trust(
+            snapshot.generation_plan.manifest,
+            trusted_lineage=snapshot.trusted_lineage,
+            current_document=not post_save_events and not has_new_dirty_generation,
+        )
         if restore_focus:
             self._restore_focus_after_workspace_save(origin)
         self._record_recent_workspace(workspace_path)
@@ -2494,6 +2935,13 @@ class _WorkspaceController:
                     else "Workspace saved"
                 )
             self._manager._status_bar.showMessage(message, 5000)
+            self._record_saved_workspace_code_trust(
+                snapshot.generation_plan.manifest,
+                trusted_lineage=snapshot.trusted_lineage,
+                current_document=(
+                    not post_save_events and not has_new_dirty_generation
+                ),
+            )
             self._restore_focus_after_workspace_save(origin)
             self._schedule_workspace_gc()
             if on_finished is not None:
