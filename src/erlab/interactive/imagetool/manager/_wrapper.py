@@ -2313,6 +2313,16 @@ class _ManagedWindowNode(QtCore.QObject):
             provenance_spec = self.displayed_provenance_spec
         if provenance_spec is None:
             return None
+        if self.manager._is_figure_uid(self.uid) and provenance_spec.script_inputs:
+            from erlab.interactive.imagetool._provenance._graph import (
+                ReplayGraphError,
+                compile_replay_graph,
+            )
+
+            try:
+                compile_replay_graph(provenance_spec, trusted_user_code=True)
+            except ReplayGraphError:
+                return None
         return provenance_spec.display_code()
 
     def add_child_reference(self, uid: str, window: QtWidgets.QWidget | None) -> None:

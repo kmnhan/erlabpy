@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
+import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool import itool
@@ -1616,6 +1617,9 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
         _authorize_provenance_execution=lambda entries, **_kwargs: _authorize_execution(
             entries
         ),
+    )
+    manager._lineage_controller = manager_lineage._LineageController(
+        typing.cast("typing.Any", manager)
     )
     controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
     spec = script(

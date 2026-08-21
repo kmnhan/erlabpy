@@ -1501,6 +1501,9 @@ class ImageToolManager(_ImageToolManagerBase):
             self._tool_graph.reindex_roots()
 
         self.tree_view.refresh()
+        self._figure_workflows._refresh_figure_source_controls()
+        if self._metadata_node_uid is not None:
+            self._schedule_details_refresh(self._metadata_node_uid)
         self._mark_workspace_structure_dirty("Reindexed root windows")
 
     @QtCore.Slot(int)
