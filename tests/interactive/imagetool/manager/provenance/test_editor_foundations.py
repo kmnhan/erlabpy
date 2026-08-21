@@ -144,6 +144,61 @@ def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
     }
 
 
+def test_file_load_edit_dialog_falls_back_to_unfiltered_loaders(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    calls: list[pathlib.Path | None] = []
+    name_filter = "NetCDF (*.nc)"
+
+    def file_loaders(path=None):
+        calls.append(path)
+        if path is not None:
+            return {}
+        return {name_filter: (xr.load_dataarray, {})}
+
+    load_source = FileLoadSource(
+        path=str(tmp_path / "scan.nc"),
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=file_loaders,
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.path_edit.setText(str(tmp_path / "replacement.nc"))
+
+    assert dialog.loader_options._valid_loaders[name_filter][0] is xr.load_dataarray
+    assert calls.count(None) >= 2
+
+    def path_specific_loaders(path=None):
+        if path is None:
+            return {name_filter: (xr.load_dataarray, {})}
+        return {"Dataset (*.nc)": (xr.load_dataset, {})}
+
+    recorded_fallback = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=path_specific_loaders,
+    )
+    qtbot.addWidget(recorded_fallback)
+    assert (
+        recorded_fallback.loader_options._valid_loaders[name_filter][0]
+        is xr.load_dataarray
+    )
+
+
 def test_file_load_edit_dialog_edits_extension_loader_parameters(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
@@ -199,6 +254,7 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
         ),
     )
     observed_values: list[dict[str, typing.Any]] = []
+    parameter_dialog_accepted = True
 
     class _ParameterDialog:
         def __init__(
@@ -214,7 +270,11 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
             self.parameters = {"scale": 3.0}
 
         def exec(self) -> int:
-            return int(QtWidgets.QDialog.DialogCode.Accepted)
+            return int(
+                QtWidgets.QDialog.DialogCode.Accepted
+                if parameter_dialog_accepted
+                else QtWidgets.QDialog.DialogCode.Rejected
+            )
 
     monkeypatch.setattr(
         extension_dialogs,
@@ -243,6 +303,16 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
     assert replay_call.source_hash == source_hash
     assert replay_call.capability_id == "load_lab_data"
     assert _deserialize_loader_kwargs(replay_call.kwargs) == {"scale": 3.0}
+
+    parameter_dialog_accepted = False
+    canceled_dialog = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=lambda _path=None: {name_filter: (loader_call, {"scale": 1.0})},
+    )
+    qtbot.addWidget(canceled_dialog)
+    canceled_dialog.accept()
+    assert canceled_dialog.result() == int(QtWidgets.QDialog.DialogCode.Rejected)
 
 
 def test_file_load_edit_dialog_does_not_substitute_for_missing_extension_loader(

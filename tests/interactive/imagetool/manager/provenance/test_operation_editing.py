@@ -1,3 +1,4 @@
+import contextlib
 import pathlib
 import types
 import typing
@@ -504,6 +505,138 @@ def test_manager_extension_routine_without_parameters_is_not_editable() -> None:
 
     assert not editable
     assert reason
+
+
+def test_manager_extension_routine_without_descriptor_is_not_editable() -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="normalize",
+        routine_name="Normalize",
+        parameters={"scale": 2.0},
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: None,
+        unavailable_reason_for_node=lambda _uid: None,
+    )
+
+    editable, reason = controller.can_edit_row(spec.display_rows()[1])
+
+    assert not editable
+    assert "descriptor" in reason
+
+
+def test_manager_extension_operation_uses_extension_executor_for_filter_and_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    parent_data = xr.DataArray([[1.0], [2.0]], dims=("x", "y"))
+    spec = full_data(operation, NormalizeOperation(dims=("x",), mode="minmax"))
+    node = _fake_edit_node(spec)
+    node.imagetool = None
+    node.resolved_replay_source_data = lambda: parent_data
+    controller = _fake_edit_controller(node)
+    calls: list[xr.DataArray] = []
+
+    def run_operation(_operation, data: xr.DataArray) -> xr.DataArray:
+        calls.append(data)
+        return data * 2.0
+
+    controller._manager._extensions = types.SimpleNamespace(
+        execution=types.SimpleNamespace(run_operation=run_operation),
+        unavailable_reason_for_node=lambda _uid: "extension unavailable",
+    )
+
+    assert (
+        controller._reorder_replay_unavailable_reason(node, "display", spec)
+        == "extension unavailable"
+    )
+    controller._validate_filter_operation(
+        node,
+        parent_data,
+        operation,
+        where="validating filter",
+    )
+    result = controller._replay_live_script_candidate(node, "display", spec)
+
+    assert len(calls) == 2
+    xr.testing.assert_identical(
+        result,
+        NormalizeOperation(dims=("x",), mode="minmax").apply(parent_data * 2.0),
+    )
+
+
+def test_manager_extension_operation_edit_raises_when_descriptor_is_unavailable() -> (
+    None
+):
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: None,
+    )
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+
+    with pytest.raises(RuntimeError, match="descriptor"):
+        controller._edit_extension_routine_operation_row(
+            node,
+            row,
+            spec,
+            row.edit_ref,
+            operation,
+        )
+
+
+def test_manager_paste_detached_trusted_script_propagates_cancel() -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    local = script(
+        ScriptCodeOperation(
+            label="Trusted step",
+            code="derived = globals()['data']",
+        ),
+        start_label="Run script",
+        active_name="derived",
+    )
+    node = _fake_edit_node(full_data())
+    node.current_public_data = lambda: data
+    node.resolved_replay_source_data = lambda: data
+    controller = _fake_edit_controller(node)
+
+    def cancel(*_args, **_kwargs) -> None:
+        raise manager_widgets._TrustedScriptReplayCancelled
+
+    controller._manager._ensure_script_provenance_trusted = cancel
+    controller._manager._extensions = types.SimpleNamespace(
+        execution=types.SimpleNamespace(
+            capture_replay_sources=lambda: contextlib.nullcontext(object()),
+            run_operation=lambda operation, value: operation.apply(value),
+        ),
+        replay_loader=lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(manager_widgets._TrustedScriptReplayCancelled):
+        controller._paste_detached_steps(node, local, where="pasting")
 
 
 def test_manager_extension_routine_editor_preserves_identity_and_cancel(

@@ -751,19 +751,12 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget,
         *,
         recoverable: Collection[tuple[str, str]] = (),
-        unresolved_count: int = 0,
     ) -> None:
         super().__init__(parent)
         self._recoverable = frozenset(recoverable)
         self.setObjectName("manager_workspace_extension_requirements_dialog")
         self.setWindowTitle("Workspace Requirements")
         layout = QtWidgets.QVBoxLayout(self)
-        self.unresolved_label = QtWidgets.QLabel(self)
-        self.unresolved_label.setObjectName(
-            "manager_workspace_extension_unresolved_count"
-        )
-        self.unresolved_label.setWordWrap(True)
-        layout.addWidget(self.unresolved_label)
         self.tree = QtWidgets.QTreeWidget(self)
         self.tree.setObjectName("manager_workspace_extension_requirements")
         self.tree.setHeaderLabels(("Extension", "Capability", "State", "Details"))
@@ -775,7 +768,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         self._register_button.clicked.connect(self._register_selected)
         self.tree.currentItemChanged.connect(self._update_register_button)
         layout.addWidget(self._register_button)
-        self.set_requirements(requirements, unresolved_count=unresolved_count)
+        self.set_requirements(requirements)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
         )
@@ -785,8 +778,6 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
     def set_requirements(
         self,
         requirements: tuple[_ResolvedWorkspaceRequirement, ...],
-        *,
-        unresolved_count: int = 0,
     ) -> None:
         """Replace displayed states while preserving the selected requirement."""
         selected = self.tree.currentItem()
@@ -818,17 +809,6 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             self.tree.addTopLevelItem(item)
             if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == selected_key:
                 self.tree.setCurrentItem(item)
-        self.unresolved_label.setProperty("unresolvedCount", unresolved_count)
-        self.unresolved_label.setText(
-            ""
-            if unresolved_count == 0
-            else (
-                f"This workspace has {unresolved_count} extension requirement"
-                f"{'s' if unresolved_count != 1 else ''} that this version of "
-                "ERLab cannot read. Save As preserves these entries."
-            )
-        )
-        self.unresolved_label.setVisible(unresolved_count > 0)
         self._update_register_button()
 
     @QtCore.Slot()

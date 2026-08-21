@@ -526,11 +526,12 @@ def _registered_extension_loader(
         )
     except ExtensionNotFoundError:
         return None
-    descriptor = reference.descriptor
-    if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
-        raise TypeError("Registered extension capability is not a loader")
     path = pathlib.Path(reference.registered_path).expanduser().resolve()
-    return path, reference.script_name, descriptor
+    return (
+        path,
+        reference.script_name,
+        typing.cast("erlab.extensions.LoaderDescriptor", reference.descriptor),
+    )
 
 
 def _extension_loader_load_code(
@@ -538,16 +539,9 @@ def _extension_loader_load_code(
     *,
     assign: str,
     loader_expression: str,
-) -> str | None:
+) -> str:
     """Build one structured file load from an existing script binding."""
-    replay_call = load_source.replay_call
-    if (
-        replay_call is None
-        or replay_call.kind != "extension_loader"
-        or replay_call.source_hash is None
-        or replay_call.capability_id is None
-    ):
-        return None
+    replay_call = typing.cast("FileReplayCall", load_source.replay_call)
     resolved = _ResolvedLoadFunc(
         kind="extension_loader",
         target=replay_call.target,
@@ -560,10 +554,13 @@ def _extension_loader_load_code(
         kwargs=_deserialize_loader_kwargs(replay_call.kwargs),
         selection=replay_call.selection,
         cast_float64=replay_call.cast_float64,
-        extension_source_hash=replay_call.source_hash,
-        extension_capability_id=replay_call.capability_id,
+        extension_source_hash=typing.cast("str", replay_call.source_hash),
+        extension_capability_id=typing.cast("str", replay_call.capability_id),
     )
-    return resolved.load_code(pathlib.Path(load_source.path), assign=assign)
+    code = resolved.load_code(pathlib.Path(load_source.path), assign=assign)
+    if code is None:
+        raise ValueError("extension loaders do not support parsed-index selections")
+    return code
 
 
 def _resolve_load_func(

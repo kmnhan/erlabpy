@@ -718,6 +718,7 @@ def _resolve_from_registered_backends(
     """Resolve one capability through the single registered-script boundary."""
     with _resolver_lock:
         backends = tuple(_registered_script_backends.values())
+    unavailable: _RegisteredScriptUnavailable | None = None
     for backend in reversed(backends):
         try:
             return backend.resolve_registered_capability(
@@ -729,6 +730,11 @@ def _resolve_from_registered_backends(
             )
         except KeyError:
             continue
+        except _RegisteredScriptUnavailable as error:
+            if unavailable is None:
+                unavailable = error
+    if unavailable is not None:
+        raise unavailable
     raise _RegisteredScriptUnavailable("missing-source")
 
 
@@ -756,12 +762,7 @@ def _resolve_registered_capability(
         expected_source_hash=reference.source_hash,
     )
     entries = loaded.erlab.routines if kind == "routine" else loaded.erlab.loaders
-    try:
-        return entries[capability_id][1]
-    except KeyError as error:
-        raise ExtensionNotFoundError(
-            f"Registered script capability {script_name}:{capability_id} was not found"
-        ) from error
+    return entries[capability_id][1]
 
 
 def _registered_script_capability_status(

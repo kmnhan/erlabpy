@@ -1640,24 +1640,26 @@ class _ManagedWindowNode(QtCore.QObject):
         if attrs is not None and before.pending_payload_kind == "tool":
             source_key = erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR
             if node_source_spec != before.node_source_spec and source_key in attrs:
-                if node_source_spec is None:
-                    attrs.pop(source_key, None)
-                else:
-                    attrs[source_key] = json.dumps(
-                        node_source_spec.model_dump(mode="json")
+                # A remap cannot remove a provenance value. It returns a validated
+                # ToolProvenanceSpec for every non-null input.
+                attrs[source_key] = json.dumps(
+                    typing.cast("ToolProvenanceSpec", node_source_spec).model_dump(
+                        mode="json"
                     )
+                )
                 pending_attrs_changed = True
 
             input_key = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
             pending_input = self._pending_tool_provenance(attrs, input_key)
             remapped_pending_input = self._remap_provenance_value(pending_input, remap)
             if remapped_pending_input != pending_input:
-                if remapped_pending_input is None:
-                    attrs.pop(input_key, None)
-                else:
-                    attrs[input_key] = json.dumps(
-                        remapped_pending_input.model_dump(mode="json")
-                    )
+                # The changed case starts from a non-null parsed value, so the remap
+                # result is also a validated ToolProvenanceSpec.
+                attrs[input_key] = json.dumps(
+                    typing.cast(
+                        "ToolProvenanceSpec", remapped_pending_input
+                    ).model_dump(mode="json")
+                )
                 pending_attrs_changed = True
 
         changed = (

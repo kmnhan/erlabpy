@@ -191,11 +191,15 @@ def test_workspace_store_value_validation_and_closed_state(
                 {"object_id": ".."},
                 {"object_id": "nested/object"},
                 {"object_id": "\x00"},
-                {"object_id": "extension-valid"},
+                {
+                    "script_name": "valid.py",
+                    "source_hash": "a" * 64,
+                    "object_id": f"extension-source-{'a' * 64}",
+                },
                 {"future": {"sources": [{"object_id": "extension-nested"}]}},
             ]
         }
-    ) == {"extension-valid", "extension-nested"}
+    ) == {f"extension-source-{'a' * 64}"}
 
     store = workspace_store.WorkspaceStore(path, create=True)
     store.close()
@@ -210,6 +214,58 @@ def test_workspace_store_value_validation_and_closed_state(
         store.require_current_path()
     with pytest.raises(RuntimeError, match="closed"):
         store.replace_from(path, lambda _source, _target: None)
+
+
+def test_workspace_store_rebinds_only_existing_legacy_payloads(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+
+    class _Reader:
+        def __init__(self, legacy_group_path: str | None) -> None:
+            self.legacy_group_path = legacy_group_path
+            self.object_ids: list[str] = []
+
+        def _rebind_legacy_group_to_object(self, object_id: str) -> None:
+            self.object_ids.append(object_id)
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+        matching = _Reader("/legacy/tool")
+        unrelated = _Reader("/other/tool")
+        store.register_reader(matching)
+        store.register_reader(unrelated)
+
+        store.rebind_legacy_readers({"/legacy/tool": "payload"})
+        assert matching.object_ids == ["payload"]
+        assert unrelated.object_ids == []
+
+        with pytest.raises(KeyError, match="missing"):
+            store.rebind_legacy_readers({"/legacy/tool": "missing"})
+        assert matching.object_ids == ["payload"]
+
+
+def test_workspace_compaction_allows_missing_optional_extension_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    source_hash = "a" * 64
+    manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "embedded_extension_sources": [
+            {
+                "script_name": "missing.py",
+                "source_hash": source_hash,
+                "object_id": f"extension-source-{source_hash}",
+            }
+        ],
+    }
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.publish(manifest)
+
+        workspace_storage._compact_workspace_store(store)
+
+        assert store.current_generation().manifest == manifest
 
 
 def test_workspace_store_identity_helpers_decode_bytes() -> None:

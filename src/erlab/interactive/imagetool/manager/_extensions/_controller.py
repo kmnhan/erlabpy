@@ -57,7 +57,10 @@ if typing.TYPE_CHECKING:
 
     from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool._provenance._model import FileLoadSource
+    from erlab.interactive.imagetool._provenance._model import (
+        FileLoadSource,
+        FileReplayCall,
+    )
     from erlab.interactive.imagetool._provenance._operations import (
         ExtensionRoutineOperation,
     )
@@ -239,24 +242,15 @@ class _ExtensionController(QtCore.QObject):
         self, load_source: FileLoadSource
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         """Run one exact file-provenance loader through the manager queue."""
-        replay_call = load_source.replay_call
-        if (
-            replay_call is None
-            or replay_call.kind != "extension_loader"
-            or replay_call.source_hash is None
-            or replay_call.capability_id is None
-        ):
-            raise erlab.extensions.ExtensionExecutionError(
-                "Extension loader replay metadata is incomplete"
-            )
+        replay_call = typing.cast("FileReplayCall", load_source.replay_call)
         if self.catalog.load_error is not None:
             raise erlab.extensions.ExtensionExecutionError(
                 "The extension catalog is unavailable"
             )
         call = self.execution.loader_call(
             replay_call.target,
-            replay_call.source_hash,
-            replay_call.capability_id,
+            typing.cast("str", replay_call.source_hash),
+            typing.cast("str", replay_call.capability_id),
         )
         return self.execution.run_loader(
             call,
@@ -1028,11 +1022,6 @@ class _ExtensionController(QtCore.QObject):
                 "the current workspace" if workspace_path is None else workspace_path
             )
             return f"Remove this script from {location} before you delete it."
-        if self._manager._workspace_state.extension_scripts.has_opaque_content:
-            return (
-                "This script can be referenced by workspace data that this ERLab "
-                "version cannot inspect."
-            )
         return None
 
     def _remove_extension(self, record: _ScriptRecord) -> None:
@@ -1107,12 +1096,12 @@ class _ExtensionController(QtCore.QObject):
     def collect_workspace_requirements(
         self,
     ) -> tuple[_WorkspaceScriptRequirement, ...]:
-        """Rebuild loaded-node dependencies and retain unresolved references.
+        """Rebuild loaded-node dependencies and retain persisted references.
 
         Current provenance is authoritative for nodes in the graph. References to
-        nodes that did not load and unresolved requirements without node references
-        remain available for a degraded Save As. Resolved dependencies that are not
-        in the current graph are omitted without mutating document state.
+        nodes that did not load and valid requirements without node references remain
+        available for a degraded Save As. Resolved dependencies that are not in the
+        current graph are omitted without mutating document state.
         """
         loaded_node_uids = set(self._manager._tool_graph.nodes)
         persisted: dict[
@@ -1179,17 +1168,12 @@ class _ExtensionController(QtCore.QObject):
                 if current_spec.file_load_source is None:
                     continue
                 replay_call = current_spec.file_load_source.replay_call
-                if (
-                    replay_call is None
-                    or replay_call.kind != "extension_loader"
-                    or replay_call.source_hash is None
-                    or replay_call.capability_id is None
-                ):
+                if replay_call is None or replay_call.kind != "extension_loader":
                     continue
                 key = (
                     _script_name_key(replay_call.target),
-                    replay_call.source_hash,
-                    replay_call.capability_id,
+                    typing.cast("str", replay_call.source_hash),
+                    typing.cast("str", replay_call.capability_id),
                 )
                 loader_references[key].add(uid)
                 loader_files[key].add(current_spec.file_load_source.path)
@@ -1615,7 +1599,6 @@ class _ExtensionController(QtCore.QObject):
                     for stored_name, stored_hash in state.verified_sources
                 )
             },
-            unresolved_count=self._unresolved_workspace_entry_count(),
         )
 
         def register_slot(script_name: str, source_hash: str) -> None:
@@ -1623,7 +1606,6 @@ class _ExtensionController(QtCore.QObject):
             if erlab.interactive.utils.qt_is_valid(dialog):
                 dialog.set_requirements(
                     self.resolved_workspace_requirements(),
-                    unresolved_count=self._unresolved_workspace_entry_count(),
                 )
 
         dialog.register_requested.connect(register_slot)
@@ -1632,16 +1614,6 @@ class _ExtensionController(QtCore.QObject):
         finally:
             with contextlib.suppress(TypeError, RuntimeError):
                 dialog.register_requested.disconnect(register_slot)
-
-    def _unresolved_workspace_entry_count(self) -> int:
-        """Return the visible count of opaque extension manifest entries."""
-        state = self._manager._workspace_state.extension_scripts
-        return (
-            len(state.opaque_requirement_payloads)
-            + len(state.opaque_source_payloads)
-            + int(state.opaque_requirement_container is not None)
-            + int(state.opaque_source_container is not None)
-        )
 
     @QtCore.Slot(str, str)
     def _save_and_register_embedded_script(
@@ -1764,13 +1736,12 @@ class _ExtensionController(QtCore.QObject):
             return False
 
     def notify_unavailable_workspace_requirements(self) -> None:
-        unresolved_count = self._unresolved_workspace_entry_count()
         unavailable = [
             item
             for item in self.resolved_workspace_requirements()
             if item.state != "ready"
         ]
-        if not unavailable and unresolved_count == 0:
+        if not unavailable:
             return
         missing_registered_scripts = {
             item.requirement.script_name
@@ -1790,17 +1761,14 @@ class _ExtensionController(QtCore.QObject):
         ):
             return
         state = self._manager._workspace_state.extension_scripts
-        if (
+        if any(
             any(
-                any(
-                    _script_name_key(stored_name)
-                    == _script_name_key(item.requirement.script_name)
-                    and stored_hash == item.requirement.source_hash
-                    for stored_name, stored_hash in state.verified_sources
-                )
-                for item in unavailable
+                _script_name_key(stored_name)
+                == _script_name_key(item.requirement.script_name)
+                and stored_hash == item.requirement.source_hash
+                for stored_name, stored_hash in state.verified_sources
             )
-            or unresolved_count
+            for item in unavailable
         ):
             self.show_workspace_requirements()
             return

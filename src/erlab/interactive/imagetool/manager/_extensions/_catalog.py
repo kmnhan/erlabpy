@@ -281,9 +281,7 @@ class _ExtensionCatalogStore:
             return catalog.model_copy(update={"extensions": records})
 
         catalog = self.mutate(None, update)
-        if registered_source_hash is None:
-            raise _ExtensionCatalogError("Script registration returned no source hash")
-        return catalog, registered_source_hash
+        return catalog, typing.cast("str", registered_source_hash)
 
     def relocate_script(
         self,
@@ -375,9 +373,7 @@ class _ExtensionCatalogStore:
             update,
             expected_record_generation=expected_record_generation,
         )
-        if changed is None:
-            raise _ExtensionCatalogError("Script reload returned no change state")
-        return catalog, changed
+        return catalog, typing.cast("bool", changed)
 
     def commit_script_validation(
         self,
@@ -474,14 +470,14 @@ class _ExtensionCatalogStore:
         )
         if status != "ready":
             raise _RegisteredScriptUnavailable(status)
-        descriptor = _capability_descriptor(snapshot, kind, capability_id)
-        if descriptor is None:
-            raise _RegisteredScriptUnavailable("missing-capability")
         return _RegisteredScriptCapability(
             registered_path=snapshot.registered_path,
             script_name=snapshot.record.script_name,
             source_hash=snapshot.record.source_hash,
-            descriptor=descriptor,
+            descriptor=typing.cast(
+                "RoutineDescriptor | LoaderDescriptor",
+                _capability_descriptor(snapshot, kind, capability_id),
+            ),
             source_bytes=snapshot.source_bytes,
         )
 
@@ -554,8 +550,6 @@ class _ExtensionCatalogStore:
         script_key = _script_name_key(script_name)
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            if script_key not in catalog.extensions:
-                raise KeyError(script_name)
             records = dict(catalog.extensions)
             del records[script_key]
             return catalog.model_copy(

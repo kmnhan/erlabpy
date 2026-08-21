@@ -2,6 +2,7 @@ import pathlib
 import typing
 from collections.abc import Callable
 
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -484,9 +485,22 @@ def test_explorer_loader_extensions_apply_only_to_manager_loads(
             **kwargs,
         )
 
-    worker = _ReprFetcher(file_path, _preview_loader, include_values=False)
+    worker = _ReprFetcher(
+        file_path,
+        _preview_loader,
+        include_values=False,
+        load_kwargs={"metadata": "from-options"},
+    )
     worker.run()
-    assert preview_calls == [{"single": True, "load_kwargs": {"without_values": True}}]
+    assert preview_calls == [
+        {
+            "single": True,
+            "load_kwargs": {
+                "metadata": "from-options",
+                "without_values": True,
+            },
+        }
+    ]
 
 
 def test_explorer_loader_refresh_keeps_selection_atomic(
@@ -504,6 +518,10 @@ def test_explorer_loader_refresh_keeps_selection_atomic(
     qtbot.addWidget(explorer)
     explorer._loader_combo.setCurrentText("lab")
     assert explorer.loader_name == "lab"
+    explorer._loader_combo.setCurrentIndex(-1)
+    explorer._loader_changed()
+    assert explorer._selected_loader_name is None
+    explorer._loader_combo.setCurrentText("lab")
     index_changes: list[str] = []
     selection_refreshes: list[str] = []
     explorer._loader_combo.currentIndexChanged.connect(
@@ -521,6 +539,15 @@ def test_explorer_loader_refresh_keeps_selection_atomic(
     assert explorer.loader_name == "lab"
     assert index_changes == []
     assert selection_refreshes == ["lab"]
+
+    state_changes: list[None] = []
+    explorer.sigStateChanged.connect(lambda: state_changes.append(None))
+    external_loaders.pop("lab")
+    explorer.refresh_loader_choices()
+
+    assert explorer.loader_name != "lab"
+    assert selection_refreshes[-1] == explorer.loader_name
+    assert state_changes
 
 
 def test_repr_fetcher_keeps_coordinate_values_without_preview(
@@ -1180,6 +1207,92 @@ def test_shared_loader_kwargs_exclude_file_dialog_method_defaults() -> None:
     ) == {"single": False}
 
 
+def test_manager_extension_loader_parameter_selection_accepts_and_cancels(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=1.0,
+            ),
+        ),
+    )
+
+    class _Loader:
+        uses_standard_loader_options = False
+
+        def __init__(self) -> None:
+            self.descriptor = descriptor
+
+        def __call__(self, _path, **_kwargs):
+            return None
+
+    loader = _Loader()
+    exec_results = [False, True, False]
+
+    class _ParameterDialog:
+        parameters: typing.ClassVar = {"scale": 3.0}
+
+        def __init__(self, received, parent, values) -> None:
+            assert received is descriptor
+            assert values == {"scale": 2.0}
+
+        def exec(self) -> bool:
+            return exec_results.pop(0)
+
+    class _NameFilterDialog:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def check_filter(self, _name_filter) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return True
+
+        def checked_filter(self):
+            return "Lab (*.dat)", loader, {"scale": 2.0}
+
+    monkeypatch.setattr(
+        extension_dialogs,
+        "_ExtensionParameterDialog",
+        _ParameterDialog,
+    )
+    monkeypatch.setattr(manager_base, "_NameFilterDialog", _NameFilterDialog)
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager,
+            "_manager_loader_name_for_callable",
+            lambda _func: None,
+        )
+        options = {"Lab (*.dat)": (loader, {"scale": 2.0})}
+
+        assert manager._select_loader_options(options) is None
+        assert manager._select_loader_options(options) == (
+            "Lab (*.dat)",
+            loader,
+            {"scale": 3.0},
+        )
+        assert (
+            manager._select_loader_options(
+                {**options, "Other (*.txt)": (xr.load_dataarray, {})}
+            )
+            is None
+        )
+
+
 def test_explorer_loader_options_dialog_updates_kwargs(
     qtbot,
     monkeypatch,
@@ -1275,19 +1388,55 @@ def test_explorer_extension_loader_options_dialog_uses_saved_values(
     )()
     monkeypatch.setattr(explorer, "_loader", lambda _name: loader)
 
-    class _CancelParameterDialog:
+    exec_results = [False, True]
+
+    class _ParameterDialog:
         def __init__(self, dialog_descriptor, parent, values) -> None:
             assert dialog_descriptor is descriptor
             assert parent is explorer
             assert values == {"mode": "saved"}
+            self.parameters = {"mode": "updated"}
 
         def exec(self) -> bool:
-            return False
+            return exec_results.pop(0)
 
     monkeypatch.setattr(
-        extension_dialogs, "_ExtensionParameterDialog", _CancelParameterDialog
+        extension_dialogs, "_ExtensionParameterDialog", _ParameterDialog
     )
 
     explorer._open_loader_options()
 
     assert explorer._loader_kwargs_by_name["example"] == {"mode": "saved"}
+
+    explorer._loader_extensions_by_name["example"] = {"stale": {}}
+    explorer._open_loader_options()
+
+    assert explorer._loader_kwargs_by_name["example"] == {"mode": "updated"}
+    assert explorer._loader_extensions_by_name["example"] == {}
+
+
+def test_tabbed_explorer_refreshes_loader_choices_in_each_tab(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    monkeypatch,
+) -> None:
+    explorer = _TabbedExplorer(
+        root_path=example_data_dir,
+        loader_name="example",
+    )
+    qtbot.addWidget(explorer)
+    explorer.add_tab(root_path=example_data_dir, loader_name="example")
+    refreshed: list[int] = []
+    for index in range(explorer.tab_widget.count()):
+        tab = explorer.get_explorer(index)
+        assert tab is not None
+        monkeypatch.setattr(
+            tab,
+            "refresh_loader_choices",
+            lambda tab_index=index: refreshed.append(tab_index),
+        )
+
+    explorer.refresh_loader_choices()
+
+    assert refreshed == [0, 1]

@@ -510,7 +510,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     def _create_explorer_window(self) -> QtWidgets.QWidget:
         from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
-        loader_name = self._recent_loader_name
+        loader_name = self._loader_name_for_name_filter(self._recent_name_filter)
         if loader_name is None:
             loader_name = self.effective_interactive_options.io.default_loader
         explorer = _TabbedExplorer(
@@ -634,10 +634,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
         return PeriodicTableWindow()
 
-    @property
-    def _recent_loader_name(self) -> str | None:
-        return self._loader_name_for_name_filter(self._recent_name_filter)
-
     def _preferred_name_filter(
         self, valid_loaders: dict[str, tuple[Callable, dict]]
     ) -> str | None:
@@ -669,12 +665,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         )
 
         def extension_parameters(
-            func: Callable,
+            descriptor: erlab.extensions.LoaderDescriptor,
             values: Mapping[str, typing.Any],
         ) -> dict[str, typing.Any] | None:
-            descriptor = getattr(func, "descriptor", None)
-            if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
-                return None
             parameter_dialog = _ExtensionParameterDialog(
                 descriptor, self, values=values
             )
@@ -687,8 +680,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             selected_filter, (selected_func, defaults) = next(
                 iter(valid_loaders.items())
             )
+            selected_descriptor = getattr(selected_func, "descriptor", None)
             if isinstance(
-                getattr(selected_func, "descriptor", None),
+                selected_descriptor,
                 erlab.extensions.LoaderDescriptor,
             ) and not bool(
                 getattr(selected_func, "uses_standard_loader_options", False)
@@ -702,7 +696,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
                         self._recent_loader_kwargs_by_filter.get(selected_filter, {})
                     )
                 selected_parameters = extension_parameters(
-                    selected_func, initial_parameters
+                    selected_descriptor, initial_parameters
                 )
                 if selected_parameters is None:
                     return None
@@ -749,10 +743,11 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             return None
 
         selected_filter, func, kwargs = dialog.checked_filter()
-        if isinstance(
-            getattr(func, "descriptor", None), erlab.extensions.LoaderDescriptor
-        ) and not bool(getattr(func, "uses_standard_loader_options", False)):
-            selected_parameters = extension_parameters(func, kwargs)
+        descriptor = getattr(func, "descriptor", None)
+        if isinstance(descriptor, erlab.extensions.LoaderDescriptor) and not bool(
+            getattr(func, "uses_standard_loader_options", False)
+        ):
+            selected_parameters = extension_parameters(descriptor, kwargs)
             if selected_parameters is None:
                 return None
             kwargs = selected_parameters

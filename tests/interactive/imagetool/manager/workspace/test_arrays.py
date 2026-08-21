@@ -556,6 +556,37 @@ def test_detached_workspace_file_manager_serialization_pins_legacy_group(
     manager.close()
 
 
+def test_workspace_file_manager_rebinds_legacy_reader_to_immutable_object(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.create_group("legacy")
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+        store.publish({"schema_version": 6, "nodes": []})
+        manager = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
+        try:
+            manager._rebind_legacy_group_to_object("payload")
+
+            assert manager.legacy_group_path is None
+            assert manager._group_path == store.object_path("payload")
+            assert store.leased_object_ids == {"payload"}
+
+            manager._rebind_legacy_group_to_object("payload")
+            with pytest.raises(RuntimeError, match="another object"):
+                manager._rebind_legacy_group_to_object("other")
+        finally:
+            manager.close()
+
+    unattached = workspace_arrays.WorkspaceFileManager(tmp_path / "missing.itws")
+    try:
+        with pytest.raises(RuntimeError, match="not attached"):
+            unattached._rebind_legacy_group_to_object("payload")
+    finally:
+        unattached.close()
+
+
 def test_workspace_dask_tokenization_pins_only_serialized_graph(tmp_path) -> None:
     path = tmp_path / "workspace.itws"
     object_id = "payload"

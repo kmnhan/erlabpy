@@ -1247,36 +1247,19 @@ class _WorkspaceSaver:
                         ),
                     )
                 )
-        for object_id, (source, kind) in scripts.opaque_objects.items():
-            if object_id not in extension_object_ids:
+        included_keys = source_keys | scripts.explicit_sources
+        embedded_script_sources: list[tuple[str, str, bytes]] = []
+        for key, (entry, source) in scripts.verified_sources.items():
+            if key not in included_keys or entry.object_id not in extension_object_ids:
                 continue
-            if object_id in node_object_ids:
+            # Verified extension IDs use a prefix that valid node IDs cannot use.
+            if entry.object_id in node_object_ids:  # pragma: no cover
                 logger.warning(
                     "Ignoring an extension object ID that conflicts with node data",
                     extra={"suppress_ui_alert": True},
                 )
                 continue
             object_writes.setdefault(
-                object_id,
-                workspace_storage._WorkspaceObjectWrite(
-                    object_id,
-                    blob=source,
-                    blob_kind=kind,
-                ),
-            )
-
-        included_keys = source_keys | scripts.explicit_sources
-        embedded_script_sources: list[tuple[str, str, bytes]] = []
-        for key, (entry, source) in scripts.verified_sources.items():
-            if key not in included_keys or entry.object_id not in extension_object_ids:
-                continue
-            if entry.object_id in node_object_ids:
-                logger.warning(
-                    "Ignoring an extension object ID that conflicts with node data",
-                    extra={"suppress_ui_alert": True},
-                )
-                continue
-            planned_write = object_writes.setdefault(
                 entry.object_id,
                 workspace_storage._WorkspaceObjectWrite(
                     entry.object_id,
@@ -1284,13 +1267,9 @@ class _WorkspaceSaver:
                     blob_kind="extension-python-source-v1",
                 ),
             )
-            if (
-                planned_write.blob == source
-                and planned_write.blob_kind == "extension-python-source-v1"
-            ):
-                embedded_script_sources.append(
-                    (entry.script_name, entry.source_hash, source)
-                )
+            embedded_script_sources.append(
+                (entry.script_name, entry.source_hash, source)
+            )
 
         for object_id in extension_object_ids - object_writes.keys():
             if (

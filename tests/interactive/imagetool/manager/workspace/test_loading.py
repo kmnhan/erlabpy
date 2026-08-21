@@ -24,6 +24,7 @@ import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
+import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
@@ -70,18 +71,14 @@ def _workspace_sweep_json(value: typing.Any) -> typing.Any:
     return json.loads(json.dumps(value))
 
 
-def test_workspace_script_inspection_separates_verified_and_opaque_sources(
+def test_workspace_script_inspection_keeps_exact_verified_sources(
     tmp_path: pathlib.Path,
 ) -> None:
     workspace_path = tmp_path / "scripts.itws"
     required_source = b"def required():\n    return 1\n"
     explicit_source = b"def explicit():\n    return 2\n"
-    future_source = b"def future():\n    return 3\n"
-    nested_source = b"future nested source bytes"
     required_hash = hashlib.sha256(required_source).hexdigest()
     explicit_hash = hashlib.sha256(explicit_source).hexdigest()
-    future_hash = hashlib.sha256(future_source).hexdigest()
-    nested_object_id = "future-nested-source"
     requirement = _WorkspaceScriptRequirement(
         script_name="required.py",
         capability_id="required",
@@ -102,13 +99,6 @@ def test_workspace_script_inspection_separates_verified_and_opaque_sources(
             "source_hash": explicit_hash,
             "object_id": f"extension-source-{explicit_hash}",
         },
-        {
-            "script_name": "future.py",
-            "source_hash": future_hash,
-            "object_id": f"extension-source-{future_hash}",
-        },
-        {"object_id": "bad\x00object", "future": {"kept": True}},
-        {"future": {"sources": [{"object_id": nested_object_id}]}},
     ]
     manifest = workspace_format._workspace_manifest_payload(
         root_order=[],
@@ -129,16 +119,6 @@ def test_workspace_script_inspection_separates_verified_and_opaque_sources(
                 f"extension-source-{explicit_hash}",
                 blob=explicit_source,
                 blob_kind="extension-python-source-v1",
-            ),
-            workspace_storage._WorkspaceObjectWrite(
-                f"extension-source-{future_hash}",
-                blob=future_source,
-                blob_kind="extension-python-source-v2",
-            ),
-            workspace_storage._WorkspaceObjectWrite(
-                nested_object_id,
-                blob=nested_source,
-                blob_kind="future-extension-source",
             ),
         ),
     )
@@ -162,106 +142,35 @@ def test_workspace_script_inspection_separates_verified_and_opaque_sources(
         ("explicit.py", explicit_hash),
     }
     assert scripts.explicit_sources == {("explicit.py", explicit_hash)}
-    assert source_entries[2:] == list(scripts.opaque_source_payloads)
-    assert scripts.opaque_objects == {
-        f"extension-source-{future_hash}": (
-            future_source,
-            "extension-python-source-v2",
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("extension_requirements", {"entries": []}, "requirements must be a list"),
+        (
+            "embedded_extension_sources",
+            {"entries": []},
+            "sources must be a list",
         ),
-        nested_object_id: (nested_source, "future-extension-source"),
-    }
-
-
-def test_partial_import_preserves_future_script_containers(
-    tmp_path: pathlib.Path,
+    ],
+)
+def test_workspace_script_inspection_rejects_future_containers(
+    tmp_path: pathlib.Path, field: str, value: object, message: str
 ) -> None:
-    workspace_path = tmp_path / "future-containers.itws"
-    source = b"future source bytes"
-    source_hash = hashlib.sha256(source).hexdigest()
-    object_id = f"future-source-{source_hash}"
-    requirement_container = {
-        "entries": [
-            {
-                "script_name": "future.py",
-                "source_hash": source_hash,
-                "references": {"nodes": ["selected-node"]},
-            }
-        ]
-    }
-    source_container = {
-        "entries": [
-            {
-                "script_name": "future.py",
-                "source_hash": source_hash,
-                "source": {"object_id": object_id},
-            }
-        ]
-    }
-    manifest = workspace_format._workspace_manifest_payload(
-        root_order=[],
-        nodes=[
-            {
-                "uid": "selected-node",
-                "path": "0",
-                "payload_object_id": "selected-payload",
-                "payload_path": "/__itws_objects/selected-payload",
-            },
-            {
-                "uid": "unselected-node",
-                "path": "1",
-                "payload_object_id": "unselected-payload",
-                "payload_path": "/__itws_objects/unselected-payload",
-            },
-        ],
-        erlab_version="test",
-        extension_requirements=requirement_container,
-        embedded_extension_sources=source_container,
-    )
-    manifest["extension_requirements"] = requirement_container
-    manifest["embedded_extension_sources"] = source_container
-    with workspace_store.WorkspaceStore(workspace_path, create=True) as store:
-        workspace_storage._write_workspace_generation(
-            store,
-            workspace_storage._WorkspaceGenerationPlan(
-                manifest=manifest,
-                objects=(
-                    workspace_storage._WorkspaceObjectWrite(
-                        "selected-payload",
-                        blob=b"selected",
-                        blob_kind="future-node",
-                    ),
-                    workspace_storage._WorkspaceObjectWrite(
-                        "unselected-payload",
-                        blob=b"unselected",
-                        blob_kind="future-node",
-                    ),
-                    workspace_storage._WorkspaceObjectWrite(
-                        object_id,
-                        blob=source,
-                        blob_kind="extension-python-source-v2",
-                    ),
-                ),
-            ),
-            compression_mode="none",
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    manifest = {"extension_requirements": [], "embedded_extension_sources": []}
+    manifest[field] = value
+
+    with pytest.raises(TypeError, match=message):
+        loader._prepare_extension_scripts(
+            tmp_path / "future-containers.itws",
+            manifest,
+            selected_paths={"0"},
         )
 
-    loader = object.__new__(workspace_loading._WorkspaceLoader)
-    scripts = loader._prepare_extension_scripts(
-        workspace_path,
-        manifest,
-        selected_paths={"0"},
-    )
 
-    if scripts.opaque_requirement_container is None:
-        raise TypeError("The future requirement container was not preserved")
-    if scripts.opaque_source_container is None:
-        raise TypeError("The future source container was not preserved")
-    assert scripts.opaque_requirement_container.value == requirement_container
-    assert scripts.opaque_source_container.value == source_container
-    assert scripts.opaque_objects == {object_id: (source, "extension-python-source-v2")}
-
-
-def test_workspace_script_inspection_preserves_ambiguous_filenames_as_opaque(
+def test_workspace_script_inspection_rejects_ambiguous_filenames(
     tmp_path: pathlib.Path,
 ) -> None:
     workspace_path = tmp_path / "ambiguous-scripts.itws"
@@ -314,19 +223,12 @@ def test_workspace_script_inspection_preserves_ambiguous_filenames_as_opaque(
         )
 
     loader = object.__new__(workspace_loading._WorkspaceLoader)
-    scripts = loader._prepare_extension_scripts(
-        workspace_path,
-        manifest,
-        selected_paths=None,
-    )
-
-    assert scripts.requirements == (first,)
-    assert scripts.opaque_requirement_payloads == (second.model_dump(mode="json"),)
-    assert scripts.verified_sources == {}
-    assert scripts.opaque_source_payloads == (source_entry,)
-    assert scripts.opaque_objects == {
-        source_entry["object_id"]: (source, "extension-python-source-v1")
-    }
+    with pytest.raises(ValueError, match="ambiguous filenames"):
+        loader._prepare_extension_scripts(
+            workspace_path,
+            manifest,
+            selected_paths=None,
+        )
 
 
 @pytest.mark.parametrize("new_policy", ["referenced", "never"])
@@ -428,45 +330,355 @@ def test_workspace_uid_reservation_includes_failed_requirement_nodes() -> None:
     )
 
 
-def test_workspace_import_rejects_opaque_requirements_with_unknown_references(
-    tmp_path: pathlib.Path,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    shared_uid = "shared-node"
-    opaque_payload = {"future": {"referencing_nodes": [shared_uid], "kept": True}}
-    incoming_scripts = workspace_loading._WorkspaceScriptState(
-        opaque_requirement_payloads=(opaque_payload,)
+def test_workspace_reserved_uid_metadata_keeps_saved_target_mapping() -> None:
+    dataset = xr.Dataset(attrs={"manager_node_uid": b"saved"})
+
+    rebased = workspace_loading._WorkspaceLoader._workspace_dataset_with_reserved_uid(
+        dataset, {"saved": "saved-import"}
+    )
+    targets = {"saved-import": 4}
+    workspace_loading._WorkspaceLoader._record_reserved_workspace_target(
+        "saved", 4, targets, {"saved": "saved-import"}
+    )
+
+    assert rebased.attrs["manager_node_uid"] == "saved-import"
+    assert dataset.attrs["manager_node_uid"] == b"saved"
+    assert targets == {"saved": 4}
+    assert (
+        workspace_loading._WorkspaceLoader._workspace_dataset_with_reserved_uid(
+            xr.Dataset(attrs={"manager_node_uid": b"\xff"}), {"saved": "other"}
+        ).attrs["manager_node_uid"]
+        == b"\xff"
+    )
+
+
+def test_workspace_uid_reservation_validates_manifest_and_requirement_uids() -> None:
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    loader._manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"used": object()})
+    )
+    requirement = _WorkspaceScriptRequirement(
+        script_name="analysis.py",
+        capability_id="analysis",
+        capability_name="Analysis",
+        capability_kind="routine",
+        source_hash="a" * 64,
+        extension_api_version=1,
+        referencing_nodes=("requirement-only",),
     )
     manifest = {
-        "nodes": [{"path": "0", "kind": "imagetool", "uid": "incoming-node"}],
-        "root_order": ["0"],
+        "nodes": [
+            {"path": "skip", "uid": "skipped"},
+            {"path": "0", "uid": None},
+            {"path": "0", "uid": "used"},
+        ]
     }
 
-    with manager_context() as manager:
-        manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
-            show=False,
-            uid=shared_uid,
-        )
-        manager._workspace_controller._mark_workspace_clean()
+    reserved = loader._reserve_workspace_uids(
+        manifest,
+        workspace_loading._WorkspaceScriptState((requirement,)),
+        selected_paths={"0"},
+    )
+    assert set(reserved) == {"used", "requirement-only"}
+    assert reserved["used"] != "used"
+    assert reserved["requirement-only"] == "requirement-only"
 
-        with pytest.raises(
-            ValueError,
-            match="opaque extension requirements",
-        ):
-            manager._workspace_controller.loading._from_h5py_workspace_file(
-                tmp_path / "unread.itws",
-                manifest,
+    with pytest.raises(ValueError, match="duplicate node UID"):
+        loader._reserve_workspace_uids(
+            {"nodes": [{"uid": "duplicate"}, {"uid": "duplicate"}]}
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "entry"),
+    [
+        (
+            "extension_requirements",
+            {"script_name": "broken.py", "source_hash": "invalid"},
+        ),
+        (
+            "embedded_extension_sources",
+            {
+                "script_name": "broken.py",
+                "source_hash": "0" * 64,
+                "object_id": f"extension-source-{'0' * 64}",
+                "future": True,
+            },
+        ),
+    ],
+)
+def test_workspace_script_preparation_rejects_invalid_selected_entries(
+    tmp_path: pathlib.Path, field: str, entry: object
+) -> None:
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    manifest = {
+        "nodes": [{"path": "0", "uid": "selected"}],
+        "extension_requirements": [],
+        "embedded_extension_sources": [],
+    }
+    manifest[field] = [entry]
+
+    with pytest.raises(ValueError, match="validation error"):
+        loader._prepare_extension_scripts(
+            tmp_path / "workspace.itws", manifest, selected_paths={"0"}
+        )
+
+
+def test_workspace_script_preparation_filters_references(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    missing_source = b"missing\n"
+    missing_hash = hashlib.sha256(missing_source).hexdigest()
+    selected = _WorkspaceScriptRequirement(
+        script_name="selected.py",
+        capability_id="selected",
+        capability_name="Selected",
+        capability_kind="routine",
+        source_hash=source_hash,
+        extension_api_version=1,
+        referencing_nodes=("selected", "other"),
+    )
+    missing = selected.model_copy(
+        update={
+            "script_name": "missing.py",
+            "capability_id": "missing",
+            "capability_name": "Missing",
+            "source_hash": missing_hash,
+            "referencing_nodes": ("selected",),
+        }
+    )
+    unselected = selected.model_copy(
+        update={
+            "script_name": "unselected.py",
+            "capability_id": "unselected",
+            "capability_name": "Unselected",
+            "referencing_nodes": ("other",),
+        }
+    )
+    source_entry = {
+        "script_name": selected.script_name,
+        "source_hash": source_hash,
+        "object_id": f"extension-source-{source_hash}",
+    }
+    unselected_source_entry = {
+        "script_name": unselected.script_name,
+        "source_hash": source_hash,
+        "object_id": f"extension-source-{source_hash}",
+    }
+    orphan = selected.model_copy(
+        update={
+            "script_name": "orphan.py",
+            "capability_id": "orphan",
+            "capability_name": "Orphan",
+        }
+    ).model_dump(mode="json")
+    orphan.pop("referencing_nodes")
+
+    def _read_source(_path: pathlib.Path, _object_id: str) -> tuple[bytes, str]:
+        return source, "extension-python-source-v1"
+
+    monkeypatch.setattr(workspace_storage, "_read_workspace_blob", _read_source)
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    scripts = loader._prepare_extension_scripts(
+        tmp_path / "workspace.itws",
+        {
+            "nodes": [
+                {"path": "0", "uid": "selected"},
+                {"path": "1", "uid": "other"},
+            ],
+            "extension_requirements": [
+                selected.model_dump(mode="json"),
+                missing.model_dump(mode="json"),
+                unselected.model_dump(mode="json"),
+                orphan,
+            ],
+            "embedded_extension_sources": [source_entry, unselected_source_entry],
+        },
+        selected_paths={"0"},
+    )
+
+    assert tuple(item.script_name for item in scripts.requirements) == (
+        "selected.py",
+        "missing.py",
+    )
+    assert all(item.referencing_nodes == ("selected",) for item in scripts.requirements)
+    assert set(scripts.verified_sources) == {("selected.py", source_hash)}
+
+
+@pytest.mark.parametrize(
+    ("blob", "message"),
+    [
+        ((b"source\n", "extension-python-source-v2"), "unsupported object kind"),
+        ((b"wrong\n", "extension-python-source-v1"), "does not match its hash"),
+    ],
+)
+def test_workspace_script_preparation_rejects_unverified_embedded_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    blob: tuple[bytes, str],
+    message: str,
+) -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    monkeypatch.setattr(
+        workspace_storage, "_read_workspace_blob", lambda _path, _object_id: blob
+    )
+
+    with pytest.raises(ValueError, match=message):
+        loader._prepare_extension_scripts(
+            tmp_path / "workspace.itws",
+            {
+                "extension_requirements": [],
+                "embedded_extension_sources": [
+                    {
+                        "script_name": "script.py",
+                        "source_hash": source_hash,
+                        "object_id": f"extension-source-{source_hash}",
+                    }
+                ],
+            },
+            selected_paths=None,
+        )
+
+
+def test_workspace_import_failure_restores_previous_script_state(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    previous = _WorkspaceScriptRequirement(
+        script_name="previous.py",
+        capability_id="previous",
+        capability_name="Previous",
+        capability_kind="routine",
+        source_hash="a" * 64,
+        extension_api_version=1,
+    )
+    incoming = _WorkspaceScriptRequirement(
+        script_name="incoming.py",
+        capability_id="incoming",
+        capability_name="Incoming",
+        capability_kind="routine",
+        source_hash="b" * 64,
+        extension_api_version=1,
+    )
+
+    with manager_context() as manager:
+        manager._workspace_state.extension_scripts.replace(
+            workspace_state._WorkspaceScriptState((previous,))
+        )
+        loader = manager._workspace_controller.loading
+        monkeypatch.setattr(
+            loader,
+            "_reserve_workspace_uids",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("UID reservation failed")
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="UID reservation failed"):
+            loader._from_h5py_workspace_file(
+                tmp_path / "workspace.itws",
+                {"nodes": [], "root_order": []},
                 replace=False,
                 mark_dirty=True,
-                incoming_extension_state=incoming_scripts,
+                incoming_extension_state=workspace_state._WorkspaceScriptState(
+                    (incoming,)
+                ),
             )
 
-        assert set(manager._tool_graph.nodes) == {shared_uid}
-        assert not manager._workspace_state.extension_scripts.has_opaque_content
-        assert not manager.is_workspace_modified
+        assert manager._workspace_state.extension_scripts.requirements == (previous,)
+
+
+def test_workspace_script_preparation_rejects_missing_embedded_object(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_hash = hashlib.sha256(b"source\n").hexdigest()
+    object_id = f"extension-source-{source_hash}"
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+
+    def _missing_source(_path: pathlib.Path, _object_id: str) -> typing.Never:
+        raise KeyError(_object_id)
+
+    monkeypatch.setattr(workspace_storage, "_read_workspace_blob", _missing_source)
+
+    with pytest.raises(ValueError, match="Could not read embedded extension source"):
+        loader._prepare_extension_scripts(
+            tmp_path / "workspace.itws",
+            {
+                "extension_requirements": [],
+                "embedded_extension_sources": [
+                    {
+                        "script_name": "script.py",
+                        "source_hash": source_hash,
+                        "object_id": object_id,
+                    }
+                ],
+            },
+            selected_paths=None,
+        )
+
+
+def test_workspace_script_preparation_rejects_duplicate_embedded_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    entry = {
+        "script_name": "script.py",
+        "source_hash": source_hash,
+        "object_id": f"extension-source-{source_hash}",
+    }
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    monkeypatch.setattr(
+        workspace_storage,
+        "_read_workspace_blob",
+        lambda _path, _object_id: (source, "extension-python-source-v1"),
+    )
+
+    with pytest.raises(ValueError, match="Duplicate embedded extension source"):
+        loader._prepare_extension_scripts(
+            tmp_path / "workspace.itws",
+            {
+                "extension_requirements": [],
+                "embedded_extension_sources": [entry, entry],
+            },
+            selected_paths=None,
+        )
+
+
+def test_workspace_extension_script_install_replaces_and_merges_state() -> None:
+    reconciled: list[None] = []
+    current = workspace_loading._WorkspaceScriptState()
+    manager_state = types.SimpleNamespace(
+        extension_scripts=current,
+        save_as_only=False,
+        degraded_reasons=(),
+    )
+    unavailable_requirement = types.SimpleNamespace(script_name="missing.py")
+    unavailable = types.SimpleNamespace(
+        state="missing", requirement=unavailable_requirement
+    )
+    loader = object.__new__(workspace_loading._WorkspaceLoader)
+    loader._manager = types.SimpleNamespace(
+        _workspace_state=manager_state,
+        _extensions=types.SimpleNamespace(
+            _reconcile_persisted_workspace_requirements=lambda: reconciled.append(None),
+            resolved_workspace_requirements=lambda **_kwargs: (unavailable,),
+        ),
+    )
+    incoming = workspace_loading._WorkspaceScriptState()
+    assert not loader._install_extension_scripts(incoming, replace=True)
+    assert manager_state.save_as_only
+    assert manager_state.degraded_reasons == ("missing.py: missing",)
+
+    assert not loader._install_extension_scripts(incoming, replace=False)
+    assert reconciled == [None, None]
 
 
 def test_extension_only_workspace_import_marks_document_dirty(
@@ -673,7 +885,6 @@ def test_failed_workspace_replacement_restores_script_state_once(
             previous_source,
             explicit=True,
         )
-        scripts.opaque_requirement_payloads = ({"future": "kept"},)
         before = scripts.copy()
         manager._workspace_state.save_as_only = True
         manager._workspace_state.degraded_reasons = ("previous.py: missing",)
@@ -722,92 +933,8 @@ def test_failed_workspace_replacement_restores_script_state_once(
         assert scripts.requirements == before.requirements
         assert scripts.verified_sources == before.verified_sources
         assert scripts.explicit_sources == before.explicit_sources
-        assert scripts.opaque_requirement_payloads == ({"future": "kept"},)
         assert manager._workspace_state.save_as_only
         assert manager._workspace_state.degraded_reasons == ("previous.py: missing",)
-
-
-def test_degraded_save_as_preserves_opaque_script_payload_and_object(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    source_path = tmp_path / "opaque.itws"
-    recovered_path = tmp_path / "recovered.itws"
-    source = b"future source bytes"
-    source_hash = hashlib.sha256(source).hexdigest()
-    object_id = f"extension-source-{source_hash}"
-    requirement_payload = {
-        "script_name": "future.py",
-        "source_hash": source_hash,
-        "future_requirement": {"kept": [1, 2]},
-    }
-    source_payloads = [
-        {
-            "script_name": "future.py",
-            "source_hash": source_hash,
-            "future_source": {
-                "object": {"object_id": object_id},
-                "kept": True,
-            },
-        },
-        {"object_id": "bad\x00object", "future_source": "kept"},
-    ]
-    manifest = workspace_format._workspace_manifest_payload(
-        root_order=[],
-        nodes=[],
-        erlab_version="test",
-        extension_requirements=[requirement_payload],
-        embedded_extension_sources=source_payloads,
-    )
-    with workspace_store.WorkspaceStore(source_path, create=True) as store:
-        workspace_storage._write_workspace_generation(
-            store,
-            workspace_storage._WorkspaceGenerationPlan(
-                manifest=manifest,
-                objects=(
-                    workspace_storage._WorkspaceObjectWrite(
-                        object_id,
-                        blob=source,
-                        blob_kind=None,
-                    ),
-                ),
-            ),
-            compression_mode="none",
-        )
-    original_document = source_path.read_bytes()
-
-    with manager_context() as manager:
-        monkeypatch.setattr(
-            manager._extensions,
-            "notify_unavailable_workspace_requirements",
-            lambda: None,
-        )
-        assert manager._workspace_controller.loading._load_workspace_file(
-            source_path,
-            replace=True,
-            associate=True,
-            mark_dirty=False,
-            select=False,
-        )
-        assert manager._workspace_state.save_as_only
-        manager._workspace_controller.saving._save_workspace_document(recovered_path)
-
-    assert source_path.read_bytes() == original_document
-    recovered_manifest = _current_workspace_manifest(recovered_path)
-    assert recovered_manifest["extension_requirements"] == [requirement_payload]
-    assert recovered_manifest["embedded_extension_sources"] == source_payloads
-    recovered_source, recovered_kind = workspace_storage._read_workspace_blob(
-        recovered_path,
-        object_id,
-    )
-    assert recovered_source == source
-    assert recovered_kind is None
-    with workspace_store.WorkspaceStore(recovered_path) as store:
-        workspace_storage._compact_workspace_store(store)
-        assert store.current_generation().manifest == recovered_manifest
 
 
 def test_workspace_import_rebases_only_incoming_script_requirements(

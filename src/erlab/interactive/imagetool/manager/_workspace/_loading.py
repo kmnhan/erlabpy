@@ -56,10 +56,7 @@ from erlab.interactive.imagetool.manager._widgets import (
 from erlab.interactive.imagetool.manager._workspace._format import (
     _require_itws_workspace_path,
 )
-from erlab.interactive.imagetool.manager._workspace._state import (
-    _OpaqueManifestContainer,
-    _WorkspaceScriptState,
-)
+from erlab.interactive.imagetool.manager._workspace._state import _WorkspaceScriptState
 
 if typing.TYPE_CHECKING:
     from collections.abc import (
@@ -1669,16 +1666,6 @@ class _WorkspaceLoader:
         root_order = manifest.get("root_order", ())
         if not isinstance(nodes, list) or not isinstance(root_order, list):
             raise TypeError("Workspace manifest is missing node ordering")
-        if (
-            not replace
-            and incoming_extension_state is not None
-            and incoming_extension_state.has_opaque_requirements
-        ):
-            raise ValueError(
-                "cannot import a workspace with opaque extension requirements; "
-                "open the workspace instead"
-            )
-
         entries_by_path: dict[str, Mapping[str, typing.Any]] = {}
         for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
             path = entry.get("path")
@@ -2751,212 +2738,94 @@ class _WorkspaceLoader:
                 and isinstance((uid := entry.get("uid")), str)
             }
 
-        requirements: list[_WorkspaceScriptRequirement] = []
-        opaque_requirements: list[typing.Any] = []
-        opaque_sources: list[typing.Any] = []
-        opaque_objects: dict[str, tuple[bytes, str | None]] = {}
-        state = _WorkspaceScriptState()
-        referenced_sources: set[tuple[str, str]] = set()
         validated_script_names: dict[str, str] = {}
 
-        def reserve_script_name(script_name: str) -> bool:
+        def reserve_script_name(script_name: str) -> None:
             key = _script_name_key(script_name)
             previous = validated_script_names.setdefault(key, script_name)
-            return previous == script_name
-
-        def selected_raw_requirement(raw: typing.Any) -> bool:
-            if selected_uids is None:
-                return True
-            if not selected_uids:
-                return False
-            references = raw.get("referencing_nodes") if isinstance(raw, dict) else None
-            if not isinstance(references, (list, tuple)):
-                return True
-            return any(
-                isinstance(uid, str) and uid in selected_uids for uid in references
-            )
-
-        def raw_source_key(raw: typing.Any) -> tuple[str, str] | None:
-            if not isinstance(raw, dict):
-                return None
-            script_name = raw.get("script_name")
-            source_hash = raw.get("source_hash")
-            if isinstance(script_name, str) and isinstance(source_hash, str):
-                return script_name, source_hash
-            return None
+            if previous != script_name:
+                raise ValueError(
+                    "workspace scripts have ambiguous filenames: "
+                    f"{previous!r} and {script_name!r}"
+                )
 
         def read_embedded_object(
             object_id: str,
-        ) -> tuple[bytes, str | None] | None:
+        ) -> tuple[bytes, str | None]:
             try:
                 workspace_store.WorkspaceStore.object_path(object_id)
                 return workspace_storage._read_workspace_blob(workspace_path, object_id)
-            except Exception:
-                logger.warning(
-                    "Could not read embedded extension source %s",
-                    object_id,
-                    exc_info=True,
-                    extra={"suppress_ui_alert": True},
-                )
-                return None
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not read embedded extension source {object_id!r}"
+                ) from exc
 
-        def preserve_raw_source_object(raw: typing.Any) -> None:
-            object_ids = workspace_store.WorkspaceStore.manifest_extension_object_ids(
-                {"embedded_extension_sources": raw}
-            )
-            for object_id in object_ids:
-                embedded_object = read_embedded_object(object_id)
-                if embedded_object is not None:
-                    opaque_objects[object_id] = embedded_object
-
-        raw_requirements = manifest.get("extension_requirements", ())
-        opaque_requirement_container: _OpaqueManifestContainer | None = None
-        if isinstance(raw_requirements, list):
-            for raw in raw_requirements:
-                if not selected_raw_requirement(raw):
-                    continue
-                try:
-                    requirement = _WorkspaceScriptRequirement.model_validate(raw)
-                except Exception:
-                    opaque_requirements.append(copy.deepcopy(raw))
-                    source_key = raw_source_key(raw)
-                    if source_key is not None:
-                        referenced_sources.add(source_key)
-                    logger.warning(
-                        "Preserving an invalid workspace script requirement",
-                        exc_info=True,
-                        extra={"suppress_ui_alert": True},
-                    )
-                    continue
-                if selected_uids is not None:
-                    selected_references = tuple(
-                        uid
-                        for uid in requirement.referencing_nodes
-                        if uid in selected_uids
-                    )
-                    if not selected_references:
-                        continue
-                    requirement = requirement.model_copy(
-                        update={"referencing_nodes": selected_references}
-                    )
-                if not reserve_script_name(requirement.script_name):
-                    opaque_requirements.append(copy.deepcopy(raw))
-                    referenced_sources.add(
-                        (requirement.script_name, requirement.source_hash)
-                    )
-                    logger.warning(
-                        "Preserving a workspace script requirement with an "
-                        "ambiguous filename",
-                        extra={"suppress_ui_alert": True},
-                    )
-                    continue
-                requirements.append(requirement)
-                referenced_sources.add(
-                    (requirement.script_name, requirement.source_hash)
-                )
-        elif "extension_requirements" in manifest and selected_raw_requirement(
-            raw_requirements
-        ):
-            opaque_requirement_container = _OpaqueManifestContainer(
-                copy.deepcopy(raw_requirements)
-            )
-            source_key = raw_source_key(raw_requirements)
-            if source_key is not None:
-                referenced_sources.add(source_key)
-            logger.warning(
-                "Preserving a malformed workspace script requirement container",
-                extra={"suppress_ui_alert": True},
-            )
-
-        raw_sources = manifest.get("embedded_extension_sources", ())
-        opaque_source_container: _OpaqueManifestContainer | None = None
-        seen_verified: set[tuple[str, str]] = set()
-        has_opaque_dependency = bool(
-            opaque_requirements or opaque_requirement_container is not None
+        raw_requirements = manifest.get("extension_requirements", [])
+        if not isinstance(raw_requirements, list):
+            raise TypeError("Workspace extension requirements must be a list")
+        all_requirements = tuple(
+            _WorkspaceScriptRequirement.model_validate(raw) for raw in raw_requirements
         )
-        if isinstance(raw_sources, list):
-            for raw in raw_sources:
-                source_key = raw_source_key(raw)
-                try:
-                    entry = (
-                        workspace_format._WorkspaceEmbeddedScriptEntry.model_validate(
-                            raw
-                        )
-                    )
-                except Exception:
-                    if (
-                        selected_uids is not None
-                        and source_key is not None
-                        and source_key not in referenced_sources
-                        and not has_opaque_dependency
-                    ):
-                        continue
-                    opaque_sources.append(copy.deepcopy(raw))
-                    preserve_raw_source_object(raw)
-                    logger.warning(
-                        "Preserving an invalid embedded script source entry",
-                        exc_info=True,
-                        extra={"suppress_ui_alert": True},
-                    )
-                    continue
-                if (
-                    selected_uids is not None
-                    and (entry.script_name, entry.source_hash) not in referenced_sources
-                    and not has_opaque_dependency
-                ):
-                    continue
-                if not reserve_script_name(entry.script_name):
-                    opaque_sources.append(copy.deepcopy(raw))
-                    preserve_raw_source_object(raw)
-                    logger.warning(
-                        "Preserving an embedded script source with an ambiguous "
-                        "filename",
-                        extra={"suppress_ui_alert": True},
-                    )
-                    continue
-                embedded_object = read_embedded_object(entry.object_id)
-                if embedded_object is None:
-                    opaque_sources.append(copy.deepcopy(raw))
-                    continue
-                source, kind = embedded_object
-                if (
-                    kind != "extension-python-source-v1"
-                    or hashlib.sha256(source).hexdigest() != entry.source_hash
-                ):
-                    opaque_sources.append(copy.deepcopy(raw))
-                    opaque_objects[entry.object_id] = embedded_object
-                    continue
-                key = (entry.script_name, entry.source_hash)
-                if key in seen_verified:
-                    opaque_sources.append(copy.deepcopy(raw))
-                    continue
-                seen_verified.add(key)
-                state.remember_verified_source(
-                    *key,
-                    source,
-                    explicit=key not in referenced_sources,
-                )
-        elif "embedded_extension_sources" in manifest and (
-            selected_uids is None or selected_uids
+
+        raw_sources = manifest.get("embedded_extension_sources", [])
+        if not isinstance(raw_sources, list):
+            raise TypeError("Workspace embedded extension sources must be a list")
+        all_sources = tuple(
+            workspace_format._WorkspaceEmbeddedScriptEntry.model_validate(raw)
+            for raw in raw_sources
+        )
+
+        for script_name in (
+            *(item.script_name for item in all_requirements),
+            *(item.script_name for item in all_sources),
         ):
-            opaque_source_container = _OpaqueManifestContainer(
-                copy.deepcopy(raw_sources)
-            )
-            preserve_raw_source_object(raw_sources)
-            logger.warning(
-                "Preserving a malformed embedded script source container",
-                extra={"suppress_ui_alert": True},
-            )
+            reserve_script_name(script_name)
+
+        requirements: list[_WorkspaceScriptRequirement] = []
+        referenced_sources: set[tuple[str, str]] = set()
+        for requirement in all_requirements:
+            if selected_uids is not None:
+                selected_references = tuple(
+                    uid for uid in requirement.referencing_nodes if uid in selected_uids
+                )
+                if not selected_references:
+                    continue
+                requirement = requirement.model_copy(
+                    update={"referencing_nodes": selected_references}
+                )
+            requirements.append(requirement)
+            referenced_sources.add((requirement.script_name, requirement.source_hash))
+
+        verified_sources: dict[
+            tuple[str, str],
+            tuple[workspace_format._WorkspaceEmbeddedScriptEntry, bytes],
+        ] = {}
+        explicit_sources: set[tuple[str, str]] = set()
+        for entry in all_sources:
+            key = (entry.script_name, entry.source_hash)
+            if selected_uids is not None and key not in referenced_sources:
+                continue
+            if key in verified_sources:
+                raise ValueError(f"Duplicate embedded extension source for {key!r}")
+            source, kind = read_embedded_object(entry.object_id)
+            if kind != "extension-python-source-v1":
+                raise ValueError(
+                    f"Embedded extension source {entry.object_id!r} has an "
+                    f"unsupported object kind {kind!r}"
+                )
+            if hashlib.sha256(source).hexdigest() != entry.source_hash:
+                raise ValueError(
+                    f"Embedded extension source {entry.object_id!r} does not match "
+                    "its hash"
+                )
+            verified_sources[key] = (entry, source)
+            if key not in referenced_sources:
+                explicit_sources.add(key)
 
         return _WorkspaceScriptState(
             requirements,
-            verified_sources=state.verified_sources,
-            opaque_requirement_payloads=opaque_requirements,
-            opaque_source_payloads=opaque_sources,
-            opaque_objects=opaque_objects,
-            explicit_sources=state.explicit_sources,
-            opaque_requirement_container=opaque_requirement_container,
-            opaque_source_container=opaque_source_container,
+            verified_sources=verified_sources,
+            explicit_sources=explicit_sources,
         )
 
     def _install_extension_scripts(
@@ -2983,13 +2852,9 @@ class _WorkspaceLoader:
         ]
         if not replace:
             return scripts != previous
-        self._manager._workspace_state.save_as_only = bool(
-            unavailable or incoming_state.has_opaque_content
-        )
+        self._manager._workspace_state.save_as_only = bool(unavailable)
         reasons = [
             f"{item.requirement.script_name}: {item.state}" for item in unavailable
         ]
-        if incoming_state.has_opaque_content:
-            reasons.append("unrecognized extension content")
         self._manager._workspace_state.degraded_reasons = tuple(reasons)
         return scripts != previous

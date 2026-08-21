@@ -21,6 +21,7 @@ import erlab
 from erlab.interactive.imagetool.manager._workspace._format import (
     _current_workspace_schema_version,
     _workspace_schema_uses_immutable_generations,
+    _WorkspaceEmbeddedScriptEntry,
 )
 
 if typing.TYPE_CHECKING:
@@ -1316,23 +1317,17 @@ class WorkspaceStore:
         cls,
         manifest: Mapping[str, typing.Any],
     ) -> frozenset[str]:
-        """Return all valid object IDs reachable from extension source content."""
+        """Return object IDs from validated embedded source entries."""
+        raw_entries = manifest.get("embedded_extension_sources", ())
+        if not isinstance(raw_entries, list):
+            return frozenset()
         object_ids: set[str] = set()
-        pending = [manifest.get("embedded_extension_sources", ())]
-        while pending:
-            value = pending.pop()
-            if isinstance(value, dict):
-                object_id = value.get("object_id")
-                if isinstance(object_id, str):
-                    try:
-                        cls.object_path(object_id)
-                    except ValueError:
-                        pass
-                    else:
-                        object_ids.add(object_id)
-                pending.extend(value.values())
-            elif isinstance(value, list):
-                pending.extend(value)
+        for raw in raw_entries:
+            try:
+                entry = _WorkspaceEmbeddedScriptEntry.model_validate(raw)
+            except ValueError:
+                continue
+            object_ids.add(entry.object_id)
         return frozenset(object_ids)
 
     @classmethod

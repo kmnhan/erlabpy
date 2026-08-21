@@ -438,6 +438,29 @@ def test_workspace_embedded_script_entry_uses_exact_filename_and_hash() -> None:
         )
 
 
+def test_workspace_immutable_generation_helpers_filter_invalid_manifest_entries() -> (
+    None
+):
+    manifest = {
+        "nodes": [
+            {"path": "0", "kind": "imagetool", "payload_object_id": "image"},
+            {"path": "/1/", "kind": "tool", "payload_object_id": "tool"},
+            {"path": "2", "kind": "unknown", "payload_object_id": "ignored"},
+            {"path": 3, "kind": "tool", "payload_object_id": "ignored"},
+            {"path": "4", "kind": "tool", "payload_object_id": ""},
+        ]
+    }
+
+    assert workspace_format._workspace_manifest_legacy_reader_rebindings(manifest) == {
+        "/0/imagetool": "image",
+        "/1/tool": "tool",
+    }
+    assert workspace_format._workspace_schema_uses_immutable_generations(5)
+    assert workspace_format._workspace_schema_uses_immutable_generations(6)
+    assert not workspace_format._workspace_schema_uses_immutable_generations(4)
+    assert not workspace_format._workspace_schema_uses_immutable_generations(7)
+
+
 def test_workspace_manifest_attrs_reject_invalid_entries(caplog) -> None:
     with caplog.at_level(logging.WARNING):
         encoded = workspace_format._workspace_manifest_attrs(

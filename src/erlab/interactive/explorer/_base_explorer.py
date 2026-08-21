@@ -672,9 +672,7 @@ class _LoaderWidget(QtWidgets.QComboBox):
         model = _LoaderInfoModel(file_browser)
         view = QtWidgets.QTableView()
         view.setCornerButtonEnabled(False)
-        vertical_header = view.verticalHeader()
-        if vertical_header is not None:
-            vertical_header.hide()
+        typing.cast("QtWidgets.QHeaderView", view.verticalHeader()).hide()
         view.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1007,7 +1005,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
             loader_names = self._loader_names()
             if current in loader_names:
                 self._loader_combo.setCurrentIndex(loader_names.index(current))
-            elif self._loader_combo.count():
+            else:
                 self._loader_combo.setCurrentIndex(0)
         self._loader_changed()
         self._on_selection_changed()

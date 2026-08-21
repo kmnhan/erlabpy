@@ -1187,14 +1187,20 @@ def test_registered_provenance_define_operation_code_api() -> None:
         for operation_type in structured_operation_types
         if "derivation_label" not in operation_type.__dict__
     ] == []
-    assert [
+    generic_code_operation_types = [
         operation_type
         for operation_type in structured_operation_types
+        if operation_type is not ExtensionRoutineOperation
+    ]
+    assert [
+        operation_type
+        for operation_type in generic_code_operation_types
         if (
             operation_type.expression_code is ToolProvenanceOperation.expression_code
             and operation_type.statement_code is ToolProvenanceOperation.statement_code
         )
     ] == []
+    assert "_bound_script_statement_code" in ExtensionRoutineOperation.__dict__
 
 
 @pytest.mark.parametrize(

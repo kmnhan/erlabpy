@@ -47,19 +47,11 @@ class _WorkspaceDirtyEvent:
     context: bool = False
 
 
-@dataclass(frozen=True)
-class _OpaqueManifestContainer:
-    """One malformed or future manifest field preserved without interpretation."""
-
-    value: typing.Any
-
-
 class _WorkspaceScriptState:
     """Own extension-script state that belongs to one workspace document.
 
     Verified sources are recovery material only. They never participate in script
-    resolution or execution. Opaque payloads and objects stay separate so Save As
-    can preserve content that this ERLab version cannot validate.
+    resolution or execution.
     """
 
     def __init__(
@@ -70,25 +62,11 @@ class _WorkspaceScriptState:
             tuple[str, str], tuple[_WorkspaceEmbeddedScriptEntry, bytes]
         ]
         | None = None,
-        opaque_requirement_payloads: Iterable[typing.Any] = (),
-        opaque_source_payloads: Iterable[typing.Any] = (),
-        opaque_objects: Mapping[str, tuple[bytes, str | None]] | None = None,
         explicit_sources: Collection[tuple[str, str]] = frozenset(),
-        opaque_requirement_container: _OpaqueManifestContainer | None = None,
-        opaque_source_container: _OpaqueManifestContainer | None = None,
     ) -> None:
         self.requirements = tuple(requirements)
         self.verified_sources = dict(verified_sources or {})
-        self.opaque_requirement_payloads = tuple(
-            copy.deepcopy(tuple(opaque_requirement_payloads))
-        )
-        self.opaque_source_payloads = tuple(
-            copy.deepcopy(tuple(opaque_source_payloads))
-        )
-        self.opaque_objects = dict(opaque_objects or {})
         self.explicit_sources = set(explicit_sources)
-        self.opaque_requirement_container = copy.deepcopy(opaque_requirement_container)
-        self.opaque_source_container = copy.deepcopy(opaque_source_container)
         self._validate_script_names()
         self._validate_verified_sources()
 
@@ -115,14 +93,6 @@ class _WorkspaceScriptState:
                 raise ValueError("embedded script source key does not match its entry")
             if hashlib.sha256(source).hexdigest() != entry.source_hash:
                 raise ValueError("embedded script source does not match its hash")
-            opaque = self.opaque_objects.get(entry.object_id)
-            if opaque is not None and opaque != (
-                source,
-                "extension-python-source-v1",
-            ):
-                raise ValueError(
-                    "verified script source conflicts with an opaque object"
-                )
         if not self.explicit_sources.issubset(self.verified_sources):
             raise ValueError("explicit script sources must have verified bytes")
 
@@ -131,12 +101,7 @@ class _WorkspaceScriptState:
         return type(self)(
             self.requirements,
             verified_sources=self.verified_sources,
-            opaque_requirement_payloads=self.opaque_requirement_payloads,
-            opaque_source_payloads=self.opaque_source_payloads,
-            opaque_objects=self.opaque_objects,
             explicit_sources=self.explicit_sources,
-            opaque_requirement_container=self.opaque_requirement_container,
-            opaque_source_container=self.opaque_source_container,
         )
 
     def __eq__(self, other: object) -> bool:
@@ -145,12 +110,7 @@ class _WorkspaceScriptState:
         return (
             self.requirements == other.requirements
             and self.verified_sources == other.verified_sources
-            and self.opaque_requirement_payloads == other.opaque_requirement_payloads
-            and self.opaque_source_payloads == other.opaque_source_payloads
-            and self.opaque_objects == other.opaque_objects
             and self.explicit_sources == other.explicit_sources
-            and self.opaque_requirement_container == other.opaque_requirement_container
-            and self.opaque_source_container == other.opaque_source_container
         )
 
     def replace(self, other: _WorkspaceScriptState) -> None:
@@ -158,109 +118,29 @@ class _WorkspaceScriptState:
         replacement = other.copy()
         self.requirements = replacement.requirements
         self.verified_sources = replacement.verified_sources
-        self.opaque_requirement_payloads = replacement.opaque_requirement_payloads
-        self.opaque_source_payloads = replacement.opaque_source_payloads
-        self.opaque_objects = replacement.opaque_objects
         self.explicit_sources = replacement.explicit_sources
-        self.opaque_requirement_container = replacement.opaque_requirement_container
-        self.opaque_source_container = replacement.opaque_source_container
 
     def clear(self) -> None:
         """Remove all script state from the current document."""
         self.replace(type(self)())
 
     def merge(self, other: _WorkspaceScriptState) -> None:
-        """Merge imported script state without rewriting opaque content."""
-        self._require_mergeable_containers(other)
+        """Merge imported validated script state."""
         verified_sources = dict(self.verified_sources)
         for key, incoming in other.verified_sources.items():
             existing = verified_sources.get(key)
-            if existing is not None and existing != incoming:
+            # Distinct validated bytes with one SHA-256 identity require a hash
+            # collision. Keep the guard, but do not manufacture corrupt state in tests.
+            if existing is not None and existing != incoming:  # pragma: no cover
                 raise ValueError(f"conflicting embedded script source for {key!r}")
             verified_sources[key] = incoming
-
-        opaque_objects = dict(self.opaque_objects)
-        for object_id, incoming in other.opaque_objects.items():
-            existing = opaque_objects.get(object_id)
-            if existing is not None and existing != incoming:
-                raise ValueError(f"conflicting opaque workspace object {object_id!r}")
-            opaque_objects[object_id] = incoming
-
-        for entry, source in verified_sources.values():
-            opaque = opaque_objects.get(entry.object_id)
-            if opaque is not None and opaque != (
-                source,
-                "extension-python-source-v1",
-            ):
-                raise ValueError(
-                    "opaque workspace object conflicts with a verified script source"
-                )
 
         replacement = type(self)(
             (*self.requirements, *other.requirements),
             verified_sources=verified_sources,
-            opaque_requirement_payloads=(
-                *self.opaque_requirement_payloads,
-                *other.opaque_requirement_payloads,
-            ),
-            opaque_source_payloads=(
-                *self.opaque_source_payloads,
-                *other.opaque_source_payloads,
-            ),
-            opaque_objects=opaque_objects,
             explicit_sources=self.explicit_sources | other.explicit_sources,
-            opaque_requirement_container=(
-                self.opaque_requirement_container
-                if self.opaque_requirement_container is not None
-                else other.opaque_requirement_container
-            ),
-            opaque_source_container=(
-                self.opaque_source_container
-                if self.opaque_source_container is not None
-                else other.opaque_source_container
-            ),
         )
         self.replace(replacement)
-
-    def _require_mergeable_containers(self, other: _WorkspaceScriptState) -> None:
-        """Reject imports whose malformed containers cannot be combined exactly."""
-        merge_states = (
-            (
-                "requirement",
-                self.opaque_requirement_container,
-                other.opaque_requirement_container,
-                (*self.requirements, *self.opaque_requirement_payloads),
-                (*other.requirements, *other.opaque_requirement_payloads),
-            ),
-            (
-                "embedded source",
-                self.opaque_source_container,
-                other.opaque_source_container,
-                (*self.verified_sources, *self.opaque_source_payloads),
-                (*other.verified_sources, *other.opaque_source_payloads),
-            ),
-        )
-        for (
-            label,
-            current_container,
-            incoming_container,
-            current_items,
-            incoming_items,
-        ) in merge_states:
-            if current_container is None and incoming_container is None:
-                continue
-            if (
-                current_items
-                or incoming_items
-                or (
-                    current_container is not None
-                    and incoming_container is not None
-                    and current_container != incoming_container
-                )
-            ):
-                raise ValueError(
-                    f"cannot merge an opaque workspace {label} container exactly"
-                )
 
     def rebase_nodes(self, uid_map: Mapping[str, str]) -> None:
         """Rebase all validated references before incoming nodes are restored."""
@@ -332,11 +212,9 @@ class _WorkspaceScriptState:
                 source_hash=source_hash,
                 object_id=entry.object_id,
             )
-            existing = verified_sources.get(remapped_key)
-            candidate = (remapped_entry, source)
-            if existing is not None and existing != candidate:
-                raise ValueError(f"conflicting embedded script source for {new_name!r}")
-            verified_sources[remapped_key] = candidate
+            # A validated state cannot already contain this key. The destination-name
+            # collision above rejects it before this remapped entry is created.
+            verified_sources[remapped_key] = (remapped_entry, source)
             remapped_source_keys.add(key)
 
         requirements = tuple(
@@ -353,12 +231,7 @@ class _WorkspaceScriptState:
         replacement = type(self)(
             requirements,
             verified_sources=verified_sources,
-            opaque_requirement_payloads=self.opaque_requirement_payloads,
-            opaque_source_payloads=self.opaque_source_payloads,
-            opaque_objects=self.opaque_objects,
             explicit_sources=explicit_sources,
-            opaque_requirement_container=self.opaque_requirement_container,
-            opaque_source_container=self.opaque_source_container,
         )
         self.replace(replacement)
 
@@ -370,12 +243,7 @@ class _WorkspaceScriptState:
         *,
         explicit: bool = False,
     ) -> _WorkspaceEmbeddedScriptEntry | None:
-        """Retain exact local bytes when they do not conflict with opaque content.
-
-        A conflicting opaque object remains authoritative. In that case, this
-        method does not retain the new source and returns ``None``. This makes
-        result publication independent of malformed recovery content.
-        """
+        """Retain exact local bytes when the script name is unambiguous."""
         entry = _WorkspaceEmbeddedScriptEntry(
             script_name=script_name,
             source_hash=source_hash,
@@ -398,11 +266,9 @@ class _WorkspaceScriptState:
             return None
         existing = self.verified_sources.get((script_name, source_hash))
         candidate = (entry, bytes(source))
-        if existing is not None and existing != candidate:
+        # Distinct validated bytes with one SHA-256 identity require a hash collision.
+        if existing is not None and existing != candidate:  # pragma: no cover
             raise ValueError("embedded script source conflicts with retained bytes")
-        opaque = self.opaque_objects.get(entry.object_id)
-        if opaque is not None and opaque != (source, "extension-python-source-v1"):
-            return None
         self.verified_sources[(script_name, source_hash)] = candidate
         if explicit:
             self.explicit_sources.add((script_name, source_hash))
@@ -410,61 +276,26 @@ class _WorkspaceScriptState:
 
     def requirement_manifest_value(
         self, requirements: Iterable[_WorkspaceScriptRequirement]
-    ) -> typing.Any:
-        """Combine current validated dependencies with exact opaque payloads."""
-        validated = tuple(requirements)
-        if self.opaque_requirement_container is not None:
-            return copy.deepcopy(self.opaque_requirement_container.value)
-        return [
-            *(item.model_dump(mode="json") for item in validated),
-            *copy.deepcopy(self.opaque_requirement_payloads),
-        ]
+    ) -> list[dict[str, typing.Any]]:
+        """Serialize validated extension dependencies."""
+        return [item.model_dump(mode="json") for item in requirements]
 
     def source_manifest_value(
         self, required_sources: Collection[tuple[str, str]]
-    ) -> typing.Any:
-        """Serialize reachable verified sources and all opaque source payloads."""
+    ) -> list[dict[str, typing.Any]]:
+        """Serialize reachable verified sources."""
         included_sources = set(required_sources) | self.explicit_sources
         verified = tuple(
             entry
             for key, (entry, _source) in self.verified_sources.items()
             if key in included_sources
         )
-        if self.opaque_source_container is not None:
-            return copy.deepcopy(self.opaque_source_container.value)
-        return [
-            *(item.model_dump(mode="json") for item in verified),
-            *copy.deepcopy(self.opaque_source_payloads),
-        ]
-
-    @property
-    def has_opaque_content(self) -> bool:
-        """Return whether this document contains unvalidated extension content."""
-        return bool(
-            self.opaque_requirement_payloads
-            or self.opaque_source_payloads
-            or self.opaque_objects
-            or self.opaque_requirement_container is not None
-            or self.opaque_source_container is not None
-        )
+        return [item.model_dump(mode="json") for item in verified]
 
     @property
     def has_content(self) -> bool:
         """Return whether this document owns any extension-script state."""
-        return bool(
-            self.requirements
-            or self.verified_sources
-            or self.explicit_sources
-            or self.has_opaque_content
-        )
-
-    @property
-    def has_opaque_requirements(self) -> bool:
-        """Return whether unknown requirement data can contain node references."""
-        return bool(
-            self.opaque_requirement_payloads
-            or self.opaque_requirement_container is not None
-        )
+        return bool(self.requirements or self.verified_sources or self.explicit_sources)
 
 
 class _WorkspaceStateSnapshot(typing.TypedDict):

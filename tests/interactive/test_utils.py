@@ -3547,6 +3547,63 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
         tool.output_imagetool_data("dummy.unknown")
 
 
+def test_tool_window_script_provenance_preserves_status_name_and_avoids_reserved_input(
+    qtbot,
+) -> None:
+    class _DummyState(pydantic.BaseModel):
+        data_name: str = "xr"
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._data = xr.DataArray([1.0], dims=("x",))
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+        def _expression(self, *, input_name, data) -> str:
+            del data
+            return f"{input_name} + 1"
+
+    tool = _DummyTool()
+    qtbot.addWidget(tool)
+    definition = erlab.interactive.utils.ToolScriptProvenanceDefinition(
+        start_label="Start",
+        label="Add one",
+        expression_method="_expression",
+        assign="result",
+    )
+
+    assert tool._script_provenance_input_name() == "xr"
+    spec = tool._build_script_provenance(
+        definition,
+        input_name="xr",
+        data=tool.tool_data,
+    )
+
+    assert spec is not None
+    assert spec.seed_code == "input_data = xr"
+    assert len(spec.steps) == 1
+    operation = spec.steps[0].operation
+    assert isinstance(operation, ScriptCodeOperation)
+    assert operation.code == "result = input_data + 1"
+
+
 def test_tool_window_copy_code_ignores_parent_provenance_but_keeps_source(
     qtbot,
 ) -> None:

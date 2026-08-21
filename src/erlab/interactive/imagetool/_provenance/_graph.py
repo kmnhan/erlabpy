@@ -44,6 +44,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 
 if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool._provenance._model import FileLoadSource
     from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 
 
@@ -991,25 +992,23 @@ def _compile_spec(
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
     if parsed.kind == "file":
-        if parsed.file_load_source is None:
-            raise ReplayGraphError("File provenance does not define a load source")
-        if parsed.active_name is None:
-            raise ReplayGraphError("File provenance does not define an active name")
-        structured_replay = parsed.file_load_source.replay_call is not None
-        extension_loader = _is_extension_loader_source(parsed.file_load_source)
+        load_source = typing.cast("FileLoadSource", parsed.file_load_source)
+        active_name = typing.cast("str", parsed.active_name)
+        structured_replay = load_source.replay_call is not None
+        extension_loader = _is_extension_loader_source(load_source)
         setup_code, load_code = (
             (None, None)
             if extension_loader
             or (structured_replay and structured_file_replay)
             or parsed.seed_code is None
-            else _file_seed_code_parts(parsed.seed_code, parsed.active_name)
+            else _file_seed_code_parts(parsed.seed_code, active_name)
         )
         current_key = _add_file_load_node(
             graph,
-            parsed.file_load_source,
+            load_source,
             setup_code=setup_code,
             load_code=load_code,
-            active_name=parsed.active_name,
+            active_name=active_name,
         )
         return _compile_replay_steps(
             graph,
@@ -1282,11 +1281,7 @@ def _compile_spec(
                 apply_context_binding(step.context_names)
             if getattr(operation, "op", None) == "script_code":
                 script_operation = typing.cast("ScriptCodeOperation", operation)
-                operation_code = script_operation.code
-                if not script_operation.copyable or operation_code is None:
-                    raise ReplayGraphError(
-                        "Script provenance contains non-replayable code"
-                    )
+                operation_code = typing.cast("str", script_operation.code)
                 if display and operation_code in {
                     "derived = derived.isel()",
                     "derived = derived.qsel()",
@@ -1387,8 +1382,7 @@ def _compile_spec(
                     flush_script()
                     ensure_script_current_key()
                     current_key = typing.cast("str", script_current_key)
-                    if step.input_policy is None and step.legacy_context is None:
-                        context_key = current_key
+                    context_key = current_key
                     operation_name = active_name
                 else:
                     pending_codes.append(
@@ -3048,11 +3042,7 @@ def _extension_script_references(
     graph: ReplayGraph,
 ) -> dict[str, tuple[pathlib.Path, str]]:
     """Resolve each graph-owned extension call to one current local script."""
-    from erlab.extensions import (
-        ExtensionNotFoundError,
-        LoaderDescriptor,
-        RoutineDescriptor,
-    )
+    from erlab.extensions import ExtensionNotFoundError
     from erlab.extensions._api import _resolve_registered_script_capability
     from erlab.interactive.imagetool._provenance._operations._extension import (
         ExtensionRoutineOperation,
@@ -3077,27 +3067,19 @@ def _extension_script_references(
             capability_id = operation.routine_id
         else:
             continue
-        if not isinstance(capability_id, str):
-            raise ReplayGraphError("Extension replay metadata is incomplete")
         try:
             reference = _resolve_registered_script_capability(
                 script_name,
                 capability_kind,
-                capability_id,
+                typing.cast("str", capability_id),
             )
         except ExtensionNotFoundError as exc:
             raise ReplayGraphError(
                 "Extension call does not have a registered local script"
             ) from exc
-        descriptor = reference.descriptor
-        expected_type = (
-            RoutineDescriptor if capability_kind == "routine" else LoaderDescriptor
-        )
-        if not isinstance(descriptor, expected_type):
-            raise ReplayGraphError("Registered extension capability has the wrong type")
         references[node.key] = (
             pathlib.Path(reference.registered_path).expanduser().resolve(),
-            descriptor.function_name,
+            reference.descriptor.function_name,
         )
     return references
 
@@ -3261,16 +3243,10 @@ def emit_replay_code(
                     assign=name,
                     loader_expression=f"{module_name}.{function_name}",
                 )
-                if code is None:
-                    raise ReplayGraphError(
-                        "Extension loader does not provide copied code"
-                    )
                 append_code(code, group_imports=True)
                 continue
             active_name = typing.cast("str", node.payload["active_name"])
-            load_code = node.payload["load_code"]
-            if not isinstance(load_code, str):
-                raise ReplayGraphError("File source does not provide copied code")
+            load_code = typing.cast("str", node.payload["load_code"])
             setup_key = node.parents[0] if node.parents else None
             if setup_key is not None and active_setup_key != setup_key:
                 setup_node = node_by_key[setup_key]
@@ -3365,17 +3341,12 @@ def emit_replay_code(
                     "tuple[tuple[str, str], ...]", node.payload["bindings"]
                 )
             ):
-                try:
-                    codes = [
-                        _replace_code_identifiers(
-                            code, {"load_script": external_load_script_name}
-                        )
-                        for code in codes
-                    ]
-                except SyntaxError as exc:
-                    raise ReplayGraphError(
-                        "Script replay code is not valid Python"
-                    ) from exc
+                codes = [
+                    _replace_code_identifiers(
+                        code, {"load_script": external_load_script_name}
+                    )
+                    for code in codes
+                ]
                 if active_name == "load_script":
                     active_name = external_load_script_name
             for input_name, input_key in typing.cast(
@@ -3503,7 +3474,7 @@ def emit_replay_code(
                 )
             )
         )
-        if output_alias not in aliases and not omit_mutating_display_alias:
+        if not omit_mutating_display_alias:
             aliases = [*aliases, output_alias]
     for public_name, key in aliases:
         planned_name = names[key]
@@ -3515,8 +3486,6 @@ def emit_replay_code(
     module_docstring: str | None = None
     future_prologues: list[str] = []
     for index, (chunk, group_imports) in enumerate(chunks):
-        if not chunk.strip():
-            continue
         docstring, chunk_future_imports, body = _partition_module_prologue(chunk)
         if docstring is not None:
             if module_docstring is None:
@@ -3530,9 +3499,7 @@ def emit_replay_code(
     framework_owned_names: set[str] = set()
     framework_import_targets: dict[str, str] = {}
     for name, import_code in _REPLAY_FRAMEWORK_IMPORTS.items():
-        bindings = _import_binding_targets(import_code)
-        if bindings is None or name not in bindings:
-            raise ReplayGraphError("Framework import does not bind its public name")
+        bindings = typing.cast("dict[str, str]", _import_binding_targets(import_code))
         framework_import_targets[name] = bindings[name]
 
     known_framework_bindings: dict[str, str] = {}

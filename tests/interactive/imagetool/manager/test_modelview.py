@@ -4183,6 +4183,79 @@ def test_manager_multifile_handler_selection_failure_branches(
         assert finished == [([], [queued_path], [file_path])]
 
 
+@pytest.mark.parametrize(
+    ("receive_result", "loaded", "failed"),
+    [
+        ([True], True, False),
+        ([False], False, True),
+        (RuntimeError("delivery failed"), False, True),
+    ],
+)
+def test_manager_multifile_handler_records_delivery_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    receive_result: list[bool] | Exception,
+    loaded: bool,
+    failed: bool,
+) -> None:
+    file_path = tmp_path / "source.dat"
+    prepared = types.SimpleNamespace(
+        data=xr.DataArray([1.0]),
+        selection=FileDataSelection(kind="dataarray"),
+        operations=(),
+        source_ndim=1,
+        source_dtype="float64",
+    )
+
+    def receive_data(*_args, **_kwargs):
+        if isinstance(receive_result, Exception):
+            raise receive_result
+        return receive_result
+
+    class _Manager(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self._data_ingress = types.SimpleNamespace(receive_data=receive_data)
+            self._status_bar = types.SimpleNamespace(showMessage=lambda *_args: None)
+
+    manager = _Manager()
+    handler = manager_io._MultiFileHandler(
+        typing.cast("typing.Any", manager),
+        [],
+        lambda _path: xr.DataArray([1.0]),
+        {},
+    )
+    monkeypatch.setattr(handler, "_load_next", lambda: None)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda _obj, _ms, callback: callback(),
+    )
+    monkeypatch.setattr(
+        handler, "_on_failed", lambda path, _details: handler.failed.append(path)
+    )
+
+    handler._deliver_and_queue(file_path, (prepared,))
+
+    assert (file_path in handler.loaded) is loaded
+    assert (file_path in handler.failed) is failed
+
+
+def test_extension_loader_owner_uses_bound_adapter_owner() -> None:
+    class _Loader:
+        script_name = "lab_loader.py"
+        source_hash = "a" * 64
+        loader_id = "load_data"
+
+        def load(self, _path: pathlib.Path) -> xr.DataArray:
+            return xr.DataArray([1.0])
+
+    loader = _Loader()
+
+    assert manager_io._extension_loader_owner(loader.load) is loader
+    assert manager_io._extension_loader_owner(xr.load_dataarray) is None
+
+
 @pytest.mark.parametrize("case", ["loader_cancel", "non_loader"])
 def test_manager_open_loader_selection_branches(
     monkeypatch,

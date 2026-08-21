@@ -315,14 +315,18 @@ def fail(data: xr.DataArray) -> xr.DataArray:
     assert str(source_path) in formatted
 
 
-def test_load_script_rejects_unsupported_signature(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("annotation", ["list[float]", "int | str | None"])
+def test_load_script_rejects_unsupported_signature(
+    tmp_path: pathlib.Path,
+    annotation: str,
+) -> None:
     script = tmp_path / "bad.py"
     script.write_text(
-        """import xarray as xr
+        f"""import xarray as xr
 from erlab.extensions import routine
 
 @routine()
-def bad(data: xr.DataArray, values: list[float]) -> xr.DataArray:
+def bad(data: xr.DataArray, values: {annotation}) -> xr.DataArray:
     return data
 """
     )
@@ -781,6 +785,96 @@ def test_registered_backend_lookup_survives_manager_removal(
         extension_api._remove_registered_script_backend("closing")
 
 
+def test_registered_backend_lookup_uses_an_older_exact_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.py"
+    source_path.write_text("value = 1\n")
+    source_bytes = source_path.read_bytes()
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    descriptor = RoutineDescriptor(
+        id="value",
+        name="Value",
+        category="Lab",
+        summary="",
+        function_name="value",
+    )
+    capability = extension_api._RegisteredScriptCapability(
+        registered_path=source_path,
+        script_name=source_path.name,
+        source_hash=source_hash,
+        descriptor=descriptor,
+        source_bytes=source_bytes,
+    )
+
+    class ExactBackend:
+        def resolve_registered_capability(
+            self,
+            script_name: str,
+            kind: str,
+            capability_id: str,
+            *,
+            source_hash: str | None = None,
+            require_enabled: bool = True,
+        ) -> extension_api._RegisteredScriptCapability:
+            del kind, require_enabled
+            if (script_name, source_hash, capability_id) != (
+                "source.py",
+                capability.source_hash,
+                "value",
+            ):
+                raise KeyError
+            return capability
+
+    class UnavailableBackend:
+        def __init__(self, status: extension_api._CapabilityStatus) -> None:
+            self.status = status
+
+        def resolve_registered_capability(
+            self,
+            script_name: str,
+            kind: str,
+            capability_id: str,
+            *,
+            source_hash: str | None = None,
+            require_enabled: bool = True,
+        ) -> extension_api._RegisteredScriptCapability:
+            del script_name, kind, capability_id, source_hash, require_enabled
+            raise extension_api._RegisteredScriptUnavailable(self.status)
+
+    extension_api._set_registered_script_backend("exact", ExactBackend())
+    extension_api._set_registered_script_backend(
+        "older-unavailable", UnavailableBackend("missing-source")
+    )
+    extension_api._set_registered_script_backend(
+        "newer", UnavailableBackend("hash-mismatch")
+    )
+    try:
+        assert (
+            extension_api._resolve_from_registered_backends(
+                "source.py",
+                "routine",
+                "value",
+                source_hash=source_hash,
+            )
+            == capability
+        )
+        extension_api._remove_registered_script_backend("exact")
+        assert (
+            extension_api._registered_script_capability_status(
+                "source.py",
+                source_hash,
+                "routine",
+                "value",
+            )
+            == "hash-mismatch"
+        )
+    finally:
+        extension_api._remove_registered_script_backend("exact")
+        extension_api._remove_registered_script_backend("older-unavailable")
+        extension_api._remove_registered_script_backend("newer")
+
+
 @pytest.mark.parametrize(
     ("parameters", "message"),
     [
@@ -918,6 +1012,7 @@ def test_public_models_validate_persisted_values() -> None:
         )
     with pytest.raises(ValueError, match=r"nested\[1\]"):
         extension_api._require_finite_parameter_values({"nested": [0.0, float("nan")]})
+    extension_api._require_finite_parameter_values({"mapping": {}, "sequence": []})
 
     descriptor_arguments = {
         "id": " ",
@@ -1022,7 +1117,10 @@ def test_run_functions_validate_lookup_and_results(
         "    return data\n\n"
         "@loader()\n"
         "def load_data(path: pathlib.Path) -> xr.DataArray:\n"
-        "    return typing.cast(xr.DataArray, path.name)\n"
+        "    return typing.cast(xr.DataArray, path.name)\n\n"
+        "@loader()\n"
+        "def fail_load(path: pathlib.Path) -> xr.DataArray:\n"
+        "    raise RuntimeError(path.name)\n"
     )
 
     with pytest.raises(TypeError, match="data must be"):
@@ -1041,6 +1139,8 @@ def test_run_functions_validate_lookup_and_results(
         run_loader("data.txt", script=source, loader_id="missing")
     with pytest.raises(ExtensionExecutionError, match="expected an xarray object"):
         run_loader("data.txt", script=source, loader_id="load_data")
+    with pytest.raises(ExtensionExecutionError, match=r"fail_load.*data\.txt"):
+        run_loader("data.txt", script=source, loader_id="fail_load")
 
 
 def test_registered_backend_runs_pinned_source_and_reports_absence(
@@ -1134,3 +1234,54 @@ def load_value(path: pathlib.Path) -> xr.DataArray:
         extension_api._resolve_registered_capability(
             "lab.py", "source", "routine", "value"
         )
+
+
+def test_parameter_coercion_preserves_optional_none_and_boolean_values() -> None:
+    def configure(data: xr.DataArray, label: str | None, enabled: bool) -> xr.DataArray:
+        return data
+
+    assert _coerce_call_parameters(configure, {"label": None, "enabled": True}) == {
+        "label": None,
+        "enabled": True,
+    }
+    with pytest.raises(TypeError, match="does not accept None"):
+        _coerce_call_parameters(configure, {"label": "ok", "enabled": None})
+
+
+def test_run_functions_reject_ambiguous_script_sources(tmp_path: pathlib.Path) -> None:
+    script_path = tmp_path / "extension.py"
+    script_path.write_text("from erlab.extensions import loader, routine\n")
+    for runner, kwargs in (
+        (run_routine, {"data": xr.DataArray(), "routine_id": "value"}),
+        (run_loader, {"path": script_path, "loader_id": "load"}),
+    ):
+        with pytest.raises(ValueError, match="cannot both"):
+            runner(script=script_path, registered_script="extension.py", **kwargs)
+
+
+def test_path_parameter_default_is_serialized_for_public_descriptors(
+    tmp_path: pathlib.Path,
+) -> None:
+    script = tmp_path / "path_default.py"
+    script.write_text(
+        """import pathlib
+import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def label(
+    data: xr.DataArray,
+    output: pathlib.Path = pathlib.Path("result.nc"),
+) -> xr.DataArray:
+    return data.assign_attrs(output=str(output))
+"""
+    )
+
+    loaded = load_script(script)
+    descriptor = loaded.erlab.routines["label"][0]
+
+    assert descriptor.parameters[0].default == "result.nc"
+    xr.testing.assert_identical(
+        run_routine(xr.DataArray([1]), script=script, routine_id="label"),
+        xr.DataArray([1], attrs={"output": "result.nc"}),
+    )

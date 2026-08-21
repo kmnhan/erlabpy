@@ -415,7 +415,6 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
 
     def cancel_if_pending(self) -> None:
         """Release a waiting caller only when this worker has not started."""
-        cancelled = False
         with self._state_lock:
             if self._started or self._cancelled:
                 return
@@ -424,9 +423,7 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
                 "The queued extension loader was canceled during manager shutdown"
             )
             self.done.set()
-            cancelled = True
-        if cancelled:
-            self.signals.finished.emit()
+        self.signals.finished.emit()
 
     def run(self) -> None:
         with self._state_lock:
@@ -508,7 +505,6 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
 
     def cancel_if_pending(self) -> None:
         """Release the GUI wait if shutdown removes this queued validation."""
-        cancelled = False
         with self._state_lock:
             if self._started or self._cancelled:
                 return
@@ -517,9 +513,7 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
                 "The queued extension validation was canceled during manager shutdown"
             )
             self.done.set()
-            cancelled = True
-        if cancelled:
-            self.signals.finished.emit()
+        self.signals.finished.emit()
 
     def run(self) -> None:
         with self._state_lock:
@@ -1224,7 +1218,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         loader_id: str,
     ) -> _ExtensionLoaderCall:
         """Pin one executable loader for Manager file-ingress paths."""
-        self._require_workspace_extension_publication()
         resolution = _resolve_execution_capability(
             self._catalog.store,
             script_name,
@@ -1285,11 +1278,6 @@ class _ExtensionExecutionController(QtCore.QObject):
             yield capture
             completed = True
         finally:
-            if (
-                not self._replay_source_captures
-                or self._replay_source_captures[-1] is not capture
-            ):
-                raise RuntimeError("replay source captures must exit in stack order")
             self._replay_source_captures.pop()
             if completed and capture.published and self._replay_source_captures:
                 parent = self._replay_source_captures[-1]
@@ -1351,7 +1339,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         parameters: dict[str, typing.Any],
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         """Run a loader synchronously on this manager's extension thread pool."""
-        self._require_workspace_extension_publication()
         task = _ExtensionLoaderWorker(
             call,
             path,
@@ -1383,7 +1370,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         capability_id: str,
     ) -> None:
         """Reject output when its capability changed or stopped before delivery."""
-        self._require_workspace_extension_publication()
         if not self._accepting:
             raise ExtensionExecutionError("Extension execution is shutting down")
         resolution = _resolve_execution_capability(
@@ -1402,18 +1388,6 @@ class _ExtensionExecutionController(QtCore.QObject):
             resolution.snapshot.record.script_name,
             resolution.snapshot.record.source_hash,
         )
-
-    def _require_workspace_extension_publication(self) -> None:
-        """Reject extension results that cannot be serialized without data loss."""
-        scripts = self._manager._workspace_state.extension_scripts
-        if (
-            scripts.opaque_requirement_container is not None
-            or scripts.opaque_source_container is not None
-        ):
-            raise ExtensionExecutionError(
-                "This workspace contains unsupported extension metadata. "
-                "Extension results cannot be added without losing recovery data."
-            )
 
     def require_loader_publication(self, call: _ExtensionLoaderCall) -> None:
         """Reject a loader result if its pinned capability is no longer current."""
@@ -1592,7 +1566,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         input_snapshot: str,
     ) -> _ExtensionRoutineJob:
         """Pin catalog state and input identity before queue admission."""
-        self._require_workspace_extension_publication()
         _require_finite_parameter_values(parameters)
         if self._catalog.load_error is not None:
             raise ExtensionExecutionError("The extension catalog is unavailable")
@@ -1609,9 +1582,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             raise ExtensionExecutionError(
                 f"The extension is not enabled or available: {resolution.status}"
             )
-        routine = resolution.descriptor
-        if not isinstance(routine, RoutineDescriptor):
-            raise ExtensionExecutionError(f"Routine {routine_id!r} is not available")
+        routine = typing.cast("RoutineDescriptor", resolution.descriptor)
         return _ExtensionRoutineJob(
             job_id=uuid.uuid4().hex,
             snapshot=resolution.snapshot,

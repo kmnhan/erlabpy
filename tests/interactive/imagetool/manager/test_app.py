@@ -91,6 +91,95 @@ def test_manager_runtime_icon_is_sanitized(qapp) -> None:
     assert not pixmap.toImage().colorSpace().isValid()
 
 
+def test_manager_rejects_unavailable_named_loader(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dialogs: list[tuple[object, str, str]] = []
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda parent, title, text: dialogs.append((parent, title, text)),
+    )
+
+    with manager_context() as manager:
+        manager._data_load([], "unavailable-loader", {})
+
+        assert dialogs == [
+            (
+                manager,
+                "Loader Unavailable",
+                "The requested loader is not available in this manager.",
+            )
+        ]
+
+
+def test_manager_uses_registered_extension_loader(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "source.dat"
+    calls: list[tuple[list[pathlib.Path], object, dict[str, object]]] = []
+
+    def loader(_path: pathlib.Path, **_kwargs: object) -> xr.DataArray:
+        return xr.DataArray([1.0])
+
+    with manager_context() as manager:
+        assert manager._loader_name_for_name_filter(None) is None
+        assert manager._loader_name_for_name_filter("Missing (*.none)") is None
+        manager._recent_name_filter = "Missing (*.none)"
+        assert manager._recent_loader_name is None
+        monkeypatch.setattr(
+            manager._extensions,
+            "loader_by_name",
+            lambda name: (loader, {"scale": 2.0}) if name == "lab-loader" else None,
+        )
+        monkeypatch.setattr(
+            manager._data_ingress,
+            "add_from_multiple_files",
+            lambda _waiting, paths, _loaded, *, func, kwargs, retry_callback: (
+                calls.append((paths, func, kwargs))
+            ),
+        )
+
+        manager._data_load([str(path)], "lab-loader", {"offset": 1.0})
+
+    assert calls == [([path], loader, {"scale": 2.0, "offset": 1.0})]
+
+
+def test_manager_rejects_conflicting_builtin_and_extension_loader_filters(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+    example_loader,
+) -> None:
+    loader = erlab.io.loaders["example"].load
+    filter_name = "Example (*.example)"
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda _paths: {filter_name: (loader, {})},
+    )
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager._extensions,
+            "file_loaders",
+            lambda _paths: {filter_name: (loader, {})},
+        )
+
+        with pytest.raises(ValueError, match="Conflicting file dialog filters"):
+            manager._available_file_loaders()
+
+
 def test_update_workers_emit_failure_tracebacks(qapp, tmp_path, monkeypatch) -> None:
     assert qapp is QtWidgets.QApplication.instance()
 

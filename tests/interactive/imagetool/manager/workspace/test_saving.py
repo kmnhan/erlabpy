@@ -506,19 +506,172 @@ def test_workspace_script_state_rejects_ambiguous_filenames_atomically(
     assert scripts.requirements == (first,)
 
 
-def test_workspace_script_capture_preserves_conflicting_opaque_object() -> None:
-    source = b"def normalize(data):\n    return data\n"
+def test_workspace_script_state_rejects_invalid_verified_source_merges() -> None:
+    source = b"source\n"
     source_hash = hashlib.sha256(source).hexdigest()
-    object_id = f"extension-source-{source_hash}"
-    scripts = workspace_state._WorkspaceScriptState(
-        opaque_objects={object_id: (b"future opaque bytes", "future-kind")}
+    entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="script.py",
+        source_hash=source_hash,
+        object_id=f"extension-source-{source_hash}",
     )
 
-    assert scripts.remember_verified_source("analysis.py", source_hash, source) is None
-    assert scripts.verified_sources == {}
-    assert scripts.opaque_objects == {
-        object_id: (b"future opaque bytes", "future-kind")
+    with pytest.raises(ValueError, match="key does not match"):
+        workspace_state._WorkspaceScriptState(
+            verified_sources={("other.py", source_hash): (entry, source)}
+        )
+    with pytest.raises(ValueError, match="must have verified bytes"):
+        workspace_state._WorkspaceScriptState(
+            explicit_sources={("script.py", source_hash)}
+        )
+
+
+def test_workspace_script_state_rejects_merge_and_rename_collisions() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    scripts = workspace_state._WorkspaceScriptState()
+    scripts.remember_verified_source("first.py", source_hash, source)
+    scripts.remember_verified_source("second.py", source_hash, source)
+    with pytest.raises(ValueError, match="already uses"):
+        scripts.remap_script("first.py", source_hash, "second.py")
+
+
+def test_workspace_script_state_manifest_composition_and_name_conflicts() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceScriptRequirement(
+        script_name="Script.py",
+        capability_id="routine",
+        capability_name="Routine",
+        capability_kind="routine",
+        source_hash=source_hash,
+        extension_api_version=1,
+    )
+    scripts = workspace_state._WorkspaceScriptState((requirement,))
+
+    assert scripts.remember_verified_source("script.py", source_hash, source) is None
+    entry = scripts.remember_verified_source("Script.py", source_hash, source)
+    assert entry is not None
+    assert scripts.requirement_manifest_value((requirement,)) == [
+        requirement.model_dump(mode="json"),
+    ]
+    assert scripts.source_manifest_value({("Script.py", source_hash)}) == [
+        entry.model_dump(mode="json"),
+    ]
+    assert scripts.source_manifest_value(frozenset()) == []
+
+
+def test_workspace_script_state_validation_and_merge_boundaries() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="script.py",
+        source_hash=source_hash,
+        object_id=f"extension-source-{source_hash}",
+    )
+
+    with pytest.raises(ValueError, match="does not match its hash"):
+        workspace_state._WorkspaceScriptState(
+            verified_sources={("script.py", source_hash): (entry, b"different")}
+        )
+    scripts = workspace_state._WorkspaceScriptState()
+    scripts.remember_verified_source("script.py", source_hash, source)
+    other_source = b"other\n"
+    other_hash = hashlib.sha256(other_source).hexdigest()
+    scripts.remember_verified_source("other.py", other_hash, other_source)
+    scripts.remap_script("script.py", source_hash, "renamed.py")
+    assert set(scripts.verified_sources) == {
+        ("renamed.py", source_hash),
+        ("other.py", other_hash),
     }
+
+
+def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.itws"
+    target_path = tmp_path / "target.itws"
+    included_source = b"included\n"
+    included_hash = hashlib.sha256(included_source).hexdigest()
+    excluded_source = b"excluded\n"
+    excluded_hash = hashlib.sha256(excluded_source).hexdigest()
+    carried_source = b"carried\n"
+    carried_hash = hashlib.sha256(carried_source).hexdigest()
+    included_key = ("included.py", included_hash)
+    excluded_key = ("excluded.py", excluded_hash)
+    scripts = workspace_state._WorkspaceScriptState()
+    included_entry = scripts.remember_verified_source(*included_key, included_source)
+    excluded_entry = scripts.remember_verified_source(*excluded_key, excluded_source)
+    if included_entry is None or excluded_entry is None:
+        raise RuntimeError("Expected verified source entries")
+    carried_entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="carried.py",
+        source_hash=carried_hash,
+        object_id=f"extension-source-{carried_hash}",
+    )
+
+    current_manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "embedded_extension_sources": [carried_entry.model_dump(mode="json")],
+    }
+    manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "embedded_extension_sources": [
+            included_entry.model_dump(mode="json"),
+            excluded_entry.model_dump(mode="json"),
+            carried_entry.model_dump(mode="json"),
+        ],
+    }
+    with workspace_store.WorkspaceStore(source_path, create=True) as source_store:
+        with source_store.write_session() as h5_file:
+            group = h5_file.require_group(
+                source_store.object_path(carried_entry.object_id)
+            )
+            group.attrs["erlab_object_kind"] = "extension-python-source-v1"
+            group.create_dataset(
+                "source",
+                data=np.frombuffer(carried_source, dtype=np.uint8),
+            )
+        source_store.publish(current_manifest)
+
+        manager = types.SimpleNamespace(
+            _workspace_state=types.SimpleNamespace(
+                dirty_data=set(),
+                dirty_added=set(),
+                dirty_state=set(),
+                path=source_path.resolve(),
+            ),
+            _tool_graph=types.SimpleNamespace(nodes={}),
+        )
+        saver = workspace_saving._WorkspaceSaver.__new__(
+            workspace_saving._WorkspaceSaver
+        )
+        saver._manager = manager
+        saver._controller = types.SimpleNamespace(_workspace_store=source_store)
+        saver._workspace_script_snapshot = lambda: (
+            (),
+            scripts,
+            frozenset({included_key}),
+        )
+        saver._workspace_manifest = lambda **_kwargs: json.loads(json.dumps(manifest))
+        saver._workspace_stale_reference_rewrite_uids = lambda _uids: frozenset()
+        saver._workspace_compression_mode = lambda: "none"
+        saver._serialized_tool_data_references = lambda _datasets: ()
+
+        snapshot = saver._workspace_generation_save_snapshot(3, fname=target_path)
+
+    writes = {item.object_id: item for item in snapshot.generation_plan.objects}
+    assert set(writes) == {included_entry.object_id, carried_entry.object_id}
+    assert writes[included_entry.object_id].blob == included_source
+    assert writes[carried_entry.object_id].source_file == str(source_path)
+    assert writes[carried_entry.object_id].source_path == source_store.object_path(
+        carried_entry.object_id
+    )
+    assert snapshot.embedded_script_sources == (
+        (included_entry.script_name, included_hash, included_source),
+    )
+    snapshot.close()
 
 
 def test_committed_generation_merges_embedded_source_into_live_state(
@@ -540,7 +693,11 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         workspace_controller._WorkspaceController
     )
     controller._manager = manager
-    controller._workspace_store = None
+    rebound: list[dict[str, str]] = []
+    controller._workspace_store = types.SimpleNamespace(
+        closed=False,
+        rebind_legacy_readers=lambda mappings: rebound.append(mappings),
+    )
     monkeypatch.setattr(
         controller,
         "_commit_saved_tool_data_references",
@@ -556,6 +713,7 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         generation_plan=workspace_storage._WorkspaceGenerationPlan(
             manifest={"schema_version": 6, "nodes": []},
             objects=(),
+            legacy_reader_rebindings=(("/legacy/imagetool", "payload"),),
         ),
         compression_mode="none",
         embedded_script_sources=(("embedded.py", embedded_hash, embedded_source),),
@@ -571,7 +729,41 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         ("embedded.py", embedded_hash),
         ("later.py", later_hash),
     }
+    assert rebound == [{"/legacy/imagetool": "payload"}]
     assert manager._workspace_state.schema_version == 6
+
+
+def test_workspace_save_and_compaction_route_save_as_only_documents() -> None:
+    callbacks: list[typing.Callable[[bool], None] | None] = []
+    manager = types.SimpleNamespace(
+        _workspace_state=types.SimpleNamespace(
+            save_as_only=True,
+            save_in_progress=False,
+        )
+    )
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    controller._manager = manager
+    controller._current_workspace_document_path = lambda: pathlib.Path("workspace.itws")
+    controller.save_as = lambda **kwargs: (
+        callbacks.append(kwargs.get("on_finished")) or True
+    )
+
+    assert controller.save(native=False)
+    assert callbacks == [None]
+    assert controller.compact_workspace()
+    compact_callback = callbacks[-1]
+    if compact_callback is None:
+        raise TypeError("Expected a compaction callback")
+
+    compacted: list[None] = []
+    controller.compact_workspace = lambda: compacted.append(None) or True
+    compact_callback(False)
+    assert compacted == []
+    manager._workspace_state.save_as_only = False
+    compact_callback(True)
+    assert compacted == [None]
 
 
 def test_committed_save_retains_always_embedded_source_for_later_save(
@@ -633,109 +825,6 @@ def test_committed_save_retains_always_embedded_source_for_later_save(
     )
     assert recovered_source == script_source
     assert kind == "extension-python-source-v1"
-
-
-def test_routine_publication_survives_opaque_source_object_collision(
-    qtbot,
-    tmp_path: pathlib.Path,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    source_path = tmp_path / "opaque_collision.py"
-    source = b"""import xarray as xr
-from erlab.extensions import routine
-
-@routine(name="Scale")
-def scale(data: xr.DataArray) -> xr.DataArray:
-    return data * 2
-"""
-    source_path.write_bytes(source)
-    source_hash = hashlib.sha256(source).hexdigest()
-    object_id = f"extension-source-{source_hash}"
-    opaque_source = b"future opaque bytes"
-    opaque_kind = "future-extension-source"
-    opaque_payload = {
-        "script_name": source_path.name,
-        "source_hash": source_hash,
-        "object_id": object_id,
-        "future": {"kept": True},
-    }
-    workspace_path = tmp_path / "opaque-collision.itws"
-    data = xr.DataArray([1.0, 2.0], dims="x")
-
-    with manager_context() as manager:
-        catalog, _source_hash = manager._extensions.catalog.store.register_script(
-            source_path
-        )
-        record = catalog.extensions[source_path.name.casefold()]
-        manager._extensions.execution.validate_script(
-            record.script_name,
-            record.source_hash,
-            expected_record_generation=record.record_generation,
-        )
-        manager._extensions.catalog.refresh()
-        manager._workspace_state.extension_scripts.replace(
-            workspace_state._WorkspaceScriptState(
-                opaque_source_payloads=(opaque_payload,),
-                opaque_objects={object_id: (opaque_source, opaque_kind)},
-            )
-        )
-        manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
-            show=False,
-        )
-
-        manager._extensions.execution.queue_routine(
-            script_name=record.script_name,
-            source_hash=record.source_hash,
-            routine_id="scale",
-            parameters={},
-            target=0,
-        )
-        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-
-        xr.testing.assert_equal(manager._get_imagetool_data(1), data * 2)
-        scripts = manager._workspace_state.extension_scripts
-        assert scripts.verified_sources == {}
-        assert scripts.opaque_objects == {object_id: (opaque_source, opaque_kind)}
-        manager._workspace_controller.saving._save_workspace_document(workspace_path)
-
-    manifest = _current_workspace_manifest(workspace_path)
-    assert manifest["embedded_extension_sources"] == [opaque_payload]
-    restored_source, restored_kind = workspace_storage._read_workspace_blob(
-        workspace_path,
-        object_id,
-    )
-    assert restored_source == opaque_source
-    assert restored_kind == opaque_kind
-
-
-def test_workspace_script_state_preserves_opaque_containers() -> None:
-    requirement_container = {"future": [1, {"value": "kept"}]}
-    source_container = {"future_source": True}
-    scripts = workspace_state._WorkspaceScriptState(
-        opaque_requirement_container=workspace_state._OpaqueManifestContainer(
-            requirement_container
-        ),
-        opaque_source_container=workspace_state._OpaqueManifestContainer(
-            source_container
-        ),
-    )
-
-    assert scripts.requirement_manifest_value(()) == requirement_container
-    assert scripts.source_manifest_value(frozenset()) == source_container
-    copied = scripts.copy()
-    requirement_container["future"].append("changed")
-    source_container["future_source"] = False
-    assert copied.requirement_manifest_value(()) == {"future": [1, {"value": "kept"}]}
-    assert copied.source_manifest_value(frozenset()) == {"future_source": True}
-
-    copied.merge(workspace_state._WorkspaceScriptState())
-    imported = workspace_state._WorkspaceScriptState()
-    imported.merge(copied)
-    assert imported.requirement_manifest_value(()) == {"future": [1, {"value": "kept"}]}
-    assert imported.source_manifest_value(frozenset()) == {"future_source": True}
 
 
 def test_manager_close_save_path_updates_file_path(

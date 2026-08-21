@@ -22,7 +22,9 @@ from qtpy import QtCore, QtGui, QtTest, QtWidgets
 import erlab
 import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool._load_source as imagetool_load_source
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
+import erlab.interactive.imagetool._provenance._execution as provenance_execution
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer as imagetool_viewer
@@ -1669,6 +1671,224 @@ def test_itool_legacy_dataset_selection_migrates_on_explicit_reload(
 
     restored.close()
     win.close()
+
+
+def test_legacy_extension_loader_selection_requires_callable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    selection = FileDataSelection(kind="parsed_index", value=0)
+    replay_call = FileReplayCall(
+        kind="extension_loader",
+        target="lab_loader.py",
+        source_hash="a" * 64,
+        capability_id="load_data",
+        selection=selection,
+    )
+    resolved = types.SimpleNamespace(
+        kind="extension_loader",
+        selection=selection,
+        loader_label="Extension Loader",
+        loader_text="lab_loader.py: Loader",
+        kwargs_text="(none)",
+        replay_call=lambda: replay_call,
+    )
+    monkeypatch.setattr(
+        imagetool_load_source,
+        "_resolve_load_func",
+        lambda _load_func: resolved,
+    )
+
+    with pytest.raises(TypeError, match="requires a callable"):
+        imagetool_load_source._migrate_legacy_file_data_selection(
+            tmp_path / "source.dat",
+            ("lab_loader.py", {}, selection),
+        )
+
+
+def test_legacy_extension_loader_selection_calls_pinned_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    selection = FileDataSelection(kind="parsed_index", value=0)
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+
+    class _Loader:
+        script_name = "lab_loader.py"
+        source_hash = "a" * 64
+        loader_id = "load_data"
+
+        def __init__(self) -> None:
+            self.descriptor = descriptor
+
+        def __call__(self, _path: pathlib.Path) -> xr.Dataset:
+            return xr.Dataset({"signal": xr.DataArray([1.0], dims=("x",))})
+
+    monkeypatch.setattr(
+        imagetool_load_source,
+        "_registered_extension_loader",
+        lambda *_args: None,
+    )
+
+    assert imagetool_load_source._migrate_legacy_file_data_selection(
+        tmp_path / "source.dat",
+        (_Loader(), {}, selection),
+    ) == FileDataSelection(kind="dataset_variable", value="signal")
+
+
+def test_extension_loader_load_code_adds_numpy_import(tmp_path: pathlib.Path) -> None:
+    resolved = imagetool_load_source._ResolvedLoadFunc(
+        kind="extension_loader",
+        target="lab_loader.py",
+        loader_label="Extension Loader",
+        loader_text="Lab Loader",
+        loader_expr="script.load_data",
+        imports=("import pathlib",),
+        setup_lines=(),
+        loader_name=None,
+        kwargs={"indices": np.array([1, 2])},
+        selection=FileDataSelection(kind="dataarray"),
+        cast_float64=False,
+        extension_source_hash="a" * 64,
+        extension_capability_id="load_data",
+    )
+
+    code = resolved.load_code(tmp_path / "source.dat", assign="data")
+
+    assert code is not None
+    assert "import numpy as np" in code
+    namespace = {
+        "script": types.SimpleNamespace(
+            load_data=lambda _path, **_kwargs: xr.DataArray([1.0])
+        )
+    }
+    exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([1.0]))
+
+
+def test_extension_loader_load_code_rejects_unmigrated_selection(
+    tmp_path: pathlib.Path,
+) -> None:
+    load_source = FileLoadSource(
+        path=str(tmp_path / "source.dat"),
+        loader_label="Extension Loader",
+        loader_text="lab_loader.py: Load data",
+        kwargs_text="",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader.py",
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="parsed_index", value=0),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="parsed-index"):
+        imagetool_load_source._extension_loader_load_code(
+            load_source,
+            assign="data",
+            loader_expression="script.load_data",
+        )
+
+
+def test_extension_loader_resolution_rejects_missing_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Loader:
+        script_name = "lab_loader.py"
+        source_hash = "a" * 64
+        loader_id = "load_data"
+
+        def __call__(self, _path: pathlib.Path) -> xr.DataArray:
+            return xr.DataArray([1.0])
+
+    with pytest.raises(ValueError, match="descriptor is unavailable"):
+        imagetool_load_source._resolve_load_func(
+            (_Loader(), {}, FileDataSelection(kind="dataarray"))
+        )
+
+
+def test_extension_loader_execution_uses_public_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    selection = FileDataSelection(kind="dataarray")
+    source_file = tmp_path / "source.dat"
+    source_file.write_text("data")
+    replay_call = FileReplayCall(
+        kind="extension_loader",
+        target="lab_loader.py",
+        source_hash="a" * 64,
+        capability_id="load_data",
+        selection=selection,
+    )
+    source = FileLoadSource(
+        path=str(source_file),
+        loader_label="Extension Loader",
+        loader_text="Lab Loader",
+        kwargs_text="(none)",
+        replay_call=replay_call,
+        load_code=None,
+    )
+    calls: list[tuple[pathlib.Path, dict[str, object]]] = []
+    monkeypatch.setattr(
+        erlab.extensions,
+        "run_loader",
+        lambda path, **kwargs: calls.append((path, kwargs)) or xr.DataArray([1.0]),
+    )
+
+    result = provenance_execution._load_file_source_object(source)
+
+    xr.testing.assert_identical(result, xr.DataArray([1.0]))
+    assert calls[0][0] == source_file
+    assert calls[0][1]["registered_script"] == "lab_loader.py"
+
+
+@pytest.mark.parametrize(
+    ("capability_status", "expected"),
+    [
+        ("missing-source", "extension-missing-source"),
+        ("unsupported-api", "extension-unsupported-api"),
+    ],
+)
+def test_extension_file_status_maps_capability_status(
+    tmp_path: pathlib.Path,
+    capability_status: str,
+    expected: str,
+) -> None:
+    source_file = tmp_path / "source.dat"
+    source_file.write_text("data")
+    spec = file_load(
+        start_label="Load source",
+        seed_code=None,
+        file_load_source=FileLoadSource(
+            path=str(source_file),
+            loader_label="Extension Loader",
+            loader_text="Lab Loader",
+            kwargs_text="(none)",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="lab_loader.py",
+                source_hash="a" * 64,
+                capability_id="load_data",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+
+    assert (
+        provenance_execution.file_load_source_status(
+            spec,
+            extension_status_resolver=lambda *_args: capability_status,
+        )
+        == expected
+    )
 
 
 def test_itool_state_optional_metadata_fields_restore_defaults(qtbot) -> None:
@@ -4329,6 +4549,7 @@ def test_itool_direct_extension_loader_status_uses_script_name(
 ) -> None:
     win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
     qtbot.addWidget(win)
+    assert win.slicer_area._direct_extension_loader_status() is None
     source_file = tmp_path / "source.dat"
     source_file.write_text("test\n")
 
@@ -4341,15 +4562,16 @@ def test_itool_direct_extension_loader_status_uses_script_name(
             return xr.DataArray([1.0])
 
     status_calls: list[tuple[str, str, str, str]] = []
+    current_status = ["ready"]
 
     def capability_status(
         script_name: str,
         source_hash: str,
         kind: str,
         capability_id: str,
-    ) -> typing.Literal["ready"]:
+    ) -> str:
         status_calls.append((script_name, source_hash, kind, capability_id))
-        return "ready"
+        return current_status[0]
 
     monkeypatch.setattr(
         imagetool_viewer,
@@ -4365,7 +4587,64 @@ def test_itool_direct_extension_loader_status_uses_script_name(
 
     assert win.slicer_area._direct_reloadable()
     assert status_calls == [("lab_loader.py", "a" * 64, "loader", "load_data")]
+    current_status[0] = "disabled"
+    reason = win.slicer_area._direct_reload_unavailable_reason()
+    assert reason is not None
+    assert "lab_loader.py" in reason
+    assert "disabled" in reason
 
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("extension-disabled", "disabled"),
+        ("extension-approval-required", "not approved"),
+        ("extension-missing-source", "not available"),
+        ("extension-missing-capability", "does not provide loader"),
+        ("extension-hash-mismatch", "changed after"),
+        ("extension-unsupported-api", "unsupported extension API"),
+        ("extension-validation-failed", "could not be validated"),
+    ],
+)
+def test_itool_extension_file_provenance_reports_current_status(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected: str,
+) -> None:
+    win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
+    qtbot.addWidget(win)
+    win.set_provenance_spec(
+        file_load(
+            start_label="Load source",
+            seed_code=None,
+            file_load_source=FileLoadSource(
+                path="source.dat",
+                loader_label="Extension Loader",
+                loader_text="lab_loader.py: Loader",
+                kwargs_text="(none)",
+                replay_call=FileReplayCall(
+                    kind="extension_loader",
+                    target="lab_loader.py",
+                    source_hash="a" * 64,
+                    capability_id="load_data",
+                    selected_index=0,
+                ),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        imagetool_viewer,
+        "file_load_source_status",
+        lambda *_args, **_kwargs: status,
+    )
+
+    reason = win.slicer_area._provenance_reload_unavailable_reason()
+
+    assert reason is not None
+    assert expected in reason
     win.close()
 
 

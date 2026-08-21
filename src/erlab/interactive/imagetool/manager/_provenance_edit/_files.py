@@ -317,16 +317,15 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             loaders: dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]],
         ) -> str | None:
             """Find the exact loader recorded by this provenance step."""
-            if self._replay_call is None:
-                return None
+            replay_call = typing.cast("FileReplayCall", self._replay_call)
             for name_filter, (func, kwargs) in loaders.items():
-                if self._replay_call.kind == "erlab_loader":
+                if replay_call.kind == "erlab_loader":
                     loader = getattr(func, "__self__", None)
                     matches = (
                         isinstance(loader, erlab.io.dataloader.LoaderBase)
-                        and loader.name == self._replay_call.target
+                        and loader.name == replay_call.target
                     )
-                elif self._replay_call.kind == "extension_loader":
+                elif replay_call.kind == "extension_loader":
                     (
                         script_name,
                         extension_source_hash,
@@ -335,14 +334,12 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
                     matches = (
                         script_name is not None
                         and _script_name_key(script_name)
-                        == _script_name_key(self._replay_call.target)
-                        and extension_source_hash == self._replay_call.source_hash
-                        and extension_capability_id == self._replay_call.capability_id
+                        == _script_name_key(replay_call.target)
+                        and extension_source_hash == replay_call.source_hash
+                        and extension_capability_id == replay_call.capability_id
                     )
                 else:
-                    matches = _loader_callable_text(
-                        func
-                    ) == self._replay_call.target and all(
+                    matches = _loader_callable_text(func) == replay_call.target and all(
                         self._initial_kwargs.get(key) == value
                         for key, value in kwargs.items()
                     )

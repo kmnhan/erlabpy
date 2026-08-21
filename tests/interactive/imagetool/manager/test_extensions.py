@@ -67,6 +67,7 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
 )
 from erlab.interactive.imagetool.manager._extensions._dialogs import (
     _ExtensionParameterDialog,
+    _RoutineSelectionDialog,
 )
 from erlab.interactive.imagetool.manager._extensions._execution import (
     _detached_routine_output,
@@ -937,7 +938,7 @@ def test_routine_dialog_rejects_a_source_reloaded_while_open(
         assert critical_calls == [None]
 
 
-def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
+def test_controller_replay_loader_rejects_unavailable_calls(
     manager_context,
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -956,11 +957,6 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
 
     with manager_context() as manager:
         controller = manager._extensions
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError, match="metadata is incomplete"
-        ):
-            controller.replay_loader(load_source(None))
-
         missing_call = FileReplayCall(
             kind="extension_loader",
             target="missing.py",
@@ -968,6 +964,13 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             capability_id="load_data",
             selection=FileDataSelection(kind="dataarray"),
         )
+        controller.catalog.load_error = "catalog unavailable"
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="catalog is unavailable",
+        ):
+            controller.replay_loader(load_source(missing_call))
+        controller.catalog.load_error = None
         with pytest.raises(
             erlab.extensions.ExtensionExecutionError,
             match="not available",
@@ -1016,6 +1019,11 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
         ):
             controller.replay_loader(load_source(script_call))
         monkeypatch.undo()
+
+        xr.testing.assert_identical(
+            controller.replay_loader(load_source(script_call)),
+            xr.DataArray([1.0]),
+        )
 
 
 def test_controller_capability_status_uses_application_catalog(
@@ -4740,6 +4748,45 @@ def test_canceling_workspace_script_review_does_not_register_source(
         )
 
 
+def test_canceling_workspace_script_save_does_not_register_source(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = _script(tmp_path / "cancelled.py")
+    source_hash = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceScriptRequirement(
+        script_name="cancelled.py",
+        capability_id="scale",
+        capability_name="Scale",
+        capability_kind="routine",
+        source_hash=source_hash,
+        extension_api_version=1,
+    )
+    monkeypatch.setattr(
+        extension_controller._SourceReviewDialog,
+        "exec",
+        lambda _dialog: QtWidgets.QDialog.DialogCode.Accepted,
+    )
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: ("", ""),
+    )
+
+    with manager_context() as manager:
+        _set_workspace_script_state(
+            manager,
+            (requirement,),
+            sources={(requirement.script_name, source_hash): source},
+        )
+
+        assert not manager._extensions._save_and_register_embedded_script(
+            requirement.script_name, source_hash
+        )
+        assert manager._extensions.catalog.store.read().extensions == {}
+
+
 @pytest.mark.parametrize("selected", [False, True])
 def test_add_script_file_dialog_accept_and_cancel(
     manager_context,
@@ -6842,6 +6889,36 @@ def test_routine_output_detaches_only_shared_numpy_buffers() -> None:
     assert unchanged is computed
 
 
+def test_readonly_routine_input_preserves_lazy_array_backends() -> None:
+    da = pytest.importorskip("dask.array")
+    values = da.from_array(np.arange(3.0), chunks=2)
+    coordinates = da.from_array(np.arange(3.0) + 10.0, chunks=2)
+    source = xr.DataArray(
+        values,
+        dims="x",
+        coords={"aux": ("x", coordinates)},
+    )
+
+    readonly = _readonly_array(source)
+
+    assert readonly.data is values
+    assert isinstance(readonly.coords["aux"].data, da.Array)
+    assert readonly.coords["aux"].data.name == coordinates.name
+    xr.testing.assert_identical(readonly.compute(), source.compute())
+
+
+def test_extension_log_fields_accept_generic_dimension_mappings() -> None:
+    fields = extension_execution._xarray_log_fields(
+        types.SimpleNamespace(sizes={"x": 2, "y": 3})
+    )
+
+    assert fields["dimensions"] == ("x", "y")
+    assert fields["shape"] == (2, 3)
+    assert extension_execution._xarray_log_fields(
+        types.SimpleNamespace(sizes=None)
+    ) == {"type": "SimpleNamespace"}
+
+
 def test_stale_routine_result_is_not_inserted(
     manager_context,
     qtbot: pytest.QtBot,
@@ -7562,6 +7639,68 @@ def test_workspace_script_remap_updates_node_provenance_owners(
         assert {child_uid, tool_uid}.issubset(manager._workspace_state.dirty_state)
 
 
+def test_workspace_script_remap_updates_nested_and_loader_provenance(
+    manager_context,
+) -> None:
+    source_hash = "a" * 64
+    operation = ExtensionRoutineOperation(
+        script_name="workspace.py",
+        source_hash=source_hash,
+        routine_id="normalize",
+        routine_name="Normalize",
+        parameters={},
+    )
+    nested = full_data(operation)
+    provenance = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use extension inputs",
+        seed_code="result = nested",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="nested",
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+        file_load_source=FileLoadSource(
+            path="data.dat",
+            loader_label="Workspace loader",
+            loader_text="workspace.py: load_data",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="workspace.py",
+                source_hash=source_hash,
+                capability_id="load_data",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=provenance,
+        )
+
+        manager._extensions._remap_workspace_script(
+            "workspace.py", source_hash, "registered.py"
+        )
+
+        remapped = manager._node_for_target(index).provenance_spec
+        remapped_nested = remapped.script_inputs[0].parsed_provenance_spec()
+        if remapped_nested is None:
+            raise RuntimeError("The nested provenance was not retained")
+        remapped_operation = typing.cast(
+            "ExtensionRoutineOperation", remapped_nested.operations[-1]
+        )
+        assert remapped_operation.script_name == "registered.py"
+        assert remapped.file_load_source is not None
+        assert remapped.file_load_source.replay_call is not None
+        assert remapped.file_load_source.replay_call.target == "registered.py"
+
+
 def test_workspace_script_remap_updates_pending_tool_provenance(
     manager_context,
     tmp_path: pathlib.Path,
@@ -7873,6 +8012,35 @@ def test_workspace_notification_opens_embedded_script_recovery(
     assert shown == [None]
 
 
+def test_workspace_notification_reports_unrecoverable_requirement(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requirement = _WorkspaceScriptRequirement(
+        script_name="missing.py",
+        capability_id="scale",
+        capability_name="Scale",
+        capability_kind="routine",
+        source_hash="a" * 64,
+        extension_api_version=1,
+    )
+    shown: list[erlab.interactive.utils.MessageDialog] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "exec",
+        lambda dialog: shown.append(dialog),
+    )
+
+    with manager_context() as manager:
+        manager._workspace_state.extension_scripts.replace(
+            workspace_state._WorkspaceScriptState((requirement,))
+        )
+
+        manager._extensions.notify_unavailable_workspace_requirements()
+
+    assert len(shown) == 1
+
+
 def test_loader_invocation_logs_and_reraises_user_failure(
     tmp_path: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
@@ -7911,6 +8079,36 @@ def load_data(path: Path) -> xr.DataArray:
         call._invoke(tmp_path / "data.dat", {}, {})
 
     assert "Extension loader failed" in caplog.text
+
+
+def test_loader_import_failure_is_classified_as_a_source_failure(
+    tmp_path: pathlib.Path,
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="import-failure",
+        snapshot=_pinned_script(
+            tmp_path / "broken.py",
+            b"raise RuntimeError('import failed')\n",
+            loaders=(descriptor,),
+        ),
+        loader_id=descriptor.id,
+        descriptor=descriptor,
+        executor=lambda *_args: xr.DataArray([1.0]),
+        publication_checker=lambda _call: None,
+        publication_recorder=lambda _call: None,
+    )
+
+    with pytest.raises(extension_execution._ExtensionSourceLoadFailure) as exc_info:
+        call._invoke(tmp_path / "data.txt", {}, {})
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 def test_remove_queued_without_replay_waiter_discards_job(
@@ -8256,16 +8454,6 @@ def test_removal_blockers_cover_managers_jobs_and_workspace_requirements(
         manager._workspace_state.extension_scripts.clear()
         assert controller._removal_blocker(script_path.name) is None
 
-        manager._workspace_state.extension_scripts.replace(
-            workspace_state._WorkspaceScriptState(
-                opaque_requirement_payloads=({"future_requirement": True},)
-            )
-        )
-        assert controller._removal_blocker(script_path.name) is not None
-
-        manager._workspace_state.extension_scripts.clear()
-        assert controller._removal_blocker(script_path.name) is None
-
 
 def test_script_registration_reads_reviewed_bytes_inside_transaction(
     tmp_path: pathlib.Path,
@@ -8453,60 +8641,6 @@ def test_loader_ingress_checks_and_records_at_the_insertion_boundary(
         assert events == ["insert", "record"]
 
 
-@pytest.mark.parametrize(
-    "container_name",
-    ["opaque_requirement_container", "opaque_source_container"],
-)
-def test_opaque_workspace_container_rejects_new_extension_results(
-    manager_context,
-    tmp_path: pathlib.Path,
-    container_name: str,
-) -> None:
-    script_path = tmp_path / "analysis.py"
-    _script(script_path)
-
-    with manager_context() as manager:
-        catalog, source_hash = manager._extensions.catalog.store.register_script(
-            script_path
-        )
-        _validate_and_enable(
-            manager._extensions.catalog.store,
-            script_path.name,
-            expected_record_generation=catalog.extensions[
-                _script_name_key(script_path.name)
-            ].record_generation,
-        )
-        manager._extensions.catalog.refresh()
-        manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
-            show=False,
-        )
-        manager._workspace_state.extension_scripts.replace(
-            workspace_state._WorkspaceScriptState(
-                **{
-                    container_name: workspace_state._OpaqueManifestContainer(
-                        {"future_entries": []}
-                    )
-                }
-            )
-        )
-
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError,
-            match="unsupported extension metadata",
-        ):
-            manager._extensions.execution.queue_routine(
-                script_name=script_path.name,
-                source_hash=source_hash,
-                routine_id="scale",
-                parameters={},
-                target=0,
-            )
-
-        assert not manager._extensions.execution.uses_script(script_path.name)
-        assert manager.ntools == 1
-
-
 def test_extension_publication_canonicalizes_workspace_script_filename(
     manager_context,
     tmp_path: pathlib.Path,
@@ -8589,6 +8723,27 @@ def test_extension_publication_canonicalizes_workspace_script_filename(
 def test_script_name_key_rejects_invalid_basenames(script_name: str) -> None:
     with pytest.raises(ValueError, match=r"must be a \.py basename"):
         _script_name_key(script_name)
+
+
+def test_extension_catalog_model_rejects_noncanonical_script_keys(
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "extension.py"
+    record = _ScriptRecord(
+        script_name=script_path.name,
+        source_path=os.fspath(script_path),
+        source_hash="a" * 64,
+        source_modified_at="2026-01-01T00:00:00+00:00",
+        registered_at="2026-01-01T00:00:00+00:00",
+    )
+
+    with pytest.raises(ValueError, match="key does not match"):
+        _ExtensionCatalogModel(extensions={"wrong.py": record})
+    with pytest.raises(ValueError, match="favorite must use a normalized"):
+        _ExtensionCatalogModel(
+            extensions={"extension.py": record},
+            routine_favorites=(("Extension.py", "scale"),),
+        )
 
 
 def test_changed_script_is_not_offered_as_missing_and_requires_review(
@@ -8789,3 +8944,877 @@ def test_provenance_edit_records_replay_source_after_replacement(
                 full_data(),
             )
         assert events == ["check", "replace"]
+
+
+def test_extension_models_validate_catalog_and_workspace_reference_identity(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_hash = "a" * 64
+    record = _ScriptRecord(
+        script_name="extension.py",
+        source_path=os.fspath(tmp_path / "extension.py"),
+        source_hash=source_hash,
+        source_modified_at="2026-01-01T00:00:00+00:00",
+        registered_at="2026-01-01T00:00:00+00:00",
+    )
+    with pytest.raises(pydantic.ValidationError, match="favorites must be unique"):
+        _ExtensionCatalogModel(
+            extensions={"extension.py": record},
+            routine_favorites=(("extension.py", "value"),) * 2,
+        )
+    with pytest.raises(pydantic.ValidationError, match="unknown script"):
+        _ExtensionCatalogModel(routine_favorites=(("extension.py", "value"),))
+    with pytest.raises(pydantic.ValidationError, match="must not be empty"):
+        _WorkspaceScriptRequirement(
+            script_name="extension.py",
+            capability_id="",
+            capability_name="Value",
+            capability_kind="routine",
+            source_hash=source_hash,
+            extension_api_version=1,
+        )
+
+
+def test_extension_dialog_helpers_handle_invalid_dates_and_empty_selection(
+    qtbot,
+) -> None:
+    assert extension_dialogs._display_datetime(None) == ""
+    assert extension_dialogs._display_datetime("not-a-date") == "not-a-date"
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _RoutineSelectionDialog((), parent)
+    qtbot.addWidget(dialog)
+    dialog._toggle_favorite()
+
+
+def test_catalog_reports_source_read_and_duplicate_favorite_failures(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    source = tmp_path / "extension.py"
+    _script(source)
+    catalog, _source_hash = store.register_script(source)
+    record = catalog.extensions["extension.py"]
+
+    monkeypatch.setattr(
+        extension_catalog.pathlib.Path,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unreadable")),
+    )
+    with pytest.raises(FileNotFoundError, match=r"extension\.py"):
+        extension_catalog._read_source_snapshot(source)
+    monkeypatch.undo()
+
+    unchanged = store.set_routine_favorite(record.script_name, "scale", favorite=False)
+    assert unchanged.routine_favorites == ()
+    with pytest.raises(KeyError):
+        store.set_routine_favorite("missing.py", "scale", favorite=True)
+
+
+def test_replay_source_capture_requires_validation_only_for_staged_sources(
+    tmp_path: pathlib.Path,
+) -> None:
+    checked: list[object] = []
+    capture = extension_execution._ReplaySourceCapture(
+        publication_checker=checked.append
+    )
+    capture.publish()
+    assert capture.published
+    assert checked == []
+
+    snapshot = _pinned_script(tmp_path / "extension.py")
+    capture.permits[
+        (
+            "extension.py",
+            snapshot.record.source_hash,
+            "routine",
+            "scale",
+        )
+    ] = snapshot
+    with pytest.raises(RuntimeError, match="checked before"):
+        capture.publish()
+    capture.require_current_for_publication()
+    capture.publish()
+    assert checked == [capture]
+
+
+def test_controller_saves_recovery_source_without_overwriting_user_files(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = b"print('workspace source')\n"
+    warnings: list[pathlib.Path] = []
+    failures: list[str] = []
+    selected_path = ""
+
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (selected_path, "Python scripts (*.py)"),
+    )
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: warnings.append(pathlib.Path(selected_path)),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, _title, text, **_kwargs: failures.append(text),
+    )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+
+        assert (
+            controller._save_source_as_user_file(
+                source, title="Save Source", suggested_name="../unsafe.py"
+            )
+            is None
+        )
+
+        selected_path = os.fspath(tmp_path / "saved_source")
+        saved = controller._save_source_as_user_file(
+            source, title="Save Source", suggested_name="extension.py"
+        )
+        assert saved == (tmp_path / "saved_source.py").resolve()
+        assert saved.read_bytes() == source
+
+        selected_path = os.fspath(saved)
+        assert (
+            controller._save_source_as_user_file(
+                source, title="Save Source", suggested_name="extension.py"
+            )
+            == saved
+        )
+
+        saved.write_bytes(b"user source\n")
+        assert (
+            controller._save_source_as_user_file(
+                source, title="Save Source", suggested_name="extension.py"
+            )
+            is None
+        )
+        assert saved.read_bytes() == b"user source\n"
+        assert warnings == [saved]
+
+        class FailingSaveFile:
+            stage = "open"
+            canceled = False
+
+            def __init__(self, _path: str) -> None:
+                pass
+
+            def open(self, _mode: object) -> bool:
+                return self.stage != "open"
+
+            def write(self, value: bytes) -> int:
+                return len(value) if self.stage != "write" else len(value) - 1
+
+            def cancelWriting(self) -> None:
+                type(self).canceled = True
+
+            def commit(self) -> bool:
+                return self.stage != "commit"
+
+            def errorString(self) -> str:
+                return f"{self.stage} failed"
+
+        with monkeypatch.context() as save_patch:
+            save_patch.setattr(
+                extension_controller.QtCore, "QSaveFile", FailingSaveFile
+            )
+            for stage in ("open", "write", "commit"):
+                FailingSaveFile.stage = stage
+                selected_path = os.fspath(tmp_path / f"{stage}.py")
+                assert (
+                    controller._save_source_as_user_file(
+                        source, title="Save Source", suggested_name="extension.py"
+                    )
+                    is None
+                )
+
+    assert FailingSaveFile.canceled
+    assert failures == ["The extension script could not be saved."] * 3
+
+
+def test_missing_script_recovery_reuses_and_releases_its_dialog(
+    manager_context,
+    qtbot: pytest.QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "missing.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        catalog, _source_hash = manager._extensions.catalog.store.register_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            script_path.name,
+            expected_record_generation=catalog.extensions[
+                script_path.name
+            ].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        script_path.unlink()
+
+        assert manager._extensions._show_missing_script_recovery()
+        dialog = manager._extensions._missing_scripts_dialog
+        if dialog is None:
+            raise RuntimeError("The missing-script dialog was not shown")
+        assert manager._extensions._show_missing_script_recovery()
+        assert manager._extensions._missing_scripts_dialog is dialog
+        located: list[str] = []
+        monkeypatch.setattr(
+            manager._extensions,
+            "_locate_missing_script",
+            lambda script_name: located.append(script_name) or False,
+        )
+        dialog.locate_requested.emit(script_path.name)
+        assert located == [script_path.name]
+        assert dialog.tree.topLevelItemCount() == 1
+
+        dialog.reject()
+        qtbot.wait_until(
+            lambda: manager._extensions._missing_scripts_dialog is None,
+            timeout=2000,
+        )
+        assert manager._extensions._missing_scripts_dialog_slots is None
+        assert not manager._extensions._show_missing_script_recovery()
+        assert manager._extensions._show_missing_script_recovery(repeat=True)
+        repeated = manager._extensions._missing_scripts_dialog
+        if repeated is None:
+            raise RuntimeError("The missing-script dialog was not repeated")
+        repeated.reject()
+
+
+def test_execution_publication_and_admission_status_guards(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    snapshot = _pinned_script(
+        tmp_path / "loader.py", b"loader source\n", loaders=(descriptor,)
+    )
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        recorded: list[tuple[str, str, bytes]] = []
+        monkeypatch.setattr(
+            manager._workspace_state.extension_scripts,
+            "remember_verified_source",
+            lambda *args: recorded.append(typing.cast("tuple[str, str, bytes]", args)),
+        )
+        call = execution._loader_call_from_snapshot(snapshot, descriptor)
+        execution._record_loader_publication(call)
+        assert recorded == [
+            (
+                snapshot.record.script_name,
+                snapshot.record.source_hash,
+                snapshot.source_bytes,
+            )
+        ]
+
+        execution.stage_replay_source(snapshot, "loader", descriptor.id)
+        assert execution._replay_source_captures == []
+        errors: list[tuple[str, str, str | None]] = []
+        monkeypatch.setattr(
+            execution,
+            "_set_validation_error",
+            lambda script_name, source_hash, detail: errors.append(
+                (script_name, source_hash, detail)
+            ),
+        )
+
+        def fail_source(task: object, **_kwargs: object) -> typing.Never:
+            worker = typing.cast("_ExtensionLoaderWorker", task)
+            worker.source_failure = True
+            worker.traceback_text = "source traceback"
+            raise RuntimeError("source failed")
+
+        monkeypatch.setattr(execution, "_run_blocking_task", fail_source)
+        with pytest.raises(RuntimeError, match="source failed"):
+            execution.run_loader(call, tmp_path / "data.txt", {})
+        assert errors == [(call.script_name, call.source_hash, "source traceback")]
+
+        execution._accepting = False
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="shutting down"
+        ):
+            execution._require_current_capability(
+                call.script_name, call.source_hash, "loader", call.loader_id
+            )
+        execution._accepting = True
+
+        manager._extensions.catalog.load_error = "catalog failed"
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="catalog is unavailable"
+        ):
+            execution._routine_job(
+                script_name="routine.py",
+                source_hash=snapshot.record.source_hash,
+                routine_id="scale",
+                parameters={},
+                input_data=xr.DataArray([1.0]),
+                input_uid="input",
+                input_snapshot="snapshot",
+            )
+        manager._extensions.catalog.load_error = None
+
+
+def test_catalog_transactions_report_reachable_conflicts_and_no_ops(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "Analysis.py"
+    source = _script(source_path)
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("file")
+    blocked_store = _ExtensionCatalogStore(blocked_parent / "catalog")
+    with pytest.raises(extension_catalog._ExtensionCatalogLockError, match="directory"):
+        blocked_store.register_script(source_path)
+    watched_catalog = _ExtensionCatalog(directory=blocked_parent / "watched")
+    try:
+        watched_catalog.refresh()
+        assert watched_catalog.load_error is not None
+    finally:
+        watched_catalog.close()
+
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog, source_hash = store.register_script(source_path)
+    record = catalog.extensions["analysis.py"]
+    with pytest.raises(_ExtensionCatalogConflictError, match="already registered"):
+        store.register_script(source_path)
+
+    same = store.relocate_script(
+        record.script_name,
+        source_path,
+        expected_record_generation=record.record_generation,
+    )
+    assert same.generation == catalog.generation
+
+    lower_case_path = tmp_path / "analysis.py"
+    with pytest.raises(_ExtensionCatalogConflictError, match="different script name"):
+        store.relocate_script(
+            lower_case_path.name,
+            lower_case_path,
+            expected_record_generation=record.record_generation,
+        )
+
+    other_path = tmp_path / "other" / source_path.name
+    other_path.parent.mkdir()
+    other_path.write_bytes(b"different source\n")
+    with pytest.raises(
+        _ExtensionCatalogConflictError, match="different script contents"
+    ):
+        store.relocate_script(
+            record.script_name,
+            other_path,
+            expected_record_generation=record.record_generation,
+        )
+
+    source_path.write_bytes(source + b"# changed\n")
+    with pytest.raises(_ExtensionCatalogConflictError, match="after it was reviewed"):
+        store.reload_script(
+            record.script_name,
+            expected_source_hash="0" * 64,
+            expected_record_generation=record.record_generation,
+        )
+    source_path.write_bytes(source)
+
+    unchanged = store.update_script(
+        record.script_name,
+        expected_record_generation=record.record_generation,
+    )
+    assert unchanged.generation == catalog.generation
+
+    favored = store.set_routine_favorite(record.script_name, "scale", favorite=True)
+    assert favored.routine_favorites == (("analysis.py", "scale"),)
+    unfavored = store.set_routine_favorite(record.script_name, "scale", favorite=False)
+    assert unfavored.routine_favorites == ()
+
+    loaders = tuple(
+        erlab.extensions.LoaderDescriptor(
+            id=f"loader-{index}",
+            name="Lab Data",
+            category="Lab",
+            summary="",
+            function_name=f"load_{index}",
+            extensions=(".txt",),
+        )
+        for index in range(2)
+    )
+    with pytest.raises(
+        _ExtensionCatalogConflictError,
+        match="duplicate file dialog filters",
+    ):
+        store.commit_script_validation(
+            record.script_name,
+            source_hash=source_hash,
+            expected_record_generation=record.record_generation,
+            routines=(),
+            loaders=loaders,
+        )
+
+    removed = store.remove_script(
+        record.script_name,
+        expected_record_generation=record.record_generation,
+    )
+    assert removed.extensions == {}
+    with pytest.raises(_ExtensionCatalogConflictError, match="another manager"):
+        store.remove_script(
+            record.script_name,
+            expected_record_generation=record.record_generation,
+        )
+
+
+def test_controller_reports_action_and_source_failures(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "actions.py"
+    _script(script_path)
+    critical: list[str] = []
+    warnings: list[str] = []
+    information: list[str] = []
+    refreshed: list[str] = []
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, _title, text, **_kwargs: critical.append(text),
+    )
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QMessageBox,
+        "warning",
+        lambda _parent, _title, text, **_kwargs: warnings.append(text),
+    )
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QMessageBox,
+        "information",
+        lambda _parent, _title, text, **_kwargs: information.append(text),
+    )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        catalog, _source_hash = controller.catalog.store.register_script(script_path)
+        _validate_and_enable(
+            controller.catalog.store,
+            script_path.name,
+            expected_record_generation=catalog.extensions[
+                script_path.name
+            ].record_generation,
+        )
+        controller.catalog.refresh()
+        record = controller.catalog.model.extensions[script_path.name]
+        monkeypatch.setattr(
+            controller,
+            "_refresh_manage_dialog",
+            lambda: refreshed.append("manage"),
+        )
+
+        validation_calls: list[dict[str, typing.Any]] = []
+        monkeypatch.setattr(
+            controller.execution,
+            "validation_error",
+            lambda *_args: "validation traceback",
+        )
+        monkeypatch.setattr(
+            controller.execution,
+            "validate_script",
+            lambda script_name, source_hash, **kwargs: validation_calls.append(
+                {"script_name": script_name, "source_hash": source_hash, **kwargs}
+            ),
+        )
+        controller._manage_action("toggle", record.script_name)
+        assert validation_calls == [
+            {
+                "script_name": record.script_name,
+                "source_hash": record.source_hash,
+                "expected_record_generation": record.record_generation,
+                "enable_script": False,
+                "persist_result": False,
+            }
+        ]
+        controller._manage_action("error", record.script_name)
+        assert critical[-1] == "The extension could not be validated."
+
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "set_routine_favorite",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("failed")),
+        )
+        controller._set_routine_favorite(record.script_name, "scale", True)
+        assert critical[-1] == "The routine favorite could not be changed."
+
+        viewed: list[str] = []
+        monkeypatch.setattr(
+            extension_controller._SourceViewerDialog,
+            "exec",
+            lambda dialog: viewed.append(dialog.source.toPlainText()) or 0,
+        )
+        controller._show_source(record.script_name, record.source_hash)
+        assert "def scale" in viewed[0]
+
+        original_resolve = controller.catalog.store.resolve_script
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "resolve_script",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                FileNotFoundError(script_path)
+            ),
+        )
+        controller._show_source(record.script_name, record.source_hash)
+        assert critical[-1] == "The registered extension source could not be read."
+        monkeypatch.setattr(
+            controller.catalog.store, "resolve_script", original_resolve
+        )
+
+        shown_sources: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            controller,
+            "_show_source",
+            lambda script_name, source_hash: shown_sources.append(
+                (script_name, source_hash)
+            ),
+        )
+        controller._manage_action("view_source", record.script_name)
+        assert shown_sources == [(record.script_name, record.source_hash)]
+
+        opened: list[str] = []
+        revealed: list[str] = []
+        copied: list[str] = []
+        monkeypatch.setattr(
+            extension_controller.QtGui.QDesktopServices,
+            "openUrl",
+            lambda url: opened.append(url.toLocalFile()) or True,
+        )
+        monkeypatch.setattr(
+            erlab.utils.misc,
+            "open_in_file_manager",
+            lambda path: revealed.append(os.fspath(path)),
+        )
+        monkeypatch.setattr(
+            extension_controller.QtWidgets.QApplication,
+            "clipboard",
+            staticmethod(
+                lambda: types.SimpleNamespace(
+                    setText=lambda value: copied.append(value),
+                    clear=lambda: None,
+                )
+            ),
+        )
+        controller._manage_action("open_source", record.script_name)
+        controller._manage_action("reveal_source", record.script_name)
+        controller._manage_action("copy_source", record.script_name)
+        assert opened == [record.source_path]
+        assert revealed == [record.source_path]
+        assert copied == [record.source_path]
+
+        script_path.unlink()
+        controller._manage_action("open_source", record.script_name)
+        assert information[-1] == "The registered source file is unavailable."
+
+        original_update = controller.catalog.store.update_script
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "update_script",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                _ExtensionCatalogConflictError("changed")
+            ),
+        )
+        controller._manage_action("embedding:always", record.script_name)
+        assert warnings[-1] == "changed"
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "update_script",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("failed")),
+        )
+        controller._manage_action("embedding:always", record.script_name)
+        assert critical[-1] == "The extension could not be changed."
+        monkeypatch.setattr(controller.catalog.store, "update_script", original_update)
+
+        assert not controller._locate_missing_script("unknown.py")
+        monkeypatch.setattr(
+            extension_controller.QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *_args, **_kwargs: ("", ""),
+        )
+        assert not controller._locate_missing_script(record.script_name)
+        monkeypatch.setattr(
+            extension_controller.QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *_args, **_kwargs: (record.source_path, "Python scripts (*.py)"),
+        )
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "relocate_script",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("failed")),
+        )
+        assert not controller._locate_missing_script(record.script_name)
+        assert critical[-1] == "The script location could not be updated."
+
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "resolve_script",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyError("unreadable")),
+        )
+        controller._refresh_manage_dialog = types.MethodType(
+            extension_controller._ExtensionController._refresh_manage_dialog,
+            controller,
+        )
+        controller._refresh_manage_dialog()
+
+    assert refreshed
+
+
+def test_extension_removal_rechecks_blockers_after_confirmation(
+    manager_context,
+    accept_dialog,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "remove.py"
+    _script(script_path)
+    information: list[str] = []
+    refreshes: list[None] = []
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        controller.catalog.store.register_script(script_path)
+        controller.catalog.refresh()
+        record = controller.catalog.model.extensions[script_path.name]
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                extension_controller,
+                "live_manager_records",
+                lambda **_kwargs: (_ for _ in ()).throw(
+                    extension_controller.ImageToolManagerRegistryError("failed")
+                ),
+            )
+            assert "could not be checked" in typing.cast(
+                "str", controller._removal_blocker(record.script_name)
+            )
+
+            mp.setattr(
+                controller,
+                "_refresh_removal_eligibility",
+                lambda *_args: refreshes.append(None),
+            )
+            mp.setattr(
+                controller,
+                "_removal_blocker",
+                lambda _script_name: "initial blocker",
+            )
+            accept_dialog(
+                lambda: controller._remove_extension(record),
+                pre_call=lambda dialog: information.append(
+                    typing.cast("QtWidgets.QMessageBox", dialog).text()
+                ),
+            )
+            assert information[-1] == "initial blocker"
+
+            blockers = iter((None, "new blocker"))
+            mp.setattr(
+                controller,
+                "_removal_blocker",
+                lambda _script_name: next(blockers),
+            )
+            accept_dialog(
+                lambda: controller._remove_extension(record),
+                chained_dialogs=2,
+                pre_call=(
+                    None,
+                    lambda dialog: information.append(
+                        typing.cast("QtWidgets.QMessageBox", dialog).text()
+                    ),
+                ),
+                accept_call=(
+                    lambda dialog: (
+                        typing.cast("QtWidgets.QMessageBox", dialog)
+                        .button(QtWidgets.QMessageBox.StandardButton.Yes)
+                        .click()
+                    ),
+                    None,
+                ),
+            )
+            assert information[-1] == "new blocker"
+            assert script_path.name in controller.catalog.model.extensions
+
+    assert len(refreshes) == 2
+
+
+def test_execution_adapters_workers_and_result_lifecycle_guards(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    loader_descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    publications: list[str] = []
+    loader_path = tmp_path / "loader.py"
+    loader_call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        snapshot=_pinned_script(loader_path, loaders=(loader_descriptor,)),
+        loader_id=loader_descriptor.id,
+        descriptor=loader_descriptor,
+        executor=lambda *_args: xr.DataArray([1.0]),
+        publication_checker=lambda _call: publications.append("check"),
+        publication_recorder=lambda _call: publications.append("record"),
+    )
+    adapter = extension_execution._DecoratedLoaderAdapter(loader_call)
+    adapter.require_current_for_publication()
+    adapter.record_publication()
+    assert publications == ["check", "record"]
+    monkeypatch.setattr(adapter, "load", lambda *_args, **_kwargs: object())
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="one xarray object"
+    ):
+        adapter.load_for_manager(tmp_path / "data.txt")
+
+    import dask.array
+
+    lazy_input = xr.DataArray(dask.array.from_array(np.arange(3)), dims="x")
+    lazy_output = xr.DataArray(dask.array.from_array(np.arange(3) + 1), dims="x")
+    detached = _detached_routine_output(lazy_output, lazy_input)
+    assert isinstance(detached.data, dask.array.Array)
+
+    loader_only_path = tmp_path / "loader_only.py"
+    _loader_script(loader_only_path, name="Only Loader", extensions=(".txt",))
+    loaded = erlab.extensions.load_script(loader_only_path)
+    with pytest.raises(erlab.extensions.ExtensionExecutionError, match="missing from"):
+        extension_execution._require_routine(loaded, "missing")
+
+    routine = erlab.extensions.RoutineDescriptor(
+        id="scale",
+        name="Scale",
+        category="Lab",
+        summary="",
+        function_name="scale",
+    )
+    bad_snapshot = _pinned_script(
+        tmp_path / "bad.py",
+        b"import os\nimport xarray as xr\n"
+        b"from erlab.extensions import routine\n"
+        b'if os.getenv("ERLAB_TEST_FAIL_EXTENSION_IMPORT"):\n'
+        b'    raise RuntimeError("import failed")\n'
+        b"@routine()\n"
+        b"def scale(data: xr.DataArray) -> xr.DataArray:\n"
+        b"    return data\n",
+        routines=(routine,),
+    )
+    job = extension_execution._ExtensionRoutineJob(
+        job_id="job",
+        snapshot=bad_snapshot,
+        routine=routine,
+        parameters={},
+        input_uid="input",
+        input_snapshot="snapshot",
+        input_data=xr.DataArray([1.0]),
+    )
+    worker = _ExtensionRoutineWorker(
+        job,
+        manager_session_id="worker-manager",
+        catalog_store=_ExtensionCatalogStore(tmp_path / "worker-catalog"),
+        script_modules={},
+        source_is_healthy=lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        extension_execution,
+        "_resolve_execution_capability",
+        lambda *_args, **_kwargs: extension_execution._ExecutionCapability(
+            "ready", bad_snapshot, routine
+        ),
+    )
+    monkeypatch.setenv("ERLAB_TEST_FAIL_EXTENSION_IMPORT", "1")
+    try:
+        worker.run()
+    finally:
+        extension_execution._remove_manager_modules("worker-manager")
+    if worker.result is None:
+        raise RuntimeError("The routine worker did not return a result")
+    assert worker.result.source_failure
+    assert worker.result.status == "failed"
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        validation_changes: list[None] = []
+        execution.validation_changed.connect(lambda: validation_changes.append(None))
+        execution._set_validation_error("stale.py", "a" * 64, "failure")
+        execution._set_validation_error("stale.py", "a" * 64, "updated failure")
+        execution._set_validation_error("stale.py", "a" * 64, "updated failure")
+        assert execution.validation_errors == {
+            ("stale.py", "a" * 64): "updated failure"
+        }
+        assert validation_changes == [None, None]
+        execution.prune_validation_errors(_ExtensionCatalogModel())
+        assert execution.validation_errors == {}
+
+        active_worker = _ExtensionRoutineWorker(
+            job,
+            manager_session_id="manager-worker",
+            catalog_store=execution._catalog.store,
+            script_modules={},
+            source_is_healthy=lambda *_args: True,
+        )
+        active_worker.signals.finished.connect(execution._finished_slot)
+        active_worker.signals.started.connect(execution._started_slot)
+        execution._active = (job, active_worker)
+        waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
+        execution._routine_waiters[job.job_id] = waiter
+        validation_errors: list[tuple[str, str, str | None]] = []
+        starts: list[None] = []
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                execution,
+                "_set_validation_error",
+                lambda *args: validation_errors.append(
+                    typing.cast("tuple[str, str, str | None]", args)
+                ),
+            )
+            mp.setattr(execution, "_start_next", lambda: starts.append(None))
+            execution._finished(
+                extension_execution._ExtensionRoutineResult(
+                    job=job,
+                    output=None,
+                    duration=0.0,
+                    status="failed",
+                    traceback_text="source traceback",
+                    source_failure=True,
+                )
+            )
+        assert validation_errors == [
+            (job.script_name, job.source_hash, "source traceback")
+        ]
+        assert waiter.result is not None
+        assert starts == [None]
+
+        execution._accepting = False
+        execution._insert_if_current(
+            extension_execution._ExtensionRoutineResult(
+                job=job,
+                output=xr.DataArray([2.0]),
+                duration=0.0,
+                status="success",
+            )
+        )
+        execution._accepting = True
+        execution._pending.append(job)
+        execution.shutdown()
+        assert execution.queued == ()

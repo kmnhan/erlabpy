@@ -253,15 +253,13 @@ def _load_file_source_object(
     if call.kind == "erlab_loader":
         func = erlab.io.loaders[call.target].load
     elif call.kind == "extension_loader":
-        if call.source_hash is None or call.capability_id is None:
-            raise ValueError("Extension loader replay metadata is incomplete")
         if extension_loader_executor is not None:
             return extension_loader_executor(load_source)
         return erlab.extensions.run_loader(
             file_path,
             registered_script=call.target,
-            source_hash=call.source_hash,
-            loader_id=call.capability_id,
+            source_hash=typing.cast("str", call.source_hash),
+            loader_id=typing.cast("str", call.capability_id),
             parameters=_deserialize_loader_kwargs(call.kwargs),
         )
     else:
@@ -482,19 +480,15 @@ def file_load_source_status(
         except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
             return "missing-loader"
     if replay_call.kind == "extension_loader":
-        if replay_call.source_hash is None:
-            return "extension-missing-source"
-        if replay_call.capability_id is None:
-            return "extension-missing-capability"
         capability_status = (
             _registered_script_capability_status
             if extension_status_resolver is None
             else extension_status_resolver
         )(
             replay_call.target,
-            replay_call.source_hash,
+            typing.cast("str", replay_call.source_hash),
             "loader",
-            replay_call.capability_id,
+            typing.cast("str", replay_call.capability_id),
         )
         if capability_status == "disabled":
             return "extension-disabled"

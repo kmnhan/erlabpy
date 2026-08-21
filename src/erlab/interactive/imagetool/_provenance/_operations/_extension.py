@@ -19,8 +19,6 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Collection
-
     import xarray as xr
 
 
@@ -67,31 +65,6 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
 
     def derivation_entry(self) -> DerivationEntry:
         return DerivationEntry(self.derivation_label(), None, False)
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        raise NotImplementedError
-
-    def statement_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        source_name: str | None = None,
-    ) -> str:
-        raise NotImplementedError
-
-    def _statement_replay_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        source_name: str | None = None,
-        reserved_names: Collection[str] = (),
-    ) -> str:
-        del input_name, output_name, source_name, reserved_names
-        raise NotImplementedError
 
     def _bound_script_statement_code(
         self,
