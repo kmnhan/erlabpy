@@ -11,6 +11,7 @@ them equivalent.
 | `DataArray` | Values, dimensions, coordinates, and metadata | Analysis and display |
 | Provenance | Source inputs and operation history for a derived row | Inspection and supported reload |
 | Workspace file | Manager rows, data, tools, figures, and window settings | Reopening a Manager session |
+| Extension source | Script name, capability ID, source hash, and an optional source copy | Replaying a lab-specific routine or loader |
 | Generated code | Python statements for selected operations | Continuing the analysis in a script or notebook |
 
 ## Provenance
@@ -41,6 +42,25 @@ A workspace is not a substitute for:
 - The software environment.
 - Metadata that was not recorded.
 - Other variables and Python objects in the notebook kernel.
+
+## Extension scripts
+
+An extension operation records the script name, capability ID, and source hash. The
+capability ID identifies the routine or loader. The source hash identifies the exact
+script contents that produced the result.
+
+Manager runs an extension operation only when a registered local script is enabled,
+approved, and matches the recorded source hash. A source edit therefore requires new
+approval. This rule prevents an old provenance record from silently running changed
+code.
+
+By default, a workspace embeds the exact source for each extension that its recorded
+operations use. The embedded copy is recovery data. Manager does not run it directly.
+You must review, save, and register the source before Manager can use it.
+
+Use the {ref}`extension recovery procedure <how-to-gui-recover-extension>` when the
+registered script is unavailable. The {ref}`extension reference
+<imagetool-manager-extensions>` describes script identity and embedding policies.
 
 ## Generated code
 

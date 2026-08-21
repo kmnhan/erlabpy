@@ -1,214 +1,123 @@
 (imagetool-manager-extensions)=
 
-# ImageTool Manager extensions
+# Manager extensions
 
-You can incorporate custom analysis routines and file loaders into ImageTool Manager as
-*extensions*.
+Manager extensions add lab-specific analysis routines and file loaders to ImageTool
+Manager. An extension is one Python script that contains one or more decorated
+functions. A decorated function remains a normal Python function that you can call
+from a notebook or script.
 
-An ImageTool Manager extension is one Python script that contains one or more decorated
-functions.
+Use the {doc}`Python task guide <../../how-to/python/manager-extensions>` to write and
+test an extension. Use the {doc}`GUI task guide <../../how-to/gui/extensions>` to
+register, run, update, and recover extension scripts.
 
-The decorators are {func}`erlab.extensions.routine` and {func}`erlab.extensions.loader`,
-depending on whether the function is an analysis routine or a file loader. A decorated
-function is still a normal Python function, so you can use it in a notebook.
+## Capability types
 
-## Implementing an extension
+| Capability | Decorator | Input | Result | Manager interface |
+| --- | --- | --- | --- | --- |
+| Analysis routine | {func}`~erlab.extensions.routine` | One {class}`~xarray.DataArray` | One {class}`~xarray.DataArray` | An entry in the {menuselection}`Extensions` menu |
+| File loader | {func}`~erlab.extensions.loader` | One {class}`~pathlib.Path` | A {class}`~xarray.DataArray`, {class}`~xarray.Dataset`, or {class}`~xarray.DataTree` | A file filter in Manager file dialogs and Data Explorer |
 
-### Write a routine
+The parameters after the input become controls in a Manager dialog. The decorator
+metadata sets the visible name, category, summary, and stable capability ID.
 
-Create a new Python file named `gaussian_tools.py` that contains the following code:
+## Function signatures
+
+All extension functions have these requirements:
+
+- The function must be synchronous.
+- The first parameter must be a required positional parameter. It can be positional-only
+  or positional-or-keyword.
+- Parameters after the first parameter cannot be positional-only. They can be
+  positional-or-keyword or keyword-only.
+- The function cannot use `*args` or `**kwargs`.
+- All parameters and the return value must have resolvable type annotations.
+- The function name `erlab` is reserved for loaded-script metadata.
+
+An analysis routine has these additional requirements:
+
+- The first parameter annotation must be {class}`xarray.DataArray`.
+- The return annotation must be {class}`xarray.DataArray`.
+- The function must not mutate the input array. Manager supplies an isolated wrapper
+  and makes NumPy-backed values and coordinates read-only.
+
+A file loader has these additional requirements:
+
+- The first parameter annotation must be {class}`pathlib.Path`.
+- The return annotation must be {class}`xarray.DataArray`, {class}`xarray.Dataset`,
+  {class}`xarray.DataTree`, or a union of these types.
+- The parameter names `loader_extensions` and `without_values` are reserved.
+- A filename extension supplied to {func}`~erlab.extensions.loader` can include or omit
+  its leading period. ERLabPy stores the normalized value with the period.
+
+## Parameter annotations
+
+| Python annotation | Manager control |
+| --- | --- |
+| `bool` | Check box |
+| `int` | Integer input |
+| `float` | Numeric input |
+| `str` | Text input |
+| {class}`pathlib.Path` | Path input |
+| {data}`typing.Literal` | Choice input |
+| {class}`enum.Enum` | Choice input |
+| An optional form of a supported type, such as `float | None` | The corresponding input with a `None` state |
+
+`Literal` values and `Enum` member values must be Boolean, integer, finite
+floating-point, or string values. A default value must match its annotation. Only an
+optional parameter can have a default of `None`.
+
+## Script and capability identity
+
+| Value | Purpose | Stability requirement |
+| --- | --- | --- |
+| Script name | Identifies a registered `.py` file | Manager compares file names case-insensitively, and each name must be unique. |
+| Capability ID | Identifies one routine or loader in a script | The function name is the default. Set `id` before you rename a function that a saved operation uses. |
+| Source hash | Identifies the exact script contents | Manager requires approval when the contents change. Recorded operations use the approved hash. |
+
+For example, this explicit ID remains `normalize` if the Python function name changes:
 
 ```python
-from typing import Literal
-
 import xarray as xr
 
-import erlab.analysis as era
 from erlab.extensions import routine
 
 
-@routine(
-    name="Gaussian convolution",
-    category="My Lab",
-    summary="Apply a coordinate-aware Gaussian convolution.",
-)
-def gaussian_convolution(
-    data: xr.DataArray,
-    sigma: float = 0.01,
-    mode: Literal["nearest", "reflect", "constant"] = "nearest",
-) -> xr.DataArray:
-    return era.image.gaussian_filter(data, sigma=sigma, mode=mode)
-```
-
-The first parameter is the selected ImageTool data. The other parameters become controls
-in the routine dialog. The return value opens in a new ImageTool.
-
-#### Test the routine
-
-Call the function directly when you work in the same notebook or module:
-
-```python
-filtered = gaussian_convolution(data, sigma=0.02)
-```
-
-Use {func}`erlab.extensions.load_script` to test the saved file from another Python
-session:
-
-```python
-from erlab.extensions import load_script
-
-gaussian_tools = load_script("/path/to/gaussian_tools.py")
-filtered = gaussian_tools.gaussian_convolution(data, sigma=0.02)
-```
-
-#### Routine signature rules
-
-A routine must follow these rules:
-
-- The first parameter must be annotated as {class}`xarray.DataArray`.
-- The return value must be annotated as {class}`xarray.DataArray`.
-- Every parameter must have a supported annotation.
-- Do not use positional-only parameters, `*args`, or `**kwargs`.
-- Asynchronous functions are not supported.
-- Do not mutate the input data.
-
-You can use these parameter types:
-
-- `bool`
-- `int`
-- `float`
-- `str`
-- {class}`pathlib.Path`
-- {data}`typing.Literal`
-- {class}`enum.Enum`
-- An optional form of the above types, e.g., `float | None`.
-
-A `Literal` or `Enum` parameter becomes a choice control.
-
-The routine ID is the Python function name by default. Explicitly supply `id` if you
-want to rename the function later without changing its identity:
-
-```python
 @routine(id="normalize", name="Normalize", category="My Lab")
 def normalize_data(data: xr.DataArray) -> xr.DataArray:
     return data / data.max()
 ```
 
-Since saved operations use the routine ID, the ID must be kept stable to maintain
-reproducibility.
+## Manager behavior
 
-### Write a file loader
+| State or event | Manager behavior |
+| --- | --- |
+| New script | Shows the source for approval before registration and validation. |
+| Changed script | Does not run the changed source until you review and approve it. |
+| Missing script | Requests a file with the same name and exact approved contents. |
+| Routine result | Opens the returned array in a new ImageTool and records the operation. |
+| Loader result | Opens the returned xarray object through the normal file-loading workflow. |
+| Workspace source | Stores an exact source copy according to the workspace embedding policy. It never runs the embedded copy directly. |
 
-Use a loader for a simple file format that returns one xarray object:
+The {guilabel}`Workspace embedding` setting has these values:
 
-```python
-from pathlib import Path
+| Value | Source stored in the workspace |
+| --- | --- |
+| {guilabel}`Embed when referenced` | Scripts required by recorded workspace operations. This is the default. |
+| {guilabel}`Always embed` | The script, even when no saved operation uses it. |
+| {guilabel}`Never embed` | No copy of the script. Recovery depends on the external file. |
 
-import numpy as np
-import xarray as xr
+## Python environment
 
-from erlab.extensions import loader
+An extension runs in the Python environment that starts ImageTool Manager. The script
+can import ERLabPy and packages in that environment. The standalone Manager can import
+only its bundled packages.
 
+Manager does not add the extension script directory to the Python import path. Put
+shared code in an installed package instead of depending on an implicit import from a
+file beside the extension script.
 
-@loader(
-    name="Lab text matrix",
-    category="My Lab",
-    summary="Load a numeric text matrix.",
-    extensions=(".txt",),
-)
-def load_lab_text(path: Path, delimiter: str = ",") -> xr.DataArray:
-    values = np.atleast_2d(np.loadtxt(path, delimiter=delimiter))
-    return xr.DataArray(values, dims=("row", "column"))
-```
+## Public API
 
-A loader must follow these rules:
-
-- The first parameter must have the {class}`pathlib.Path` annotation.
-- The return value must have an {class}`xarray.DataArray`,
-  {class}`xarray.Dataset`, or {class}`xarray.DataTree` annotation.
-- Each other parameter must follow the routine parameter rules.
-- A leading period in each `extensions` value is optional.
-- Do not use `loader_extensions` or `without_values` as a parameter name.
-
-You can test the loader as a normal function. You can also load it from its script:
-
-```python
-from pathlib import Path
-
-from erlab.extensions import load_script
-
-lab_loaders = load_script("/path/to/lab_loaders.py")
-data = lab_loaders.load_lab_text(Path("scan.txt"), delimiter="\t")
-```
-
-## Register and use the script
-
-1. Start ImageTool Manager.
-2. Select {menuselection}`Extensions --> Add Script…`.
-3. Select the `.py` file.
-4. Review the source and approve.
-
-Each registered script must have a unique file name. ImageTool Manager compares file
-names without case differences. For example, you cannot register both
-`gaussian_tools.py` and `GAUSSIAN_TOOLS.py`.
-
-To run a routine, select one ImageTool and then select the routine from the
-{menuselection}`Extensions` menu. To use a loader, open a file with the file filter that
-the loader supplies.
-
-After you edit a registered script, open {menuselection}`Extensions --> Manage
-Extensions` and review the update. The manager does not run changed code before you
-approve it.
-
-If you move a registered script, ImageTool Manager asks you to locate the file. The new
-file must have the same file name and the same contents.
-
-## Use a workspace with an extension
-
-By default, ImageTool Manager stores the exact contents of each script that the
-workspace uses. This copy is for recovery and reproducibility. The manager never
-runs this embedded copy.
-
-You can change the workspace embedding setting in {menuselection}`Extensions --> Manage
-Extensions`. Use **Always embed** to include an unused script. Use **Never embed** when
-you manage recovery by another method.
-
-If a script used in the manager is not available, save the embedded copy to a local
-`.py` file and register it before you replay the operation.
-
-## Dependencies
-
-An extension script can import ERLabPy and other available Python packages. For
-example:
-
-```python
-import xarray as xr
-
-from erlab.extensions import routine
-from some_package import do_something
-
-
-@routine(name="Remove background", category="My Lab")
-def remove_background(data: xr.DataArray) -> xr.DataArray:
-    return do_something(data)
-```
-
-`some_package` must be installed in the Python environment that starts ImageTool
-Manager. The standalone version cannot access these, so you must use a Python
-environment to run the manager if your extension depends on external packages or build a
-standalone version that includes the packages.
-
-Do not depend on an implicit import from a file next to the extension script. The
-manager does *not* add the script directory to the Python import path.
-
-## Share the extension
-
-- Share the `.py` file as the extension source. Using a version control system like git
-  is recommended if you want to track changes and share the extension with other users.
-  Each user should add their local copy with {menuselection}`Extensions --> Add Script…`.
-
-- If an import fails, confirm that all imported packages are available to the manager.
-
-- If validation fails, confirm that each function follows the signature rules above.
-
-See {mod}`erlab.extensions` for the complete public API and error types.
+The {mod}`erlab.extensions` API Reference describes the decorators, script loader,
+execution functions, descriptors, and error types.

@@ -46,6 +46,7 @@ calculations and data exploration.
   that stay synchronized with notebook variables.
 - Create Matplotlib figures from ImageTool data without writing code using the built-in
   {ref}`Figure Composer <figure-composer>`.
+- Add lab-specific analysis routines and file loaders with Python extension scripts.
 - Drag-and-drop files to open them quickly, or use the integrated data explorer to
   browse preview data.
 
@@ -55,6 +56,9 @@ For metadata procedures, see {ref}`how-to-gui-correct-manager-metadata`.
 
 For workspace procedures, see {ref}`how-to-gui-save-manager-workspace`. For
 derived-result procedures, see {ref}`how-to-gui-update-derived-results`.
+
+For extension controls and states, see {ref}`imagetool-manager-extensions`. For
+extension procedures, see {ref}`how-to-gui-manager-extensions`.
 
 (imagetool-manager-organize)=
 

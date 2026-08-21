@@ -8,6 +8,7 @@ the GUI-centered workflow.
 
 imagetool
 manager
+extensions
 figure-composer
 settings
 tools/index

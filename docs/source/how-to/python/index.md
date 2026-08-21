@@ -13,4 +13,5 @@ momentum-conversion
 curve-fitting
 transformations-and-filtering
 equation-svg
+manager-extensions
 ```
