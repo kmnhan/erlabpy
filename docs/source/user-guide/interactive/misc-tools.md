@@ -482,7 +482,13 @@ For 2D data, the tool fits a *stack* of 1D curves.
 6. Start the 2D sequence with {guilabel}`Fit ⤒` or {guilabel}`Fit ⤓`. The tool will step through the selected range while populating the parameters according to the chosen
    mode.
 
-7. Inspect the parameter plot to verify trends. If a slice fails, move to it with {guilabel}`Index`, fix the parameters, then continue the sequence.
+7. Inspect the parameter plot. If a slice fails, move to it with {guilabel}`Index`, fix
+   the parameters, then continue the sequence.
+
+   :::{tip} When working in ImageTool Manager, right-click the plot and choose
+   {guilabel}`Open parameter values in ftool` to fit the selected values using their
+   standard errors. The weighted fit omits points that do not have a finite, positive
+   standard error. If no valid points remain, ftool does not open. :::
 
 8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the
    combined results or {guilabel}`Copy code` to generate reproducible code for the full

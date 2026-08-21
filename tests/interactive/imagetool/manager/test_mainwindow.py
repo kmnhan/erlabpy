@@ -3124,6 +3124,96 @@ def test_batch_operation_metadata_matches_launcher() -> None:
     assert RestoreNonuniformDimsOperation.batch_available
 
 
+def test_weighted_ftool_action_routes_assigned_targets(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        assert manager.weighted_ftool_action.objectName() == (
+            "manager_open_weighted_ftool_action"
+        )
+        assert manager.weighted_ftool_action in manager.edit_menu.actions()
+        assert manager.weighted_ftool_action in manager.tree_view._menu.actions()
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                xr.ones_like(test_data), _in_manager=True
+            ),
+            show=False,
+        )
+
+        select_tools(manager, [0])
+        assert not manager.weighted_ftool_action.isEnabled()
+        select_tools(manager, [0, 1])
+        assert manager.weighted_ftool_action.isEnabled()
+
+        calls: list[tuple[int | str, int | str]] = []
+        monkeypatch.setattr(
+            manager._actions_controller,
+            "open_weighted_ftool",
+            lambda data, uncertainty: calls.append((data, uncertainty)) or None,
+        )
+
+        class _Dialog:
+            result = QtWidgets.QDialog.DialogCode.Accepted
+            data_target = 1
+            uncertainty_target = 0
+
+            def __init__(self, _parent, _targets) -> None:
+                pass
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return self.result
+
+        monkeypatch.setattr(manager_actions, "_WeightedFtoolDialog", _Dialog)
+        manager.weighted_ftool_action.trigger()
+        assert calls == [(1, 0)]
+
+        _Dialog.result = QtWidgets.QDialog.DialogCode.Rejected
+        manager.weighted_ftool_action.trigger()
+        assert calls == [(1, 0)]
+
+
+def test_open_weighted_ftool_rejects_invalid_targets(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        data_node = manager._tool_graph.root_wrappers[0]
+
+        with pytest.raises(ValueError, match="must use different ImageTools"):
+            manager.open_weighted_ftool(data_node.uid, data_node.uid)
+
+        child = erlab.interactive.ftool(test_data, execute=False)
+        child.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": data_node.uid},
+            parent=data_node.uid,
+            show=False,
+        )
+        with pytest.raises(TypeError, match="inputs must be ImageTools"):
+            manager.open_weighted_ftool(data_node.uid, child_uid)
+
+
 def test_batch_dialog_defensive_paths_and_launch(
     qtbot,
     monkeypatch,

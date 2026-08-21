@@ -34,6 +34,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _RenameDialog,
     _StoreDialog,
+    _WeightedFtoolDialog,
 )
 from erlab.interactive.imagetool.manager._widgets import _WATCHED_VAR_COLORS
 from erlab.interactive.imagetool.manager._window_layout import (
@@ -464,6 +465,60 @@ class _ActionsController:
         """Concatenate the selected data using :func:`xarray.concat`."""
         dlg = self._concat_dialog
         dlg.open()
+
+    def show_weighted_ftool_dialog(self) -> None:
+        """Assign two selected ImageTools as data and uncertainty inputs."""
+        targets = self._manager._selected_imagetool_targets()
+        if len(targets) != 2 or self._manager._selected_tool_uids():
+            return
+        dialog = _WeightedFtoolDialog(
+            self._manager,
+            [(target, self._target_display_text(target)) for target in targets],
+        )
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return
+        self.open_weighted_ftool(dialog.data_target, dialog.uncertainty_target)
+
+    def open_weighted_ftool(
+        self,
+        data_target: int | str,
+        uncertainty_target: int | str,
+    ) -> str | None:
+        """Open a managed ftool with separate data and uncertainty inputs."""
+        if data_target == uncertainty_target:
+            raise ValueError("Data and uncertainty must use different ImageTools.")
+        data_node = self._manager._node_for_target(data_target)
+        uncertainty_node = self._manager._node_for_target(uncertainty_target)
+        if not data_node.is_imagetool or not uncertainty_node.is_imagetool:
+            raise TypeError("Weighted ftool inputs must be ImageTools.")
+
+        try:
+            tool = erlab.interactive.ftool(
+                data_node.data_for_role("displayed"),
+                uncertainty=uncertainty_node.data_for_role("displayed"),
+                data_name="data",
+                uncertainty_name="uncertainty",
+                execute=False,
+            )
+        except Exception:
+            self._show_operation_error(
+                "Could not open weighted ftool",
+                "Could not open ftool with the selected data and standard uncertainty.",
+            )
+            return None
+
+        tool.set_script_inputs(
+            (ScriptInput(name="data"), ScriptInput(name="uncertainty")),
+            primary_input="data",
+        )
+        return self.add_childtool(
+            tool,
+            script_inputs={
+                "data": data_target,
+                "uncertainty": uncertainty_target,
+            },
+            parent=data_target,
+        )
 
     @property
     def _batch_dialog(self) -> _BatchOperationDialog:
@@ -1363,12 +1418,10 @@ class _ActionsController:
             if replacement is None:
                 # A notebook-side update replaces the watched variable itself, so
                 # prior ImageTool operations no longer describe the displayed array.
-                wrapper.set_detached_provenance(
+                wrapper.replace_with_detached_data(
+                    prepared.data,
                     None,
                     replay_source_data=None,
-                )
-                self._manager.get_imagetool(idx).slicer_area.replace_source_data(
-                    prepared.data
                 )
             else:
                 # Rebuild provenance from the updated watched source and only the

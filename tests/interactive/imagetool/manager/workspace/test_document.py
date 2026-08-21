@@ -2499,6 +2499,56 @@ def test_manager_workspace_roundtrip_fit1d_child(
         assert restored_spec.script_inputs[0].parsed_provenance_spec() is not None
 
 
+def test_manager_workspace_roundtrip_weighted_ftool_preserves_both_input_uids(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    uncertainty = xr.ones_like(test_data).rename("uncertainty")
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+            provenance_spec=full_data().to_replay_spec(),
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(uncertainty, _in_manager=True),
+            show=False,
+            provenance_spec=full_data().to_replay_spec(),
+        )
+
+        data_node = manager._tool_graph.root_wrappers[0]
+        uncertainty_node = manager._tool_graph.root_wrappers[1]
+        child_uid = manager.open_weighted_ftool(data_node.uid, uncertainty_node.uid)
+
+        assert child_uid is not None
+        tree = manager._workspace_controller.saving._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
+
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        loaded_child = manager.get_childtool(child_uid)
+        assert isinstance(loaded_child, (Fit1DTool, Fit2DTool))
+        assert [(item.name, item.node_uid) for item in loaded_child.script_inputs] == [
+            ("data", data_node.uid),
+            ("uncertainty", uncertainty_node.uid),
+        ]
+        assert loaded_child.source_state == "fresh"
+        assert loaded_child.uncertainty is not None
+        xr.testing.assert_identical(loaded_child.uncertainty, uncertainty)
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == [child_uid]
+
+
 def test_manager_workspace_roundtrip_fit2d_child(
     qtbot,
     exp_decay_model,

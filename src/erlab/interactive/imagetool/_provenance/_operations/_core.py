@@ -370,7 +370,7 @@ class ModelFitOperation(ToolProvenanceOperation):
         )
         output = fit_result[result_variable].sel(param=self.parameter, drop=True)
         if self.output == "stderr":
-            output = output.fillna(0.0)
+            output = output.where(np.isfinite(output) & (output > 0))
         return output.rename(self.output_name)
 
     def derivation_label(self) -> str:
@@ -423,6 +423,14 @@ class ModelFitOperation(ToolProvenanceOperation):
         lines[-1] += f".{result_variable}.sel("
         lines.extend((f"    param={self.parameter!r},", "    drop=True,", ")"))
         if self.output == "stderr":
-            lines[-1] += ".fillna(0.0)"
+            lines[-1] += ".where("
+            lines.extend(
+                (
+                    "    lambda error: error.notnull()",
+                    "    & (error > 0)",
+                    '    & (error < float("inf")),',
+                    ")",
+                )
+            )
         lines[-1] += f".rename({self.output_name!r})"
         return "\n".join(lines)

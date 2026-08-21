@@ -950,10 +950,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         """Absolute standard uncertainty used for weighted fitting."""
         return self._uncertainty
 
+    def _uncertainty_is_script_input(self) -> bool:
+        return any(item.name == self._uncertainty_name for item in self.script_inputs)
+
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
     ) -> ToolProvenanceSpec | None:
-        if self._uncertainty is not None:
+        if self._uncertainty is not None and not self._uncertainty_is_script_input():
             return None
         return super().current_provenance_spec(
             flush_deferred_restore=flush_deferred_restore
