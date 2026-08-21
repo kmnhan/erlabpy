@@ -4260,6 +4260,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> typing.Any:
         return getattr(self, method_name)(input_name=input_name, data=data)
 
+    def _script_provenance_input_name(self) -> str | None:
+        """Return the saved caller expression for standalone copied code."""
+        status = self.tool_status
+        if "data_name" not in type(status).model_fields:
+            return None
+        value = status.model_dump(include={"data_name"}).get("data_name")
+        return value if isinstance(value, str) else None
+
     def _normalize_script_provenance(
         self,
         operations: ToolProvenanceOperation | Sequence[ToolProvenanceOperation] | None,
@@ -4288,6 +4296,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         from erlab.interactive.imagetool._provenance._operations import (
             ScriptCodeOperation,
         )
+
+        source_input_name = input_name
+        if input_name in {
+            "eplt",
+            "era",
+            "erlab",
+            "eri",
+            "np",
+            "numpy",
+            "pathlib",
+            "xr",
+            "xarray",
+        }:
+            input_name = "input_data"
 
         operations: tuple[
             ToolProvenanceOperation,
@@ -4417,6 +4439,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     ),
                 )
 
+        operations = tuple(
+            operation.model_copy(update={"framework_owned": True})
+            if isinstance(operation, ScriptCodeOperation)
+            else operation
+            for operation in operations
+        )
+
         seed_code = definition.seed_code
         if definition.seed_code_method is not None:
             seed_code = typing.cast(
@@ -4426,6 +4455,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     input_name=input_name,
                     data=data,
                 ),
+            )
+        if source_input_name != input_name:
+            input_alias = f"{input_name} = {source_input_name}"
+            seed_code = "\n".join(
+                part for part in (input_alias, seed_code) if part is not None
             )
 
         return script(
@@ -4467,7 +4501,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         input_name = replay_input_name(input_provenance)
         local_spec = self._build_script_provenance(
             definition,
-            input_name=input_name if input_provenance is not None else None,
+            input_name=(
+                input_name
+                if input_provenance is not None
+                else self._script_provenance_input_name()
+            ),
             data=data,
         )
         if direct_input_name is not None:

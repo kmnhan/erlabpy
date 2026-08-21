@@ -473,6 +473,29 @@ def test_qsel_mean_multiple_dim(avg_args) -> None:
     np.testing.assert_allclose(result.coords["y"].data, y.mean())
 
 
+@pytest.mark.parametrize("method", ["mean", "min", "max", "sum"])
+def test_qsel_reducer_helpers_hashable_tuple_dim(method: str) -> None:
+    tuple_dim = ("beta", 0)
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", tuple_dim),
+        coords={
+            "associated": xr.DataArray([1.0, 2.0, 4.0, 8.0], dims=[tuple_dim]),
+        },
+    )
+    expected = getattr(data, method)(dim=(tuple_dim,), keep_attrs=True).assign_coords(
+        {
+            "associated": data.coords["associated"].mean(
+                dim=(tuple_dim,), keep_attrs=True
+            ),
+        }
+    )
+
+    result = getattr(data.qsel, method)((tuple_dim,))
+
+    xr.testing.assert_identical(result, expected)
+
+
 def test_qsel_mean_invalid_dim() -> None:
     # Create a simple 1D DataArray
 

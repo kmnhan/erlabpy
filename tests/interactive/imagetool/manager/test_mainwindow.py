@@ -1400,16 +1400,22 @@ def test_failed_file_ingress_does_not_report_acquisition_context(
         )
     }
     creation_errors: list[None] = []
+    created_tools: list[QtWidgets.QWidget] = []
 
     def fail_registration(*_args: object, **_kwargs: object) -> typing.NoReturn:
         raise RuntimeError("registration failed")
+
+    def create_tool(*_args: object, **_kwargs: object) -> QtWidgets.QWidget:
+        tool = QtWidgets.QWidget(manager)
+        created_tools.append(tool)
+        return tool
 
     with manager_context() as manager:
         manager._acquisition_context.set_state(
             AcquisitionContextState(enabled=True, fields=(field,)),
             mark_dirty=False,
         )
-        monkeypatch.setattr(manager_io, "ImageTool", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(manager_io, "ImageTool", create_tool)
         monkeypatch.setattr(manager, "add_imagetool", fail_registration)
         monkeypatch.setattr(
             manager._data_ingress,
@@ -1432,6 +1438,13 @@ def test_failed_file_ingress_does_not_report_acquisition_context(
         ) == [False]
         assert summary == ContextIngressSummary()
         assert len(creation_errors) == 2
+        assert len(created_tools) == 2
+        assert all(erlab.interactive.utils.qt_is_valid(tool) for tool in created_tools)
+
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        assert all(
+            not erlab.interactive.utils.qt_is_valid(tool) for tool in created_tools
+        )
 
 
 def test_acquisition_context_collision_policy_and_incompatible_input_are_atomic(

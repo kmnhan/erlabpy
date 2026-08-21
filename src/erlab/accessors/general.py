@@ -785,13 +785,34 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             dim = list(self._obj.dims)
         if isinstance(dim, str):
             dim = [dim]
+        dims = list(dim)
+        coord_order = list(self._obj.coords)
+        sorted_obj = self._obj.sortby(dims)
+        lost_dims = [
+            name
+            for name, coord in sorted_obj.coords.items()
+            if any(dimension in coord.dims for dimension in dims)
+        ]
 
-        qsel_kwargs: dict[Hashable, float] = {}
-        for d in dim:
-            qsel_kwargs[d] = 0.0
-            qsel_kwargs[f"{d}_width"] = np.inf
-
-        return self._obj.sortby(list(dim)).qsel(qsel_kwargs, func=func)
+        # Width keys are strings, but xarray dimension names can be any Hashable.
+        # Reduce directly so tuple-valued names stay intact. Keep the same coordinate
+        # behavior as width-based qsel reductions: dependent numeric coordinates use
+        # their mean, independent of the data reducer.
+        lost_coords: dict[Hashable, xr.DataArray] = {}
+        for name in lost_dims:
+            with contextlib.suppress(TypeError):
+                lost_coords[name] = sorted_obj[name].mean(
+                    dim=set(dims).intersection(sorted_obj[name].dims),
+                    keep_attrs=True,
+                )
+        out = getattr(sorted_obj, func)(dim=dims, keep_attrs=True).assign_coords(
+            lost_coords
+        )
+        return erlab.utils.array.sort_coord_order(
+            out,
+            keys=coord_order,
+            dims_first=True,
+        )
 
     def around(
         self,

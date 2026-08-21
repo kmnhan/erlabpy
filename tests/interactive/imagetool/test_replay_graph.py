@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import pathlib
 import re
 import textwrap
@@ -11,6 +12,7 @@ import pytest
 import xarray as xr
 
 import erlab
+import erlab.extensions._api as extension_api
 from erlab.interactive.imagetool._provenance import _graph
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
@@ -46,7 +48,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     _replace_ast_names,
     _script_function_dependencies,
     _script_seed_file_load_parts,
-    _simple_assignment_source_name,
+    _simple_name_assignment,
     _single_assignment_output_name,
     _statement_scope_names,
     _validate_script_code_names,
@@ -74,8 +76,11 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
+    GaussianFilterOperation,
     ImageDerivativeOperation,
     IselOperation,
+    KspaceWorkFunctionOperation,
     QSelOperation,
     RenameOperation,
     RestoreNonuniformDimsOperation,
@@ -90,18 +95,57 @@ from erlab.interactive.imagetool._provenance._operations import (
 def _exec_generated_code(
     code: str, namespace_items: dict[str, typing.Any] | None = None
 ) -> dict[str, typing.Any]:
-    namespace: dict[str, typing.Any] = {
-        "erlab": erlab,
-        "era": erlab.analysis,
-        "np": np,
-        "numpy": np,
-        "xr": xr,
-        "xarray": xr,
-    }
-    if namespace_items is not None:
-        namespace.update(namespace_items)
+    namespace = dict(namespace_items or {})
     exec(code, namespace, namespace)  # noqa: S102
     return namespace
+
+
+def _extension_routine_operation() -> ExtensionRoutineOperation:
+    return ExtensionRoutineOperation(
+        script_name="local_routine.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={},
+    )
+
+
+def _registered_routine(
+    script_path: pathlib.Path,
+) -> extension_api._RegisteredScriptCapability:
+    source_bytes = script_path.read_bytes()
+    return extension_api._RegisteredScriptCapability(
+        registered_path=script_path,
+        script_name=script_path.name,
+        source_hash=hashlib.sha256(source_bytes).hexdigest(),
+        descriptor=erlab.extensions.RoutineDescriptor(
+            id="scale",
+            name="Scale",
+            category="Other",
+            summary="",
+            function_name="scale",
+        ),
+        source_bytes=source_bytes,
+    )
+
+
+def _registered_loader(
+    script_path: pathlib.Path,
+) -> extension_api._RegisteredScriptCapability:
+    source_bytes = script_path.read_bytes()
+    return extension_api._RegisteredScriptCapability(
+        registered_path=script_path,
+        script_name=script_path.name,
+        source_hash=hashlib.sha256(source_bytes).hexdigest(),
+        descriptor=erlab.extensions.LoaderDescriptor(
+            id="load_data",
+            name="Load data",
+            category="Other",
+            summary="",
+            function_name="load_data",
+        ),
+        source_bytes=source_bytes,
+    )
 
 
 def _file_replay_source(
@@ -125,10 +169,15 @@ def _file_replay_source(
 
 
 def _file_spec(path: pathlib.Path | str, *, selected_index: int = 0):
+    seed_code = f"import xarray as xr\n\nderived = xr.load_dataarray({str(path)!r})"
     return file_load(
         start_label="Load source",
-        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=_file_replay_source(path, selected_index=selected_index),
+        seed_code=seed_code,
+        file_load_source=_file_replay_source(
+            path,
+            selected_index=selected_index,
+            load_code=seed_code.replace("derived =", "data =", 1),
+        ),
     )
 
 
@@ -199,19 +248,10 @@ def test_replay_graph_low_level_validation_helpers() -> None:
         "def identity(value):\n    _ = era\n    return value", "era"
     )
     assert not _code_uses_name("derived =", "data")
-    assert _simple_assignment_source_name("target = source", "target") == "source"
-    assert (
-        _simple_assignment_source_name(
-            "target: xr.DataArray = source",
-            "target",
-        )
-        == "source"
-    )
-    assert _simple_assignment_source_name("target =", "target") is None
-    assert (
-        _simple_assignment_source_name("target = source\nother = source", "target")
-        is None
-    )
+    assert _simple_name_assignment("target = source") == ("target", "source")
+    assert _simple_name_assignment("target: xr.DataArray = source") is None
+    assert _simple_name_assignment("target =") is None
+    assert _simple_name_assignment("target = source\nother = source") is None
 
     module = ast.parse(
         """
@@ -470,7 +510,6 @@ class Child(Base, metaclass=data_5):
             code="derived = data + 1",
         ),
         start_label="Run script",
-        seed_code="derived = data",
         active_name="derived",
     )
     assert not script_provenance_replayable(external_input_spec)
@@ -504,6 +543,170 @@ class Child(Base, metaclass=data_5):
     assert _single_assignment_output_name("obj.value = data") is None
     assert _single_assignment_output_name("first = data\nsecond = data") is None
     assert script_provenance_trust_key(None) is None
+
+
+@pytest.mark.parametrize("alias", ["derived", "source_data", "seed_result"])
+def test_replay_graph_removes_only_unused_simple_seed_aliases(alias: str) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    unused = script(
+        ScriptCodeOperation(label="Offset input", code="result = watched + 1.0"),
+        start_label="Start from watched data",
+        seed_code=f"{alias} = watched",
+        active_name="result",
+    )
+    unused_graph = compile_replay_graph(unused, display=True)
+    unused_code = typing.cast("str", unused.display_code())
+
+    assert not any(
+        f"{alias} = watched" in node.payload.get("codes", ())
+        for node in unused_graph.nodes
+    )
+    xr.testing.assert_identical(
+        _exec_generated_code(unused_code, {"watched": data})["result"],
+        data + 1.0,
+    )
+
+    used = script(
+        ScriptCodeOperation(label="Add input", code=f"result = {alias} + {alias}"),
+        start_label="Start from watched data",
+        seed_code=f"{alias} = watched",
+        active_name="result",
+    )
+    used_code = typing.cast("str", used.display_code())
+
+    assert f"{alias} = watched" not in used_code
+    assert "result = watched + watched" in used_code
+    xr.testing.assert_identical(
+        _exec_generated_code(used_code, {"watched": data})["result"],
+        data + data,
+    )
+
+
+def test_replay_graph_preserves_annotated_seed_alias() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        ScriptCodeOperation(label="Offset input", code="result = watched + 1.0"),
+        start_label="Start from watched data",
+        seed_code="source_data: object = watched",
+        active_name="result",
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"watched": data})
+
+    assert "source_data: object = watched" in code
+    assert namespace["__annotations__"] == {"source_data": object}
+    xr.testing.assert_identical(namespace["result"], data + 1.0)
+
+
+def test_replay_graph_omits_trivial_imports_for_one_framework_step() -> None:
+    operation = ScriptCodeOperation(
+        label="Copy data",
+        code="result = xr.DataArray(np.asarray(data), dims=data.dims)",
+        framework_owned=True,
+    )
+    restored = ScriptCodeOperation.model_validate(operation.model_dump(mode="json"))
+    spec = script(
+        restored,
+        start_label="Start from data",
+        seed_code="result = data",
+        active_name="result",
+    )
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"data": data, "np": np, "xr": xr})
+
+    assert restored.framework_owned is True
+    assert "import numpy" not in code
+    assert "import xarray" not in code
+    assert "result = data" not in code
+    xr.testing.assert_identical(namespace["result"], data)
+
+
+def test_replay_graph_imports_framework_once_for_composed_display_code() -> None:
+    first = GaussianFilterOperation(sigma={"x": 0.5})
+    second = GaussianFilterOperation(sigma={"x": 1.0})
+    data = xr.DataArray([1.0, 2.0, 3.0], dims="x")
+    spec = script(
+        first,
+        second,
+        start_label="Start from data",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"data": data})
+
+    assert code.count("import erlab.analysis as era") == 1
+    xr.testing.assert_identical(
+        namespace["derived"],
+        second.apply(first.apply(data)),
+    )
+
+
+@pytest.mark.parametrize("active_name", ["era", "np", "xr"])
+def test_replay_graph_reserves_framework_names_for_script_outputs(
+    active_name: str,
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        GaussianFilterOperation(sigma={"x": 0.5}),
+        start_label="Start from data",
+        seed_code=f"{active_name} = data",
+        active_name=active_name,
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(
+        code,
+        {"data": data, "era": erlab.analysis},
+    )
+
+    assert "import erlab.analysis as era" not in code
+    xr.testing.assert_identical(
+        namespace[active_name],
+        GaussianFilterOperation(sigma={"x": 0.5}).apply(data),
+    )
+
+
+def test_replay_graph_reuses_user_owned_canonical_framework_import() -> None:
+    spec = script(
+        ScriptCodeOperation(
+            label="Copy input",
+            code="result = xr.DataArray(intermediate)",
+            framework_owned=True,
+        ),
+        start_label="Build data",
+        seed_code="import xarray as xr\nintermediate = xr.DataArray([1.0])",
+        active_name="result",
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    assert code.count("import xarray as xr") == 1
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([1.0]))
+
+
+def test_replay_graph_restores_framework_import_after_user_alias_collision() -> None:
+    spec = script(
+        ScriptCodeOperation(
+            label="Copy input",
+            code="result = xr.DataArray(intermediate)",
+            framework_owned=True,
+        ),
+        start_label="Start from data",
+        seed_code="import types as xr\nintermediate = data",
+        active_name="result",
+    )
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"data": data})
+
+    xr.testing.assert_identical(namespace["result"], data)
 
 
 def test_replay_graph_script_context_binding_error_paths() -> None:
@@ -2118,6 +2321,7 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("result = data_0",),
             "active_name": "result",
             "bindings": (("data_0", source_key),),
+            "framework_owned": (False,),
         },
     )
 
@@ -2144,6 +2348,7 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("bad =",),
             "active_name": "derived",
             "bindings": (),
+            "framework_owned": (False,),
         },
     )
     with pytest.raises(ReplayGraphError, match="Script replay code"):
@@ -2324,26 +2529,27 @@ def test_replay_graph_display_restores_dimensions_left_by_recorded_mapping(
     runtime_graph = compile_replay_graph(spec)
     display_graph = compile_replay_graph(spec, display=True)
     display_code = emit_replay_code(display_graph, output_name="derived")
-    expected = source.swap_dims({"x_idx": "x", "y_idx": "y"}).drop_vars(
+    runtime_expected = source.swap_dims({"x_idx": "x", "y_idx": "y"}).drop_vars(
         ("x_idx", "y_idx"), errors="ignore"
     )
+    copied_expected = source.swap_dims({"x_idx": "x"}).drop_vars(
+        "x_idx", errors="ignore"
+    )
 
-    assert display_code.count("def _restore_image_tool_dimensions") == 1
+    assert "def _restore_image_tool_dimensions" not in display_code
     xr.testing.assert_identical(
         execute_replay_graph(runtime_graph),
-        expected,
+        runtime_expected,
     )
     xr.testing.assert_identical(
-        _exec_generated_code(display_code)["derived"],
-        expected,
+        _exec_generated_code(display_code, {"xr": xr})["derived"],
+        copied_expected,
     )
 
 
 @pytest.mark.parametrize("source_kind", ["public_data", "selection"])
-@pytest.mark.parametrize("display", [False, True])
-def test_replay_graph_restores_script_seeded_internal_source_views(
+def test_replay_graph_runtime_restores_script_seeded_internal_source_views(
     source_kind: str,
-    display: bool,
     tmp_path: pathlib.Path,
 ) -> None:
     source = xr.DataArray(
@@ -2370,13 +2576,14 @@ def test_replay_graph_restores_script_seeded_internal_source_views(
         replay_stages=(ReplayStage.from_source_spec(source_spec),),
     )
 
-    graph = compile_replay_graph(spec, display=display)
+    graph = compile_replay_graph(spec)
     code = emit_replay_code(graph, output_name="derived")
-    namespace = _exec_generated_code(code)
+    namespace = _exec_generated_code(code, {"erlab": erlab})
 
     assert code.count("def _restore_image_tool_dimensions") == 1
     assert "erlab.utils.array._restore_nonuniform_dims" not in code
     assert "erlab.interactive.imagetool.slicer" not in code
+    xr.testing.assert_identical(execute_replay_graph(graph), source.qsel(x=0.2))
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2))
 
 
@@ -2416,19 +2623,352 @@ def test_replay_graph_restore_support_preserves_module_prologue(
     )
     assert code.count("from __future__ import annotations") == 1
     assert code.count("import xarray as xr") == 1
-    assert code.count("def _restore_image_tool_dimensions") == int(not display)
+    assert "def _restore_image_tool_dimensions" not in code
     assert code.index("from __future__ import annotations") < code.index(
         "import xarray as xr"
     )
-    if not display:
-        assert code.index("import xarray as xr") < code.index(
-            "def _restore_image_tool_dimensions"
-        )
     assert namespace["__doc__"] == "Load the replay source."
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2))
 
 
-def test_replay_graph_restore_support_does_not_shadow_script_function(
+def test_extension_code_preserves_module_prologue(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code=(
+            '"""Generated extension workflow."""\n'
+            "from __future__ import annotations\n"
+            "import xarray as xr\n"
+            "annotation: MissingType | None = None\n"
+            "result = xr.DataArray([3.0])"
+        ),
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+
+    assert code.startswith(
+        '"""Generated extension workflow."""\nfrom __future__ import annotations'
+    )
+    assert namespace["__doc__"] == "Generated extension workflow."
+    assert namespace["__annotations__"] == {"annotation": "MissingType | None"}
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([6.0]))
+
+
+def test_extension_binding_named_like_internal_restore_helper(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "_restore_image_tool_dimensions.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    source = xr.DataArray(
+        [1.0, 2.0, 3.0],
+        dims=("x_idx",),
+        coords={"x": ("x_idx", [0.0, 0.2, 1.0])},
+    )
+    source_dict = source.to_dict()
+    extension_operation = ExtensionRoutineOperation(
+        script_name=script_path.name,
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={},
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code=(
+            f"import xarray as xr\nresult = xr.DataArray.from_dict({source_dict!r})"
+        ),
+        active_name="result",
+    ).append_replay_stage(
+        full_data(extension_operation, RestoreNonuniformDimsOperation())
+    )
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+    scale_call = next(
+        node
+        for node in ast.walk(ast.parse(code))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "scale"
+    )
+    scale_call_source = ast.get_source_segment(code, scale_call)
+
+    assert scale_call_source is not None
+    assert "\n" not in scale_call_source
+    assert "def _restore_image_tool_dimensions" not in code
+    xr.testing.assert_identical(namespace["result"], source * 2.0)
+
+
+def test_extension_code_preserves_external_framework_alias_input(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    source = xr.DataArray([1.0, 3.0, 2.0], dims=("x",))
+    gaussian = GaussianFilterOperation(sigma={"x": 0.5})
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use caller data",
+        seed_code="result = era",
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation(), gaussian))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"era": source})
+
+    xr.testing.assert_identical(namespace["result"], gaussian.apply(source * 2.0))
+
+
+def test_extension_code_hoists_nested_script_prologues(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    data_path = tmp_path / "source.nc"
+    xr.DataArray([4.0]).to_netcdf(data_path)
+    nested_source = file_load(
+        start_label="Load nested source",
+        seed_code=(
+            '"""Load the nested source."""\n'
+            "from __future__ import annotations\n"
+            "import xarray as xr\n"
+            f"derived = xr.load_dataarray({str(data_path)!r})"
+        ),
+        file_load_source=_file_replay_source(data_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use nested source",
+        seed_code=(
+            '"""Process the nested source."""\n'
+            "from __future__ import annotations\n"
+            "annotation: int | None = None\n"
+            "result = source"
+        ),
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="source",
+                label="Nested source",
+                provenance_spec=nested_source,
+            ),
+        ),
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code)
+
+    assert code.startswith(
+        '"""Load the nested source."""\nfrom __future__ import annotations'
+    )
+    assert code.count("from __future__ import annotations") == 1
+    string_expressions = [
+        statement.value.value
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    ]
+    assert string_expressions == [
+        "Load the nested source.",
+        "Process the nested source.",
+    ]
+    assert namespace["__doc__"] == "Load the nested source."
+    assert namespace["__annotations__"] == {"annotation": "int | None"}
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([8.0]))
+
+
+def test_extension_code_preserves_nested_load_script_input(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use caller data",
+        seed_code=("def get_data():\n    return load_script\n\nresult = get_data()"),
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+    source = xr.DataArray([3.0])
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"load_script": source})
+
+    xr.testing.assert_identical(namespace["result"], source * 2.0)
+
+
+def test_extension_code_preserves_later_load_script_input(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = script(
+        ScriptCodeOperation(
+            label="Use caller data",
+            code="result = load_script",
+        ),
+        start_label="Create data",
+        seed_code="result = xr.DataArray([1.0])",
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+    source = xr.DataArray([3.0])
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"load_script": source, "xr": xr})
+
+    xr.testing.assert_identical(namespace["result"], source * 2.0)
+
+
+def test_extension_code_does_not_capture_later_local_load_script_binding(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use local data",
+        seed_code=(
+            "def get_data():\n"
+            "    return load_script\n\n"
+            "load_script = xr.DataArray([3.0])\n"
+            "result = get_data()"
+        ),
+        active_name="result",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"xr": xr})
+
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([6.0]))
+
+
+def test_replay_graph_preserves_user_restore_named_function(
     tmp_path: pathlib.Path,
 ) -> None:
     source = xr.DataArray(
@@ -2447,7 +2987,7 @@ def test_replay_graph_restore_support_does_not_shadow_script_function(
         seed_code=(
             "def _restore_image_tool_dimensions(array):\n"
             "    return array + 1\n"
-            "derived = erlab.utils.array._make_dims_uniform(data_0)"
+            "derived = data_0"
         ),
         active_name="derived",
         script_inputs=(
@@ -2465,7 +3005,7 @@ def test_replay_graph_restore_support_does_not_shadow_script_function(
     code = typing.cast("str", spec.derivation_code())
     namespace = _exec_generated_code(code)
 
-    assert "def _restore_image_tool_dimensions_2(array):" in code
+    assert "def _restore_image_tool_dimensions_2(array):" not in code
     assert code.count("def _restore_image_tool_dimensions(array):") == 1
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2) + 1)
 
@@ -2811,7 +3351,6 @@ def test_replay_graph_display_preserves_whole_array_rename(
     )
     code = emit_replay_code(graph, output_name="derived")
 
-    assert ".rename('renamed')" in code
     xr.testing.assert_identical(
         _exec_generated_code(code)["derived"], data.rename("renamed")
     )
@@ -2833,8 +3372,6 @@ def test_replay_graph_display_preserves_structured_final_rename(
     file_code = typing.cast("str", file_spec.display_code())
     live_code = typing.cast("str", live_spec.display_code(parent_data=data))
 
-    assert ".rename('renamed')" in file_code
-    assert ".rename('renamed')" in live_code
     xr.testing.assert_identical(
         _exec_generated_code(file_code)["derived"],
         data.rename("renamed"),
@@ -2931,7 +3468,7 @@ def test_replay_graph_uses_existing_console_alias_for_script_code(
     )
 
     code = typing.cast("str", spec.derivation_code())
-    namespace = _exec_generated_code(code)
+    namespace = _exec_generated_code(code, {"era": erlab.analysis})
 
     assert "era = erlab.analysis" not in code
     xr.testing.assert_identical(
@@ -3029,7 +3566,6 @@ def test_replay_graph_reuses_shared_loader_setup() -> None:
 
     code = typing.cast("str", spec.derivation_code())
 
-    assert "import erlab" not in code
     assert code.count("erlab.io.set_loader('example')") == 1
     assert code.count("erlab.io.load") == 2
 
@@ -3123,7 +3659,7 @@ def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
     )
 
     code = typing.cast("str", spec.derivation_code())
-    namespace = _exec_generated_code(code)
+    namespace = _exec_generated_code(code, {"xr": xr})
 
     assert code.count("xr.DataArray") == 2
     xr.testing.assert_identical(
@@ -3406,7 +3942,7 @@ def test_replay_graph_allows_for_loop_script_code() -> None:
 
     graph = compile_replay_graph(spec, display=True)
     code = emit_replay_code(graph, output_name="fig")
-    namespace = _exec_generated_code(code)
+    namespace = _exec_generated_code(code, {"np": np, "xr": xr})
 
     assert "for profile in profiles:" in code
     assert len(namespace["fig"]) == 2
@@ -3448,7 +3984,7 @@ def test_replay_graph_allows_for_loop_with_script_input() -> None:
     )
 
     code = typing.cast("str", spec.derivation_code())
-    namespace = _exec_generated_code(code)
+    namespace = _exec_generated_code(code, {"np": np, "xr": xr})
 
     assert "for profile in profiles:" in code
     assert len(namespace["fig"]) == 2
@@ -3770,3 +4306,351 @@ def test_replay_graph_execution_matches_emitted_code(tmp_path: pathlib.Path) -> 
     namespace = _exec_generated_code(code)
 
     xr.testing.assert_identical(replayed, namespace["derived"])
+
+
+def test_script_file_source_replays_registered_extension_loader(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_loader.py"
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader()
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("4")
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="local_loader.py: Load data",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target=script_path.name,
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_loader(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Load extension data",
+        seed_code="derived = None",
+        active_name="derived",
+        file_load_source=load_source,
+    )
+
+    graph = compile_replay_graph(spec, display=True)
+    code = emit_replay_code(graph, output_name="derived")
+    namespace = _exec_generated_code(code)
+
+    assert code.count("from erlab.extensions import load_script") == 1
+    xr.testing.assert_identical(namespace["derived"], xr.DataArray([4.0]))
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("value = 1", (None, "", "value = 1")),
+        (
+            "from __future__ import annotations\nvalue = 1",
+            (None, "from __future__ import annotations", "value = 1"),
+        ),
+        (
+            '"""Module docs."""\nvalue = 1',
+            ('"""Module docs."""', "", "value = 1"),
+        ),
+    ],
+)
+def test_partition_module_prologue_without_combined_docstring_and_future(
+    code: str,
+    expected: tuple[str | None, str, str],
+) -> None:
+    assert _graph._partition_module_prologue(code) == expected
+
+
+def test_script_output_rename_handles_identity_and_annotated_binding() -> None:
+    codes = ["result: object = data", "final = result"]
+
+    assert (
+        _graph._replace_script_output_identifiers(
+            codes,
+            previous_name="result",
+            output_name="result",
+        )
+        == codes
+    )
+    assert _graph._replace_script_output_identifiers(
+        codes,
+        previous_name="result",
+        output_name="processed",
+    ) == ["processed: object = data", "final = processed"]
+
+
+def test_extension_script_uses_safe_binding_for_invalid_module_name(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "123.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine(id="scale")
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = script(
+        _extension_routine_operation(),
+        start_label="Create data",
+        seed_code="result = data",
+        active_name="result",
+    )
+    source = xr.DataArray([2.0])
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"data": source})
+
+    assert "extension_script = load_script" in code
+    xr.testing.assert_identical(namespace["result"], source * 2)
+
+
+@pytest.mark.parametrize("active_name", ["era", "np", "xr"])
+def test_script_code_flushes_before_framework_named_output(active_name: str) -> None:
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    operation = GaussianFilterOperation(sigma={"x": 0.5})
+    spec = script(
+        ScriptCodeOperation(label="Use input", code=f"{active_name} = data + 0"),
+        operation,
+        start_label="Start from data",
+        active_name=active_name,
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(
+        code,
+        {"data": source, "era": erlab.analysis},
+    )
+
+    xr.testing.assert_identical(namespace[active_name], operation.apply(source))
+
+
+def test_script_output_rename_starts_at_an_earlier_conditional_binding() -> None:
+    renamed = _graph._replace_script_output_identifiers(
+        ["if False:\n    result = data\nresult = data + 1"],
+        previous_name="result",
+        output_name="processed",
+    )
+    source = xr.DataArray([1.0])
+
+    namespace = _exec_generated_code(renamed[0], {"data": source})
+
+    xr.testing.assert_identical(namespace["processed"], source + 1)
+
+
+def test_script_output_rename_waits_for_a_later_binding() -> None:
+    renamed = _graph._replace_script_output_identifiers(
+        ["intermediate = data", "result = intermediate + 1"],
+        previous_name="result",
+        output_name="processed",
+    )
+    source = xr.DataArray([1.0])
+
+    namespace = _exec_generated_code("\n".join(renamed), {"data": source})
+
+    assert renamed[0] == "intermediate = data"
+    xr.testing.assert_identical(namespace["processed"], source + 1)
+
+
+def test_extension_code_avoids_reserved_caller_load_script_bindings(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_routine.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use caller data",
+        seed_code=(
+            "input_data = None\n"
+            "input_data_2 = None\n"
+            "def get_data():\n"
+            "    return load_script\n\n"
+            "load_script = get_data()"
+        ),
+        active_name="load_script",
+    ).append_replay_stage(full_data(_extension_routine_operation()))
+    source = xr.DataArray([3.0])
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"load_script": source})
+
+    assert "input_data_3 = load_script" in code
+    xr.testing.assert_identical(namespace["result"], source * 2.0)
+
+
+def test_replay_graph_avoids_reserved_copy_suffixes(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "shared.nc"
+    source = xr.DataArray(np.arange(3.0), dims="x")
+    source.to_netcdf(path)
+    source_spec = _file_spec(path)
+
+    def branch(delta: float) -> ToolProvenanceSpec:
+        return script(
+            ScriptCodeOperation(
+                label="Change source",
+                code=f"source_2 = None\nresult = source + {delta}",
+            ),
+            start_label="Run branch",
+            active_name="result",
+            script_inputs=(
+                ScriptInput(
+                    name="source",
+                    label="Source",
+                    provenance_spec=source_spec,
+                ),
+            ),
+        )
+
+    spec = script(
+        ScriptCodeOperation(
+            label="Combine branches",
+            code="total = left + right",
+        ),
+        start_label="Combine branches",
+        active_name="total",
+        script_inputs=(
+            ScriptInput(
+                name="left",
+                label="Left",
+                provenance_spec=branch(1.0),
+            ),
+            ScriptInput(
+                name="right",
+                label="Right",
+                provenance_spec=branch(2.0),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    assert "source_3 = loaded_data.copy(deep=True)" in code
+    xr.testing.assert_identical(namespace["total"], source * 2 + 3)
+
+
+def test_emit_replay_code_preserves_ambiguous_import_chunks() -> None:
+    spec = script(
+        ScriptCodeOperation(
+            label="Calculate result",
+            code="from math import *\nresult = sqrt(4)",
+        ),
+        start_label="Calculate result",
+        active_name="result",
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    assert namespace["result"] == 2.0
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        ScriptCodeOperation(
+            label="Unavailable code",
+            code="result = data",
+            copyable=False,
+        ),
+        ScriptCodeOperation(label="Unavailable code", code=None),
+    ],
+)
+def test_compile_replay_graph_rejects_noncopyable_script_code(
+    operation: ScriptCodeOperation,
+) -> None:
+    spec = script(
+        operation,
+        start_label="Use input",
+        active_name="result",
+    )
+
+    with pytest.raises(ReplayGraphError, match="non-replayable code"):
+        compile_replay_graph(spec, display=True)
+
+
+@pytest.mark.parametrize("method", ["isel", "qsel", "sel"])
+def test_display_graph_omits_empty_legacy_selection_step(method: str) -> None:
+    source = xr.DataArray([1.0, 2.0], dims="x", name="source")
+    spec = script(
+        ScriptCodeOperation(
+            label=f"{method}()",
+            code=f"derived = derived.{method}()",
+        ),
+        RenameOperation(name="renamed"),
+        start_label="Use input",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"data": source})
+
+    assert f".{method}()" not in code
+    xr.testing.assert_identical(namespace["derived"], source.rename("renamed"))
+
+
+def test_display_code_omits_alias_after_mutating_operation() -> None:
+    source = xr.DataArray([1.0], attrs={"sample_workfunction": 4.5})
+    spec = script(
+        KspaceWorkFunctionOperation(work_function=4.4),
+        start_label="Use input",
+        seed_code="result = data",
+        active_name="result",
+    )
+
+    code = emit_replay_code(
+        compile_replay_graph(spec, display=True),
+        output_name="result",
+    )
+    namespace = _exec_generated_code(code, {"data": source})
+
+    assert "result = data" not in code
+    assert namespace["data"].kspace.work_function == 4.4

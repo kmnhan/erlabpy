@@ -22,6 +22,9 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
+from erlab.interactive.imagetool.manager._extensions._controller import (
+    _ExtensionController,
+)
 from erlab.interactive.imagetool.manager._figurecomposer._collection import (
     _FigureCollectionController,
 )
@@ -297,6 +300,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
         self._workspace_controller = _WorkspaceController(self)
+        self._extensions = _ExtensionController(self)
         self._acquisition_context = _AcquisitionContextController(self)
         self._metadata_editor = _MetadataEditorController(self)
         self._details_refresh_queue = _ManagerDetailsRefreshQueue(
@@ -723,6 +727,8 @@ class ImageToolManager(_ImageToolManagerBase):
         self._apps_menu_action = self.apps_menu.menuAction()
         self.apps_menu.setObjectName("manager_apps_menu")
         self.apps_menu.addAction(self.ptable_action)
+
+        self.extensions_menu = self._extensions.create_menu(self.menu_bar)
 
         self._dask_menu = DaskMenu(self, "Dask")
         self.menu_bar.addMenu(self._dask_menu)
@@ -1156,6 +1162,9 @@ class ImageToolManager(_ImageToolManagerBase):
                     self._sigCloseResolved.emit(False)
                     return
 
+            logger.debug("Waiting for extension code to finish...")
+            self._extensions.close()
+
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
             self._registry_heartbeat.stop()
@@ -1289,7 +1298,10 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._tool_graph.descendant_uids(uid)
 
     def _mark_removed_subtree_dirty(self, uid: str) -> None:
-        for node_uid in self._tool_graph.subtree_uids(uid):
+        subtree_uids = self._tool_graph.subtree_uids(uid)
+        if not self._workspace_state.closing_document:
+            self._workspace_state.extension_scripts.remove_node_references(subtree_uids)
+        for node_uid in subtree_uids:
             node = self._tool_graph.nodes.get(node_uid)
             if node is not None:
                 self._set_node_window_modified(node_uid, False)
@@ -1967,6 +1979,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._deferred_workspace_actions_refresh = True
             return
         self._details_panel._update_actions()
+        self._extensions.update_actions()
 
     def about(self) -> None:
         self._widgets_controller.about()
@@ -2272,18 +2285,18 @@ class ImageToolManager(_ImageToolManagerBase):
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         self._lineage_controller._show_dependency_reload_dialog(target)
 
-    @staticmethod
     def _script_input_has_recorded_file(
+        self,
         script_input: ScriptInput,
     ) -> bool:
-        return _LineageController._script_input_has_recorded_file(script_input)
+        return self._lineage_controller._script_input_has_recorded_file(script_input)
 
-    @staticmethod
     def _dependency_ref_has_recorded_file(
+        self,
         spec: ToolProvenanceSpec | None,
         ref: ScriptInputDependencyRef,
     ) -> bool:
-        return _LineageController._dependency_ref_has_recorded_file(spec, ref)
+        return self._lineage_controller._dependency_ref_has_recorded_file(spec, ref)
 
     def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
         return self._lineage_controller._missing_dependencies_have_recorded_file(uid)
@@ -2487,10 +2500,11 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._lineage_controller._workspace_loaded_uid_map(loaded_targets_by_uid)
 
     def _rebase_loaded_workspace_dependency_refs(
-        self, loaded_targets_by_uid: Mapping[str, int | str]
+        self,
+        loaded_targets_by_uid: Mapping[str, int | str],
     ) -> None:
         self._lineage_controller._rebase_loaded_workspace_dependency_refs(
-            loaded_targets_by_uid
+            loaded_targets_by_uid,
         )
 
     def _selected_reload_targets(

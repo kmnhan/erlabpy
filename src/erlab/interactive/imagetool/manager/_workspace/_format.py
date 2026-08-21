@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import collections.abc
 import contextlib
+import copy
 import json
 import logging
 import math
@@ -19,6 +20,7 @@ import typing
 import numpy as np
 import pydantic
 
+from erlab.extensions._models import _script_name_key, _validate_source_hash
 from erlab.interactive.imagetool import _serialization
 
 if typing.TYPE_CHECKING:
@@ -29,7 +31,7 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_WORKSPACE_SCHEMA_VERSION = 5
+_WORKSPACE_SCHEMA_VERSION = 6
 _WORKSPACE_MANIFEST_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
@@ -40,6 +42,33 @@ _WORKSPACE_TRANSACTION_GROUP_PREFIX = "__itws_txn_"
 _WORKSPACE_ENCODED_ATTRS_ATTR = "_erlab_workspace_encoded_attrs"
 _WORKSPACE_ENCODED_ATTRS_VERSION = 1
 _WORKSPACE_REPLAY_SOURCE_BLOB_NAME = "<manager-replay-source-data>"
+
+
+class _WorkspaceEmbeddedScriptEntry(pydantic.BaseModel):
+    """One verified script source object owned by a workspace document."""
+
+    script_name: str
+    source_hash: str
+    object_id: str
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    @pydantic.field_validator("script_name")
+    @classmethod
+    def _valid_script_name(cls, value: str) -> str:
+        _script_name_key(value)
+        return value
+
+    @pydantic.field_validator("source_hash")
+    @classmethod
+    def _valid_source_hash(cls, value: str) -> str:
+        return _validate_source_hash(value)
+
+    @pydantic.model_validator(mode="after")
+    def _valid_object_id(self) -> typing.Self:
+        if self.object_id != f"extension-source-{self.source_hash}":
+            raise ValueError("embedded script object ID does not match its source")
+        return self
 
 
 class WorkspaceLoaderState(pydantic.BaseModel):
@@ -144,6 +173,25 @@ def _workspace_manifest_payload_path(
     return None
 
 
+def _workspace_manifest_legacy_reader_rebindings(
+    manifest: Mapping[str, typing.Any] | None,
+) -> dict[str, str]:
+    """Map old node payload paths to their current immutable objects."""
+    mappings: dict[str, str] = {}
+    for entry in _iter_workspace_manifest_node_entries(manifest):
+        node_path = entry.get("path")
+        kind = entry.get("kind")
+        object_id = entry.get("payload_object_id")
+        if (
+            isinstance(node_path, str)
+            and kind in {"imagetool", "tool"}
+            and isinstance(object_id, str)
+            and object_id
+        ):
+            mappings[f"/{node_path.strip('/')}/{kind}"] = object_id
+    return mappings
+
+
 def _decode_workspace_attr_text(value: object) -> str | None:
     if isinstance(value, bytes):
         with contextlib.suppress(UnicodeDecodeError):
@@ -165,6 +213,11 @@ def _workspace_file_metadata_from_attrs(
 
 def _current_workspace_schema_version() -> int:
     return _WORKSPACE_SCHEMA_VERSION
+
+
+def _workspace_schema_uses_immutable_generations(schema_version: int) -> bool:
+    """Return whether a readable schema uses immutable generation storage."""
+    return 5 <= schema_version <= _WORKSPACE_SCHEMA_VERSION
 
 
 def _workspace_path_is_itws(
@@ -199,6 +252,8 @@ def _workspace_manifest_payload(
     standalone_apps: Mapping[str, typing.Any] | None = None,
     option_overrides: Mapping[str, typing.Any] | None = None,
     acquisition_context: Mapping[str, typing.Any] | None = None,
+    extension_requirements: Iterable[typing.Any] | None = None,
+    embedded_extension_sources: Iterable[typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -226,6 +281,14 @@ def _workspace_manifest_payload(
     if acquisition_context is not None:
         # Context defaults are workspace-scoped and independent of loader choices.
         manifest["acquisition_context"] = dict(acquisition_context)
+    if extension_requirements is not None:
+        # Requirements describe exact code without importing it during inspection.
+        manifest["extension_requirements"] = copy.deepcopy(list(extension_requirements))
+    if embedded_extension_sources is not None:
+        # Embedded code is document-owned recovery material, not an execution source.
+        manifest["embedded_extension_sources"] = copy.deepcopy(
+            list(embedded_extension_sources)
+        )
     return manifest
 
 

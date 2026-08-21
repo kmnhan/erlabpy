@@ -27,9 +27,11 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.extensions._api import _registered_script_capability_status
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
+    _extension_loader_identity,
     _LoadFunc,
     _parse_serialized_file_data_selection,
     _serialize_loader_kwargs,
@@ -64,6 +66,7 @@ if typing.TYPE_CHECKING:
 
     import qtawesome
 
+    from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive._options.schema import AppOptions
     from erlab.interactive.imagetool.plot_items import (
         ItoolGraphicsLayoutWidget,
@@ -2491,7 +2494,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if not isinstance(selection, FileDataSelection):
                 raise TypeError("load_func selection must be a FileDataSelection")
             func_instance = getattr(func, "__self__", None)
-            if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+            extension_identity = _extension_loader_identity(func)
+            if isinstance(func_instance, erlab.io.dataloader.LoaderBase) and not all(
+                isinstance(value, str) and value for value in extension_identity[:3]
+            ):
                 func = func_instance.name
             self._load_func = (func, load_func[1], selection)
         else:
@@ -2716,16 +2722,63 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _direct_reloadable(self) -> bool:
         """Return whether direct file metadata can reload the current source."""
-        return (
-            (self._file_path is not None)
-            and self._file_path.exists()
-            and self._load_func is not None
-            and (callable(self._load_func[0]) or self._load_func[0] in erlab.io.loaders)
+        if (
+            self._file_path is None
+            or not self._file_path.exists()
+            or self._load_func is None
+            or (
+                not callable(self._load_func[0])
+                and self._load_func[0] not in erlab.io.loaders
+            )
+        ):
+            return False
+        extension_status = self._direct_extension_loader_status()
+        return extension_status is None or extension_status == "ready"
+
+    def _direct_extension_loader_status(self) -> _CapabilityStatus | None:
+        """Return the current state of the pinned direct loader, if applicable.
+
+        A callable extension loader is not sufficient evidence that reload is safe.
+        Its identified source must still be available and enabled. Managed windows
+        use their manager's resolver so session-only approvals do not leak between
+        manager instances.
+        """
+        if self._load_func is None:
+            return None
+        script_name, source_hash, loader_id = _extension_loader_identity(
+            self._load_func[0]
+        )
+        if not (
+            isinstance(script_name, str)
+            and script_name
+            and isinstance(source_hash, str)
+            and source_hash
+            and isinstance(loader_id, str)
+            and loader_id
+        ):
+            return None
+        manager = self._manager_instance if self._in_manager else None
+        resolver = (
+            _registered_script_capability_status
+            if manager is None
+            else manager._extensions.capability_status
+        )
+        return resolver(
+            script_name,
+            source_hash,
+            "loader",
+            loader_id,
         )
 
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
-        return can_reload_without_trust(self.provenance_spec)
+        manager = self._manager_instance if self._in_manager else None
+        return can_reload_without_trust(
+            self.provenance_spec,
+            extension_status_resolver=(
+                None if manager is None else manager._extensions.capability_status
+            ),
+        )
 
     def _direct_reload_unavailable_reason(self) -> str | None:
         """Return why direct file metadata cannot reload, if it is relevant."""
@@ -2754,6 +2807,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 f"The saved loader {loader!r} is not available in this ImageTool "
                 "session. Reopen the data from its file with an available loader."
             )
+        extension_status = self._direct_extension_loader_status()
+        if extension_status is not None and extension_status != "ready":
+            script_name = _extension_loader_identity(loader)[0]
+            return (
+                f"The loader from registered script {script_name!r} cannot run "
+                f"because its status is {extension_status!r}. Review the script in "
+                "ImageTool Manager, then try again."
+            )
         return None
 
     def _provenance_reload_unavailable_reason(self) -> str | None:
@@ -2761,7 +2822,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         provenance_spec = self.provenance_spec
         if provenance_spec is None:
             return None
-        source_status = file_load_source_status(provenance_spec)
+        manager = self._manager_instance if self._in_manager else None
+        extension_status_resolver = (
+            None if manager is None else manager._extensions.capability_status
+        )
+        source_status = file_load_source_status(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        )
         if provenance_spec.kind == "file" or has_file_load_source(provenance_spec):
             load_source = provenance_spec.file_load_source
             if source_status == "no-file-load-source" or load_source is None:
@@ -2790,9 +2858,50 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     "in this ImageTool session. Reopen the data from its file "
                     "with an available loader."
                 )
+            if source_status == "extension-disabled":
+                return (
+                    f"The registered script {replay_call.target!r} is disabled. "
+                    "Enable it in ImageTool Manager, then try again."
+                )
+            if source_status == "extension-approval-required":
+                return (
+                    f"The registered script {replay_call.target!r} is not approved. "
+                    "Review it in ImageTool Manager, then try again."
+                )
+            if source_status == "extension-missing-source":
+                return (
+                    f"The registered script {replay_call.target!r} is not available. "
+                    "Register or locate it in ImageTool Manager, then try again."
+                )
+            if source_status == "extension-missing-capability":
+                return (
+                    f"The registered script {replay_call.target!r} does not provide "
+                    "loader "
+                    f"{replay_call.capability_id!r}."
+                )
+            if source_status == "extension-hash-mismatch":
+                return (
+                    f"The registered script {replay_call.target!r} changed after "
+                    "this provenance was recorded. Restore matching contents in "
+                    "ImageTool Manager, then try again."
+                )
+            if source_status == "extension-unsupported-api":
+                return (
+                    f"The loader from registered script {replay_call.target!r} uses "
+                    "an unsupported extension API version."
+                )
+            if source_status == "extension-validation-failed":
+                return (
+                    f"The loader from registered script {replay_call.target!r} could "
+                    "not be validated. Open Manage Extensions in ImageTool Manager "
+                    "for details."
+                )
             if provenance_spec.kind == "file":
                 return None
-        if can_reload_without_trust(provenance_spec):
+        if can_reload_without_trust(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        ):
             return None
         if provenance_spec.kind == "script":
             if script_provenance_requires_trust(provenance_spec):
@@ -2867,15 +2976,40 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if provenance_spec is None:
             raise RuntimeError("Data cannot be reloaded from provenance")
         load_source = provenance_spec.file_load_source
-        source_status = file_load_source_status(provenance_spec)
+        manager = self._manager_instance if self._in_manager else None
+        extension_status_resolver = (
+            None if manager is None else manager._extensions.capability_status
+        )
+        source_status = file_load_source_status(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        )
         if load_source is not None and source_status == "missing-file":
             raise FileNotFoundError(pathlib.Path(load_source.path))
-        if not can_reload_without_trust(provenance_spec):
+        if not can_reload_without_trust(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        ):
             raise RuntimeError("Data cannot be reloaded from provenance")
+        extension_executor = (
+            None if manager is None else manager._extensions.execution.run_operation
+        )
+        extension_loader_executor = (
+            None if manager is None else manager._extensions.replay_loader
+        )
         if provenance_spec.kind == "file":
-            return replay_file_provenance(provenance_spec)
+            return replay_file_provenance(
+                provenance_spec,
+                extension_executor=extension_executor,
+                extension_loader_executor=extension_loader_executor,
+            )
         if provenance_spec.kind == "script":
-            return replay_script_provenance(provenance_spec, {})
+            return replay_script_provenance(
+                provenance_spec,
+                {},
+                extension_executor=extension_executor,
+                extension_loader_executor=extension_loader_executor,
+            )
         raise RuntimeError("Data cannot be reloaded from provenance")
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
@@ -2913,8 +3047,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return manager._script_reload_from_slicer_area(self, execute=True)
         if self._direct_reloadable() or self._provenance_reloadable():
             try:
-                data, kwargs = self._fetch_reload_data()
-                self._replace_reload_data(data, kwargs)
+                replay_capture = (
+                    contextlib.nullcontext(None)
+                    if manager is None
+                    else manager._extensions.execution.capture_replay_sources()
+                )
+                with replay_capture as publication:
+                    data, kwargs = self._fetch_reload_data()
+                    if publication is not None:
+                        publication.require_current_for_publication()
+                    self._replace_reload_data(data, kwargs)
+                    if publication is not None:
+                        publication.publish()
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."

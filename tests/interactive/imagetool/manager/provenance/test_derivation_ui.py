@@ -1,3 +1,4 @@
+import contextlib
 import json
 import pathlib
 import types
@@ -930,6 +931,24 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
 
     manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={"available": _Dependency()}),
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args: "ready",
+            replay_loader=lambda *_args, **_kwargs: pytest.fail(
+                "built-in provenance must not use extension loader execution"
+            ),
+            execution=types.SimpleNamespace(
+                run_operation=lambda *_args, **_kwargs: pytest.fail(
+                    "built-in provenance must not use extension execution"
+                ),
+                capture_replay_sources=lambda: contextlib.nullcontext(
+                    types.SimpleNamespace(
+                        require_current_for_publication=lambda: None,
+                        publish=lambda: None,
+                    )
+                ),
+            ),
+        ),
     )
     controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
     spec = script(
@@ -957,6 +976,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     )
 
     display_node = types.SimpleNamespace(
+        uid="display",
         parent_uid=None,
         source_spec=None,
         displayed_source_spec=None,
@@ -964,6 +984,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     )
     assert controller._reorder_target(display_node) == ("display", spec)
     source_node = types.SimpleNamespace(
+        uid="source",
         parent_uid="parent",
         source_spec=spec,
         displayed_source_spec=spec,

@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from typing import Self
 
 import erlab
+from erlab.interactive.imagetool.manager._workspace._format import (
+    _current_workspace_schema_version,
+    _workspace_schema_uses_immutable_generations,
+    _WorkspaceEmbeddedScriptEntry,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -524,7 +529,9 @@ class WorkspaceStore:
                 fs_persist=True,
             )
             self._workspace_id = self._ensure_workspace_id(h5_file, workspace_id)
-            h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            h5_file.attrs["imagetool_workspace_schema_version"] = (
+                _current_workspace_schema_version()
+            )
             h5_file.attrs["erlab_version"] = str(erlab.__version__)
             h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
             h5_file.require_group(_WORKSPACE_STAGING_GROUP)
@@ -944,6 +951,39 @@ class WorkspaceStore:
         with self._lock:
             self._readers.add(reader)
 
+    def rebind_legacy_readers(
+        self,
+        legacy_reader_rebindings: Mapping[str, str],
+    ) -> None:
+        """Retarget unchanged legacy readers to immutable payload objects.
+
+        The caller must supply only mappings whose object contains the same array
+        values as the legacy group. Retargeting keeps existing xarray and Dask
+        graphs usable without retaining a second physical payload copy.
+        """
+        if not legacy_reader_rebindings:
+            return
+        with self._write_lock, self._lock:
+            readers = tuple(self._readers)
+            rebindings = tuple(
+                (reader, legacy_reader_rebindings.get(reader.legacy_group_path))
+                for reader in readers
+            )
+            object_ids = {
+                object_id for _reader, object_id in rebindings if object_id is not None
+            }
+            with self.read_session() as h5_file:
+                missing = [
+                    object_id
+                    for object_id in object_ids
+                    if self.object_path(object_id).strip("/") not in h5_file
+                ]
+            if missing:
+                raise KeyError(f"Workspace object {missing[0]!r} is missing")
+            for reader, object_id in rebindings:
+                if object_id is not None:
+                    reader._rebind_legacy_group_to_object(object_id)
+
     def pin_serialized_reader_reference(
         self,
         *,
@@ -1112,7 +1152,12 @@ class WorkspaceStore:
 
     @staticmethod
     def object_path(object_id: str) -> str:
-        if not object_id or "/" in object_id:
+        if (
+            not object_id
+            or "/" in object_id
+            or "\x00" in object_id
+            or object_id in {".", ".."}
+        ):
             raise ValueError("Workspace object ID must be one path component")
         return f"/{_WORKSPACE_OBJECTS_GROUP}/{object_id}"
 
@@ -1151,7 +1196,9 @@ class WorkspaceStore:
         manifest = json.loads(raw)
         if not isinstance(manifest, dict):
             raise TypeError("Workspace generation manifest is not an object")
-        if int(manifest.get("schema_version", 0)) != 5:
+        if not _workspace_schema_uses_immutable_generations(
+            int(manifest.get("schema_version", 0))
+        ):
             raise ValueError("Workspace generation has an unsupported schema")
         nodes = manifest.get("nodes")
         if not isinstance(nodes, list):
@@ -1208,7 +1255,7 @@ class WorkspaceStore:
             staging_name = uuid.uuid4().hex
             staging = staging_root.create_group(staging_name)
             generation_manifest = dict(manifest)
-            generation_manifest["schema_version"] = 5
+            generation_manifest["schema_version"] = _current_workspace_schema_version()
             generation_manifest.pop("generation", None)
             try:
                 self._write_manifest(staging, generation_manifest)
@@ -1225,7 +1272,9 @@ class WorkspaceStore:
                 f"/{_WORKSPACE_STAGING_GROUP}/{staging_name}",
                 f"/{_WORKSPACE_GENERATIONS_GROUP}/{generation_name}",
             )
-            self.h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            self.h5_file.attrs["imagetool_workspace_schema_version"] = (
+                _current_workspace_schema_version()
+            )
             self.h5_file.attrs["erlab_version"] = str(erlab.__version__)
             self.flush(durable=True)
             return _WorkspaceGeneration(sequence, generation_manifest)
@@ -1241,9 +1290,11 @@ class WorkspaceStore:
                 handle = handle[0]
             os.fsync(int(handle))
 
-    @staticmethod
-    def manifest_object_ids(manifest: Mapping[str, typing.Any]) -> frozenset[str]:
-        """Return payload object IDs referenced by a manifest."""
+    @classmethod
+    def manifest_node_object_ids(
+        cls, manifest: Mapping[str, typing.Any]
+    ) -> frozenset[str]:
+        """Return data object IDs referenced by workspace nodes."""
         object_ids: set[str] = set()
         nodes = manifest.get("nodes", ())
         if not isinstance(nodes, list):
@@ -1252,9 +1303,39 @@ class WorkspaceStore:
             if not isinstance(entry, dict):
                 continue
             object_id = entry.get("payload_object_id")
-            if isinstance(object_id, str) and object_id:
-                object_ids.add(object_id)
+            if not isinstance(object_id, str):
+                continue
+            try:
+                cls.object_path(object_id)
+            except ValueError:
+                continue
+            object_ids.add(object_id)
         return frozenset(object_ids)
+
+    @classmethod
+    def manifest_extension_object_ids(
+        cls,
+        manifest: Mapping[str, typing.Any],
+    ) -> frozenset[str]:
+        """Return object IDs from validated embedded source entries."""
+        raw_entries = manifest.get("embedded_extension_sources", ())
+        if not isinstance(raw_entries, list):
+            return frozenset()
+        object_ids: set[str] = set()
+        for raw in raw_entries:
+            try:
+                entry = _WorkspaceEmbeddedScriptEntry.model_validate(raw)
+            except ValueError:
+                continue
+            object_ids.add(entry.object_id)
+        return frozenset(object_ids)
+
+    @classmethod
+    def manifest_object_ids(cls, manifest: Mapping[str, typing.Any]) -> frozenset[str]:
+        """Return all immutable object IDs referenced by a manifest."""
+        return cls.manifest_node_object_ids(
+            manifest
+        ) | cls.manifest_extension_object_ids(manifest)
 
     def collect_garbage(
         self,

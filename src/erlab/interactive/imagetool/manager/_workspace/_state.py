@@ -5,24 +5,32 @@ from __future__ import annotations
 __all__ = [
     "_ManagerWorkspaceState",
     "_WorkspaceDirtyEvent",
+    "_WorkspaceScriptState",
     "_WorkspaceStateSnapshot",
 ]
 
 import contextlib
 import copy
+import hashlib
 import typing
 import uuid
 from dataclasses import dataclass
 
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool.manager._workspace._format import (
     _current_workspace_schema_version,
+    _WorkspaceEmbeddedScriptEntry,
 )
 
 if typing.TYPE_CHECKING:
     import pathlib
-    from collections.abc import Iterator
+    from collections.abc import Collection, Iterable, Iterator, Mapping
 
     from qtpy import QtCore
+
+    from erlab.interactive.imagetool.manager._extensions._models import (
+        _WorkspaceScriptRequirement,
+    )
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,257 @@ class _WorkspaceDirtyEvent:
     layout: bool = False
     options: bool = False
     context: bool = False
+
+
+class _WorkspaceScriptState:
+    """Own extension-script state that belongs to one workspace document.
+
+    Verified sources are recovery material only. They never participate in script
+    resolution or execution.
+    """
+
+    def __init__(
+        self,
+        requirements: Iterable[_WorkspaceScriptRequirement] = (),
+        *,
+        verified_sources: Mapping[
+            tuple[str, str], tuple[_WorkspaceEmbeddedScriptEntry, bytes]
+        ]
+        | None = None,
+        explicit_sources: Collection[tuple[str, str]] = frozenset(),
+    ) -> None:
+        self.requirements = tuple(requirements)
+        self.verified_sources = dict(verified_sources or {})
+        self.explicit_sources = set(explicit_sources)
+        self._validate_script_names()
+        self._validate_verified_sources()
+
+    def _validate_script_names(self) -> None:
+        """Reject ambiguous spellings of one portable script filename."""
+        names: dict[str, str] = {}
+        script_names = (
+            *(requirement.script_name for requirement in self.requirements),
+            *(entry.script_name for entry, _source in self.verified_sources.values()),
+        )
+        for script_name in script_names:
+            key = _script_name_key(script_name)
+            previous = names.setdefault(key, script_name)
+            if previous != script_name:
+                raise ValueError(
+                    "workspace scripts have ambiguous filenames: "
+                    f"{previous!r} and {script_name!r}"
+                )
+
+    def _validate_verified_sources(self) -> None:
+        """Require each recovery entry and byte snapshot to have one identity."""
+        for key, (entry, source) in self.verified_sources.items():
+            if key != (entry.script_name, entry.source_hash):
+                raise ValueError("embedded script source key does not match its entry")
+            if hashlib.sha256(source).hexdigest() != entry.source_hash:
+                raise ValueError("embedded script source does not match its hash")
+        if not self.explicit_sources.issubset(self.verified_sources):
+            raise ValueError("explicit script sources must have verified bytes")
+
+    def copy(self) -> _WorkspaceScriptState:
+        """Return an independent copy for document rollback."""
+        return type(self)(
+            self.requirements,
+            verified_sources=self.verified_sources,
+            explicit_sources=self.explicit_sources,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _WorkspaceScriptState):
+            return NotImplemented
+        return (
+            self.requirements == other.requirements
+            and self.verified_sources == other.verified_sources
+            and self.explicit_sources == other.explicit_sources
+        )
+
+    def replace(self, other: _WorkspaceScriptState) -> None:
+        """Replace all document-owned script state from one validated snapshot."""
+        replacement = other.copy()
+        self.requirements = replacement.requirements
+        self.verified_sources = replacement.verified_sources
+        self.explicit_sources = replacement.explicit_sources
+
+    def clear(self) -> None:
+        """Remove all script state from the current document."""
+        self.replace(type(self)())
+
+    def merge(self, other: _WorkspaceScriptState) -> None:
+        """Merge imported validated script state."""
+        verified_sources = dict(self.verified_sources)
+        for key, incoming in other.verified_sources.items():
+            existing = verified_sources.get(key)
+            # Distinct validated bytes with one SHA-256 identity require a hash
+            # collision. Keep the guard, but do not manufacture corrupt state in tests.
+            if existing is not None and existing != incoming:  # pragma: no cover
+                raise ValueError(f"conflicting embedded script source for {key!r}")
+            verified_sources[key] = incoming
+
+        replacement = type(self)(
+            (*self.requirements, *other.requirements),
+            verified_sources=verified_sources,
+            explicit_sources=self.explicit_sources | other.explicit_sources,
+        )
+        self.replace(replacement)
+
+    def rebase_nodes(self, uid_map: Mapping[str, str]) -> None:
+        """Rebase all validated references before incoming nodes are restored."""
+        if not uid_map:
+            return
+        self.requirements = tuple(
+            requirement.model_copy(
+                update={
+                    "referencing_nodes": tuple(
+                        uid_map.get(uid, uid) for uid in requirement.referencing_nodes
+                    )
+                }
+            )
+            for requirement in self.requirements
+        )
+
+    def remove_node_references(self, node_uids: Iterable[str]) -> None:
+        """Remove only references for nodes that the user explicitly deleted."""
+        removed = set(node_uids)
+        if not removed:
+            return
+        remaining_requirements: list[_WorkspaceScriptRequirement] = []
+        for requirement in self.requirements:
+            if not requirement.referencing_nodes:
+                remaining_requirements.append(requirement)
+                continue
+            remaining = tuple(
+                uid for uid in requirement.referencing_nodes if uid not in removed
+            )
+            if not remaining:
+                continue
+            remaining_requirements.append(
+                requirement.model_copy(update={"referencing_nodes": remaining})
+            )
+        self.requirements = tuple(remaining_requirements)
+
+    def remap_script(
+        self,
+        previous_name: str,
+        source_hash: str,
+        new_name: str,
+    ) -> None:
+        """Atomically change one script filename across validated state."""
+        previous_key = _script_name_key(previous_name)
+        new_key = _script_name_key(new_name)
+        verified_sources: dict[
+            tuple[str, str], tuple[_WorkspaceEmbeddedScriptEntry, bytes]
+        ] = {}
+        remapped_source_keys: set[tuple[str, str]] = set()
+        for key, (entry, source) in self.verified_sources.items():
+            script_name, key_hash = key
+            matches_source = (
+                key_hash == source_hash
+                and _script_name_key(script_name) == previous_key
+            )
+            if (
+                not matches_source
+                and key_hash == source_hash
+                and previous_key != new_key
+                and _script_name_key(script_name) == new_key
+            ):
+                raise ValueError(f"embedded script source already uses {new_name!r}")
+            if not matches_source:
+                verified_sources[key] = (entry, source)
+                continue
+            remapped_key = (new_name, source_hash)
+            remapped_entry = _WorkspaceEmbeddedScriptEntry(
+                script_name=new_name,
+                source_hash=source_hash,
+                object_id=entry.object_id,
+            )
+            # A validated state cannot already contain this key. The destination-name
+            # collision above rejects it before this remapped entry is created.
+            verified_sources[remapped_key] = (remapped_entry, source)
+            remapped_source_keys.add(key)
+
+        requirements = tuple(
+            requirement.model_copy(update={"script_name": new_name})
+            if requirement.source_hash == source_hash
+            and _script_name_key(requirement.script_name) == previous_key
+            else requirement
+            for requirement in self.requirements
+        )
+        explicit_sources = {
+            (new_name, source_hash) if key in remapped_source_keys else key
+            for key in self.explicit_sources
+        }
+        replacement = type(self)(
+            requirements,
+            verified_sources=verified_sources,
+            explicit_sources=explicit_sources,
+        )
+        self.replace(replacement)
+
+    def remember_verified_source(
+        self,
+        script_name: str,
+        source_hash: str,
+        source: bytes,
+        *,
+        explicit: bool = False,
+    ) -> _WorkspaceEmbeddedScriptEntry | None:
+        """Retain exact local bytes when the script name is unambiguous."""
+        entry = _WorkspaceEmbeddedScriptEntry(
+            script_name=script_name,
+            source_hash=source_hash,
+            object_id=f"extension-source-{source_hash}",
+        )
+        if hashlib.sha256(source).hexdigest() != source_hash:
+            raise ValueError("embedded script source does not match its hash")
+        script_key = _script_name_key(script_name)
+        known_names = (
+            *(requirement.script_name for requirement in self.requirements),
+            *(
+                stored_entry.script_name
+                for stored_entry, _stored_source in self.verified_sources.values()
+            ),
+        )
+        if any(
+            _script_name_key(known_name) == script_key and known_name != script_name
+            for known_name in known_names
+        ):
+            return None
+        existing = self.verified_sources.get((script_name, source_hash))
+        candidate = (entry, bytes(source))
+        # Distinct validated bytes with one SHA-256 identity require a hash collision.
+        if existing is not None and existing != candidate:  # pragma: no cover
+            raise ValueError("embedded script source conflicts with retained bytes")
+        self.verified_sources[(script_name, source_hash)] = candidate
+        if explicit:
+            self.explicit_sources.add((script_name, source_hash))
+        return entry
+
+    def requirement_manifest_value(
+        self, requirements: Iterable[_WorkspaceScriptRequirement]
+    ) -> list[dict[str, typing.Any]]:
+        """Serialize validated extension dependencies."""
+        return [item.model_dump(mode="json") for item in requirements]
+
+    def source_manifest_value(
+        self, required_sources: Collection[tuple[str, str]]
+    ) -> list[dict[str, typing.Any]]:
+        """Serialize reachable verified sources."""
+        included_sources = set(required_sources) | self.explicit_sources
+        verified = tuple(
+            entry
+            for key, (entry, _source) in self.verified_sources.items()
+            if key in included_sources
+        )
+        return [item.model_dump(mode="json") for item in verified]
+
+    @property
+    def has_content(self) -> bool:
+        """Return whether this document owns any extension-script state."""
+        return bool(self.requirements or self.verified_sources or self.explicit_sources)
 
 
 class _WorkspaceStateSnapshot(typing.TypedDict):
@@ -59,6 +318,9 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     dirty_generation: int
     dirty_events: tuple[_WorkspaceDirtyEvent, ...]
     schema_version: int
+    save_as_only: bool
+    degraded_reasons: tuple[str, ...]
+    extension_scripts: _WorkspaceScriptState
 
 
 class _ManagerWorkspaceState:
@@ -88,9 +350,17 @@ class _ManagerWorkspaceState:
         self.schema_version: int = _current_workspace_schema_version()
         self.lock: QtCore.QLockFile | None = None
         self.closing_document: bool = False
+        self.save_as_only: bool = False
+        self.degraded_reasons: tuple[str, ...] = ()
+        self.extension_scripts = _WorkspaceScriptState()
 
     def is_modified(self, *, has_nodes: bool) -> bool:
-        if self.path is None and not has_nodes and not self.context_modified:
+        if (
+            self.path is None
+            and not has_nodes
+            and not self.context_modified
+            and not self.extension_scripts.has_content
+        ):
             return False
         return (
             self.structure_modified
@@ -223,6 +493,9 @@ class _ManagerWorkspaceState:
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "schema_version": self.schema_version,
+            "save_as_only": self.save_as_only,
+            "degraded_reasons": self.degraded_reasons,
+            "extension_scripts": self.extension_scripts.copy(),
         }
 
     def restore(self, snapshot: _WorkspaceStateSnapshot) -> set[str]:
@@ -244,4 +517,7 @@ class _ManagerWorkspaceState:
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.schema_version = snapshot["schema_version"]
+        self.save_as_only = snapshot["save_as_only"]
+        self.degraded_reasons = snapshot["degraded_reasons"]
+        self.extension_scripts.replace(snapshot["extension_scripts"])
         return self.dirty_added | self.dirty_data | self.dirty_state

@@ -16,6 +16,12 @@ import xarray as xr
 from pydantic import ValidationError
 
 import erlab
+import erlab.extensions._api as extension_api
+from erlab.interactive.imagetool._load_source import (
+    _load_provenance_from_file_details,
+    _load_source_details_from_file,
+    _load_source_details_from_provenance,
+)
 from erlab.interactive.imagetool._provenance import _code
 from erlab.interactive.imagetool._provenance._code import (
     _MAPPING_MARKER,
@@ -119,6 +125,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
     FillNaOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
@@ -161,14 +168,8 @@ from erlab.interactive.imagetool._provenance._operations import (
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
-    exec_namespace = {
-        "np": np,
-        "xr": xr,
-        "erlab": erlab,
-        "era": erlab.analysis,
-        **namespace,
-    }
-    exec(code, exec_namespace)  # noqa: S102
+    exec_namespace = dict(namespace)
+    exec(code, exec_namespace, exec_namespace)  # noqa: S102
     return exec_namespace
 
 
@@ -545,6 +546,13 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
             values=[1.0, 2.0, 3.0],
         ),
         AssignAttrsOperation(attrs={"sample": "test"}),
+        ExtensionRoutineOperation(
+            script_name="my_lab.py",
+            source_hash="a" * 64,
+            routine_id="where",
+            routine_name="Where",
+            parameters={},
+        ),
         KspaceConfigurationOperation(configuration=2),
         KspaceWorkFunctionOperation(work_function=4.2),
         KspaceInnerPotentialOperation(inner_potential=12.0),
@@ -575,7 +583,11 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
 
 @pytest.mark.parametrize(
     "operation",
-    _representative_structured_operations(),
+    tuple(
+        operation
+        for operation in _representative_structured_operations()
+        if not isinstance(operation, ExtensionRoutineOperation)
+    ),
     ids=lambda operation: operation.op,
 )
 def test_structured_operations_generate_public_code(
@@ -588,6 +600,18 @@ def test_structured_operations_generate_public_code(
 
     assert "erlab.interactive.imagetool" not in code
     assert "decode_provenance_value" not in code
+
+
+def test_extension_routine_omits_code_without_a_registered_script() -> None:
+    operation = next(
+        operation
+        for operation in _representative_structured_operations()
+        if isinstance(operation, ExtensionRoutineOperation)
+    )
+
+    assert operation.derivation_entry().code is None
+    with pytest.raises(NotImplementedError):
+        operation.statement_code("data", output_name="derived")
 
 
 @pytest.mark.parametrize(
@@ -693,7 +717,7 @@ def test_uniform_interpolation_uses_current_coordinate_bounds() -> None:
     )
     namespace = _exec_generated_code(
         operation.replay_code("data", output_name="derived"),
-        {"data": data},
+        {"data": data, "np": np},
     )
     generated = namespace["derived"]
     assert isinstance(generated, xr.DataArray)
@@ -874,7 +898,16 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         "Start from current parent ImageTool data",
         'Average(dims=("x",))',
     ]
-    assert spec.derivation_code() == "derived = data.qsel.mean('x')"
+    derivation_code = spec.derivation_code()
+    assert derivation_code is not None
+    derivation_namespace = _exec_generated_code(
+        derivation_code,
+        {"data": _base_data()},
+    )
+    xr.testing.assert_identical(
+        derivation_namespace["derived"].rename(None),
+        _base_data().qsel.mean("x").rename(None),
+    )
     display_code = typing.cast("str", spec.display_code())
     assert ".rename(" not in display_code
     namespace = _exec_generated_code(display_code, {"data": _base_data()})
@@ -961,7 +994,10 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
         migrated_code
     )
     assert "erlab.utils.array._restore_nonuniform_dims(data)" in migrated_code
-    namespace = _exec_generated_code(migrated_code, {"data": uniform})
+    namespace = _exec_generated_code(
+        migrated_code,
+        {"data": uniform, "erlab": erlab},
+    )
     xr.testing.assert_identical(namespace["derived"], public)
 
     seed_spec = parse_tool_provenance_spec(
@@ -1151,14 +1187,20 @@ def test_registered_provenance_define_operation_code_api() -> None:
         for operation_type in structured_operation_types
         if "derivation_label" not in operation_type.__dict__
     ] == []
-    assert [
+    generic_code_operation_types = [
         operation_type
         for operation_type in structured_operation_types
+        if operation_type is not ExtensionRoutineOperation
+    ]
+    assert [
+        operation_type
+        for operation_type in generic_code_operation_types
         if (
             operation_type.expression_code is ToolProvenanceOperation.expression_code
             and operation_type.statement_code is ToolProvenanceOperation.statement_code
         )
     ] == []
+    assert "_bound_script_statement_code" in ExtensionRoutineOperation.__dict__
 
 
 @pytest.mark.parametrize(
@@ -1197,6 +1239,7 @@ def test_operation_replay_code_uses_requested_names(
         code,
         {
             "data": data.copy(deep=True),
+            "era": erlab.analysis,
             "source": data.copy(deep=True),
         },
     )
@@ -1225,6 +1268,7 @@ def test_operation_replay_code_passes_source_context() -> None:
         code,
         {
             "child": child.copy(deep=True),
+            "erlab": erlab,
             "parent": parent.copy(deep=True),
         },
     )
@@ -1414,6 +1458,7 @@ def test_generated_provenance_code_preserves_effect_order_across_aliases() -> No
             code="derived = derived.copy()",
         ),
         start_label="Run script",
+        seed_code=("import numpy\nimport numpy as np\nimport xarray as xr"),
         active_name="derived",
     )
     previous_error_state = np.seterr(divide="warn")
@@ -1424,7 +1469,7 @@ def test_generated_provenance_code_preserves_effect_order_across_aliases() -> No
             np.seterr(divide="warn")
             namespace = _exec_generated_code(
                 code,
-                {"np": np, "numpy": np, "xr": xr},
+                {},
             )
             xr.testing.assert_identical(namespace["derived"], expected)
             assert code.index("numpy.geterr") < code.index("np.seterr")
@@ -1552,7 +1597,7 @@ def test_statement_operation_replay_code_mutates_working_copy() -> None:
     assert "result = data.copy(deep=False)" in code
     assert "result.kspace.work_function = 4.2" in code
     assert "sample_workfunction" not in code
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True), "np": np})
     assert namespace["result"].kspace.work_function == pytest.approx(4.2)
     assert namespace["data"].kspace.work_function == pytest.approx(4.5)
 
@@ -1579,13 +1624,13 @@ def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
 
     code = typing.cast("str", spec.display_code())
 
-    assert "derived = data.copy(deep=False)" in code
-    assert code.count(".copy(deep=False)") == 1
-    assert "derived.kspace.work_function = 4.2" in code
-    assert "derived.kspace.set_normal(" in code
-    assert "derived = derived.kspace.convert(" in code
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
-    expected = data.copy(deep=False)
+    assert ".copy(deep=False)" not in code
+    assert "data.kspace.work_function = 4.2" in code
+    assert "data.kspace.set_normal(" in code
+    assert "derived = data.kspace.convert(" in code
+    working_data = data.copy(deep=True)
+    namespace = _exec_generated_code(code, {"data": working_data})
+    expected = working_data
     expected.kspace.work_function = 4.2
     expected.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)
     expected = expected.kspace.convert(
@@ -1594,7 +1639,13 @@ def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
         silent=True,
     )
     xr.testing.assert_allclose(namespace["derived"], expected)
-    assert namespace["data"].kspace.work_function == pytest.approx(4.5)
+    assert namespace["data"].kspace.work_function == pytest.approx(4.2)
+    assert data.kspace.work_function == pytest.approx(4.5)
+
+    replay_source = data.copy(deep=True)
+    replayed = replay_script_provenance(spec, {"data": replay_source})
+    xr.testing.assert_allclose(replayed, expected)
+    assert replay_source.kspace.work_function == pytest.approx(4.5)
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata(
@@ -1781,7 +1832,10 @@ def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
     code = spec.display_code(parent_data=data)
     assert code is not None
     assert ".rename(" in code
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code,
+        {"data": data.copy(deep=True), "np": np},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
@@ -1806,13 +1860,19 @@ def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
     assert entry.code is not None
     assert "Interpolate" in entry.label
     assert '.interp({"k-space": np.linspace' in entry.code
-    namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        entry.code,
+        {"derived": data.copy(deep=True), "np": np},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".interp") for call in _generated_call_names(code))
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code,
+        {"data": data.copy(deep=True), "np": np},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
@@ -1846,13 +1906,19 @@ def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
     assert entry.copyable is True
     assert entry.code is not None
     assert "leading_edge" in entry.code
-    namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        entry.code,
+        {"derived": data.copy(deep=True), "era": erlab.analysis},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".leading_edge") for call in _generated_call_names(code))
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code,
+        {"data": data.copy(deep=True), "era": erlab.analysis},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
@@ -1881,7 +1947,7 @@ def test_tool_provenance_assign_coords_replay_display_code(
     assert "erlab.utils.array.sort_coord_order" not in call_names
     assert expected_call in call_names
 
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True), "np": np})
     xr.testing.assert_allclose(
         namespace["derived"],
         data.assign_coords({"y": data["y"].copy(data=values)}),
@@ -1905,7 +1971,7 @@ def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
     assert code is not None
     call_names = _generated_call_names(code)
     assert "np.linspace" in call_names
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True), "np": np})
     xr.testing.assert_allclose(
         namespace["derived"],
         data.assign_coords({"x": data["x"].copy(data=values)}),
@@ -1942,7 +2008,10 @@ def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
     )
     scalar_code = typing.cast("str", scalar_spec.derivation_code())
     assert "np.nan" in scalar_code
-    scalar_namespace = _exec_generated_code(scalar_code, {"data": data.copy(deep=True)})
+    scalar_namespace = _exec_generated_code(
+        scalar_code,
+        {"data": data.copy(deep=True), "np": np},
+    )
     assert np.isnan(scalar_namespace["derived"].coords["temperature"].item())
 
     attrs_spec = full_data(
@@ -1958,7 +2027,10 @@ def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
     assert "np.nan" in attrs_code
     assert "np.inf" in attrs_code
     assert "complex(np.nan, np.inf)" in attrs_code
-    attrs_namespace = _exec_generated_code(attrs_code, {"data": data.copy(deep=True)})
+    attrs_namespace = _exec_generated_code(
+        attrs_code,
+        {"data": data.copy(deep=True), "np": np},
+    )
     assert np.isinf(attrs_namespace["derived"].attrs["offset"])
     assert np.isnan(attrs_namespace["derived"].attrs["bad"])
     assert np.isnan(attrs_namespace["derived"].attrs["complex"].real)
@@ -1974,7 +2046,10 @@ def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
     coord_code = typing.cast("str", coord_spec.derivation_code())
     assert "np.nan" in coord_code
     assert "np.inf" in coord_code
-    coord_namespace = _exec_generated_code(coord_code, {"data": data.copy(deep=True)})
+    coord_namespace = _exec_generated_code(
+        coord_code,
+        {"data": data.copy(deep=True), "np": np},
+    )
     np.testing.assert_equal(
         coord_namespace["derived"].coords["temperature"].values,
         np.array([np.nan, np.inf, -np.inf]),
@@ -2002,7 +2077,7 @@ def test_tool_provenance_assign_1d_coord_operation() -> None:
     code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".assign_coords") for call in _generated_call_names(code))
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True), "np": np})
     xr.testing.assert_identical(
         namespace["derived"], data.assign_coords(label=("x", values))
     )
@@ -2425,7 +2500,6 @@ def test_tool_provenance_divide_by_coord_operation() -> None:
     xr.testing.assert_identical(spec.apply(data), expected)
     code = spec.derivation_code()
     assert code is not None
-    assert "derived.mesh_current" in code
     assert ".rename(" not in code
     namespace = _exec_generated_code(code, {"data": data})
     xr.testing.assert_identical(namespace["derived"], data / data.mesh_current)
@@ -2450,7 +2524,6 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
     spaced_spec = full_data(DivideByCoordOperation(coord_name="mesh current"))
     spaced_code = spaced_spec.derivation_code()
     assert spaced_code is not None
-    assert 'derived.coords["mesh current"]' in spaced_code
     assert ".rename(" not in spaced_code
     namespace = _exec_generated_code(spaced_code, {"data": data})
     xr.testing.assert_identical(
@@ -2460,7 +2533,6 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
     conflict_spec = full_data(DivideByCoordOperation(coord_name="mean"))
     conflict_code = conflict_spec.derivation_code()
     assert conflict_code is not None
-    assert 'derived.coords["mean"]' in conflict_code
     assert ".rename(" not in conflict_code
     namespace = _exec_generated_code(conflict_code, {"data": data})
     xr.testing.assert_identical(namespace["derived"], data / data.coords["mean"])
@@ -2576,48 +2648,37 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     string_key_data = _string_key_data()
 
     qsel_spec = full_data(QSelOperation(kwargs={"k-space": 1.0, "k-space_width": 1.0}))
-    assert qsel_spec.derivation_code() == (
-        "derived = data.qsel({'k-space': 1.0, 'k-space_width': 1.0})"
-    )
-    xr.testing.assert_identical(
-        qsel_spec.apply(string_key_data),
-        string_key_data.qsel({"k-space": 1.0, "k-space_width": 1.0}),
-    )
+    qsel_expected = string_key_data.qsel({"k-space": 1.0, "k-space_width": 1.0})
+    xr.testing.assert_identical(qsel_spec.apply(string_key_data), qsel_expected)
 
     isel_spec = full_data(IselOperation(kwargs={1: slice(1, 3)}))
-    assert isel_spec.derivation_code() == "derived = data.isel({1: slice(1, 3)})"
-    xr.testing.assert_identical(isel_spec.apply(data), data.isel({1: slice(1, 3)}))
+    isel_expected = data.isel({1: slice(1, 3)})
+    xr.testing.assert_identical(isel_spec.apply(data), isel_expected)
 
     transpose_spec = full_data(TransposeOperation(dims=(("beta", 0), 1)))
-    assert transpose_spec.derivation_code() == (
-        "derived = data.transpose(*(('beta', 0), 1))"
-    )
-    xr.testing.assert_identical(
-        transpose_spec.apply(data), data.transpose(("beta", 0), 1)
-    )
+    transpose_expected = data.transpose(("beta", 0), 1)
+    xr.testing.assert_identical(transpose_spec.apply(data), transpose_expected)
 
     average_spec = full_data(AverageOperation(dims=("k-space",)))
-    assert average_spec.derivation_code() == "derived = data.qsel.mean('k-space')"
-    xr.testing.assert_identical(
-        average_spec.apply(string_key_data), string_key_data.qsel.mean("k-space")
-    )
+    average_expected = string_key_data.qsel.mean("k-space")
+    xr.testing.assert_identical(average_spec.apply(string_key_data), average_expected)
 
     tuple_average_spec = full_data(AverageOperation(dims=(("beta", 0),)))
-    assert tuple_average_spec.derivation_code() == (
-        "derived = data.qsel.mean((('beta', 0),))"
-    )
+    tuple_average_expected = data.qsel.mean((("beta", 0),))
+    xr.testing.assert_identical(tuple_average_spec.apply(data), tuple_average_expected)
 
     aggregate_spec = full_data(QSelAggregationOperation(dims=("k-space",), func="sum"))
-    assert aggregate_spec.derivation_code() == "derived = data.qsel.sum('k-space')"
+    aggregate_expected = string_key_data.qsel.sum("k-space")
     xr.testing.assert_identical(
-        aggregate_spec.apply(string_key_data), string_key_data.qsel.sum("k-space")
+        aggregate_spec.apply(string_key_data), aggregate_expected
     )
 
     mean_aggregate_spec = full_data(
         QSelAggregationOperation(dims=(("beta", 0),), func="mean")
     )
-    assert mean_aggregate_spec.derivation_code() == (
-        "derived = data.qsel.mean((('beta', 0),))"
+    mean_aggregate_expected = data.qsel.mean((("beta", 0),))
+    xr.testing.assert_identical(
+        mean_aggregate_spec.apply(data), mean_aggregate_expected
     )
 
     dumped = aggregate_spec.model_dump(mode="json")
@@ -2638,23 +2699,35 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
             reducer="mean",
         )
     )
-    assert coarsen_spec.derivation_code() == (
-        "derived = data.coarsen(dim={1: 2}, boundary='trim').mean()"
-    )
-    xr.testing.assert_identical(
-        coarsen_spec.apply(data),
-        data.coarsen(
-            dim={1: 2}, boundary="trim", side="left", coord_func="mean"
-        ).mean(),
-    )
+    coarsen_expected = data.coarsen(
+        dim={1: 2}, boundary="trim", side="left", coord_func="mean"
+    ).mean()
+    xr.testing.assert_identical(coarsen_spec.apply(data), coarsen_expected)
 
     thin_spec = full_data(ThinOperation(mode="per_dim", factors={1: 2}))
-    assert thin_spec.derivation_code() == "derived = data.thin({1: 2})"
-    xr.testing.assert_identical(thin_spec.apply(data), data.thin({1: 2}))
+    thin_expected = data.thin({1: 2})
+    xr.testing.assert_identical(thin_spec.apply(data), thin_expected)
 
     swap_spec = full_data(SwapDimsOperation(mapping={1: "coord_1"}))
-    assert swap_spec.derivation_code() == "derived = data.swap_dims({1: 'coord_1'})"
-    xr.testing.assert_identical(swap_spec.apply(data), data.swap_dims({1: "coord_1"}))
+    swap_expected = data.swap_dims({1: "coord_1"})
+    xr.testing.assert_identical(swap_spec.apply(data), swap_expected)
+
+    for spec, source, expected in (
+        (qsel_spec, string_key_data, qsel_expected),
+        (isel_spec, data, isel_expected),
+        (transpose_spec, data, transpose_expected),
+        (average_spec, string_key_data, average_expected),
+        (tuple_average_spec, data, tuple_average_expected),
+        (aggregate_spec, string_key_data, aggregate_expected),
+        (mean_aggregate_spec, data, mean_aggregate_expected),
+        (coarsen_spec, data, coarsen_expected),
+        (thin_spec, data, thin_expected),
+        (swap_spec, data, swap_expected),
+    ):
+        code = spec.derivation_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"data": source})
+        xr.testing.assert_identical(namespace["derived"], expected)
 
     dumped = tuple_average_spec.model_dump(mode="json")
     assert dumped["operations"][0]["dims"] == {
@@ -2825,7 +2898,7 @@ def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None
     unknown_code = typing.cast("str", spec.display_code())
     assert ".transpose(" in unknown_code
     assert ".squeeze()" in unknown_code
-    assert "def _restore_image_tool_dimensions" in unknown_code
+    assert "_restore_image_tool_dimensions" not in unknown_code
     assert "erlab.utils.array._restore_nonuniform_dims" not in unknown_code
 
     data = _base_data()
@@ -2912,24 +2985,6 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     assert nonuniform_context.advance(RestoreNonuniformDimsOperation()).dims is None
     assert context.advance(AverageOperation(dims=("x",))).dims is None
 
-    staged_spec = script(
-        start_label="Run script",
-        seed_code="derived = data",
-        active_name="derived",
-        replay_stages=(
-            ReplayStage(
-                source_kind="full_data",
-                operations=(
-                    RestoreNonuniformDimsOperation(),
-                    SqueezeOperation(),
-                ),
-            ),
-        ),
-    )
-    assert [
-        entry.label for entry in staged_spec._code_fallback_entries(parent_data=data)
-    ] == ["Run script"]
-
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
@@ -2958,7 +3013,8 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
             code="derived = derived.squeeze()",
         ),
         start_label="Start from current analysis-tool input data",
-        seed_code="derived = data",
+        seed_code="import erlab\nderived = data",
+        active_name="derived",
     )
 
     code = spec.display_code()
@@ -3356,7 +3412,9 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
         {"derived": data.copy(deep=True)},
     )
     xr.testing.assert_identical(namespace["derived"], data.rename("renamed"))
-    assert full_data().derivation_code() is None
+    for source_spec in (full_data(), public_data(), selection()):
+        assert source_spec.derivation_code() is None
+        assert source_spec.display_code() is None
     assert script(start_label="Start", active_name="derived").display_code() is None
     edge_entry = CorrectWithEdgeOperation(
         edge_fit=xr.Dataset(), shift_coords=True
@@ -3609,7 +3667,7 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
     assert entries[-1].code is not None
     namespace = _exec_generated_code(
         typing.cast("str", reparsed_spec.derivation_code()),
-        {"data": data.copy(deep=True)},
+        {"data": data.copy(deep=True), "era": erlab.analysis, "xr": xr},
     )
     assert namespace["derived"].attrs["last_op"] == "correct_with_edge"
 
@@ -3630,7 +3688,10 @@ def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
     assert "np.inf" in code
     assert "imagetool" not in code
     assert "xr.Dataset.from_dict" in code
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    namespace = _exec_generated_code(
+        code,
+        {"data": data.copy(deep=True), "era": erlab.analysis, "np": np, "xr": xr},
+    )
     assert namespace["derived"].attrs["shift_coords"] is False
 
 
@@ -3674,6 +3735,7 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
         ),
         start_label="Start from current analysis-tool input data",
         seed_code="prepared = data.copy()",
+        active_name="result",
     )
     reparsed_script = parse_tool_provenance_spec(script_spec.model_dump(mode="json"))
 
@@ -3681,9 +3743,11 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
     assert reparsed_script.derivation_entries()[0].label == (
         "Start from current analysis-tool input data"
     )
-    assert reparsed_script.derivation_code() == (
-        "prepared = data.copy()\nresult = data.mean()"
-    )
+    code = reparsed_script.derivation_code()
+    assert code is not None
+    data = _base_data()
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["result"], data.mean())
     with pytest.raises(
         TypeError, match="source_spec must be a live ToolProvenanceSpec"
     ):
@@ -4406,7 +4470,7 @@ def test_legacy_operations_model_copy_rejects_ambiguous_duplicate_metadata() -> 
         )
 
 
-def test_tool_provenance_script_flat_step_prefix_and_fallback_rows() -> None:
+def test_tool_provenance_script_flat_step_prefix_and_display_rows() -> None:
     stage = ReplayStage(
         source_kind="full_data",
         operations=(
@@ -4442,7 +4506,7 @@ def test_tool_provenance_script_flat_step_prefix_and_fallback_rows() -> None:
     assert before_stage.active_name == "result"
 
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="scan")
-    entries = spec._code_fallback_entries(parent_data=data)
+    entries = spec.display_entries(parent_data=data)
     labels = [entry.label for entry in entries]
     assert 'Average(dims=("x",))' in labels
     assert "isel(missing=0)" in labels
@@ -5075,6 +5139,179 @@ def test_file_load_source_replay_call_round_trips() -> None:
     assert parsed_erlab.replay_call.target == "example"
 
 
+def test_extension_load_source_code_uses_current_registration(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_script = tmp_path / "current_loader.py"
+    current_script.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(id="load_data", name="Current Lab Data")
+def read_current(path: Path) -> xr.DataArray:
+    return xr.DataArray([2.0 * float(path.read_text())])
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("3")
+    current_descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Current Lab Data",
+        category="Lab",
+        summary="",
+        function_name="read_current",
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: extension_api._RegisteredScriptCapability(
+            registered_path=current_script,
+            script_name=current_script.name,
+            source_hash="b" * 64,
+            descriptor=current_descriptor,
+            source_bytes=current_script.read_bytes(),
+        ),
+    )
+
+    class PinnedLoader:
+        script_name = "lab_loader.py"
+        source_hash = "a" * 64
+        loader_id = "load_data"
+        source_path = tmp_path / "missing" / "old_loader.py"
+        descriptor = erlab.extensions.LoaderDescriptor(
+            id="load_data",
+            name="Current Lab Data",
+            category="Lab",
+            summary="",
+            function_name="read_old",
+        )
+
+        def __call__(self, _path: pathlib.Path) -> xr.DataArray:
+            raise RuntimeError("The pinned callable must not generate copied code")
+
+    details = _load_source_details_from_file(
+        data_path,
+        (
+            PinnedLoader(),
+            {},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    if details.load_code is None:
+        raise RuntimeError("The registered loader did not generate code")
+    namespace = _exec_generated_code(details.load_code, {})
+
+    assert details.loader_text == "current_loader.py: Current Lab Data"
+    assert str(current_script) in details.load_code
+    assert "old_loader.py" not in details.load_code
+    assert ".read_current(" in details.load_code
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([6.0]))
+
+    provenance = _load_provenance_from_file_details(
+        data_path,
+        (
+            PinnedLoader(),
+            {},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    if provenance is None or provenance.file_load_source is None:
+        raise RuntimeError("The extension loader did not create provenance")
+    assert provenance.file_load_source.load_code is None
+
+
+def test_registered_extension_provenance_exposes_current_load_code(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "local_loader.py"
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader()
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("4")
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: extension_api._RegisteredScriptCapability(
+            registered_path=script_path,
+            script_name=script_path.name,
+            source_hash="a" * 64,
+            descriptor=erlab.extensions.LoaderDescriptor(
+                id="load_data",
+                name="Load data",
+                category="Other",
+                summary="",
+                function_name="load_data",
+            ),
+            source_bytes=script_path.read_bytes(),
+        ),
+    )
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="local_loader.py: Load data",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="local_loader.py",
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+        load_code="load_script('/sender/local_loader.py').load_data()",
+    )
+
+    details = _load_source_details_from_provenance(load_source)
+    if details.load_code is None:
+        raise RuntimeError("The registered loader did not generate code")
+    namespace = _exec_generated_code(details.load_code, {})
+
+    assert str(script_path) in details.load_code
+    assert "/sender/local_loader.py" not in details.load_code
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([4.0]))
+
+
+def test_embedded_only_extension_provenance_suppresses_recorded_load_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_reference(*_args: typing.Any) -> typing.NoReturn:
+        raise erlab.extensions.ExtensionNotFoundError("not registered")
+
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        missing_reference,
+    )
+    load_source = FileLoadSource(
+        path="scan.txt",
+        loader_label="Extension Loader",
+        loader_text="embedded_loader.py: Load data",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="embedded_loader.py",
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+        load_code="load_script('/sender/embedded_loader.py').load_data()",
+    )
+
+    details = _load_source_details_from_provenance(load_source)
+
+    assert details.load_code is None
+
+
 def test_provenance_file_source_capabilities_cover_script_backed_files(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -5111,6 +5348,10 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
         operation_refs = tuple(iter_operation_refs(spec))
         assert [ref.operation_index for ref, _op in operation_refs] == [0]
         assert isinstance(operation_refs[0][1], AverageOperation)
+
+    incomplete_file_spec = file_spec.model_copy(update={"file_load_source": None})
+    assert file_load_source_status(incomplete_file_spec) == "no-file-load-source"
+    assert not can_reload_without_trust(incomplete_file_spec)
 
     missing_spec = script_spec.model_copy(
         update={
@@ -5175,6 +5416,54 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
     assert can_reload_without_trust(plain_script)
 
 
+def test_file_reload_checks_extension_routine_operations(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    xr.DataArray([1.0]).to_netcdf(path)
+    spec = file_load(
+        start_label="Load data",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=FileLoadSource(
+            path=str(path),
+            loader_label="Load Function",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="(none)",
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    ).append_replay_stage(
+        full_data(
+            ExtensionRoutineOperation(
+                script_name="local_routine.py",
+                source_hash="a" * 64,
+                routine_id="scale",
+                routine_name="Scale",
+                parameters={},
+            )
+        )
+    )
+    calls: list[tuple[str, str, str, str]] = []
+
+    def capability_status(
+        script_name: str,
+        source_hash: str,
+        kind: str,
+        capability_id: str,
+    ) -> str:
+        calls.append((script_name, source_hash, kind, capability_id))
+        return "disabled"
+
+    assert not can_reload_without_trust(
+        spec,
+        extension_status_resolver=typing.cast("typing.Any", capability_status),
+    )
+    assert calls == [("local_routine.py", "a" * 64, "routine", "scale")]
+
+
 def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     data = _base_data()
 
@@ -5210,6 +5499,20 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         )
     with pytest.raises(ValidationError, match="target"):
         FileReplayCall(kind="callable", target="", selected_index=0)
+    with pytest.raises(ValidationError, match="lowercase SHA-256"):
+        FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader.py",
+            source_hash="not-a-source",
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+    with pytest.raises(ValidationError, match="source_hash and capability_id"):
+        FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader.py",
+            selection=FileDataSelection(kind="dataarray"),
+        )
 
     bad_kwargs_call = FileReplayCall.model_construct(
         kind="callable",
@@ -5291,6 +5594,62 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         )
     with pytest.raises(TypeError, match="Replay steps can only"):
         full_data().append_replay_stage(full_data())
+
+
+def test_extension_routine_rejects_invalid_source_identity() -> None:
+    with pytest.raises(ValidationError, match="lowercase SHA-256"):
+        ExtensionRoutineOperation(
+            script_name="lab_routines.py",
+            source_hash="not-a-source",
+            routine_id="normalize",
+            routine_name="Normalize",
+            parameters={},
+        )
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    ["lab", ".", "../lab.py", "folder/lab.py", "bad\x00.py"],
+)
+def test_extension_provenance_rejects_invalid_script_names(
+    script_name: str,
+) -> None:
+    with pytest.raises(ValidationError, match=r"must be a \.py basename"):
+        ExtensionRoutineOperation(
+            script_name=script_name,
+            source_hash="a" * 64,
+            routine_id="normalize",
+            routine_name="Normalize",
+            parameters={},
+        )
+    with pytest.raises(ValidationError, match=r"must be a \.py basename"):
+        FileReplayCall(
+            kind="extension_loader",
+            target=script_name,
+            source_hash="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+
+
+def test_extension_provenance_preserves_valid_script_name_spelling() -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="Lab_Routines.PY",
+        source_hash="a" * 64,
+        routine_id="normalize",
+        routine_name="Normalize",
+        parameters={},
+    )
+    replay_call = FileReplayCall(
+        kind="extension_loader",
+        target="Lab_Loaders.PY",
+        source_hash="b" * 64,
+        capability_id="load_data",
+        selection=FileDataSelection(kind="dataarray"),
+    )
+
+    assert operation.script_name == "Lab_Routines.PY"
+    assert replay_call.target == "Lab_Loaders.PY"
 
 
 def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> None:
@@ -5599,11 +5958,14 @@ def test_compose_operation_free_restored_source_preserves_nonuniform_dimensions(
     xr.testing.assert_identical(replayed, public)
 
     code = composed.display_code()
-    assert code is not None
-    namespace = _exec_generated_code(code, replay_inputs)
-    xr.testing.assert_identical(
-        namespace[typing.cast("str", composed.active_name)], public
-    )
+    if composed.kind == "file":
+        assert code is not None
+        namespace = _exec_generated_code(code, replay_inputs)
+        xr.testing.assert_identical(
+            namespace[typing.cast("str", composed.active_name)], public
+        )
+    else:
+        assert code is None
 
 
 def test_script_provenance_supports_named_console_inputs() -> None:
@@ -5613,12 +5975,16 @@ def test_script_provenance_supports_named_console_inputs() -> None:
             code="data_0 = data_0 + 1.0",
         ),
         start_label="Load left",
-        seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
+        seed_code=(
+            "import xarray as xr\n\ndata_0 = xr.DataArray([1.0, 2.0], dims=['x'])"
+        ),
         active_name="data_0",
     )
     right = script(
         start_label="Load right",
-        seed_code="data_1 = xr.DataArray([0.5, 1.5], dims=['x'])",
+        seed_code=(
+            "import xarray as xr\n\ndata_1 = xr.DataArray([0.5, 1.5], dims=['x'])"
+        ),
         active_name="data_1",
     )
     spec = script(
@@ -6065,10 +6431,7 @@ derived = data
             script_inputs="bad",
         )
 
-    assert (
-        script(start_label="Run", active_name="derived")._graph_code(display=True)
-        is None
-    )
+    assert script(start_label="Run", active_name="derived").derivation_code() is None
     assert (
         full_data(
             ScriptCodeOperation(label="Opaque", code=None, copyable=False)
@@ -7603,10 +7966,12 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     assert "import xarray" in code
     assert "xarray.load_dataarray" in code
     assert '.rename("avg")' not in code
-    assert ".rename(y=" in code
-    assert "data =" not in code
     namespace = _exec_generated_code(code, {})
     assert isinstance(namespace["derived"], xr.DataArray)
+    xr.testing.assert_identical(
+        namespace["derived"],
+        second_stage.apply(first_stage.apply(data.astype(np.float64))),
+    )
 
     updated = data + 100
     updated.to_netcdf(path, engine="h5netcdf")
@@ -7703,6 +8068,7 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
     parent = script(
         start_label="Start from watched variable 'my_1d'",
         seed_code="derived = my_1d",
+        active_name="derived",
     )
     source = selection(
         SortCoordOrderOperation(),
@@ -7723,17 +8089,12 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
 
     assert composed is not None
     code = composed.display_code()
-    assert code is not None
+    assert code is None
     watched_data = xr.DataArray(
         np.arange(5),
         dims=("x",),
         coords={"x": np.arange(5)},
     )
-    namespace = _exec_generated_code(code, {"my_1d": watched_data.copy(deep=True)})
-    derived = namespace["derived"]
-    assert isinstance(derived, xr.DataArray)
-    xr.testing.assert_identical(derived, watched_data)
-    assert ".squeeze()" not in code
 
     explicit_source = selection(
         SortCoordOrderOperation(),
@@ -7770,6 +8131,7 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_selection(
     parent = script(
         start_label="Start from watched variable 'my_1d'",
         seed_code="derived = my_1d",
+        active_name="derived",
     )
     parent_data = xr.DataArray(
         np.arange(5).reshape((5, 1)),
@@ -7786,17 +8148,7 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_selection(
 
     assert composed is not None
     code = composed.display_code()
-    assert code is not None
-    assert "stack_dim" not in code
-    watched_data = xr.DataArray(
-        np.arange(5),
-        dims=("x",),
-        coords={"x": np.arange(5)},
-    )
-    namespace = _exec_generated_code(code, {"my_1d": watched_data.copy(deep=True)})
-    derived = namespace["derived"]
-    assert isinstance(derived, xr.DataArray)
-    xr.testing.assert_identical(derived, watched_data)
+    assert code is None
 
 
 def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
@@ -7833,7 +8185,10 @@ def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     assert "fit_result" not in code
     assert "-np.inf" in code
     assert "np.inf" in code
-    namespace = _exec_generated_code(code, {"data": data})
+    namespace = _exec_generated_code(
+        code,
+        {"data": data, "era": erlab.analysis, "np": np, "xr": xr},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
     parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
@@ -7871,7 +8226,10 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     np.testing.assert_allclose(expected, 2.0)
 
     code = f"derived = {operation.expression_code('data')}"
-    namespace = _exec_generated_code(code, {"data": data})
+    namespace = _exec_generated_code(
+        code,
+        {"data": data, "era": erlab.analysis},
+    )
     xr.testing.assert_identical(namespace["derived"], expected)
 
 

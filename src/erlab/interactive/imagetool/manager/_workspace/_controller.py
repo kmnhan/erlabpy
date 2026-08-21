@@ -755,10 +755,18 @@ class _WorkspaceController:
     ) -> None:
         """Apply one committed generation to live manager references."""
         self._commit_saved_tool_data_references(snapshot)
+        store = self._workspace_store
+        if store is not None and not store.closed:
+            store.rebind_legacy_readers(
+                dict(snapshot.generation_plan.legacy_reader_rebindings)
+            )
         self._repoint_saved_pending_workspace_payloads(
             workspace_path,
             manifest=manifest,
         )
+        scripts = self._manager._workspace_state.extension_scripts
+        for script_name, source_hash, source in snapshot.embedded_script_sources:
+            scripts.remember_verified_source(script_name, source_hash, source)
         self._manager._workspace_state.schema_version = (
             workspace_format._current_workspace_schema_version()
         )
@@ -1714,7 +1722,12 @@ class _WorkspaceController:
             associated_store = workspace_store.WorkspaceStore.active(associated_fname)
             if associated_store is None:
                 associated_store = workspace_store.WorkspaceStore(associated_fname)
-            if schema_version == workspace_format._current_workspace_schema_version():
+            if (
+                workspace_format._workspace_schema_uses_immutable_generations(
+                    schema_version
+                )
+                and not self._manager._workspace_state.save_as_only
+            ):
                 associated_store.clear_staging()
 
         self._set_workspace_path(
@@ -1763,6 +1776,8 @@ class _WorkspaceController:
 
         state = self._manager._workspace_state
         if state.path is None:
+            return self.save_as(native=native, on_finished=_offload_after_save)
+        if state.save_as_only:
             return self.save_as(native=native, on_finished=_offload_after_save)
         if (
             self._manager.is_workspace_modified
@@ -2169,6 +2184,8 @@ class _WorkspaceController:
         workspace_path = self._current_workspace_document_path()
         if workspace_path is None:
             return self.save_as(native=native, on_finished=on_finished)
+        if self._manager._workspace_state.save_as_only:
+            return self.save_as(native=native, on_finished=on_finished)
         if self._manager._workspace_state.save_in_progress:
             self._background_save_requested = True
             self._manager._status_bar.showMessage("Workspace save queued", 3000)
@@ -2260,6 +2277,15 @@ class _WorkspaceController:
             self._manager._workspace_state.path is not None
             and pathlib.Path(fname).resolve() == self._manager._workspace_state.path
         ):
+            if self._manager._workspace_state.save_as_only:
+                self._manager._show_operation_error(
+                    "Select a different workspace file",
+                    "This workspace cannot overwrite the original file because "
+                    "some extension content is unavailable.",
+                )
+                if on_finished is not None:
+                    on_finished(False)
+                return False
             return self.save(
                 native=native,
                 on_finished=on_finished,
@@ -2422,6 +2448,8 @@ class _WorkspaceController:
                 workspace_lock=self._take_workspace_access_lock(access),
                 store=new_store,
             )
+            self._manager._workspace_state.save_as_only = False
+            self._manager._workspace_state.degraded_reasons = ()
             access = None
             self._adopt_committed_workspace_generation(
                 saved_path,
@@ -2523,6 +2551,13 @@ class _WorkspaceController:
         workspace_path = self._current_workspace_document_path()
         if workspace_path is None:
             return self.save_as()
+        if self._manager._workspace_state.save_as_only:
+
+            def _compact_after_save(save_succeeded: bool) -> None:
+                if save_succeeded and not self._manager._workspace_state.save_as_only:
+                    self.compact_workspace()
+
+            return self.save_as(on_finished=_compact_after_save)
         if self._manager._workspace_state.save_in_progress:
             self._manager._status_bar.showMessage(
                 "Workspace save already in progress", 3000
@@ -2558,6 +2593,11 @@ class _WorkspaceController:
                     self.saving._save_workspace_document(
                         workspace_path,
                         mark_clean=False,
+                    )
+                if store.leased_legacy_group_paths:
+                    workspace_storage._rebind_equivalent_legacy_readers(
+                        store,
+                        store.current_generation().manifest,
                     )
                 workspace_storage._compact_workspace_store(
                     store,

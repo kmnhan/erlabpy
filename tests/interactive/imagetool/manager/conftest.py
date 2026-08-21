@@ -30,4 +30,5 @@ def isolated_recent_workspace_settings(
         manager_widgets._MANAGER_SETTINGS_PATH_ENV_VAR,
         str(settings_path),
     )
+    monkeypatch.setenv("ERLAB_EXTENSION_CATALOG", str(tmp_path / "extensions"))
     return settings_path

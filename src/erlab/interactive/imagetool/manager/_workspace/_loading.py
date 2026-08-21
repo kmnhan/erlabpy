@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
+from erlab.extensions._models import _script_name_key
 from erlab.interactive import _qt_state
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
@@ -44,6 +46,9 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ChooseFromWorkspaceManifestDialog,
 )
+from erlab.interactive.imagetool.manager._extensions._models import (
+    _WorkspaceScriptRequirement,
+)
 from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _strip_workspace_modified_placeholder,
@@ -51,6 +56,7 @@ from erlab.interactive.imagetool.manager._widgets import (
 from erlab.interactive.imagetool.manager._workspace._format import (
     _require_itws_workspace_path,
 )
+from erlab.interactive.imagetool.manager._workspace._state import _WorkspaceScriptState
 
 if typing.TYPE_CHECKING:
     from collections.abc import (
@@ -821,7 +827,9 @@ class _WorkspaceLoader:
             )
             return False
         return (
-            schema_version == workspace_format._current_workspace_schema_version()
+            workspace_format._workspace_schema_uses_immutable_generations(
+                schema_version
+            )
             and manifest is not None
         )
 
@@ -872,6 +880,7 @@ class _WorkspaceLoader:
         profiler: _WorkspaceLoadProfiler | None = None,
         pending_workspace_memory_payload: tuple[str | os.PathLike[str], str]
         | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         with _workspace_load_stage(profiler, "imagetool metadata restore"):
             uid = ds.attrs.get("manager_node_uid")
@@ -934,8 +943,13 @@ class _WorkspaceLoader:
                 and not replay_source_pending
             ):
                 replay_source_data = self._workspace_replay_source_data(ds, uid=uid)
+            saved_uid = self._workspace_saved_uid_from_dataset(ds)
             kwargs: dict[str, typing.Any] = {
-                "uid": uid,
+                "uid": (
+                    saved_uid
+                    if saved_uid is None or reserved_uids is None
+                    else reserved_uids.get(saved_uid, saved_uid)
+                ),
                 "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
                 "source_snapshot_token": ds.attrs.get(
                     "manager_node_source_snapshot_token"
@@ -978,14 +992,24 @@ class _WorkspaceLoader:
             ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
 
             if pending_workspace_memory_payload is not None:
-                return self.pending._register_pending_workspace_imagetool(
-                    ds,
+                pending_ds = self._workspace_dataset_with_reserved_uid(
+                    ds, reserved_uids
+                )
+                target = self.pending._register_pending_workspace_imagetool(
+                    pending_ds,
                     parent_target=parent_target,
                     node_path=node_path,
                     kwargs=kwargs,
                     pending_workspace_memory_payload=pending_workspace_memory_payload,
                     loaded_targets_by_uid=loaded_targets_by_uid,
                 )
+                self._record_reserved_workspace_target(
+                    saved_uid,
+                    target,
+                    loaded_targets_by_uid,
+                    reserved_uids,
+                )
+                return target
 
         with _workspace_load_stage(profiler, "imagetool widget restore"):
             tool = ImageTool.from_dataset(ds, **tool_kwargs)
@@ -1059,17 +1083,27 @@ class _WorkspaceLoader:
         profiler: _WorkspaceLoadProfiler | None = None,
         pending_workspace_tool_payload: tuple[str | os.PathLike[str], str]
         | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         if pending_workspace_tool_payload is not None:
             self.pending._validate_pending_workspace_tool_dataset(
                 ds, parent_target=parent_target
             )
-            return self.pending._register_pending_workspace_tool(
-                ds,
+            saved_uid = self._workspace_saved_uid_from_dataset(ds)
+            pending_ds = self._workspace_dataset_with_reserved_uid(ds, reserved_uids)
+            target = self.pending._register_pending_workspace_tool(
+                pending_ds,
                 parent_target=parent_target,
                 pending_workspace_tool_payload=pending_workspace_tool_payload,
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
+            self._record_reserved_workspace_target(
+                saved_uid,
+                target,
+                loaded_targets_by_uid,
+                reserved_uids,
+            )
+            return target
 
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
         try:
@@ -1094,12 +1128,18 @@ class _WorkspaceLoader:
                     )
                 )
             with _workspace_load_stage(profiler, "tool manager registration"):
+                saved_uid = self._workspace_saved_uid_from_dataset(ds)
+                reserved_uid = (
+                    saved_uid
+                    if saved_uid is None or reserved_uids is None
+                    else reserved_uids.get(saved_uid, saved_uid)
+                )
                 if parent_target is None:
                     self._require_workspace_root_tool_is_figure(tool)
                     target = self._manager.add_figuretool(
                         tool,
                         show=_workspace_dataset_window_visible(ds, "tool"),
-                        uid=ds.attrs.get("manager_node_uid"),
+                        uid=reserved_uid,
                         snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
                         source_snapshot_token=ds.attrs.get(
                             "manager_node_source_snapshot_token"
@@ -1112,7 +1152,7 @@ class _WorkspaceLoader:
                         tool,
                         parent_target,
                         show=_workspace_dataset_window_visible(ds, "tool"),
-                        uid=ds.attrs.get("manager_node_uid"),
+                        uid=reserved_uid,
                         snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
                         source_snapshot_token=ds.attrs.get(
                             "manager_node_source_snapshot_token"
@@ -1150,6 +1190,83 @@ class _WorkspaceLoader:
         if isinstance(uid, str) and uid:
             return uid
         return None
+
+    @classmethod
+    def _workspace_dataset_with_reserved_uid(
+        cls,
+        ds: xr.Dataset,
+        reserved_uids: Mapping[str, str] | None,
+    ) -> xr.Dataset:
+        """Return a metadata view with the preallocated incoming node UID."""
+        saved_uid = cls._workspace_saved_uid_from_dataset(ds)
+        if saved_uid is None or reserved_uids is None:
+            return ds
+        reserved_uid = reserved_uids.get(saved_uid, saved_uid)
+        if reserved_uid == saved_uid:
+            return ds
+        reserved = ds.copy(deep=False)
+        reserved.attrs = dict(ds.attrs)
+        reserved.attrs["manager_node_uid"] = reserved_uid
+        return reserved
+
+    @staticmethod
+    def _record_reserved_workspace_target(
+        saved_uid: str | None,
+        target: int | str,
+        loaded_targets_by_uid: dict[str, int | str] | None,
+        reserved_uids: Mapping[str, str] | None,
+    ) -> None:
+        """Keep the saved-to-target map authoritative after metadata rebasing."""
+        if saved_uid is None or loaded_targets_by_uid is None:
+            return
+        if reserved_uids is not None:
+            reserved_uid = reserved_uids.get(saved_uid, saved_uid)
+            if reserved_uid != saved_uid:
+                loaded_targets_by_uid.pop(reserved_uid, None)
+        loaded_targets_by_uid[saved_uid] = target
+
+    def _reserve_workspace_uids(
+        self,
+        manifest: Mapping[str, typing.Any] | None,
+        incoming_scripts: _WorkspaceScriptState | None = None,
+        *,
+        selected_paths: Collection[str] | None = None,
+    ) -> dict[str, str]:
+        """Allocate every incoming node identity before any node is restored.
+
+        Failed nodes still need distinct identities because their unresolved script
+        requirements remain in the document after a degraded load.
+        """
+        incoming_uids: list[str] = []
+        manifest_uids: set[str] = set()
+        for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
+            if selected_paths is not None and entry.get("path") not in selected_paths:
+                continue
+            uid = entry.get("uid")
+            if not isinstance(uid, str) or not uid:
+                continue
+            if uid in manifest_uids:
+                raise ValueError(
+                    f"Workspace manifest contains duplicate node UID {uid!r}"
+                )
+            manifest_uids.add(uid)
+            incoming_uids.append(uid)
+        if incoming_scripts is not None:
+            for requirement in incoming_scripts.requirements:
+                for uid in requirement.referencing_nodes:
+                    if uid not in manifest_uids:
+                        manifest_uids.add(uid)
+                        incoming_uids.append(uid)
+
+        used = set(self._manager._tool_graph.nodes)
+        reserved: dict[str, str] = {}
+        for saved_uid in incoming_uids:
+            candidate = saved_uid
+            while candidate in used:
+                candidate = uuid.uuid4().hex
+            reserved[saved_uid] = candidate
+            used.add(candidate)
+        return reserved
 
     def _record_workspace_loaded_node_target(
         self,
@@ -1290,6 +1407,7 @@ class _WorkspaceLoader:
         node_path: str | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = None
@@ -1348,6 +1466,7 @@ class _WorkspaceLoader:
                 node_path=node_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
                 pending_workspace_memory_payload=pending_imagetool_payload,
+                reserved_uids=reserved_uids,
             )
         elif "tool" in node_tree:
             ds = None
@@ -1386,6 +1505,7 @@ class _WorkspaceLoader:
                 parent_target=parent_target,
                 loaded_targets_by_uid=loaded_targets_by_uid,
                 pending_workspace_tool_payload=pending_tool_payload,
+                reserved_uids=reserved_uids,
             )
         else:
             raise ValueError("Workspace node has no supported window payload")
@@ -1423,6 +1543,7 @@ class _WorkspaceLoader:
                         else f"{node_path}/childtools/{child_key}"
                     ),
                     loaded_targets_by_uid=loaded_targets_by_uid,
+                    reserved_uids=reserved_uids,
                 )
         return target
 
@@ -1436,6 +1557,7 @@ class _WorkspaceLoader:
         node_path: str | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str | None:
         try:
             return self._load_workspace_node(
@@ -1446,6 +1568,7 @@ class _WorkspaceLoader:
                 node_path=node_path,
                 workspace_file_path=workspace_file_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
+                reserved_uids=reserved_uids,
             )
         except Exception as exc:
             self._record_skipped_workspace_node(node_path, exc)
@@ -1460,6 +1583,7 @@ class _WorkspaceLoader:
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int:
         loaded_count = 0
         for key in root_keys:
@@ -1475,6 +1599,7 @@ class _WorkspaceLoader:
                     workspace_file_path=workspace_file_path,
                     node_path=key,
                     loaded_targets_by_uid=loaded_targets_by_uid,
+                    reserved_uids=reserved_uids,
                 )
                 if target is not None:
                     loaded_count += 1
@@ -1488,6 +1613,7 @@ class _WorkspaceLoader:
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
+        reserved_uids: Mapping[str, str] | None = None,
     ) -> int:
         if "figures" not in tree:
             return 0
@@ -1514,6 +1640,7 @@ class _WorkspaceLoader:
                 workspace_file_path=workspace_file_path,
                 node_path=figure_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
+                reserved_uids=reserved_uids,
             )
             if target is not None:
                 loaded_count += 1
@@ -1528,6 +1655,7 @@ class _WorkspaceLoader:
         mark_dirty: bool,
         selected_paths: set[str] | None = None,
         profiler: _WorkspaceLoadProfiler | None = None,
+        incoming_extension_state: _WorkspaceScriptState | None = None,
     ) -> bool:
         if profiler is None:
             profiler = _WorkspaceLoadProfiler(fname)
@@ -1536,7 +1664,6 @@ class _WorkspaceLoader:
         root_order = manifest.get("root_order", ())
         if not isinstance(nodes, list) or not isinstance(root_order, list):
             raise TypeError("Workspace manifest is missing node ordering")
-
         entries_by_path: dict[str, Mapping[str, typing.Any]] = {}
         for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
             path = entry.get("path")
@@ -1566,6 +1693,7 @@ class _WorkspaceLoader:
             raise ValueError("Workspace manifest has no loadable root nodes")
 
         loaded_targets_by_uid: dict[str, int | str] = {}
+        reserved_uids: dict[str, str] = {}
         child_paths: dict[str, list[str]] = {path: [] for path in entries_by_path}
         for path in entries_by_path:
             if "/childtools/" not in path:
@@ -1698,6 +1826,7 @@ class _WorkspaceLoader:
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     profiler=profiler,
                     pending_workspace_memory_payload=pending_payload,
+                    reserved_uids=reserved_uids,
                 )
             else:
                 target = self._load_workspace_tool_dataset(
@@ -1706,6 +1835,7 @@ class _WorkspaceLoader:
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     profiler=profiler,
                     pending_workspace_tool_payload=pending_payload,
+                    reserved_uids=reserved_uids,
                 )
             for child_path in child_paths[path]:
                 _load_path_or_warn(child_path, target)
@@ -1756,6 +1886,12 @@ class _WorkspaceLoader:
             else contextlib.nullcontext()
         )
         backup: _WorkspaceReplaceBackup | None = None
+        previous_import_scripts = (
+            self._manager._workspace_state.extension_scripts.copy()
+            if not replace
+            else None
+        )
+        extension_scripts_changed = False
         with (
             maybe_guard,
             erlab.interactive.utils.wait_dialog(
@@ -1771,6 +1907,18 @@ class _WorkspaceLoader:
                         self._manager._workspace_state.advance_document_identity()
                         self._manager.remove_all_tools()
                         self._controller._drain_workspace_restore_events()
+                reserved_uids = self._reserve_workspace_uids(
+                    manifest,
+                    incoming_extension_state,
+                    selected_paths=selected_paths,
+                )
+                if incoming_extension_state is not None:
+                    incoming_extension_state = incoming_extension_state.copy()
+                    incoming_extension_state.rebase_nodes(reserved_uids)
+                    extension_scripts_changed = self._install_extension_scripts(
+                        incoming_extension_state,
+                        replace=replace,
+                    )
                 loaded_count = 0
                 for root_path in root_paths:
                     if _load_path_or_warn(root_path) is not None:
@@ -1782,7 +1930,7 @@ class _WorkspaceLoader:
                     self._raise_no_workspace_windows_loaded()
                 with profiler.stage("link/layout restore"):
                     self._manager._rebase_loaded_workspace_dependency_refs(
-                        loaded_targets_by_uid
+                        loaded_targets_by_uid,
                     )
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if replace:
@@ -1792,6 +1940,10 @@ class _WorkspaceLoader:
                         self._restore_workspace_loader_state(manifest)
                         self._restore_acquisition_context(manifest)
                         self._restore_standalone_apps_state(manifest)
+                if mark_dirty and not replace and extension_scripts_changed:
+                    self._controller._mark_workspace_structure_dirty(
+                        "Imported extension scripts"
+                    )
                 if not mark_dirty:
                     with profiler.stage("ui catch-up"):
                         self._controller._drain_workspace_restore_events()
@@ -1801,6 +1953,10 @@ class _WorkspaceLoader:
                         self._restore_replaced_workspace_backup(backup)
                     except Exception:
                         logger.exception("Failed to restore previous workspace")
+                elif previous_import_scripts is not None:
+                    self._manager._workspace_state.extension_scripts.replace(
+                        previous_import_scripts
+                    )
                 raise
             finally:
                 if backup is not None:
@@ -1832,7 +1988,9 @@ class _WorkspaceLoader:
                 workspace_format._workspace_file_metadata_from_attrs(root_attrs)
             )
             if (
-                schema_version == workspace_format._current_workspace_schema_version()
+                workspace_format._workspace_schema_uses_immutable_generations(
+                    schema_version
+                )
                 and manifest is not None
             ):
                 self._from_h5py_workspace_file(
@@ -1928,6 +2086,7 @@ class _WorkspaceLoader:
             )
             backup: _WorkspaceReplaceBackup | None = None
             loaded_targets_by_uid: dict[str, int | str] = {}
+            reserved_uids: dict[str, str] = {}
             with (
                 maybe_guard,
                 erlab.interactive.utils.wait_dialog(
@@ -1944,6 +2103,8 @@ class _WorkspaceLoader:
                             self._manager._workspace_state.advance_document_identity()
                             self._manager.remove_all_tools()
                             self._controller._drain_workspace_restore_events()
+                        self._manager._workspace_state.extension_scripts.clear()
+                    reserved_uids = self._reserve_workspace_uids(manifest)
                     root_item = (
                         None
                         if dialog is None
@@ -1957,6 +2118,7 @@ class _WorkspaceLoader:
                             manifest=manifest,
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
+                            reserved_uids=reserved_uids,
                         )
                         loaded_count += self._load_workspace_figures(
                             tree,
@@ -1964,6 +2126,7 @@ class _WorkspaceLoader:
                             manifest=manifest,
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
+                            reserved_uids=reserved_uids,
                         )
                     if loaded_count == 0 and self._skipped_workspace_nodes:
                         self._raise_no_workspace_windows_loaded()
@@ -2409,8 +2572,9 @@ class _WorkspaceLoader:
                             )
                         )
                     if (
-                        schema_version
-                        == workspace_format._current_workspace_schema_version()
+                        workspace_format._workspace_schema_uses_immutable_generations(
+                            schema_version
+                        )
                         and manifest is not None
                     ):
                         load_store = None
@@ -2436,6 +2600,11 @@ class _WorkspaceLoader:
                                 ):
                                     return self._finish_workspace_file_load(False)
                                 selected_paths = dialog.selected_paths()
+                            incoming_extension_state = self._prepare_extension_scripts(
+                                access.path,
+                                manifest,
+                                selected_paths=selected_paths,
+                            )
                             loaded = self._from_h5py_workspace_file(
                                 access.path,
                                 manifest,
@@ -2443,6 +2612,7 @@ class _WorkspaceLoader:
                                 mark_dirty=mark_dirty,
                                 selected_paths=selected_paths,
                                 profiler=profiler,
+                                incoming_extension_state=incoming_extension_state,
                             )
                             if loaded and associate:
                                 self._controller._associate_loaded_workspace_file(
@@ -2460,6 +2630,8 @@ class _WorkspaceLoader:
                                     self._restore_workspace_loader_state(
                                         manifest, apply_explorer=False
                                     )
+                            if loaded:
+                                self._manager._extensions.notify_unavailable_workspace_requirements()
                             return _retain_imported_source(access, loaded)
                         finally:
                             if (
@@ -2469,9 +2641,8 @@ class _WorkspaceLoader:
                             ):
                                 load_store.close()
                 except Exception:
-                    if (
+                    if workspace_format._workspace_schema_uses_immutable_generations(
                         schema_version
-                        == workspace_format._current_workspace_schema_version()
                     ):
                         raise
                     logger.debug(
@@ -2508,6 +2679,9 @@ class _WorkspaceLoader:
                         workspace_file_path=access.path,
                         profiler=profiler,
                     )
+                    if replace:
+                        self._manager._workspace_state.save_as_only = False
+                        self._manager._workspace_state.degraded_reasons = ()
                     if loaded and associate:
                         self._controller._associate_loaded_workspace_file(
                             access.path,
@@ -2535,3 +2709,150 @@ class _WorkspaceLoader:
             self._controller._release_unused_imported_workspace_accesses()
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes
+
+    def _prepare_extension_scripts(
+        self,
+        workspace_path: pathlib.Path,
+        manifest: Mapping[str, typing.Any],
+        *,
+        selected_paths: set[str] | None,
+    ) -> _WorkspaceScriptState:
+        """Read document-owned script metadata and bytes without importing code."""
+        selected_uids: set[str] | None = None
+        manifest_paths = {
+            str(path)
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
+                manifest
+            )
+            if isinstance((path := entry.get("path")), str)
+        }
+        if selected_paths is not None and not manifest_paths.issubset(selected_paths):
+            selected_uids = {
+                str(uid)
+                for entry in workspace_format._iter_workspace_manifest_node_entries(
+                    manifest
+                )
+                if entry.get("path") in selected_paths
+                and isinstance((uid := entry.get("uid")), str)
+            }
+
+        validated_script_names: dict[str, str] = {}
+
+        def reserve_script_name(script_name: str) -> None:
+            key = _script_name_key(script_name)
+            previous = validated_script_names.setdefault(key, script_name)
+            if previous != script_name:
+                raise ValueError(
+                    "workspace scripts have ambiguous filenames: "
+                    f"{previous!r} and {script_name!r}"
+                )
+
+        def read_embedded_object(
+            object_id: str,
+        ) -> tuple[bytes, str | None]:
+            try:
+                workspace_store.WorkspaceStore.object_path(object_id)
+                return workspace_storage._read_workspace_blob(workspace_path, object_id)
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not read embedded extension source {object_id!r}"
+                ) from exc
+
+        raw_requirements = manifest.get("extension_requirements", [])
+        if not isinstance(raw_requirements, list):
+            raise TypeError("Workspace extension requirements must be a list")
+        all_requirements = tuple(
+            _WorkspaceScriptRequirement.model_validate(raw) for raw in raw_requirements
+        )
+
+        raw_sources = manifest.get("embedded_extension_sources", [])
+        if not isinstance(raw_sources, list):
+            raise TypeError("Workspace embedded extension sources must be a list")
+        all_sources = tuple(
+            workspace_format._WorkspaceEmbeddedScriptEntry.model_validate(raw)
+            for raw in raw_sources
+        )
+
+        for script_name in (
+            *(item.script_name for item in all_requirements),
+            *(item.script_name for item in all_sources),
+        ):
+            reserve_script_name(script_name)
+
+        requirements: list[_WorkspaceScriptRequirement] = []
+        referenced_sources: set[tuple[str, str]] = set()
+        for requirement in all_requirements:
+            if selected_uids is not None:
+                selected_references = tuple(
+                    uid for uid in requirement.referencing_nodes if uid in selected_uids
+                )
+                if not selected_references:
+                    continue
+                requirement = requirement.model_copy(
+                    update={"referencing_nodes": selected_references}
+                )
+            requirements.append(requirement)
+            referenced_sources.add((requirement.script_name, requirement.source_hash))
+
+        verified_sources: dict[
+            tuple[str, str],
+            tuple[workspace_format._WorkspaceEmbeddedScriptEntry, bytes],
+        ] = {}
+        explicit_sources: set[tuple[str, str]] = set()
+        for entry in all_sources:
+            key = (entry.script_name, entry.source_hash)
+            if selected_uids is not None and key not in referenced_sources:
+                continue
+            if key in verified_sources:
+                raise ValueError(f"Duplicate embedded extension source for {key!r}")
+            source, kind = read_embedded_object(entry.object_id)
+            if kind != "extension-python-source-v1":
+                raise ValueError(
+                    f"Embedded extension source {entry.object_id!r} has an "
+                    f"unsupported object kind {kind!r}"
+                )
+            if hashlib.sha256(source).hexdigest() != entry.source_hash:
+                raise ValueError(
+                    f"Embedded extension source {entry.object_id!r} does not match "
+                    "its hash"
+                )
+            verified_sources[key] = (entry, source)
+            if key not in referenced_sources:
+                explicit_sources.add(key)
+
+        return _WorkspaceScriptState(
+            requirements,
+            verified_sources=verified_sources,
+            explicit_sources=explicit_sources,
+        )
+
+    def _install_extension_scripts(
+        self,
+        incoming_state: _WorkspaceScriptState,
+        *,
+        replace: bool,
+    ) -> bool:
+        """Install one parsed script state after outgoing nodes are removed."""
+        scripts = self._manager._workspace_state.extension_scripts
+        previous = scripts.copy()
+        if replace:
+            scripts.replace(incoming_state)
+        else:
+            scripts.merge(incoming_state)
+        self._manager._extensions._reconcile_persisted_workspace_requirements()
+
+        unavailable = [
+            item
+            for item in self._manager._extensions.resolved_workspace_requirements(
+                include_current=False
+            )
+            if item.state != "ready"
+        ]
+        if not replace:
+            return scripts != previous
+        self._manager._workspace_state.save_as_only = bool(unavailable)
+        reasons = [
+            f"{item.requirement.script_name}: {item.state}" for item in unavailable
+        ]
+        self._manager._workspace_state.degraded_reasons = tuple(reasons)
+        return scripts != previous

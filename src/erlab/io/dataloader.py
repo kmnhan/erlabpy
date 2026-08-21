@@ -64,6 +64,21 @@ class LoaderNotFoundError(Exception):
         super().__init__(f"Loader for name or alias {key} not found in the registry")
 
 
+def _filename_matches_extensions(
+    file_path: pathlib.Path, extensions: Iterable[str] | None
+) -> bool:
+    """Return whether a path matches one of the loader filename extensions."""
+    if extensions is None:
+        return True
+    filename = file_path.name.casefold()
+    return any(
+        file_path.suffix == ""
+        if extension == ""
+        else filename.endswith(extension.casefold())
+        for extension in extensions
+    )
+
+
 class UnsupportedFileError(Exception):
     """Raised when the loader does not support the given file extension."""
 
@@ -158,7 +173,7 @@ class _Loader(_ReloadStableMeta):
                         errno.ENOENT, os.strerror(errno.ENOENT), file_path
                     )
 
-                if file_path.suffix.lower() not in self.extensions:
+                if not _filename_matches_extensions(file_path, self.extensions):
                     raise UnsupportedFileError(self, file_path)
                 return original_load_single(self, file_path, **kwargs)
 

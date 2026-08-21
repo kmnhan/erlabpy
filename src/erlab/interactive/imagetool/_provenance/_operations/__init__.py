@@ -35,6 +35,9 @@ from erlab.interactive.imagetool._provenance._operations._core import (
     _model_fit_parameters_code,
     _ModelFitParameterSpec,
 )
+from erlab.interactive.imagetool._provenance._operations._extension import (
+    ExtensionRoutineOperation,
+)
 from erlab.interactive.imagetool._provenance._operations._kspace import (
     KspaceConfigurationOperation,
     KspaceConvertOperation,
@@ -69,6 +72,7 @@ __all__ = (
     "CoarsenOperation",
     "CorrectWithEdgeOperation",
     "DivideByCoordOperation",
+    "ExtensionRoutineOperation",
     "FillNaOperation",
     "GaussianFilterOperation",
     "ImageDerivativeOperation",

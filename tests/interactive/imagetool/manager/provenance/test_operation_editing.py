@@ -1,3 +1,4 @@
+import contextlib
 import pathlib
 import types
 import typing
@@ -31,6 +32,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
     IselOperation,
@@ -405,6 +407,320 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
 
     assert replayed == [spec]
     assert replaced == [spec]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_editable"),
+    [
+        ("ready", True),
+        ("disabled", False),
+        ("approval-required", False),
+        ("missing-source", False),
+        ("missing-capability", False),
+        ("hash-mismatch", False),
+        ("unsupported-api", False),
+        ("validation-failed", False),
+    ],
+)
+def test_manager_extension_routine_editability_requires_a_ready_descriptor(
+    status: str,
+    expected_editable: bool,
+) -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="scale",
+        name="Scale",
+        category="Lab",
+        summary="",
+        function_name="scale",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=2.0,
+            ),
+        ),
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    status_calls: list[tuple[str, str, str, str]] = []
+
+    def capability_status(
+        script_name: str,
+        source_hash: str,
+        kind: str,
+        capability_id: str,
+    ) -> str:
+        status_calls.append((script_name, source_hash, kind, capability_id))
+        return status
+
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=capability_status,
+        routine_descriptor=lambda *_args: descriptor,
+    )
+
+    editable, reason = controller.can_edit_row(spec.display_rows()[1])
+
+    assert editable is expected_editable
+    assert bool(reason) is not expected_editable
+    assert status_calls == [("lab.py", "a" * 64, "routine", "scale")]
+
+
+def test_manager_extension_routine_without_parameters_is_not_editable() -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="normalize",
+        routine_name="Normalize",
+        parameters={},
+    )
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="normalize",
+        name="Normalize",
+        category="Lab",
+        summary="",
+        function_name="normalize",
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: descriptor,
+    )
+
+    editable, reason = controller.can_edit_row(spec.display_rows()[1])
+
+    assert not editable
+    assert reason
+
+
+def test_manager_extension_routine_without_descriptor_is_not_editable() -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="normalize",
+        routine_name="Normalize",
+        parameters={"scale": 2.0},
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: None,
+        unavailable_reason_for_node=lambda _uid: None,
+    )
+
+    editable, reason = controller.can_edit_row(spec.display_rows()[1])
+
+    assert not editable
+    assert "descriptor" in reason
+
+
+def test_manager_extension_operation_uses_extension_executor_for_filter_and_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    parent_data = xr.DataArray([[1.0], [2.0]], dims=("x", "y"))
+    spec = full_data(operation, NormalizeOperation(dims=("x",), mode="minmax"))
+    node = _fake_edit_node(spec)
+    node.imagetool = None
+    node.resolved_replay_source_data = lambda: parent_data
+    controller = _fake_edit_controller(node)
+    calls: list[xr.DataArray] = []
+
+    def run_operation(_operation, data: xr.DataArray) -> xr.DataArray:
+        calls.append(data)
+        return data * 2.0
+
+    controller._manager._extensions = types.SimpleNamespace(
+        execution=types.SimpleNamespace(run_operation=run_operation),
+        unavailable_reason_for_node=lambda _uid: "extension unavailable",
+    )
+
+    assert (
+        controller._reorder_replay_unavailable_reason(node, "display", spec)
+        == "extension unavailable"
+    )
+    controller._validate_filter_operation(
+        node,
+        parent_data,
+        operation,
+        where="validating filter",
+    )
+    result = controller._replay_live_script_candidate(node, "display", spec)
+
+    assert len(calls) == 2
+    xr.testing.assert_identical(
+        result,
+        NormalizeOperation(dims=("x",), mode="minmax").apply(parent_data * 2.0),
+    )
+
+
+def test_manager_extension_operation_edit_raises_when_descriptor_is_unavailable() -> (
+    None
+):
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: None,
+    )
+    row = spec.display_rows()[1]
+    assert row.edit_ref is not None
+
+    with pytest.raises(RuntimeError, match="descriptor"):
+        controller._edit_extension_routine_operation_row(
+            node,
+            row,
+            spec,
+            row.edit_ref,
+            operation,
+        )
+
+
+def test_manager_paste_detached_trusted_script_propagates_cancel() -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    local = script(
+        ScriptCodeOperation(
+            label="Trusted step",
+            code="derived = globals()['data']",
+        ),
+        start_label="Run script",
+        active_name="derived",
+    )
+    node = _fake_edit_node(full_data())
+    node.current_public_data = lambda: data
+    node.resolved_replay_source_data = lambda: data
+    controller = _fake_edit_controller(node)
+
+    def cancel(*_args, **_kwargs) -> None:
+        raise manager_widgets._TrustedScriptReplayCancelled
+
+    controller._manager._ensure_script_provenance_trusted = cancel
+    controller._manager._extensions = types.SimpleNamespace(
+        execution=types.SimpleNamespace(
+            capture_replay_sources=lambda: contextlib.nullcontext(object()),
+            run_operation=lambda operation, value: operation.apply(value),
+        ),
+        replay_loader=lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(manager_widgets._TrustedScriptReplayCancelled):
+        controller._paste_detached_steps(node, local, where="pasting")
+
+
+def test_manager_extension_routine_editor_preserves_identity_and_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="scale",
+        name="Scale",
+        category="Lab",
+        summary="",
+        function_name="scale",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=2.0,
+            ),
+        ),
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: descriptor,
+    )
+    initial_values: list[dict[str, typing.Any]] = []
+    accepted = True
+
+    class ParameterDialog:
+        parameters: typing.ClassVar[dict[str, float]] = {"scale": 3.0}
+
+        def __init__(
+            self,
+            descriptor_arg: erlab.extensions.RoutineDescriptor,
+            _parent: object,
+            values: dict[str, typing.Any] | None = None,
+        ) -> None:
+            assert descriptor_arg is descriptor
+            initial_values.append(dict(values or {}))
+
+        def exec(self) -> int:
+            return int(
+                QtWidgets.QDialog.DialogCode.Accepted
+                if accepted
+                else QtWidgets.QDialog.DialogCode.Rejected
+            )
+
+    monkeypatch.setattr(
+        provenance_edit_controller,
+        "_ExtensionParameterDialog",
+        ParameterDialog,
+    )
+    candidates: list[ToolProvenanceSpec] = []
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda _node, _scope, candidate, **_kwargs: candidates.append(candidate),
+    )
+    row = spec.display_rows()[1]
+
+    controller.edit_row(row)
+
+    assert initial_values == [{"scale": 2.0}]
+    replacement = candidates[0].operations[0]
+    assert isinstance(replacement, ExtensionRoutineOperation)
+    assert (
+        replacement.model_copy(update={"parameters": operation.parameters}) == operation
+    )
+    assert replacement.parameters == {"scale": 3.0}
+
+    accepted = False
+    controller.edit_row(row)
+    assert len(candidates) == 1
 
 
 def test_manager_terminal_current_data_edit_seed_rejects_grouped_operations(
@@ -1169,12 +1485,7 @@ def test_manager_provenance_validation_rejects_highdim_reorder_result(
         active_name="derived",
     )
     reordered = original.model_copy(update={"steps": tuple(reversed(original.steps))})
-    manager = types.SimpleNamespace(
-        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
-    )
-    controller = provenance_edit_controller._ProvenanceEditController(
-        typing.cast("typing.Any", manager)
-    )
+    controller = _fake_edit_controller()
     node = types.SimpleNamespace(
         imagetool=None,
         resolved_replay_source_data=lambda: source,

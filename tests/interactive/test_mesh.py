@@ -23,6 +23,14 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 
 
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    output = dict(namespace)
+    exec(code, output, output)  # noqa: S102
+    return output
+
+
 @pytest.fixture
 def meshy_data() -> xr.DataArray:
     height = width = 32
@@ -100,7 +108,7 @@ def test_meshtool_update_and_copy_code(qtbot, meshy_data) -> None:
         "corrected": None,
         "mesh": None,
     }
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, namespace)
 
     xr.testing.assert_identical(win._corrected, namespace["corrected"])
     xr.testing.assert_identical(win._mesh, namespace["mesh"])
@@ -151,7 +159,7 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
             "era": erlab.analysis,
             "mesh_data": meshy_data,
         }
-        exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+        namespace = _exec_generated_code(code, namespace)
         output = namespace[expected_name]
         assert isinstance(output, xr.DataArray)
         xr.testing.assert_identical(
@@ -176,10 +184,8 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
         "era": erlab.analysis,
         "mesh": meshy_data,
     }
-    exec(  # noqa: S102
-        corrected_collision_code,
-        {"__builtins__": {}},
-        corrected_namespace,
+    corrected_namespace = _exec_generated_code(
+        corrected_collision_code, corrected_namespace
     )
     xr.testing.assert_identical(
         typing.cast("xr.DataArray", corrected_namespace["mesh_output"]),
@@ -194,7 +200,7 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
         "era": erlab.analysis,
         "corrected": meshy_data,
     }
-    exec(mesh_collision_code, {"__builtins__": {}}, mesh_namespace)  # noqa: S102
+    mesh_namespace = _exec_generated_code(mesh_collision_code, mesh_namespace)
     xr.testing.assert_identical(
         typing.cast("xr.DataArray", mesh_namespace["corrected_output"]),
         mesh_operation.apply(meshy_data),
@@ -262,11 +268,7 @@ def test_remove_mesh_replay_preserves_reserved_tuple_binding(
     assert code is not None
     assert "corrected, mesh_2 = era.mesh.remove_mesh(" in code
 
-    namespace: dict[str, object] = {
-        "era": erlab.analysis,
-        "xr": xr,
-    }
-    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(code, {"era": erlab.analysis, "xr": xr})
     expected = operation.apply(meshy_data) + existing_mesh
     xr.testing.assert_identical(
         typing.cast("xr.DataArray", namespace["result"]),
@@ -368,7 +370,7 @@ def test_meshtool_autofind_and_persistence(
         "era": erlab.analysis,
         "mesh_input": meshy_data,
     }
-    exec(restored.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    namespace = _exec_generated_code(restored.copy_code(), namespace)
     corrected, mesh = erlab.analysis.mesh.remove_mesh(
         meshy_data,
         **restored.get_params_dict(),

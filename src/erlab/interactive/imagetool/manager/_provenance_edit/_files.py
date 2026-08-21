@@ -11,8 +11,11 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
+from erlab.extensions import LoaderDescriptor
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
+    _extension_loader_identity,
     _load_provenance_from_file_details,
     _loader_callable_text,
     _migrate_legacy_file_data_selection,
@@ -28,7 +31,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
@@ -152,6 +155,11 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         batch_peers: Sequence[_FileLoadBatchPeer] = (),
         batch_apply_default: bool = False,
         checked_batch_peer_ids: frozenset[str] | None = None,
+        file_loaders: Callable[
+            [pathlib.Path | Sequence[pathlib.Path] | None],
+            dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]],
+        ]
+        | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("managerProvenanceFileLoadEditDialog")
@@ -182,6 +190,8 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._initial_loader_extensions = (
             dict(loader_extensions) if isinstance(loader_extensions, dict) else None
         )
+        self._accepted_extension_parameters: dict[str, typing.Any] | None = None
+        self._file_loaders = file_loaders or erlab.interactive.utils.file_loaders
 
         layout = QtWidgets.QVBoxLayout(self)
         form_layout = QtWidgets.QFormLayout()
@@ -295,31 +305,56 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         *,
         preferred_filter: str | None = None,
     ) -> _LoaderOptionsWidget:
-        valid_loaders = erlab.interactive.utils.file_loaders(path)
+        valid_loaders = self._file_loaders(path)
         if not valid_loaders:
-            valid_loaders = erlab.interactive.utils.file_loaders()
+            valid_loaders = self._file_loaders(None)
 
         selected_filter = (
             preferred_filter if preferred_filter in valid_loaders else None
         )
-        if selected_filter is None and self._replay_call is not None:
-            for name_filter, (func, kwargs) in valid_loaders.items():
-                if self._replay_call.kind == "erlab_loader":
+
+        def recorded_filter(
+            loaders: dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]],
+        ) -> str | None:
+            """Find the exact loader recorded by this provenance step."""
+            replay_call = typing.cast("FileReplayCall", self._replay_call)
+            for name_filter, (func, kwargs) in loaders.items():
+                if replay_call.kind == "erlab_loader":
                     loader = getattr(func, "__self__", None)
                     matches = (
                         isinstance(loader, erlab.io.dataloader.LoaderBase)
-                        and loader.name == self._replay_call.target
+                        and loader.name == replay_call.target
+                    )
+                elif replay_call.kind == "extension_loader":
+                    (
+                        script_name,
+                        extension_source_hash,
+                        extension_capability_id,
+                    ) = _extension_loader_identity(func)
+                    matches = (
+                        script_name is not None
+                        and _script_name_key(script_name)
+                        == _script_name_key(replay_call.target)
+                        and extension_source_hash == replay_call.source_hash
+                        and extension_capability_id == replay_call.capability_id
                     )
                 else:
-                    matches = _loader_callable_text(
-                        func
-                    ) == self._replay_call.target and all(
+                    matches = _loader_callable_text(func) == replay_call.target and all(
                         self._initial_kwargs.get(key) == value
                         for key, value in kwargs.items()
                     )
                 if matches:
-                    selected_filter = name_filter
-                    break
+                    return name_filter
+            return None
+
+        if selected_filter is None and self._replay_call is not None:
+            selected_filter = recorded_filter(valid_loaders)
+            if selected_filter is None and preferred_filter is None:
+                all_loaders = self._file_loaders(None)
+                selected_filter = recorded_filter(all_loaders)
+                if selected_filter is None:
+                    raise RuntimeError("The recorded file loader is not available")
+                valid_loaders = all_loaders
         selected_filter = selected_filter or next(iter(valid_loaders), None)
         if selected_filter is not None:
             func, kwargs = valid_loaders[selected_filter]
@@ -372,9 +407,9 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             else None
         )
         current_metadata = self.loader_options.spreadsheet_metadata_source()
-        valid_loaders = erlab.interactive.utils.file_loaders(path)
+        valid_loaders = self._file_loaders(path)
         if not valid_loaders:
-            valid_loaders = erlab.interactive.utils.file_loaders()
+            valid_loaders = self._file_loaders(None)
         if tuple(valid_loaders) == tuple(self.loader_options._valid_loaders):
             self.loader_options._sample_paths = (path,)
             return
@@ -481,6 +516,8 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         replay_steps: tuple[ReplayStep, ...],
     ) -> ToolProvenanceSpec:
         _filter_name, func, kwargs = self.loader_options.checked_filter()
+        if self._accepted_extension_parameters is not None:
+            kwargs = self._accepted_extension_parameters
         if selection.kind == "parsed_index":
             selection = _migrate_legacy_file_data_selection(
                 path,
@@ -559,6 +596,23 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
     def accept(self) -> None:
         if not self.loader_options.validate_checked_values():
             return
+        _filter_name, func, kwargs = self.loader_options.checked_filter()
+        descriptor = getattr(func, "descriptor", None)
+        if isinstance(descriptor, LoaderDescriptor) and not bool(
+            getattr(func, "uses_standard_loader_options", False)
+        ):
+            from erlab.interactive.imagetool.manager._extensions._dialogs import (
+                _ExtensionParameterDialog,
+            )
+
+            parameter_dialog = _ExtensionParameterDialog(
+                descriptor,
+                self,
+                values=kwargs,
+            )
+            if parameter_dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+                return
+            self._accepted_extension_parameters = parameter_dialog.parameters
         super().accept()
 
 
@@ -573,9 +627,14 @@ def _same_replay_loader(
     left: FileReplayCall,
     right: FileReplayCall,
 ) -> bool:
+    targets_match = left.target == right.target
+    if left.kind == right.kind == "extension_loader":
+        targets_match = _script_name_key(left.target) == _script_name_key(right.target)
     return (
         left.kind == right.kind
-        and left.target == right.target
+        and targets_match
+        and left.source_hash == right.source_hash
+        and left.capability_id == right.capability_id
         and encode_provenance_value(left.kwargs)
         == encode_provenance_value(right.kwargs)
     )

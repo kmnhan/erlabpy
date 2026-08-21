@@ -14,9 +14,11 @@ import typing
 import uuid
 from dataclasses import dataclass
 
+import numpy as np
 from qtpy import QtCore
 
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool.manager._workspace._format import (
     _WORKSPACE_BACKUP_GROUP_PREFIX,
@@ -27,7 +29,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     import h5py
     import xarray as xr
@@ -47,6 +49,8 @@ class _WorkspaceObjectWrite:
     dataset: xr.Dataset | None = None
     source_file: str | None = None
     source_path: str | None = None
+    blob: bytes | None = None
+    blob_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,11 +64,20 @@ class _WorkspaceGroupCopy:
 
 @dataclass(frozen=True)
 class _WorkspaceGenerationPlan:
-    """A complete manifest and the new objects that it references."""
+    """A complete manifest and the new objects that it references.
+
+    ``legacy_object_links`` identifies unchanged legacy payloads that can become
+    immutable objects through a hard link during an in-place format upgrade.
+    ``legacy_reader_rebindings`` contains only legacy paths whose array values
+    match the target object. Save As can hard-link these paths and retarget their
+    live readers after publication without changing a Dask graph's result.
+    """
 
     manifest: dict[str, typing.Any]
     objects: tuple[_WorkspaceObjectWrite, ...]
     preserved_groups: tuple[_WorkspaceGroupCopy, ...] = ()
+    legacy_object_links: tuple[tuple[str, str], ...] = ()
+    legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
 
 
 def _workspace_object_copy_source(item: _WorkspaceObjectWrite) -> tuple[str, str]:
@@ -85,6 +98,27 @@ def _workspace_generation_copy_source(
     workspace_arrays.ensure_workspace_hdf5_filters_registered()
     with workspace_arrays._workspace_file_lock(path), h5py.File(path, "r") as h5_file:
         yield h5_file
+
+
+def _existing_workspace_object_ids(
+    path: str | os.PathLike[str], object_ids: Iterable[str]
+) -> frozenset[str]:
+    """Return only immutable objects that can be copied from a workspace.
+
+    A degraded document can retain a manifest reference whose object was already
+    missing. Save As must preserve that unresolved reference without attempting a
+    copy that would abort the complete save.
+    """
+    candidates = frozenset(object_ids)
+    if not candidates:
+        return frozenset()
+    with _workspace_generation_copy_source(path) as h5_file:
+        return frozenset(
+            object_id
+            for object_id in candidates
+            if workspace_store.WorkspaceStore.object_path(object_id).strip("/")
+            in h5_file
+        )
 
 
 def _copy_workspace_group(
@@ -122,6 +156,26 @@ def _copy_workspace_group(
         )
 
 
+def _link_workspace_group(
+    target_store: workspace_store.WorkspaceStore,
+    *,
+    source_path: str,
+    target_path: str,
+) -> bool:
+    """Create one HDF5 hard link and return whether it was created."""
+    with target_store.lock:
+        if target_path.strip("/") in target_store.h5_file:
+            return False
+        if source_path.strip("/") not in target_store.h5_file:
+            raise KeyError(f"Workspace payload group {source_path!r} is missing")
+        parent = workspace_arrays._ensure_h5_parent_group(
+            target_store.h5_file, target_path
+        )
+        name = target_path.rstrip("/").rsplit("/", maxsplit=1)[-1]
+        parent[name] = target_store.h5_file[source_path]
+        return True
+
+
 def _write_workspace_generation(
     target_store: workspace_store.WorkspaceStore,
     plan: _WorkspaceGenerationPlan,
@@ -132,10 +186,18 @@ def _write_workspace_generation(
     """Write new immutable objects and publish one generation."""
     with target_store.write_session(on_contention=on_contention):
         created_object_ids: list[str] = []
+        created_legacy_links: list[str] = []
         try:
             with target_store.lock:
                 target_store.require_current_path()
+            legacy_object_links = {
+                object_id: legacy_path
+                for legacy_path, object_id in plan.legacy_object_links
+            }
+            legacy_reader_rebindings = dict(plan.legacy_reader_rebindings)
             for item in plan.preserved_groups:
+                if item.target_path in legacy_reader_rebindings:
+                    continue
                 with target_store.lock:
                     if item.target_path.strip("/") in target_store.h5_file:
                         continue
@@ -150,6 +212,15 @@ def _write_workspace_generation(
                 with target_store.lock:
                     if target_path.strip("/") in target_store.h5_file:
                         continue
+                legacy_path = legacy_object_links.get(item.object_id)
+                if legacy_path is not None:
+                    if _link_workspace_group(
+                        target_store,
+                        source_path=legacy_path,
+                        target_path=target_path,
+                    ):
+                        created_object_ids.append(item.object_id)
+                    continue
                 created_object_ids.append(item.object_id)
                 if item.dataset is not None:
                     if workspace_arrays._workspace_dataset_can_write_h5py(item.dataset):
@@ -168,6 +239,16 @@ def _write_workspace_generation(
                             compression_mode=compression_mode,
                         )
                     continue
+                if item.blob is not None:
+                    with target_store.lock:
+                        group = target_store.h5_file.require_group(target_path)
+                        if item.blob_kind is not None:
+                            group.attrs["erlab_object_kind"] = item.blob_kind
+                        group.create_dataset(
+                            "source",
+                            data=np.frombuffer(item.blob, dtype=np.uint8),
+                        )
+                    continue
                 source_file, source_path = _workspace_object_copy_source(item)
                 _copy_workspace_group(
                     target_store,
@@ -175,9 +256,25 @@ def _write_workspace_generation(
                     source_path=source_path,
                     target_path=target_path,
                 )
+            for item in plan.preserved_groups:
+                object_id = legacy_reader_rebindings.get(item.target_path)
+                if object_id is None:
+                    continue
+                object_path = target_store.object_path(object_id)
+                if _link_workspace_group(
+                    target_store,
+                    source_path=object_path,
+                    target_path=item.target_path,
+                ):
+                    created_legacy_links.append(item.target_path)
             return target_store.publish(plan.manifest)
         except Exception:
             with contextlib.suppress(Exception), target_store.lock:
+                for group_path in created_legacy_links:
+                    workspace_arrays._delete_h5_path(
+                        target_store.h5_file,
+                        group_path,
+                    )
                 referenced_object_ids: set[str] = set()
                 for generation in target_store.generations():
                     referenced_object_ids.update(
@@ -191,6 +288,122 @@ def _write_workspace_generation(
                         )
                 target_store.h5_file.flush()
             raise
+
+
+def _read_workspace_blob(
+    path: str | os.PathLike[str], object_id: str
+) -> tuple[bytes, str | None]:
+    """Read one immutable binary object without executing its contents."""
+    object_path = workspace_store.WorkspaceStore.object_path(object_id)
+    with _workspace_generation_copy_source(path) as h5_file:
+        group = h5_file[object_path]
+        raw = group["source"][()]
+        kind = group.attrs.get("erlab_object_kind")
+        if isinstance(kind, bytes):
+            kind = kind.decode()
+        return bytes(raw), kind if isinstance(kind, str) else None
+
+
+def _workspace_dataset_values_equal(
+    left: typing.Any,
+    right: typing.Any,
+) -> bool:
+    if left.shape != right.shape or left.dtype != right.dtype:
+        return False
+
+    def _values_equal(left_values: np.ndarray, right_values: np.ndarray) -> bool:
+        try:
+            return bool(np.array_equal(left_values, right_values, equal_nan=True))
+        except TypeError:
+            return bool(np.array_equal(left_values, right_values))
+
+    if not left.shape:
+        return _values_equal(left[()], right[()])
+    if any(size == 0 for size in left.shape):
+        return True
+    remaining_items = max(1, (16 * 1024 * 1024) // max(1, left.dtype.itemsize))
+    reversed_block_shape: list[int] = []
+    for size in reversed(left.shape):
+        block_size = min(int(size), remaining_items)
+        reversed_block_shape.append(block_size)
+        remaining_items = max(1, remaining_items // block_size)
+    block_shape = tuple(reversed(reversed_block_shape))
+    block_counts = tuple(
+        (int(size) + block_size - 1) // block_size
+        for size, block_size in zip(left.shape, block_shape, strict=True)
+    )
+    for block_index in np.ndindex(block_counts):
+        selection = tuple(
+            slice(
+                index * block_size,
+                min((index + 1) * block_size, int(size)),
+            )
+            for index, block_size, size in zip(
+                block_index, block_shape, left.shape, strict=True
+            )
+        )
+        if not _values_equal(left[selection], right[selection]):
+            return False
+    return True
+
+
+def _workspace_groups_have_equal_datasets(
+    left: typing.Any,
+    right: typing.Any,
+) -> bool:
+    if left.id == right.id:
+        return True
+    left_datasets: dict[str, typing.Any] = {}
+    right_datasets: dict[str, typing.Any] = {}
+
+    def _collect_dataset(
+        datasets: dict[str, typing.Any], name: str, item: typing.Any
+    ) -> None:
+        if isinstance(item, h5py.Dataset):
+            datasets[name] = item
+
+    left.visititems(lambda name, item: _collect_dataset(left_datasets, name, item))
+    right.visititems(lambda name, item: _collect_dataset(right_datasets, name, item))
+    if left_datasets.keys() != right_datasets.keys():
+        return False
+    return all(
+        _workspace_dataset_values_equal(left_datasets[name], right_datasets[name])
+        for name in left_datasets
+    )
+
+
+def _rebind_equivalent_legacy_readers(
+    store: workspace_store.WorkspaceStore,
+    manifest: Mapping[str, typing.Any],
+) -> None:
+    """Move live readers to equal immutable objects before compaction.
+
+    Schema conversion temporarily preserves old payload paths for live xarray
+    readers. Content comparison prevents a derived Dask graph from being retargeted
+    to a different saved result.
+    """
+    legacy_reader_rebindings = (
+        workspace_format._workspace_manifest_legacy_reader_rebindings(manifest)
+    )
+    legacy_paths = store.leased_legacy_group_paths
+    if not legacy_reader_rebindings or not legacy_paths:
+        return
+    equivalent: dict[str, str] = {}
+    with store.write_lock, store.lock, store.read_session() as h5_file:
+        for legacy_path in legacy_paths:
+            object_id = legacy_reader_rebindings.get(legacy_path)
+            if object_id is None:
+                continue
+            object_path = store.object_path(object_id)
+            if (
+                legacy_path.strip("/") in h5_file
+                and object_path.strip("/") in h5_file
+                and _workspace_groups_have_equal_datasets(
+                    h5_file[legacy_path], h5_file[object_path]
+                )
+            ):
+                equivalent[legacy_path] = object_id
+        store.rebind_legacy_readers(equivalent)
 
 
 def _compact_workspace_store(
@@ -214,6 +427,10 @@ def _compact_workspace_store(
             baseline_manifest.pop("replacement_delta_count", None)
             baseline_manifest.pop("repack_estimate_known", None)
             object_ids = set(store.manifest_object_ids(baseline_manifest))
+            node_object_ids = set(store.manifest_node_object_ids(baseline_manifest))
+            extension_object_ids = set(
+                store.manifest_extension_object_ids(baseline_manifest)
+            )
             object_ids.update(store.leased_object_ids)
             serialized_pins = store.serialized_reader_pin_snapshot()
             discarded_pins = (
@@ -224,6 +441,11 @@ def _compact_workspace_store(
                 object_id
                 for object_id, version in serialized_pins.object_versions.items()
                 if version > discarded_pins.object_versions.get(object_id, -1)
+            )
+            optional_missing_script_source_ids = (
+                extension_object_ids
+                - node_object_ids
+                - set(serialized_pins.object_versions)
             )
             legacy_group_paths = store.leased_legacy_group_paths | {
                 group_path
@@ -263,6 +485,8 @@ def _compact_workspace_store(
                             None,
                         )
                         if not copied:
+                            if object_id in optional_missing_script_source_ids:
+                                continue
                             raise KeyError(f"Workspace object {object_id!r} is missing")
                 compacted.publish(baseline_manifest)
                 compacted.publish(baseline_manifest)
@@ -276,7 +500,7 @@ def _compact_workspace_store(
                     )
                 if any(
                     compacted.object_path(object_id).strip("/") not in compacted.h5_file
-                    for object_id in object_ids
+                    for object_id in object_ids - optional_missing_script_source_ids
                 ):
                     raise RuntimeError(
                         "Compacted workspace is missing a payload object"
@@ -310,7 +534,7 @@ def _compact_workspace_store(
                 prepared_path.unlink()
 
 
-_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int, int]
+_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int]
 
 
 class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
@@ -339,18 +563,22 @@ class _WorkspacePublicationConflictError(workspace_store.WorkspaceStoreConflictE
 def _workspace_publication_state(
     path: str | os.PathLike[str],
 ) -> _WorkspacePublicationState:
-    """Return the state used to detect an external document replacement."""
+    """Return content-sensitive state used to detect an external file change.
+
+    The state excludes ``ctime`` because cloud clients can change it when they
+    update extended attributes without changing the workspace. File identity,
+    size, and modification time still reject replacement and content changes.
+    """
     try:
         stat_result = os.stat(path)
     except FileNotFoundError:
-        return False, 0, 0, 0, 0, 0
+        return False, 0, 0, 0, 0
     return (
         True,
         stat_result.st_dev,
         stat_result.st_ino,
         stat_result.st_size,
         stat_result.st_mtime_ns,
-        stat_result.st_ctime_ns,
     )
 
 
@@ -654,6 +882,34 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
         if not _workspace_path_is_itws(fname):
             return
         active_store = workspace_store.WorkspaceStore.active(fname)
+        read_context = (
+            active_store.read_session()
+            if active_store is not None
+            else h5py.File(fname, "r")
+        )
+        with read_context as h5_file:
+            if not _workspace_file_is_workspace(h5_file):
+                return
+            transaction_names = {
+                name
+                for name in h5_file
+                if name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX)
+            }
+            transaction_roots: set[str] = set()
+            for name in transaction_names:
+                pending_root, backup_root = _workspace_transaction_roots(h5_file[name])
+                transaction_roots.update(
+                    root for root in (pending_root, backup_root) if root is not None
+                )
+            has_orphan = any(
+                name.startswith(
+                    (_WORKSPACE_PENDING_GROUP_PREFIX, _WORKSPACE_BACKUP_GROUP_PREFIX)
+                )
+                and name not in transaction_roots
+                for name in h5_file
+            )
+        if not transaction_names and not has_orphan:
+            return
         file_context = (
             active_store.write_session()
             if active_store is not None

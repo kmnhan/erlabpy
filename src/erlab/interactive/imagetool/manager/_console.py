@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
-    _expression_receiver_code,
     _validate_script_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
@@ -453,12 +452,6 @@ def _structured_seed_and_operations(
     if operation is None or (source.seed_expression is None and not source.copyable):
         return None, ()
     seed_expression = source.seed_expression or source.code
-    if operation.statement_mutates_input and not any(
-        previous.statement_mutates_input for previous in source.operations
-    ):
-        seed_expression = (
-            f"{_expression_receiver_code(seed_expression)}.copy(deep=False)"
-        )
     return seed_expression, (*source.operations, operation)
 
 

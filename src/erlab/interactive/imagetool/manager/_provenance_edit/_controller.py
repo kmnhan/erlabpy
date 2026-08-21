@@ -43,10 +43,14 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
     GaussianFilterOperation,
     NormalizeOperation,
     ScriptCodeOperation,
     SortByOperation,
+)
+from erlab.interactive.imagetool.manager._extensions._dialogs import (
+    _ExtensionParameterDialog,
 )
 from erlab.interactive.imagetool.manager._provenance_edit._editors import (
     _NATIVE_TERMINAL_CURRENT_DATA_EDITORS,
@@ -78,6 +82,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.extensions import RoutineDescriptor
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
@@ -213,7 +218,15 @@ class _ProvenanceEditController:
         scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
     ) -> str | None:
-        source_status = file_load_source_status(spec)
+        extension_reason = self._manager._extensions.unavailable_reason_for_node(
+            node.uid
+        )
+        if extension_reason is not None:
+            return extension_reason
+        source_status = file_load_source_status(
+            spec,
+            extension_status_resolver=self._manager._extensions.capability_status,
+        )
         if source_status not in {"no-file-load-source", "loadable"}:
             return {
                 "missing-file": "The recorded source file is not available.",
@@ -221,6 +234,21 @@ class _ProvenanceEditController:
                     "The recorded source does not include replay loader information."
                 ),
                 "missing-loader": "The recorded source loader is not available.",
+                "extension-disabled": "The registered script is disabled.",
+                "extension-approval-required": ("The required script needs approval."),
+                "extension-missing-source": ("The required script is not registered."),
+                "extension-missing-capability": (
+                    "The registered script does not provide this loader."
+                ),
+                "extension-hash-mismatch": (
+                    "The registered script does not match the recorded source hash."
+                ),
+                "extension-unsupported-api": (
+                    "The registered script uses an unsupported extension API version."
+                ),
+                "extension-validation-failed": (
+                    "The registered script loader could not be validated."
+                ),
             }[source_status]
 
         if spec.kind == "file":
@@ -570,20 +598,25 @@ class _ProvenanceEditController:
             candidate = node.displayed_source_spec.append_replacement_operations(
                 *operations
             )
-            try:
-                data, candidate = self._replay_candidate_result(
-                    node,
-                    "source",
-                    candidate,
-                )
-                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-            except Exception as exc:
-                raise _ProvenanceReplayFailure(
-                    "validating the pasted provenance steps: "
-                    "replaying the requested provenance",
-                    exc,
-                ) from exc
-            self._replace_node_data(node, "source", data, candidate, None)
+            with (
+                self._manager._extensions.execution.capture_replay_sources()
+            ) as publication:
+                try:
+                    data, candidate = self._replay_candidate_result(
+                        node,
+                        "source",
+                        candidate,
+                    )
+                    erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
+                except Exception as exc:
+                    raise _ProvenanceReplayFailure(
+                        "validating the pasted provenance steps: "
+                        "replaying the requested provenance",
+                        exc,
+                    ) from exc
+                publication.require_current_for_publication()
+                self._replace_node_data(node, "source", data, candidate, None)
+                publication.publish()
             self._manager._update_info(uid=node.uid)
             return
 
@@ -601,54 +634,70 @@ class _ProvenanceEditController:
         *,
         where: str,
     ) -> None:
-        current_data = node.current_public_data()
-        replay_source_data = node.resolved_replay_source_data()
-        try:
-            if local.kind == "script":
-                trusted_user_code = script_provenance_requires_trust(local)
-                if trusted_user_code:
-                    self._manager._ensure_script_provenance_trusted(
+        with (
+            self._manager._extensions.execution.capture_replay_sources()
+        ) as publication:
+            current_data = node.current_public_data()
+            replay_source_data = node.resolved_replay_source_data()
+            try:
+                if local.kind == "script":
+                    trusted_user_code = script_provenance_requires_trust(local)
+                    if trusted_user_code:
+                        self._manager._ensure_script_provenance_trusted(
+                            local,
+                            reason="paste these provenance steps",
+                        )
+                    data = replay_script_provenance(
                         local,
-                        reason="paste these provenance steps",
+                        {
+                            "data": current_data,
+                            "derived": current_data,
+                        },
+                        trusted_user_code=trusted_user_code,
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                        extension_loader_executor=(
+                            self._manager._extensions.replay_loader
+                        ),
                     )
-                data = replay_script_provenance(
+                else:
+                    data = local.apply(
+                        current_data,
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                    )
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
+            except _TrustedScriptReplayCancelled:
+                raise
+            except Exception as exc:
+                raise _ProvenanceReplayFailure(
+                    f"{where}: replaying the requested provenance",
+                    exc,
+                ) from exc
+
+            if local.kind == "script":
+                spec = compose_full_provenance(
+                    node.displayed_provenance_spec,
                     local,
-                    {
-                        "data": current_data,
-                        "derived": current_data,
-                    },
-                    trusted_user_code=trusted_user_code,
+                    script_context_names=("data", "derived"),
                 )
             else:
-                data = local.apply(current_data)
-            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-        except _TrustedScriptReplayCancelled:
-            raise
-        except Exception as exc:
-            raise _ProvenanceReplayFailure(
-                f"{where}: replaying the requested provenance",
-                exc,
-            ) from exc
-
-        if local.kind == "script":
-            spec = compose_full_provenance(
-                node.displayed_provenance_spec,
-                local,
-                script_context_names=("data", "derived"),
+                spec = compose_full_provenance(
+                    node.displayed_provenance_spec,
+                    local,
+                )
+            if spec is None:
+                spec = local.to_replay_spec()
+            publication.require_current_for_publication()
+            node.replace_with_detached_data(
+                data,
+                spec,
+                preserve_filter=False,
+                replay_source_data=replay_source_data,
             )
-        else:
-            spec = compose_full_provenance(
-                node.displayed_provenance_spec,
-                local,
-            )
-        if spec is None:
-            spec = local.to_replay_spec()
-        node.replace_with_detached_data(
-            data,
-            spec,
-            preserve_filter=False,
-            replay_source_data=replay_source_data,
-        )
+            publication.publish()
         self._manager._update_info(uid=node.uid)
 
     def can_delete_row(
@@ -711,8 +760,40 @@ class _ProvenanceEditController:
         if row.edit_ref.kind == "file_load":
             if spec.kind not in {"file", "script"} or spec.file_load_source is None:
                 return False, "This row is not a file load step."
-            if spec.file_load_source.replay_call is None:
+            replay_call = spec.file_load_source.replay_call
+            if replay_call is None:
                 return False, "This file load step cannot be replayed."
+            if replay_call.kind == "extension_loader":
+                status = self._manager._extensions.capability_status(
+                    replay_call.target,
+                    typing.cast("str", replay_call.source_hash),
+                    "loader",
+                    typing.cast("str", replay_call.capability_id),
+                )
+                if status != "ready":
+                    return False, {
+                        "disabled": "Enable this extension before you edit this load.",
+                        "approval-required": (
+                            "Review and enable this extension before you edit this "
+                            "load."
+                        ),
+                        "missing-source": (
+                            "Register the exact loader script before you edit this "
+                            "load."
+                        ),
+                        "missing-capability": (
+                            "The registered script does not provide this loader."
+                        ),
+                        "hash-mismatch": (
+                            "The registered loader script changed after this load."
+                        ),
+                        "unsupported-api": (
+                            "This loader uses an unsupported extension API version."
+                        ),
+                        "validation-failed": (
+                            "The extension loader did not pass validation."
+                        ),
+                    }[status]
             return True, ""
         operation = spec._operation_for_ref(row.edit_ref)
         if operation is None:
@@ -744,6 +825,9 @@ class _ProvenanceEditController:
             return False, "This live row needs a parent source to replay."
         if script_operation is not None:
             return True, ""
+        if isinstance(operation, ExtensionRoutineOperation):
+            descriptor, reason = self._extension_routine_edit_descriptor(operation)
+            return descriptor is not None, reason
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
             reason = _uneditable_operation_reason(operation)
@@ -1355,101 +1439,107 @@ class _ProvenanceEditController:
             batch_peers=batch_peers,
             batch_apply_default=batch_apply_default,
             checked_batch_peer_ids=checked_batch_peer_ids,
+            file_loaders=self._manager._available_file_loaders,
         )
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
         while True:
-            candidate = dialog.provenance_spec(
-                active_name=_file_load_edit_active_name(spec),
-                replay_steps=spec.steps,
-            )
-            if spec.kind == "script":
-                candidate = _replace_file_load_fields(spec, candidate)
-            if row is None:
-                edit_candidate = candidate
-            elif root_spec is None:
-                edit_candidate = self._root_candidate_for_row(node, row, candidate)
-            else:
-                edit_candidate = self._replace_script_input_path_spec(
-                    root_spec,
-                    row.script_input_path,
-                    candidate,
+            with (
+                self._manager._extensions.execution.capture_replay_sources()
+            ) as publication:
+                candidate = dialog.provenance_spec(
+                    active_name=_file_load_edit_active_name(spec),
+                    replay_steps=spec.steps,
                 )
-
-            peer_edits = [
-                (peer, dialog.peer_provenance_spec(peer))
-                for peer in dialog.selected_batch_peers()
-            ]
-            deferred_peer_edits: list[
-                tuple[
-                    _FileLoadBatchPeer,
-                    ToolProvenanceSpec,
-                ]
-            ] = []
-            for peer, peer_candidate in peer_edits:
-                if peer.node.uid == node.uid and peer.scope == scope:
-                    edit_candidate = self._replace_file_load_target_spec(
-                        edit_candidate,
-                        peer,
-                        peer_candidate,
-                    )
+                if spec.kind == "script":
+                    candidate = _replace_file_load_fields(spec, candidate)
+                if row is None:
+                    edit_candidate = candidate
+                elif root_spec is None:
+                    edit_candidate = self._root_candidate_for_row(node, row, candidate)
                 else:
-                    deferred_peer_edits.append((peer, peer_candidate))
+                    edit_candidate = self._replace_script_input_path_spec(
+                        root_spec,
+                        row.script_input_path,
+                        candidate,
+                    )
 
-            try:
-                validated_edits = [
-                    self._validated_edit(node, scope, edit_candidate, where=where),
+                peer_edits = [
+                    (peer, dialog.peer_provenance_spec(peer))
+                    for peer in dialog.selected_batch_peers()
                 ]
-            except Exception as exc:
-                spreadsheet_error = _spreadsheet_metadata_error_from_exception(exc)
-                if spreadsheet_error is None:
-                    raise
-                source = dialog.loader_options.spreadsheet_metadata_source()
-                if source is None:
-                    raise
-                action = self._prompt_spreadsheet_metadata_recovery(
-                    source, spreadsheet_error
-                )
-                if action == "retry":
-                    continue
-                if action == "configure" and (
-                    dialog.loader_options.configure_spreadsheet_metadata(
-                        load_on_open=False
-                    )
-                ):
-                    continue
-                return
-
-            failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
-            for peer, peer_candidate in deferred_peer_edits:
-                try:
-                    peer_where = (
-                        "validating the edited file-load provenance for "
-                        f"{peer.node.display_text}"
-                    )
-                    if peer.script_input_path:
-                        peer_candidate = self._replace_file_load_target_spec(
-                            self._root_spec_for_batch_peer(peer),
+                deferred_peer_edits: list[
+                    tuple[
+                        _FileLoadBatchPeer,
+                        ToolProvenanceSpec,
+                    ]
+                ] = []
+                for peer, peer_candidate in peer_edits:
+                    if peer.node.uid == node.uid and peer.scope == scope:
+                        edit_candidate = self._replace_file_load_target_spec(
+                            edit_candidate,
                             peer,
                             peer_candidate,
                         )
-                    validated_edits.append(
-                        self._validated_edit(
-                            peer.node,
-                            peer.scope,
-                            peer_candidate,
-                            where=peer_where,
-                        )
-                    )
+                    else:
+                        deferred_peer_edits.append((peer, peer_candidate))
+
+                try:
+                    validated_edits = [
+                        self._validated_edit(node, scope, edit_candidate, where=where),
+                    ]
                 except Exception as exc:
-                    failures.append((peer, exc))
-            if failures and not self._confirm_apply_valid_batch(
-                valid_peer_count=len(validated_edits) - 1,
-                failures=failures,
-            ):
-                return
-            for edit in validated_edits:
-                self._apply_validated_edit(edit)
+                    spreadsheet_error = _spreadsheet_metadata_error_from_exception(exc)
+                    if spreadsheet_error is None:
+                        raise
+                    source = dialog.loader_options.spreadsheet_metadata_source()
+                    if source is None:
+                        raise
+                    action = self._prompt_spreadsheet_metadata_recovery(
+                        source, spreadsheet_error
+                    )
+                    if action == "retry":
+                        continue
+                    if action == "configure" and (
+                        dialog.loader_options.configure_spreadsheet_metadata(
+                            load_on_open=False
+                        )
+                    ):
+                        continue
+                    return
+
+                failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
+                for peer, peer_candidate in deferred_peer_edits:
+                    try:
+                        peer_where = (
+                            "validating the edited file-load provenance for "
+                            f"{peer.node.display_text}"
+                        )
+                        if peer.script_input_path:
+                            peer_candidate = self._replace_file_load_target_spec(
+                                self._root_spec_for_batch_peer(peer),
+                                peer,
+                                peer_candidate,
+                            )
+                        validated_edits.append(
+                            self._validated_edit(
+                                peer.node,
+                                peer.scope,
+                                peer_candidate,
+                                where=peer_where,
+                            )
+                        )
+                    except Exception as exc:
+                        failures.append((peer, exc))
+                if failures and not self._confirm_apply_valid_batch(
+                    valid_peer_count=len(validated_edits) - 1,
+                    failures=failures,
+                ):
+                    return
+                publication.require_current_for_publication()
+                for edit in validated_edits:
+                    self._apply_validated_edit(edit)
+                publication.publish()
             return
 
     def _edit_operation_row(
@@ -1472,6 +1562,15 @@ class _ProvenanceEditController:
             ScriptCodeOperation,
         ):
             self._edit_script_code_operation_row(node, row, spec, ref, operation)
+            return
+        if isinstance(operation, ExtensionRoutineOperation):
+            self._edit_extension_routine_operation_row(
+                node,
+                row,
+                spec,
+                ref,
+                operation,
+            )
             return
         dialog_match = _dialog_match_for_operation_ref(spec, ref)
         if dialog_match is None:
@@ -1522,6 +1621,76 @@ class _ProvenanceEditController:
             row.scope,
             root_candidate,
             where="validating the edited Python code",
+        )
+
+    def _extension_routine_edit_descriptor(
+        self,
+        operation: ExtensionRoutineOperation,
+    ) -> tuple[RoutineDescriptor | None, str]:
+        status = self._manager._extensions.capability_status(
+            operation.script_name,
+            operation.source_hash,
+            "routine",
+            operation.routine_id,
+        )
+        if status != "ready":
+            reason = {
+                "disabled": "Enable this extension before you edit this step.",
+                "approval-required": (
+                    "Review and enable this extension before you edit this step."
+                ),
+                "missing-source": (
+                    "Register the exact script used by this step before you edit it."
+                ),
+                "missing-capability": (
+                    "The registered script does not provide this routine."
+                ),
+                "hash-mismatch": (
+                    "The registered script changed after this step was recorded."
+                ),
+                "unsupported-api": (
+                    "This routine uses an unsupported extension API version."
+                ),
+                "validation-failed": ("The extension source did not pass validation."),
+            }[status]
+            return None, reason
+        descriptor = self._manager._extensions.routine_descriptor(
+            operation.script_name,
+            operation.source_hash,
+            operation.routine_id,
+        )
+        if descriptor is None:
+            return None, "The routine descriptor is not available."
+        if not descriptor.parameters:
+            return None, "This routine does not have editable parameters."
+        return descriptor, ""
+
+    def _edit_extension_routine_operation_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        operation: ExtensionRoutineOperation,
+    ) -> None:
+        descriptor, reason = self._extension_routine_edit_descriptor(operation)
+        if descriptor is None:
+            raise RuntimeError(reason)
+        dialog = _ExtensionParameterDialog(
+            descriptor,
+            self._manager,
+            values=operation.parameters,
+        )
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return
+        replacement = operation.model_copy(update={"parameters": dialog.parameters})
+        candidate = spec._replace_operation_ref(ref, (replacement,))
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            root_candidate,
+            where="validating the edited extension routine",
         )
 
     def _edited_native_operations(
@@ -1771,9 +1940,13 @@ class _ProvenanceEditController:
         *,
         where: str = "validating the provenance change",
     ) -> None:
-        self._apply_validated_edit(
-            self._validated_edit(node, scope, candidate, where=where)
-        )
+        with (
+            self._manager._extensions.execution.capture_replay_sources()
+        ) as publication:
+            edit = self._validated_edit(node, scope, candidate, where=where)
+            publication.require_current_for_publication()
+            self._apply_validated_edit(edit)
+            publication.publish()
 
     def _validated_edit(
         self,
@@ -1842,7 +2015,10 @@ class _ProvenanceEditController:
             if node.imagetool is not None and callable(filter_result):
                 filter_result(data, operation)
                 return
-            operation.apply(data)
+            if isinstance(operation, ExtensionRoutineOperation):
+                self._manager._extensions.execution.run_operation(operation, data)
+            else:
+                operation.apply(data)
         except Exception as exc:
             raise _ProvenanceReplayFailure(
                 f"{where}: validating the active display filter",
@@ -1957,11 +2133,27 @@ class _ProvenanceEditController:
                 return self._replay_live_script_candidate(node, scope, spec), spec
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
-                return spec.apply(parent.current_source_data()), spec
+                return (
+                    spec.apply(
+                        parent.current_source_data(),
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                    ),
+                    spec,
+                )
             parent_data = node.resolved_replay_source_data()
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-            return spec.apply(parent_data), spec
+            return (
+                spec.apply(
+                    parent_data,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                ),
+                spec,
+            )
         if spec.kind == "script":
             external_input_names = self._script_replay_source_input_names(spec)
             if external_input_names:
@@ -1984,6 +2176,12 @@ class _ProvenanceEditController:
                         spec,
                         replay_inputs,
                         trusted_user_code=trusted_user_code,
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                        extension_loader_executor=(
+                            self._manager._extensions.replay_loader
+                        ),
                     ),
                     spec,
                 )
@@ -2019,7 +2217,12 @@ class _ProvenanceEditController:
                 operation,
                 ScriptCodeOperation,
             ):
-                data = operation._apply_schema_v2(data, parent_data=parent_data)
+                if isinstance(operation, ExtensionRoutineOperation):
+                    data = self._manager._extensions.execution.run_operation(
+                        operation, data
+                    )
+                else:
+                    data = operation._apply_schema_v2(data, parent_data=parent_data)
                 continue
             step_spec = self._live_script_step_spec(operation)
             replay_inputs = {
@@ -2041,6 +2244,8 @@ class _ProvenanceEditController:
                 step_spec,
                 replay_inputs,
                 trusted_user_code=trusted_user_code,
+                extension_executor=(self._manager._extensions.execution.run_operation),
+                extension_loader_executor=self._manager._extensions.replay_loader,
             )
         return data
 
@@ -2067,7 +2272,13 @@ class _ProvenanceEditController:
         with warnings.catch_warnings(record=True) as replay_warnings:
             warnings.simplefilter("always")
             try:
-                return replay_file_provenance(spec)
+                return replay_file_provenance(
+                    spec,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                    extension_loader_executor=(self._manager._extensions.replay_loader),
+                )
             except Exception as exc:
                 if warning_details := _replay_warning_details(replay_warnings):
                     exc.add_note(

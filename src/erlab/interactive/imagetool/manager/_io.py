@@ -18,6 +18,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool._load_source import _extension_loader_identity
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._acquisition_context import (
@@ -27,12 +28,38 @@ from erlab.interactive.imagetool.manager._dialogs import _is_loader_func
 
 logger = logging.getLogger(__name__)
 
+
+class _ExtensionLoaderPublication(typing.Protocol):
+    """Publication controls retained by a pinned extension loader callable."""
+
+    def require_current_for_publication(self) -> None: ...
+
+    def record_publication(self) -> None: ...
+
+
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+
+
+def _is_extension_loader_func(func: object) -> bool:
+    return all(
+        isinstance(value, str) and value
+        for value in _extension_loader_identity(func)[:3]
+    )
+
+
+def _extension_loader_owner(
+    func: object,
+) -> _ExtensionLoaderPublication | None:
+    """Return the pinned extension call owner for one loader callable."""
+    if not _is_extension_loader_func(func):
+        return None
+    owner = getattr(func, "__self__", func)
+    return typing.cast("_ExtensionLoaderPublication", owner)
 
 
 class _DataIngressController:
@@ -47,7 +74,7 @@ class _DataIngressController:
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
         valid_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = (
-            erlab.interactive.utils.file_loaders()
+            self._manager._available_file_loaders()
         )
         dialog.setNameFilters(valid_loaders.keys())
         if not native:
@@ -66,7 +93,7 @@ class _DataIngressController:
         self._manager._recent_name_filter = dialog.selectedNameFilter()
         self._manager._recent_directory = os.path.dirname(file_names[0])
         func, kwargs = valid_loaders[self._manager._recent_name_filter]
-        if _is_loader_func(func):
+        if _is_loader_func(func) or _is_extension_loader_func(func):
             selected = self._manager._select_loader_options(
                 {self._manager._recent_name_filter: (func, kwargs)},
                 self._manager._recent_name_filter,
@@ -93,23 +120,38 @@ class _DataIngressController:
         watched_metadata: Mapping[str, typing.Any] | None = None,
         show: bool | None = None,
         _context_summary: ContextIngressSummary | None = None,
+        _extension_publication: _ExtensionLoaderPublication | None = None,
     ) -> list[bool]:
-        """Construct manager-owned ImageTools from received arrays or datasets."""
+        """Construct manager-owned ImageTools from received arrays or datasets.
+
+        An extension loader supplies its pinned publication permit through the
+        private ``_extension_publication`` argument. Loader results are selected into
+        data arrays before this call. The permit is checked directly before each
+        data-array manager mutation. Exact script bytes are retained only after the
+        corresponding ImageTool is inserted.
+        """
         flags: list[bool] = []
         report_context_status = _context_summary is None
         context_summary = _context_summary or ContextIngressSummary()
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
+                dataset_tool: ImageTool | None = None
                 try:
+                    dataset_tool = ImageTool.from_dataset(
+                        ds,
+                        _in_manager=True,
+                        options_model=self._manager.effective_interactive_options,
+                    )
                     self._manager.add_imagetool(
-                        ImageTool.from_dataset(
-                            ds,
-                            _in_manager=True,
-                            options_model=self._manager.effective_interactive_options,
-                        ),
+                        dataset_tool,
                         activate=True,
                     )
                 except Exception:
+                    if dataset_tool is not None and erlab.interactive.utils.qt_is_valid(
+                        dataset_tool
+                    ):
+                        dataset_tool.close()
+                        dataset_tool.deleteLater()
                     flags.append(False)
                     logger.exception(
                         "Error creating ImageTool window",
@@ -239,14 +281,18 @@ class _DataIngressController:
                 *preparation_operations,
                 *context_operations,
             )
+            image_tool: ImageTool | None = None
             try:
+                image_tool = ImageTool(
+                    context_data,
+                    **kwargs,
+                    load_func=this_load_func,
+                    preparation_operations=preparation_operations,
+                )
+                if _extension_publication is not None:
+                    _extension_publication.require_current_for_publication()
                 new_index = self._manager.add_imagetool(
-                    ImageTool(
-                        context_data,
-                        **kwargs,
-                        load_func=this_load_func,
-                        preparation_operations=preparation_operations,
-                    ),
+                    image_tool,
                     show=show,
                     activate=show,
                     watched_var=watched_var,
@@ -266,6 +312,8 @@ class _DataIngressController:
                     source_input_ndim=source_input_ndim,
                     source_input_dtype=source_input_dtype,
                 )
+                if _extension_publication is not None:
+                    _extension_publication.record_publication()
                 indices.append(new_index)
                 if context_resolution is not None:
                     context_summary.add_resolution(context_resolution)
@@ -274,6 +322,11 @@ class _DataIngressController:
                     if node.imagetool is not None:
                         node.imagetool._update_title()
             except Exception:
+                if image_tool is not None and erlab.interactive.utils.qt_is_valid(
+                    image_tool
+                ):
+                    image_tool.close()
+                    image_tool.deleteLater()
                 flags.append(False)
                 logger.exception(
                     "Error creating ImageTool window",
@@ -395,7 +448,7 @@ class _DataIngressController:
             return
 
         valid_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = (
-            erlab.interactive.utils.file_loaders(paths)
+            self._manager._available_file_loaders(paths)
         )
         if not valid_loaders:
             if all(path.is_dir() for path in paths):
@@ -420,7 +473,7 @@ class _DataIngressController:
 
         if len(valid_loaders) == 1:
             name_filter, (func, kwargs) = next(iter(valid_loaders.items()))
-            if _is_loader_func(func):
+            if _is_loader_func(func) or _is_extension_loader_func(func):
                 selected = self._manager._select_loader_options(
                     valid_loaders, name_filter, sample_paths=paths
                 )
@@ -638,7 +691,6 @@ class _MultiFileHandler(QtCore.QObject):
             erlab.interactive.utils.single_shot(self, 0, self._load_next)
             return
 
-        self.loaded.append(file_path)
         erlab.interactive.utils.single_shot(
             self, 0, lambda: self._deliver_and_queue(file_path, selected_data)
         )
@@ -650,30 +702,42 @@ class _MultiFileHandler(QtCore.QObject):
     ) -> None:
         func: Callable | str = self._func
         func_instance = getattr(func, "__self__", None)
-        if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+        if isinstance(
+            func_instance, erlab.io.dataloader.LoaderBase
+        ) and not _is_extension_loader_func(func):
             func = func_instance.name
 
-        self.manager._data_ingress.receive_data(
-            [prepared.data for prepared in selected_data],
-            kwargs={
-                "file_path": file_path,
-                "load_func": (func, self._kwargs.copy()),
-                "load_selections": tuple(
-                    prepared.selection for prepared in selected_data
-                ),
-                "preparation_operations": tuple(
-                    prepared.operations for prepared in selected_data
-                ),
-                "source_input_ndims": tuple(
-                    prepared.source_ndim for prepared in selected_data
-                ),
-                "source_input_dtypes": tuple(
-                    prepared.source_dtype for prepared in selected_data
-                ),
-            },
-            show=(self.n_total == 1),
-            _context_summary=self.context_summary,
-        )
+        extension_owner = _extension_loader_owner(self._func)
+        try:
+            inserted = self.manager._data_ingress.receive_data(
+                [prepared.data for prepared in selected_data],
+                kwargs={
+                    "file_path": file_path,
+                    "load_func": (func, self._kwargs.copy()),
+                    "load_selections": tuple(
+                        prepared.selection for prepared in selected_data
+                    ),
+                    "preparation_operations": tuple(
+                        prepared.operations for prepared in selected_data
+                    ),
+                    "source_input_ndims": tuple(
+                        prepared.source_ndim for prepared in selected_data
+                    ),
+                    "source_input_dtypes": tuple(
+                        prepared.source_dtype for prepared in selected_data
+                    ),
+                },
+                show=(self.n_total == 1),
+                _context_summary=self.context_summary,
+                _extension_publication=extension_owner,
+            )
+        except Exception:
+            self._on_failed(file_path, traceback.format_exc())
+            return
+        if any(inserted):
+            self.loaded.append(file_path)
+        else:
+            self.failed.append(file_path)
         erlab.interactive.utils.single_shot(self, 0, self._load_next)
 
     @QtCore.Slot(pathlib.Path, str)

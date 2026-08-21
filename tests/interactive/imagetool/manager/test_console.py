@@ -1,3 +1,4 @@
+import contextlib
 import pathlib
 import sys
 import types
@@ -15,6 +16,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
+import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.utils
@@ -76,6 +78,60 @@ def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[s
         lambda _parent, reason: reasons.append(reason),
     )
     return reasons
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("extension-disabled", "disabled"),
+        ("extension-approval-required", "not approved"),
+        ("extension-missing-source", "not registered"),
+        ("extension-missing-capability", "does not provide loader"),
+        ("extension-hash-mismatch", "does not match the recorded source hash"),
+        ("extension-unsupported-api", "unsupported extension API"),
+        ("extension-validation-failed", "could not be validated"),
+    ],
+)
+def test_manager_file_source_extension_status_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected: str,
+) -> None:
+    spec = file_load(
+        start_label="Load source",
+        seed_code=None,
+        file_load_source=FileLoadSource(
+            path="source.dat",
+            loader_label="Extension Loader",
+            loader_text="lab_loader.py: Loader",
+            kwargs_text="(none)",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="lab_loader.py",
+                source_hash="a" * 64,
+                capability_id="load_data",
+                selected_index=0,
+            ),
+        ),
+    )
+    controller = manager_lineage._LineageController(
+        typing.cast(
+            "typing.Any",
+            types.SimpleNamespace(
+                _extensions=types.SimpleNamespace(
+                    capability_status=lambda *_args: "ready"
+                )
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        manager_lineage, "file_load_source_status", lambda *_a, **_k: status
+    )
+
+    reason = controller._file_load_source_unavailable_reason(spec, "Input")
+
+    assert reason is not None
+    assert expected in reason
 
 
 def test_manager_console(
@@ -673,12 +729,11 @@ def test_manager_console_kspace_set_normal_returns_derived_provenance() -> None:
     assert spec.operations[0].group is None
     code = spec.display_code()
     assert code is not None
-    assert "derived = data.copy(deep=False)" in code
-    assert "derived.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
+    assert ".copy(deep=False)" not in code
+    assert "data.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)" in code
     assert "sample_workfunction" not in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
-    assert namespace["derived"].kspace.offsets["delta"] == pytest.approx(2.0)
-    for key, value in original_offsets.items():
+    for key, value in derived.data.kspace.offsets.items():
         assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
 
     converted = derived.kspace.convert()
@@ -3285,6 +3340,74 @@ def test_manager_reload_script_derived_target_reports_runtime_error(
     assert "ValueError" in str(critical_calls[0][1].get("detailed_text", ""))
 
 
+def test_manager_reload_script_derived_target_honors_trust_cancel() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Copy", code="derived = data"),
+        start_label="Run script",
+        active_name="derived",
+    )
+    node = types.SimpleNamespace(uid="node", provenance_spec=spec)
+
+    def rebuild(*_args, **_kwargs):
+        raise manager_widgets._TrustedScriptReplayCancelled
+
+    manager = types.SimpleNamespace(
+        _node_for_target=lambda _target: node,
+        _rebuild_script_provenance=rebuild,
+        _extensions=types.SimpleNamespace(
+            execution=types.SimpleNamespace(
+                capture_replay_sources=lambda: contextlib.nullcontext(object())
+            )
+        ),
+    )
+
+    assert not manager_lineage._LineageController(
+        typing.cast("typing.Any", manager)
+    )._reload_script_derived_target("node")
+
+
+def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = script(
+        ScriptCodeOperation(label="Copy", code="derived = data"),
+        start_label="Run script",
+        active_name="derived",
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        provenance_spec=spec,
+        current_source_data=lambda: xr.DataArray([1.0], dims=("x",)),
+    )
+    result = types.SimpleNamespace(
+        data=xr.DataArray(np.ones((2, 2)), dims=("x", "y")),
+        provenance_spec=spec,
+    )
+    dialogs: list[str] = []
+    manager = types.SimpleNamespace(
+        _node_for_target=lambda _target: node,
+        _rebuild_script_provenance=lambda *_args, **_kwargs: result,
+        _reload_incompatibility_details=lambda *_args: "incompatible",
+        _prompt_incompatible_reload_commit=lambda _details: "new",
+        _extensions=types.SimpleNamespace(
+            execution=types.SimpleNamespace(
+                capture_replay_sources=lambda: contextlib.nullcontext(object())
+            )
+        ),
+    )
+    monkeypatch.setattr(erlab.interactive, "itool", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, _title, text, **_kwargs: dialogs.append(text),
+    )
+
+    assert not manager_lineage._LineageController(
+        typing.cast("typing.Any", manager)
+    )._reload_script_derived_target("node")
+    assert dialogs == ["An error occurred while opening reloaded data."]
+
+
 def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
@@ -3735,8 +3858,13 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
     assert right_spec is not None
     load_count = 0
 
-    def _load_shared_source(_load_source: typing.Any) -> xr.DataArray:
+    def _load_shared_source(
+        _load_source: typing.Any,
+        *,
+        extension_loader_executor: typing.Any = None,
+    ) -> xr.DataArray:
         nonlocal load_count
+        del extension_loader_executor
         load_count += 1
         return source
 

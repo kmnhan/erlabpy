@@ -296,6 +296,7 @@ def test_manager_registry_hides_starting_records(monkeypatch, tmp_path) -> None:
 
     assert record.state == "starting"
     assert registry.live_manager_records() == ()
+    assert registry.live_manager_records(include_starting=True) == (record,)
     assert registry.manager_selection_info()["reason"] == "none"
 
     ready_record = registry.activate_manager_record(
@@ -319,9 +320,20 @@ def test_manager_registry_handles_invalid_records_and_paths(
 
     registry._REGISTRY_PATH.write_text("{", encoding="utf-8")
     assert registry._read_records_unlocked() == []
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="Could not read"):
+        registry.live_manager_records(strict=True)
 
     registry._REGISTRY_PATH.write_text('{"records": []}', encoding="utf-8")
     assert registry._read_records_unlocked() == []
+    with pytest.raises(
+        registry.ImageToolManagerRegistryError, match="must contain a list"
+    ):
+        registry.live_manager_records(strict=True)
+
+    registry._REGISTRY_PATH.write_text('[{"state": "ready"}]', encoding="utf-8")
+    assert registry._read_records_unlocked() == []
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="invalid record"):
+        registry.live_manager_records(strict=True)
 
     record = registry._ManagerRecord(
         internal_id="abc",

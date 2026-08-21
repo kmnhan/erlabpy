@@ -13,6 +13,7 @@ import erlab.interactive._qt_state as qt_state
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
+from erlab.extensions._models import _script_name_key
 from erlab.interactive.imagetool._provenance._model import ScriptInput, script
 from tests.interactive.imagetool.manager.workspace._support import (
     _workspace_test_file_spec,
@@ -410,6 +411,54 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
     assert (
         workspace_format._workspace_manifest_payload_path(manifest, "missing") is None
     )
+
+
+def test_workspace_embedded_script_entry_uses_exact_filename_and_hash() -> None:
+    source_hash = "a" * 64
+    entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="Gaussian_Tools.PY",
+        source_hash=source_hash,
+        object_id=f"extension-source-{source_hash}",
+    )
+
+    assert entry.script_name == "Gaussian_Tools.PY"
+    assert _script_name_key(entry.script_name) == "gaussian_tools.py"
+    for script_name in ("", "nested/script.py", "bad\\script.py", "bad\x00.py"):
+        with pytest.raises(pydantic.ValidationError):
+            workspace_format._WorkspaceEmbeddedScriptEntry(
+                script_name=script_name,
+                source_hash=source_hash,
+                object_id=f"extension-source-{source_hash}",
+            )
+    with pytest.raises(pydantic.ValidationError, match="does not match"):
+        workspace_format._WorkspaceEmbeddedScriptEntry(
+            script_name="valid.py",
+            source_hash=source_hash,
+            object_id="extension-source-wrong",
+        )
+
+
+def test_workspace_immutable_generation_helpers_filter_invalid_manifest_entries() -> (
+    None
+):
+    manifest = {
+        "nodes": [
+            {"path": "0", "kind": "imagetool", "payload_object_id": "image"},
+            {"path": "/1/", "kind": "tool", "payload_object_id": "tool"},
+            {"path": "2", "kind": "unknown", "payload_object_id": "ignored"},
+            {"path": 3, "kind": "tool", "payload_object_id": "ignored"},
+            {"path": "4", "kind": "tool", "payload_object_id": ""},
+        ]
+    }
+
+    assert workspace_format._workspace_manifest_legacy_reader_rebindings(manifest) == {
+        "/0/imagetool": "image",
+        "/1/tool": "tool",
+    }
+    assert workspace_format._workspace_schema_uses_immutable_generations(5)
+    assert workspace_format._workspace_schema_uses_immutable_generations(6)
+    assert not workspace_format._workspace_schema_uses_immutable_generations(4)
+    assert not workspace_format._workspace_schema_uses_immutable_generations(7)
 
 
 def test_workspace_manifest_attrs_reject_invalid_entries(caplog) -> None:

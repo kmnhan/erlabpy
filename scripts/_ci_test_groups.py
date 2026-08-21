@@ -59,6 +59,11 @@ COMPAT_TARGETS: tuple[str, ...] = (
     "tests/interactive/test_utils.py::test_better_axis_item_explicit_unitless_si_prefix_ranges_take_precedence",
     "tests/interactive/test_utils.py::test_better_axis_item_applies_unitless_thresholds_with_unit_power",
     "tests/interactive/test_utils.py::test_better_axis_item_preserves_negative_axis_scale_si_prefix",
+    "tests/interactive/imagetool/manager/test_extensions.py::test_execution_shutdown_is_safe_after_qt_teardown",
+    "tests/interactive/imagetool/manager/test_extensions.py::test_catalog_close_cancels_pending_refresh",
+    "tests/interactive/imagetool/manager/test_extensions.py::test_missing_script_prompt_locates_an_identical_script",
+    "tests/interactive/imagetool/manager/test_extensions.py::test_extension_actions_disconnect_when_controller_closes",
+    "tests/interactive/imagetool/manager/test_extensions.py::test_shutdown_resolves_active_queued_and_blocking_extension_work",
     "tests/interactive/imagetool/test_module_split.py",
     "tests/interactive/imagetool/test_server_multipart.py",
     "tests/interactive/imagetool/test_manager_warnings.py",
@@ -87,6 +92,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/test_conftest.py",
         "tests/test_constants.py",
         "tests/test_lattice.py",
+        "tests/test_extensions.py",
     ),
     "cov-io": ("tests/io",),
     "cov-qt-imagetool": (
@@ -108,6 +114,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/manager/test_mainwindow.py",
         "tests/interactive/imagetool/manager/test_modelview.py",
         "tests/interactive/imagetool/manager/test_wrapper.py",
+        "tests/interactive/imagetool/manager/test_extensions.py",
     ),
     "cov-qt-manager-workspace-a": (
         "tests/interactive/imagetool/manager/workspace/test_arrays.py",

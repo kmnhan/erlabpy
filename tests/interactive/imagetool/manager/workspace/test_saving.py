@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import errno
+import hashlib
 import json
 import os
 import pathlib
@@ -35,6 +36,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager._extensions._models import (
+    _WorkspaceScriptRequirement,
+)
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
@@ -415,6 +419,412 @@ def test_workspace_state_repeated_non_node_dirty_during_save(
     assert len(state.dirty_events) == 2
     assert state.dirty_events[-1].generation == 2
     assert getattr(state.dirty_events[-1], event_field)
+
+
+def test_workspace_script_state_owns_verified_and_explicit_sources() -> None:
+    source = b"from erlab.extensions import routine\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceScriptRequirement(
+        script_name="Gaussian_Tools.py",
+        capability_id="normalize",
+        capability_name="Normalize",
+        capability_kind="routine",
+        source_hash=source_hash,
+        extension_api_version=1,
+        referencing_nodes=("loaded", "failed"),
+    )
+    scripts = workspace_state._WorkspaceScriptState((requirement,))
+    scripts.remember_verified_source(
+        requirement.script_name,
+        source_hash,
+        source,
+        explicit=True,
+    )
+
+    snapshot = scripts.copy()
+    assert snapshot == scripts
+    assert scripts != object()
+    scripts.rebase_nodes({"loaded": "loaded-import", "failed": "failed-import"})
+    scripts.remove_node_references(("loaded-import",))
+    scripts.remap_script("gaussian_tools.py", source_hash, "filters.py")
+
+    assert scripts.requirements[0].script_name == "filters.py"
+    assert scripts.requirements[0].referencing_nodes == ("failed-import",)
+    assert ("filters.py", source_hash) in scripts.verified_sources
+    assert scripts.explicit_sources == {("filters.py", source_hash)}
+    assert scripts.source_manifest_value(frozenset()) == [
+        {
+            "script_name": "filters.py",
+            "source_hash": source_hash,
+            "object_id": f"extension-source-{source_hash}",
+        }
+    ]
+    assert snapshot.requirements == (requirement,)
+    assert snapshot.explicit_sources == {("Gaussian_Tools.py", source_hash)}
+    assert snapshot != scripts
+
+    with pytest.raises(ValueError, match="does not match its hash"):
+        scripts.remember_verified_source("bad.py", "0" * 64, source)
+
+
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    [
+        ("Gaussian.py", "gaussian.py"),
+        (
+            "caf\N{LATIN SMALL LETTER E WITH ACUTE}.py",
+            "cafe\N{COMBINING ACUTE ACCENT}.py",
+        ),
+    ],
+)
+def test_workspace_script_state_rejects_ambiguous_filenames_atomically(
+    first_name: str,
+    second_name: str,
+) -> None:
+    first = _WorkspaceScriptRequirement(
+        script_name=first_name,
+        capability_id="first",
+        capability_name="First",
+        capability_kind="routine",
+        source_hash="a" * 64,
+        extension_api_version=1,
+    )
+    second = first.model_copy(
+        update={
+            "script_name": second_name,
+            "capability_id": "second",
+            "capability_name": "Second",
+        }
+    )
+
+    with pytest.raises(ValueError, match="ambiguous filenames"):
+        workspace_state._WorkspaceScriptState((first, second))
+
+    scripts = workspace_state._WorkspaceScriptState((first,))
+    with pytest.raises(ValueError, match="ambiguous filenames"):
+        scripts.merge(workspace_state._WorkspaceScriptState((second,)))
+    assert scripts.requirements == (first,)
+
+
+def test_workspace_script_state_rejects_invalid_verified_source_merges() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="script.py",
+        source_hash=source_hash,
+        object_id=f"extension-source-{source_hash}",
+    )
+
+    with pytest.raises(ValueError, match="key does not match"):
+        workspace_state._WorkspaceScriptState(
+            verified_sources={("other.py", source_hash): (entry, source)}
+        )
+    with pytest.raises(ValueError, match="must have verified bytes"):
+        workspace_state._WorkspaceScriptState(
+            explicit_sources={("script.py", source_hash)}
+        )
+
+
+def test_workspace_script_state_rejects_merge_and_rename_collisions() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    scripts = workspace_state._WorkspaceScriptState()
+    scripts.remember_verified_source("first.py", source_hash, source)
+    scripts.remember_verified_source("second.py", source_hash, source)
+    with pytest.raises(ValueError, match="already uses"):
+        scripts.remap_script("first.py", source_hash, "second.py")
+
+
+def test_workspace_script_state_manifest_composition_and_name_conflicts() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceScriptRequirement(
+        script_name="Script.py",
+        capability_id="routine",
+        capability_name="Routine",
+        capability_kind="routine",
+        source_hash=source_hash,
+        extension_api_version=1,
+    )
+    scripts = workspace_state._WorkspaceScriptState((requirement,))
+
+    assert scripts.remember_verified_source("script.py", source_hash, source) is None
+    entry = scripts.remember_verified_source("Script.py", source_hash, source)
+    assert entry is not None
+    assert scripts.requirement_manifest_value((requirement,)) == [
+        requirement.model_dump(mode="json"),
+    ]
+    assert scripts.source_manifest_value({("Script.py", source_hash)}) == [
+        entry.model_dump(mode="json"),
+    ]
+    assert scripts.source_manifest_value(frozenset()) == []
+
+
+def test_workspace_script_state_validation_and_merge_boundaries() -> None:
+    source = b"source\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="script.py",
+        source_hash=source_hash,
+        object_id=f"extension-source-{source_hash}",
+    )
+
+    with pytest.raises(ValueError, match="does not match its hash"):
+        workspace_state._WorkspaceScriptState(
+            verified_sources={("script.py", source_hash): (entry, b"different")}
+        )
+    scripts = workspace_state._WorkspaceScriptState()
+    scripts.remember_verified_source("script.py", source_hash, source)
+    other_source = b"other\n"
+    other_hash = hashlib.sha256(other_source).hexdigest()
+    scripts.remember_verified_source("other.py", other_hash, other_source)
+    scripts.remap_script("script.py", source_hash, "renamed.py")
+    assert set(scripts.verified_sources) == {
+        ("renamed.py", source_hash),
+        ("other.py", other_hash),
+    }
+
+
+def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "source.itws"
+    target_path = tmp_path / "target.itws"
+    included_source = b"included\n"
+    included_hash = hashlib.sha256(included_source).hexdigest()
+    excluded_source = b"excluded\n"
+    excluded_hash = hashlib.sha256(excluded_source).hexdigest()
+    carried_source = b"carried\n"
+    carried_hash = hashlib.sha256(carried_source).hexdigest()
+    included_key = ("included.py", included_hash)
+    excluded_key = ("excluded.py", excluded_hash)
+    scripts = workspace_state._WorkspaceScriptState()
+    included_entry = scripts.remember_verified_source(*included_key, included_source)
+    excluded_entry = scripts.remember_verified_source(*excluded_key, excluded_source)
+    if included_entry is None or excluded_entry is None:
+        raise RuntimeError("Expected verified source entries")
+    carried_entry = workspace_format._WorkspaceEmbeddedScriptEntry(
+        script_name="carried.py",
+        source_hash=carried_hash,
+        object_id=f"extension-source-{carried_hash}",
+    )
+
+    current_manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "embedded_extension_sources": [carried_entry.model_dump(mode="json")],
+    }
+    manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "embedded_extension_sources": [
+            included_entry.model_dump(mode="json"),
+            excluded_entry.model_dump(mode="json"),
+            carried_entry.model_dump(mode="json"),
+        ],
+    }
+    with workspace_store.WorkspaceStore(source_path, create=True) as source_store:
+        with source_store.write_session() as h5_file:
+            group = h5_file.require_group(
+                source_store.object_path(carried_entry.object_id)
+            )
+            group.attrs["erlab_object_kind"] = "extension-python-source-v1"
+            group.create_dataset(
+                "source",
+                data=np.frombuffer(carried_source, dtype=np.uint8),
+            )
+        source_store.publish(current_manifest)
+
+        manager = types.SimpleNamespace(
+            _workspace_state=types.SimpleNamespace(
+                dirty_data=set(),
+                dirty_added=set(),
+                dirty_state=set(),
+                path=source_path.resolve(),
+            ),
+            _tool_graph=types.SimpleNamespace(nodes={}),
+        )
+        saver = workspace_saving._WorkspaceSaver.__new__(
+            workspace_saving._WorkspaceSaver
+        )
+        saver._manager = manager
+        saver._controller = types.SimpleNamespace(_workspace_store=source_store)
+        saver._workspace_script_snapshot = lambda: (
+            (),
+            scripts,
+            frozenset({included_key}),
+        )
+        saver._workspace_manifest = lambda **_kwargs: json.loads(json.dumps(manifest))
+        saver._workspace_stale_reference_rewrite_uids = lambda _uids: frozenset()
+        saver._workspace_compression_mode = lambda: "none"
+        saver._serialized_tool_data_references = lambda _datasets: ()
+
+        snapshot = saver._workspace_generation_save_snapshot(3, fname=target_path)
+
+    writes = {item.object_id: item for item in snapshot.generation_plan.objects}
+    assert set(writes) == {included_entry.object_id, carried_entry.object_id}
+    assert writes[included_entry.object_id].blob == included_source
+    assert writes[carried_entry.object_id].source_file == str(source_path)
+    assert writes[carried_entry.object_id].source_path == source_store.object_path(
+        carried_entry.object_id
+    )
+    assert snapshot.embedded_script_sources == (
+        (included_entry.script_name, included_hash, included_source),
+    )
+    snapshot.close()
+
+
+def test_committed_generation_merges_embedded_source_into_live_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedded_source = b"EMBEDDED = 1\n"
+    embedded_hash = hashlib.sha256(embedded_source).hexdigest()
+    later_source = b"LATER = 2\n"
+    later_hash = hashlib.sha256(later_source).hexdigest()
+    scripts = workspace_state._WorkspaceScriptState()
+    scripts.remember_verified_source("later.py", later_hash, later_source)
+    manager = types.SimpleNamespace(
+        _workspace_state=types.SimpleNamespace(
+            extension_scripts=scripts,
+            schema_version=0,
+        )
+    )
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    controller._manager = manager
+    rebound: list[dict[str, str]] = []
+    controller._workspace_store = types.SimpleNamespace(
+        closed=False,
+        rebind_legacy_readers=lambda mappings: rebound.append(mappings),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_commit_saved_tool_data_references",
+        lambda _snapshot: None,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_repoint_saved_pending_workspace_payloads",
+        lambda *_args, **_kwargs: None,
+    )
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        generation_plan=workspace_storage._WorkspaceGenerationPlan(
+            manifest={"schema_version": 6, "nodes": []},
+            objects=(),
+            legacy_reader_rebindings=(("/legacy/imagetool", "payload"),),
+        ),
+        compression_mode="none",
+        embedded_script_sources=(("embedded.py", embedded_hash, embedded_source),),
+    )
+
+    controller._adopt_committed_workspace_generation(
+        pathlib.Path("workspace.itws"),
+        snapshot,
+        manifest=snapshot.generation_plan.manifest,
+    )
+
+    assert set(scripts.verified_sources) == {
+        ("embedded.py", embedded_hash),
+        ("later.py", later_hash),
+    }
+    assert rebound == [{"/legacy/imagetool": "payload"}]
+    assert manager._workspace_state.schema_version == 6
+
+
+def test_workspace_save_and_compaction_route_save_as_only_documents() -> None:
+    callbacks: list[typing.Callable[[bool], None] | None] = []
+    manager = types.SimpleNamespace(
+        _workspace_state=types.SimpleNamespace(
+            save_as_only=True,
+            save_in_progress=False,
+        )
+    )
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    controller._manager = manager
+    controller._current_workspace_document_path = lambda: pathlib.Path("workspace.itws")
+    controller.save_as = lambda **kwargs: (
+        callbacks.append(kwargs.get("on_finished")) or True
+    )
+
+    assert controller.save(native=False)
+    assert callbacks == [None]
+    assert controller.compact_workspace()
+    compact_callback = callbacks[-1]
+    if compact_callback is None:
+        raise TypeError("Expected a compaction callback")
+
+    compacted: list[None] = []
+    controller.compact_workspace = lambda: compacted.append(None) or True
+    compact_callback(False)
+    assert compacted == []
+    manager._workspace_state.save_as_only = False
+    compact_callback(True)
+    assert compacted == [None]
+
+
+def test_committed_save_retains_always_embedded_source_for_later_save(
+    qtbot,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    script_path = tmp_path / "always.py"
+    script_source = b"VALUE = 1\n"
+    script_path.write_bytes(script_source)
+    source_hash = hashlib.sha256(script_source).hexdigest()
+    workspace_path = tmp_path / "always.itws"
+
+    with manager_context() as manager:
+        catalog, _registered_hash = manager._extensions.catalog.store.register_script(
+            script_path
+        )
+        record = catalog.extensions[script_path.name.casefold()]
+        manager._extensions.catalog.store.update_script(
+            record.script_name,
+            expected_record_generation=record.record_generation,
+            embed_policy="always",
+        )
+        manager._extensions.catalog.refresh()
+        tool = itool(xr.DataArray([1.0]), manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: workspace_path,
+        )
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert (script_path.name, source_hash) in (
+            manager._workspace_state.extension_scripts.verified_sources
+        )
+        script_path.unlink()
+        manager._workspace_state.mark_layout_dirty()
+        assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+
+    source_entries = _current_workspace_manifest(workspace_path)[
+        "embedded_extension_sources"
+    ]
+    assert source_entries == [
+        {
+            "script_name": script_path.name,
+            "source_hash": source_hash,
+            "object_id": f"extension-source-{source_hash}",
+        }
+    ]
+    recovered_source, kind = workspace_storage._read_workspace_blob(
+        workspace_path,
+        source_entries[0]["object_id"],
+    )
+    assert recovered_source == script_source
+    assert kind == "extension-python-source-v1"
 
 
 def test_manager_close_save_path_updates_file_path(
@@ -2422,9 +2832,9 @@ def test_manager_workspace_generation_save_open_replaces_and_binds_path(
         assert not manager.is_workspace_modified
 
         attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-        assert attrs["imagetool_workspace_schema_version"] == 5
+        assert attrs["imagetool_workspace_schema_version"] == 6
         manifest = workspace_format._workspace_manifest_from_attrs(attrs)
-        assert manifest["schema_version"] == 5
+        assert manifest["schema_version"] == 6
         assert {node["uid"] for node in manifest["nodes"]} >= {
             manager._tool_graph.root_wrappers[0].uid,
             child_uid,
@@ -2444,6 +2854,44 @@ def test_manager_workspace_generation_save_open_replaces_and_binds_path(
         assert manager._tool_graph.root_wrappers[0]._childtool_indices == [child_uid]
         assert manager.get_imagetool(0).slicer_area._data.chunks is None
         assert _compute_first_value(manager.get_imagetool(0).slicer_area._data) == 0
+
+
+def test_manager_opens_schema_5_immutable_generation_workspace(
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "schema-5.itws"
+    data = xr.DataArray(np.arange(9).reshape(3, 3), dims=("x", "y"))
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+
+        with h5py.File(fname, "r+") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            generation_root = h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP]
+            for generation in generation_root.values():
+                manifest = workspace_store.WorkspaceStore._read_manifest(generation)
+                manifest["schema_version"] = 5
+                del generation[workspace_store._WORKSPACE_MANIFEST_DATASET]
+                workspace_store.WorkspaceStore._write_manifest(generation, manifest)
+
+        extra = itool(data + 1, manager=False, execute=False)
+        assert isinstance(extra, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(extra, show=False)
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        assert manager.ntools == 1
+        xr.testing.assert_identical(
+            manager._get_imagetool_data(0),
+            data.assign_coords(x=np.arange(3), y=np.arange(3)),
+        )
 
 
 def test_manager_workspace_import_ignored_while_save_in_progress(
@@ -3986,6 +4434,237 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         generations = store.generations()
         assert len(generations) == 2
         assert generations[0].manifest == generations[1].manifest == current_manifest
+
+
+def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    path = tmp_path / "schema-4.itws"
+    data = xr.DataArray(
+        np.arange(400, dtype=np.float64).reshape((20, 20)),
+        dims=("x", "y"),
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+
+        tree = manager._workspace_controller.saving._to_datatree()
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+        manager.remove_all_tools()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert _request_workspace_save_and_wait(qtbot, manager)
+
+        store = manager._workspace_controller._workspace_store
+        if store is None:
+            raise RuntimeError("Expected an associated workspace store")
+        entry = next(
+            workspace_format._iter_workspace_manifest_node_entries(
+                store.current_generation().manifest
+            )
+        )
+        object_path = str(entry["payload_path"])
+        legacy_path = "/0/imagetool"
+        assert legacy_path in store.h5_file
+        assert not store.leased_legacy_group_paths
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            == h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
+
+
+def test_manager_workspace_save_as_and_compact_deduplicates_legacy_payload(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_path = tmp_path / "schema-4.itws"
+    new_path = tmp_path / "converted.itws"
+    data = xr.DataArray(
+        np.arange(400, dtype=np.float64).reshape((20, 20)),
+        dims=("x", "y"),
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+
+        tree = manager._workspace_controller.saving._to_datatree()
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.to_netcdf(old_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+        manager.remove_all_tools()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            old_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: str(new_path),
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        store = manager._workspace_controller._workspace_store
+        if store is None:
+            raise RuntimeError("Expected an associated workspace store")
+        manifest = store.current_generation().manifest
+        entry = next(workspace_format._iter_workspace_manifest_node_entries(manifest))
+        object_path = str(entry["payload_path"])
+        legacy_path = "/0/imagetool"
+        assert legacy_path in store.h5_file
+        assert not store.leased_legacy_group_paths
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            == h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
+
+        with store.write_session() as h5_file:
+            del h5_file[legacy_path]
+            h5_file.copy(object_path, legacy_path)
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            != h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        stale_legacy = workspace_arrays.open_workspace_dataset(
+            new_path, legacy_path, chunks=None
+        )
+        assert store.leased_legacy_group_paths == {legacy_path}
+        assert manager._workspace_controller.loading._load_workspace_file(
+            new_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert store.leased_legacy_group_paths == {legacy_path}
+
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        assert manager.compact_workspace()
+        assert legacy_path not in store.h5_file
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
+        np.testing.assert_array_equal(stale_legacy[_ITOOL_DATA_NAME], data)
+        stale_legacy.close()
+
+
+def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_path = tmp_path / "schema-4.itws"
+    new_path = tmp_path / "converted.itws"
+    data = xr.DataArray(
+        np.arange(400, dtype=np.float64).reshape((20, 20)),
+        dims=("x", "y"),
+    )
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+        tree = manager._workspace_controller.saving._to_datatree()
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        manifest["nodes"][0]["data_backing"] = "dask"
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.to_netcdf(old_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+        manager.remove_all_tools()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            old_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        dirty_data = manager._get_imagetool_data(0)
+        if dirty_data is None:
+            raise RuntimeError("Expected loaded ImageTool data")
+        dirty_data = dirty_data + 1.0
+        expected = data + 1.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(
+            dirty_data,
+            auto_compute=False,
+            emit_edited=True,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: str(new_path),
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        store = manager._workspace_controller._workspace_store
+        if store is None:
+            raise RuntimeError("Expected an associated workspace store")
+        entry = next(
+            workspace_format._iter_workspace_manifest_node_entries(
+                store.current_generation().manifest
+            )
+        )
+        object_path = str(entry["payload_path"])
+        legacy_path = "/0/imagetool"
+        assert store.leased_legacy_group_paths == {legacy_path}
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            != h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
+
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        assert manager.compact_workspace()
+        assert legacy_path in store.h5_file
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
+        np.testing.assert_array_equal(dirty_data, expected)
 
 
 def test_manager_workspace_upgrade_repoints_pending_payload_before_compaction(

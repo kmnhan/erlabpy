@@ -1,4 +1,7 @@
+import contextlib
+import dataclasses
 import datetime
+import json
 import logging
 import pathlib
 import types
@@ -18,13 +21,18 @@ from erlab.interactive.imagetool._load_source import (
     _load_source_label_and_text,
     _loader_callable_text,
 )
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ToolProvenanceSpec,
+    full_data,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
     _coerce_note,
     _format_added_time,
     _format_chunk_summary,
     _ManagedWindowNode,
+    _NodeProvenanceOwnerSnapshot,
     _preview_from_imagetool,
     _preview_image_for_node,
 )
@@ -45,6 +53,152 @@ def test_reapplying_workspace_link_state_keeps_color_cache_valid() -> None:
     assert invalidated == []
     assert node._workspace_link_key == "link-group"
     assert node._workspace_link_colors is False
+
+
+def test_wrapper_provenance_value_remap_requires_valid_specs() -> None:
+    provenance = full_data()
+
+    assert _ManagedWindowNode._remap_provenance_value(None, lambda value: value) is None
+    assert (
+        _ManagedWindowNode._remap_provenance_value(
+            provenance, lambda value: value, live_source=True
+        )
+        == provenance
+    )
+    with pytest.raises(TypeError, match="ToolProvenanceSpec"):
+        _ManagedWindowNode._remap_provenance_value(
+            provenance, lambda _value: typing.cast("ToolProvenanceSpec", object())
+        )
+
+    encoded = json.dumps(provenance.model_dump(mode="json"))
+    assert (
+        _ManagedWindowNode._pending_tool_provenance({"source": encoded}, "source")
+        == provenance
+    )
+    assert (
+        _ManagedWindowNode._pending_tool_provenance({"source": b"\xff"}, "source")
+        is None
+    )
+    assert _ManagedWindowNode._pending_tool_provenance({"source": 1}, "source") is None
+    assert (
+        _ManagedWindowNode._pending_tool_provenance({"source": "{"}, "source") is None
+    )
+
+
+def test_wrapper_provenance_owner_remap_rolls_back_atomically(
+    qtbot,
+    test_data,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(tool, show=False)
+        node = manager._tool_graph.root_wrappers[index]
+        node._source_spec = full_data()
+        before = node._provenance_owner_snapshot()
+
+        with pytest.raises(RuntimeError, match="ownership changed"):
+            node._apply_provenance_owner_snapshot(
+                dataclasses.replace(
+                    before,
+                    pending_payload=(pathlib.Path("other.itws"), "/0/imagetool"),
+                )
+            )
+
+        applied: list[object] = []
+
+        def _apply(snapshot) -> None:
+            applied.append(snapshot)
+            if len(applied) == 1:
+                raise RuntimeError("apply failed")
+
+        monkeypatch.setattr(node, "_apply_provenance_owner_snapshot", _apply)
+        with pytest.raises(RuntimeError, match="apply failed"):
+            node.remap_provenance_owners(
+                lambda spec: spec.model_copy(update={"kind": "public_data"})
+            )
+        assert len(applied) == 2
+        assert applied[-1] == before
+
+        monkeypatch.setattr(node, "_manager", lambda: None)
+        node.commit_provenance_owner_remap()
+
+
+def test_wrapper_applies_tool_owned_source_provenance() -> None:
+    changed: list[None] = []
+
+    class _Tool:
+        source_spec = full_data()
+        input_provenance_spec = None
+        _source_spec = source_spec
+        _input_provenance_snapshot_from_parent = False
+
+        @staticmethod
+        def _coalesce_provenance_changes():
+            return contextlib.nullcontext()
+
+        @staticmethod
+        def _notify_provenance_changed() -> None:
+            changed.append(None)
+
+    tool = _Tool()
+    node = types.SimpleNamespace(
+        imagetool=None,
+        tool_window=tool,
+        _pending_workspace_payload=None,
+        _pending_workspace_payload_kind=None,
+        _pending_workspace_payload_attrs=None,
+        _source_spec=None,
+        _provenance_spec=None,
+        _invalidate_provenance_derived_state=lambda **_kwargs: None,
+    )
+    snapshot = _NodeProvenanceOwnerSnapshot(
+        imagetool=None,
+        tool_window=typing.cast("typing.Any", tool),
+        pending_payload=None,
+        pending_payload_kind=None,
+        node_source_spec=None,
+        node_provenance_spec=None,
+        tool_source_spec=ToolProvenanceSpec(kind="public_data"),
+        tool_input_provenance_spec=None,
+        tool_input_from_parent=False,
+        pending_payload_attrs=None,
+    )
+
+    _ManagedWindowNode._apply_provenance_owner_snapshot(
+        typing.cast("_ManagedWindowNode", node), snapshot
+    )
+
+    assert tool._source_spec == ToolProvenanceSpec(kind="public_data")
+    assert changed == [None]
+
+
+def test_wrapper_parent_refresh_marks_missing_output_unavailable() -> None:
+    states: list[str] = []
+    node = types.SimpleNamespace(
+        tool_window=None,
+        _output_id="missing-output",
+        _source_auto_update=True,
+        imagetool=object(),
+        source_state="fresh",
+        manager=types.SimpleNamespace(
+            _extensions=types.SimpleNamespace(
+                execution=types.SimpleNamespace(
+                    capture_replay_sources=lambda: contextlib.nullcontext()
+                )
+            )
+        ),
+        _resolved_output_payload=lambda: None,
+        _set_source_state=states.append,
+    )
+
+    assert not _ManagedWindowNode.handle_parent_source_replaced(
+        typing.cast("_ManagedWindowNode", node), xr.DataArray([1.0])
+    )
+    assert states == ["unavailable"]
 
 
 def test_wrapper_preview_fallback_branches(monkeypatch) -> None:

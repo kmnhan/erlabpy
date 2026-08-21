@@ -29,6 +29,12 @@ from erlab.interactive.imagetool._provenance._operations import (
 from tests._qt_helpers import signal_receiver_count
 
 
+def _exec_generated_code(code: str, **namespace_items: object) -> dict[str, object]:
+    namespace = dict(namespace_items)
+    exec(code, namespace, namespace)  # noqa: S102
+    return namespace
+
+
 def _make_1d_data() -> xr.DataArray:
     x = np.linspace(-1.0, 1.0, 11)
     data = np.exp(-(x**2))
@@ -1931,12 +1937,13 @@ def test_fit2d_mixed_slice_ranges_copy_and_output_provenance(
     assert copied_code
 
     for code in (current_code, copied_code):
-        namespace = {
-            "source_spectrum": data,
-            "era": erlab.analysis,
-            "xr": xr,
-        }
-        exec(code, namespace)  # noqa: S102
+        namespace = _exec_generated_code(
+            code,
+            source_spectrum=data,
+            era=erlab.analysis,
+            np=np,
+            xr=xr,
+        )
         result = namespace["result"]
         assert isinstance(result, xr.Dataset)
         for index, fit_range in enumerate(fit_ranges):
@@ -2017,12 +2024,13 @@ def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
     assert restored_spec is not None
     restored_code = restored_spec.display_code()
     assert restored_code is not None
-    namespace = {
-        "source_spectrum": data,
-        "era": erlab.analysis,
-        "xr": xr,
-    }
-    exec(restored_code, namespace)  # noqa: S102
+    namespace = _exec_generated_code(
+        restored_code,
+        source_spectrum=data,
+        era=erlab.analysis,
+        np=np,
+        xr=xr,
+    )
     restored_result = namespace["result"]
     assert isinstance(restored_result, xr.Dataset)
     for index, fit_range in enumerate(fit_ranges):
@@ -2407,10 +2415,8 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     fit_data = data.isel(y=slice(0, 3))
     expected_values = values_spec.operations[-1].apply(fit_data)
     expected_stderr = stderr_spec.operations[-1].apply(fit_data)
-    values_namespace = {"data": data, "era": erlab.analysis, "xr": xr}
-    stderr_namespace = {"data": data, "era": erlab.analysis, "xr": xr}
-    exec(values_code, values_namespace)  # noqa: S102
-    exec(stderr_code, stderr_namespace)  # noqa: S102
+    values_namespace = _exec_generated_code(values_code, data=data)
+    stderr_namespace = _exec_generated_code(stderr_code, data=data)
     xr.testing.assert_identical(values_namespace["parameter_values"], expected_values)
     xr.testing.assert_identical(stderr_namespace["parameter_stderr"], expected_stderr)
 
@@ -2487,12 +2493,7 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
     direct_code = direct_spec.display_code()
     assert direct_code is not None
     assert "watched_data.isel" in direct_code
-    direct_namespace = {
-        "watched_data": data,
-        "era": erlab.analysis,
-        "xr": xr,
-    }
-    exec(direct_code, direct_namespace)  # noqa: S102
+    direct_namespace = _exec_generated_code(direct_code, watched_data=data)
     expected_direct = direct_spec.operations[-1].apply(data.isel(y=slice(0, 3)))
     xr.testing.assert_identical(direct_namespace["parameter_values"], expected_direct)
 
@@ -2553,14 +2554,9 @@ def test_fit2d_parameter_output_provenance_preserves_standalone_data_name(
     assert code is not None
     assert "source_spectrum.isel" in code
 
-    namespace = {
-        "source_spectrum": source_spectrum,
-        "era": erlab.analysis,
-        "xr": xr,
-    }
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        exec(code, namespace)  # noqa: S102
+        namespace = _exec_generated_code(code, source_spectrum=source_spectrum)
     assert spec.active_name is not None
     actual = namespace[spec.active_name]
     assert isinstance(actual, xr.DataArray)
@@ -2614,10 +2610,9 @@ def test_fit2d_expression_model_parameter_output_provenance_executes(qtbot) -> N
         replayed = replay_script_provenance(spec, {"source_spectrum": data})
     xr.testing.assert_allclose(replayed, values)
 
-    namespace = {"source_spectrum": data, "xr": xr}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        exec(code, namespace)  # noqa: S102
+        namespace = _exec_generated_code(code, source_spectrum=data, xr=xr)
     actual = namespace["parameter_values"]
     assert isinstance(actual, xr.DataArray)
     xr.testing.assert_allclose(actual, values)

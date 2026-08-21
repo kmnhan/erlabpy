@@ -3,6 +3,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import types
 import weakref
 
@@ -22,28 +23,23 @@ def _load_conftest_module() -> types.ModuleType:
 _CONFTEST = _load_conftest_module()
 
 
-class _DummyPluginManager:
-    def __init__(self, plugins: set[str]) -> None:
-        self._plugins = plugins
+def test_extension_catalog_uses_a_test_temporary_directory() -> None:
+    catalog_directory = pathlib.Path(os.environ["ERLAB_EXTENSION_CATALOG"])
 
-    def hasplugin(self, name: str) -> bool:
-        return name in self._plugins
+    assert catalog_directory.parent == pathlib.Path(tempfile.gettempdir())
+    assert catalog_directory.name.startswith("erlabpy-test-extension-catalog-")
 
 
 class _DummyPytestConfig:
-    def __init__(self, plugins: set[str], cov_source: list[str] | None = None) -> None:
-        self.pluginmanager = _DummyPluginManager(plugins)
+    def __init__(self, cov_source: list[str] | None = None) -> None:
         self.option = types.SimpleNamespace(
             cov_source=[] if cov_source is None else cov_source
         )
 
 
 def test_coverage_is_active_requires_requested_cov_source() -> None:
-    assert not _CONFTEST._coverage_is_active(_DummyPytestConfig({"pytest_cov"}))
-    assert not _CONFTEST._coverage_is_active(_DummyPytestConfig({"pytest_cov", "_cov"}))
-    assert _CONFTEST._coverage_is_active(
-        _DummyPytestConfig({"pytest_cov", "_cov"}, ["erlab"])
-    )
+    assert not _CONFTEST._coverage_is_active(_DummyPytestConfig())
+    assert _CONFTEST._coverage_is_active(_DummyPytestConfig(["erlab"]))
 
 
 def test_conftest_import_defaults_pyside6_to_offscreen() -> None:

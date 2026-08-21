@@ -903,30 +903,21 @@ class DataTransformDialog(_DataManipulationDialog):
             if not erlab.utils.misc._is_valid_identifier(input_name):
                 input_name = "data"
             output_name = f"{input_name}{self.copy_output_suffix}"
-            current_name = output_name
-            lines = [f"{output_name} = {input_name}.copy(deep=False)"]
-            for index, operation in enumerate(operations):
+            current_name = input_name
+            lines: list[str] = []
+            for operation in operations:
                 if operation.statement_mutates_input:
                     lines.append(
                         operation.replay_code(current_name, output_name=current_name)
                     )
                     continue
-                replay_output_name = (
-                    output_name
-                    if lines
-                    or any(
-                        later_operation.statement_mutates_input
-                        for later_operation in operations[index + 1 :]
-                    )
-                    else current_name
-                )
                 lines.append(
                     operation.replay_code(
                         current_name,
-                        output_name=replay_output_name,
+                        output_name=output_name,
                     )
                 )
-                current_name = replay_output_name
+                current_name = output_name
             return "\n".join(lines)
         except Exception:
             return ""
@@ -2747,10 +2738,11 @@ class SelectionDialog(DataTransformDialog):
 
         self.preview_label = QtWidgets.QLabel()
         self.preview_label.setObjectName("selection_result_preview")
-        self.code_preview = QtWidgets.QPlainTextEdit()
+        self.code_preview = erlab.interactive.utils.PythonCodeEditor()
         self.code_preview.setObjectName("selection_code_preview")
         self.code_preview.setReadOnly(True)
-        self.code_preview.setMaximumBlockCount(4)
+        self.code_preview.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+        self.code_preview._text_document().setMaximumBlockCount(4)
         self.code_preview.setMaximumHeight(
             4 * QtGui.QFontMetrics(self.code_preview.font()).height()
         )

@@ -1,4 +1,5 @@
 import pathlib
+import types
 import typing
 import warnings
 
@@ -11,6 +12,7 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     FileLoadSource,
+    FileReplayCall,
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
@@ -584,6 +586,21 @@ def test_manager_provenance_file_load_batch_helper_branches(
     assert (
         provenance_edit_files._normalized_path(pathlib.Path("scan.h5"))
         == pathlib.Path("scan.h5").expanduser().absolute()
+    )
+
+    left_loader = FileReplayCall(
+        kind="extension_loader",
+        target="Lab_Loader.PY",
+        source_hash="a" * 64,
+        capability_id="load_data",
+        kwargs={"scale": 2.0},
+        selected_index=0,
+    )
+    right_loader = left_loader.model_copy(update={"target": "lab_loader.py"})
+    assert provenance_edit_files._same_replay_loader(left_loader, right_loader)
+    assert not provenance_edit_files._same_replay_loader(
+        left_loader,
+        right_loader.model_copy(update={"capability_id": "other"}),
     )
 
     empty_warning = warnings.WarningMessage(
@@ -1605,6 +1622,65 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
     assert pathlib.Path(edited_peer.file_load_source.path) == new_dir / "peer.h5"
 
 
+def test_manager_provenance_file_edit_preserves_script_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_file = _manager_replay_file_spec(tmp_path / "old.h5")
+    replacement = _manager_replay_file_spec(tmp_path / "new.h5")
+    script_spec = script(
+        ScriptCodeOperation(label="Scale", code="derived = derived * 2"),
+        start_label="Load and scale",
+        seed_code=old_file.seed_code,
+        active_name="derived",
+        file_load_source=old_file.file_load_source,
+    )
+    node = _fake_edit_node(script_spec)
+    controller = _fake_edit_controller(node)
+
+    class _Dialog:
+        def __init__(self, *_args: typing.Any, **_kwargs: typing.Any) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(self, **_kwargs: typing.Any) -> ToolProvenanceSpec:
+            return replacement.model_copy(update={"steps": script_spec.steps})
+
+        def selected_batch_peers(self):
+            return ()
+
+    validated: list[ToolProvenanceSpec] = []
+    monkeypatch.setattr(provenance_edit_controller, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(
+        controller,
+        "_validated_edit",
+        lambda edit_node, scope, candidate, **_kwargs: (
+            validated.append(candidate)
+            or provenance_edit_controller._ValidatedProvenanceEdit(
+                node=typing.cast("typing.Any", edit_node),
+                scope=scope,
+                data=xr.DataArray([1.0]),
+                spec=candidate,
+                filter_operation=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(controller, "_apply_validated_edit", lambda _edit: None)
+
+    controller._edit_file_load_spec(
+        typing.cast("typing.Any", node),
+        "display",
+        script_spec,
+        where="validating script file load",
+    )
+
+    assert validated[0].kind == "script"
+    assert validated[0].steps == script_spec.steps
+    assert validated[0].file_load_source == replacement.file_load_source
+
+
 @pytest.mark.parametrize(
     ("action", "configure_result", "expected_attempts", "expected_applied"),
     [
@@ -1707,6 +1783,53 @@ def test_manager_provenance_spreadsheet_failure_is_recoverable_on_demand(
     assert validation_attempts == expected_attempts
     assert len(applied) == expected_applied
     assert configure_calls == ([False] if action == "configure" else [])
+
+
+def test_manager_provenance_spreadsheet_failure_without_source_is_reraised(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    spec = _manager_replay_file_spec(tmp_path / "scan.h5")
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+
+    class _Dialog:
+        loader_options = types.SimpleNamespace(spreadsheet_metadata_source=lambda: None)
+
+        def __init__(self, *_args: typing.Any, **_kwargs: typing.Any) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(self, **_kwargs: typing.Any) -> ToolProvenanceSpec:
+            return spec
+
+        def selected_batch_peers(self):
+            return ()
+
+    source_error = erlab.io.metadata.SpreadsheetMetadataError("missing source")
+    replay_error = provenance_edit_controller._ProvenanceReplayFailure(
+        "validating spreadsheet replay",
+        source_error,
+    )
+    monkeypatch.setattr(provenance_edit_controller, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(
+        controller,
+        "_validated_edit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(replay_error),
+    )
+
+    with pytest.raises(
+        provenance_edit_controller._ProvenanceReplayFailure,
+        match="validating spreadsheet replay",
+    ):
+        controller._edit_file_load_spec(
+            typing.cast("typing.Any", node),
+            "display",
+            spec,
+            where="validating spreadsheet replay",
+        )
 
 
 @pytest.mark.parametrize("action", ["retry", "configure", "cancel"])
@@ -2669,6 +2792,7 @@ def test_manager_provenance_missing_nested_source_uses_batch_relink_dialog(
             batch_peers: tuple[provenance_edit_files._FileLoadBatchPeer, ...],
             batch_apply_default: bool = False,
             checked_batch_peer_ids: frozenset[str] | None = None,
+            **_kwargs: typing.Any,
         ) -> None:
             checked_batch_peer_ids = checked_batch_peer_ids or frozenset()
             dialog_calls.append(
@@ -2790,6 +2914,7 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
             batch_peers: tuple[provenance_edit_files._FileLoadBatchPeer, ...],
             batch_apply_default: bool = False,
             checked_batch_peer_ids: frozenset[str] | None = None,
+            **_kwargs: typing.Any,
         ) -> None:
             assert pathlib.Path(load_source.path) == old_a_path
             assert batch_apply_default is True
@@ -2940,6 +3065,7 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
             batch_peers: tuple[provenance_edit_files._FileLoadBatchPeer, ...],
             batch_apply_default: bool = False,
             checked_batch_peer_ids: frozenset[str] | None = None,
+            **_kwargs: typing.Any,
         ) -> None:
             assert pathlib.Path(load_source.path) == old_a_path
             assert batch_apply_default is True
@@ -3303,7 +3429,14 @@ def test_manager_provenance_file_replay_validation_captures_loader_warnings(
     controller = _fake_edit_controller(_fake_edit_node(full_data()))
     spec = _manager_provenance_file_spec(file_path)
 
-    def _warn_then_fail(_spec: ToolProvenanceSpec) -> xr.DataArray:
+    def _warn_then_fail(
+        _spec: ToolProvenanceSpec,
+        *,
+        extension_executor: typing.Any = None,
+        extension_loader_executor: typing.Any = None,
+    ) -> xr.DataArray:
+        assert extension_executor is not None
+        assert extension_loader_executor is not None
         warnings.warn(
             "Loading f_003_S001 with inferred index 3 resulted in an error.",
             UserWarning,

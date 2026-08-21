@@ -28,6 +28,10 @@ class ScriptCodeOperation(ToolProvenanceOperation):
     code: str | None
     copyable: bool = True
     visible: bool = True
+    framework_owned: bool = pydantic.Field(
+        default=False,
+        exclude_if=lambda value: not value,
+    )
 
     live_applicable: typing.ClassVar[bool] = False
 

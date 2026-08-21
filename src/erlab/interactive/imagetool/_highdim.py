@@ -187,10 +187,11 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
         self.preview_label.setObjectName("reduce_dimension_result_preview")
         layout.addWidget(self.preview_label)
 
-        self.code_preview = QtWidgets.QPlainTextEdit(self)
+        self.code_preview = erlab.interactive.utils.PythonCodeEditor(self)
         self.code_preview.setObjectName("reduce_dimension_code_preview")
         self.code_preview.setReadOnly(True)
-        self.code_preview.setMaximumBlockCount(4)
+        self.code_preview.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+        self.code_preview._text_document().setMaximumBlockCount(4)
         self.code_preview.setMaximumHeight(
             4 * QtGui.QFontMetrics(self.code_preview.font()).height()
         )

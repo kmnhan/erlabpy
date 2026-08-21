@@ -440,7 +440,7 @@ def _load_paths_and_loader(
 
     if loader_name is None:
         return path_list, "ask"
-    return path_list, erlab.io.loaders[loader_name].name
+    return path_list, loader_name
 
 
 _UNSET = object()
@@ -1040,8 +1040,7 @@ def load_in_manager(
     paths
         List of paths containing the data to be displayed in the ImageTool window.
     loader_name
-        Name of the loader to use to load the data. The loader must be registered in
-        :attr:`erlab.io.loaders`.
+        Name of a registered loader or an enabled manager extension loader.
     target
         Optional 0-based manager index. If omitted, the current process default is
         used. If no default is set, the only live manager is used. If multiple

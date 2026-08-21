@@ -14,6 +14,7 @@ import numpy as np
 import xarray as xr
 
 import erlab
+from erlab.extensions._api import _registered_script_capability_status
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
@@ -35,11 +36,21 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _script_input_reference_text,
     has_file_load_source,
+    iter_operation_refs,
     parse_tool_provenance_spec,
 )
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+
+    from erlab.extensions._api import _CapabilityStatus
+    from erlab.interactive.imagetool._provenance._operations import (
+        ExtensionRoutineOperation,
+    )
+
+    _CapabilityStatusResolver = Callable[
+        [str, str, typing.Literal["routine", "loader"], str], _CapabilityStatus
+    ]
 
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
@@ -228,7 +239,11 @@ def _resolve_importable_callable(target: str) -> Callable[..., typing.Any]:
     return typing.cast("Callable[..., typing.Any]", obj)
 
 
-def _load_file_source_object(load_source: FileLoadSource) -> typing.Any:
+def _load_file_source_object(
+    load_source: FileLoadSource,
+    *,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+) -> typing.Any:
     from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
 
     call = load_source.replay_call
@@ -237,17 +252,34 @@ def _load_file_source_object(load_source: FileLoadSource) -> typing.Any:
     file_path = pathlib.Path(load_source.path)
     if call.kind == "erlab_loader":
         func = erlab.io.loaders[call.target].load
+    elif call.kind == "extension_loader":
+        if extension_loader_executor is not None:
+            return extension_loader_executor(load_source)
+        return erlab.extensions.run_loader(
+            file_path,
+            registered_script=call.target,
+            source_hash=typing.cast("str", call.source_hash),
+            loader_id=typing.cast("str", call.capability_id),
+            parameters=_deserialize_loader_kwargs(call.kwargs),
+        )
     else:
         func = _resolve_importable_callable(call.target)
 
     return func(file_path, **_deserialize_loader_kwargs(call.kwargs))
 
 
-def _load_file_source_data(load_source: FileLoadSource) -> xr.DataArray:
+def _load_file_source_data(
+    load_source: FileLoadSource,
+    *,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+) -> xr.DataArray:
     call = load_source.replay_call
     if call is None:
         raise ValueError("File load source does not define replay metadata")
-    loaded = _load_file_source_object(load_source)
+    loaded = _load_file_source_object(
+        load_source,
+        extension_loader_executor=extension_loader_executor,
+    )
     data = _select_replay_input(loaded, call.selection)
     if call.cast_float64:
         data = data.astype(np.float64)
@@ -265,17 +297,28 @@ def execute_replay_graph(
     graph: ReplayGraph,
     *,
     cache: dict[str, xr.DataArray] | None = None,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     # Replay runs from manager actions; avoid optional native reduction accelerators
     # that can crash PySide6/Python 3.14 while Qt threads are alive.
     with xr.set_options(use_numbagg=False):
-        return _execute_replay_graph(graph, cache=cache)
+        return _execute_replay_graph(
+            graph,
+            cache=cache,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        )
 
 
 def _execute_replay_graph(
     graph: ReplayGraph,
     *,
     cache: dict[str, xr.DataArray] | None = None,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
@@ -286,7 +329,10 @@ def _execute_replay_graph(
             continue
 
         if node.kind == "file_load":
-            data = _load_file_source_data(node.payload["load_source"])
+            data = _load_file_source_data(
+                node.payload["load_source"],
+                extension_loader_executor=extension_loader_executor,
+            )
         elif node.kind == "setup":
             continue
         elif node.kind == "live_input":
@@ -301,7 +347,9 @@ def _execute_replay_graph(
             )
         elif node.kind == "operation":
             operation = node.payload["operation"]
-            if node.payload.get("legacy_parent_context", False):
+            if extension_executor is not None and operation.op == "extension_routine":
+                data = extension_executor(operation, values[node.parents[0]])
+            elif node.payload.get("legacy_parent_context", False):
                 data = operation._apply_schema_v2(
                     values[node.parents[0]],
                     parent_data=values[node.parents[1]],
@@ -385,19 +433,33 @@ def replay_file_provenance(
     spec: typing.Any,
     *,
     cache: dict[str, xr.DataArray] | None = None,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     """Replay structured file provenance without executing generated Python."""
     try:
-        graph = compile_replay_graph(spec)
-        return execute_replay_graph(graph, cache=cache)
+        graph = compile_replay_graph(spec, structured_file_replay=True)
+        return execute_replay_graph(
+            graph,
+            cache=cache,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        )
     except ReplayGraphError as exc:
         raise TypeError("Expected structured file provenance") from exc
 
 
 def file_load_source_status(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
 ) -> FileLoadSourceStatus:
-    """Return the current availability of the recorded file-load source."""
+    """Return the current availability of the recorded file-load source.
+
+    A managed ImageTool can supply its own resolver so session-specific extension
+    validation failures do not affect other manager instances.
+    """
     spec = parse_tool_provenance_spec(value)
     if spec is None or spec.file_load_source is None:
         return "no-file-load-source"
@@ -417,27 +479,75 @@ def file_load_source_status(
             _resolve_importable_callable(replay_call.target)
         except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
             return "missing-loader"
+    if replay_call.kind == "extension_loader":
+        capability_status = (
+            _registered_script_capability_status
+            if extension_status_resolver is None
+            else extension_status_resolver
+        )(
+            replay_call.target,
+            typing.cast("str", replay_call.source_hash),
+            "loader",
+            typing.cast("str", replay_call.capability_id),
+        )
+        if capability_status == "disabled":
+            return "extension-disabled"
+        if capability_status == "approval-required":
+            return "extension-approval-required"
+        if capability_status == "missing-source":
+            return "extension-missing-source"
+        if capability_status == "missing-capability":
+            return "extension-missing-capability"
+        if capability_status == "hash-mismatch":
+            return "extension-hash-mismatch"
+        if capability_status == "unsupported-api":
+            return "extension-unsupported-api"
+        if capability_status == "validation-failed":
+            return "extension-validation-failed"
     return "loadable"
 
 
 def can_reload_without_trust(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
 ) -> bool:
-    """Return whether recorded provenance can replay without trusted user code."""
+    """Return whether provenance can replay with the selected extension scope."""
     spec = parse_tool_provenance_spec(value)
     if spec is None:
         return False
-    if spec.kind == "file":
-        return file_load_source_status(spec) == "loadable"
-    if spec.kind != "script":
+    if spec.kind not in {"file", "script"}:
         return False
-    if has_file_load_source(spec) and file_load_source_status(spec) != "loadable":
+    if (spec.kind == "file" or has_file_load_source(spec)) and file_load_source_status(
+        spec, extension_status_resolver=extension_status_resolver
+    ) != "loadable":
         return False
-    if not script_provenance_replayable(spec):
+    if spec.kind == "script" and not script_provenance_replayable(spec):
         return False
+    capability_status = (
+        _registered_script_capability_status
+        if extension_status_resolver is None
+        else extension_status_resolver
+    )
+    for _ref, operation in iter_operation_refs(spec):
+        if getattr(operation, "op", None) != "extension_routine":
+            continue
+        extension_operation = typing.cast("ExtensionRoutineOperation", operation)
+        if (
+            capability_status(
+                extension_operation.script_name,
+                extension_operation.source_hash,
+                "routine",
+                extension_operation.routine_id,
+            )
+            != "ready"
+        ):
+            return False
     for script_input in spec.script_inputs:
         input_spec = script_input.parsed_provenance_spec()
-        if not can_reload_without_trust(input_spec):
+        if not can_reload_without_trust(
+            input_spec, extension_status_resolver=extension_status_resolver
+        ):
             return False
     return True
 
@@ -551,6 +661,9 @@ def replay_script_provenance(
     inputs: Mapping[str, xr.DataArray],
     *,
     trusted_user_code: bool = False,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     """Execute script provenance from already resolved input arrays."""
     try:
@@ -558,8 +671,13 @@ def replay_script_provenance(
             spec,
             external_inputs=inputs,
             trusted_user_code=trusted_user_code,
+            structured_file_replay=True,
         )
-        return execute_replay_graph(graph)
+        return execute_replay_graph(
+            graph,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        )
     except ReplayGraphError as exc:
         if "non-replayable" in str(exc):
             raise ValueError(str(exc)) from exc
@@ -573,6 +691,9 @@ def rebuild_script_provenance(
     cache: dict[str, xr.DataArray] | None = None,
     depth: int = 0,
     trusted_user_code: bool = False,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> tuple[xr.DataArray, typing.Any]:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
@@ -681,5 +802,14 @@ def rebuild_script_provenance(
         rebuilt_spec,
         live_input_resolver=resolve_live,
         trusted_user_code=trusted_user_code,
+        structured_file_replay=True,
     )
-    return execute_replay_graph(graph, cache=cache), rebuilt_spec
+    return (
+        execute_replay_graph(
+            graph,
+            cache=cache,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        ),
+        rebuilt_spec,
+    )

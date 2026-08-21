@@ -1,3 +1,4 @@
+import contextlib
 import enum
 import gc
 import pathlib
@@ -16,11 +17,15 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
+from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
+    _serialize_loader_kwargs,
+)
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     FileDataSelection,
@@ -31,6 +36,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
+    file_load,
     full_data,
     script,
 )
@@ -136,6 +142,247 @@ def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
         "engine": "h5netcdf",
         "chunks": {"x": 1},
     }
+
+
+def test_file_load_edit_dialog_falls_back_to_unfiltered_loaders(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    calls: list[pathlib.Path | None] = []
+    name_filter = "NetCDF (*.nc)"
+
+    def file_loaders(path=None):
+        calls.append(path)
+        if path is not None:
+            return {}
+        return {name_filter: (xr.load_dataarray, {})}
+
+    load_source = FileLoadSource(
+        path=str(tmp_path / "scan.nc"),
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="(none)",
+        replay_call=FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=file_loaders,
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.path_edit.setText(str(tmp_path / "replacement.nc"))
+
+    assert dialog.loader_options._valid_loaders[name_filter][0] is xr.load_dataarray
+    assert calls.count(None) >= 2
+
+    def path_specific_loaders(path=None):
+        if path is None:
+            return {name_filter: (xr.load_dataarray, {})}
+        return {"Dataset (*.nc)": (xr.load_dataset, {})}
+
+    recorded_fallback = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=path_specific_loaders,
+    )
+    qtbot.addWidget(recorded_fallback)
+    assert (
+        recorded_fallback.loader_options._valid_loaders[name_filter][0]
+        is xr.load_dataarray
+    )
+
+
+def test_file_load_edit_dialog_edits_extension_loader_parameters(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    data_path = tmp_path / "scan.txt"
+    data_path.write_text("1\n")
+    source_hash = "a" * 64
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_lab_data",
+        name="Load Lab Data",
+        category="Lab",
+        summary="Load one lab data file.",
+        function_name="load_lab_data",
+        extensions=(".txt",),
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=1.0,
+            ),
+        ),
+    )
+
+    class _LoaderCall:
+        script_name = "lab_loader.py"
+        loader_id = "load_lab_data"
+        __name__ = "load"
+
+        def __init__(self) -> None:
+            self.source_hash = source_hash
+            self.descriptor = descriptor
+
+        def __call__(self, path: pathlib.Path, **kwargs: typing.Any) -> xr.DataArray:
+            del path, kwargs
+            return xr.DataArray([1.0])
+
+    loader_call = _LoaderCall()
+    name_filter = "Load Lab Data (*.txt)"
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="lab_loader.py: load_lab_data",
+        kwargs_text="scale=2.0",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader.py",
+            source_hash=source_hash,
+            capability_id="load_lab_data",
+            kwargs=_serialize_loader_kwargs({"scale": 2.0}),
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    observed_values: list[dict[str, typing.Any]] = []
+    parameter_dialog_accepted = True
+
+    class _ParameterDialog:
+        def __init__(
+            self,
+            received_descriptor: erlab.extensions.LoaderDescriptor,
+            parent: QtWidgets.QWidget,
+            values: dict[str, typing.Any],
+        ) -> None:
+            del parent
+            if received_descriptor is not descriptor:
+                raise RuntimeError("The editor received the wrong loader descriptor")
+            observed_values.append(dict(values))
+            self.parameters = {"scale": 3.0}
+
+        def exec(self) -> int:
+            return int(
+                QtWidgets.QDialog.DialogCode.Accepted
+                if parameter_dialog_accepted
+                else QtWidgets.QDialog.DialogCode.Rejected
+            )
+
+    monkeypatch.setattr(
+        extension_dialogs,
+        "_ExtensionParameterDialog",
+        _ParameterDialog,
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=lambda _path=None: {name_filter: (loader_call, {"scale": 1.0})},
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.accept()
+
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert observed_values == [{"scale": 2.0}]
+    candidate = dialog.provenance_spec(active_name="data", replay_steps=())
+    replay_call = candidate.file_load_source.replay_call
+    if replay_call is None:
+        raise RuntimeError("The edited file load has no replay call")
+    assert replay_call.kind == "extension_loader"
+    assert replay_call.target == "lab_loader.py"
+    assert replay_call.source_hash == source_hash
+    assert replay_call.capability_id == "load_lab_data"
+    assert _deserialize_loader_kwargs(replay_call.kwargs) == {"scale": 3.0}
+
+    parameter_dialog_accepted = False
+    canceled_dialog = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=lambda _path=None: {name_filter: (loader_call, {"scale": 1.0})},
+    )
+    qtbot.addWidget(canceled_dialog)
+    canceled_dialog.accept()
+    assert canceled_dialog.result() == int(QtWidgets.QDialog.DialogCode.Rejected)
+
+
+def test_file_load_edit_dialog_does_not_substitute_for_missing_extension_loader(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    data_path = tmp_path / "scan.txt"
+    data_path.write_text("1\n")
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="lab_loader.py: load_lab_data",
+        kwargs_text="scale=2.0",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader.py",
+            source_hash="a" * 64,
+            capability_id="load_lab_data",
+            kwargs={"scale": 2.0},
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+
+    with pytest.raises(RuntimeError, match="recorded file loader"):
+        provenance_edit_files._FileLoadEditDialog(
+            load_source,
+            parent,
+            file_loaders=lambda _path=None: {
+                "Unrelated loader (*.txt)": (xr.load_dataarray, {})
+            },
+        )
+
+
+def test_missing_extension_loader_provenance_is_not_editable(
+    tmp_path: pathlib.Path,
+) -> None:
+    data_path = tmp_path / "scan.txt"
+    data_path.write_text("1\n")
+    spec = file_load(
+        start_label="Load data",
+        seed_code=None,
+        file_load_source=FileLoadSource(
+            path=str(data_path),
+            loader_label="Extension Loader",
+            loader_text="lab_loader.py: load_lab_data",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="lab_loader.py",
+                source_hash="a" * 64,
+                capability_id="load_lab_data",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions.capability_status = lambda *_args: "missing-source"
+    row = next(
+        row
+        for row in spec.display_rows()
+        if row.edit_ref is not None and row.edit_ref.kind == "file_load"
+    )
+
+    editable, reason = controller.can_edit_row(row)
+
+    assert not editable
+    assert reason
 
 
 def test_file_load_edit_dialog_restores_spreadsheet_metadata_controls(
@@ -1112,6 +1359,22 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
     manager._selected_imagetool_targets = lambda: ()
     manager._node_for_target = lambda target: manager._tool_graph.nodes[target]
     manager._parent_node = lambda _node: pytest.fail("parent data should be detached")
+    manager._extensions = types.SimpleNamespace(
+        replay_loader=lambda *_args, **_kwargs: pytest.fail(
+            "built-in provenance must not use extension loader execution"
+        ),
+        execution=types.SimpleNamespace(
+            run_operation=lambda *_args, **_kwargs: pytest.fail(
+                "built-in provenance must not use extension execution"
+            ),
+            capture_replay_sources=lambda: contextlib.nullcontext(
+                types.SimpleNamespace(
+                    require_current_for_publication=lambda: None,
+                    publish=lambda: None,
+                )
+            ),
+        ),
+    )
     manager._script_input_can_reload = lambda *_args, **_kwargs: True
     manager._rebuild_script_provenance = lambda *_args, **_kwargs: pytest.fail(
         "selection edit should not rebuild script provenance"
@@ -1386,7 +1649,7 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
         safe_spec,
         reason="reload this result",
     )
-    assert detailed_texts == ["derived = data\nderived = data + 1"]
+    assert detailed_texts == ["derived = data + 1"]
 
 
 def test_manager_provenance_lightweight_helper_edges() -> None:
@@ -1493,6 +1756,17 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     ensured: list[str] = []
     trusted_flags: list[bool] = []
     manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            replay_loader=lambda *_args, **_kwargs: pytest.fail(
+                "built-in provenance must not use extension loader execution"
+            ),
+            execution=types.SimpleNamespace(
+                run_operation=lambda *_args, **_kwargs: pytest.fail(
+                    "built-in provenance must not use extension execution"
+                )
+            ),
+        ),
         _script_input_can_reload=lambda *_args, **_kwargs: True,
         _ensure_script_provenance_trusted=lambda _spec, *, reason: ensured.append(
             reason

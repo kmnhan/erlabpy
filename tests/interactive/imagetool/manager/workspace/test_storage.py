@@ -1,10 +1,13 @@
+import contextlib
 import errno
 import json
+import os
 import pathlib
 import types
 import typing
 
 import h5py
+import numpy as np
 import pytest
 from qtpy import QtWidgets
 
@@ -157,6 +160,54 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
     assert synced_parents == []
     assert source.read_bytes() == b"new"
     assert destination.read_bytes() == b"old"
+
+
+def test_replace_workspace_file_ignores_metadata_only_ctime_changes(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "prepared.itws"
+    destination = tmp_path / "workspace.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    expected_state = workspace_storage._workspace_publication_state(destination)
+    real_state = workspace_storage.os.stat(destination)
+    ctime_ns = real_state.st_ctime_ns
+
+    def _stat_with_new_ctime(_path):
+        nonlocal ctime_ns
+        ctime_ns += 1
+        return types.SimpleNamespace(
+            st_dev=real_state.st_dev,
+            st_ino=real_state.st_ino,
+            st_size=real_state.st_size,
+            st_mtime_ns=real_state.st_mtime_ns,
+            st_ctime_ns=ctime_ns,
+        )
+
+    monkeypatch.setattr(workspace_storage.os, "stat", _stat_with_new_ctime)
+
+    workspace_storage._replace_workspace_file(
+        source, destination, expected_state=expected_state
+    )
+
+    assert destination.read_bytes() == b"new"
+
+
+def test_workspace_publication_state_detects_same_size_content_changes(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    path.write_bytes(b"before")
+    expected = workspace_storage._workspace_publication_state(path)
+    previous_mtime_ns = path.stat().st_mtime_ns
+    path.write_bytes(b"after!")
+    os.utime(
+        path,
+        ns=(previous_mtime_ns + 1_000_000_000, previous_mtime_ns + 1_000_000_000),
+    )
+
+    with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+        workspace_storage._require_workspace_publication_state(path, expected)
 
 
 def test_workspace_file_access_retry_filter_is_specific() -> None:
@@ -665,8 +716,7 @@ def test_workspace_h5_transaction_helper_edge_cases(tmp_path) -> None:
 
 
 def test_recover_workspace_transactions_ignores_non_workspace_file(tmp_path) -> None:
-
-    fname = tmp_path / "plain.h5"
+    fname = tmp_path / "plain.itws"
     with h5py.File(fname, "w") as h5_file:
         h5_file.create_group(f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x")
 
@@ -674,3 +724,128 @@ def test_recover_workspace_transactions_ignores_non_workspace_file(tmp_path) -> 
 
     with h5py.File(fname, "r") as h5_file:
         assert f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x" in h5_file
+
+
+def test_workspace_storage_links_and_compares_immutable_payload_groups(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            legacy = h5_file.create_group("legacy")
+            legacy.create_dataset("data", data=np.array([1.0]))
+            legacy.create_group("nested")
+            equal = h5_file.create_group("equal")
+            equal.create_dataset("data", data=np.array([1.0]))
+            equal.create_group("nested")
+            h5_file.create_group("different").create_dataset(
+                "data", data=np.array([2.0])
+            )
+            h5_file.create_group("different_names").create_dataset(
+                "other", data=np.array([1.0])
+            )
+
+            assert workspace_storage._link_workspace_group(
+                store, source_path="/legacy", target_path="/objects/payload"
+            )
+            assert not workspace_storage._link_workspace_group(
+                store, source_path="/legacy", target_path="/objects/payload"
+            )
+            assert workspace_storage._workspace_groups_have_equal_datasets(
+                h5_file["legacy"], h5_file["objects/payload"]
+            )
+            assert workspace_storage._workspace_groups_have_equal_datasets(
+                h5_file["legacy"], h5_file["equal"]
+            )
+            assert not workspace_storage._workspace_groups_have_equal_datasets(
+                h5_file["legacy"], h5_file["different"]
+            )
+            assert not workspace_storage._workspace_groups_have_equal_datasets(
+                h5_file["legacy"], h5_file["different_names"]
+            )
+        with pytest.raises(KeyError, match="missing"):
+            workspace_storage._link_workspace_group(
+                store, source_path="/missing", target_path="/objects/missing"
+            )
+
+
+def test_workspace_blob_and_dataset_comparison_edge_cases(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest={"schema_version": 6, "nodes": []},
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        "blob", blob=b"source", blob_kind="kind"
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+    with h5py.File(path, "r+") as h5_file:
+        h5_file[f"{workspace_store._WORKSPACE_OBJECTS_GROUP}/blob"].attrs[
+            "erlab_object_kind"
+        ] = np.bytes_(b"kind")
+
+    assert workspace_storage._read_workspace_blob(path, "blob") == (
+        b"source",
+        "kind",
+    )
+    assert not workspace_storage._workspace_dataset_values_equal(
+        np.arange(2), np.arange(3)
+    )
+    assert workspace_storage._workspace_dataset_values_equal(
+        np.array(1.0), np.array(1.0)
+    )
+    assert workspace_storage._workspace_dataset_values_equal(
+        np.empty((0, 2)), np.empty((0, 2))
+    )
+    assert workspace_storage._workspace_dataset_values_equal(
+        np.array(["value"], dtype=object),
+        np.array(["value"], dtype=object),
+    )
+
+
+def test_rebind_equivalent_legacy_readers_ignores_unmapped_reader(tmp_path) -> None:
+    path = tmp_path / "groups.h5"
+    with h5py.File(path, "w") as h5_file:
+        h5_file.create_group("legacy")
+        rebound: list[dict[str, str]] = []
+
+        class _Store:
+            write_lock = contextlib.nullcontext()
+            lock = contextlib.nullcontext()
+            leased_legacy_group_paths = frozenset({"/legacy"})
+
+            @staticmethod
+            def read_session():
+                return contextlib.nullcontext(h5_file)
+
+            @staticmethod
+            def object_path(object_id: str) -> str:
+                return f"/objects/{object_id}"
+
+            @staticmethod
+            def rebind_legacy_readers(mappings) -> None:
+                rebound.append(mappings)
+
+        store = typing.cast("workspace_store.WorkspaceStore", _Store())
+        workspace_storage._rebind_equivalent_legacy_readers(
+            store, {"schema_version": 6, "nodes": []}
+        )
+        workspace_storage._rebind_equivalent_legacy_readers(
+            store,
+            {
+                "schema_version": 6,
+                "nodes": [
+                    {
+                        "path": "0",
+                        "kind": "imagetool",
+                        "payload_object_id": "payload",
+                    }
+                ],
+            },
+        )
+        assert rebound == [{}]

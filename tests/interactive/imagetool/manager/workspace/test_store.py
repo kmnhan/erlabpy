@@ -23,7 +23,7 @@ if typing.TYPE_CHECKING:
 
 def _manifest(*object_ids: str) -> dict[str, object]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "nodes": [
             {
                 "uid": f"node-{index}",
@@ -167,14 +167,39 @@ def test_workspace_store_value_validation_and_closed_state(
     path = tmp_path / "workspace.itws"
     with pytest.raises(ValueError, match="only when create is true"):
         workspace_store.WorkspaceStore(path, workspace_id="invalid")
-    for object_id in ("", "nested/object"):
+    for object_id in ("", ".", "..", "nested/object", "\x00"):
         with pytest.raises(ValueError, match="one path component"):
             workspace_store.WorkspaceStore.object_path(object_id)
 
     assert workspace_store.WorkspaceStore.manifest_object_ids({"nodes": {}}) == set()
     assert workspace_store.WorkspaceStore.manifest_object_ids(
-        {"nodes": [None, {}, {"payload_object_id": ""}, {"payload_object_id": "ok"}]}
+        {
+            "nodes": [
+                None,
+                {},
+                {"payload_object_id": ""},
+                {"payload_object_id": "\x00"},
+                {"payload_object_id": "ok"},
+            ]
+        }
     ) == {"ok"}
+    assert workspace_store.WorkspaceStore.manifest_extension_object_ids(
+        {
+            "embedded_extension_sources": [
+                {"object_id": ""},
+                {"object_id": "."},
+                {"object_id": ".."},
+                {"object_id": "nested/object"},
+                {"object_id": "\x00"},
+                {
+                    "script_name": "valid.py",
+                    "source_hash": "a" * 64,
+                    "object_id": f"extension-source-{'a' * 64}",
+                },
+                {"future": {"sources": [{"object_id": "extension-nested"}]}},
+            ]
+        }
+    ) == {f"extension-source-{'a' * 64}"}
 
     store = workspace_store.WorkspaceStore(path, create=True)
     store.close()
@@ -189,6 +214,58 @@ def test_workspace_store_value_validation_and_closed_state(
         store.require_current_path()
     with pytest.raises(RuntimeError, match="closed"):
         store.replace_from(path, lambda _source, _target: None)
+
+
+def test_workspace_store_rebinds_only_existing_legacy_payloads(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+
+    class _Reader:
+        def __init__(self, legacy_group_path: str | None) -> None:
+            self.legacy_group_path = legacy_group_path
+            self.object_ids: list[str] = []
+
+        def _rebind_legacy_group_to_object(self, object_id: str) -> None:
+            self.object_ids.append(object_id)
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+        matching = _Reader("/legacy/tool")
+        unrelated = _Reader("/other/tool")
+        store.register_reader(matching)
+        store.register_reader(unrelated)
+
+        store.rebind_legacy_readers({"/legacy/tool": "payload"})
+        assert matching.object_ids == ["payload"]
+        assert unrelated.object_ids == []
+
+        with pytest.raises(KeyError, match="missing"):
+            store.rebind_legacy_readers({"/legacy/tool": "missing"})
+        assert matching.object_ids == ["payload"]
+
+
+def test_workspace_compaction_allows_missing_optional_extension_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    source_hash = "a" * 64
+    manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "embedded_extension_sources": [
+            {
+                "script_name": "missing.py",
+                "source_hash": source_hash,
+                "object_id": f"extension-source-{source_hash}",
+            }
+        ],
+    }
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.publish(manifest)
+
+        workspace_storage._compact_workspace_store(store)
+
+        assert store.current_generation().manifest == manifest
 
 
 def test_workspace_store_identity_helpers_decode_bytes() -> None:
@@ -1100,6 +1177,79 @@ def test_workspace_generation_removes_all_new_objects_after_plan_error(
             )
 
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == set()
+        assert store.generations() == ()
+
+
+def test_workspace_generation_removes_legacy_link_after_publish_error(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest("written"),
+        objects=(
+            workspace_storage._WorkspaceObjectWrite(
+                "written", dataset=xr.Dataset({"data": ("x", np.arange(3))})
+            ),
+        ),
+        preserved_groups=(
+            workspace_storage._WorkspaceGroupCopy(
+                source_file=str(path),
+                source_path="/legacy",
+                target_path="/legacy",
+            ),
+        ),
+        legacy_reader_rebindings=(("/legacy", "written"),),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+
+        def _fail_publish(_manifest) -> None:
+            raise RuntimeError("publish failed")
+
+        monkeypatch.setattr(store, "publish", _fail_publish)
+        with pytest.raises(RuntimeError, match="publish failed"):
+            workspace_storage._write_workspace_generation(
+                store, plan, compression_mode="none"
+            )
+
+        assert "legacy" not in store.h5_file
+        assert store.object_path("written").strip("/") not in store.h5_file
+        assert store.generations() == ()
+
+
+def test_workspace_generation_removes_in_place_object_link_after_publish_error(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest("written"),
+        objects=(
+            workspace_storage._WorkspaceObjectWrite(
+                "written",
+                source_file=str(path),
+                source_path="/legacy",
+            ),
+        ),
+        legacy_object_links=(("/legacy", "written"),),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.create_group("legacy").create_dataset("data", data=np.arange(3))
+        legacy_address = h5py.h5o.get_info(store.h5_file["/legacy"].id).addr
+
+        def _fail_publish(_manifest) -> None:
+            raise RuntimeError("publish failed")
+
+        monkeypatch.setattr(store, "publish", _fail_publish)
+        with pytest.raises(RuntimeError, match="publish failed"):
+            workspace_storage._write_workspace_generation(
+                store, plan, compression_mode="none"
+            )
+
+        assert "legacy" in store.h5_file
+        assert h5py.h5o.get_info(store.h5_file["/legacy"].id).addr == legacy_address
+        assert store.object_path("written").strip("/") not in store.h5_file
         assert store.generations() == ()
 
 
