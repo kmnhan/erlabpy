@@ -24,6 +24,10 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.explorer._loaders import (
+    BUILTIN_EXPLORER_LOADERS,
+    _BuiltinExplorerLoader,
+)
 from erlab.io.dataloader import _filename_matches_extensions
 
 if typing.TYPE_CHECKING:
@@ -550,8 +554,8 @@ class _ReprFetcher(QtCore.QRunnable):
     ----------
     file_path
         Path to the file.
-    loader_name
-        Name of the loader plugin to use.
+    load_method
+        Loader method to use.
     """
 
     def __init__(
@@ -601,12 +605,16 @@ class _ReprFetcher(QtCore.QRunnable):
                 dat,
                 additional_info=[],
                 show_size=self.include_values,
-                # Preview-off loads replace only data values; keep coordinate summaries.
+                # Metadata-only loads may defer data values; keep coordinate summaries.
                 load_values=True,
             )
-            if not self.include_values:
-                dat = None
         finally:
+            if dat is not None and not self.include_values:
+                close = getattr(dat, "close", None)
+                if callable(close):
+                    with contextlib.suppress(Exception):
+                        close()
+                dat = None
             if text is not None and not self._aborted.is_set():
                 self.signals.fetched.emit(file_path, text, dat)
             self.signals.finished.emit(self)
@@ -631,10 +639,16 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
 
             match index.column():
                 case 0:
-                    return loader_name
+                    return getattr(
+                        self._file_browser._loader(loader_name),
+                        "display_name",
+                        loader_name,
+                    )
                 case 1:
                     loader = self._file_browser._loader(loader_name)
                     return loader.description if hasattr(loader, "description") else ""
+        elif role == QtCore.Qt.ItemDataRole.UserRole and index.column() == 0:
+            return self._file_browser._loader_names()[index.row()]
         return None
 
     def headerData(
@@ -979,22 +993,47 @@ class _DataExplorer(QtWidgets.QMainWindow):
             loader_name = erlab.interactive.options.model.io.default_loader
 
         if loader_name:
-            self._loader_combo.setCurrentText(loader_name)
+            self._set_loader_name(loader_name)
 
         self._dir_loaded()
 
     @property
     def loader_name(self) -> str:
         """Name of the selected loader."""
-        return self._loader_combo.currentText()
+        loader_name = self._loader_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+        return "" if loader_name is None else str(loader_name)
 
     def _loader_names(self) -> tuple[str, ...]:
-        builtin_names = set(erlab.io.loaders.keys()) - self._excluded_loaders
-        return tuple(sorted({*builtin_names, *self._external_loaders}))
+        plugin_names = set(erlab.io.loaders.keys()) - self._excluded_loaders
+        loader_names = {
+            *BUILTIN_EXPLORER_LOADERS,
+            *plugin_names,
+            *self._external_loaders,
+        }
+        return tuple(
+            sorted(
+                loader_names,
+                key=lambda name: str(
+                    getattr(self._loader(name), "display_name", name)
+                ).casefold(),
+            )
+        )
 
     def _loader(self, name: str) -> typing.Any:
+        builtin = BUILTIN_EXPLORER_LOADERS.get(name)
+        if builtin is not None:
+            return builtin
         external = self._external_loaders.get(name)
         return erlab.io.loaders[name] if external is None else external
+
+    def _set_loader_name(self, name: str) -> bool:
+        """Select a loader by its stable name."""
+        try:
+            index = self._loader_names().index(name)
+        except ValueError:
+            return False
+        self._loader_combo.setCurrentIndex(index)
+        return True
 
     def refresh_loader_choices(self) -> None:
         """Refresh choices after the manager catalog generation changes."""
@@ -1072,7 +1111,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 state.loader_name is not None
                 and state.loader_name in self._loader_names()
             ):
-                self._loader_combo.setCurrentText(state.loader_name)
+                self._set_loader_name(state.loader_name)
 
             self._preview_check.setChecked(state.preview)
 
@@ -1469,6 +1508,34 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
         loader_name = self.loader_name
         loader = self._loader(loader_name)
+        if isinstance(loader, _BuiltinExplorerLoader):
+            dialog = _NameFilterDialog(
+                self,
+                {
+                    loader.spec.name_filter: (
+                        loader.spec.load_func,
+                        dict(loader.spec.default_kwargs)
+                        | self._loader_kwargs_by_name.get(loader_name, {}),
+                    )
+                },
+                sample_paths=self._current_selection,
+            )
+            dialog.check_filter(loader.spec.name_filter)
+            if not dialog.exec():
+                return
+            _, _, selected_kwargs = dialog.checked_filter()
+            self._loader_kwargs_by_name[loader_name] = loader.option_overrides(
+                selected_kwargs
+            )
+            self._loader_extensions_by_name[loader_name] = {}
+            self.sigLoaderStateChanged.emit(
+                self.loader_kwargs_by_name(),
+                self.loader_extensions_by_name(),
+            )
+            self._emit_workspace_state_changed()
+            self._on_selection_changed()
+            return
+
         descriptor = getattr(loader, "descriptor", None)
         if isinstance(descriptor, erlab.extensions.LoaderDescriptor) and not bool(
             getattr(loader, "uses_standard_loader_options", False)

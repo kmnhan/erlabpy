@@ -3573,6 +3573,9 @@ def test_select_loader_options_cancel_keeps_recent_filter(
         _manager_loader_name_for_callable=(
             manager_base._builtin_loader_name_for_callable
         ),
+        _manager_loader_name_for_entry=lambda _name_filter, func: (
+            manager_base._builtin_loader_name_for_callable(func)
+        ),
         _shared_loader_state=lambda: ({}, {}),
     )
 
@@ -3762,6 +3765,11 @@ def test_open_multiple_files_preselects_default_loader_filter(
         _available_file_loaders=lambda _paths=None: valid_loaders,
         _manager_loader_name_for_callable=(
             manager_base._builtin_loader_name_for_callable
+        ),
+        _manager_loader_name_for_entry=lambda name_filter, func: (
+            "builtin:xarray-hdf5"
+            if name_filter == "xarray HDF5 Files (*.h5)"
+            else manager_base._builtin_loader_name_for_callable(func)
         ),
         _shared_loader_state=lambda: ({}, {}),
         effective_interactive_options=erlab.interactive.options.model,

@@ -14,6 +14,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive._options.core
 from erlab.interactive import _qt_state
+from erlab.interactive._file_loaders import builtin_file_loader_for_name_filter
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 
 if typing.TYPE_CHECKING:
@@ -354,7 +355,16 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         entry = self._available_file_loaders().get(name_filter)
         if entry is None:
             return None
-        return self._manager_loader_name_for_callable(entry[0])
+        return self._manager_loader_name_for_entry(name_filter, entry[0])
+
+    def _manager_loader_name_for_entry(
+        self, name_filter: str, func: Callable
+    ) -> str | None:
+        """Return the shared manager identity for one file-dialog entry."""
+        builtin = builtin_file_loader_for_name_filter(name_filter)
+        if builtin is not None:
+            return builtin.id
+        return self._manager_loader_name_for_callable(func)
 
     def _manager_loader_name_for_callable(self, func: Callable) -> str | None:
         """Return the shared manager identity for any supported loader call."""
@@ -544,7 +554,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             loader_entry = valid_loaders.get(name_filter)
             if loader_entry is None:
                 continue
-            loader_name = self._manager_loader_name_for_callable(loader_entry[0])
+            loader_name = self._manager_loader_name_for_entry(
+                name_filter, loader_entry[0]
+            )
             if loader_name is not None:
                 shared_kwargs.setdefault(
                     loader_name,
@@ -554,7 +566,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             loader_entry = valid_loaders.get(name_filter)
             if loader_entry is None:
                 continue
-            loader_name = self._manager_loader_name_for_callable(loader_entry[0])
+            loader_name = self._manager_loader_name_for_entry(
+                name_filter, loader_entry[0]
+            )
             if loader_name is not None:
                 shared_extensions.setdefault(loader_name, dict(extensions))
         return shared_kwargs, shared_extensions
@@ -581,7 +595,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if recent_filter is not None:
             loader_entry = self._available_file_loaders().get(recent_filter)
             if loader_entry is not None:
-                loader_name = self._manager_loader_name_for_callable(loader_entry[0])
+                loader_name = self._manager_loader_name_for_entry(
+                    recent_filter, loader_entry[0]
+                )
                 if loader_name is not None and loader_name in shared_kwargs:
                     self._recent_loader_kwargs_by_filter[recent_filter] = (
                         dict(loader_entry[1]) | shared_kwargs[loader_name]
@@ -688,7 +704,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
                 getattr(selected_func, "uses_standard_loader_options", False)
             ):
                 initial_parameters = dict(defaults)
-                loader_name = self._manager_loader_name_for_callable(selected_func)
+                loader_name = self._manager_loader_name_for_entry(
+                    selected_filter, selected_func
+                )
                 if loader_name is not None and loader_name in shared_kwargs:
                     initial_parameters.update(shared_kwargs[loader_name])
                 else:
@@ -716,7 +734,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         dialog_extensions: dict[str, dict[str, typing.Any]] = {}
         for current_filter, (func, kwargs) in valid_loaders.items():
             dialog_kwargs = kwargs.copy()
-            loader_name = self._manager_loader_name_for_callable(func)
+            loader_name = self._manager_loader_name_for_entry(current_filter, func)
             if loader_name is not None and loader_name in shared_kwargs:
                 dialog_kwargs.update(shared_kwargs[loader_name])
             else:
@@ -759,7 +777,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         self._recent_loader_extensions_by_filter[selected_filter] = (
             loader_extensions.copy() if isinstance(loader_extensions, dict) else {}
         )
-        loader_name = self._manager_loader_name_for_callable(func)
+        loader_name = self._manager_loader_name_for_entry(selected_filter, func)
         if loader_name is not None:
             self._set_shared_loader_options(
                 loader_name,

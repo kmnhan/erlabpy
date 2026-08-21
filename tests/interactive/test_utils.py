@@ -21,6 +21,11 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
+from erlab.interactive._file_loaders import (
+    BUILTIN_FILE_LOADER_SPECS,
+    builtin_file_loader_for_id,
+    builtin_file_loader_for_name_filter,
+)
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
@@ -160,6 +165,25 @@ def test_file_loaders_match_mixed_extensions() -> None:
 
     assert da30_filter in valid_loaders
     assert (xr.load_dataarray, {"engine": "erlab-igor"}) not in valid_loaders.values()
+
+
+def test_builtin_file_loader_specs_match_file_dialog_entries() -> None:
+    specs = BUILTIN_FILE_LOADER_SPECS
+
+    assert {spec.id for spec in specs} == {
+        "builtin:xarray-hdf5",
+        "builtin:xarray-netcdf",
+        "builtin:igor-binary-wave",
+    }
+    assert len({spec.name_filter for spec in specs}) == len(specs)
+
+    valid_loaders = erlab.interactive.utils.file_loaders()
+    for spec in specs:
+        assert builtin_file_loader_for_id(spec.id) is spec
+        assert builtin_file_loader_for_name_filter(spec.name_filter) is spec
+        func, kwargs = valid_loaders[spec.name_filter]
+        assert func is spec.load_func
+        assert kwargs == dict(spec.default_kwargs)
 
 
 class _PersistentToolState(pydantic.BaseModel):

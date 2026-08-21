@@ -117,6 +117,76 @@ def test_manager_rejects_unavailable_named_loader(
         ]
 
 
+def test_manager_resolves_and_dispatches_builtin_file_loader(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "source.h5"
+    calls: list[tuple[list[pathlib.Path], object, dict[str, object]]] = []
+
+    with manager_context() as manager:
+        assert (
+            manager._loader_name_for_name_filter("xarray HDF5 Files (*.h5)")
+            == "builtin:xarray-hdf5"
+        )
+        monkeypatch.setattr(
+            manager._data_ingress,
+            "add_from_multiple_files",
+            lambda _waiting, paths, _loaded, *, func, kwargs, retry_callback: (
+                calls.append((paths, func, kwargs))
+            ),
+        )
+
+        manager._data_load(
+            [str(path)],
+            "builtin:xarray-hdf5",
+            {"decode_times": False},
+        )
+
+    assert calls == [
+        ([path], xr.load_dataarray, {"engine": "h5netcdf", "decode_times": False})
+    ]
+
+
+def test_manager_builtin_file_loader_preserves_callable_provenance(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        [[1.0, 2.0], [3.0, 4.0]],
+        dims=("x", "y"),
+        name="source",
+    )
+    path = tmp_path / "source.h5"
+    data.to_netcdf(path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager._data_load([str(path)], "builtin:xarray-hdf5", {})
+        qtbot.wait_until(
+            lambda: manager.ntools == 1 and len(manager._file_handlers) == 0,
+            timeout=15000,
+        )
+
+        tool = manager.get_imagetool(0)
+        provenance = tool.provenance_spec
+        assert provenance is not None
+        assert provenance.file_load_source is not None
+        assert provenance.file_load_source.replay_call is not None
+        assert provenance.file_load_source.replay_call.target == "xarray.load_dataarray"
+        assert provenance.file_load_source.replay_call.kwargs == {"engine": "h5netcdf"}
+        code = provenance.display_code()
+        assert code is not None
+        namespace: dict[str, object] = {}
+        exec(code, namespace, namespace)  # noqa: S102
+        xr.testing.assert_identical(namespace["derived"], data)
+
+
 def test_manager_uses_registered_extension_loader(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]

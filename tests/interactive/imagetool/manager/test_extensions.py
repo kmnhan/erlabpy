@@ -1231,6 +1231,9 @@ def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None
         _manager_loader_name_for_callable=(
             manager_base._builtin_loader_name_for_callable
         ),
+        _manager_loader_name_for_entry=lambda _name_filter, func: (
+            manager_base._builtin_loader_name_for_callable(func)
+        ),
         _shared_loader_state=lambda: ({}, {}),
         _set_shared_loader_options=lambda name, kwargs, extensions: (
             shared_updates.append((name, dict(kwargs), dict(extensions)))
@@ -1292,6 +1295,10 @@ def test_direct_extension_loader_uses_shared_loader_state(
     )
     manager._manager_loader_name_for_callable = types.MethodType(
         manager_base._ImageToolManagerBase._manager_loader_name_for_callable,
+        manager,
+    )
+    manager._manager_loader_name_for_entry = types.MethodType(
+        manager_base._ImageToolManagerBase._manager_loader_name_for_entry,
         manager,
     )
 
