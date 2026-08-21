@@ -1763,13 +1763,30 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
 
 def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
 ) -> None:
-    spec = _trust_required_script_spec()
+    original_spec = _trust_required_script_spec()
+    source_path = tmp_path / "source.h5"
+    source_path.touch()
+    spec = original_spec.model_copy(
+        update={
+            "script_inputs": (
+                original_spec.script_inputs[0].model_copy(
+                    update={
+                        "provenance_spec": _manager_replay_file_spec(
+                            source_path
+                        ).model_dump(mode="json")
+                    }
+                ),
+            )
+        }
+    )
     ensured: list[str] = []
     trusted_flags: list[bool] = []
     manager = types.SimpleNamespace(
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args, **_kwargs: None,
             replay_loader=lambda *_args, **_kwargs: pytest.fail(
                 "built-in provenance must not use extension loader execution"
             ),
@@ -1779,6 +1796,7 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
                 )
             ),
         ),
+        _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
     monkeypatch.setattr(
@@ -1794,9 +1812,12 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     node = types.SimpleNamespace(
         is_imagetool=True,
         imagetool=object(),
+        tool_window=None,
+        slicer_area=types.SimpleNamespace(_direct_reloadable=lambda: False),
         provenance_spec=spec,
         uid="node",
     )
+    manager._tool_graph.nodes[node.uid] = node
 
     def rebuild_script_provenance(
         spec_arg: ToolProvenanceSpec,
