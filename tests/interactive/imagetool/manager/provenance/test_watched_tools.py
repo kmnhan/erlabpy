@@ -815,6 +815,132 @@ def test_manager_watched_root_ftool_copy_code_1d_omits_duplicate_seed_and_noop_s
         _assert_modelfit_code_replays_source(copied[-1], "my_data", test_data)
 
 
+def test_manager_open_weighted_ftool_binds_replays_and_refreshes_inputs(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        np.exp(-((x / 0.25) ** 2)),
+        dims=("x",),
+        coords={"x": x},
+        name="data",
+    )
+    uncertainty = xr.DataArray(
+        np.linspace(0.1, 0.2, x.size),
+        dims=("x",),
+        coords={"x": x},
+        name="uncertainty",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_ingress.receive_data(
+            [data], {}, watched_var=("data", "kernel-data")
+        )
+        manager._data_ingress.receive_data(
+            [uncertainty], {}, watched_var=("uncertainty", "kernel-uncertainty")
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        data_node = manager._tool_graph.root_wrappers[0]
+        uncertainty_node = manager._tool_graph.root_wrappers[1]
+        child_uid = manager.open_weighted_ftool(data_node.uid, uncertainty_node.uid)
+
+        assert child_uid is not None
+        assert data_node._childtool_indices == [child_uid]
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, Fit1DTool)
+        assert [(item.name, item.node_uid) for item in child.script_inputs] == [
+            ("data", data_node.uid),
+            ("uncertainty", uncertainty_node.uid),
+        ]
+        copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
+        replayed = _exec_generated_code(
+            copied,
+            {
+                "data": data.copy(deep=True),
+                "uncertainty": uncertainty.copy(deep=True),
+            },
+        )["result"]
+        assert isinstance(replayed, xr.Dataset)
+        xr.testing.assert_identical(
+            replayed.modelfit_data, data.rename("modelfit_data")
+        )
+        xr.testing.assert_allclose(replayed.modelfit_weights, 1.0 / uncertainty)
+
+        manager._flush_idle_work(force=True)
+        qtbot.wait(0)
+        assert child.source_state == "fresh"
+
+        updates: list[dict[str, xr.DataArray]] = []
+        update_inputs = child.update_inputs
+
+        def _update_inputs(inputs: dict[str, xr.DataArray]) -> bool | None:
+            updates.append(dict(inputs))
+            return update_inputs(inputs)
+
+        monkeypatch.setattr(child, "update_inputs", _update_inputs)
+        child._set_source_auto_update(True)
+        updated_uncertainty = uncertainty * 2.0
+        manager._data_watched_update(
+            "uncertainty", "kernel-uncertainty", updated_uncertainty
+        )
+        manager._flush_idle_work(force=True)
+        qtbot.wait(0)
+
+        assert len(updates) == 1
+        assert set(updates[0]) == {"data", "uncertainty"}
+        xr.testing.assert_equal(updates[0]["data"], data)
+        xr.testing.assert_equal(updates[0]["uncertainty"], updated_uncertainty)
+        assert child.uncertainty is not None
+        xr.testing.assert_equal(child.uncertainty, updated_uncertainty)
+
+        manager.remove_imagetool(1)
+        qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
+        assert data_node._childtool_indices == [child_uid]
+        assert child.uncertainty is not None
+
+
+def test_manager_open_weighted_ftool_rejects_invalid_uncertainty_input(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    uncertainty = xr.ones_like(test_data).rename("uncertainty")
+    invalid_uncertainty = uncertainty.isel(alpha=slice(1, None))
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        monkeypatch.setattr(
+            manager._actions_controller, "_show_operation_error", lambda *_: None
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                invalid_uncertainty, _in_manager=True
+            ),
+            show=False,
+        )
+
+        data_node = manager._tool_graph.root_wrappers[0]
+        invalid_node = manager._tool_graph.root_wrappers[1]
+        assert manager.open_weighted_ftool(data_node.uid, invalid_node.uid) is None
+        assert data_node._childtool_indices == []
+
+
 def test_manager_selecting_unfit_ftool_child_does_not_warn(
     qtbot,
     monkeypatch,

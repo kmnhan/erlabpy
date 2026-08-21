@@ -26,8 +26,8 @@ from xarray_lmfit.modelfit import (
 import erlab.interactive.utils
 from erlab.interactive._fit1d import (
     Fit1DTool,
-    _FitCodeEditRejected,
     _broadcast_uncertainty,
+    _FitCodeEditRejected,
     _FitRestoreState,
     _load_lmfit_for_ftool_restore,
     _SnapCursorLine,
@@ -213,21 +213,35 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
         )
         show_stderr_action.triggered.connect(self._show_parameter_stderr)
 
+        open_parameter_values_action = self.vb.menu.addAction(
+            "Open parameter values in ftool"
+        )
+        open_parameter_values_action.setObjectName("fit2dParamPlotOpenInFtoolAction")
+        open_parameter_values_action.triggered.connect(
+            self._open_parameter_values_in_ftool
+        )
+
         self.vb.menu.addSeparator()
 
         add_to_figure_action = self.vb.menu.addAction("Add parameter plot to Figure…")
         add_to_figure_action.setObjectName("fit2dParamPlotAddToFigureAction")
         add_to_figure_action.triggered.connect(self._add_parameter_plot_to_figure)
 
-    def _current_param_dataarray(
-        self, *, stderr: bool
-    ) -> tuple[str, xr.DataArray] | None:
+    def _current_param_name(self) -> str | None:
         param_name = self._tool.param_plot_combo.currentText().strip()
         if not param_name:
             self._tool._show_warning(
                 "No parameter selected",
                 "Select a parameter in the parameter plot first.",
             )
+            return None
+        return param_name
+
+    def _current_param_dataarray(
+        self, *, stderr: bool
+    ) -> tuple[str, xr.DataArray] | None:
+        param_name = self._current_param_name()
+        if param_name is None:
             return None
 
         da = self._tool._param_plot_dataarray(param_name, stderr=stderr)
@@ -240,6 +254,34 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
             )
             return None
         return param_name, da
+
+    def _current_param_dataarrays(
+        self, *, for_weighted_fit: bool = False
+    ) -> tuple[str, xr.DataArray, xr.DataArray] | None:
+        param_name = self._current_param_name()
+        if param_name is None:
+            return None
+        if for_weighted_fit:
+            values, stderr = self._tool._param_plot_dataarrays_for_weighted_fit(
+                param_name
+            )
+        else:
+            values, stderr = self._tool._param_plot_dataarrays(param_name)
+        if values.size == 0 or stderr.size == 0:
+            self._tool._show_warning(
+                "No data available",
+                "No parameter values or standard errors are available for the "
+                "selected parameter in the current y-range.",
+            )
+            return None
+        if for_weighted_fit and not np.isfinite(values.values).any():
+            self._tool._show_warning(
+                "No valid parameter data",
+                "The selected parameter does not have any finite values with finite, "
+                "positive standard errors in the current y-range.",
+            )
+            return None
+        return param_name, values, stderr
 
     def _save_dataarray_as_hdf5(self, data: xr.DataArray) -> None:
         if isinstance(data.name, str):
@@ -321,6 +363,10 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
             )
 
     @QtCore.Slot()
+    def _open_parameter_values_in_ftool(self) -> None:
+        self._tool._open_parameter_values_in_ftool()
+
+    @QtCore.Slot()
     def _add_parameter_plot_to_figure(self) -> None:
         self._tool._add_parameter_plot_to_figure()
 
@@ -359,11 +405,17 @@ class Fit2DTool(Fit1DTool):
 
     class Output(enum.StrEnum):
         PARAMETER_VALUES = "fit2d.param_plot.values"
+        PARAMETER_VALUES_FOR_WEIGHTED_FIT = "fit2d.param_plot.values_for_weighted_fit"
         PARAMETER_STDERR = "fit2d.param_plot.stderr"
 
     IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
         Output.PARAMETER_VALUES: erlab.interactive.utils.ToolImageOutputDefinition(
             data_method="_parameter_values_output_data",
+        ),
+        Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT: (
+            erlab.interactive.utils.ToolImageOutputDefinition(
+                data_method="_parameter_values_for_weighted_fit_output_data",
+            )
         ),
         Output.PARAMETER_STDERR: erlab.interactive.utils.ToolImageOutputDefinition(
             data_method="_parameter_stderr_output_data",
@@ -375,7 +427,7 @@ class Fit2DTool(Fit1DTool):
 
     @classmethod
     def _parameter_output_id(cls, output: Output, param_name: str) -> str:
-        if output not in (cls.Output.PARAMETER_VALUES, cls.Output.PARAMETER_STDERR):
+        if output not in tuple(cls.Output):
             raise ValueError("output must be a Fit2DTool parameter output")
         return (
             f"{output.value}{cls._PARAMETER_OUTPUT_SEPARATOR}"
@@ -387,7 +439,7 @@ class Fit2DTool(Fit1DTool):
         cls, output_id: str | enum.Enum
     ) -> tuple[Output, str | None] | None:
         normalized = erlab.interactive.utils._normalize_tool_output_id(output_id)
-        for output in (cls.Output.PARAMETER_VALUES, cls.Output.PARAMETER_STDERR):
+        for output in cls.Output:
             if normalized == output.value:
                 return output, None
             prefix = f"{output.value}{cls._PARAMETER_OUTPUT_SEPARATOR}"
@@ -1681,7 +1733,12 @@ class Fit2DTool(Fit1DTool):
             param = params[param_name]
             plot_y.append(y)
             param_values.append(self._parameter_value(param))
-            param_errors.append(param.stderr if param.stderr is not None else 0.0)
+            stderr = param.stderr
+            param_errors.append(
+                stderr
+                if stderr is not None and np.isfinite(stderr) and stderr > 0
+                else np.nan
+            )
 
         return np.array(plot_y), np.array(param_values), np.array(param_errors)
 
@@ -1738,18 +1795,39 @@ class Fit2DTool(Fit1DTool):
                 names.append(name)
         return names
 
+    def _param_plot_dataarrays(
+        self, param_name: str
+    ) -> tuple[xr.DataArray, xr.DataArray]:
+        plot_y, param_values, param_errors = self._param_plot_data(param_name)
+        coords = {self._y_dim_name: plot_y}
+        dims = (self._y_dim_name,)
+        return (
+            xr.DataArray(
+                param_values,
+                coords=coords,
+                dims=dims,
+                name=f"{param_name}_values",
+            ),
+            xr.DataArray(
+                param_errors,
+                coords=coords,
+                dims=dims,
+                name=f"{param_name}_stderr",
+            ),
+        )
+
+    def _param_plot_dataarrays_for_weighted_fit(
+        self, param_name: str
+    ) -> tuple[xr.DataArray, xr.DataArray]:
+        values, stderr = self._param_plot_dataarrays(param_name)
+        valid = np.isfinite(values) & np.isfinite(stderr) & (stderr > 0)
+        return values.where(valid), stderr.where(valid)
+
     def _param_plot_dataarray(
         self, param_name: str, *, stderr: bool = False
     ) -> xr.DataArray:
-        plot_y, param_values, param_errors = self._param_plot_data(param_name)
-        values = param_errors if stderr else param_values
-        kind = "stderr" if stderr else "values"
-        return xr.DataArray(
-            values,
-            coords={self._y_dim_name: plot_y},
-            dims=(self._y_dim_name,),
-            name=f"{param_name}_{kind}",
-        )
+        values, errors = self._param_plot_dataarrays(param_name)
+        return errors if stderr else values
 
     def _show_dataarray_in_itool(
         self,
@@ -1767,7 +1845,7 @@ class Fit2DTool(Fit1DTool):
         if tool is not None:
             self._itool = tool
 
-    def _parameter_figure_output_target(
+    def _parameter_output_target(
         self,
         param_name: str,
         output: Output,
@@ -1784,6 +1862,35 @@ class Fit2DTool(Fit1DTool):
             return None
         target = self._output_imagetool_target(output_id)
         return target if isinstance(target, str) else None
+
+    def _parameter_output_targets(
+        self,
+        param_name: str,
+        values: xr.DataArray,
+        stderr: xr.DataArray,
+        *,
+        values_output: Output = Output.PARAMETER_VALUES,
+    ) -> tuple[str, str] | None:
+        values_output_id = self._parameter_output_id(values_output, param_name)
+        previous_values_target = self._output_imagetool_target(values_output_id)
+        values_target = self._parameter_output_target(param_name, values_output, values)
+        if values_target is not None:
+            stderr_target = self._parameter_output_target(
+                param_name, self.Output.PARAMETER_STDERR, stderr
+            )
+            if stderr_target is not None:
+                return values_target, stderr_target
+            if previous_values_target is None:
+                manager, _ = self._managed_output_imagetool_parent()
+                if manager is not None:
+                    manager._remove_childtool(values_target)
+                self._clear_output_imagetool_target(values_output_id)
+        self._show_warning(
+            "Could not open parameter data",
+            "Could not open the selected parameter values and standard errors "
+            "in ImageTool Manager.",
+        )
+        return None
 
     def _parameter_figure_operation(
         self,
@@ -1845,8 +1952,48 @@ class Fit2DTool(Fit1DTool):
             label=param_name,
         )
 
+    def _open_parameter_values_in_ftool(self) -> None:
+        manager, parent_uid = self._managed_output_imagetool_parent()
+        if manager is None or parent_uid is None:
+            self._show_warning(
+                "ImageTool Manager required",
+                "Open ftool in ImageTool Manager to fit parameter values.",
+            )
+            return
+
+        current = self.param_plot._current_param_dataarrays(for_weighted_fit=True)
+        if current is None:
+            return
+
+        param_name, values, stderr = current
+        values_output = self.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT
+        output_ids = (
+            self._parameter_output_id(values_output, param_name),
+            self._parameter_output_id(self.Output.PARAMETER_STDERR, param_name),
+        )
+        previous_targets = tuple(
+            self._output_imagetool_target(output_id) for output_id in output_ids
+        )
+        targets = self._parameter_output_targets(
+            param_name,
+            values,
+            stderr,
+            values_output=values_output,
+        )
+        if targets is None:
+            return
+
+        if manager.open_weighted_ftool(*targets) is not None:
+            return
+        for output_id, previous_target, target in zip(
+            output_ids, previous_targets, targets, strict=True
+        ):
+            if previous_target is None:
+                manager._remove_childtool(target)
+                self._clear_output_imagetool_target(output_id)
+
     def _add_parameter_plot_to_figure(self) -> None:
-        current = self.param_plot._current_param_dataarray(stderr=False)
+        current = self.param_plot._current_param_dataarrays()
         if current is None:
             return
 
@@ -1859,7 +2006,7 @@ class Fit2DTool(Fit1DTool):
             )
             return
 
-        param_name, values = current
+        param_name, values, stderr = current
         target_figure = None
         if manager._figure_uids():
             target_figure = manager._choose_figure_append_target(
@@ -1868,28 +2015,10 @@ class Fit2DTool(Fit1DTool):
             if target_figure is None:
                 return
 
-        stderr = self._param_plot_dataarray(param_name, stderr=True)
-        if values.size == 0 or stderr.size == 0:
-            self._show_warning(
-                "No data available",
-                "No parameter values or standard errors are available for the "
-                "selected parameter in the current y-range.",
-            )
+        targets = self._parameter_output_targets(param_name, values, stderr)
+        if targets is None:
             return
-
-        values_target = self._parameter_figure_output_target(
-            param_name, self.Output.PARAMETER_VALUES, values
-        )
-        stderr_target = self._parameter_figure_output_target(
-            param_name, self.Output.PARAMETER_STDERR, stderr
-        )
-        if values_target is None or stderr_target is None:
-            self._show_warning(
-                "Could not open parameter data",
-                "Could not open the selected parameter values and standard errors "
-                "in ImageTool Manager.",
-            )
-            return
+        values_target, stderr_target = targets
 
         operation = self._parameter_figure_operation(
             manager,
@@ -1897,7 +2026,6 @@ class Fit2DTool(Fit1DTool):
             values_target=values_target,
             stderr_target=stderr_target,
         )
-        targets = (values_target, stderr_target)
         if target_figure is None:
             manager.create_figure_from_targets(
                 targets,
@@ -3211,7 +3339,10 @@ class Fit2DTool(Fit1DTool):
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
     ) -> ToolProvenanceSpec | None:
-        if self._uncertainty_full is not None:
+        if (
+            self._uncertainty_full is not None
+            and not self._uncertainty_is_script_input()
+        ):
             return None
         # Manager metadata and other passive provenance consumers should not trigger
         # interactive warnings for incomplete fit ranges.
@@ -3249,19 +3380,25 @@ class Fit2DTool(Fit1DTool):
             source=source,
         )
 
-    def _current_param_output(self, *, stderr: bool) -> tuple[str, xr.DataArray] | None:
+    def _current_param_output(
+        self, *, stderr: bool, for_weighted_fit: bool = False
+    ) -> tuple[str, xr.DataArray] | None:
         param_name = self.param_plot_combo.currentText().strip()
         if not param_name or param_name not in self._param_plot_names():
             return None
+        if for_weighted_fit:
+            values, _ = self._param_plot_dataarrays_for_weighted_fit(param_name)
+            return param_name, values
         return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
 
     def _resolve_parameter_output(
         self, output: Output, param_name: str
-    ) -> tuple[str, bool] | None:
+    ) -> tuple[str, bool, bool] | None:
         stderr = output == self.Output.PARAMETER_STDERR
+        for_weighted_fit = output == self.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT
         if not param_name or param_name not in self._param_plot_names():
             return None
-        return param_name, stderr
+        return param_name, stderr, for_weighted_fit
 
     def output_imagetool_data(self, output_id: str | enum.Enum) -> xr.DataArray | None:
         self._flush_restore_work()
@@ -3275,7 +3412,10 @@ class Fit2DTool(Fit1DTool):
         request = self._resolve_parameter_output(output, param_name)
         if request is None:
             return None
-        param_name, stderr = request
+        param_name, stderr, for_weighted_fit = request
+        if for_weighted_fit:
+            values, _ = self._param_plot_dataarrays_for_weighted_fit(param_name)
+            return values
         return self._param_plot_dataarray(param_name, stderr=stderr)
 
     def output_imagetool_provenance(
@@ -3290,7 +3430,10 @@ class Fit2DTool(Fit1DTool):
         output, param_name = parts
         if param_name is None:
             current = self._current_param_output(
-                stderr=output == self.Output.PARAMETER_STDERR
+                stderr=output == self.Output.PARAMETER_STDERR,
+                for_weighted_fit=(
+                    output == self.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT
+                ),
             )
             if current is None:
                 return None
@@ -3299,14 +3442,24 @@ class Fit2DTool(Fit1DTool):
         request = self._resolve_parameter_output(output, param_name)
         if request is None:
             return None
-        if self._uncertainty_full is not None:
+        if (
+            self._uncertainty_full is not None
+            and not self._uncertainty_is_script_input()
+        ):
             return None
-        param_name, stderr = request
-        return self._parameter_output_provenance(param_name, stderr=stderr, data=data)
+        param_name, stderr, for_weighted_fit = request
+        return self._parameter_output_provenance(
+            param_name,
+            stderr=stderr,
+            for_weighted_fit=for_weighted_fit,
+            data=data,
+        )
 
     def _parameter_model_fit_operation(
         self, param_name: str, *, stderr: bool
     ) -> ModelFitOperation | None:
+        if self._uncertainty_full is not None:
+            return None
         if not self.scale_covar_check.isChecked():
             return None
         model_choice = self._infer_model_choice(self._model)
@@ -3339,6 +3492,7 @@ class Fit2DTool(Fit1DTool):
         param_name: str,
         *,
         stderr: bool,
+        for_weighted_fit: bool,
         input_name: str | None,
     ) -> ScriptCodeOperation | None:
         """Build public replay code for models outside the structured catalog."""
@@ -3358,13 +3512,41 @@ class Fit2DTool(Fit1DTool):
         output_expression = (
             f"({fit_expression}).{result_variable}.sel(param={param_name!r}, drop=True)"
         )
-        if stderr:
-            output_expression += ".fillna(0.0)"
-        output_expression += f".rename({output_name!r})"
+        if for_weighted_fit:
+            code = (
+                f"{prelude}\nparameter_fit = {fit_expression}\n"
+                "fit_parameter_values = parameter_fit.modelfit_coefficients.sel(\n"
+                f"    param={param_name!r},\n"
+                "    drop=True,\n"
+                ")\n"
+                "fit_parameter_stderr = parameter_fit.modelfit_stderr.sel(\n"
+                f"    param={param_name!r},\n"
+                "    drop=True,\n"
+                ")\n"
+                "parameter_values = fit_parameter_values.where(\n"
+                "    fit_parameter_values.notnull()\n"
+                '    & (abs(fit_parameter_values) < float("inf"))\n'
+                "    & fit_parameter_stderr.notnull()\n"
+                "    & (fit_parameter_stderr > 0)\n"
+                '    & (fit_parameter_stderr < float("inf"))\n'
+                f").rename({output_name!r})"
+            )
+        elif stderr:
+            code = (
+                f"{prelude}\nfit_parameter_stderr = {output_expression}\n"
+                "parameter_stderr = fit_parameter_stderr.where(\n"
+                "    fit_parameter_stderr.notnull()\n"
+                "    & (fit_parameter_stderr > 0)\n"
+                '    & (fit_parameter_stderr < float("inf"))\n'
+                f").rename({output_name!r})"
+            )
+        else:
+            code = f"{prelude}\n{assign} = {output_expression}.rename({output_name!r})"
         output_label = "standard errors" if stderr else "values"
         return ScriptCodeOperation(
             label=f"Fit model and extract {param_name!r} parameter {output_label}",
-            code=f"{prelude}\n{assign} = {output_expression}",
+            code=code,
+            framework_owned=True,
         )
 
     def _parameter_output_provenance(
@@ -3372,12 +3554,17 @@ class Fit2DTool(Fit1DTool):
         param_name: str,
         *,
         stderr: bool,
+        for_weighted_fit: bool,
         data: xr.DataArray,
     ) -> ToolProvenanceSpec | None:
         del data
         input_name = self.primary_input or self._data_name_full
         seed_code = f"derived = {input_name}"
-        model_fit = self._parameter_model_fit_operation(param_name, stderr=stderr)
+        model_fit = (
+            None
+            if for_weighted_fit
+            else self._parameter_model_fit_operation(param_name, stderr=stderr)
+        )
         assign = "parameter_stderr" if stderr else "parameter_values"
         if model_fit is not None:
             operations: list[ToolProvenanceOperation] = []
@@ -3405,7 +3592,8 @@ class Fit2DTool(Fit1DTool):
         fallback = self._parameter_output_script_operation(
             param_name,
             stderr=stderr,
-            input_name="derived",
+            for_weighted_fit=for_weighted_fit,
+            input_name=input_name,
         )
         if fallback is None:
             return None
@@ -3419,6 +3607,12 @@ class Fit2DTool(Fit1DTool):
 
     def _parameter_values_output_data(self) -> xr.DataArray | None:
         current = self._current_param_output(stderr=False)
+        if current is None:
+            return None
+        return current[1]
+
+    def _parameter_values_for_weighted_fit_output_data(self) -> xr.DataArray | None:
+        current = self._current_param_output(stderr=False, for_weighted_fit=True)
         if current is None:
             return None
         return current[1]

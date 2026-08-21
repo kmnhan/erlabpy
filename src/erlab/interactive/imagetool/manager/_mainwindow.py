@@ -544,6 +544,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
 
+        self.weighted_ftool_action = QtWidgets.QAction("Open in ftool…", self)
+        self.weighted_ftool_action.setObjectName("manager_open_weighted_ftool_action")
+        self.weighted_ftool_action.triggered.connect(self.show_weighted_ftool_dialog)
+        self.weighted_ftool_action.setToolTip(
+            "Open two selected ImageTools as data and standard uncertainty in ftool"
+        )
+
         self.batch_action = QtWidgets.QAction("Batch Operation…", self)
         self.batch_action.setObjectName("manager_batch_operation_action")
         self.batch_action.triggered.connect(self.show_batch_operations)
@@ -696,6 +703,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.edit_menu.addAction(self.reindex_action)
         self.edit_menu.addSeparator()
         self.edit_menu.addAction(self.concat_action)
+        self.edit_menu.addAction(self.weighted_ftool_action)
         self.edit_menu.addAction(self.metadata_editor_action)
         self.edit_menu.addAction(self.batch_action)
         self.edit_menu.addAction(self.create_figure_action)
@@ -2643,6 +2651,19 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def concat_selected(self) -> None:
         self._actions_controller.concat_selected()
+
+    def show_weighted_ftool_dialog(self) -> None:
+        self._actions_controller.show_weighted_ftool_dialog()
+
+    def open_weighted_ftool(
+        self,
+        data_target: int | str,
+        uncertainty_target: int | str,
+    ) -> str | None:
+        return self._actions_controller.open_weighted_ftool(
+            data_target,
+            uncertainty_target,
+        )
 
     def batch_target_count(self) -> int:
         return self._actions_controller.batch_target_count()

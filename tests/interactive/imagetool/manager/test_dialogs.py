@@ -38,6 +38,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _NameFilterDialog,
     _NameMapEditorDialog,
     _text_to_loader_extension_value,
+    _WeightedFtoolDialog,
 )
 from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
     _MAPPING_NAME_COLUMN,
@@ -138,6 +139,58 @@ def test_window_layout_minimum_size_validation(qtbot) -> None:
     assert window_layout.frame_rects_fit_windows(
         [window], [QtCore.QRect(0, 0, 100, 80)]
     )
+
+
+def test_weighted_ftool_dialog_assigns_distinct_targets(qtbot) -> None:
+    dialog = _WeightedFtoolDialog(None, [(3, "Data"), (7, "Uncertainty")])
+    qtbot.addWidget(dialog)
+
+    data_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_weighted_ftool_data_target"
+    )
+    uncertainty_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_weighted_ftool_uncertainty_target"
+    )
+    swap_button = dialog.findChild(
+        QtWidgets.QPushButton, "manager_weighted_ftool_swap_button"
+    )
+    button_box = dialog.findChild(
+        QtWidgets.QDialogButtonBox, "manager_weighted_ftool_button_box"
+    )
+    assert data_label is not None
+    assert uncertainty_label is not None
+    assert swap_button is not None
+    assert button_box is not None
+    assert (dialog.data_target, dialog.uncertainty_target) == (3, 7)
+
+    swap_button.click()
+    assert (dialog.data_target, dialog.uncertainty_target) == (7, 3)
+
+    button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).click()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+    cancel_dialog = _WeightedFtoolDialog(None, [(3, "Data"), (7, "Uncertainty")])
+    qtbot.addWidget(cancel_dialog)
+    cancel_button = cancel_dialog.findChild(
+        QtWidgets.QDialogButtonBox, "manager_weighted_ftool_button_box"
+    )
+    assert cancel_button is not None
+    cancel_button.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).click()
+    assert cancel_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [[], [(1, "One")], [(1, "One"), (2, "Two"), (3, "Three")]],
+)
+def test_weighted_ftool_dialog_rejects_invalid_target_pairs(targets) -> None:
+    with pytest.raises(ValueError, match="exactly two"):
+        _WeightedFtoolDialog(None, targets)
+
+
+def test_weighted_ftool_dialog_rejects_duplicate_targets() -> None:
+    with pytest.raises(ValueError, match="must be distinct"):
+        _WeightedFtoolDialog(None, [(1, "A"), (1, "B")])
 
 
 def test_window_layout_dialog_uses_semantic_icon_controls(qtbot) -> None:

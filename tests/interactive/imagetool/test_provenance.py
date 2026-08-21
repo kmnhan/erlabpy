@@ -8831,6 +8831,17 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     )
     xr.testing.assert_identical(namespace["derived"], expected)
 
+    stderr_operation = operation.model_copy(
+        update={"parameter": "c0", "output": "stderr"}
+    )
+    stderr = stderr_operation.apply(data)
+    assert stderr.name == "c0_stderr"
+    assert np.isnan(stderr.item())
+
+    stderr_code = f"derived = {stderr_operation.expression_code('data')}"
+    stderr_namespace = _exec_generated_code(stderr_code, {"data": data})
+    xr.testing.assert_identical(stderr_namespace["derived"], stderr)
+
 
 @pytest.mark.parametrize(
     ("parameter", "message"),
