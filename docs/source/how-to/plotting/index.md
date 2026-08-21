@@ -20,7 +20,6 @@ titles-and-labels
 axis-units
 core-levels
 brillouin-zones
-out-of-plane-brillouin-zones
 figure-styles
 ```
 
@@ -204,9 +203,9 @@ figure-styles
 :::::{grid} 1 1 2 2
 :gutter: 2
 
-::::{grid-item-card} 2D Brillouin zones
-:link: brillouin-zones
-:link-type: doc
+::::{grid-item-card} First Brillouin zone
+:link: how-to-plotting-first-brillouin-zone
+:link-type: ref
 :class-card: plotting-gallery-card
 
 ```{eval-rst}
@@ -247,8 +246,8 @@ figure-styles
 ::::
 
 ::::{grid-item-card} Out-of-plane Brillouin-zone sections
-:link: out-of-plane-brillouin-zones
-:link-type: doc
+:link: how-to-plotting-out-of-plane-brillouin-zones
+:link-type: ref
 :class-card: plotting-gallery-card
 
 ```{eval-rst}

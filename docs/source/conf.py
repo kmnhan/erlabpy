@@ -694,7 +694,7 @@ rediraffe_redirects = {
     "how-to/python/plotting/figure-styles.md": "how-to/plotting/figure-styles.md",
     "how-to/python/plotting/maps-and-cuts.md": "how-to/plotting/maps-and-cuts.md",
     "how-to/python/plotting/out-of-plane-brillouin-zones.md": (
-        "how-to/plotting/out-of-plane-brillouin-zones.md"
+        "how-to/plotting/brillouin-zones.md"
     ),
     "how-to/python/plotting/titles-and-labels.md": (
         "how-to/plotting/titles-and-labels.md"
@@ -703,6 +703,9 @@ rediraffe_redirects = {
         "how-to/plotting/two-dimensional-colormaps.md"
     ),
     "how-to/plotting/brillouin-zone-overlays.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/plotting/out-of-plane-brillouin-zones.md": (
         "how-to/plotting/brillouin-zones.md"
     ),
     "reference/data-conventions.md": "explanation/data-conventions.md",
@@ -741,6 +744,7 @@ rediraffe_redirects = {
     "user-guide/interactive/index.md": "explanation/python-and-gui-workflows.md",
     "user-guide/interactive/imagetool.md": "reference/gui/imagetool.md",
     "user-guide/interactive/manager.md": "reference/gui/manager.md",
+    "user-guide/interactive/extensions.md": "reference/gui/extensions.md",
     "user-guide/interactive/figure-composer.md": ("reference/gui/figure-composer.md"),
     "user-guide/interactive/misc-tools.md": "reference/gui/tools/index.md",
     "user-guide/interactive/options.md": "reference/gui/settings.md",

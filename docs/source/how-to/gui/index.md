@@ -7,6 +7,7 @@ Manager, or another interactive tool.
 :maxdepth: 1
 
 loading-and-saving
+extensions
 inspection-and-selection
 plotting
 curve-fitting
