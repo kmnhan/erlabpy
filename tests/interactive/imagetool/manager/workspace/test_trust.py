@@ -248,6 +248,45 @@ def test_workspace_code_trust_manifest_uses_metadata_and_not_workspace_id() -> N
     assert first.canonical_bytes() != changed_code.canonical_bytes()
 
 
+def test_workspace_trust_adapter_rejects_invalid_metadata() -> None:
+    assert not workspace_trust.workspace_path_is_trusted("workspace.txt")
+    assert workspace_trust._decoded_json_mapping("{") is None
+    assert workspace_trust._decoded_json_mapping("[]") is None
+
+    with pytest.raises(TypeError, match="attribute entry is invalid"):
+        workspace_trust._entry_attrs({"payload_attrs": [["only-one-item"]]})
+    with pytest.raises(TypeError, match="identifier must be a string"):
+        workspace_trust._tool_code_trust_from_attrs({"tool_cls_qualname": 1})
+    with pytest.raises(TypeError, match="state must be JSON text"):
+        workspace_trust._tool_code_trust_from_attrs(
+            {"tool_cls_qualname": "test:Tool", "tool_state": 1}
+        )
+
+
+def test_workspace_trust_adapter_filters_saved_attributes() -> None:
+    assert workspace_trust._entry_attrs(
+        {
+            "payload_attrs": {
+                "tool_state": "{}",
+                "ignored": "not security metadata",
+            }
+        }
+    ) == {"tool_state": "{}"}
+    assert (
+        workspace_trust._entry_attrs(
+            {
+                "payload_attrs": [
+                    [
+                        {"kind": "int", "value": 1},
+                        {"kind": "str", "value": "ignored"},
+                    ]
+                ]
+            }
+        )
+        == {}
+    )
+
+
 @pytest.mark.parametrize(
     "identifier",
     [
@@ -284,6 +323,10 @@ def test_saved_tool_class_registry_accepts_canonical_figure_id() -> None:
     )
 
     assert ToolWindow._saved_tool_class_from_dataset(dataset) is FigureComposerTool
+
+
+def test_saved_tool_builtin_loader_resolves_nested_attributes() -> None:
+    assert _saved_tools._load_builtin_tool("json", "JSONDecoder") is json.JSONDecoder
 
 
 def test_saved_tool_class_registry_discovers_installed_extensions(
@@ -339,6 +382,40 @@ def test_saved_tool_entry_point_does_not_replace_builtin(
         is FigureComposerTool
     )
     assert loaded == []
+
+
+def test_saved_tool_registry_ignores_module_only_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _saved_tools.importlib.metadata,
+        "entry_points",
+        lambda *, group: [SimpleNamespace(attr=None)],
+    )
+    monkeypatch.setattr(_saved_tools, "_ENTRY_POINTS_DISCOVERED", False)
+
+    _saved_tools._discover_saved_tool_entry_points()
+
+
+def test_saved_tool_loader_must_return_a_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identifier = "test.saved_tools:NotAClass"
+    monkeypatch.setattr(
+        _saved_tools,
+        "_SAVED_TOOL_CLASSES",
+        dict(_saved_tools._SAVED_TOOL_CLASSES),
+    )
+    monkeypatch.setattr(
+        _saved_tools,
+        "_SAVED_TOOL_LOADERS",
+        dict(_saved_tools._SAVED_TOOL_LOADERS),
+    )
+    monkeypatch.setattr(_saved_tools, "_ENTRY_POINTS_DISCOVERED", True)
+    _saved_tools._register_saved_tool_loader(identifier, object)
+
+    with pytest.raises(TypeError, match="is not a class"):
+        _saved_tools.resolve_saved_tool_class(identifier)
 
 
 def test_saved_tool_entry_point_must_load_its_declared_class(

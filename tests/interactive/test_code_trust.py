@@ -6,12 +6,14 @@ import pathlib
 import sqlite3
 import typing
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._code_trust as code_trust
 import erlab.interactive._code_trust._application as _application
+import erlab.interactive._code_trust._notary as _notary
 from erlab.interactive._code_trust import (
     approve_document_trust,
     document_trust_has_trusted_lineage,
@@ -30,6 +32,7 @@ from erlab.interactive._code_trust._locations import (
 )
 from erlab.interactive._code_trust._notary import CodeTrustError, CodeTrustNotary
 from erlab.interactive._code_trust._payloads import (
+    CODE_PAYLOAD_ENTRIES_ATTR,
     code_payload_entries_from_metadata,
     store_code_payload_entries,
 )
@@ -119,6 +122,41 @@ def test_code_trust_manifest_canonicalization_and_validation() -> None:
         CodeTrustEntry("test", "here", "code", {"values": (1, 2)})
     with pytest.raises(ValueError, match="positive"):
         CodeTrustManifest("test", 0, ())
+
+
+@pytest.mark.parametrize(
+    ("args", "error", "message"),
+    [
+        ((1, "location", "code"), TypeError, "feature must be a string"),
+        ((" ", "location", "code"), ValueError, "feature must not be empty"),
+        (("feature", 1, "code"), TypeError, "location must be a string"),
+        (("feature", " ", "code"), ValueError, "location must not be empty"),
+        (("feature", "location", 1), TypeError, "code must be a string"),
+        (("feature", "location", "code", []), TypeError, "context must be a mapping"),
+    ],
+)
+def test_code_trust_entry_rejects_invalid_runtime_values(
+    args: tuple[typing.Any, ...], error: type[Exception], message: str
+) -> None:
+    with pytest.raises(error, match=message):
+        CodeTrustEntry(*args)
+
+
+@pytest.mark.parametrize(
+    ("args", "error", "message"),
+    [
+        ((1, 1, ()), TypeError, "domain must be a string"),
+        ((" ", 1, ()), ValueError, "domain must not be empty"),
+        (("test", True, ()), TypeError, "policy version must be an integer"),
+        (("test", 1, []), TypeError, "entries must be a tuple"),
+        (("test", 1, ("bad",)), TypeError, "entries must be CodeTrustEntry"),
+    ],
+)
+def test_code_trust_manifest_rejects_invalid_runtime_values(
+    args: tuple[typing.Any, ...], error: type[Exception], message: str
+) -> None:
+    with pytest.raises(error, match=message):
+        CodeTrustManifest(*args)
 
 
 def test_code_trust_entry_snapshots_mutable_context() -> None:
@@ -1053,6 +1091,69 @@ def test_opaque_code_payload_metadata_binds_exact_bytes() -> None:
     )
 
 
+def test_code_payload_metadata_validates_saved_values() -> None:
+    entry = code_trust.create_payload_entry(
+        "test.payload", "payload/0", "Serialized callable", b"payload"
+    )
+    attrs: dict[str, object] = {}
+    store_code_payload_entries(attrs, (entry,))
+    attrs[CODE_PAYLOAD_ENTRIES_ATTR] = str(attrs[CODE_PAYLOAD_ENTRIES_ATTR]).encode()
+
+    assert code_payload_entries_from_metadata(attrs) == (entry,)
+
+    invalid_metadata = (
+        (1, "must be JSON text"),
+        ("{", "invalid JSON"),
+        ("{}", "must be a JSON list"),
+        ("[{}]", "invalid fields"),
+        (
+            json.dumps(
+                [
+                    {
+                        "code": "Serialized callable",
+                        "context": [],
+                        "feature": "test.payload",
+                        "location": "payload/0",
+                    }
+                ]
+            ),
+            "context must be an object",
+        ),
+    )
+    for raw, message in invalid_metadata:
+        with pytest.raises(TypeError, match=message):
+            code_payload_entries_from_metadata({CODE_PAYLOAD_ENTRIES_ATTR: raw})
+
+
+def test_code_payload_metadata_rejects_invalid_entries() -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        code_trust.create_payload_entry(
+            "test.payload",
+            "payload/0",
+            "Serialized callable",
+            b"payload",
+            {"payload_sha256": "0" * 64},
+        )
+
+    for digest in ("z" * 64, "0" * 62):
+        invalid = _entry(context={"payload_sha256": digest})
+        with pytest.raises(TypeError, match="invalid SHA-256"):
+            store_code_payload_entries({}, (invalid,))
+
+    entry = code_trust.create_payload_entry(
+        "test.payload", "payload/0", "Serialized callable", b"payload"
+    )
+    duplicate = code_trust.create_payload_entry(
+        "test.payload", "payload/0", "Another callable", b"other"
+    )
+    with pytest.raises(ValueError, match="unique locations"):
+        store_code_payload_entries({}, (entry, duplicate))
+
+    attrs = {CODE_PAYLOAD_ENTRIES_ATTR: "stale"}
+    store_code_payload_entries(attrs, ())
+    assert CODE_PAYLOAD_ENTRIES_ATTR not in attrs
+
+
 def test_code_trust_notary_sign_check_remove_and_domain_separation(tmp_path) -> None:
     notary = CodeTrustNotary(tmp_path)
     manifest = _manifest()
@@ -1067,11 +1168,100 @@ def test_code_trust_notary_sign_check_remove_and_domain_separation(tmp_path) -> 
     assert not notary.check(manifest)
 
 
+def test_code_trust_notary_rejects_invalid_configuration(tmp_path) -> None:
+    with pytest.raises(ValueError, match="cache size must be positive"):
+        CodeTrustNotary(tmp_path, cache_size=0)
+
+    notary = CodeTrustNotary(tmp_path)
+    (tmp_path / "code_trust_secret").write_bytes(b"short")
+    with pytest.raises(CodeTrustError, match="invalid size"):
+        notary._secret()
+
+
+def test_code_trust_notary_closes_connection_for_rejected_schema(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notary = CodeTrustNotary(tmp_path)
+
+    class TrackingConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = TrackingConnection()
+
+    def reject_schema(_connection: object) -> None:
+        raise CodeTrustError("bad schema")
+
+    monkeypatch.setattr(_notary.sqlite3, "connect", lambda *_args: connection)
+    monkeypatch.setattr(notary, "_initialize_database", reject_schema)
+
+    with pytest.raises(CodeTrustError, match="bad schema"):
+        notary._connect()
+
+    assert connection.closed
+
+
+def test_code_trust_notary_empty_manifest_operations_are_noops(tmp_path) -> None:
+    notary = CodeTrustNotary(tmp_path)
+    manifest = CodeTrustManifest("erlab.workspace", 1, ())
+
+    assert notary.check(manifest)
+    notary.sign(manifest)
+    notary.remove(manifest)
+    assert not tuple(tmp_path.iterdir())
+
+
+def test_code_trust_notary_check_fails_closed_on_storage_error(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notary = CodeTrustNotary(tmp_path)
+
+    def fail_signature(_manifest: CodeTrustManifest) -> str:
+        raise CodeTrustError("unavailable")
+
+    monkeypatch.setattr(notary, "_signature", fail_signature)
+
+    assert not notary.check(_manifest())
+
+
+class _FailingCodeTrustConnection:
+    def execute(self, *_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("unavailable")
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (lambda notary, manifest: notary.sign(manifest), "store"),
+        (lambda notary, manifest: notary.remove(manifest), "remove"),
+        (lambda notary, _manifest: notary.reset(), "reset"),
+    ],
+)
+def test_code_trust_notary_wraps_database_mutation_failures(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: typing.Callable[[CodeTrustNotary, CodeTrustManifest], None],
+    message: str,
+) -> None:
+    notary = CodeTrustNotary(tmp_path)
+    monkeypatch.setattr(notary, "_connect", _FailingCodeTrustConnection)
+
+    with pytest.raises(CodeTrustError, match=message):
+        operation(notary, _manifest())
+
+
 def test_code_trust_notary_reset_and_culling(tmp_path) -> None:
     notary = CodeTrustNotary(tmp_path, cache_size=4)
     manifests = tuple(_manifest(code=f"value = {index}") for index in range(5))
     for manifest in manifests:
         notary.sign(manifest)
+    other_domain = _manifest(domain="erlab.figure-composer-file")
+    notary.sign(other_domain)
 
     assert not notary.check(manifests[0])
     assert not notary.check(manifests[1])
@@ -1079,6 +1269,10 @@ def test_code_trust_notary_reset_and_culling(tmp_path) -> None:
 
     notary.reset(domain="erlab.workspace")
     assert not notary.check(manifests[2])
+    assert notary.check(other_domain)
+
+    notary.reset()
+    assert not notary.check(other_domain)
 
 
 def test_code_trust_notary_secret_and_database_tampering_fail_closed(tmp_path) -> None:
@@ -1291,6 +1485,24 @@ def test_application_code_trust_directory_honors_environment_override(
     assert _application.application_code_trust_directory() == configured
 
 
+def test_application_code_trust_directory_requires_qt_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    standard_paths = SimpleNamespace(
+        StandardLocation=SimpleNamespace(GenericDataLocation=object()),
+        writableLocation=lambda _location: "",
+    )
+    monkeypatch.delenv("ERLAB_CODE_TRUST_DIRECTORY", raising=False)
+    monkeypatch.setattr(
+        _application,
+        "QtCore",
+        SimpleNamespace(QStandardPaths=standard_paths),
+    )
+
+    with pytest.raises(RuntimeError, match="Could not determine"):
+        _application.application_code_trust_directory()
+
+
 def test_code_trust_notary_missing_secret_invalidates_saved_signatures(
     tmp_path,
 ) -> None:
@@ -1401,3 +1613,18 @@ def test_validate_trusted_location_rejects_filesystem_root(tmp_path) -> None:
     assert validate_trusted_location(folder) == folder.resolve()
     with pytest.raises(ValueError, match="filesystem root"):
         validate_trusted_location(folder.anchor)
+
+
+def test_trusted_location_policy_rejects_files_and_unusable_paths(tmp_path) -> None:
+    not_a_folder = tmp_path / "not-a-folder"
+    not_a_folder.write_text("file")
+
+    with pytest.raises(ValueError, match="must be a folder"):
+        validate_trusted_location(not_a_folder)
+
+    missing_document = tmp_path / "missing.itws"
+    assert not document_path_is_trusted("test", missing_document, (("test", tmp_path),))
+
+    document = tmp_path / "document.itws"
+    document.touch()
+    assert not document_path_is_trusted("test", document, (("test", not_a_folder),))

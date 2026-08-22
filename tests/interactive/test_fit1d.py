@@ -439,6 +439,14 @@ def test_expression_model_local_entry_matches_saved_model_identity() -> None:
 
 
 def test_lmfit_code_trust_tracks_every_saved_parameter_expression() -> None:
+    assert (
+        lmfit_parameter_expression_entries(
+            None,
+            feature="test.lmfit-parameter",
+            location_prefix="parameters",
+        )
+        == ()
+    )
     entries = lmfit_parameter_expression_entries(
         [
             ("plain", None),
@@ -452,6 +460,47 @@ def test_lmfit_code_trust_tracks_every_saved_parameter_expression() -> None:
     assert entries[0].location == "parameters/constrained"
     assert entries[0].code == "2 * plain"
     assert entries[0].context == {"parameter": "constrained"}
+
+
+@pytest.mark.parametrize(
+    ("serialized", "review_text"),
+    [
+        ("{", "Invalid serialized lmfit content"),
+        (json.dumps({"params": "{"}), "Invalid serialized lmfit parameters"),
+    ],
+)
+def test_lmfit_code_trust_fails_closed_for_malformed_json(
+    serialized: str, review_text: str
+) -> None:
+    entry = lmfit_model_code_entry(
+        serialized,
+        feature="test.lmfit-model",
+        location="model",
+    )
+
+    assert entry is not None
+    assert review_text in entry.code
+
+
+def test_lmfit_code_trust_hashes_non_json_executable_details() -> None:
+    serialized = json.dumps(
+        {
+            "__class__": "Callable",
+            "__name__": "custom_model",
+            "importer": "unavailable.user_module",
+            "value": float("nan"),
+        }
+    )
+
+    entry = lmfit_model_code_entry(
+        serialized,
+        feature="test.lmfit-model",
+        location="model",
+    )
+
+    assert entry is not None
+    assert "serialized-callable" in entry.code
+    assert isinstance(entry.context["payload_sha256"], str)
 
 
 def test_lmfit_parameter_expression_locations_are_stable_and_escaped() -> None:
@@ -540,6 +589,24 @@ def test_lmfit_code_trust_classifies_result_payload_without_loading_it() -> None
     )
 
     assert entry is None
+
+
+def test_lmfit_code_trust_fails_closed_for_invalid_result_payloads() -> None:
+    missing_results = xr.Dataset({"other": xr.DataArray(1)}).to_netcdf(
+        path=None, engine="h5netcdf"
+    )
+    non_string_result = xr.Dataset({"modelfit_results": xr.DataArray(1)}).to_netcdf(
+        path=None, engine="h5netcdf"
+    )
+
+    for payload in (b"not-netcdf", bytes(missing_results), bytes(non_string_result)):
+        entry = lmfit_result_code_entry(
+            payload,
+            feature="test.lmfit-result",
+            location="fit-result",
+        )
+        assert entry is not None
+        assert "Unrecognized serialized lmfit result" in entry.code
 
 
 def test_fit1d_saved_library_model_and_result_restore_without_approval(qtbot) -> None:

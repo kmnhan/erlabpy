@@ -115,6 +115,9 @@ class CodeTrustNotary:
             ) from exc
         try:
             self._initialize_database(connection)
+        except CodeTrustError:
+            connection.close()
+            raise
         except sqlite3.OperationalError as exc:
             connection.close()
             raise CodeTrustError(

@@ -69,7 +69,7 @@ def _decoded_json_mapping(value: typing.Any) -> Mapping[str, typing.Any] | None:
         return None
     try:
         payload = json.loads(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return None
     return payload if isinstance(payload, dict) else None
 

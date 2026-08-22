@@ -80,21 +80,22 @@ class CodeTrustEntry:
             raise ValueError("Code trust location must not be empty")
         if not isinstance(self.code, str):
             raise TypeError("Code trust code must be a string")
-        context = _normalize_json(self.context, "context")
-        if not isinstance(context, dict):  # pragma: no cover - annotation is Mapping
+        if not isinstance(self.context, Mapping):
             raise TypeError("Code trust context must be a mapping")
+        context = _normalize_json(self.context, "context")
         # Keep the signed value independent from mutable feature state. The
         # normalization recursively copies all supported mappings and lists.
-        object.__setattr__(self, "context", context)
+        object.__setattr__(
+            self, "context", typing.cast("dict[str, JSONValue]", context)
+        )
 
     def payload(self) -> dict[str, JSONValue]:
         """Return the signed JSON payload for this entry."""
-        context = _normalize_json(self.context, "context")
-        if not isinstance(context, dict):  # pragma: no cover - validated above
-            raise TypeError("Code trust context must be a mapping")
         return {
             "code": self.code,
-            "context": context,
+            "context": typing.cast(
+                "dict[str, JSONValue]", _normalize_json(self.context, "context")
+            ),
             "feature": self.feature,
             "location": self.location,
         }

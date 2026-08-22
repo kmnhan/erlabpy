@@ -65,7 +65,7 @@ def code_payload_entries_from_metadata(
         raise TypeError("Saved code payload metadata must be JSON text")
     try:
         payload = json.loads(raw)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise TypeError("Saved code payload metadata is invalid JSON") from exc
     if not isinstance(payload, list):
         raise TypeError("Saved code payload metadata must be a JSON list")

@@ -42,7 +42,7 @@ def _walk_serialized(
             if key in {"params", "init_params"} and isinstance(item, str):
                 try:
                     item = json.loads(item)
-                except (TypeError, ValueError):
+                except ValueError:
                     yield child_path, None, value[key]
                     continue
             yield from _walk_serialized(item, child_path)
@@ -167,7 +167,7 @@ def _serialized_lmfit_details(
 ) -> list[dict[str, typing.Any]]:
     try:
         value = json.loads(serialized)
-    except (TypeError, ValueError):
+    except ValueError:
         return [
             _detail(
                 "unknown-serialized-content",
