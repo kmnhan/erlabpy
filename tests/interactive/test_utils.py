@@ -173,7 +173,9 @@ def test_builtin_file_loader_specs_match_file_dialog_entries() -> None:
     assert {spec.id for spec in specs} == {
         "builtin:xarray-hdf5",
         "builtin:xarray-netcdf",
+        "builtin:xarray-zarr",
         "builtin:igor-binary-wave",
+        "builtin:igor-packed-experiment",
     }
     assert len({spec.name_filter for spec in specs}) == len(specs)
 
@@ -181,6 +183,9 @@ def test_builtin_file_loader_specs_match_file_dialog_entries() -> None:
     for spec in specs:
         assert builtin_file_loader_for_id(spec.id) is spec
         assert builtin_file_loader_for_name_filter(spec.name_filter) is spec
+        if not spec.file_dialog:
+            assert spec.name_filter not in valid_loaders
+            continue
         func, kwargs = valid_loaders[spec.name_filter]
         assert func is spec.load_func
         assert kwargs == dict(spec.default_kwargs)

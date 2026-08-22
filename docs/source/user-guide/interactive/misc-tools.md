@@ -597,7 +597,7 @@ Provides a file-browser-like interface for exploring and visualizing ARPES data 
 your disk.
 
 The loader list also supports general xarray HDF5 (`.h5`), NetCDF (`.nc`, `.nc4`, and
-`.cdf`), and Igor Binary Wave (`.ibw`) files.
+`.cdf`), Zarr (`.zarr`), and supported Igor (`.ibw` and `.pxt`) files.
 
 For most day-to-day browsing and loading, this is faster than the interactive summary
 table described in the {ref}`I/O guide <io-summarizing-data>`. Use the summary table when

@@ -263,14 +263,12 @@ class IOOptions(BaseModel):
             ui_type="list",
             ui_choices=[
                 {"label": "None", "value": "None"},
+                *(
+                    {"label": spec.label, "value": spec.id}
+                    for spec in BUILTIN_FILE_LOADER_SPECS
+                ),
                 *sorted(
-                    [
-                        *({"label": name, "value": name} for name in erlab.io.loaders),
-                        *(
-                            {"label": spec.label, "value": spec.id}
-                            for spec in BUILTIN_FILE_LOADER_SPECS
-                        ),
-                    ],
+                    ({"label": name, "value": name} for name in erlab.io.loaders),
                     key=lambda choice: choice["label"].casefold(),
                 ),
             ],

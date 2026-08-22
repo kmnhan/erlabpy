@@ -25,13 +25,14 @@ class BuiltinFileLoaderSpec:
     default_kwargs: Mapping[str, typing.Any] = dataclasses.field(
         default_factory=lambda: types.MappingProxyType({})
     )
+    file_dialog: bool = True
 
 
 BUILTIN_FILE_LOADER_SPECS = (
     BuiltinFileLoaderSpec(
         id="builtin:xarray-hdf5",
-        label="xarray HDF5 DataArray",
-        description="Load an xarray DataArray from an HDF5 file.",
+        label="HDF5",
+        description="Load an HDF5 file.",
         name_filter="xarray HDF5 Files (*.h5)",
         extensions=frozenset({".h5"}),
         load_func=xr.load_dataarray,
@@ -39,18 +40,37 @@ BUILTIN_FILE_LOADER_SPECS = (
     ),
     BuiltinFileLoaderSpec(
         id="builtin:xarray-netcdf",
-        label="xarray NetCDF DataArray",
-        description="Load an xarray DataArray from a NetCDF file.",
+        label="NetCDF",
+        description="Load a NetCDF file.",
         name_filter="NetCDF Files (*.nc *.nc4 *.cdf)",
         extensions=frozenset({".nc", ".nc4", ".cdf"}),
         load_func=xr.load_dataarray,
     ),
     BuiltinFileLoaderSpec(
+        id="builtin:xarray-zarr",
+        label="Zarr",
+        description="Load a Zarr store.",
+        name_filter="xarray Zarr Stores (*.zarr)",
+        extensions=frozenset({".zarr"}),
+        load_func=xr.load_dataarray,
+        default_kwargs=types.MappingProxyType({"engine": "zarr"}),
+        file_dialog=False,
+    ),
+    BuiltinFileLoaderSpec(
         id="builtin:igor-binary-wave",
-        label="Igor Binary Wave",
-        description="Load an Igor Binary Wave as an xarray DataArray.",
+        label="IBW",
+        description="Load an Igor Binary Wave.",
         name_filter="Igor Binary Waves (*.ibw)",
         extensions=frozenset({".ibw"}),
+        load_func=xr.load_dataarray,
+        default_kwargs=types.MappingProxyType({"engine": "erlab-igor"}),
+    ),
+    BuiltinFileLoaderSpec(
+        id="builtin:igor-packed-experiment",
+        label="PXT",
+        description="Load a single-wave Igor packed experiment.",
+        name_filter="Igor Packed Experiment Templates (*.pxt)",
+        extensions=frozenset({".pxt"}),
         load_func=xr.load_dataarray,
         default_kwargs=types.MappingProxyType({"engine": "erlab-igor"}),
     ),

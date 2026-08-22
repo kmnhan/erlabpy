@@ -44,10 +44,7 @@ from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.interactive import _qt_state
-from erlab.interactive._file_loaders import (
-    BuiltinFileLoaderSpec,
-    builtin_file_loader_for_id,
-)
+from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
 from erlab.interactive._plot_state import TOOL_VIEW_STATE_ATTR, ToolPlotStateRegistry
 from erlab.interactive._widgets import _Separator
 from erlab.utils._code import (
@@ -1331,34 +1328,19 @@ def file_loaders(
     name to avoid conflicts. Duplicate filters from separate loader hierarchies raise a
     ValueError.
     """
-    hdf5_spec = typing.cast(
-        "BuiltinFileLoaderSpec",
-        builtin_file_loader_for_id("builtin:xarray-hdf5"),
-    )
-    netcdf_spec = typing.cast(
-        "BuiltinFileLoaderSpec",
-        builtin_file_loader_for_id("builtin:xarray-netcdf"),
-    )
-    ibw_spec = typing.cast(
-        "BuiltinFileLoaderSpec",
-        builtin_file_loader_for_id("builtin:igor-binary-wave"),
-    )
-    valid_loaders: dict[str, tuple[Callable, dict]] = {
-        hdf5_spec.name_filter: (hdf5_spec.load_func, dict(hdf5_spec.default_kwargs)),
-        "xarray HDF5 Files Chunked (*.h5)": (
-            xr.open_dataarray,
-            {"engine": "h5netcdf", "chunks": "auto"},
-        ),
-        netcdf_spec.name_filter: (
-            netcdf_spec.load_func,
-            dict(netcdf_spec.default_kwargs),
-        ),
-        ibw_spec.name_filter: (ibw_spec.load_func, dict(ibw_spec.default_kwargs)),
-        "Igor Packed Experiment Templates (*.pxt)": (
-            xr.load_dataarray,
-            {"engine": "erlab-igor"},
-        ),
-    }
+    valid_loaders: dict[str, tuple[Callable, dict]] = {}
+    for spec in BUILTIN_FILE_LOADER_SPECS:
+        if not spec.file_dialog:
+            continue
+        valid_loaders[spec.name_filter] = (
+            spec.load_func,
+            dict(spec.default_kwargs),
+        )
+        if spec.id == "builtin:xarray-hdf5":
+            valid_loaders["xarray HDF5 Files Chunked (*.h5)"] = (
+                xr.open_dataarray,
+                {"engine": "h5netcdf", "chunks": "auto"},
+            )
     if importlib.util.find_spec("zarr"):  # pragma: no branch
         valid_loaders["Zarr Store (*.zarr)"] = (
             xr.open_dataarray,

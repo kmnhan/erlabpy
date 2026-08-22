@@ -1,5 +1,7 @@
 import pathlib
+import shutil
 import typing
+import warnings
 from collections.abc import Callable
 
 import pytest
@@ -437,23 +439,35 @@ def test_explorer_general(
         explorer.close()
 
 
+@pytest.mark.parametrize(
+    ("recent_filter", "loader_name"),
+    [
+        ("xarray HDF5 Files (*.h5)", "builtin:xarray-hdf5"),
+        (
+            "Igor Packed Experiment Templates (*.pxt)",
+            "builtin:igor-packed-experiment",
+        ),
+    ],
+)
 def test_manager_recent_builtin_filter_selects_explorer_loader(
     qtbot,
     tmp_path: pathlib.Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    recent_filter: str,
+    loader_name: str,
 ) -> None:
     with manager_context() as manager:
         manager._recent_directory = str(tmp_path)
-        manager._recent_name_filter = "xarray HDF5 Files (*.h5)"
+        manager._recent_name_filter = recent_filter
 
         explorer = manager._create_explorer_window()
         qtbot.addWidget(explorer)
 
         assert isinstance(explorer, _TabbedExplorer)
         assert explorer.current_explorer is not None
-        assert explorer.current_explorer.loader_name == "builtin:xarray-hdf5"
+        assert explorer.current_explorer.loader_name == loader_name
 
 
 def test_explorer_loader_extensions_apply_only_to_manager_loads(
@@ -670,6 +684,7 @@ def test_builtin_explorer_loader_uses_open_dataarray_without_preview(
     [
         ("builtin:xarray-hdf5", ".h5"),
         ("builtin:xarray-netcdf", ".nc"),
+        ("builtin:xarray-zarr", ".zarr"),
         ("builtin:igor-binary-wave", ".ibw"),
     ],
 )
@@ -688,6 +703,14 @@ def test_explorer_builtin_dataarray_preview(
     path = tmp_path / f"preview{suffix}"
     if suffix == ".ibw":
         erlab.io.igor.save_wave(data, path)
+    elif suffix == ".zarr":
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Consolidated metadata is currently not part.*",
+                category=UserWarning,
+            )
+            data.to_zarr(path)
     else:
         data.to_netcdf(path, engine="h5netcdf")
 
@@ -696,10 +719,13 @@ def test_explorer_builtin_dataarray_preview(
     explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
     qtbot.addWidget(explorer)
     assert explorer.loader_name == loader_name
-    loader_row = explorer._loader_names().index(loader_name)
-    loader_index = explorer._loader_combo.model().index(loader_row, 0)
+    loader_model = explorer._loader_combo.model()
+    loader_row = loader_model.row_for_loader_name(loader_name)
+    assert loader_row is not None
+    loader_index = loader_model.index(loader_row, 0)
     assert loader_index.data() == loader.display_name
     assert loader_index.data(QtCore.Qt.ItemDataRole.UserRole) == loader_name
+    assert loader_model.index(loader_row, 1).data() == loader.description
 
     explorer._preview_check.setChecked(True)
     index = explorer._model_index_for_path(path)
@@ -712,6 +738,56 @@ def test_explorer_builtin_dataarray_preview(
     qtbot.wait_until(lambda: explorer._preview._data is not None)
     xr.testing.assert_allclose(explorer._preview._data, expected)
     assert explorer.workspace_state_payload()["loader_name"] == loader_name
+
+
+def test_explorer_builtin_pxt_preview(qtbot, tmp_path: pathlib.Path) -> None:
+    source_path = pathlib.Path(__file__).parents[1] / "io/test_igor/exp0.pxt"
+    path = tmp_path / "preview.pxt"
+    shutil.copyfile(source_path, path)
+    loader_name = "builtin:igor-packed-experiment"
+    expected = xr.load_dataarray(path, engine="erlab-igor")
+    explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
+    qtbot.addWidget(explorer)
+
+    explorer._preview_check.setChecked(True)
+    index = explorer._model_index_for_path(path)
+    explorer._tree_view.selectionModel().select(
+        index,
+        QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+        | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+    qtbot.wait_until(lambda: explorer._preview._data is not None)
+    xr.testing.assert_allclose(explorer._preview._data, expected)
+
+
+def test_explorer_loader_popup_groups_general_files_before_plugins(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path)
+    qtbot.addWidget(explorer)
+    model = explorer._loader_combo.model()
+    view = explorer._loader_combo.view()
+    group_rows = model.group_rows()
+
+    assert len(group_rows) == 2
+    assert group_rows[0] == 0
+    assert all(
+        model.flags(model.index(row, 0)) == QtCore.Qt.ItemFlag.NoItemFlags
+        for row in group_rows
+    )
+    assert (
+        model.data(model.index(group_rows[0], 0), QtCore.Qt.ItemDataRole.UserRole)
+        is None
+    )
+    assert all(view.columnSpan(row, 0) == model.columnCount() for row in group_rows)
+    general_file_rows = [
+        model.row_for_loader_name(loader_name)
+        for loader_name in BUILTIN_EXPLORER_LOADERS
+    ]
+    assert all(row is not None and row < group_rows[1] for row in general_file_rows)
+    assert explorer.loader_name in BUILTIN_EXPLORER_LOADERS
 
 
 def test_repr_fetcher_aborted_before_run_skips_loader(

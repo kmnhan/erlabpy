@@ -522,7 +522,7 @@ it is faster than the interactive summary table in the I/O guide. Use
 or when you are developing loaders.
 
 The loader list includes general xarray HDF5 (`.h5`), NetCDF (`.nc`, `.nc4`, and
-`.cdf`), and Igor Binary Wave (`.ibw`) files.
+`.cdf`), Zarr (`.zarr`), and supported Igor (`.ibw` and `.pxt`) files.
 
 The explorer can also be launched standalone from Python or the command line for browsing
 and previewing. Opening selected files into ImageTool analysis still requires a running
