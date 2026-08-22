@@ -70,7 +70,7 @@ figure-styles
 ```
 ::::
 
-::::{grid-item-card} Polygon masking
+::::{grid-item-card} First Brillouin zone mask
 :link: how-to-python-mask-polygon
 :link-type: ref
 :class-card: plotting-gallery-card
@@ -80,7 +80,7 @@ figure-styles
    :include-source: false
    :show-source-link: false
    :class: plotting-gallery-preview
-   :alt: Constant energy map with a polygon boundary and the resulting masked map
+   :alt: Repeated-zone constant energy surface and the intensity retained inside the first Brillouin zone
 ```
 ::::
 

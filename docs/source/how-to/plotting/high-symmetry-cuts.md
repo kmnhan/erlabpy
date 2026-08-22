@@ -3,10 +3,13 @@
 # High-symmetry cuts
 
 Use this guide to show a selected reciprocal-space path beside its energy–momentum cut.
-Start with converted `momentum_data`, `high_symmetry_vertices`, and
-`high_symmetry_cut` prepared with {ref}`how-to-python-extract-path`.
+Start with converted `momentum_data`. You can extract the cut with Python or with a
+polygonal ROI in ImageTool.
 
 ## Python
+
+Prepare `high_symmetry_vertices` and `high_symmetry_cut` with
+{ref}`how-to-python-extract-path`.
 
 Calculate the path positions of the vertices. Use them for the x-axis ticks and the
 internal guide lines:
@@ -83,13 +86,46 @@ width perpendicular to the path.
 
 ## Figure Composer
 
-Prepare `path_energy_map` and `high_symmetry_cut` with the Python code above. Add both
-arrays in {guilabel}`Sources`.
+### ImageTool preparation
+
+1. Open `momentum_data` in a managed ImageTool.
+2. Display the $k_x$-$k_y$ plane. Move the energy cursor to the required binding
+   energy. Set the energy bin width in the {guilabel}`Binning` panel.
+3. Right-click the image and choose {guilabel}`Add Polygon ROI`.
+4. Place the ROI vertices in path order. Right-click the ROI and choose
+   {guilabel}`Edit ROI…` to enter the exact high-symmetry point coordinates. Leave
+   {guilabel}`Closed` off.
+5. Right-click the ROI and choose {guilabel}`Slice Along ROI Path`.
+6. Set {guilabel}`New Dim Name` to `path`. Select a suitable
+   {guilabel}`Step Size`, set {guilabel}`Result Placement` to
+   {guilabel}`Open Child Window`, and create the cut.
+7. Return to the original ImageTool. Right-click the displayed constant energy surface
+   and choose {guilabel}`New Figure`. Figure Composer records the displayed energy
+   selection and bin width. You do not have to create `path_energy_map` in Python.
+8. Set the Figure Composer layout to $1 \times 2$. Target the existing
+   {guilabel}`Image Plot` step to the left axes.
+9. In the ROI-derived cut ImageTool, right-click the image and choose
+   {guilabel}`Append to Figure`. Select the same figure and the right axes. You do not
+   have to create `high_symmetry_cut` in Python.
+
+For more information about ROI editing and path interpolation, see
+{ref}`how-to-gui-extract-polygon-path`.
+
+The ROI result uses cumulative distance as its `path` coordinate. At each ROI vertex,
+record the `path` value where the associated `kx` and `ky` coordinates match that
+vertex. Use these values for the guide lines and tick labels below. The
+`path_vertex_positions` calculation in the Python section gives the same values.
+
+If the map and cut already exist as Python variables, prepare `path_energy_map` and
+`high_symmetry_cut` with the Python procedures above and in
+{ref}`how-to-python-extract-path`. Add both arrays in {guilabel}`Sources`:
 
 1. Use a $1 \times 2$ layout.
 2. Add an {guilabel}`Image Plot` step for `path_energy_map` on the left axes. Set
    {guilabel}`Aspect` to `equal`.
 3. Add an {guilabel}`Image Plot` step for `high_symmetry_cut` on the right axes.
+
+### Figure assembly
 
 The single first-zone boundary drawn by {func}`erlab.plotting.plot_hex_bz` does not have
 an editable Figure Composer step.
@@ -97,8 +133,8 @@ an editable Figure Composer step.
 ```{include} ../../_includes/figure-composer-planned-step.md
 ```
 
-4. Add a {guilabel}`Python` step after the left image.
-5. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
+1. Add a {guilabel}`Python` step after the left image.
+2. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
 
 ```python
 lattice_constant = 6.97
@@ -111,20 +147,22 @@ eplt.plot_hex_bz(
 )
 ```
 
-6. Add an {guilabel}`Axes Method` step after the boundary. Select
+3. Add an {guilabel}`Axes Method` step after the boundary. Select
    {meth}`plot <matplotlib.axes.Axes.plot>` and target the left axes. Set
    {guilabel}`Plot data` to {guilabel}`Pick from data`. For X, select
-   `high_symmetry_cut` and `kx`. For Y, select `high_symmetry_cut` and `ky`.
-7. Add an {guilabel}`ERLab Method` step for
+   the path-cut source and `kx`. For Y, select the same source and `ky`.
+4. Add an {guilabel}`ERLab Method` step for
    {func}`fermiline <erlab.plotting.fermiline>` on the right axes.
-8. Add one {guilabel}`Axes Method` step for each internal guide. Select
+5. Add one {guilabel}`Axes Method` step for each internal guide. Select
    {meth}`Vertical line <matplotlib.axes.Axes.axvline>`, target the right axes, and
-   enter the corresponding value from `path_vertex_positions[1:-1]`.
-9. Add an {guilabel}`Axes Method` step for
+   enter the cumulative path-coordinate value of the corresponding internal ROI
+   vertex. These values are `path_vertex_positions[1:-1]` in the Python example.
+6. Add an {guilabel}`Axes Method` step for
    {meth}`Set x ticks <matplotlib.axes.Axes.set_xticks>` on the right axes. Enter the
-   values from `path_vertex_positions` and the labels `Γ, M, K, Γ`.
-10. Add an {guilabel}`Axes Method` step for
-    {meth}`set_xlabel <matplotlib.axes.Axes.set_xlabel>` on the right axes. Leave
-    {guilabel}`Label` empty so that the cumulative path distance is not shown.
+   cumulative path-coordinate values of all ROI vertices and the labels `Γ, M, K, Γ`.
+   These values are `path_vertex_positions` in the Python example.
+7. Add an {guilabel}`Axes Method` step for
+   {meth}`set_xlabel <matplotlib.axes.Axes.set_xlabel>` on the right axes. Leave
+   {guilabel}`Label` empty so that the cumulative path distance is not shown.
 
 Replace the lattice constant and path positions with values for the measured material.
