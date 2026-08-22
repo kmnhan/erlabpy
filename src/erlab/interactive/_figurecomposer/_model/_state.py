@@ -697,9 +697,16 @@ class FigureOperationState(pydantic.BaseModel):
     method_transform_expression: str = ""
 
     code: str = ""
-    trusted: bool = False
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _discard_legacy_trusted(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping) and "trusted" in value:
+            value = dict(value)
+            value.pop("trusted", None)
+        return value
 
     @pydantic.field_validator(
         "norm_kwargs",
@@ -877,12 +884,11 @@ class FigureOperationState(pydantic.BaseModel):
         )
 
     @classmethod
-    def custom(cls, *, label: str, code: str, trusted: bool) -> FigureOperationState:
+    def custom(cls, *, label: str, code: str) -> FigureOperationState:
         return cls(
             kind=FigureOperationKind.CUSTOM,
             label=label,
             code=code,
-            trusted=trusted,
             axes=FigureAxesSelectionState(axes=()),
         )
 

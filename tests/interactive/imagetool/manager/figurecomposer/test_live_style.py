@@ -108,7 +108,6 @@ def test_figure_composer_live_colormap_falls_back_for_earlier_custom_step(
     custom = FigureOperationState.custom(
         label="mutate",
         code="data.values[:] += 1.0",
-        trusted=True,
     )
     tool = _visible_image_tool(
         qtbot,

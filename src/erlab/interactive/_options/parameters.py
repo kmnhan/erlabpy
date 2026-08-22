@@ -12,6 +12,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._stylesheets
+from erlab.interactive._code_trust import (
+    reset_saved_code_trust,
+    validate_trusted_location,
+)
 from erlab.interactive._widgets import _CenteredIconToolButton
 
 _STYLESHEET_AVAILABLE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -536,6 +540,181 @@ class DirectoryPathParameter(pyqtgraph.parametertree.parameterTypes.SimpleParame
 
     def __init__(self, **opts):
         opts.setdefault("type", "directory_path")
+        super().__init__(**opts)
+
+
+class TrustedFoldersWidget(QtWidgets.QWidget):
+    """Editor for recursively trusted executable-document folders."""
+
+    sigFoldersChanged = QtCore.Signal(list)
+    _VISIBLE_LIST_ROWS = 4
+
+    def __init__(
+        self,
+        folders: list[str] | None = None,
+        *,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.list_widget = QtWidgets.QListWidget(self)
+        self.list_widget.setObjectName("trustedFoldersList")
+        layout.addWidget(self.list_widget)
+
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(4)
+
+        self.add_button = QtWidgets.QToolButton(self)
+        self.add_button.setObjectName("trustedFoldersAddButton")
+        self.add_button.setText("Add Folder…")
+        self.add_button.setToolTip("Select a trusted workspace folder.")
+        self.add_button.clicked.connect(self.add_folder)
+        buttons.addWidget(self.add_button)
+
+        self.remove_button = QtWidgets.QToolButton(self)
+        self.remove_button.setObjectName("trustedFoldersRemoveButton")
+        self.remove_button.setText("Remove")
+        self.remove_button.setToolTip("Stop trusting the selected folder.")
+        self.remove_button.clicked.connect(self.remove_selected_folder)
+        self.remove_button.setEnabled(False)
+        self.list_widget.currentRowChanged.connect(
+            lambda row: self.remove_button.setEnabled(row >= 0)
+        )
+        buttons.addWidget(self.remove_button)
+        buttons.addStretch(1)
+
+        self.reset_trust_button = QtWidgets.QToolButton(self)
+        self.reset_trust_button.setObjectName("trustedSignaturesResetButton")
+        self.reset_trust_button.setText("Reset Saved Trust…")
+        self.reset_trust_button.setToolTip(
+            "Remove all saved executable-content signatures."
+        )
+        self.reset_trust_button.clicked.connect(self.reset_saved_trust)
+        buttons.addWidget(self.reset_trust_button)
+        layout.addLayout(buttons)
+
+        self.set_folders(folders or [])
+        self._update_list_height()
+
+    def get_folders(self) -> list[str]:
+        """Return the configured folders in display order."""
+        return [
+            item.text()
+            for row in range(self.list_widget.count())
+            if (item := self.list_widget.item(row)) is not None
+        ]
+
+    def set_folders(self, folders: list[str]) -> None:
+        """Replace the configured folder list without accessing the filesystem."""
+        normalized = list(dict.fromkeys(str(item).strip() for item in folders))
+        normalized = [folder for folder in normalized if folder]
+        if normalized == self.get_folders():
+            return
+        self.list_widget.clear()
+        self.list_widget.addItems(normalized)
+        if normalized:
+            self.list_widget.setCurrentRow(0)
+        self._update_list_height()
+        self.sigFoldersChanged.emit(normalized)
+
+    @QtCore.Slot()
+    def add_folder(self) -> None:
+        """Select, validate, and add one trusted folder."""
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select Trusted Workspace Folder",
+            "",
+        )
+        if not directory:
+            return
+        try:
+            resolved = validate_trusted_location(directory)
+        except (OSError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Folder Not Added", str(exc))
+            return
+        folder = str(resolved)
+        folders = self.get_folders()
+        if folder in folders:
+            self.list_widget.setCurrentRow(folders.index(folder))
+            return
+        reply = QtWidgets.QMessageBox.warning(
+            self,
+            "Trust Workspace Folder",
+            "Every .itws file in this folder and its subfolders is trusted. Opening "
+            "one can run recorded scripts, Figure Composer Python, saved lmfit model "
+            "or result code, and lmfit parameter expressions without review. Add this "
+            "folder only if untrusted users and programs cannot change its contents.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self.set_folders([*folders, folder])
+        self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+
+    @QtCore.Slot()
+    def remove_selected_folder(self) -> None:
+        """Remove the selected folder from the trusted list."""
+        row = self.list_widget.currentRow()
+        folders = self.get_folders()
+        if not 0 <= row < len(folders):
+            return
+        folders.pop(row)
+        self.set_folders(folders)
+        if folders:
+            self.list_widget.setCurrentRow(min(row, len(folders) - 1))
+
+    @QtCore.Slot()
+    def reset_saved_trust(self) -> None:
+        """Remove saved signatures after user confirmation."""
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Reset Saved Code Trust",
+            "Remove all saved executable-content trust signatures? Trusted folders "
+            "are not changed.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            reset_saved_code_trust()
+        except RuntimeError as exc:
+            QtWidgets.QMessageBox.warning(self, "Saved Trust Not Reset", str(exc))
+
+    def _update_list_height(self) -> None:
+        row_height = self.list_widget.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = self.list_widget.fontMetrics().height() + 6
+        frame = self.list_widget.frameWidth() * 2
+        rows = max(1, min(self._VISIBLE_LIST_ROWS, self.list_widget.count()))
+        self.list_widget.setFixedHeight(row_height * rows + frame)
+
+
+class TrustedFoldersParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    def makeWidget(self) -> TrustedFoldersWidget:
+        widget = TrustedFoldersWidget()
+        widget.sigChanged = widget.sigFoldersChanged  # type: ignore[attr-defined]
+        widget.value = widget.get_folders  # type: ignore[attr-defined]
+        widget.setValue = widget.set_folders  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return widget
+
+
+class TrustedFoldersParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = TrustedFoldersParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "trusted_folders")
         super().__init__(**opts)
 
 

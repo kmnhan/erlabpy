@@ -4424,6 +4424,16 @@ class EdgeCorrectionDialog(DataTransformDialog):
             shift_coords=self.shift_coord_check.isChecked(),
         )
 
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        edge_fit = getattr(self, "_edge_fit", None)
+        if edge_fit is None:
+            raise RuntimeError("Edge correction fit data has not been loaded.")
+        return erlab.analysis.gold.correct_with_edge(
+            data,
+            edge_fit,
+            shift_coords=self.shift_coord_check.isChecked(),
+        )
+
     def _validate(self) -> QtWidgets.QDialog.DialogCode:
         if "eV" not in self.slicer_area.data.dims:
             QtWidgets.QMessageBox.warning(

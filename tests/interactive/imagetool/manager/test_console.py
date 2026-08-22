@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.utils
+from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
 from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._provenance import _execution
 from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
@@ -62,6 +63,14 @@ from .helpers import (
     select_child_tool,
     select_tools,
 )
+
+
+def _authorize_execution(entries: tuple[typing.Any, ...]) -> object:
+    _trust, capability = issue_execution_capability(new_document_trust(), entries)
+    if capability is None:  # pragma: no cover - local trust always issues one.
+        raise RuntimeError("Could not issue test execution capability")
+    return capability
+
 
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._modelview import (
@@ -1324,7 +1333,11 @@ def test_manager_console_reserved_result_name_replays_without_shadowing() -> Non
         "data_0",
     ]
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data_0": data0, "data_1": data1}),
+        replay_script_provenance(
+            spec,
+            {"data_0": data0, "data_1": data1},
+            authorize=_authorize_execution,
+        ),
         combined.data,
     )
 
@@ -2557,7 +2570,11 @@ def test_manager_console_captures_self_contained_function_source(
         assert "def add_scale(data):" in shifted_code
         assert "def offset_data(data):" in shifted_code
         xr.testing.assert_identical(
-            replay_script_provenance(shifted_spec, {"data_0": data}),
+            replay_script_provenance(
+                shifted_spec,
+                {"data_0": data},
+                authorize=_authorize_execution,
+            ),
             data + 2.0,
         )
         manager.console._console_widget.execute("piped = tools[0].pipe(offset_data)")
@@ -3349,7 +3366,7 @@ def test_manager_reload_script_derived_target_honors_trust_cancel() -> None:
     node = types.SimpleNamespace(uid="node", provenance_spec=spec)
 
     def rebuild(*_args, **_kwargs):
-        raise manager_widgets._TrustedScriptReplayCancelled
+        raise manager_widgets._TrustedProvenanceReplayCancelled
 
     manager = types.SimpleNamespace(
         _node_for_target=lambda _target: node,

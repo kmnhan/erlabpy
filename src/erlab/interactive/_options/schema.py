@@ -63,6 +63,7 @@ __all__ = [
     "FigureExportOptions",
     "FigureOptions",
     "IOOptions",
+    "SecurityOptions",
     "WorkspaceCompressionMode",
     "WorkspaceOptions",
     "normalize_workspace_compression_mode",
@@ -544,6 +545,25 @@ class FigureOptions(BaseModel):
         return _str_list(v)
 
 
+class SecurityOptions(BaseModel):
+    """User-only executable-content trust settings."""
+
+    trusted_workspace_folders: list[str] = Field(
+        default_factory=list,
+        title="Trusted workspace folders",
+        description=(
+            "Workspace files in these folders and their child folders can run saved "
+            "Python code without signature verification."
+        ),
+        json_schema_extra={"ui_type": "trusted_folders"},
+    )
+
+    @field_validator("trusted_workspace_folders", mode="before")
+    @classmethod
+    def normalize_trusted_workspace_folders(cls, value: typing.Any) -> list[str]:
+        return _str_list(value)
+
+
 class AppOptions(BaseModel):
     """Root configuration model for interactive tool options."""
 
@@ -566,4 +586,9 @@ class AppOptions(BaseModel):
         default_factory=FigureOptions,
         title="Figure Composer",
         description="Matplotlib Figure Composer defaults.",
+    )
+    security: SecurityOptions = Field(
+        default_factory=SecurityOptions,
+        title="Security",
+        description="Executable-content trust settings.",
     )

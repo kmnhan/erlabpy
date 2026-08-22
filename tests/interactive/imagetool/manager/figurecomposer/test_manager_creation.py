@@ -1367,7 +1367,6 @@ def test_manager_custom_figure_code_uses_readable_source_aliases(
                     "operation": FigureOperationState.custom(
                         label="summary",
                         code=code,
-                        trusted=True,
                     )
                 }
             else:
@@ -1393,7 +1392,6 @@ def test_manager_custom_figure_code_uses_readable_source_aliases(
                 "operation": FigureOperationState.custom(
                     label="ambiguous",
                     code=ambiguous_code,
-                    trusted=True,
                 )
             },
             {"custom_code": ambiguous_code},

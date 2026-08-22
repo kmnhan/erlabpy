@@ -527,10 +527,22 @@ def encode_provenance_value(value: typing.Any) -> typing.Any:
     return value
 
 
-def decode_provenance_value(value: typing.Any) -> typing.Any:
-    """Decode values produced by :func:`encode_provenance_value`."""
+def decode_provenance_value(
+    value: typing.Any,
+    *,
+    allow_code_payload: bool = False,
+) -> typing.Any:
+    """Decode values produced by :func:`encode_provenance_value`.
+
+    Opaque lmfit results can restore Python callables. They remain encoded unless the
+    caller is an authorized execution boundary.
+    """
     if isinstance(value, Mapping):
         if _FIT_DATASET_MARKER in value:
+            if not allow_code_payload:
+                raise ValueError(
+                    "Opaque lmfit result payload requires code authorization"
+                )
             return _decode_fit_dataset(value[_FIT_DATASET_MARKER])
         if _DATASET_MARKER in value:
             return xr.Dataset.from_dict(
@@ -543,28 +555,35 @@ def decode_provenance_value(value: typing.Any) -> typing.Any:
         if _SLICE_MARKER in value:
             start, stop, step = typing.cast("list[typing.Any]", value[_SLICE_MARKER])
             return slice(
-                decode_provenance_value(start),
-                decode_provenance_value(stop),
-                decode_provenance_value(step),
+                decode_provenance_value(start, allow_code_payload=allow_code_payload),
+                decode_provenance_value(stop, allow_code_payload=allow_code_payload),
+                decode_provenance_value(step, allow_code_payload=allow_code_payload),
             )
         if _TUPLE_MARKER in value:
             return tuple(
-                decode_provenance_value(item)
+                decode_provenance_value(item, allow_code_payload=allow_code_payload)
                 for item in typing.cast("list[typing.Any]", value[_TUPLE_MARKER])
             )
         if _MAPPING_MARKER in value:
             return {
-                decode_provenance_value(key): decode_provenance_value(item)
+                decode_provenance_value(
+                    key, allow_code_payload=allow_code_payload
+                ): decode_provenance_value(item, allow_code_payload=allow_code_payload)
                 for key, item in typing.cast(
                     "list[list[typing.Any]]", value[_MAPPING_MARKER]
                 )
             }
         return {
-            decode_provenance_value(key): decode_provenance_value(item)
+            decode_provenance_value(
+                key, allow_code_payload=allow_code_payload
+            ): decode_provenance_value(item, allow_code_payload=allow_code_payload)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [decode_provenance_value(item) for item in value]
+        return [
+            decode_provenance_value(item, allow_code_payload=allow_code_payload)
+            for item in value
+        ]
     return erlab.utils.misc._convert_to_native(value)
 
 
@@ -596,8 +615,22 @@ def _is_identifier_string_mapping(value: Mapping[typing.Any, typing.Any]) -> boo
     )
 
 
+def _redact_opaque_fit_results(value: typing.Any) -> typing.Any:
+    """Return a display-safe copy that never decodes an opaque fit result."""
+    if isinstance(value, Mapping):
+        if _FIT_DATASET_MARKER in value:
+            return "<saved lmfit result>"
+        return {
+            _redact_opaque_fit_results(key): _redact_opaque_fit_results(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_opaque_fit_results(item) for item in value]
+    return value
+
+
 def _format_derivation_value(value: typing.Any) -> str:
-    decoded = decode_provenance_value(value)
+    decoded = decode_provenance_value(_redact_opaque_fit_results(value))
     if isinstance(decoded, Mapping):
         return erlab.interactive.utils.format_kwargs(dict(decoded))
     if isinstance(decoded, (tuple, list)):
@@ -1202,6 +1235,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         data: xr.DataArray,
         *,
         parent_data: xr.DataArray,
+        authorization: object | None = None,
     ) -> xr.DataArray:
         """Apply an operation deserialized from a schema-v2 parent-data context.
 
@@ -1212,12 +1246,17 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         ``ReplayStep.legacy_context``, and the schema-v2 migration together when old
         saved workspace support is retired.
         """
-        if "parent_data" in inspect.signature(self.apply).parameters:
+        parameters = inspect.signature(self.apply).parameters
+        kwargs: dict[str, typing.Any] = {}
+        if "authorization" in parameters:
+            kwargs["authorization"] = authorization
+        if "parent_data" in parameters:
             # Schema-v2 compatibility shim for operation classes defined outside
             # ERLab. Do not broaden the current unary apply() contract.
             legacy_apply = typing.cast("Callable[..., xr.DataArray]", self.apply)
-            return legacy_apply(data, parent_data=parent_data)
-        return self.apply(data)
+            kwargs["parent_data"] = parent_data
+            return legacy_apply(data, **kwargs)
+        return self.apply(data, **kwargs)
 
     def derivation_entry(self) -> DerivationEntry:
         """Return the user-visible derivation entry for this operation.
@@ -1823,7 +1862,7 @@ def parse_tool_provenance_operation(
         original_code = payload["code"]
         payload["code"] = _migrate_legacy_nonuniform_restore_code(original_code)
         if payload["code"] != original_code:
-            payload["framework_owned"] = True
+            payload["uses_implicit_framework_imports"] = True
     return operation_type.model_validate(payload)
 
 
@@ -3405,8 +3444,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             [ToolProvenanceOperation, xr.DataArray], xr.DataArray
         ]
         | None = None,
+        authorization: object | None = None,
     ) -> xr.DataArray:
-        """Apply live operations, with an optional manager extension executor."""
+        """Apply live operations with extension and stored-code authorization."""
         require_live_source_spec(self)
         data = self._starting_data_for_kind(
             typing.cast(
@@ -3422,7 +3462,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             ):
                 data = extension_executor(operation, data)
             else:
-                data = operation._apply_schema_v2(data, parent_data=parent_data)
+                data = operation._apply_schema_v2(
+                    data,
+                    parent_data=parent_data,
+                    authorization=authorization,
+                )
         if self.kind == "selection":
             # Coordinate dictionary order is presentation state, not a replay step.
             # Normalize it once at the live selection boundary so it cannot split or

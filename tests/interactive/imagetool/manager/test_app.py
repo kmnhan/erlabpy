@@ -1199,8 +1199,10 @@ def test_manager_workspace_properties_action_uses_current_state(
             workspace_path: str | None,
             *,
             state: _WorkspacePropertiesState,
+            review_code_callback: Callable[[], None] | None = None,
             parent: QtWidgets.QWidget | None = None,
         ) -> None:
+            _ = review_code_callback
             dialog_calls.append((workspace_path, state, parent))
 
         def exec(self) -> int:

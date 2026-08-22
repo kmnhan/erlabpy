@@ -21,6 +21,15 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
+from erlab.interactive._code_trust import (
+    create_entry,
+    create_manifest,
+    execution_capability_allows,
+    issue_local_edit_capability,
+    new_document_trust,
+    untrusted_document_trust,
+)
+from erlab.interactive._code_trust._api import _document_trust_after_save
 from erlab.interactive._file_loaders import (
     BUILTIN_FILE_LOADER_SPECS,
     builtin_file_loader_for_id,
@@ -36,7 +45,12 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
     IselOperation,
+    ModelFitOperation,
     ScriptCodeOperation,
+    _ModelFitParameterSpec,
+)
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_operation_code_trust_entries,
 )
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._modelview import (
@@ -220,6 +234,20 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         self._data = new_data
 
 
+def _expression_fit_operation(expression: str = "2 * c0") -> ModelFitOperation:
+    return ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(expr=expression),
+        },
+        method="leastsq",
+        parameter="c0",
+    )
+
+
 class _FailingPersistentTool(_PersistentTool):
     @property
     def tool_status(self) -> _PersistentToolState:
@@ -341,6 +369,19 @@ class _DeferredRestoreTool(
 
     def _result_output_data(self) -> xr.DataArray:
         return self._data + self.deferred_runs
+
+
+@pytest.fixture
+def deferred_restore_tool(qtbot) -> _DeferredRestoreTool:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        _DeferredRestoreTool(data).to_dataset(),
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    if not isinstance(restored, _DeferredRestoreTool):  # pragma: no cover
+        raise TypeError("Expected deferred restore test tool")
+    return restored
 
 
 def test_tool_window_history_actions_undo_redo(qtbot) -> None:
@@ -1237,133 +1278,75 @@ def test_plot_state_registry_defensive_paths(monkeypatch) -> None:
     assert base_adapter._connections == []
 
 
-def test_tool_window_direct_restore_runs_deferred_task_eagerly(qtbot) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
-    qtbot.addWidget(restored)
-
-    assert isinstance(restored, _DeferredRestoreTool)
-    assert restored.construct_restoring is True
-    assert restored.construct_deferred is False
-    assert restored.deferred_runs == 1
-
-
-def test_tool_window_private_deferred_restore_queues_constructor_task(qtbot) -> None:
+@pytest.mark.parametrize("defer", [False, True])
+def test_tool_window_restore_runs_or_queues_constructor_task(
+    qtbot, defer: bool
+) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     saved = _DeferredRestoreTool(data).to_dataset()
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(
         saved,
-        _defer_restore_work=True,
+        _defer_restore_work=defer,
     )
     qtbot.addWidget(restored)
 
     assert isinstance(restored, _DeferredRestoreTool)
     assert restored.construct_restoring is True
-    assert restored.construct_deferred is True
-    assert restored.deferred_runs == 0
-
-    assert restored._flush_restore_work(key="dummy-restore-task")
+    assert restored.construct_deferred is defer
+    assert restored.deferred_runs == int(not defer)
+    if defer:
+        assert restored._flush_restore_work(key="dummy-restore-task")
     assert restored.deferred_runs == 1
 
 
-def test_tool_window_deferred_restore_flushes_before_save(qtbot) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        saved,
-        _defer_restore_work=True,
-    )
-    qtbot.addWidget(restored)
-    assert isinstance(restored, _DeferredRestoreTool)
+@pytest.mark.parametrize("action", ["save", "output", "copy"])
+def test_tool_window_deferred_restore_flushes_before_use(
+    deferred_restore_tool, monkeypatch, action: str
+) -> None:
+    if action == "save":
+        deferred_restore_tool.to_dataset()
+    elif action == "output":
+        xr.testing.assert_identical(
+            deferred_restore_tool.output_imagetool_data(
+                _DeferredRestoreTool.Output.RESULT
+            ),
+            deferred_restore_tool.tool_data + 1,
+        )
+    else:
+        monkeypatch.setattr(
+            erlab.interactive.utils, "copy_to_clipboard", lambda code: code
+        )
+        deferred_restore_tool.copy_code()
 
-    restored.to_dataset()
-
-    assert restored.deferred_runs == 1
-
-
-def test_tool_window_deferred_restore_flushes_on_show(qtbot) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        saved,
-        _defer_restore_work=True,
-    )
-    qtbot.addWidget(restored)
-    assert isinstance(restored, _DeferredRestoreTool)
-
-    restored.show()
-    qtbot.waitUntil(lambda: restored.deferred_runs == 1, timeout=1000)
+    assert deferred_restore_tool.deferred_runs == 1
 
 
-def test_tool_window_deferred_restore_is_discarded_on_close(qtbot) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        saved,
-        _defer_restore_work=True,
-    )
-    qtbot.addWidget(restored)
-    assert isinstance(restored, _DeferredRestoreTool)
-
-    restored.close()
-
-    assert restored.deferred_runs == 0
-    assert not restored._flush_restore_work()
+def test_tool_window_deferred_restore_flushes_on_show(
+    deferred_restore_tool, qtbot
+) -> None:
+    deferred_restore_tool.show()
+    qtbot.waitUntil(lambda: deferred_restore_tool.deferred_runs == 1, timeout=1000)
 
 
-def test_tool_window_deferred_restore_flushes_before_output(qtbot) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        saved,
-        _defer_restore_work=True,
-    )
-    qtbot.addWidget(restored)
-    assert isinstance(restored, _DeferredRestoreTool)
+def test_tool_window_deferred_restore_is_discarded_on_close(
+    deferred_restore_tool,
+) -> None:
+    deferred_restore_tool.close()
 
-    xr.testing.assert_identical(
-        restored.output_imagetool_data(_DeferredRestoreTool.Output.RESULT),
-        data + 1,
-    )
-    assert restored.deferred_runs == 1
+    assert deferred_restore_tool.deferred_runs == 0
+    assert not deferred_restore_tool._flush_restore_work()
 
 
-def test_tool_window_deferred_restore_flushes_before_copy(qtbot, monkeypatch) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        saved,
-        _defer_restore_work=True,
-    )
-    qtbot.addWidget(restored)
-    assert isinstance(restored, _DeferredRestoreTool)
-    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", lambda code: code)
-
-    restored.copy_code()
-
-    assert restored.deferred_runs == 1
-
-
-def test_tool_window_failed_deferred_restore_can_retry(qtbot) -> None:
-    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
-    saved = _DeferredRestoreTool(data).to_dataset()
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        saved,
-        _defer_restore_work=True,
-    )
-    qtbot.addWidget(restored)
-    assert isinstance(restored, _DeferredRestoreTool)
-    restored.fail_next_deferred_restore = True
+def test_tool_window_failed_deferred_restore_can_retry(deferred_restore_tool) -> None:
+    deferred_restore_tool.fail_next_deferred_restore = True
 
     with pytest.raises(RuntimeError, match="deferred restore failed"):
-        restored._flush_restore_work(key="dummy-restore-task")
+        deferred_restore_tool._flush_restore_work(key="dummy-restore-task")
 
-    assert restored.deferred_runs == 0
-    assert restored._flush_restore_work(key="dummy-restore-task")
-    assert restored.deferred_runs == 1
+    assert deferred_restore_tool.deferred_runs == 0
+    assert deferred_restore_tool._flush_restore_work(key="dummy-restore-task")
+    assert deferred_restore_tool.deferred_runs == 1
 
 
 def test_tool_window_deferred_restore_helper_edges(qtbot) -> None:
@@ -1390,6 +1373,35 @@ def test_tool_window_deferred_restore_helper_edges(qtbot) -> None:
         assert not win._flush_restore_work()
     finally:
         win._flushing_restore_work = False
+
+
+def test_tool_window_deferred_restore_flush_skips_canceled_and_replaced_work(
+    qtbot,
+) -> None:
+    win = _DeferredRestoreTool(xr.DataArray(np.arange(3.0), dims=("x",)))
+    qtbot.addWidget(win)
+    win._restoring_from_dataset = True
+    win._defer_restored_tool_work = True
+    calls: list[str] = []
+
+    def first() -> None:
+        calls.append("first")
+        win._discard_restore_work(key="canceled")
+        win._deferred_restore_work["replaced"] = (
+            lambda: calls.append("replacement"),
+            False,
+        )
+
+    assert win._defer_restore_work(first, key="first")
+    assert win._defer_restore_work(lambda: calls.append("canceled"), key="canceled")
+    assert win._defer_restore_work(lambda: calls.append("stale"), key="replaced")
+
+    assert win._flush_restore_work()
+
+    assert calls == ["first"]
+    assert tuple(win._deferred_restore_work) == ("replaced",)
+    assert win._flush_restore_work()
+    assert calls == ["first", "replacement"]
 
 
 @pytest.fixture
@@ -4083,9 +4095,11 @@ def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> N
 
     single_spec = tool.current_provenance_spec()
     assert single_spec is not None
-    expected_operation = operation.model_copy(update={"framework_owned": True})
+    expected_operation = operation.model_copy(
+        update={"uses_implicit_framework_imports": True}
+    )
     assert single_spec.operations == (expected_operation,)
-    assert operation.framework_owned is False
+    assert operation.uses_implicit_framework_imports is False
 
     tool._operations = [operation]
     sequence_spec = tool.current_provenance_spec()
@@ -4571,6 +4585,225 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
         )
 
 
+def test_tool_window_saved_source_reference_authorizes_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    operation = _expression_fit_operation()
+    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data})
+    ds.attrs[erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR] = json.dumps(
+        full_data(operation).model_dump(mode="json")
+    )
+    executions: list[None] = []
+
+    def apply(
+        operation: ModelFitOperation,
+        source: xr.DataArray,
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        entries = provenance_operation_code_trust_entries(
+            operation,
+            location_prefix="runtime-operation",
+        )
+        assert execution_capability_allows(authorization, entries)
+        executions.append(None)
+        return source
+
+    monkeypatch.setattr(ModelFitOperation, "apply", apply)
+
+    with pytest.raises(ValueError, match="untrusted code"):
+        erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            {"kind": "parent_source"},
+            ds,
+            source_parent_data=data,
+            reference_resolver=None,
+            document_trust=untrusted_document_trust(),
+        )
+    assert executions == []
+
+    resolved = erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+        {"kind": "parent_source"},
+        ds,
+        source_parent_data=data,
+        reference_resolver=None,
+        document_trust=new_document_trust(),
+    )
+    xr.testing.assert_identical(resolved, data)
+    assert executions == [None]
+
+
+def test_tool_window_manifest_includes_saved_source_expressions() -> None:
+    class _SourceTrustTool(_PersistentTool):
+        _CODE_TRUST_DOMAIN = "test.tool-source"
+
+    attrs = {
+        erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR: json.dumps(
+            full_data(_expression_fit_operation()).model_dump(mode="json")
+        )
+    }
+
+    manifest = _SourceTrustTool._code_trust_manifest_from_saved_metadata(
+        _PersistentToolState(),
+        attrs,
+    )
+
+    assert manifest is not None
+    assert [entry.feature for entry in manifest.entries] == [
+        "erlab.provenance.model-fit-parameter-expression"
+    ]
+    assert manifest.entries[0].location == (
+        "tool-source/provenance/operations/0/parameters/c1"
+    )
+
+
+def test_tool_window_local_code_edit_changes_signed_trust_to_local_lineage(
+    qtbot,
+) -> None:
+    class _SourceTrustTool(_PersistentTool):
+        _CODE_TRUST_DOMAIN = "test.tool-source"
+
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = _SourceTrustTool(data)
+    qtbot.addWidget(tool)
+
+    def source(expression: str) -> ToolProvenanceSpec:
+        return full_data(_expression_fit_operation(expression))
+
+    tool.set_source_binding(source("2 * c0"))
+    manifest = tool._current_code_trust_manifest()
+    assert manifest is not None
+    signed = _document_trust_after_save(
+        new_document_trust(),
+        manifest,
+        saved_trusted_lineage=True,
+        signature_stored=True,
+    )
+    tool.set_document_trust(signed)
+    changed_source = source("3 * c0")
+    changed_entries = tuple(tool._source_spec_code_trust_entries(changed_source))
+    with tool._local_code_edit(
+        changed_entries,
+        edited_entries=changed_entries,
+    ) as capability:
+        assert execution_capability_allows(capability, changed_entries)
+        tool.set_source_binding(changed_source)
+
+    assert tool._authorize_code_execution(changed_entries)
+
+
+def test_tool_window_local_code_edit_commits_only_after_success(qtbot) -> None:
+    tool = _PersistentTool(xr.DataArray(np.arange(3.0), dims="x"))
+    qtbot.addWidget(tool)
+    saved_entry = create_entry("test.code", "operations/0", "saved()")
+    edited_entry = create_entry("test.code", "operations/0", "edited()")
+    signed = _document_trust_after_save(
+        new_document_trust(),
+        create_manifest("test.tool", 1, (saved_entry,)),
+        saved_trusted_lineage=True,
+        signature_stored=True,
+    )
+    tool.set_document_trust(signed)
+
+    def fail_edit() -> None:
+        with tool._local_code_edit(
+            (edited_entry,),
+            edited_entries=(edited_entry,),
+        ) as capability:
+            assert tool._document_trust == signed
+            assert tool._issue_code_execution_capability((edited_entry,)) is capability
+            raise RuntimeError("validation failed")
+
+    with pytest.raises(RuntimeError, match="validation failed"):
+        fail_edit()
+
+    assert tool._document_trust == signed
+
+    with tool._local_code_edit(
+        (edited_entry,),
+        edited_entries=(edited_entry,),
+    ):
+        assert tool._document_trust == signed
+
+    assert tool._document_trust != signed
+
+
+def test_tool_window_managed_authorization_uses_document_host(qtbot) -> None:
+    approved_entry = create_entry(
+        "test.code",
+        "operations/0",
+        "value = 1",
+    )
+    denied_entry = create_entry(
+        "test.code",
+        "operations/0",
+        "value = 2",
+    )
+    manifest = create_manifest("test.tool", 1, (approved_entry,))
+    calls: list[object] = []
+    current_trust = signed = _document_trust_after_save(
+        new_document_trust(),
+        manifest,
+        saved_trusted_lineage=True,
+        signature_stored=True,
+    )
+
+    def issue(entries, **kwargs):
+        calls.append((tuple(entries), kwargs))
+        return
+
+    @contextlib.contextmanager
+    def local_edit_context(entries, *, edited_entries, **kwargs):
+        calls.append((tuple(entries), tuple(edited_entries), kwargs))
+        yield "local-edit-capability"
+
+    tool = _PersistentTool(xr.DataArray(np.arange(3.0), dims="x"))
+    qtbot.addWidget(tool)
+    tool._set_code_trust_host(
+        issue,
+        local_edit_context=local_edit_context,
+        state_getter=lambda: current_trust,
+    )
+
+    assert not tool._authorize_code_execution((denied_entry,))
+    with tool._local_code_edit(
+        (denied_entry,), edited_entries=(denied_entry,)
+    ) as capability:
+        assert capability == "local-edit-capability"
+    tool._review_code_trust()
+    assert tool._current_document_trust() is signed
+    assert calls == [
+        ((denied_entry,), {"focus_on_block": False}),
+        ((denied_entry,), (denied_entry,), {"focus_on_block": False}),
+    ]
+
+
+def test_tool_window_rejects_partial_capability_from_document_host(qtbot) -> None:
+    local_entry = create_entry("test.code", "operations/local", "local()")
+    external_entry = create_entry("test.code", "operations/external", "external()")
+    trust = untrusted_document_trust()
+    _prospective, partial_capability = issue_local_edit_capability(
+        trust,
+        (local_entry, external_entry),
+        edited_entries=(local_entry,),
+    )
+    assert execution_capability_allows(partial_capability, (local_entry,))
+    assert not execution_capability_allows(partial_capability, (external_entry,))
+
+    tool = _PersistentTool(xr.DataArray(np.arange(3.0), dims="x"))
+    qtbot.addWidget(tool)
+    tool._set_code_trust_host(
+        lambda *_args, **_kwargs: partial_capability,
+        local_edit_context=lambda *_args, **_kwargs: contextlib.nullcontext(
+            partial_capability
+        ),
+        state_getter=lambda: trust,
+    )
+
+    assert tool._issue_code_execution_capability((local_entry,)) is partial_capability
+    assert tool._issue_code_execution_capability((local_entry, external_entry)) is None
+
+
 def test_tool_window_resolves_references_with_missing_placeholder_variables() -> None:
     ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
     ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
@@ -4681,6 +4914,10 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self._tool_graph = _ManagerToolGraph(self._handle_node_change)
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+            self._workspace_controller = types.SimpleNamespace(
+                _configure_tool_code_trust=lambda _tool, **_kwargs: None,
+                _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
+            )
 
         def _handle_node_change(
             self,
@@ -4933,6 +5170,10 @@ def test_managed_tool_window_node_detached_update_branches(
                     ),
                 )
             )
+            self._workspace_controller = types.SimpleNamespace(
+                _configure_tool_code_trust=lambda _tool, **_kwargs: None,
+                _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
+            )
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,
@@ -5168,6 +5409,10 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             self._tool_graph = _ManagerToolGraph()
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+            self._workspace_controller = types.SimpleNamespace(
+                _configure_tool_code_trust=lambda _tool, **_kwargs: None,
+                _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
+            )
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []

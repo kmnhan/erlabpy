@@ -1626,6 +1626,7 @@ def test_manager_figure_workspace_reference_helper_edges(
                 objects=(),
             ),
             compression_mode="none",
+            trusted_lineage=True,
             serialized_tool_data_references=(
                 ("missing", "missing-token", {}),
                 (root_node.uid, root_node.snapshot_token, {}),

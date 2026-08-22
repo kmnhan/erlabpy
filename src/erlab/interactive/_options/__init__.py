@@ -16,6 +16,7 @@ from erlab.interactive._options.parameters import (
     SavefigDpiParameter,
     SavefigPaddingParameter,
     StylesheetListParameter,
+    TrustedFoldersParameter,
     _CustomColorMapParameter,
 )
 
@@ -45,6 +46,10 @@ pyqtgraph.parametertree.registerParameterType(
 
 pyqtgraph.parametertree.registerParameterType(
     "directory_path", DirectoryPathParameter, override=True
+)
+
+pyqtgraph.parametertree.registerParameterType(
+    "trusted_folders", TrustedFoldersParameter, override=True
 )
 
 __getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)

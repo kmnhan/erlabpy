@@ -146,7 +146,6 @@ def test_custom_code_disables_plot_slices_selection_cache(qtbot) -> None:
     custom = FigureOperationState.custom(
         label="mutate",
         code="data.values[:] += 1.0",
-        trusted=True,
     )
     second = _slice_operation("after", axes=((0, 1),))
     tool = _slices_tool(data, first, custom, second)
@@ -174,7 +173,6 @@ def test_custom_code_only_render_invalidates_previous_selection(qtbot) -> None:
     custom = FigureOperationState.custom(
         label="mutate",
         code="data.values[:] += 1.0",
-        trusted=True,
     )
     original_recipe = tool.tool_status
     tool._document.replace_recipe(

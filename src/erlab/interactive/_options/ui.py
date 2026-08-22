@@ -23,12 +23,13 @@ from erlab.interactive._options.parameters import (
     SavefigNumberWidget,
     SavefigPaddingWidget,
     StylesheetListWidget,
+    TrustedFoldersWidget,
 )
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive._widgets import _Separator
 
 _Scope = typing.Literal["user", "workspace"]
-_CATEGORY_ORDER = ("colors", "io", "ktool", "figure")
+_CATEGORY_ORDER = ("colors", "io", "ktool", "figure", "security")
 
 
 def _object_path(path: str) -> str:
@@ -341,7 +342,9 @@ class _SettingsRow(QtWidgets.QFrame):
         object_path = _object_path(path)
         self.setObjectName(f"settingsRow_{scope}_{object_path}")
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        multiline_control = isinstance(control, StylesheetListWidget)
+        multiline_control = isinstance(
+            control, StylesheetListWidget | TrustedFoldersWidget
+        )
 
         layout = QtWidgets.QGridLayout(self)
         layout.setContentsMargins(0, 8, 0, 8)
@@ -641,6 +644,8 @@ class OptionDialog(QtWidgets.QDialog):
             return SavefigPaddingWidget(parent=self)
         if ui_type == "directory_path":
             return DirectoryPathWidget(parent=self)
+        if ui_type == "trusted_folders":
+            return TrustedFoldersWidget(parent=self)
         if ui_type == "choice_slider":
             return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
@@ -744,6 +749,10 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigPathChanged.connect(
                 lambda _path, row=row: self._control_changed(row)
             )
+        elif isinstance(control, TrustedFoldersWidget):
+            control.sigFoldersChanged.connect(
+                lambda _folders, row=row: self._control_changed(row)
+            )
         elif isinstance(control, QtWidgets.QLineEdit):
             control.editingFinished.connect(lambda row=row: self._control_changed(row))
 
@@ -841,6 +850,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_value()
         if isinstance(control, DirectoryPathWidget):
             return control.get_path()
+        if isinstance(control, TrustedFoldersWidget):
+            return control.get_folders()
         if isinstance(control, QtWidgets.QLineEdit):
             text = control.text()
             default_value = option_value(AppOptions(), path)
@@ -891,6 +902,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, DirectoryPathWidget):
             control.set_path(None if value is None else str(value))
+            return
+        if isinstance(control, TrustedFoldersWidget):
+            control.set_folders(list(value or []))
             return
         if isinstance(control, QtWidgets.QLineEdit):
             if isinstance(value, list):

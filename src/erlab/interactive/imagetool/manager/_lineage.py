@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import pathlib
 import traceback
@@ -16,8 +17,6 @@ from erlab.interactive.imagetool._provenance._execution import (
     file_load_source_status,
     rebuild_script_provenance,
     script_provenance_replayable,
-    script_provenance_requires_trust,
-    script_provenance_trust_key,
 )
 from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
 from erlab.interactive.imagetool._provenance._model import (
@@ -31,13 +30,17 @@ from erlab.interactive.imagetool._provenance._model import (
     script_input_dependency_refs,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_trust_entries,
+    script_replay_source_input_names,
+)
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
     _DEPENDENCY_STATUS_LABELS,
     _DEPENDENCY_STATUS_TOOLTIPS,
     _ScriptRebuildError,
     _ScriptRebuildResult,
-    _TrustedScriptReplayCancelled,
+    _TrustedProvenanceReplayCancelled,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -64,57 +67,77 @@ class _LineageController:
     def _script_provenance_runnable(
         spec: ToolProvenanceSpec,
     ) -> bool:
-        return script_provenance_replayable(spec) or script_provenance_requires_trust(
-            spec
-        )
-
-    def _ensure_script_provenance_trusted(
-        self,
-        spec: ToolProvenanceSpec,
-        *,
-        reason: str,
-        external_input_names: set[str] | None = None,
-    ) -> None:
-        if not script_provenance_requires_trust(
+        input_names = set(script_replay_source_input_names(spec))
+        return script_provenance_replayable(
             spec,
-            external_input_names=external_input_names,
-        ):
-            return
-        trust_key = script_provenance_trust_key(spec)
-        if (
-            trust_key is not None
-            and trust_key in self._manager._trusted_script_replay_keys
-        ):
-            return
-        if not self._prompt_trusted_script_replay(spec, reason=reason):
-            raise _TrustedScriptReplayCancelled
-        if trust_key is not None:
-            self._manager._trusted_script_replay_keys.add(trust_key)
+            external_input_names=input_names or None,
+            allow_code=True,
+        )
 
-    def _prompt_trusted_script_replay(
+    def _authorize_provenance_execution(
         self,
-        spec: ToolProvenanceSpec,
+        entries: tuple[typing.Any, ...],
         *,
         reason: str,
-    ) -> bool:
-        msg_box = QtWidgets.QMessageBox(self._manager)
-        msg_box.setObjectName("managerTrustedScriptReplayDialog")
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle("Run Recorded Python Code")
-        msg_box.setText("Run recorded Python code?")
-        msg_box.setInformativeText(
-            f"ImageTool cannot verify this recorded code as safe to replay "
-            f"automatically. It needs to run Python code to {reason}."
+        raise_on_block: bool = True,
+    ) -> object | None:
+        capability = (
+            self._manager._workspace_controller.issue_code_execution_capability(
+                entries,
+                focus_on_block=True,
+                allow_partial=True,
+            )
         )
-        if code := spec.derivation_code():
-            msg_box.setDetailedText(code)
-        run_button = msg_box.addButton(
-            "Run Code", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        if capability is not None:
+            return capability
+        logger.info("Blocked untrusted recorded Python code needed to %s", reason)
+        if raise_on_block:
+            raise _TrustedProvenanceReplayCancelled
+        return None
+
+    def _provenance_execution_authorizer(
+        self,
+        *,
+        reason: str,
+        raise_on_block: bool = True,
+    ):
+        return functools.partial(
+            self._authorize_provenance_execution,
+            reason=reason,
+            raise_on_block=raise_on_block,
         )
-        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
-        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", cancel_button))
-        msg_box.exec()
-        return msg_box.clickedButton() is run_button
+
+    def _apply_provenance(
+        self,
+        spec: ToolProvenanceSpec,
+        data: xr.DataArray,
+        *,
+        reason: str,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        """Apply structured provenance under the workspace trust decision."""
+        entries = functools.partial(
+            provenance_code_trust_entries,
+            spec,
+            location_prefix="workspace/provenance",
+        )
+        capability = authorization
+        if capability is None:
+            capability = (
+                self._manager._workspace_controller.issue_code_execution_capability(
+                    entries,
+                    focus_on_block=True,
+                    allow_partial=True,
+                )
+            )
+        if capability is None:
+            logger.info("Blocked untrusted recorded Python code needed to %s", reason)
+            raise _TrustedProvenanceReplayCancelled
+        return spec.apply(
+            data,
+            extension_executor=self._manager._extensions.execution.run_operation,
+            authorization=capability,
+        )
 
     def _dependency_refs_for_uid(
         self, uid: str
@@ -612,6 +635,7 @@ class _LineageController:
         spec: ToolProvenanceSpec,
         *,
         target_node_uid: str | None = None,
+        authorization: object | None = None,
     ) -> _ScriptRebuildResult:
         def _resolve_live_input(
             script_input: ScriptInput,
@@ -627,21 +651,23 @@ class _LineageController:
                 target_node_uid=target_node_uid,
             )
 
-        try:
-            trusted_user_code = script_provenance_requires_trust(spec)
-            if trusted_user_code:
-                self._manager._ensure_script_provenance_trusted(
-                    spec,
+        def authorize(entries):
+            if authorization is None:
+                return self._authorize_provenance_execution(
+                    entries,
                     reason="reload this result",
                 )
+            return authorization
+
+        try:
             data, rebuilt_spec = rebuild_script_provenance(
                 spec,
                 live_input_resolver=_resolve_live_input,
-                trusted_user_code=trusted_user_code,
                 extension_executor=self._manager._extensions.execution.run_operation,
                 extension_loader_executor=self._manager._extensions.replay_loader,
+                authorize=authorize,
             )
-        except _TrustedScriptReplayCancelled:
+        except _TrustedProvenanceReplayCancelled:
             raise
         except ReplayGraphError as exc:
             raise _ScriptRebuildError(
@@ -746,11 +772,20 @@ class _LineageController:
             if reason is not None:
                 return reason
         if spec is not None and spec.kind == "script":
-            if script_provenance_requires_trust(spec):
+            if not spec.script_inputs:
                 return (
-                    "This data includes recorded script code that needs trust "
-                    "confirmation before replay. Open the ImageTool, then reload it."
+                    "This result has no recorded inputs. Reopen or recreate it "
+                    "from reloadable inputs to enable reload."
                 )
+            if self._script_provenance_runnable(spec):
+                for script_input in spec.script_inputs:
+                    reason = self._manager._script_input_unavailable_reason(
+                        script_input,
+                        target_node_uid=node.uid,
+                    )
+                    if reason is not None:
+                        return reason
+                return None
             return (
                 "This data was created from recorded script steps that cannot be "
                 "reloaded automatically from the saved provenance. Reopen or recreate "
@@ -1198,7 +1233,7 @@ class _LineageController:
                     spec,
                     target_node_uid=node.uid,
                 )
-            except _TrustedScriptReplayCancelled:
+            except _TrustedProvenanceReplayCancelled:
                 return False
             except _ScriptRebuildError as exc:
                 erlab.interactive.utils.MessageDialog.critical(

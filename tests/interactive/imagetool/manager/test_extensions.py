@@ -31,6 +31,7 @@ from erlab.interactive.imagetool._load_source import (
     _resolve_load_func,
 )
 from erlab.interactive.imagetool._provenance._execution import (
+    can_reload_with_trusted_code,
     can_reload_without_trust,
     file_load_source_status,
     replay_file_provenance,
@@ -3987,9 +3988,11 @@ def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
         )
         return "ready"
 
-    assert can_reload_without_trust(spec, extension_status_resolver=ready)
+    assert not can_reload_without_trust(spec, extension_status_resolver=ready)
+    assert calls == []
+    assert can_reload_with_trusted_code(spec, extension_status_resolver=ready)
     assert calls == [("lab.py", source_hash, "routine", "normalize")]
-    assert not can_reload_without_trust(
+    assert not can_reload_with_trusted_code(
         spec,
         extension_status_resolver=lambda *_args: "disabled",
     )
@@ -7621,8 +7624,8 @@ def test_workspace_script_remap_updates_node_provenance_owners(
             source_state="stale",
         )
         input_tool = _ExtensionInputTool(xr.DataArray([3.0]))
-        input_tool.set_input_provenance_spec(old_spec)
         tool_uid = manager.add_childtool(input_tool, 0, show=False)
+        input_tool.set_input_provenance_spec(old_spec)
         manager._workspace_state.mark_clean()
 
         manager._extensions._remap_workspace_script(
@@ -8929,9 +8932,19 @@ def test_provenance_edit_records_replay_source_after_replacement(
             "_check_replay_capture",
             lambda _capture: events.append("check"),
         )
+        monkeypatch.setattr(
+            controller,
+            "_provenance_code_entries",
+            lambda *_args, **_kwargs: (),
+        )
+        node = types.SimpleNamespace(
+            displayed_provenance_spec=None,
+            displayed_source_spec=None,
+            parent_uid=None,
+        )
 
         controller._validate_and_replace(
-            typing.cast("typing.Any", object()),
+            typing.cast("typing.Any", node),
             "display",
             full_data(),
         )
@@ -8946,7 +8959,7 @@ def test_provenance_edit_records_replay_source_after_replacement(
         monkeypatch.setattr(controller, "_apply_validated_edit", fail_replacement)
         with pytest.raises(RuntimeError, match="replacement failed"):
             controller._validate_and_replace(
-                typing.cast("typing.Any", object()),
+                typing.cast("typing.Any", node),
                 "display",
                 full_data(),
             )

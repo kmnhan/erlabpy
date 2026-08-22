@@ -1,8 +1,10 @@
+import pathlib
 import warnings
 
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive._options.parameters as option_parameters
 import erlab.interactive._stylesheets
 from erlab.interactive._options.parameters import (
     _STYLESHEET_AVAILABLE_ROLE,
@@ -17,6 +19,8 @@ from erlab.interactive._options.parameters import (
     SavefigDpiWidget,
     StylesheetListParameter,
     StylesheetListWidget,
+    TrustedFoldersParameter,
+    TrustedFoldersWidget,
     _stylesheet_names,
 )
 from erlab.interactive._widgets import _CenteredIconToolButton, _Separator
@@ -279,6 +283,174 @@ def test_directory_path_parameter_item_widget(qtbot) -> None:
     assert isinstance(widget, DirectoryPathWidget)
     assert not item.hideWidget
     assert widget.value() == "~/data"
+
+
+def test_trusted_folders_widget_browse_accepts_and_cancel_keeps_value(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    widget = TrustedFoldersWidget()
+    qtbot.addWidget(widget)
+    responses = iter(("", str(tmp_path)))
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: next(responses),
+    )
+    monkeypatch.setattr(
+        option_parameters,
+        "validate_trusted_location",
+        lambda path: pathlib.Path(path).resolve(),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *_args: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+
+    widget.add_folder()
+    assert widget.get_folders() == []
+
+    with qtbot.waitSignal(widget.sigFoldersChanged, timeout=1000):
+        widget.add_folder()
+    assert widget.get_folders() == [str(tmp_path.resolve())]
+
+
+def test_trusted_folders_widget_requires_confirmation(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    widget = TrustedFoldersWidget()
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        option_parameters,
+        "validate_trusted_location",
+        lambda path: pathlib.Path(path).resolve(),
+    )
+    replies = iter(
+        (
+            QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *_args: next(replies),
+    )
+
+    widget.add_folder()
+    assert widget.get_folders() == []
+
+    widget.add_folder()
+    assert widget.get_folders() == [str(tmp_path.resolve())]
+
+
+def test_trusted_folders_widget_rejects_invalid_folder(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    widget = TrustedFoldersWidget()
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        option_parameters,
+        "validate_trusted_location",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid")),
+    )
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args),
+    )
+
+    widget.add_folder()
+
+    assert widget.get_folders() == []
+    assert len(warnings) == 1
+
+
+def test_trusted_folders_widget_normalizes_and_removes(qtbot) -> None:
+    widget = TrustedFoldersWidget([" first ", "first", "second"])
+    qtbot.addWidget(widget)
+
+    assert widget.get_folders() == ["first", "second"]
+
+    widget.list_widget.setCurrentRow(0)
+    with qtbot.waitSignal(widget.sigFoldersChanged, timeout=1000):
+        widget.remove_selected_folder()
+
+    assert widget.get_folders() == ["second"]
+    assert widget.remove_button.isEnabled()
+
+
+def test_trusted_folders_widget_reset_requires_confirmation(qtbot, monkeypatch) -> None:
+    widget = TrustedFoldersWidget()
+    qtbot.addWidget(widget)
+    replies = iter(
+        (
+            QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *_args: next(replies))
+    resets: list[None] = []
+    monkeypatch.setattr(
+        option_parameters,
+        "reset_saved_code_trust",
+        lambda: resets.append(None),
+    )
+
+    widget.reset_saved_trust()
+    assert resets == []
+
+    widget.reset_saved_trust()
+    assert resets == [None]
+
+
+def test_trusted_folders_widget_reports_signature_reset_failure(
+    qtbot, monkeypatch
+) -> None:
+    widget = TrustedFoldersWidget()
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        option_parameters,
+        "reset_saved_code_trust",
+        lambda: (_ for _ in ()).throw(RuntimeError("failed")),
+    )
+    warning_parents: list[QtWidgets.QWidget] = []
+
+    def record_warning(parent, _title, _text):
+        warning_parents.append(parent)
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", record_warning)
+
+    widget.reset_saved_trust()
+
+    assert warning_parents == [widget]
+
+
+def test_trusted_folders_parameter_item_widget(qtbot) -> None:
+    param = TrustedFoldersParameter(name="folders", value=["~/workspaces"])
+    item = param.makeTreeItem(0)
+    widget = item.widget
+    qtbot.addWidget(widget)
+
+    assert isinstance(widget, TrustedFoldersWidget)
+    assert not item.hideWidget
+    assert widget.value() == ["~/workspaces"]
 
 
 def test_style_library_paths_falls_back_to_matplotlib_core(monkeypatch) -> None:

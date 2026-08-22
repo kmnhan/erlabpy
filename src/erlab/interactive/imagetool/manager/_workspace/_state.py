@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass
 
 from erlab.extensions._models import _script_name_key
+from erlab.interactive._code_trust import new_document_trust
 from erlab.interactive.imagetool.manager._workspace._format import (
     _current_workspace_schema_version,
     _WorkspaceEmbeddedScriptEntry,
@@ -28,6 +29,7 @@ if typing.TYPE_CHECKING:
 
     from qtpy import QtCore
 
+    from erlab.interactive._code_trust._api import _DocumentTrust
     from erlab.interactive.imagetool.manager._extensions._models import (
         _WorkspaceScriptRequirement,
     )
@@ -321,6 +323,7 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     save_as_only: bool
     degraded_reasons: tuple[str, ...]
     extension_scripts: _WorkspaceScriptState
+    code_trust: _DocumentTrust
 
 
 class _ManagerWorkspaceState:
@@ -348,6 +351,7 @@ class _ManagerWorkspaceState:
         self.dirty_events: list[_WorkspaceDirtyEvent] = []
         self.save_in_progress: bool = False
         self.schema_version: int = _current_workspace_schema_version()
+        self.code_trust = new_document_trust()
         self.lock: QtCore.QLockFile | None = None
         self.closing_document: bool = False
         self.save_as_only: bool = False
@@ -496,6 +500,7 @@ class _ManagerWorkspaceState:
             "save_as_only": self.save_as_only,
             "degraded_reasons": self.degraded_reasons,
             "extension_scripts": self.extension_scripts.copy(),
+            "code_trust": self.code_trust,
         }
 
     def restore(self, snapshot: _WorkspaceStateSnapshot) -> set[str]:
@@ -520,4 +525,5 @@ class _ManagerWorkspaceState:
         self.save_as_only = snapshot["save_as_only"]
         self.degraded_reasons = snapshot["degraded_reasons"]
         self.extension_scripts.replace(snapshot["extension_scripts"])
+        self.code_trust = snapshot["code_trust"]
         return self.dirty_added | self.dirty_data | self.dirty_state

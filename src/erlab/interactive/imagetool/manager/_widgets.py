@@ -71,8 +71,8 @@ class _ScriptRebuildError(RuntimeError):
         self.details = details
 
 
-class _TrustedScriptReplayCancelled(RuntimeError):
-    """Raised when the user declines to execute trusted replay code."""
+class _TrustedProvenanceReplayCancelled(RuntimeError):
+    """Raised when document trust blocks recorded Python code."""
 
 
 def _manager_settings() -> QtCore.QSettings:
@@ -813,6 +813,8 @@ def _workspace_file_manager_action_text() -> str:
 class _WorkspacePropertiesState:
     is_modified: bool
     top_level_window_count: int
+    code_trust_text: str = "Trusted local document"
+    code_trust_review_available: bool = False
 
 
 def _workspace_file_type_text(path: pathlib.Path | None) -> str:
@@ -857,6 +859,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         workspace_path: str | os.PathLike[str] | None,
         *,
         state: _WorkspacePropertiesState,
+        review_code_callback: Callable[[], None] | None = None,
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -876,6 +879,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         self.value_labels: dict[str, QtWidgets.QLabel] = {}
         self.copy_path_button: QtWidgets.QAbstractButton | None = None
         self.reveal_button: QtWidgets.QAbstractButton | None = None
+        self.review_code_button: QtWidgets.QAbstractButton | None = None
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -984,6 +988,13 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         row = self._add_detail(
             details_layout,
             row,
+            "code_trust",
+            "Stored code",
+            state.code_trust_text,
+        )
+        row = self._add_detail(
+            details_layout,
+            row,
             "unsaved_changes",
             "Unsaved changes",
             "Yes" if state.is_modified else "No",
@@ -997,6 +1008,19 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         )
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
+        if state.code_trust_review_available and review_code_callback is not None:
+            self.review_code_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    "Review and Trust…",
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
+            )
+            self.review_code_button.setObjectName(
+                "manager_workspace_review_code_button"
+            )
+            self.review_code_button.clicked.connect(self.accept)
+            self.review_code_button.clicked.connect(review_code_callback)
         if self._workspace_path is not None:
             self.copy_path_button = typing.cast(
                 "QtWidgets.QAbstractButton",

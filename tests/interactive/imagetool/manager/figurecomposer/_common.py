@@ -285,7 +285,6 @@ def _custom_order_step(label: str) -> FigureOperationState:
     return FigureOperationState.custom(
         label=label,
         code=f"fig.__dict__['_order'] = fig.__dict__.get('_order', []) + [{label!r}]",
-        trusted=True,
     )
 
 

@@ -43,6 +43,8 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+from erlab.interactive.imagetool._provenance import _model as provenance_model
+from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
 from erlab.interactive.imagetool._provenance._execution import replay_file_provenance
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -851,6 +853,24 @@ def test_acquisition_context_values_are_serialization_stable() -> None:
     assert not AcquisitionContextState(enabled=True).enabled
     with pytest.raises(ValueError, match="unique by kind"):
         AcquisitionContextState(fields=(field, field))
+
+
+def test_acquisition_context_rejects_opaque_fit_results_without_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_decode(_value: typing.Any) -> typing.NoReturn:
+        raise AssertionError("acquisition context decoded an opaque fit result")
+
+    monkeypatch.setattr(provenance_model, "_decode_fit_dataset", reject_decode)
+
+    with pytest.raises(ValueError, match="requires code authorization"):
+        AcquisitionContextField.model_validate(
+            {
+                "kind": "attribute",
+                "name": "payload",
+                "value": {_FIT_DATASET_MARKER: "serialized-result"},
+            }
+        )
 
 
 def test_acquisition_context_field_dialog_validates_and_restores(
@@ -5173,6 +5193,26 @@ def test_workspace_properties_dialog_without_associated_file(qtbot) -> None:
     )
     dialog._copy_path()
     dialog._reveal_path()
+
+
+def test_workspace_properties_dialog_offers_code_review(qtbot) -> None:
+    reviews: list[None] = []
+    dialog = _WorkspacePropertiesDialog(
+        None,
+        state=_WorkspacePropertiesState(
+            is_modified=False,
+            top_level_window_count=0,
+            code_trust_review_available=True,
+        ),
+        review_code_callback=lambda: reviews.append(None),
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.review_code_button is not None
+    dialog.review_code_button.click()
+
+    assert reviews == [None]
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
 
 
 def test_workspace_properties_dialog_file_detail_branches(

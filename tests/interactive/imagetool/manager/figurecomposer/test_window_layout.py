@@ -1834,7 +1834,6 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     custom_operation = FigureOperationState.custom(
         label="custom",
         code="pass",
-        trusted=True,
     )
     tool.add_operation(custom_operation)
     tool._target_current_operation_all_axes()
@@ -2122,9 +2121,7 @@ def test_figure_composer_axes_selection_guards_recipe_updates(
     assert len(render_calls) == 1
     qtbot.waitUntil(lambda: len(render_calls) == 2, timeout=1000)
 
-    tool.add_operation(
-        FigureOperationState.custom(label="code", code="pass", trusted=True)
-    )
+    tool.add_operation(FigureOperationState.custom(label="code", code="pass"))
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(1)
     )
@@ -2388,9 +2385,7 @@ def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
     assert tool._preview_render_update_pending
     qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
 
-    tool.add_operation(
-        FigureOperationState.custom(label="code", code="pass", trusted=True)
-    )
+    tool.add_operation(FigureOperationState.custom(label="code", code="pass"))
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(1)
     )
@@ -2762,7 +2757,6 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     operation = FigureOperationState.custom(
         label="custom",
         code="raise RuntimeError('boom')",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -3778,7 +3772,7 @@ def test_figure_composer_operation_table_presents_targets_and_selects_rows(
                     sources=("data",),
                     axes=FigureAxesSelectionState(expression="axs[:, 0]"),
                 ),
-                FigureOperationState.custom(label="custom", code="pass", trusted=True),
+                FigureOperationState.custom(label="custom", code="pass"),
             ),
             primary_source="data",
         ),
@@ -4454,7 +4448,6 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
                         "fig.__dict__['_order'] = "
                         "fig.__dict__.get('_order', []) + ['first']"
                     ),
-                    trusted=True,
                 ),
                 FigureOperationState.custom(
                     label="second",
@@ -4462,7 +4455,6 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
                         "fig.__dict__['_order'] = "
                         "fig.__dict__.get('_order', []) + ['second']"
                     ),
-                    trusted=True,
                 ),
                 FigureOperationState.custom(
                     label="third",
@@ -4470,7 +4462,6 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
                         "fig.__dict__['_order'] = "
                         "fig.__dict__.get('_order', []) + ['third']"
                     ),
-                    trusted=True,
                 ),
             ),
             primary_source="data",
@@ -4579,7 +4570,6 @@ def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> N
             code=(
                 f"fig.__dict__['_order'] = fig.__dict__.get('_order', []) + [{label!r}]"
             ),
-            trusted=True,
         )
 
     tool = FigureComposerTool(
