@@ -5,30 +5,35 @@ ranges, follow a path through momentum space, or compare several slices.
 
 (how-to-python-mask-polygon)=
 
-## Polygon masking
+## Masking to the first Brillouin zone
 
-Define the polygon vertices in the coordinate order given by `dims`, then apply
+Use the first Brillouin zone as a polygon when a repeated-zone constant energy surface
+must be restricted to one reciprocal unit cell. Construct the real-space basis, obtain
+the ordered zone vertices, then apply
 {func}`mask_with_polygon <erlab.analysis.mask.mask_with_polygon>`:
 
 ```python
 import numpy as np
 
+import erlab
 import erlab.analysis as era
 
 constant_energy_map = data.qsel(eV=-0.2, eV_width=0.02)
-vertices = np.array(
+lattice_constant = 6.97
+real_space_basis = lattice_constant * np.array(
     [
-        [-0.60, -0.15],
-        [-0.25, -0.55],
-        [0.25, -0.55],
-        [0.60, 0.15],
-        [0.25, 0.55],
-        [-0.25, 0.55],
+        [1.0, 0.0],
+        [-0.5, np.sqrt(3) / 2],
     ]
+)
+first_bz_vertices = erlab.lattice.get_2d_vertices(
+    real_space_basis,
+    reciprocal=False,
+    rotate=30.0,
 )
 masked_map = era.mask.mask_with_polygon(
     constant_energy_map,
-    vertices,
+    first_bz_vertices,
     dims=("kx", "ky"),
 )
 ```
@@ -36,12 +41,13 @@ masked_map = era.mask.mask_with_polygon(
 ```{eval-rst}
 .. plot:: how_to/inspection_and_selection.py mask_momentum_region
    :include-source: false
-   :alt: Constant energy map with a polygon boundary beside the map masked to that polygon
+   :alt: Repeated-zone constant energy surface with the first Brillouin-zone boundary beside the intensity retained inside that zone
 ```
 
-Points outside the polygon become missing values. Use `invert=True` to mask the region
-inside the polygon. Use `drop=True` to remove coordinate labels for rows and columns
-that contain no retained values.
+The 30° rotation aligns the Γ–M direction with $k_x$ for this model. Points outside the
+first Brillouin zone become missing values. Use `invert=True` to mask the zone instead.
+Use `drop=True` to remove coordinate labels for rows and columns that contain no
+retained values.
 
 (how-to-python-select-average-data)=
 
