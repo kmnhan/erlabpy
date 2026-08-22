@@ -1,7 +1,10 @@
 import pathlib
+import shutil
 import typing
+import warnings
 from collections.abc import Callable
 
+import pytest
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -15,6 +18,7 @@ from erlab.interactive.explorer._base_explorer import (
     _FileSystem,
     _ReprFetcher,
 )
+from erlab.interactive.explorer._loaders import BUILTIN_EXPLORER_LOADERS
 from erlab.interactive.explorer._tabbed_explorer import (
     DataExplorerState,
     _TabbedExplorer,
@@ -435,6 +439,37 @@ def test_explorer_general(
         explorer.close()
 
 
+@pytest.mark.parametrize(
+    ("recent_filter", "loader_name"),
+    [
+        ("xarray HDF5 Files (*.h5)", "builtin:xarray-hdf5"),
+        (
+            "Igor Packed Experiment Templates (*.pxt)",
+            "builtin:igor-packed-experiment",
+        ),
+    ],
+)
+def test_manager_recent_builtin_filter_selects_explorer_loader(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    recent_filter: str,
+    loader_name: str,
+) -> None:
+    with manager_context() as manager:
+        manager._recent_directory = str(tmp_path)
+        manager._recent_name_filter = recent_filter
+
+        explorer = manager._create_explorer_window()
+        qtbot.addWidget(explorer)
+
+        assert isinstance(explorer, _TabbedExplorer)
+        assert explorer.current_explorer is not None
+        assert explorer.current_explorer.loader_name == loader_name
+
+
 def test_explorer_loader_extensions_apply_only_to_manager_loads(
     qtbot,
     monkeypatch,
@@ -501,6 +536,35 @@ def test_explorer_loader_extensions_apply_only_to_manager_loads(
             },
         }
     ]
+
+
+def test_explorer_builtin_loader_sends_stable_id_to_manager(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    loader_name = "builtin:xarray-hdf5"
+    file_path = tmp_path / "data.h5"
+    explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
+    qtbot.addWidget(explorer)
+    explorer._loader_kwargs_by_name[loader_name] = {"decode_times": False}
+    load_calls: list[tuple[list[pathlib.Path], str | None, dict[str, object]]] = []
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "is_running",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "load_in_manager",
+        lambda files, loader_name=None, **kwargs: load_calls.append(
+            (list(files), loader_name, kwargs)
+        ),
+    )
+
+    explorer.to_manager(files=[file_path])
+
+    assert load_calls == [([file_path], loader_name, {"decode_times": False})]
 
 
 def test_explorer_loader_refresh_keeps_selection_atomic(
@@ -581,6 +645,149 @@ def test_repr_fetcher_keeps_coordinate_values_without_preview(
     assert "0 : 0.5 : 1.5" in text
     assert "float64 [3]" not in text
     assert "float64 [4]" not in text
+
+
+def test_builtin_explorer_loader_uses_open_dataarray_without_preview(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(
+        [[1.0, 2.0], [3.0, 4.0]],
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [2.0, 3.0]},
+    )
+    closed: list[None] = []
+    data.set_close(lambda: closed.append(None))
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def _open_dataarray(path, **kwargs):
+        calls.append((path, kwargs))
+        return data
+
+    monkeypatch.setattr(xr, "open_dataarray", _open_dataarray)
+    fetched: list[object] = []
+    loader = BUILTIN_EXPLORER_LOADERS["builtin:xarray-hdf5"]
+    worker = _ReprFetcher(tmp_path / "data.h5", loader.load, include_values=False)
+    worker.signals.fetched.connect(
+        lambda _path, _text, preview_data: fetched.append(preview_data)
+    )
+
+    worker.run()
+
+    assert calls == [(str(tmp_path / "data.h5"), {"engine": "h5netcdf"})]
+    assert fetched == [None]
+    assert closed == [None]
+
+
+@pytest.mark.parametrize(
+    ("loader_name", "suffix"),
+    [
+        ("builtin:xarray-hdf5", ".h5"),
+        ("builtin:xarray-netcdf", ".nc"),
+        ("builtin:xarray-zarr", ".zarr"),
+        ("builtin:igor-binary-wave", ".ibw"),
+    ],
+)
+def test_explorer_builtin_dataarray_preview(
+    qtbot,
+    tmp_path: pathlib.Path,
+    loader_name: str,
+    suffix: str,
+) -> None:
+    data = xr.DataArray(
+        [[1.0, 2.0], [3.0, 4.0]],
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [2.0, 3.0]},
+        name="preview",
+    )
+    path = tmp_path / f"preview{suffix}"
+    if suffix == ".ibw":
+        erlab.io.igor.save_wave(data, path)
+    elif suffix == ".zarr":
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Consolidated metadata is currently not part.*",
+                category=UserWarning,
+            )
+            data.to_zarr(path)
+    else:
+        data.to_netcdf(path, engine="h5netcdf")
+
+    loader = BUILTIN_EXPLORER_LOADERS[loader_name]
+    expected = loader.spec.load_func(path, **loader.spec.default_kwargs)
+    explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
+    qtbot.addWidget(explorer)
+    assert explorer.loader_name == loader_name
+    loader_model = explorer._loader_combo.model()
+    loader_row = loader_model.row_for_loader_name(loader_name)
+    assert loader_row is not None
+    loader_index = loader_model.index(loader_row, 0)
+    assert loader_index.data() == loader.display_name
+    assert loader_index.data(QtCore.Qt.ItemDataRole.UserRole) == loader_name
+    assert loader_model.index(loader_row, 1).data() == loader.description
+
+    explorer._preview_check.setChecked(True)
+    index = explorer._model_index_for_path(path)
+    explorer._tree_view.selectionModel().select(
+        index,
+        QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+        | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+    qtbot.wait_until(lambda: explorer._preview._data is not None)
+    xr.testing.assert_allclose(explorer._preview._data, expected)
+    assert explorer.workspace_state_payload()["loader_name"] == loader_name
+
+
+def test_explorer_builtin_pxt_preview(qtbot, tmp_path: pathlib.Path) -> None:
+    source_path = pathlib.Path(__file__).parents[1] / "io/test_igor/exp0.pxt"
+    path = tmp_path / "preview.pxt"
+    shutil.copyfile(source_path, path)
+    loader_name = "builtin:igor-packed-experiment"
+    expected = xr.load_dataarray(path, engine="erlab-igor")
+    explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
+    qtbot.addWidget(explorer)
+
+    explorer._preview_check.setChecked(True)
+    index = explorer._model_index_for_path(path)
+    explorer._tree_view.selectionModel().select(
+        index,
+        QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+        | QtCore.QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+    qtbot.wait_until(lambda: explorer._preview._data is not None)
+    xr.testing.assert_allclose(explorer._preview._data, expected)
+
+
+def test_explorer_loader_popup_groups_general_files_before_plugins(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=tmp_path)
+    qtbot.addWidget(explorer)
+    model = explorer._loader_combo.model()
+    view = explorer._loader_combo.view()
+    group_rows = model.group_rows()
+
+    assert len(group_rows) == 2
+    assert group_rows[0] == 0
+    assert all(
+        model.flags(model.index(row, 0)) == QtCore.Qt.ItemFlag.NoItemFlags
+        for row in group_rows
+    )
+    assert (
+        model.data(model.index(group_rows[0], 0), QtCore.Qt.ItemDataRole.UserRole)
+        is None
+    )
+    assert all(view.columnSpan(row, 0) == model.columnCount() for row in group_rows)
+    general_file_rows = [
+        model.row_for_loader_name(loader_name)
+        for loader_name in BUILTIN_EXPLORER_LOADERS
+    ]
+    assert all(row is not None and row < group_rows[1] for row in general_file_rows)
+    assert explorer.loader_name in BUILTIN_EXPLORER_LOADERS
 
 
 def test_repr_fetcher_aborted_before_run_skips_loader(
@@ -952,6 +1159,29 @@ def test_explorer_extension_loader_matches_uppercase_compound_suffix(
 
     assert matching_index.isValid()
     assert unsupported_index.isValid()
+    assert explorer._fs_model.flags(matching_index) & QtCore.Qt.ItemFlag.ItemIsEnabled
+    assert not (
+        explorer._fs_model.flags(unsupported_index) & QtCore.Qt.ItemFlag.ItemIsEnabled
+    )
+
+
+def test_explorer_builtin_loader_filters_files_by_extension(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    matching_path = tmp_path / "values.H5"
+    unsupported_path = tmp_path / "values.txt"
+    matching_path.touch()
+    unsupported_path.touch()
+    explorer = _DataExplorer(
+        root_path=tmp_path,
+        loader_name="builtin:xarray-hdf5",
+    )
+    qtbot.addWidget(explorer)
+
+    matching_index = explorer._model_index_for_path(matching_path)
+    unsupported_index = explorer._model_index_for_path(unsupported_path)
+
     assert explorer._fs_model.flags(matching_index) & QtCore.Qt.ItemFlag.ItemIsEnabled
     assert not (
         explorer._fs_model.flags(unsupported_index) & QtCore.Qt.ItemFlag.ItemIsEnabled
@@ -1357,6 +1587,69 @@ def test_explorer_loader_options_dialog_updates_kwargs(
     }
 
 
+def test_explorer_builtin_loader_options_store_only_overrides(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    loader_name = "builtin:xarray-hdf5"
+    loader = BUILTIN_EXPLORER_LOADERS[loader_name]
+    explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
+    qtbot.addWidget(explorer)
+    explorer._loader_kwargs_by_name[loader_name] = {"decode_times": True}
+    explorer._loader_extensions_by_name[loader_name] = {"stale": {}}
+    exec_results = [False, True]
+    loader_state_changes: list[tuple[object, object]] = []
+    workspace_state_changes: list[None] = []
+    explorer.sigLoaderStateChanged.connect(
+        lambda kwargs, extensions: loader_state_changes.append((kwargs, extensions))
+    )
+    explorer.sigStateChanged.connect(lambda: workspace_state_changes.append(None))
+
+    class _FakeNameFilterDialog:
+        def __init__(
+            self, parent, valid_loaders, *, loader_extensions=None, sample_paths=None
+        ) -> None:
+            assert parent is explorer
+            assert valid_loaders == {
+                loader.spec.name_filter: (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf", "decode_times": True},
+                )
+            }
+            assert loader_extensions is None
+            assert list(sample_paths or ()) == []
+
+        def check_filter(self, name_filter: str | None) -> None:
+            assert name_filter == loader.spec.name_filter
+
+        def exec(self) -> bool:
+            return exec_results.pop(0)
+
+        def checked_filter(self):
+            return (
+                loader.spec.name_filter,
+                xr.load_dataarray,
+                {"engine": "h5netcdf", "decode_times": False},
+            )
+
+    monkeypatch.setattr(_dialogs, "_NameFilterDialog", _FakeNameFilterDialog)
+
+    explorer._open_loader_options()
+
+    assert explorer.loader_kwargs_by_name()[loader_name] == {"decode_times": True}
+    assert explorer.loader_extensions_by_name()[loader_name] == {"stale": {}}
+    assert loader_state_changes == []
+    assert workspace_state_changes == []
+
+    explorer._open_loader_options()
+
+    assert explorer.loader_kwargs_by_name()[loader_name] == {"decode_times": False}
+    assert explorer.loader_extensions_by_name()[loader_name] == {}
+    assert len(loader_state_changes) == 1
+    assert len(workspace_state_changes) == 1
+
+
 def test_explorer_extension_loader_options_dialog_uses_saved_values(
     qtbot,
     monkeypatch,
@@ -1386,7 +1679,7 @@ def test_explorer_extension_loader_options_dialog_uses_saved_values(
         (),
         {"descriptor": descriptor, "uses_standard_loader_options": False},
     )()
-    monkeypatch.setattr(explorer, "_loader", lambda _name: loader)
+    explorer._external_loaders["example"] = loader
 
     exec_results = [False, True]
 

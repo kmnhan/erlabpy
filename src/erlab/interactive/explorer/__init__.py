@@ -46,8 +46,8 @@ def data_explorer(
     directory
         Initial directory to display in the explorer.
     loader_name
-        Name of the loader to use to load the data. The loader must be registered in
-        :attr:`erlab.io.loaders`.
+        Stable name of the loader to use. This can identify a registered loader or a
+        built-in Data Explorer loader.
     """
     with erlab.interactive.utils.setup_qapp(execute):
         win = _TabbedExplorer(root_path=directory, loader_name=loader_name)

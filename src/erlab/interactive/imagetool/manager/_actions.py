@@ -13,6 +13,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.slicer
+from erlab.interactive._file_loaders import builtin_file_loader_for_id
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
@@ -1091,6 +1092,20 @@ class _ActionsController:
         """Load data from the given files using the specified loader."""
         if loader_name == "ask":
             self._manager._handle_dropped_files([pathlib.Path(p) for p in paths])
+            return
+
+        builtin_loader = builtin_file_loader_for_id(loader_name)
+        if builtin_loader is not None:
+            self._manager._data_ingress.add_from_multiple_files(
+                [],
+                [pathlib.Path(p) for p in paths],
+                [],
+                func=builtin_loader.load_func,
+                kwargs=dict(builtin_loader.default_kwargs) | kwargs,
+                retry_callback=lambda _: self._manager._data_load(
+                    paths, loader_name, kwargs
+                ),
+            )
             return
 
         extension_loader = self._manager._extensions.loader_by_name(loader_name)

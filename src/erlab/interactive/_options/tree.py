@@ -49,14 +49,7 @@ def _build_leaf_param(
 
     if "enum" in schema:
         param_type = "list"
-        choices = extras.get("ui_choices") if isinstance(extras, dict) else None
-        if isinstance(choices, list):
-            opts["limits"] = {
-                str(choice.get("label", choice.get("value"))): choice.get("value")
-                for choice in choices
-            }
-        else:
-            opts["limits"] = schema["enum"]
+        opts["limits"] = schema["enum"]
     else:
         stype = schema.get("type")
         if ui_type:
@@ -81,6 +74,12 @@ def _build_leaf_param(
                     param_type = "str"
 
     if isinstance(extras, dict):
+        choices = extras.get("ui_choices")
+        if param_type == "list" and isinstance(choices, list):
+            opts["limits"] = {
+                str(choice.get("label", choice.get("value"))): choice.get("value")
+                for choice in choices
+            }
         for k, v in extras.items():
             if k.startswith("ui_") and k not in {"ui_type", "ui_choices"}:
                 opts[k.removeprefix("ui_")] = v

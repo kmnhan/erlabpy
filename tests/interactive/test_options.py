@@ -7,6 +7,7 @@ import pytest
 from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._options.ui as options_ui
+from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
 from erlab.interactive._options import OptionDialog, options
 from erlab.interactive._options.core import (
     OptionManager,
@@ -369,6 +370,18 @@ def test_user_edit_saves_immediately(dialog: OptionDialog):
 
     assert options.model.colors.cmap.name == "bwr"
     assert dialog.modified
+
+
+def test_default_loader_control_includes_builtin_loader_ids(
+    dialog: OptionDialog,
+) -> None:
+    combo = typing.cast(
+        "QtWidgets.QComboBox",
+        _control(dialog, "user", "io/default_loader", QtWidgets.QComboBox),
+    )
+
+    for spec in BUILTIN_FILE_LOADER_SPECS:
+        assert combo.findData(spec.id) >= 0
 
 
 def test_session_revert_restores_user_baseline(dialog: OptionDialog):
@@ -1185,6 +1198,16 @@ def test_options_get_set():
 def test_recent_workspace_limit_validates_bounds(value: int) -> None:
     with pytest.raises(pydantic.ValidationError):
         IOOptions(recent_workspace_limit=value)
+
+
+@pytest.mark.parametrize("loader", BUILTIN_FILE_LOADER_SPECS)
+def test_default_loader_accepts_builtin_loader(loader) -> None:
+    assert IOOptions(default_loader=loader.id).default_loader == loader.id
+
+
+def test_default_loader_rejects_unknown_loader() -> None:
+    with pytest.raises(pydantic.ValidationError):
+        IOOptions(default_loader="missing")
 
 
 @pytest.mark.parametrize(
