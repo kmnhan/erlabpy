@@ -27,6 +27,7 @@ loader.
    pal4a1
    snu1
    ssrl52
+   tps39a
 
 """
 

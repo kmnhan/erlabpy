@@ -116,6 +116,7 @@ docs = [
   "sphinx-qt-documentation>=0.4.1",
   "sphinxcontrib-bibtex>=2.6.3",
   "sphinxcontrib-googleanalytics>=0.4",
+  "sphinxcontrib-mermaid>=2.1.0",
   "sphinxext-rediraffe>=0.3.0",
 ]
 pyinstaller = [

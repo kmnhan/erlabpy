@@ -3,8 +3,31 @@ Everything related to plotting.
 
 .. currentmodule:: erlab.plotting
 
-For some examples on how to use the plotting functions, see the :doc:`User Guide
-<user-guide/plotting>`.
+The :doc:`Python workflow tutorial </tutorials/python/index>` introduces basic plotting.
+For figure preparation tasks, see the :doc:`Plotting How-to guides
+</how-to/plotting/index>`.
+
+.. rubric:: Bundled Matplotlib styles
+
+Importing :mod:`erlab.plotting` registers these public style sheets with Matplotlib:
+
+``erlab.general``
+    General ERLab figure dimensions, line widths, tick settings, and font sizes.
+``erlab.nature``
+    Compact figure dimensions and line weights for Nature-style figures.
+``erlab.arial``
+    Arial text and MathText. Install Arial for the requested typeface.
+``erlab.helvetica``
+    Helvetica text and MathText. Install Helvetica for the requested typeface.
+``erlab.times``
+    Times text with STIX MathText. Install Times New Roman or Times for the requested
+    typeface.
+``erlab.stixsans-fallback``
+    STIX Sans fallback glyphs for MathText.
+
+Combine the general, output, and font styles in a Matplotlib style context. For example,
+use ``["erlab.general", "erlab.nature", "erlab.arial"]``. Matplotlib uses the next
+available fallback font when a requested font is not installed.
 
 .. rubric:: Modules
 

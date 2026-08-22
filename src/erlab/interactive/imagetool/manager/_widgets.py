@@ -1698,7 +1698,7 @@ class _WidgetsController:
             webbrowser.open("https://github.com/kmnhan/erlabpy/releases")
         elif clicked_button == documentation_btn:
             webbrowser.open(
-                "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
+                "https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html"
             )
 
     def open_log_directory(self) -> None:

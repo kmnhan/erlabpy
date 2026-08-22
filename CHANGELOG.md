@@ -140,7 +140,7 @@
 
 - **io:** fill metadata from spreadsheets (#474) ([a5d96a2](https://github.com/kmnhan/erlabpy/commit/a5d96a2bb013fe3089b12f702e417bbf21c724dc))
 
-  Adds a way to load metadata from spreadsheets (Excel or Google Sheets) into data coordinates and attributes when loading data. This is useful for endstations that do not provide sufficient metadata in the raw data files. The behavior can be set up using the new `metadata` argument to `erlab.io.load`, or interactively in ImageTool Manager. See the [user guide](https://erlabpy.readthedocs.io/en/stable/user-guide/io.html#filling-metadata-from-a-spreadsheet) for more information.
+  Adds a way to load metadata from spreadsheets (Excel or Google Sheets) into data coordinates and attributes when loading data. This is useful for endstations that do not provide sufficient metadata in the raw data files. The behavior can be set up using the new `metadata` argument to `erlab.io.load`, or interactively in ImageTool Manager. See the [How-to guide](https://erlabpy.readthedocs.io/en/stable/how-to/python/loading-and-saving.html#io-spreadsheet-metadata) for more information.
 
 - **manager:** add provenance reordering (#470) ([1ef894e](https://github.com/kmnhan/erlabpy/commit/1ef894ef01056c5cac0eac640846d1bbb43c5732))
 
@@ -278,7 +278,7 @@
 
   Add a new interface named Figure Composer for building reproducible publication-quality Matplotlib figures without leaving the GUI. Users can create new figures from ImageTool panels or the manager list. The figures are also saved to the workspace file and can be reloaded in future sessions.
 
-  See the [Figure Composer guide](https://erlabpy.readthedocs.io/en/latest/user-guide/interactive/figure-composer.html) for details on how to use it.
+  See the [Figure Composer reference](https://erlabpy.readthedocs.io/en/latest/reference/gui/figure-composer.html) for details about the application.
 
 - **manager:** add batch operations (#387) ([7256cf5](https://github.com/kmnhan/erlabpy/commit/7256cf5847cb1d07e726b5a35f0268ede260dddb))
 

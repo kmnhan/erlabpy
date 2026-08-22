@@ -180,7 +180,8 @@ class KspaceInputCoordinatesDialog(QtWidgets.QDialog):
     """Small editor dialog for momentum-conversion input coordinates."""
 
     _ANGLE_CONVENTION_URL = (
-        "https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html#nomenclature"
+        "https://erlabpy.readthedocs.io/en/stable/"
+        "reference/data-conventions.html#nomenclature"
     )
 
     def __init__(

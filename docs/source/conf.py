@@ -54,6 +54,7 @@ extensions = [
     "matplotlib.sphinxext.figmpl_directive",
     "matplotlib.sphinxext.roles",
     "sphinxcontrib.bibtex",
+    "sphinxcontrib.mermaid",
     "sphinx_qt_documentation",
     "myst_nb",
     "notfound.extension",
@@ -61,7 +62,42 @@ extensions = [
     "sphinx_llm.txt",
 ]
 llms_txt_build_parallel = False
-myst_enable_extensions = ["colon_fence", "dollarmath"]
+myst_enable_extensions = ["colon_fence", "dollarmath", "substitution"]
+
+mermaid_light_theme = "neutral"
+mermaid_dark_theme = "dark"
+mermaid_height = "auto"
+mermaid_fullscreen = False
+mermaid_init_config = {
+    "startOnLoad": False,
+    "fontFamily": "Arial, Helvetica, sans-serif",
+    "htmlLabels": True,
+    "flowchart": {
+        "curve": "basis",
+        "nodeSpacing": 28,
+        "rankSpacing": 30,
+        "padding": 8,
+    },
+}
+
+
+def _available_loader_table() -> str:
+    import erlab
+
+    return "\n".join(
+        [
+            "| Loader | Description | Loader class |",
+            "| --- | --- | --- |",
+            *(
+                f"| `{name}` | {loader.description.replace('|', '&#124;')} | "
+                f"{{class}}`{type(loader).__module__}.{type(loader).__qualname__}` |"
+                for name, loader in erlab.io.loaders.items()
+            ),
+        ]
+    )
+
+
+myst_substitutions = {"available_loader_table": _available_loader_table()}
 suppress_warnings = [
     "mystnb.unknown_mime_type",  # holoviews rendering
 ]
@@ -84,7 +120,7 @@ if os.getenv("READTHEDOCS"):
     html_baseurl = "https://erlabpy.readthedocs.io/en/stable/"  # Canonical URL
 
 templates_path = ["_templates", sphinx_autosummary_accessors.templates_path]
-exclude_patterns = []
+exclude_patterns = ["_includes/**"]
 
 default_role = "obj"
 
@@ -306,7 +342,7 @@ intersphinx_mapping = {
 
 # -- Plot configuration ------------------------------------------------------
 
-plot_formats = ["pdf"]
+plot_formats = ["svg", "pdf"]
 plot_basedir = "pyplots"
 plot_html_show_formats = False
 
@@ -644,5 +680,74 @@ latex_elements = {
 # -- Rediraffe settings ------------------------------------------------------
 # https://sphinxext-rediraffe.readthedocs.io/en/latest/
 rediraffe_redirects = {
-    "user-guide/imagetool.md": "user-guide/interactive/imagetool.md",
+    "how-to/python/plotting.md": "how-to/plotting/index.md",
+    "how-to/python/plotting/index.md": "how-to/plotting/index.md",
+    "how-to/python/plotting/annotations.md": "how-to/plotting/annotations.md",
+    "how-to/python/plotting/axis-units.md": "how-to/plotting/axis-units.md",
+    "how-to/python/plotting/brillouin-zone-overlays.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/python/plotting/brillouin-zones.md": ("how-to/plotting/brillouin-zones.md"),
+    "how-to/python/plotting/colorbars.md": "how-to/plotting/colorbars.md",
+    "how-to/python/plotting/core-levels.md": "how-to/plotting/core-levels.md",
+    "how-to/python/plotting/equation-svg.md": "how-to/python/equation-svg.md",
+    "how-to/python/plotting/figure-styles.md": "how-to/plotting/figure-styles.md",
+    "how-to/python/plotting/maps-and-cuts.md": "how-to/plotting/maps-and-cuts.md",
+    "how-to/python/plotting/out-of-plane-brillouin-zones.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/python/plotting/titles-and-labels.md": (
+        "how-to/plotting/titles-and-labels.md"
+    ),
+    "how-to/python/plotting/two-dimensional-colormaps.md": (
+        "how-to/plotting/two-dimensional-colormaps.md"
+    ),
+    "how-to/plotting/brillouin-zone-overlays.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/plotting/out-of-plane-brillouin-zones.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "reference/data-conventions.md": "explanation/data-conventions.md",
+    "explanation/data-model.md": "explanation/data-conventions.md",
+    "explanation/coordinate-selection-and-interpolation.md": (
+        "tutorials/python/index.ipynb"
+    ),
+    "explanation/visualizing-multidimensional-arpes-data.md": (
+        "tutorials/python/index.ipynb"
+    ),
+    "explanation/effects-of-transformations-and-filtering.md": (
+        "how-to/python/transformations-and-filtering.md"
+    ),
+    "explanation/gui-workflow.md": "explanation/python-and-gui-workflows.md",
+    "user-guide/index.md": "getting-started.md",
+    "user-guide/io.ipynb": "how-to/python/loading-and-saving.md",
+    "user-guide/indexing.ipynb": "how-to/python/inspection-and-selection.md",
+    "user-guide/plotting.ipynb": "how-to/plotting/index.md",
+    "user-guide/kconv.ipynb": "how-to/python/momentum-conversion.md",
+    "user-guide/curve-fitting.ipynb": "how-to/python/curve-fitting.md",
+    "user-guide/transform.ipynb": "how-to/python/transformations-and-filtering.md",
+    "user-guide/filtering.ipynb": "how-to/python/transformations-and-filtering.md",
+    "tutorials/python/first-notebook.ipynb": "tutorials/python/index.ipynb",
+    "tutorials/python/io.ipynb": "how-to/python/loading-and-saving.md",
+    "tutorials/python/indexing.ipynb": "how-to/python/inspection-and-selection.md",
+    "tutorials/python/plotting.ipynb": "how-to/plotting/index.md",
+    "tutorials/python/kconv.ipynb": "how-to/python/momentum-conversion.md",
+    "tutorials/python/curve-fitting.ipynb": "how-to/python/curve-fitting.md",
+    "tutorials/python/transform.ipynb": (
+        "how-to/python/transformations-and-filtering.md"
+    ),
+    "tutorials/python/filtering.ipynb": (
+        "how-to/python/transformations-and-filtering.md"
+    ),
+    "user-guide/workflow-bridge.md": "explanation/python-and-gui-workflows.md",
+    "user-guide/interactive/index.md": "explanation/python-and-gui-workflows.md",
+    "user-guide/interactive/imagetool.md": "reference/gui/imagetool.md",
+    "user-guide/interactive/manager.md": "reference/gui/manager.md",
+    "user-guide/interactive/extensions.md": "reference/gui/extensions.md",
+    "user-guide/interactive/figure-composer.md": ("reference/gui/figure-composer.md"),
+    "user-guide/interactive/misc-tools.md": "reference/gui/tools/index.md",
+    "user-guide/interactive/options.md": "reference/gui/settings.md",
+    "user-guide/interactive/tool-authoring.md": ("contributing/interactive-tools.md"),
+    "user-guide/imagetool.md": "reference/gui/imagetool.md",
 }

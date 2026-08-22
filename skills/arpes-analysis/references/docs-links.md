@@ -12,12 +12,17 @@ available locally.
 
 ## Core guides
 
-- [Reading and writing data](https://erlabpy.readthedocs.io/en/stable/user-guide/io.html)
-- [Selecting and indexing](https://erlabpy.readthedocs.io/en/stable/user-guide/indexing.html)
-- [Momentum conversion](https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html)
-- [Curve fitting](https://erlabpy.readthedocs.io/en/stable/user-guide/curve-fitting.html)
-- [Plotting](https://erlabpy.readthedocs.io/en/stable/user-guide/plotting.html)
-- [Data transformations](https://erlabpy.readthedocs.io/en/stable/user-guide/transform.html)
+- [Python workflow tutorial](https://erlabpy.readthedocs.io/en/stable/tutorials/python/)
+- [Data loading and saving](https://erlabpy.readthedocs.io/en/stable/how-to/python/loading-and-saving.html)
+- [Data inspection and selection](https://erlabpy.readthedocs.io/en/stable/how-to/python/inspection-and-selection.html)
+- [Momentum conversion](https://erlabpy.readthedocs.io/en/stable/how-to/python/momentum-conversion.html)
+- [Curve fitting](https://erlabpy.readthedocs.io/en/stable/how-to/python/curve-fitting.html)
+- [Plotting](https://erlabpy.readthedocs.io/en/stable/how-to/plotting/index.html)
+- [Fit a reference when one energy range does not suit every EDC](https://erlabpy.readthedocs.io/en/stable/how-to/python/curve-fitting.html#how-to-python-fit-fermi-edge-separate-ranges)
+- [Annotating core levels](https://erlabpy.readthedocs.io/en/stable/how-to/plotting/core-levels.html)
+- [Transformations and filtering](https://erlabpy.readthedocs.io/en/stable/how-to/python/transformations-and-filtering.html)
+- [ARPES data conventions](https://erlabpy.readthedocs.io/en/stable/explanation/data-conventions.html)
+- [Momentum-conversion concepts](https://erlabpy.readthedocs.io/en/stable/explanation/momentum-conversion.html)
 - [Stable API index](https://erlabpy.readthedocs.io/en/stable/reference.html)
 - [Stable documentation search](https://erlabpy.readthedocs.io/en/stable/search.html)
 - [Stable LLM sitemap](https://erlabpy.readthedocs.io/en/stable/llms.txt)
@@ -25,12 +30,15 @@ available locally.
 
 ## Optional GUI guides
 
-- [Interactive tools](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/index.html)
-- [ImageTool](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html)
-- [ImageTool Manager notebook integration](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#working-with-notebooks)
-- [Figure Composer](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html)
-- [`goldtool`, `ktool`, and `ftool`](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html)
-- [GUI and Python side by side](https://erlabpy.readthedocs.io/en/stable/user-guide/workflow-bridge.html)
+- [Python and GUI workflows](https://erlabpy.readthedocs.io/en/stable/explanation/python-and-gui-workflows.html)
+- [Workspaces and provenance](https://erlabpy.readthedocs.io/en/stable/explanation/workspaces-and-provenance.html)
+- [ImageTool](https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html)
+- [Writing Manager extensions](https://erlabpy.readthedocs.io/en/stable/how-to/python/manager-extensions.html)
+- [Using Manager extensions](https://erlabpy.readthedocs.io/en/stable/how-to/gui/extensions.html)
+- [Manager extension reference](https://erlabpy.readthedocs.io/en/stable/reference/gui/extensions.html)
+- [Watch notebook variables in ImageTool Manager](https://erlabpy.readthedocs.io/en/stable/how-to/gui/python-integration.html#working-with-notebooks)
+- [Figure Composer](https://erlabpy.readthedocs.io/en/stable/reference/gui/figure-composer.html)
+- [`goldtool`, `ktool`, and `ftool`](https://erlabpy.readthedocs.io/en/stable/reference/gui/tools/index.html)
 
 ## Analysis APIs
 
@@ -40,6 +48,7 @@ available locally.
 - [`xarray.DataArray.kspace.convert_coords`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert_coords.html)
 - [`xarray.DataArray.kspace.hv_to_kz`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.hv_to_kz.html)
 - [`erlab.analysis.gold.edge`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.edge)
+- [`erlab.analysis.gold.guess_edge_fit_range`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.guess_edge_fit_range)
 - [`erlab.analysis.gold.poly`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.poly)
 - [`erlab.analysis.gold.quick_fit`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.quick_fit)
 - [`erlab.analysis.gold.correct_with_edge`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.correct_with_edge)
@@ -48,5 +57,6 @@ available locally.
 - [`erlab.plotting.plot_array`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_array)
 - [`erlab.plotting.plot_slices`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_slices)
 - [`erlab.plotting.fermiline`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.fermiline)
+- [`erlab.plotting.plot_core_levels`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_core_levels)
 - [`erlab.plotting.plot_in_plane_bz`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_in_plane_bz)
 - [`xarray.DataArray.xlm.modelfit`](https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.DataArray.xlm.modelfit.html)
