@@ -1521,6 +1521,14 @@ def test_explorer_builtin_loader_options_store_only_overrides(
     explorer = _DataExplorer(root_path=tmp_path, loader_name=loader_name)
     qtbot.addWidget(explorer)
     explorer._loader_kwargs_by_name[loader_name] = {"decode_times": True}
+    explorer._loader_extensions_by_name[loader_name] = {"stale": {}}
+    exec_results = [False, True]
+    loader_state_changes: list[tuple[object, object]] = []
+    workspace_state_changes: list[None] = []
+    explorer.sigLoaderStateChanged.connect(
+        lambda kwargs, extensions: loader_state_changes.append((kwargs, extensions))
+    )
+    explorer.sigStateChanged.connect(lambda: workspace_state_changes.append(None))
 
     class _FakeNameFilterDialog:
         def __init__(
@@ -1540,7 +1548,7 @@ def test_explorer_builtin_loader_options_store_only_overrides(
             assert name_filter == loader.spec.name_filter
 
         def exec(self) -> bool:
-            return True
+            return exec_results.pop(0)
 
         def checked_filter(self):
             return (
@@ -1553,8 +1561,17 @@ def test_explorer_builtin_loader_options_store_only_overrides(
 
     explorer._open_loader_options()
 
+    assert explorer.loader_kwargs_by_name()[loader_name] == {"decode_times": True}
+    assert explorer.loader_extensions_by_name()[loader_name] == {"stale": {}}
+    assert loader_state_changes == []
+    assert workspace_state_changes == []
+
+    explorer._open_loader_options()
+
     assert explorer.loader_kwargs_by_name()[loader_name] == {"decode_times": False}
     assert explorer.loader_extensions_by_name()[loader_name] == {}
+    assert len(loader_state_changes) == 1
+    assert len(workspace_state_changes) == 1
 
 
 def test_explorer_extension_loader_options_dialog_uses_saved_values(
