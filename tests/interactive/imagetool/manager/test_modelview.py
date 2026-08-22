@@ -244,6 +244,24 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     tracker._remove_reverse_refs("orphan-dependent")
 
 
+def test_dependency_tracker_discards_failed_refresh_chain() -> None:
+    graph = types.SimpleNamespace(nodes={})
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+    tracker.queue_source_refresh("upstream", "failed")
+    tracker.queue_source_refresh("failed", "child")
+    tracker.queue_source_refresh("child", "grandchild")
+    tracker.queue_source_refresh("other-upstream", "grandchild")
+    tracker.queue_source_refresh("unrelated", "kept")
+
+    tracker.discard_source_refresh_chain("failed")
+
+    assert not tracker.source_refresh_queued("upstream", "failed")
+    assert not tracker.source_refresh_queued("failed", "child")
+    assert not tracker.source_refresh_queued("child", "grandchild")
+    assert not tracker.source_refresh_queued("other-upstream", "grandchild")
+    assert tracker.source_refresh_queued("unrelated", "kept")
+
+
 def test_dependency_tracker_drops_missing_uid_from_pending_index() -> None:
     node = types.SimpleNamespace(
         is_imagetool=True,

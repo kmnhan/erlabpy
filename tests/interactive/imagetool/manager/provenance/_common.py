@@ -272,6 +272,7 @@ def _fake_edit_controller(
         _selected_imagetool_targets=lambda: selected_targets,
         _node_for_target=lambda target: graph_nodes[target],
         _parent_node=_parent_node,
+        _available_file_loaders=erlab.interactive.utils.file_loaders,
         _extensions=types.SimpleNamespace(
             replay_loader=lambda *_args, **_kwargs: pytest.fail(
                 "built-in provenance must not use extension loader execution"

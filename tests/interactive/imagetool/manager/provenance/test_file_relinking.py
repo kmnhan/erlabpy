@@ -1646,7 +1646,7 @@ def test_manager_provenance_file_edit_preserves_script_steps(
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
         def provenance_spec(self, **_kwargs: typing.Any) -> ToolProvenanceSpec:
-            return replacement.model_copy(update={"steps": script_spec.steps})
+            return replacement
 
         def selected_batch_peers(self):
             return ()

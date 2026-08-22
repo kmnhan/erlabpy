@@ -223,5 +223,22 @@ class _ManagerDependencyTracker:
             seen.add(blocker_uid)
             pending.extend(self.pop_source_refreshes(blocker_uid))
 
+    def discard_source_refresh_chain(self, uid: str) -> None:
+        """Discard queued refreshes that reach or depend on a failed target."""
+        pending = [uid]
+        seen: set[str] = set()
+        while pending:
+            target_uid = pending.pop()
+            if target_uid in seen:
+                continue
+            seen.add(target_uid)
+            pending.extend(self.pop_source_refreshes(target_uid))
+            for blocker_uid, target_uids in list(
+                self._pending_source_refresh_targets.items()
+            ):
+                target_uids.pop(target_uid, None)
+                if not target_uids:
+                    self._pending_source_refresh_targets.pop(blocker_uid, None)
+
     def has_pending_source_refreshes(self) -> bool:
         return bool(self._pending_source_refresh_targets)
