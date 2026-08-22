@@ -901,6 +901,9 @@ def test_manager_paste_steps_validation_error_branches(
             (ScriptCodeOperation(label="script", code="derived = data"),),
         )
 
+    parent = _fake_edit_node(full_data(), uid="parent")
+    parent.current_source_data = lambda: xr.DataArray([1.0], dims=("x",))
+    controller = _fake_edit_controller(node, parent=parent)
     monkeypatch.setattr(
         controller,
         "_replay_candidate_result",

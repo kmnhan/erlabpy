@@ -573,11 +573,20 @@ class _ProvenanceEditController:
         ) as publication:
             current_data = node.current_public_data()
             replay_source_data = node.resolved_replay_source_data()
+            script_context_names = ("data", "derived")
+            current_output_name = getattr(
+                node.displayed_provenance_spec,
+                "active_name",
+                None,
+            )
+            current_output_names = (
+                (current_output_name,) if isinstance(current_output_name, str) else ()
+            )
             if local.kind == "script":
                 spec = compose_full_provenance(
                     node.displayed_provenance_spec,
                     local,
-                    script_context_names=("data", "derived"),
+                    script_context_names=script_context_names,
                 )
             else:
                 spec = compose_full_provenance(
@@ -613,7 +622,15 @@ class _ProvenanceEditController:
                     raise _TrustedProvenanceReplayCancelled
                 try:
                     if local.kind == "script":
-                        input_names = script_replay_source_input_names(local)
+                        input_names = tuple(
+                            dict.fromkeys(
+                                (
+                                    *script_context_names,
+                                    *current_output_names,
+                                    *script_replay_source_input_names(local),
+                                )
+                            )
+                        )
                         data = replay_script_provenance(
                             local,
                             dict.fromkeys(input_names, current_data),
