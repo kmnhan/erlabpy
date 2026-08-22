@@ -5,12 +5,14 @@ ranges, follow a path through momentum space, or compare several slices.
 
 (how-to-python-mask-polygon)=
 
-## Masking to the first Brillouin zone
+## Polygon masking
 
-Use the first Brillouin zone as a polygon when a repeated-zone constant energy surface
-must be restricted to one reciprocal unit cell. Construct the real-space basis, obtain
-the ordered zone vertices, then apply
+Define polygon vertices in the coordinate order given by `dims`, then apply
 {func}`mask_with_polygon <erlab.analysis.mask.mask_with_polygon>`:
+
+This example uses the first Brillouin zone as a physically meaningful boundary for a
+repeated-zone constant energy surface. Construct the real-space basis and obtain the
+ordered zone vertices:
 
 ```python
 import numpy as np

@@ -236,50 +236,86 @@ stack other indexing dimensions first when the result has more than one.
 
 ### Static component and residual plot
 
-For the one-dimensional `spectrum` from {ref}`how-to-python-fit-multiple-peaks`, use a
-fixed inspection figure. Here, `spectrum` is one selected source spectrum.
-`lmfit_result` is its corresponding lmfit {class}`lmfit.model.ModelResult`:
+Use a two-panel plot when you must include the fit components and residual in a static
+report. This example fits a Bi 5d spin-orbit doublet. Select a range with background on
+both sides of the doublet. Here, `core_spectrum` is a one-dimensional spectrum with an
+`eV` coordinate.
 
 ```python
+import erlab.analysis as era
 import matplotlib.pyplot as plt
 import erlab.plotting as eplt
 
-coordinate = spectrum.kx.values
-measured = spectrum.values
-components = lmfit_result.eval_components(x=coordinate)
-residual = measured - lmfit_result.best_fit
+energy = core_spectrum.eV.values
+intensity = core_spectrum.values
+
+model = era.fit.models.MultiPeakModel(
+    npeaks=2,
+    peak_shapes="voigt",
+    fd=False,
+    background="shirley",
+    convolve=False,
+)
+params = model.guess(intensity, x=energy)
+
+# Bi 5d5/2 position and initial Voigt widths, in eV
+params["p0_center"].set(value=-25.0, min=-25.5, max=-24.5)
+params["p0_sigma"].set(value=0.20, min=0.0, max=0.5)
+params["p0_gamma"].set(value=0.10, min=0.0, max=0.5)
+
+# Bi 5d3/2 splitting, shared Gaussian width, and 3:2 area ratio
+params["p1_center"].set(expr="p0_center - 3.0")
+params["p1_sigma"].set(expr="p0_sigma")
+params["p1_gamma"].set(value=0.10, min=0.0, max=0.5)
+params["p1_amplitude"].set(expr="2 * p0_amplitude / 3")
+
+lmfit_result = model.fit(intensity, x=energy, params=params)
+components = lmfit_result.eval_components(x=energy)
+residual = intensity - lmfit_result.best_fit
 
 fig, axes = plt.subplots(
-    2,
-    1,
-    figsize=(6.4, 3.0),
+    2, 1,
+    figsize=(4.8, 3.6),
     layout="compressed",
     sharex=True,
     height_ratios=(3, 1),
 )
-axes[0].plot(coordinate, measured, "o", markersize=3, label="Measured data")
-axes[0].plot(coordinate, lmfit_result.best_fit, label="Best fit")
-for name, component in components.items():
-    label = name.rstrip("_").replace("_", " ").title()
-    axes[0].plot(coordinate, component, "--", label=label)
-axes[0].set_ylabel("Intensity")
+axes[0].plot(energy, intensity, "o", markersize=2, label="Measured data")
+axes[0].plot(energy, lmfit_result.best_fit, color="black", label="Best fit")
+axes[0].plot(energy, components["2Peak_p0"], label=r"Bi 5d$_{5/2}$")
+axes[0].plot(energy, components["2Peak_p1"], label=r"Bi 5d$_{3/2}$")
+axes[0].plot(
+    energy,
+    components["2Peak_baseline"] + components["2Peak_shirley"],
+    "--",
+    color="0.45",
+    label="Shirley background",
+)
+axes[0].set_ylabel("Intensity (arb. units)")
 axes[0].legend(ncols=2)
 
 axes[1].axhline(0.0, color="0.5", linewidth=1)
-axes[1].plot(coordinate, residual, ".-", color="tab:red", markersize=3)
-axes[1].set(xlabel=r"$k_x$ (Å$^{-1}$)", ylabel="Residual")
+axes[1].plot(energy, residual, ".", color="0.25", markersize=2)
+axes[1].set(xlabel=r"$E-E_F$ (eV)", ylabel="Residual")
 eplt.clean_labels(axes)
 ```
 
 ```{eval-rst}
 .. plot:: how_to/curve_fitting.py inspect_fit_components_and_residuals
    :include-source: false
-   :alt: Measured spectrum with a best fit and separate peak and background components above its residual
+   :alt: Bi 5d spectrum with a Voigt doublet, Shirley background, best fit, and residual
 ```
 
-The generated example uses two Lorentzian peaks and a linear background for an MDC.
-Use the components from the model that is justified for the measured spectrum.
-Structured residuals show behavior that the model does not describe.
+{meth}`~erlab.analysis.fit.models.MultiPeakModel.guess` initializes the constant
+background from the low-binding-energy end of the fit range. It initializes the
+Shirley step from the endpoint difference and the integrated signal. Do not set an
+arbitrary Shirley step before you inspect this estimate.
+
+The 3:2 area constraint is the statistical ratio for a d doublet. The shared Gaussian
+width represents the common instrumental broadening. The Lorentzian widths remain
+independent in this example. Replace the center, splitting, and width bounds with values
+that apply to the selected core level and instrument. Structured residuals show
+behavior that the model does not describe.
 
 See {ref}`explanation-fitting-independent` for the meaning of independent fit results.
 See {meth}`xarray.Dataset.qshow.fit` and {meth}`xarray.Dataset.qshow.params` for the
