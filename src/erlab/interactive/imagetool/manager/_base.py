@@ -14,7 +14,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive._options.core
 from erlab.interactive import _qt_state
-from erlab.interactive._file_loaders import builtin_file_loader_for_name_filter
+from erlab.interactive._file_loaders import (
+    builtin_file_loader_for_id,
+    builtin_file_loader_for_name_filter,
+)
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 
 if typing.TYPE_CHECKING:
@@ -657,6 +660,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             return self._recent_name_filter
 
         default_loader = self.effective_interactive_options.io.default_loader
+        builtin_loader = builtin_file_loader_for_id(default_loader)
+        if builtin_loader is not None:
+            return (
+                builtin_loader.name_filter
+                if builtin_loader.name_filter in valid_loaders
+                else None
+            )
         if default_loader == "None" or default_loader not in erlab.io.loaders:
             return None
 

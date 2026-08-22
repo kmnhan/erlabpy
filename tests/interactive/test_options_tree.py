@@ -1,6 +1,7 @@
 import math
 import types
 
+from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive._options.tree import (
     _build_leaf_param,
@@ -101,6 +102,17 @@ def test_make_parameter_round_trips_default_directory() -> None:
     directory_param.setValue("~/other-data")
 
     assert parameter_to_options(param).io.default_directory == "~/other-data"
+
+
+def test_make_parameter_round_trips_builtin_default_loader() -> None:
+    loader_id = BUILTIN_FILE_LOADER_SPECS[0].id
+    options = AppOptions.model_validate({"io": {"default_loader": loader_id}})
+    param = make_parameter(options)
+
+    loader_param = param.child("io").child("default_loader")
+    assert loader_id in loader_param.opts["limits"].values()
+    assert loader_param.value() == loader_id
+    assert parameter_to_options(param).io.default_loader == loader_id
 
 
 def test_make_parameter_workspace_compression_uses_display_labels() -> None:

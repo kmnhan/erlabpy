@@ -51,6 +51,10 @@ import typing
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import erlab
+from erlab.interactive._file_loaders import (
+    BUILTIN_FILE_LOADER_SPECS,
+    builtin_file_loader_for_id,
+)
 
 __all__ = [
     "AppOptions",
@@ -254,13 +258,23 @@ class IOOptions(BaseModel):
     default_loader: str = Field(
         default="None",
         title="Default loader",
-        description="Loader to pre-select in the data explorer.",
-        json_schema_extra={
-            **_workspace_extra(
-                ui_type="list",
-                ui_limits=["None", *list(erlab.io.loaders.keys())],
-            )
-        },
+        description="Loader to pre-select in Data Explorer and file dialogs.",
+        json_schema_extra=_workspace_extra(
+            ui_type="list",
+            ui_choices=[
+                {"label": "None", "value": "None"},
+                *sorted(
+                    [
+                        *({"label": name, "value": name} for name in erlab.io.loaders),
+                        *(
+                            {"label": spec.label, "value": spec.id}
+                            for spec in BUILTIN_FILE_LOADER_SPECS
+                        ),
+                    ],
+                    key=lambda choice: choice["label"].casefold(),
+                ),
+            ],
+        ),
     )
     default_directory: str = Field(
         default="",
@@ -290,8 +304,11 @@ class IOOptions(BaseModel):
     def loader_exists(cls, v: str | None):
         if not v or v == "None":
             return "None"
-        if v not in erlab.io.loaders:
-            available = list(erlab.io.loaders.keys())
+        if v not in erlab.io.loaders and builtin_file_loader_for_id(v) is None:
+            available = [
+                *erlab.io.loaders.keys(),
+                *(spec.id for spec in BUILTIN_FILE_LOADER_SPECS),
+            ]
             raise ValueError(
                 "Loader '" + v + "' not registered; available: " + str(available)
             )

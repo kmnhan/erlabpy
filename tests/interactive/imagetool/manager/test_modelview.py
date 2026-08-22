@@ -3613,6 +3613,8 @@ def _manager_for_loader_preference(recent_filter: str | None = None):
         ("example", "xarray HDF5 Files (*.h5)", "xarray HDF5 Files (*.h5)"),
         ("example", None, "Example Raw Data (*.h5)"),
         ("example", "Missing (*.missing)", "Example Raw Data (*.h5)"),
+        ("builtin:xarray-hdf5", None, "xarray HDF5 Files (*.h5)"),
+        ("builtin:xarray-netcdf", None, None),
         ("None", None, None),
     ],
 )
