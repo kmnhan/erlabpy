@@ -108,6 +108,7 @@ from erlab.interactive.imagetool._provenance._model import (
     restamp_operation_groups,
     script,
     script_input_dependency_refs,
+    script_inputs_dependency_refs,
     selection,
     stamp_operation_group,
     strip_operation_groups,
@@ -1275,6 +1276,34 @@ def test_operation_replay_code_passes_source_context() -> None:
     xr.testing.assert_identical(
         namespace["result"],
         operation._apply_schema_v2(child, parent_data=parent),
+    )
+
+
+def test_external_input_bypasses_trust_required_recorded_fallback() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    fallback = script(
+        ScriptCodeOperation(
+            label="Trusted fallback",
+            code="import os\nright = xr.DataArray([0.0], dims='x')",
+        ),
+        start_label="Build fallback",
+        active_name="right",
+    )
+    spec = script(
+        ScriptCodeOperation(label="Use input", code="result = right"),
+        start_label="Use external input",
+        active_name="result",
+        script_inputs=(ScriptInput(name="right", provenance_spec=fallback),),
+    )
+
+    assert script_provenance_replayable(spec, external_input_names={"right"})
+    assert not script_provenance_requires_trust(
+        spec,
+        external_input_names={"right"},
+    )
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"right": data}),
+        data,
     )
 
 
@@ -6259,6 +6288,10 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
         ),
     )
 
+    assert [
+        ref.node_uid for ref in script_inputs_dependency_refs(spec.script_inputs)
+    ] == ["old-extra"]
+
     refs = script_input_dependency_refs(spec)
     assert [
         (
@@ -8231,6 +8264,20 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
         {"data": data, "era": erlab.analysis},
     )
     xr.testing.assert_identical(namespace["derived"], expected)
+
+    stderr_operation = operation.model_copy(
+        update={"parameter": "c0", "output": "stderr"}
+    )
+    stderr = stderr_operation.apply(data)
+    assert stderr.name == "c0_stderr"
+    assert np.isnan(stderr.item())
+
+    stderr_code = f"derived = {stderr_operation.expression_code('data')}"
+    stderr_namespace = _exec_generated_code(
+        stderr_code,
+        {"data": data, "era": erlab.analysis},
+    )
+    xr.testing.assert_identical(stderr_namespace["derived"], stderr)
 
 
 @pytest.mark.parametrize(

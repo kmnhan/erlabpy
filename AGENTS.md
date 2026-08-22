@@ -57,6 +57,8 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 
 User-facing generated/copied/replay code must be as clean and direct as possible. Treat readability of generated code as product behavior, not a cosmetic afterthought. Copied code is also teaching material for users moving between scripts and the GUI, so prefer public APIs, semantic variable names, complete expressions, and best-practice examples. Avoid meaningless relay assignments, repeated scratch variables, reused generic names such as `derived` across unrelated subexpressions, leaked internal manager helpers, and temporaries that do not carry semantic value. Prefer semantic names from watched variables, console assignments, provenance inputs, or visible actions, and inline one-use aliases when it is safe to do so.
 
+Copied code is notebook-facing representative code, not an exact serialized replay program. Use direct public expressions. Omit routine framework imports for one provenance step, and import each required module at most once in a composed workflow. Do not add defensive `.copy()` calls, private restoration helpers, or other internal machinery only to preserve replay isolation. If a normal public operation updates input metadata, copied code should show that update directly. Keep exact source isolation and non-mutating behavior in the separate structured replay and execution paths.
+
 When changing provenance or code-generation paths, scan the emitted code for redundant reassignments and internal implementation details. Add property-style tests for cleanliness when it is the behavior under test, while still executing the generated code and asserting the resulting object/value exactly.
 
 ## Interactive Qt Notes

@@ -13,6 +13,7 @@ from erlab.interactive._fit1d import (
     _ParameterEditDelegate,
     _ParameterTableModel,
 )
+from erlab.interactive.imagetool._provenance._model import ScriptInput
 from tests._qt_helpers import signal_receiver_count
 
 
@@ -176,6 +177,405 @@ def test_fit1d_copy_code_executes_with_notebook_aliases(qtbot) -> None:
     assert isinstance(namespace["result"], xr.Dataset)
 
 
+def test_fit1d_uncertainty_defaults_and_error_bars(qtbot) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+
+    unweighted = erlab.interactive.ftool(data, execute=False)
+    weighted = erlab.interactive.ftool(
+        data,
+        uncertainty=uncertainty,
+        uncertainty_name="sigma",
+        execute=False,
+    )
+    overridden = erlab.interactive.ftool(
+        data,
+        uncertainty=uncertainty,
+        scale_covar=True,
+        execute=False,
+    )
+    for win in (unweighted, weighted, overridden):
+        qtbot.addWidget(win)
+
+    assert unweighted.scale_covar_check.objectName() == "ftoolScaleCovarCheck"
+    assert unweighted.scale_covar_check.isChecked()
+    assert unweighted.current_provenance_spec() is not None
+    assert not unweighted.normalize_residuals_check.isEnabled()
+    assert not weighted.scale_covar_check.isChecked()
+    assert weighted.normalize_residuals_check.objectName() == (
+        "ftoolNormalizeResidualsCheck"
+    )
+    assert weighted.normalize_residuals_check.isChecked()
+    assert overridden.scale_covar_check.isChecked()
+    assert weighted.current_provenance_spec() is None
+    np.testing.assert_allclose(weighted.data_errorbar.opts["top"], uncertainty)
+    np.testing.assert_allclose(weighted.data_errorbar.opts["bottom"], uncertainty)
+
+    xvals = weighted._x_values()
+    residuals = weighted._normalized_data_values() - weighted._model_eval_values(xvals)
+    np.testing.assert_allclose(weighted._last_residual, residuals / uncertainty)
+    weighted.normalize_residuals_check.setChecked(False)
+    np.testing.assert_allclose(weighted._last_residual, residuals)
+
+    weighted.scale_covar_check.setChecked(True)
+    assert weighted.tool_status.scale_covar
+
+    weighted._set_fit_running(True, multi=False)
+    assert not weighted.scale_covar_check.isEnabled()
+    weighted._set_fit_running(False, multi=False)
+    assert weighted.scale_covar_check.isEnabled()
+
+
+def test_fit1d_uncertainty_validation(qtbot) -> None:
+    data = _make_1d_data()
+    misaligned = xr.DataArray(
+        np.ones(data.size),
+        dims=("x",),
+        coords={"x": np.arange(data.size)},
+    )
+    extra_dim = xr.DataArray(np.ones(data.size), dims=("other",))
+
+    with pytest.raises(TypeError, match=r"xarray\.DataArray"):
+        erlab.interactive.ftool(  # type: ignore[arg-type]
+            data, uncertainty=np.ones(data.size), execute=False
+        )
+    with pytest.raises(ValueError, match="align exactly"):
+        erlab.interactive.ftool(data, uncertainty=misaligned, execute=False)
+    with pytest.raises(ValueError, match="subset"):
+        erlab.interactive.ftool(data, uncertainty=extra_dim, execute=False)
+    with pytest.raises(TypeError, match="real numeric"):
+        erlab.interactive.ftool(
+            data,
+            uncertainty=xr.full_like(data, "invalid", dtype=object),
+            execute=False,
+        )
+    with pytest.raises(TypeError, match="real numeric"):
+        erlab.interactive.ftool(
+            data,
+            uncertainty=xr.DataArray(
+                np.ones(data.size, dtype=complex),
+                dims=data.dims,
+                coords=data.coords,
+            ),
+            execute=False,
+        )
+
+    for invalid_value in (0.0, -0.1, np.nan, np.inf):
+        with pytest.raises(ValueError, match="finite and strictly positive"):
+            erlab.interactive.ftool(
+                data,
+                uncertainty=xr.full_like(data, invalid_value),
+                execute=False,
+            )
+
+    data_with_nan = data.copy()
+    data_with_nan[0] = np.nan
+    uncertainty_with_nan = xr.full_like(data, 0.2)
+    uncertainty_with_nan[0] = np.nan
+    win = erlab.interactive.ftool(
+        data_with_nan,
+        uncertainty=uncertainty_with_nan,
+        execute=False,
+    )
+    qtbot.addWidget(win)
+
+
+def test_fit1d_direct_weights_validation() -> None:
+    data = _make_1d_data()
+
+    assert fit1d._validate_weights_input(data, None) is None
+    scalar = xr.DataArray(2.0)
+    assert fit1d._validate_weights_input(data, scalar) is scalar
+    zero = xr.DataArray(0.0)
+    assert fit1d._validate_weights_input(data, zero) is zero
+    xr.testing.assert_identical(
+        fit1d._broadcast_weights(data, scalar), xr.full_like(data, 2.0).rename(None)
+    )
+
+    with pytest.raises(TypeError, match=r"xarray\.DataArray"):
+        fit1d._validate_weights_input(data, np.ones(data.size))
+    with pytest.raises(TypeError, match="real numeric"):
+        fit1d._validate_weights_input(data, xr.full_like(data, "invalid", dtype=object))
+    with pytest.raises(TypeError, match="real numeric"):
+        fit1d._validate_weights_input(data, xr.full_like(data, 1.0, dtype=complex))
+    with pytest.raises(ValueError, match="unexpected dimensions"):
+        fit1d._validate_weights_input(
+            data, xr.DataArray(np.ones((data.size, 2)), dims=("x", "extra"))
+        )
+    with pytest.raises(ValueError, match="align exactly"):
+        fit1d._validate_weights_input(
+            data,
+            xr.DataArray(
+                np.ones(data.size),
+                dims="x",
+                coords={"x": data.x + 1.0},
+            ),
+        )
+    for invalid_value in (-1.0, np.nan, np.inf):
+        with pytest.raises(ValueError, match="finite and nonnegative"):
+            fit1d._validate_weights_input(data, xr.full_like(data, invalid_value))
+
+
+def test_fit1d_rejects_ambiguous_internal_weighting(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    weighting = xr.ones_like(data)
+    with pytest.raises(ValueError, match="Only one"):
+        win._reset_fit_state(
+            data,
+            win._model,
+            win._params,
+            uncertainty=weighting,
+            direct_weights=weighting,
+            data_name="data",
+            model_name="model",
+        )
+
+    tiny_weights = xr.full_like(data, np.nextafter(0.0, 1.0))
+    win._set_direct_weights(tiny_weights)
+    xr.testing.assert_identical(win._fit_weights(), tiny_weights)
+    assert np.isnan(win.data_errorbar.opts["top"]).all()
+
+
+def test_fit1d_scalar_uncertainty_broadcasts(qtbot, exp_decay_model) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    uncertainty = xr.DataArray(0.2, name="sigma")
+    win = erlab.interactive.ftool(
+        data,
+        model=exp_decay_model,
+        params=exp_decay_model.make_params(n0=2.0, tau=1.0),
+        uncertainty=uncertainty,
+        data_name="decay",
+        model_name="model",
+        uncertainty_name="xr.DataArray(0.2)",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+
+    np.testing.assert_allclose(win.data_errorbar.opts["top"], 0.2)
+    weights = win._fit_weights()
+    assert weights is not None
+    xr.testing.assert_allclose(weights, xr.full_like(data, 5.0))
+
+    prelude = win._copy_prelude()
+    assert "input_uncertainty" not in prelude
+    namespace = {
+        "decay": data,
+        "model": exp_decay_model,
+        "xr": xr,
+    }
+    exec(  # noqa: S102
+        f"{prelude}\nreplayed = {win._fit_expression()}",
+        namespace,
+    )
+    replayed_result = namespace["replayed"].modelfit_results.compute().item()
+    np.testing.assert_allclose(replayed_result.weights, 5.0)
+
+
+def test_fit1d_generated_uncertainty_name_does_not_shadow_data(
+    qtbot, exp_decay_model
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    fit_uncertainty = xr.DataArray(
+        3.0 * np.exp(-t / 2.0),
+        dims=("t",),
+        coords={"t": t},
+        name="fit_uncertainty",
+    )
+    sigma = xr.DataArray(0.2)
+    win = erlab.interactive.ftool(
+        fit_uncertainty,
+        model=exp_decay_model,
+        params=exp_decay_model.make_params(n0=2.0, tau=1.0),
+        uncertainty=sigma,
+        data_name="fit_uncertainty",
+        model_name="model",
+        uncertainty_name="sigma.copy()",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+
+    namespace = {
+        "fit_uncertainty": fit_uncertainty,
+        "model": exp_decay_model,
+        "sigma": sigma,
+    }
+    exec(  # noqa: S102
+        f"{win._copy_prelude()}\nreplayed = {win._fit_expression()}",
+        namespace,
+    )
+    replayed = namespace["replayed"]
+    xr.testing.assert_identical(
+        replayed.modelfit_data,
+        fit_uncertainty.rename("modelfit_data"),
+    )
+    np.testing.assert_allclose(
+        replayed.modelfit_results.compute().item().weights,
+        5.0,
+    )
+
+
+def test_fit1d_weighted_fit_and_generated_code(qtbot, exp_decay_model) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    uncertainty = xr.DataArray(
+        np.linspace(0.1, 0.2, t.size),
+        dims=("t",),
+        coords={"t": t},
+        name="sigma",
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data,
+        model=exp_decay_model,
+        params=params,
+        uncertainty=uncertainty,
+        data_name="decay",
+        model_name="model",
+        uncertainty_name="sigma",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    win.normalize_check.setChecked(True)
+    win.domain_min_spin.setValue(0.5)
+    win.domain_max_spin.setValue(3.5)
+    win.nfev_spin.setValue(0)
+
+    fit_uncertainty = win._fit_uncertainty()
+    assert fit_uncertainty is not None
+    expected_uncertainty = uncertainty.sel(t=slice(0.5, 3.5)) / abs(
+        data.sel(t=slice(0.5, 3.5)).mean()
+    )
+    xr.testing.assert_allclose(fit_uncertainty, expected_uncertainty)
+
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+    assert win._last_result_ds is not None
+    result = win._last_result_ds.modelfit_results.compute().item()
+    np.testing.assert_allclose(result.weights, 1.0 / expected_uncertainty.values)
+    assert result.scale_covar is False
+
+    win.scale_covar_check.setChecked(True)
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: not win._fit_running(), timeout=10000)
+    assert win._last_result_ds is not None
+    assert win._last_result_ds.modelfit_results.compute().item().scale_covar is True
+    win.scale_covar_check.setChecked(False)
+
+    namespace = {
+        "decay": data,
+        "model": exp_decay_model,
+        "sigma": uncertainty,
+    }
+    exec(  # noqa: S102
+        f"{win._copy_prelude()}\nreplayed = {win._fit_expression()}",
+        namespace,
+    )
+    replayed_result = namespace["replayed"].modelfit_results.compute().item()
+    np.testing.assert_allclose(
+        replayed_result.weights, 1.0 / expected_uncertainty.values
+    )
+    assert replayed_result.scale_covar is False
+
+    win._run_fit_multiple(1)
+    qtbot.waitUntil(lambda: not win._fit_running(), timeout=10000)
+    assert win._last_result_ds is not None
+    multi_result = win._last_result_ds.modelfit_results.compute().item()
+    np.testing.assert_allclose(
+        multi_result.weights,
+        1.0 / expected_uncertainty.values,
+    )
+
+
+def test_fit1d_uncertainty_persistence_roundtrip(qtbot) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+    win = erlab.interactive.ftool(
+        data,
+        uncertainty=uncertainty,
+        uncertainty_name="sigma",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit1DTool)
+    xr.testing.assert_identical(restored.uncertainty, uncertainty)
+    assert restored.tool_status.uncertainty_name == "sigma"
+    assert restored.scale_covar_check.isChecked() is False
+
+
+def test_fit1d_managed_uncertainty_uses_named_persistence_input(qtbot) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+    win = erlab.interactive.ftool(data, uncertainty=uncertainty, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+    bindings = (ScriptInput(name="data"), ScriptInput(name="uncertainty"))
+    win.set_script_inputs(bindings, primary_input="data", state="stale")
+
+    items = win._persistence_data_items()
+    assert "uncertainty" in items
+    assert fit1d._PERSISTED_UNCERTAINTY_VAR not in items
+    xr.testing.assert_identical(items["uncertainty"], uncertainty)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit1DTool)
+    assert restored.script_inputs == bindings
+    xr.testing.assert_identical(restored.uncertainty, uncertainty)
+
+    replacement_data = data + 1.0
+    replacement_uncertainty = uncertainty + 0.1
+    win._replace_persistence_data_items(
+        {
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: replacement_data,
+            "uncertainty": replacement_uncertainty,
+        },
+        xr.Dataset(),
+    )
+    xr.testing.assert_identical(win.tool_data, replacement_data)
+    xr.testing.assert_identical(win.uncertainty, replacement_uncertainty)
+    assert win.script_inputs == bindings
+    assert win.source_state == "stale"
+
+
+def test_fit1d_legacy_uncertainty_and_direct_weights_persistence(qtbot) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2).rename("sigma")
+    legacy = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(legacy)
+    assert isinstance(legacy, Fit1DTool)
+    legacy._restore_persistence_data_items(
+        {fit1d._PERSISTED_UNCERTAINTY_VAR: uncertainty}, xr.Dataset()
+    )
+    xr.testing.assert_identical(legacy.uncertainty, uncertainty)
+
+    weights = xr.full_like(data, 2.0).rename("weights")
+    weighted = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(weighted)
+    assert isinstance(weighted, Fit1DTool)
+    weighted._set_direct_weights(weights)
+    items = weighted._persistence_data_items()
+    assert fit1d._PERSISTED_WEIGHTS_VAR in items
+    assert "uncertainty" not in items
+    xr.testing.assert_identical(items[fit1d._PERSISTED_WEIGHTS_VAR], weights)
+
+    restored = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit1DTool)
+    restored._restore_persistence_data_items(items, xr.Dataset())
+    xr.testing.assert_identical(restored._direct_weights, weights)
+
+
 def test_fit1d_tool_status_without_saved_params_uses_model_defaults(
     qtbot, exp_decay_model
 ) -> None:
@@ -310,6 +710,7 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
         data, model=exp_decay_model, params=params, execute=False
     )
     qtbot.addWidget(win)
+    win.scale_covar_check.setChecked(False)
 
     assert win._run_fit()
     qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
@@ -324,6 +725,222 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     assert win_restored.save_button.isEnabled()
     assert win_restored.copy_button.isEnabled()
     assert isinstance(win_restored._model, type(exp_decay_model))
+    assert not win_restored.scale_covar_check.isChecked()
+
+    overridden = erlab.interactive.ftool(fit_ds, scale_covar=True, execute=False)
+    qtbot.addWidget(overridden)
+    assert overridden.scale_covar_check.isChecked()
+    assert not overridden._fit_is_current
+    assert not overridden.save_button.isEnabled()
+    assert not overridden.copy_button.isEnabled()
+
+    supplied_uncertainty = erlab.interactive.ftool(
+        fit_ds,
+        uncertainty=xr.full_like(data, 0.2),
+        execute=False,
+    )
+    qtbot.addWidget(supplied_uncertainty)
+    assert not supplied_uncertainty._fit_is_current
+    assert not supplied_uncertainty.save_button.isEnabled()
+    assert not supplied_uncertainty.copy_button.isEnabled()
+
+    scaled_fit_ds = data.xlm.modelfit(
+        "t",
+        model=exp_decay_model,
+        params=params,
+        scale_covar=True,
+    ).load()
+    scaled_with_uncertainty = erlab.interactive.ftool(
+        scaled_fit_ds,
+        uncertainty=xr.full_like(data, 0.2),
+        execute=False,
+    )
+    qtbot.addWidget(scaled_with_uncertainty)
+    assert not scaled_with_uncertainty.scale_covar_check.isChecked()
+    assert not scaled_with_uncertainty._fit_is_current
+
+    weights = xr.DataArray(
+        np.linspace(0.3, 2.7, data.size), dims="t", coords={"t": data.t}
+    )
+    assert not np.array_equal(weights, 1.0 / (1.0 / weights))
+    weighted_fit_ds = data.xlm.modelfit(
+        "t",
+        model=exp_decay_model,
+        params=params,
+        weights=weights,
+        scale_covar=False,
+    ).load()
+    weighted_restored = erlab.interactive.ftool(weighted_fit_ds, execute=False)
+    qtbot.addWidget(weighted_restored)
+    xr.testing.assert_identical(
+        weighted_restored._direct_weights, weighted_fit_ds.modelfit_weights
+    )
+    np.testing.assert_array_equal(weighted_restored._fit_weights(), weights)
+    assert weighted_restored.uncertainty is not None
+    xr.testing.assert_allclose(weighted_restored.uncertainty, 1.0 / weights)
+    np.testing.assert_allclose(
+        weighted_restored.data_errorbar.opts["top"], 1.0 / weights
+    )
+    assert weighted_restored._fit_is_current
+    assert weighted_restored.save_button.isEnabled()
+    assert weighted_restored.copy_button.isEnabled()
+
+    namespace = {"weighted_fit_ds": weighted_fit_ds, "model": exp_decay_model}
+    exec(  # noqa: S102
+        f"{weighted_restored._copy_prelude()}\n"
+        f"replayed = {weighted_restored._fit_expression()}",
+        namespace,
+    )
+    np.testing.assert_array_equal(
+        namespace["replayed"].modelfit_results.compute().item().weights,
+        weights,
+    )
+
+    workspace_restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        weighted_restored.to_dataset()
+    )
+    qtbot.addWidget(workspace_restored)
+    assert isinstance(workspace_restored, Fit1DTool)
+    xr.testing.assert_identical(
+        workspace_restored._direct_weights, weighted_fit_ds.modelfit_weights
+    )
+    np.testing.assert_array_equal(workspace_restored._fit_weights(), weights)
+
+    weighted_restored.domain_min_spin.setValue(0.5)
+    weighted_restored.domain_max_spin.setValue(3.5)
+    cropped_data = weighted_restored._fit_data_raw()
+    np.testing.assert_array_equal(
+        weighted_restored._fit_weights(),
+        weights.sel(t=cropped_data.t),
+    )
+
+    weighted_restored._direct_weights_name = "fit_weights"
+    collision_namespace = {
+        "weighted_fit_ds": weighted_fit_ds,
+        "model": exp_decay_model,
+        "fit_weights": weights,
+    }
+    exec(  # noqa: S102
+        f"{weighted_restored._copy_prelude()}\n"
+        f"replayed = {weighted_restored._fit_expression()}",
+        collision_namespace,
+    )
+    np.testing.assert_array_equal(
+        collision_namespace["replayed"].modelfit_results.compute().item().weights,
+        weights.sel(t=cropped_data.t),
+    )
+    assert workspace_restored._fit_is_current
+    updated_data = data * 1.01
+    assert workspace_restored.update_inputs({"data": updated_data})
+    xr.testing.assert_identical(
+        workspace_restored._direct_weights, weighted_fit_ds.modelfit_weights
+    )
+    np.testing.assert_array_equal(workspace_restored._fit_weights(), weights)
+
+    legacy_weighted = erlab.interactive.ftool(
+        weighted_fit_ds.drop_vars("modelfit_weights"), execute=False
+    )
+    qtbot.addWidget(legacy_weighted)
+    assert legacy_weighted.uncertainty is None
+    assert legacy_weighted.scale_covar_check.isChecked()
+    assert not legacy_weighted._fit_is_current
+    assert not legacy_weighted.save_button.isEnabled()
+    assert not legacy_weighted.copy_button.isEnabled()
+
+    invalid_weighted_ds = weighted_fit_ds.copy()
+    invalid_weighted_ds["modelfit_weights"] = -weights
+    invalid_weighted = erlab.interactive.ftool(invalid_weighted_ds, execute=False)
+    qtbot.addWidget(invalid_weighted)
+    assert invalid_weighted.uncertainty is None
+    assert not invalid_weighted._fit_is_current
+
+    zero_weights = weights.copy()
+    zero_weights[5] = 0.0
+    zero_weighted_ds = data.xlm.modelfit(
+        "t",
+        model=exp_decay_model,
+        params=params,
+        weights=zero_weights,
+        scale_covar=False,
+    ).load()
+    zero_weighted = erlab.interactive.ftool(zero_weighted_ds, execute=False)
+    qtbot.addWidget(zero_weighted)
+    xr.testing.assert_identical(
+        zero_weighted._direct_weights, zero_weighted_ds.modelfit_weights
+    )
+    np.testing.assert_array_equal(zero_weighted._fit_weights(), zero_weights)
+    assert zero_weighted._fit_is_current
+    assert np.isnan(zero_weighted.data_errorbar.opts["top"][5])
+    np.testing.assert_allclose(
+        np.delete(zero_weighted.data_errorbar.opts["top"], 5),
+        np.delete(1.0 / zero_weights.where(zero_weights != 0).values, 5),
+    )
+
+    scalar_weights = xr.DataArray(0.3)
+    scalar_fit_ds = data.xlm.modelfit(
+        "t",
+        model=exp_decay_model,
+        params=params,
+        weights=scalar_weights,
+        scale_covar=False,
+    ).load()
+    scalar_restored = erlab.interactive.ftool(scalar_fit_ds, execute=False)
+    qtbot.addWidget(scalar_restored)
+    xr.testing.assert_identical(
+        scalar_restored._direct_weights, scalar_fit_ds.modelfit_weights
+    )
+    xr.testing.assert_identical(
+        scalar_restored._fit_weights(), scalar_fit_ds.modelfit_weights
+    )
+    np.testing.assert_allclose(
+        scalar_restored.data_errorbar.opts["top"], 1.0 / scalar_weights
+    )
+    scalar_namespace = {
+        "scalar_fit_ds": scalar_fit_ds,
+        "model": exp_decay_model,
+    }
+    exec(  # noqa: S102
+        f"{scalar_restored._copy_prelude()}\n"
+        f"replayed = {scalar_restored._fit_expression()}",
+        scalar_namespace,
+    )
+    xr.testing.assert_identical(
+        scalar_namespace["replayed"].modelfit_weights,
+        scalar_fit_ds.modelfit_weights,
+    )
+    scalar_restored.normalize_check.setChecked(True)
+    norm = scalar_restored._fit_normalization_factor()
+    assert norm is not None
+    norm = abs(norm)
+    xr.testing.assert_identical(
+        scalar_restored._fit_weights(), scalar_fit_ds.modelfit_weights * norm
+    )
+    np.testing.assert_allclose(
+        scalar_restored._normalized_direct_weights_values(),
+        np.full(data.size, scalar_weights.item() * norm),
+    )
+    np.testing.assert_allclose(
+        scalar_restored.data_errorbar.opts["top"],
+        np.full(data.size, 1.0 / scalar_weights.item() / norm),
+    )
+    scalar_namespace = {
+        "scalar_fit_ds": scalar_fit_ds,
+        "model": exp_decay_model,
+    }
+    exec(  # noqa: S102
+        f"{scalar_restored._copy_prelude()}\n"
+        f"replayed = {scalar_restored._fit_expression()}",
+        scalar_namespace,
+    )
+    np.testing.assert_allclose(
+        scalar_namespace["replayed"].modelfit_results.compute().item().weights,
+        np.full(data.size, scalar_weights.item() * norm),
+    )
+    assert scalar_namespace["replayed"].modelfit_weights.dims == ()
+    xr.testing.assert_allclose(
+        scalar_namespace["replayed"].modelfit_weights,
+        scalar_fit_ds.modelfit_weights * norm,
+    )
 
 
 def test_fit1d_persistence_roundtrip_preserves_fit_result(
@@ -395,7 +1012,7 @@ def test_fit1d_persistence_roundtrip_preserves_stale_fit(
     assert not win_restored.copy_button.isEnabled()
 
 
-def test_fit1d_update_data_preserves_state_and_refit(
+def test_fit1d_update_inputs_preserves_state_and_refit(
     qtbot, exp_decay_model, monkeypatch
 ):
     data = _make_1d_data()
@@ -424,7 +1041,7 @@ def test_fit1d_update_data_preserves_state_and_refit(
         coords=data.coords,
         name=data.name,
     )
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win.tool_status == status
     xr.testing.assert_identical(win.tool_data, new_data)
@@ -435,12 +1052,12 @@ def test_fit1d_update_data_preserves_state_and_refit(
     win.refit_on_source_update_check.setChecked(True)
     newer_data = new_data.copy(deep=True)
     newer_data.data = np.asarray(newer_data.data) * 1.1
-    win.update_data(newer_data)
+    win.update_inputs({"data": newer_data})
 
     assert called == [True]
 
 
-def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
+def test_fit1d_validate_update_inputs_invalid_input_keeps_existing_ui(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -450,7 +1067,7 @@ def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     bad_data = xr.DataArray(np.arange(6).reshape((2, 3)), dims=("y", "x"))
 
     with pytest.raises(ValueError, match="1D DataArray"):
-        win.update_data(bad_data)
+        win.validate_update_inputs({"data": bad_data})
 
     assert win.centralWidget() is old_central
     assert old_central is not None
@@ -458,7 +1075,7 @@ def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> None:
+def test_fit1d_update_inputs_drops_missing_coord_backed_param_bindings(qtbot) -> None:
     data = _make_1d_data().assign_coords(offset=1.25)
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -477,7 +1094,7 @@ def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> N
     assert not (win.param_model.flags(value_index) & QtCore.Qt.ItemFlag.ItemIsEditable)
 
     new_data = data.drop_vars("offset")
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert param_name not in win._params_from_coord
     value_index = win.param_model.index(0, 1)
@@ -485,7 +1102,7 @@ def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> N
     assert win.param_mode_combo.currentText() == "Manual"
 
 
-def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+def test_fit1d_apply_inputs_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -521,7 +1138,9 @@ def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> Non
         name=data.name,
     )
 
-    assert win.update_data(new_data) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": new_data}, (script_input,)) is False
     assert stuck_thread.cancel_called
     assert stuck_thread.interrupted
     assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
@@ -531,7 +1150,7 @@ def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> Non
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_fit1d_update_data_keeps_fit_finished_receivers_constant(qtbot) -> None:
+def test_fit1d_update_inputs_keeps_fit_finished_receivers_constant(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -541,14 +1160,14 @@ def test_fit1d_update_data_keeps_fit_finished_receivers_constant(qtbot) -> None:
     for scale in (1.1, 1.2, 1.3):
         updated = data.copy(deep=True)
         updated.data = np.asarray(data.data) * scale
-        win.update_data(updated)
+        win.update_inputs({"data": updated})
         assert (
             signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
             == initial_receivers
         )
 
 
-def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
+def test_fit1d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     qtbot, monkeypatch
 ) -> None:
     data = _make_1d_data()
@@ -593,12 +1212,62 @@ def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is False
+    script_input = ScriptInput(name="data")
+    win.set_script_inputs((script_input,), primary_input="data")
+    assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted
     assert old_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
     assert old_thread.deleted is True
+
+
+def test_fit1d_refit_start_failure_commits_published_input(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    updated = data * 1.1
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    monkeypatch.setattr(win, "_run_fit", lambda: False)
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    win.set_script_inputs((old_binding,), primary_input="data")
+
+    assert win._apply_inputs({"data": updated}, (refreshed_binding,)) is True
+
+    assert win.source_state == "fresh"
+    assert win.script_inputs == (refreshed_binding,)
+    assert win._pending_script_inputs is None
+    xr.testing.assert_identical(win.tool_data, updated)
+
+
+def test_fit1d_async_refit_failure_commits_published_input(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    updated = data * 1.1
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    monkeypatch.setattr(win, "_run_fit", lambda: True)
+    monkeypatch.setattr(win, "_show_error", lambda *_args, **_kwargs: None)
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    win.set_script_inputs((old_binding,), primary_input="data")
+
+    assert win._apply_inputs({"data": updated}, (refreshed_binding,)) is False
+    assert win._source_refresh_deferred is True
+    win._fit_errored("fit failed")
+
+    assert win.source_state == "fresh"
+    assert win.script_inputs == (refreshed_binding,)
+    assert win._pending_script_inputs is None
+    assert win._source_refresh_deferred is False
+    xr.testing.assert_identical(win.tool_data, updated)
 
 
 def test_fit1d_queue_fit_action_ignores_stale_thread(qtbot) -> None:
@@ -1865,6 +2534,62 @@ def test_fit1d_start_worker_start_exception_resets_buttons(qtbot, monkeypatch) -
     assert win._fit_cancel_requested is False
     assert win.fit_button.isEnabled()
     assert not win.cancel_fit_button.isEnabled()
+
+
+def test_fit1d_workers_use_one_scale_covar_snapshot(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+
+    captured: list[bool] = []
+
+    class _Signal:
+        def connect(self, _callback) -> None:
+            return None
+
+    class _Worker:
+        def __init__(self, *_args, scale_covar: bool, **_kwargs) -> None:
+            captured.append(scale_covar)
+            self.finished = _Signal()
+            self.sigFinished = _Signal()
+            self.sigTimedOut = _Signal()
+            self.sigErrored = _Signal()
+            self.sigCancelled = _Signal()
+
+        def setServiceLevel(self, _level) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def deleteLater(self) -> None:
+            return None
+
+    monkeypatch.setattr(fit1d, "_FitWorker", _Worker)
+    callbacks = {
+        "on_success": lambda _result: None,
+        "on_timeout": lambda: None,
+        "on_error": lambda _message: None,
+    }
+
+    win.scale_covar_check.setChecked(False)
+    assert win._start_fit_worker(win._fit_data(), win._params, multi=True, **callbacks)
+    first_worker = win._fit_thread
+    assert not win.scale_covar_check.isEnabled()
+
+    win.scale_covar_check.setChecked(True)
+    win._fit_thread = None
+    assert win._start_fit_worker(win._fit_data(), win._params, multi=True, **callbacks)
+    second_worker = win._fit_thread
+
+    assert captured == [False, False]
+    for worker in (first_worker, second_worker):
+        if worker is not None:
+            worker.deleteLater()
+    win._fit_thread = None
+    win._fit_is_current = True
+    win._set_fit_running(False, multi=True)
+    assert win.scale_covar_check.isEnabled()
+    assert not win._fit_is_current
 
 
 def test_fit1d_run_fit_preparation_error_resets_buttons(qtbot, monkeypatch) -> None:

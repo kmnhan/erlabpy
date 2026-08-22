@@ -5,6 +5,7 @@ import enum
 import importlib.resources
 import os
 import typing
+from collections.abc import Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -533,9 +534,9 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self.corr_fft_image.setImage(log_magnitude_corr)
         self._notify_data_changed()
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
         status = self.tool_status
-        new_data = self.validate_update_data(new_data)
+        new_data = inputs["data"]
 
         self._data = new_data
         self._corrected = None
@@ -559,11 +560,13 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self._notify_data_changed()
         self._reset_history_stack()
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if not all(dim in data.dims for dim in {"alpha", "eV"}):
             raise ValueError("Input DataArray must have 'alpha' and 'eV' dimensions.")
-        return data
+        return {"data": data}
 
     @QtCore.Slot()
     def _corr_itool(self) -> None:
@@ -598,28 +601,28 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     def _provenance_seed_code(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         del data
-        return f"derived = {input_name or self.data_name}"
+        return f"derived = {primary_input or self.data_name}"
 
     def _corrected_provenance(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> RemoveMeshOperation:
-        del input_name, data
+        del primary_input, data
         return self._mesh_provenance_operation(output="corrected")
 
     def _mesh_provenance(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> RemoveMeshOperation:
-        del input_name, data
+        del primary_input, data
         return self._mesh_provenance_operation(output="mesh")
 
     def _corrected_output(self) -> xr.DataArray | None:

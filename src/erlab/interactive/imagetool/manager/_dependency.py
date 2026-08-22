@@ -2,20 +2,51 @@
 
 from __future__ import annotations
 
+import typing
+
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDependencyRef,
     script_input_dependency_refs,
+    script_inputs_dependency_refs,
 )
 
 __all__ = ["_DependencyStatus", "_ManagerDependencyTracker"]
 
-import typing
-
 if typing.TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from erlab.interactive.imagetool._provenance._model import ScriptInput
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
     from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 _DependencyStatus = typing.Literal["current", "changed", "missing"]
+_SourceState = typing.Literal["fresh", "stale", "unavailable"]
+
+
+def _combine_source_states(states: Iterable[_SourceState]) -> _SourceState:
+    """Return the most severe state from a set of source states."""
+    aggregate: _SourceState = "fresh"
+    for state in states:
+        if state == "unavailable":
+            return "unavailable"
+        if state == "stale":
+            aggregate = "stale"
+    return aggregate
+
+
+def _effective_script_input_dependency_refs(
+    script_inputs: Sequence[ScriptInput],
+) -> tuple[ScriptInputDependencyRef, ...]:
+    """Return the live dependencies selected by named input resolution."""
+    refs: list[ScriptInputDependencyRef] = []
+    for script_input in script_inputs:
+        if script_input.node_uid:
+            refs.extend(script_inputs_dependency_refs((script_input,)))
+            continue
+        fallback = script_input.parsed_provenance_spec()
+        if fallback is not None:
+            refs.extend(_effective_script_input_dependency_refs(fallback.script_inputs))
+    return tuple(refs)
 
 
 class _ManagerDependencyTracker:
@@ -38,7 +69,7 @@ class _ManagerDependencyTracker:
         self._dependents_by_source_uid: dict[str, dict[str, None]] = {}
         self._unindexed_uids: dict[str, None] = {}
         self._status_cache: dict[str, _DependencyStatus | None] = {}
-        self._pending_source_refresh_targets: dict[str, set[str]] = {}
+        self._pending_source_refresh_targets: dict[str, dict[str, bool]] = {}
 
     def note_uid(self, uid: str) -> None:
         self._unindexed_uids[uid] = None
@@ -59,12 +90,15 @@ class _ManagerDependencyTracker:
         if node is None:
             self.invalidate_uid(uid)
             return ()
-        spec = (
-            node.passive_displayed_provenance_spec
-            if node.tool_window is not None
-            else node.provenance_spec
-        )
-        if spec is None:
+        if node.is_imagetool:
+            script_inputs = ()
+            spec = node.provenance_spec
+        else:
+            script_inputs = node.tool_script_inputs
+            spec = None if script_inputs else node.provenance_spec
+            if spec is not None:
+                script_inputs = spec.script_inputs
+        if spec is None and not script_inputs:
             self._remove_reverse_refs(uid)
             self._ref_cache.pop(uid, None)
             self._unindexed_uids.pop(uid, None)
@@ -78,7 +112,11 @@ class _ManagerDependencyTracker:
         ):
             self._unindexed_uids.pop(uid, None)
             return cached[2]
-        refs = script_input_dependency_refs(spec)
+        refs = (
+            _effective_script_input_dependency_refs(script_inputs)
+            if script_inputs
+            else script_input_dependency_refs(spec)
+        )
         self._remove_reverse_refs(uid)
         source_uids = {ref.node_uid for ref in refs}
         self._source_uids_by_dependent[uid] = source_uids
@@ -131,7 +169,7 @@ class _ManagerDependencyTracker:
         for blocker_uid, target_uids in list(
             self._pending_source_refresh_targets.items()
         ):
-            target_uids.discard(uid)
+            target_uids.pop(uid, None)
             if not target_uids:
                 self._pending_source_refresh_targets.pop(blocker_uid, None)
 
@@ -145,13 +183,62 @@ class _ManagerDependencyTracker:
             if not dependents:
                 self._dependents_by_source_uid.pop(source_uid, None)
 
-    def queue_source_refresh(self, blocker_uid: str, target_uid: str) -> None:
-        self._pending_source_refresh_targets.setdefault(blocker_uid, set()).add(
-            target_uid
+    def queue_source_refresh(
+        self,
+        blocker_uid: str,
+        target_uid: str,
+        *,
+        automatic: bool = False,
+    ) -> None:
+        """Queue a deferred refresh continuation.
+
+        A manual continuation remains manual when an automatic update later queues
+        the same target. This lets a disabled automatic-update setting cancel only
+        automatic self-refreshes.
+        """
+        target_uids = self._pending_source_refresh_targets.setdefault(blocker_uid, {})
+        existing = target_uids.get(target_uid)
+        target_uids[target_uid] = (
+            automatic if existing is None else existing and automatic
         )
 
     def pop_source_refreshes(self, blocker_uid: str) -> set[str]:
-        return self._pending_source_refresh_targets.pop(blocker_uid, set())
+        return set(self.pop_source_refresh_intents(blocker_uid))
+
+    def pop_source_refresh_intents(self, blocker_uid: str) -> dict[str, bool]:
+        """Return deferred targets mapped to whether they are automatic."""
+        return self._pending_source_refresh_targets.pop(blocker_uid, {})
+
+    def source_refresh_queued(self, blocker_uid: str, target_uid: str) -> bool:
+        return target_uid in self._pending_source_refresh_targets.get(blocker_uid, ())
+
+    def discard_source_refreshes(self, blocker_uids: Iterable[str]) -> None:
+        """Discard deferred continuation chains below the given blockers."""
+        pending = list(blocker_uids)
+        seen: set[str] = set()
+        while pending:
+            blocker_uid = pending.pop()
+            if blocker_uid in seen:
+                continue
+            seen.add(blocker_uid)
+            pending.extend(self.pop_source_refreshes(blocker_uid))
+
+    def discard_source_refresh_chain(self, uid: str) -> None:
+        """Discard queued refreshes that reach or depend on a failed target."""
+        pending = [uid]
+        seen: set[str] = set()
+        while pending:
+            target_uid = pending.pop()
+            if target_uid in seen:
+                continue
+            seen.add(target_uid)
+            pending.extend(self.pop_source_refreshes(target_uid))
+            for blocker_uid, target_uids in list(
+                self._pending_source_refresh_targets.items()
+            ):
+                target_uids.pop(target_uid, None)
+                if not target_uids:
+                    self._pending_source_refresh_targets.pop(blocker_uid, None)
 
     def has_pending_source_refreshes(self) -> bool:
         return bool(self._pending_source_refresh_targets)

@@ -258,6 +258,16 @@ and right-click context menus:
   Combine selected data with {func}`xarray.concat` and open the result in a new
   ImageTool window.
 
+- {guilabel}`Open in ftool…`
+
+  Select two ImageTool rows. The dialog assigns one row to {guilabel}`Data` and one row
+  to {guilabel}`Standard uncertainty`. Use {guilabel}`Swap` to exchange the assignments.
+  The manager opens a weighted `ftool`. The data ImageTool remains the parent row. The
+  standard uncertainty ImageTool remains a named dependency of `ftool`.
+
+  The standard uncertainty must align with, and broadcast to, the data. If it is missing
+  or incompatible, the manager does not open an unweighted `ftool`.
+
 - {guilabel}`New Empty Figure`
 
   Create a Figure Composer window without data sources or recipe steps.
@@ -573,9 +583,11 @@ many of the same operations and keep track of the manager history. For example:
   # xarray module calls also keep manager inputs when they receive tool handles
   xr.concat([tools[0], tools[1]], dim="scan")
 
+
   # Simple helper functions defined in the console can receive tool handles directly
   def normalize(data):
       return data / data.max()
+
 
   normalize(tools[0])
 
@@ -771,7 +783,11 @@ If you are using VS Code (or other editor that supports VS Code extensions), the
 If you wish to integrate the manager into custom workflows, you can programmatically load data and control ImageTool windows in the manager. Use the public functions exported from {mod}`erlab.interactive.imagetool.manager`:
 
 ```python
-from erlab.interactive.imagetool.manager import load_in_manager, replace_data, show_in_manager
+from erlab.interactive.imagetool.manager import (
+    load_in_manager,
+    replace_data,
+    show_in_manager,
+)
 
 # Open raw files and let the manager choose the loader interactively
 load_in_manager(["scan1.pxt", "scan2.pxt"])

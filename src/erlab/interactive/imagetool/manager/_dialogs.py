@@ -16,7 +16,7 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     import xarray
 
@@ -525,18 +525,20 @@ class _ConcatDialog(QtWidgets.QDialog):
                 result_data = xr.concat(to_concat, **concat_kwargs)
                 replacement_target = self.replacement_target()
                 if replacement_target is None:
-                    created_index = manager._show_multi_input_script_result(
-                        result_data,
-                        selected,
-                        operation_label="Concatenate selected ImageTools",
-                        operation_code=operation_code,
-                        data_role="source",
+                    created_index = (
+                        manager._lineage_controller._show_multi_input_script_result(
+                            result_data,
+                            selected,
+                            operation_label="Concatenate selected ImageTools",
+                            operation_code=operation_code,
+                            data_role="source",
+                        )
                     )
                 else:
                     replacement_node = manager._node_for_target(replacement_target)
                     replacement_node.replace_with_detached_data(
                         result_data,
-                        manager._multi_input_script_provenance(
+                        manager._lineage_controller._multi_input_script_provenance(
                             selected,
                             operation_label="Concatenate selected ImageTools",
                             operation_code=operation_code,
@@ -570,6 +572,72 @@ class _ConcatDialog(QtWidgets.QDialog):
                         preserved_target=replacement_target,
                     )
         super().accept()
+
+
+class _WeightedFtoolDialog(QtWidgets.QDialog):
+    """Assign the data and uncertainty inputs for a weighted ftool."""
+
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        targets: Sequence[tuple[int | str, str]],
+    ) -> None:
+        super().__init__(parent)
+        if len(targets) != 2:
+            raise ValueError("Weighted ftool requires exactly two targets.")
+        if targets[0][0] == targets[1][0]:
+            raise ValueError("Weighted ftool targets must be distinct.")
+        self._targets = tuple(targets)
+
+        self.setWindowTitle("Open in ftool")
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+
+        layout = QtWidgets.QFormLayout(self)
+        self._data_label = QtWidgets.QLabel(self)
+        self._data_label.setObjectName("manager_weighted_ftool_data_target")
+        self._uncertainty_label = QtWidgets.QLabel(self)
+        self._uncertainty_label.setObjectName(
+            "manager_weighted_ftool_uncertainty_target"
+        )
+        self._data_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._uncertainty_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        layout.addRow("Data", self._data_label)
+        layout.addRow("Standard uncertainty", self._uncertainty_label)
+
+        self._swap_button = QtWidgets.QPushButton("Swap", self)
+        self._swap_button.setObjectName("manager_weighted_ftool_swap_button")
+        self._swap_button.clicked.connect(self._swap_targets)
+        layout.addRow(self._swap_button)
+
+        self._button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self._button_box.setObjectName("manager_weighted_ftool_button_box")
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+        layout.addRow(self._button_box)
+        self._update_target_labels()
+
+    @property
+    def data_target(self) -> int | str:
+        return self._targets[0][0]
+
+    @property
+    def uncertainty_target(self) -> int | str:
+        return self._targets[1][0]
+
+    def _update_target_labels(self) -> None:
+        self._data_label.setText(self._targets[0][1])
+        self._uncertainty_label.setText(self._targets[1][1])
+
+    @QtCore.Slot()
+    def _swap_targets(self) -> None:
+        self._targets = self._targets[::-1]
+        self._update_target_labels()
 
 
 class _RenameDialog(QtWidgets.QDialog):

@@ -64,13 +64,10 @@ if typing.TYPE_CHECKING:
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
     from erlab.interactive.imagetool._provenance._model import (
+        ScriptInput,
         ToolProvenanceOperation,
         ToolProvenanceSpec,
     )
-    from erlab.interactive.imagetool._provenance._operations import (
-        ImageToolSelectionSourceBinding,
-    )
-
 else:
     import lazy_loader as _lazy
 
@@ -1098,6 +1095,8 @@ _TOOL_SOURCE_BINDING_ATTR = "tool_source_binding"
 _TOOL_SOURCE_STATE_ATTR = "tool_source_state"
 _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
 _TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
+_TOOL_SCRIPT_INPUTS_ATTR = "tool_script_inputs"
+_TOOL_PRIMARY_INPUT_ATTR = "tool_primary_input"
 _TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
 _TOOL_DATA_BLOB_NAME_ATTR = "tool_data_blob_name"
 _SAVED_TOOL_DATA_NAME = "<saved-tool-data>"
@@ -3284,21 +3283,23 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       work is materialized only when its data is needed, such as for show, save, copy,
       or output access. Closing a tool discards any work that was never needed.
 
-    For tools that support refreshing their data from an ImageTool source, subclasses
-    should also override the following hooks:
+    For tools that support refreshing their inputs, subclasses should also override
+    the following hooks:
 
-    - `update_data` must apply replacement data to the existing window without
-      recreating it. Return `False` when the incoming data is recognized but cannot be
-      applied yet, so the tool remains marked as stale.
+    - `update_inputs` must apply all replacement inputs to the existing window without
+      recreating it. Return `False` when the input was not applied. If asynchronous
+      work will apply it later, call `_defer_source_refresh()` before returning
+      `False`.
 
-    - `validate_update_data` can normalize or reject incoming source data before
-      `update_data` runs. Raise an exception to mark the source as unavailable.
+    - `validate_update_inputs` can normalize or reject the complete input mapping
+      before `update_inputs` runs. Raise an exception to mark the source as
+      unavailable.
 
     - `rebase_source_node_uids` should update any internal source-node references
       when a manager workspace is imported and saved node IDs are remapped.
 
     - `_cancel_background_work` can stop worker threads or other asynchronous work
-      before `update_data` mutates the tool state. Override
+      before `update_inputs` mutates the tool state. Override
       `BACKGROUND_TASK_TIMEOUT_MS` as needed to change the default wait timeout.
 
     For full compatibility with the ImageTool manager, the following optional
@@ -3359,6 +3360,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     sigStateChanged = QtCore.Signal()  #: :meta private:
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigProvenanceChanged = QtCore.Signal()  #: :meta private:
+    _sigSourceRefreshAborted = QtCore.Signal()  #: :meta private:
 
     def __init_subclass__(cls, **kwargs: typing.Any) -> None:
         """Put each concrete status setter inside the mutation boundary."""
@@ -3411,28 +3413,27 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._tool_root_layout.addWidget(self._source_status_bar, 0)
         QtWidgets.QMainWindow.setCentralWidget(self, self._tool_root_widget)
 
-        self._source_spec: ToolProvenanceSpec | None = None
-        self._source_binding: ImageToolSelectionSourceBinding | None = None
-        self._input_provenance_spec: ToolProvenanceSpec | None = None
-        self._input_provenance_snapshot_from_parent = False
+        self._script_inputs: tuple[ScriptInput, ...] = ()
+        self._pending_script_inputs: tuple[ScriptInput, ...] | None = None
+        self._primary_input: str | None = None
         self._provenance_revision = 0
         self._provenance_change_depth = 0
         self._provenance_change_pending = False
         if not self._PROVENANCE_IS_MODEL_OWNED:
             self.sigStateChanged.connect(self._advance_provenance_revision)
             self.sigDataChanged.connect(self._advance_provenance_revision)
-        self._input_provenance_parent_fetcher: (
+        self._input_resolver: (
             Callable[
                 [],
-                ToolProvenanceSpec | None,
+                tuple[Mapping[str, xr.DataArray], tuple[ScriptInput, ...]],
             ]
             | None
         ) = None
         self._source_refreshing: bool = False
         self._source_refresh_deferred: bool = False
+        self._source_refresh_rerun_requested: bool = False
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
-        self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
         self._managed_source_update_dialog: Callable[..., int] | None = None
         self._managed_source_reload: Callable[[], bool] | None = None
         self._managed_source_reload_available: Callable[[], bool] | None = None
@@ -4108,166 +4109,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             flush_deferred_restore=flush_deferred_restore,
         )
 
-    @property
-    def input_provenance_spec(
-        self,
-    ) -> ToolProvenanceSpec | None:
-        """Return the replay provenance snapshot for the displayed tool input data."""
-        return self._input_provenance_spec
-
-    def set_input_provenance_spec(
-        self,
-        provenance_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-    ) -> None:
-        """Set the replay provenance snapshot for the displayed tool input data."""
-        from erlab.interactive.imagetool._provenance._model import (
-            to_replay_provenance_spec,
-        )
-
-        self._set_input_provenance_snapshot(
-            to_replay_provenance_spec(provenance_spec),
-            from_parent=False,
-        )
-
-    def set_input_provenance_parent_fetcher(
-        self,
-        fetcher: Callable[
-            [],
-            ToolProvenanceSpec | None,
-        ]
-        | None,
-    ) -> None:
-        """Set the callback used to resolve provenance for future source refreshes."""
-        fetcher_changed = fetcher is not self._input_provenance_parent_fetcher
-        with self._provenance_mutation(changed=fetcher_changed):
-            self._input_provenance_parent_fetcher = fetcher
-            if (
-                fetcher is not None
-                and self.has_source_binding
-                and self._source_state == "fresh"
-            ):
-                self._sync_input_provenance_snapshot()
-
-    def _parent_input_provenance(
-        self,
-    ) -> ToolProvenanceSpec | None:
-        if self._input_provenance_parent_fetcher is None:
-            return None
-        from erlab.interactive.imagetool._provenance._model import (
-            to_replay_provenance_spec,
-        )
-
-        return to_replay_provenance_spec(self._input_provenance_parent_fetcher())
-
-    def _snapshot_input_provenance(
-        self,
-    ) -> ToolProvenanceSpec | None:
-        from erlab.interactive.imagetool._provenance._model import (
-            compose_display_provenance,
-        )
-
-        parent_data, source_spec = self._input_source_context()
-        parent_provenance = None
-        if self._input_provenance_parent_fetcher is not None:
-            parent_provenance = self._parent_input_provenance()
-        return compose_display_provenance(
-            parent_provenance,
-            source_spec,
-            parent_data=parent_data,
-        )
-
-    def _input_source_context(
-        self,
-    ) -> tuple[
-        xr.DataArray | None,
-        ToolProvenanceSpec | None,
-    ]:
-        parent_data: xr.DataArray | None = None
-        if self._source_parent_fetcher is not None:
-            try:
-                parent_data = self._source_parent_fetcher()
-            except Exception:
-                parent_data = None
-
-        return parent_data, self._source_spec
-
-    @typing.final
-    def _set_input_provenance_snapshot(
-        self,
-        provenance_spec: ToolProvenanceSpec | None,
-        *,
-        from_parent: bool,
-    ) -> None:
-        """Set the stored input snapshot through the provenance revision boundary."""
-        if (
-            provenance_spec is self._input_provenance_spec
-            and from_parent == self._input_provenance_snapshot_from_parent
-        ):
-            return
-        self._input_provenance_spec = provenance_spec
-        self._input_provenance_snapshot_from_parent = from_parent
-        self._notify_provenance_changed()
-
-    def _sync_input_provenance_snapshot(self) -> None:
-        """Refresh the stored input provenance snapshot for the displayed tool data."""
-        self._set_input_provenance_snapshot(
-            self._snapshot_input_provenance(),
-            from_parent=True,
-        )
-
-    def _effective_input_provenance_spec(
-        self,
-    ) -> ToolProvenanceSpec | None:
-        if self._input_provenance_spec is not None:
-            return self._input_provenance_spec
-        return self._snapshot_input_provenance()
-
-    def _copy_input_provenance_spec(
-        self,
-    ) -> ToolProvenanceSpec | None:
-        from erlab.interactive.imagetool._provenance._model import (
-            compose_display_provenance,
-            direct_replay_input_name,
-        )
-
-        if self.has_source_binding:
-            parent_data, source_spec = self._input_source_context()
-            parent_provenance = None
-            if self._input_provenance_parent_fetcher is not None:
-                fetched_parent = self._parent_input_provenance()
-                if direct_replay_input_name(fetched_parent) is not None:
-                    parent_provenance = fetched_parent
-
-            return compose_display_provenance(
-                parent_provenance,
-                source_spec,
-                parent_data=parent_data,
-            )
-        if (
-            self._input_provenance_spec is not None
-            and not self._input_provenance_snapshot_from_parent
-        ):
-            return self._input_provenance_spec
-        if self._input_provenance_parent_fetcher is None:
-            return self._input_provenance_spec
-        return None
-
     def _call_script_provenance_method(
         self,
         method_name: str,
         *,
-        input_name: str | None,
+        primary_input: str | None,
         data: xr.DataArray | None,
     ) -> typing.Any:
-        return getattr(self, method_name)(input_name=input_name, data=data)
-
-    def _script_provenance_input_name(self) -> str | None:
-        """Return the saved caller expression for standalone copied code."""
-        status = self.tool_status
-        if "data_name" not in type(status).model_fields:
-            return None
-        value = status.model_dump(include={"data_name"}).get("data_name")
-        return value if isinstance(value, str) else None
+        return getattr(self, method_name)(primary_input=primary_input, data=data)
 
     def _normalize_script_provenance(
         self,
@@ -4290,27 +4139,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self,
         definition: ToolScriptProvenanceDefinition,
         *,
-        input_name: str | None,
         data: xr.DataArray | None,
+        script_inputs: Sequence[ScriptInput] = (),
+        primary_input: str | None = None,
     ) -> ToolProvenanceSpec | None:
         from erlab.interactive.imagetool._provenance._model import script
         from erlab.interactive.imagetool._provenance._operations import (
             ScriptCodeOperation,
         )
-
-        source_input_name = input_name
-        if input_name in {
-            "eplt",
-            "era",
-            "erlab",
-            "eri",
-            "np",
-            "numpy",
-            "pathlib",
-            "xr",
-            "xarray",
-        }:
-            input_name = "input_data"
 
         operations: tuple[
             ToolProvenanceOperation,
@@ -4323,7 +4159,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     "str | None",
                     self._call_script_provenance_method(
                         definition.label_method,
-                        input_name=input_name,
+                        primary_input=primary_input,
                         data=data,
                     ),
                 )
@@ -4331,7 +4167,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 "str | None",
                 self._call_script_provenance_method(
                     typing.cast("str", definition.expression_method),
-                    input_name=input_name,
+                    primary_input=primary_input,
                     data=data,
                 ),
             )
@@ -4339,7 +4175,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if definition.assign_method is not None:
                 raw_assign = self._call_script_provenance_method(
                     definition.assign_method,
-                    input_name=input_name,
+                    primary_input=primary_input,
                     data=data,
                 )
             if not label or not expression or raw_assign is None:
@@ -4359,7 +4195,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     "str | None",
                     self._call_script_provenance_method(
                         definition.prelude_method,
-                        input_name=input_name,
+                        primary_input=primary_input,
                         data=data,
                     ),
                 )
@@ -4380,7 +4216,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     "str | None",
                     self._call_script_provenance_method(
                         definition.active_name_method,
-                        input_name=input_name,
+                        primary_input=primary_input,
                         data=data,
                     ),
                 )
@@ -4422,7 +4258,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     ),
                     self._call_script_provenance_method(
                         definition.operations_method,
-                        input_name=input_name,
+                        primary_input=primary_input,
                         data=data,
                     ),
                 )
@@ -4435,10 +4271,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     "str | None",
                     self._call_script_provenance_method(
                         definition.active_name_method,
-                        input_name=input_name,
+                        primary_input=primary_input,
                         data=data,
                     ),
                 )
+            if active_name is None and primary_input is not None:
+                active_name = primary_input
 
         operations = tuple(
             operation.model_copy(update={"framework_owned": True})
@@ -4453,21 +4291,26 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 "str | None",
                 self._call_script_provenance_method(
                     definition.seed_code_method,
-                    input_name=input_name,
+                    primary_input=primary_input,
                     data=data,
                 ),
             )
-        if source_input_name != input_name:
-            input_alias = f"{input_name} = {source_input_name}"
-            seed_code = "\n".join(
-                part for part in (input_alias, seed_code) if part is not None
-            )
+        if (
+            seed_code is None
+            and script_inputs
+            and definition.operations_method is not None
+            and active_name is not None
+            and primary_input is not None
+            and active_name != primary_input
+        ):
+            seed_code = f"{active_name} = {primary_input}"
 
         return script(
             *operations,
             start_label=definition.start_label,
             seed_code=seed_code,
             active_name=active_name,
+            script_inputs=script_inputs,
         )
 
     def _resolve_script_provenance(
@@ -4475,52 +4318,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         definition: ToolScriptProvenanceDefinition | None,
         *,
         data: xr.DataArray | None = None,
-        include_parent_provenance: bool = True,
         flush_deferred_restore: bool = True,
     ) -> ToolProvenanceSpec | None:
-        from erlab.interactive.imagetool._provenance._model import (
-            compose_full_provenance,
-            direct_replay_input_name,
-            replay_input_name,
-            to_replay_provenance_spec,
-        )
-
         if flush_deferred_restore and not self._flushing_restore_work:
             self._flush_restore_work()
         if definition is None:
             return None
-        input_provenance = (
-            self._effective_input_provenance_spec()
-            if include_parent_provenance
-            else self._copy_input_provenance_spec()
-        )
-        direct_input_name = (
-            direct_replay_input_name(input_provenance)
-            if input_provenance is not None
-            else None
-        )
-        input_name = replay_input_name(input_provenance)
-        local_spec = self._build_script_provenance(
+        return self._build_script_provenance(
             definition,
-            input_name=(
-                input_name
-                if input_provenance is not None
-                else self._script_provenance_input_name()
-            ),
             data=data,
+            script_inputs=self._script_inputs,
+            primary_input=self._primary_input,
         )
-        if direct_input_name is not None:
-            if input_provenance is None:
-                raise RuntimeError("Direct replay input requires input provenance.")
-            if local_spec is None:
-                return None
-            replay_spec = to_replay_provenance_spec(local_spec)
-            if replay_spec is None:
-                raise RuntimeError("Could not convert local provenance to replay spec.")
-            return replay_spec.model_copy(
-                update={"start_label": typing.cast("str", input_provenance.start_label)}
-            )
-        return compose_full_provenance(input_provenance, local_spec)
 
     def output_imagetool_data(self, output_id: str | enum.Enum) -> xr.DataArray | None:
         """Return the current data for a manager-tracked output declared in the class.
@@ -4584,7 +4393,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return self._copy_provenance_code(
             self._resolve_script_provenance(
                 self.COPY_PROVENANCE,
-                include_parent_provenance=False,
             )
         )
 
@@ -4672,7 +4480,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> erlab.interactive.imagetool.ImageTool | None:
         manager, parent_uid = self._managed_output_imagetool_parent()
         output_source_state: typing.Literal["fresh", "stale", "unavailable"] = (
-            self.source_state if self.has_source_binding else "fresh"
+            self.source_state if self._script_inputs else "fresh"
         )
 
         if output_id is None:
@@ -4792,18 +4600,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         )
 
     @property
-    def source_spec(
-        self,
-    ) -> ToolProvenanceSpec | None:
-        """Return the current ImageTool source specification."""
-        return self._source_spec
+    def script_inputs(self) -> tuple[ScriptInput, ...]:
+        """Return the fixed named inputs consumed by this tool."""
+        return tuple(item.model_copy(deep=True) for item in self._script_inputs)
 
     @property
-    def source_binding(
-        self,
-    ) -> ImageToolSelectionSourceBinding | None:
-        """Return legacy ImageTool selection state awaiting one-time materialization."""
-        return self._source_binding
+    def primary_input(self) -> str | None:
+        """Return the input used as the primary tool data source."""
+        return self._primary_input
 
     @property
     def source_state(self) -> typing.Literal["fresh", "stale", "unavailable"]:
@@ -4816,14 +4620,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return self._source_auto_update
 
     @property
-    def has_source_binding(self) -> bool:
-        """Return `True` when this tool is bound to ImageTool source data."""
-        return self._source_spec is not None or self._source_binding is not None
-
-    @property
     def source_status_text(self) -> str:
         """Return the status label shown for source bindings that need attention."""
-        if not self.has_source_binding:
+        if not self._script_inputs:
             return ""
         if self._source_state == "stale":
             return "Update Available"
@@ -4833,88 +4632,69 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             return "Automatic Updates Enabled"
         return ""
 
-    def set_source_binding(
+    def set_script_inputs(
         self,
-        source_spec: ToolProvenanceSpec | None,
+        script_inputs: Sequence[ScriptInput],
         *,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        primary_input: str | None = None,
         auto_update: bool = False,
         state: typing.Literal["fresh", "stale", "unavailable"] = "fresh",
     ) -> None:
-        """Bind this tool to data selected from a parent ImageTool.
+        """Set the fixed named input bindings for this tool."""
+        from erlab.interactive.imagetool._provenance._model import ScriptInput
 
-        Parameters
-        ----------
-        source_spec
-            Current source spec used for derivation display and refresh. When provided,
-            refresh applies this spec as stored.
-        source_binding
-            Legacy selection state from an ImageTool plot. Used only to materialize a
-            missing ``source_spec`` once; explicit ``source_spec`` values take priority.
-        auto_update
-            Whether compatible parent changes should update this tool automatically.
-        state
-            Current refresh state for manager and tool status UI.
-        """
-        from erlab.interactive.imagetool._provenance._model import (
-            ToolProvenanceSpec,
-            require_live_source_spec,
-        )
-        from erlab.interactive.imagetool._provenance._operations import (
-            ImageToolSelectionSourceBinding,
-        )
-
-        if source_spec is not None and not isinstance(
-            source_spec,
-            ToolProvenanceSpec,
-        ):
-            raise TypeError(
-                "source_spec must be a ToolProvenanceSpec or None. Use "
-                "parse_tool_provenance_spec() when deserializing saved payloads."
+        provided = tuple(script_inputs)
+        if any(not isinstance(item, ScriptInput) for item in provided):
+            raise TypeError("script_inputs must contain ScriptInput values")
+        normalized = tuple(item.model_copy(deep=True) for item in provided)
+        names = tuple(item.name for item in normalized)
+        if len(set(names)) != len(names):
+            raise ValueError("script input names must be unique")
+        if normalized and primary_input is None:
+            raise ValueError("script inputs require an explicit primary_input")
+        if self._script_inputs:
+            current_signature = tuple(
+                (item.name, item.data_role, item.source_spec)
+                for item in self._script_inputs
             )
-        if source_binding is not None and not isinstance(
-            source_binding,
-            ImageToolSelectionSourceBinding,
-        ):
-            raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
-        if source_spec is None and source_binding is not None:
-            with contextlib.suppress(Exception):
-                if self._source_parent_fetcher is not None:
-                    source_spec = source_binding.materialize(
-                        self._source_parent_fetcher()
-                    )
-        live_source_spec = require_live_source_spec(source_spec)
-        live_source_binding = None if live_source_spec is not None else source_binding
-        source_changed = (
-            live_source_spec is not self._source_spec
-            or live_source_binding is not self._source_binding
+            new_signature = tuple(
+                (item.name, item.data_role, item.source_spec) for item in normalized
+            )
+            if (
+                new_signature != current_signature
+                or primary_input != self._primary_input
+            ):
+                raise ValueError(
+                    "script input names, roles, transforms, order, and primary input "
+                    "are fixed"
+                )
+        if normalized:
+            if primary_input not in names:
+                raise ValueError("primary_input must name a script input")
+        elif primary_input is not None:
+            raise ValueError("primary_input requires at least one script input")
+
+        self._pending_script_inputs = None
+        changed = (
+            normalized != self._script_inputs or primary_input != self._primary_input
         )
         with self._coalesce_provenance_changes():
-            self._source_spec = live_source_spec
-            self._source_binding = live_source_binding
+            self._script_inputs = normalized
+            self._primary_input = primary_input
             self._source_auto_update = bool(auto_update)
-            if source_changed:
+            if changed:
                 self._notify_provenance_changed()
-            if self.has_source_binding and state == "fresh":
-                self._sync_input_provenance_snapshot()
-        self._set_source_state(state if self.has_source_binding else "fresh")
+        self._set_source_state(state if normalized else "fresh")
 
-    def set_source_parent_fetcher(
-        self, fetcher: Callable[[], xr.DataArray] | None
+    def _set_input_resolver(
+        self,
+        resolver: Callable[
+            [], tuple[Mapping[str, xr.DataArray], tuple[ScriptInput, ...]]
+        ]
+        | None,
     ) -> None:
-        """Set the callback used to fetch the latest parent ImageTool data."""
-        fetcher_changed = fetcher is not self._source_parent_fetcher
-        with self._provenance_mutation(changed=fetcher_changed):
-            self._source_parent_fetcher = fetcher
-            if fetcher is not None and self._source_binding is not None:
-                with contextlib.suppress(Exception):
-                    self._materialized_source_spec(fetcher())
-            if (
-                fetcher is not None
-                and self.has_source_binding
-                and self._source_state == "fresh"
-            ):
-                self._sync_input_provenance_snapshot()
+        """Set the standalone owner callback that resolves all current inputs."""
+        self._input_resolver = resolver
 
     def _set_managed_source_update_dialog(
         self, callback: Callable[..., int] | None
@@ -5025,11 +4805,53 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def finalize_source_refresh(self) -> None:
         """Record that the current source refresh has been applied to the tool."""
+        rerun_requested = self._source_refresh_rerun_requested
+        self._source_refresh_rerun_requested = False
         with self._coalesce_provenance_changes():
+            pending_inputs = self._pending_script_inputs
+            self._pending_script_inputs = None
+            if pending_inputs is not None:
+                with self._provenance_mutation(
+                    changed=pending_inputs != self._script_inputs
+                ):
+                    self._script_inputs = pending_inputs
             self._source_refresh_deferred = False
-            self._sync_input_provenance_snapshot()
-            self._set_source_state("fresh")
+            self._set_source_state(
+                "stale" if rerun_requested and not self._source_auto_update else "fresh"
+            )
             self.sigDataChanged.emit()
+        if rerun_requested and self._source_auto_update:
+            single_shot(self, 0, self._rerun_source_refresh)
+
+    def _rerun_source_refresh(self) -> None:
+        """Apply a queued standalone refresh after terminal callback cleanup."""
+        if self._source_refreshing or self._source_refresh_deferred:
+            return
+        if not self._source_auto_update:
+            self._set_source_state("stale")
+            return
+        self._update_from_input_source()
+
+    def _defer_source_refresh(self) -> None:
+        """Keep the current input transaction pending until explicit completion."""
+        if not self._source_refreshing or self._pending_script_inputs is None:
+            raise RuntimeError(
+                "source refresh can only be deferred from update_inputs()"
+            )
+        self._source_refresh_deferred = True
+
+    def abort_source_refresh(self) -> None:
+        """Discard a pending input transaction after deferred work fails or stops."""
+        if self._pending_script_inputs is None and not self._source_refresh_deferred:
+            return
+        rerun_requested = self._source_refresh_rerun_requested
+        self._source_refresh_rerun_requested = False
+        self._pending_script_inputs = None
+        self._source_refresh_deferred = False
+        self._set_source_state("stale")
+        self._sigSourceRefreshAborted.emit()
+        if rerun_requested and self._source_auto_update:
+            single_shot(self, 0, self._rerun_source_refresh)
 
     def _set_source_auto_update(self, value: bool) -> None:
         """Update the auto-refresh flag and notify manager-facing UI state."""
@@ -5043,13 +4865,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Update the source state, refresh the banner, and emit info changes."""
         if state != "stale":
             self._source_refresh_deferred = False
+            self._source_refresh_rerun_requested = False
+            self._pending_script_inputs = None
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
 
     def _refresh_source_status_widget(self) -> None:
         """Refresh the inline banner that reports update availability."""
-        if not self.has_source_binding or (
+        if not self._script_inputs or (
             self._source_state == "fresh" and not self._source_auto_update
         ):
             self._source_status_bar.hide()
@@ -5105,32 +4929,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             return False
         return self._managed_source_reload()
 
-    def _materialized_source_spec(
-        self, parent_data: xr.DataArray
-    ) -> ToolProvenanceSpec:
-        """Return the source spec to apply to ``parent_data``."""
-        if self._source_spec is not None:
-            return self._source_spec
-        if self._source_binding is not None:
-            with self._coalesce_provenance_changes():
-                self._source_spec = self._source_binding.materialize(parent_data)
-                self._source_binding = None
-                self._notify_provenance_changed()
-            return self._source_spec
-        raise RuntimeError("Tool is not bound to an ImageTool source.")
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        """Validate or normalize the complete named input mapping."""
+        return dict(inputs)
 
-    def _resolve_source_data(self, parent_data: xr.DataArray) -> xr.DataArray:
-        """Apply the current source spec or selection state to ``parent_data``."""
-        return self._materialized_source_spec(parent_data).apply(parent_data)
-
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        """Validate or normalize source data before `update_data` consumes it.
-
-        Subclasses can override this to enforce dimension, coordinate, or metadata
-        requirements for refreshed source data. Raise an exception to mark the source as
-        unavailable.
-        """
-        return new_data
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool | None:
+        """Apply a validated complete input mapping to the existing window."""
+        del inputs
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement update_inputs() to support "
+            "source updates."
+        )
 
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
         """Stop any running background work before mutating the tool state.
@@ -5139,26 +4950,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         shutdown before tearing down widgets or replacing internal state.
         """
         return True
-
-    def _perform_source_update(
-        self,
-        new_data: xr.DataArray,
-        *,
-        apply_update: Callable[[xr.DataArray], bool | None],
-        timeout_ms: int | None = None,
-    ) -> bool:
-        """Run an update from ImageTool without tearing down active worker UI."""
-        self._source_refresh_deferred = False
-        validated = self.validate_update_data(new_data)
-        if timeout_ms is None:
-            timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
-        if not self._cancel_background_work(timeout_ms=timeout_ms):
-            logger.warning(
-                "Timed out waiting for background work to stop while updating %s",
-                self.tool_name,
-            )
-            return False
-        return apply_update(validated) is not False
 
     @staticmethod
     def _wait_for_threadpool(
@@ -5183,82 +4974,91 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             return True
         return bool(threadpool.waitForDone(timeout_ms))
 
-    def _update_from_parent_source(self) -> bool:
-        """Fetch the latest parent data and apply it through `update_data`."""
-        if self._source_parent_fetcher is None:
-            return False
-        try:
-            parent_data = self._source_parent_fetcher()
-        except Exception:
-            return False
-        try:
-            resolved = self._resolve_source_data(parent_data)
-        except Exception:
-            self._set_source_state("unavailable")
-            return False
+    def _apply_inputs(
+        self,
+        inputs: Mapping[str, xr.DataArray],
+        refreshed_script_inputs: Sequence[ScriptInput],
+    ) -> bool:
+        """Validate and apply one complete input transaction."""
+        if not self._script_inputs:
+            raise RuntimeError("ToolWindow does not define script inputs")
+        refreshed_inputs = tuple(
+            item.model_copy(deep=True) for item in refreshed_script_inputs
+        )
+        expected_signature = tuple(
+            (item.name, item.data_role, item.source_spec)
+            for item in self._script_inputs
+        )
+        refreshed_signature = tuple(
+            (item.name, item.data_role, item.source_spec) for item in refreshed_inputs
+        )
+        expected_names = {name for name, _role, _source in expected_signature}
+        if refreshed_signature != expected_signature:
+            raise ValueError("refreshed inputs do not match the fixed input binding")
 
-        try:
-            resolved = self.validate_update_data(resolved)
-        except Exception:
-            self._set_source_state("unavailable")
-            return False
-
-        try:
+        def _update(validated: Mapping[str, xr.DataArray]) -> bool | None:
             self._source_refresh_deferred = False
             self._source_refreshing = True
-            update_complete = self.update_data(resolved)
-        except Exception:
-            logger.exception(
-                "Failed to update %s from ImageTool source data", self.tool_name
-            )
-            self._set_source_state("unavailable")
-            return False
-        finally:
-            self._source_refreshing = False
+            self._pending_script_inputs = refreshed_inputs
+            try:
+                return self.update_inputs(validated)
+            except Exception:
+                self.abort_source_refresh()
+                raise
+            finally:
+                self._source_refreshing = False
+
+        update_complete = self._update_inputs_transaction(
+            inputs, expected_names=expected_names, update=_update
+        )
         if update_complete is False:
+            if not self._source_refresh_deferred:
+                self._pending_script_inputs = None
+                self._source_refresh_rerun_requested = False
             self._set_source_state("stale")
             return False
         self.finalize_source_refresh()
         return True
 
-    def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> None:
-        """React to replacement of the parent ImageTool data source."""
-        if not self.has_source_binding:
+    def _update_from_input_source(self) -> bool:
+        """Resolve and apply all inputs owned by a standalone source."""
+        if self._input_resolver is None:
+            return False
+        try:
+            inputs, refreshed_inputs = self._input_resolver()
+            return self._apply_inputs(inputs, refreshed_inputs)
+        except Exception:
+            logger.exception("Failed to update %s from its inputs", self.tool_name)
+            self._set_source_state("unavailable")
+            return False
+
+    def handle_input_sources_replaced(self, _source: object = None) -> None:
+        """React to replacement of a standalone input producer."""
+        if self._input_resolver is None or not self._script_inputs:
+            return
+        if self._source_refreshing or self._source_refresh_deferred:
+            self._source_refresh_rerun_requested = True
+            self._set_source_state("stale")
             return
         try:
-            resolved = self._resolve_source_data(parent_data)
+            inputs, refreshed_inputs = self._input_resolver()
         except Exception:
             self._set_source_state("unavailable")
             return
-
-        try:
-            resolved = self.validate_update_data(resolved)
-        except Exception:
-            self._set_source_state("unavailable")
-            return
-
-        self._source_refresh_deferred = False
         if self._source_auto_update:
             try:
-                self._source_refreshing = True
-                update_complete = self.update_data(resolved)
+                self._apply_inputs(inputs, refreshed_inputs)
             except Exception:
-                logger.exception(
-                    "Failed to auto-update %s from ImageTool source data",
-                    self.tool_name,
-                )
+                logger.exception("Failed to auto-update %s inputs", self.tool_name)
                 self._set_source_state("unavailable")
-                return
-            finally:
-                self._source_refreshing = False
-            if update_complete is False:
-                if self._source_state != "stale":
-                    self._set_source_state("stale")
-                return
-            self.finalize_source_refresh()
-        else:
-            if self._source_state != "stale":
-                self._set_source_state("stale")
+            return
+        try:
+            self.validate_update_inputs(inputs)
+        except Exception:
+            self._set_source_state("unavailable")
+            return
+        if self._source_state != "stale":
+            self._set_source_state("stale")
 
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None
@@ -5267,7 +5067,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if self._managed_source_update_dialog is not None:
             return self._managed_source_update_dialog(parent=parent)
 
-        if not self.has_source_binding:
+        if not self._script_inputs:
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
         dialog = _ToolSourceUpdateDialog(
@@ -5279,23 +5079,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if result == int(QtWidgets.QDialog.DialogCode.Accepted):
             self._set_source_auto_update(dialog.auto_update_check.isChecked())
             if dialog.update_requested and self._source_state == "stale":
-                self._update_from_parent_source()
+                self._update_from_input_source()
         return result
 
-    def update_data(self, new_data: xr.DataArray) -> bool | None:
-        """Apply refreshed source data to the existing tool window.
-
-        Subclasses must override this when they support updates from ImageTool data.
-        Return `False` to leave the tool marked as stale when the new data is recognized
-        but cannot be published as a fresh result immediately.
-        """
-        raise NotImplementedError(
-            "Subclasses of ToolWindow must implement update_data() to support "
-            "updates from ImageTool data."
-        )
-
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
-        """Rebase internal source-node references after workspace import."""
+        """Rebase subclass-owned source-node references after workspace import."""
+        del uid_map
 
     @property
     def preview_imageitem(self) -> pg.ImageItem | None:
@@ -5345,19 +5134,32 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         view_state = self._plot_state_registry.state_json()
         if view_state is not None:
             attrs[TOOL_VIEW_STATE_ATTR] = view_state
-        if self._source_spec is not None:
-            attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(
-                self._source_spec.model_dump(mode="json")
-            )
-        if self.has_source_binding:
+        attrs.update(
+            self._saved_script_input_attrs(self._script_inputs, self._primary_input)
+        )
+        if self._script_inputs:
             attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
             attrs[_TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(self._source_auto_update)
-        input_provenance = self._effective_input_provenance_spec()
-        if input_provenance is not None:
-            attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR] = json.dumps(
-                input_provenance.model_dump(mode="json")
-            )
         return attrs
+
+    @staticmethod
+    def _saved_script_input_attrs(
+        script_inputs: Sequence[ScriptInput], primary_input: str | None
+    ) -> dict[str, typing.Any]:
+        """Encode one canonical saved-input attribute pair."""
+        inputs = tuple(script_inputs)
+        if not inputs:
+            if primary_input is not None:
+                raise ValueError("primary input requires at least one script input")
+            return {}
+        if primary_input not in {item.name for item in inputs}:
+            raise ValueError("primary input must name a script input")
+        return {
+            _TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
+                [item.model_dump(mode="json") for item in inputs]
+            ),
+            _TOOL_PRIMARY_INPUT_ATTR: primary_input,
+        }
 
     def _saved_tool_status(self) -> M:
         """Return the state model to serialize for this tool."""
@@ -5392,29 +5194,76 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
-    ) -> None:
+    ) -> bool | None:
         """Restore named data artifacts saved by `_persistence_data_items()`."""
         del data_items, ds
+        return False
+
+    def _persistence_input_item_keys(self) -> dict[str, str]:
+        """Map canonical input names to their saved data item keys."""
+        return {
+            item.name: (
+                _SAVED_TOOL_DATA_NAME if item.name == self._primary_input else item.name
+            )
+            for item in self._script_inputs
+        }
+
+    def _update_inputs_transaction(
+        self,
+        inputs: Mapping[str, xr.DataArray],
+        *,
+        expected_names: Collection[str],
+        update: Callable[[Mapping[str, xr.DataArray]], bool | None],
+    ) -> bool | None:
+        """Validate, stop background work, and apply one complete input update."""
+        expected = set(expected_names)
+        if set(inputs) != expected:
+            raise ValueError("inputs do not match the declared input names")
+        validated = dict(self.validate_update_inputs(inputs))
+        if set(validated) != expected:
+            raise ValueError("validated inputs do not match the declared input names")
+        if not self._cancel_background_work(timeout_ms=self.BACKGROUND_TASK_TIMEOUT_MS):
+            logger.warning(
+                "Timed out waiting for background work to stop while updating %s",
+                self.tool_name,
+            )
+            return False
+        return update(validated)
 
     def _replace_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
         """Replace saved data artifacts in an already constructed tool window."""
-        primary_data = data_items.get(_SAVED_TOOL_DATA_NAME)
-        if primary_data is not None:
-            update_overridden = type(self).update_data is not ToolWindow.update_data
-            restore_overridden = (
-                type(self)._restore_persistence_data_items
-                is not ToolWindow._restore_persistence_data_items
-            )
-            if update_overridden:
-                current_name = self.tool_data.name
-                self.update_data(primary_data.rename(current_name))
-            elif not restore_overridden:
+        if not self._script_inputs:
+            if self._restore_persistence_data_items(data_items, ds) is False:
                 raise NotImplementedError(
-                    f"{type(self).__name__} must implement update_data() or "
-                    "_restore_persistence_data_items() to replace saved data."
+                    f"{type(self).__name__} must implement "
+                    "_restore_persistence_data_items()"
                 )
+            return
+        if len(self._script_inputs) == 1:
+            self._restore_persistence_data_items(data_items, ds)
+            return
+
+        primary_input = typing.cast("str", self._primary_input)
+        item_keys = self._persistence_input_item_keys()
+        try:
+            inputs = {name: data_items[key] for name, key in item_keys.items()}
+        except KeyError as exc:
+            raise ValueError(
+                f"{type(self).__name__}._persistence_data_items() must include each "
+                f"script input persistence item; missing {exc.args[0]!r}"
+            ) from exc
+        inputs[primary_input] = inputs[primary_input].rename(self.tool_data.name)
+        if (
+            self._update_inputs_transaction(
+                inputs, expected_names=inputs, update=self.update_inputs
+            )
+            is False
+        ):
+            raise RuntimeError(
+                "Persisted ToolWindow input replacement was deferred or cancelled"
+            )
         self._restore_persistence_data_items(data_items, ds)
 
     def _flush_restore_work_for_save(self) -> None:
@@ -5463,20 +5312,45 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if (
             not self._save_tool_data_references
             or variable_name != _SAVED_TOOL_DATA_NAME
-            or not self.has_source_binding
             or self.source_state != "fresh"
-            or self._source_parent_fetcher is None
+            or len(self._script_inputs) != 1
         ):
             return None
-        try:
-            parent_data = self._source_parent_fetcher()
-            resolved = self._materialized_source_spec(parent_data).apply(parent_data)
-            resolved = self.validate_update_data(resolved)
-        except Exception:
+        script_input = self._script_inputs[0]
+        if (
+            script_input.name != self._primary_input
+            or script_input.node_uid is None
+            or (
+                self._save_tool_data_reference_node_uids is not None
+                and script_input.node_uid
+                not in self._save_tool_data_reference_node_uids
+            )
+        ):
             return None
-        if not self._reference_resolves_current_tool_data(resolved, data):
-            return None
-        return {"kind": "parent_source"}
+        payload: dict[str, typing.Any] = {
+            "kind": "manager_node",
+            "node_uid": script_input.node_uid,
+            "node_snapshot_token": script_input.node_snapshot_token,
+            "data_role": script_input.data_role,
+        }
+        if script_input.source_spec is not None:
+            payload["source_spec"] = script_input.source_spec
+        return payload
+
+    @staticmethod
+    def _apply_saved_tool_data_reference(
+        reference: Mapping[str, typing.Any], data: xr.DataArray
+    ) -> xr.DataArray:
+        """Apply the optional canonical transform stored on a data reference."""
+        from erlab.interactive.imagetool._provenance._model import (
+            parse_tool_provenance_spec,
+            require_live_source_spec,
+        )
+
+        source_spec = require_live_source_spec(
+            parse_tool_provenance_spec(reference.get("source_spec"))
+        )
+        return data if source_spec is None else source_spec.apply(data)
 
     def _reference_saved_tool_data(
         self, variable_name: str, data: xr.DataArray
@@ -5496,10 +5370,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def _saved_tool_data_dataset(self) -> xr.Dataset:
         data_items = self._persistence_data_items()
-        if _SAVED_TOOL_DATA_NAME not in data_items:
+        required_items = {_SAVED_TOOL_DATA_NAME}
+        required_items.update(self._persistence_input_item_keys().values())
+        missing_items = required_items.difference(data_items)
+        if missing_items:
+            missing = min(missing_items)
             raise ValueError(
                 f"{type(self).__name__}._persistence_data_items() must include "
-                f"{_SAVED_TOOL_DATA_NAME!r}"
+                f"the canonical input item {missing!r}"
             )
 
         variables: dict[str, xr.DataArray] = {}
@@ -5568,24 +5446,127 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         return references
 
     @staticmethod
-    def _saved_source_spec_from_attrs(
-        ds: xr.Dataset,
-    ) -> ToolProvenanceSpec:
+    def _saved_script_input_metadata(
+        attrs: Mapping[str, typing.Any],
+        *,
+        source_parent_data: xr.DataArray | None = None,
+    ) -> tuple[tuple[ScriptInput, ...], str | None]:
+        """Decode canonical inputs and the released unary metadata format."""
         from erlab.interactive.imagetool._provenance._model import (
+            ScriptInput,
+            parse_script_inputs,
             parse_tool_provenance_spec,
             require_live_source_spec,
         )
-
-        payload = ds.attrs.get(_TOOL_SOURCE_SPEC_ATTR)
-        if not isinstance(payload, str):
-            raise TypeError("Referenced tool data is missing source provenance")
-        source_spec = parse_tool_provenance_spec(
-            typing.cast("Mapping[str, typing.Any]", json.loads(payload))
+        from erlab.interactive.imagetool._provenance._operations import (
+            ImageToolSelectionSourceBinding,
         )
-        live_source_spec = require_live_source_spec(source_spec)
-        if live_source_spec is None:
-            raise ValueError("Referenced tool data source provenance is not replayable")
-        return live_source_spec
+
+        def _legacy_value(name: str, decode: Callable[[typing.Any], typing.Any]):
+            raw_value = attrs.get(name)
+            if raw_value is None:
+                return None
+            try:
+                return decode(json.loads(raw_value))
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid legacy ToolWindow input metadata", exc_info=True
+                )
+                return None
+
+        def _materialized_source_spec(source_binding):
+            if source_binding is None or source_parent_data is None:
+                return None
+            try:
+                return source_binding.materialize(source_parent_data)
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid legacy ToolWindow input metadata", exc_info=True
+                )
+                return None
+
+        raw_script_inputs = attrs.get(_TOOL_SCRIPT_INPUTS_ATTR)
+        if raw_script_inputs is not None:
+            try:
+                script_inputs = parse_script_inputs(raw_script_inputs)
+                raw_primary = attrs.get(_TOOL_PRIMARY_INPUT_ATTR)
+                if isinstance(raw_primary, bytes):
+                    raw_primary = raw_primary.decode()
+                primary_input = raw_primary if isinstance(raw_primary, str) else None
+                ToolWindow._saved_script_input_attrs(script_inputs, primary_input)
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved ToolWindow script inputs", exc_info=True
+                )
+            else:
+                if (
+                    script_inputs
+                    and source_parent_data is not None
+                    and _TOOL_SOURCE_BINDING_ATTR in attrs
+                ):
+                    primary_index = tuple(item.name for item in script_inputs).index(
+                        primary_input
+                    )
+                    if script_inputs[primary_index].source_spec is None:
+                        source_spec = _materialized_source_spec(
+                            _legacy_value(
+                                _TOOL_SOURCE_BINDING_ATTR,
+                                ImageToolSelectionSourceBinding.model_validate,
+                            )
+                        )
+                        if source_spec is not None:
+                            updated = list(script_inputs)
+                            updated[primary_index] = script_inputs[
+                                primary_index
+                            ].model_copy(
+                                update={
+                                    "source_spec": source_spec.model_dump(mode="json")
+                                }
+                            )
+                            script_inputs = tuple(updated)
+                return script_inputs, primary_input
+
+        raw_source_spec = attrs.get(_TOOL_SOURCE_SPEC_ATTR)
+        raw_source_binding = attrs.get(_TOOL_SOURCE_BINDING_ATTR)
+        raw_input_provenance = attrs.get(_TOOL_INPUT_PROVENANCE_SPEC_ATTR)
+        if (
+            raw_source_spec is None
+            and raw_source_binding is None
+            and raw_input_provenance is None
+        ):
+            return (), None
+        source_spec = _legacy_value(
+            _TOOL_SOURCE_SPEC_ATTR,
+            lambda value: require_live_source_spec(parse_tool_provenance_spec(value)),
+        )
+        source_binding = (
+            None
+            if source_spec is not None
+            else _legacy_value(
+                _TOOL_SOURCE_BINDING_ATTR,
+                ImageToolSelectionSourceBinding.model_validate,
+            )
+        )
+        if source_spec is None:
+            source_spec = _materialized_source_spec(source_binding)
+        provenance_spec = _legacy_value(
+            _TOOL_INPUT_PROVENANCE_SPEC_ATTR, parse_tool_provenance_spec
+        )
+        if source_spec is None and provenance_spec is None and source_binding is None:
+            return (), None
+        return (
+            ScriptInput(
+                name="data",
+                source_spec=(
+                    None if source_spec is None else source_spec.model_dump(mode="json")
+                ),
+                provenance_spec=(
+                    None
+                    if provenance_spec is None
+                    else provenance_spec.model_dump(mode="json")
+                ),
+            ),
+        ), "data"
 
     @classmethod
     def _resolve_saved_tool_data_reference(
@@ -5604,7 +5585,22 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     "Saved tool data references parent ImageTool data, but the "
                     "parent data is unavailable."
                 )
-            return cls._saved_source_spec_from_attrs(ds).apply(source_parent_data)
+            script_inputs, primary_input = cls._saved_script_input_metadata(
+                ds.attrs, source_parent_data=source_parent_data
+            )
+            source_spec = next(
+                (
+                    item.parsed_source_spec()
+                    for item in script_inputs
+                    if item.name == primary_input
+                ),
+                None,
+            )
+            if source_spec is None:
+                raise ValueError(
+                    "Referenced tool data source provenance is not replayable"
+                )
+            return source_spec.apply(source_parent_data)
         if kind == "manager_node":
             if reference_resolver is None:
                 raise _MissingSavedToolDataReferenceError(
@@ -5776,50 +5772,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     ds.attrs["tool_state"]
                 )
             tool._tool_display_name = ds.attrs.get("tool_display_name", "")
-            source_spec = None
-            if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
-                try:
-                    from erlab.interactive.imagetool._provenance._model import (
-                        parse_tool_provenance_spec,
-                        require_live_source_spec,
-                    )
+            script_inputs, primary_input = cls_obj._saved_script_input_metadata(
+                ds.attrs,
+                source_parent_data=source_parent_data,
+            )
 
-                    source_spec = parse_tool_provenance_spec(
-                        typing.cast(
-                            "Mapping[str, typing.Any]",
-                            json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
-                        )
-                    )
-                    source_spec = require_live_source_spec(source_spec)
-                except Exception:
-                    logger.warning(
-                        "Ignoring invalid saved tool source provenance for %s",
-                        cls_obj.__qualname__,
-                        exc_info=True,
-                    )
-            source_binding = None
-            if source_spec is None and _TOOL_SOURCE_BINDING_ATTR in ds.attrs:
-                try:
-                    from erlab.interactive.imagetool._provenance._operations import (
-                        ImageToolSelectionSourceBinding,
-                    )
-
-                    source_binding = ImageToolSelectionSourceBinding.model_validate(
-                        typing.cast(
-                            "Mapping[str, typing.Any]",
-                            json.loads(ds.attrs[_TOOL_SOURCE_BINDING_ATTR]),
-                        )
-                    )
-                except Exception:
-                    logger.warning(
-                        "Ignoring invalid saved tool source binding for %s",
-                        cls_obj.__qualname__,
-                        exc_info=True,
-                    )
-            if source_spec is not None or source_binding is not None:
-                tool.set_source_binding(
-                    source_spec,
-                    source_binding=source_binding,
+            if script_inputs:
+                tool.set_script_inputs(
+                    script_inputs,
+                    primary_input=primary_input,
                     auto_update=bool(
                         ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)
                     ),
@@ -5827,22 +5788,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                         ds.attrs.get(_TOOL_SOURCE_STATE_ATTR)
                     ),
                 )
-            if _TOOL_INPUT_PROVENANCE_SPEC_ATTR in ds.attrs:
-                try:
-                    tool.set_input_provenance_spec(
-                        typing.cast(
-                            "Mapping[str, typing.Any]",
-                            json.loads(ds.attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR]),
-                        )
-                    )
-                except Exception:
-                    logger.warning(
-                        "Ignoring invalid saved tool input provenance for %s",
-                        cls_obj.__qualname__,
-                        exc_info=True,
-                    )
-            tool._restore_persistence_payload(ds)
-            tool._restore_persistence_data_items(data_items, ds)
+            if script_inputs:
+                tool._replace_persistence_data_items(data_items, ds)
+                tool._restore_persistence_payload(ds)
+            else:
+                tool._restore_persistence_payload(ds)
+                tool._restore_persistence_data_items(data_items, ds)
             tool._plot_state_registry.restore_json(ds.attrs.get(TOOL_VIEW_STATE_ATTR))
             tool.setWindowTitle(ds.attrs["tool_title"])
             if (

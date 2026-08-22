@@ -47,6 +47,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_full_provenance,
@@ -2699,13 +2700,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if (
             self._managed_source_chain_reload_target() is not None
             or self._direct_reloadable()
-            or self._provenance_reloadable()
         ):
             return True
         manager = self._manager_instance if self._in_manager else None
-        return manager is not None and manager._script_reload_from_slicer_area(
-            self, execute=False
-        )
+        if (
+            manager is not None
+            and self.provenance_spec is not None
+            and self.provenance_spec.kind == "script"
+            and self.provenance_spec.script_inputs
+        ):
+            return manager._script_reload_from_slicer_area(self, execute=False)
+        return self._provenance_reloadable()
 
     def _managed_source_chain_reload_target(
         self,
@@ -3037,15 +3042,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
             manager, target = managed_reload
             return manager._reload_source_chain_for_child(target)
         manager = self._manager_instance if self._in_manager else None
-        if (
-            manager is not None
+        direct_reloadable = self._direct_reloadable()
+        managed_script_reload = (
+            not direct_reloadable
+            and manager is not None
             and self.provenance_spec is not None
             and self.provenance_spec.kind == "script"
             and self.provenance_spec.script_inputs
+        )
+        if (
+            manager is not None
+            and managed_script_reload
             and manager._script_reload_from_slicer_area(self, execute=False)
         ):
             return manager._script_reload_from_slicer_area(self, execute=True)
-        if self._direct_reloadable() or self._provenance_reloadable():
+        if direct_reloadable or (
+            not managed_script_reload and self._provenance_reloadable()
+        ):
             try:
                 replay_capture = (
                     contextlib.nullcontext(None)
@@ -3067,17 +3080,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return True
         if manager is not None:
             return manager._script_reload_from_slicer_area(self, execute=True)
-        if not self.reloadable:
-            return False
-        try:
-            data, kwargs = self._fetch_reload_data()
-            self._replace_reload_data(data, kwargs)
-        except Exception:
-            erlab.interactive.utils.MessageDialog.critical(
-                self, "Error", "An error occurred while reloading data."
-            )
-            return False
-        return True
+        return False
 
     def _replace_reload_data(
         self,
@@ -3988,10 +3991,59 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     manager.add_widget(widget)
                 return
 
-        if isinstance(widget, erlab.interactive.utils.ToolWindow):
-            widget.set_source_parent_fetcher(lambda: self._tool_source_parent_data())
-            self.sigSourceDataReplaced.connect(widget.handle_parent_source_replaced)
-            widget.set_input_provenance_parent_fetcher(self.displayed_provenance_spec)
+        if (
+            isinstance(widget, erlab.interactive.utils.ToolWindow)
+            and widget.script_inputs
+        ):
+            if len(widget.script_inputs) != 1 or widget.primary_input is None:
+                raise ValueError(
+                    "ToolWindows opened from ImageTool must declare one input"
+                )
+            script_input = widget.script_inputs[0]
+
+            def _resolve_inputs() -> tuple[
+                dict[str, xr.DataArray], tuple[ScriptInput, ...]
+            ]:
+                if script_input.data_role == "source":
+                    parent_data, _state = self.persistence_data_and_state()
+                    parent_provenance = self.provenance_spec
+                else:
+                    parent_data = self.displayed_data
+                    parent_provenance = self.displayed_provenance_spec()
+                source_spec = script_input.parsed_source_spec()
+                resolved = (
+                    parent_data
+                    if source_spec is None
+                    else source_spec.apply(parent_data)
+                )
+                provenance_spec = (
+                    None
+                    if parent_provenance is None
+                    else compose_full_provenance(parent_provenance, source_spec)
+                )
+                refreshed = script_input.model_copy(
+                    update={
+                        "node_uid": None,
+                        "node_snapshot_token": None,
+                        "provenance_spec": (
+                            None
+                            if provenance_spec is None
+                            else provenance_spec.model_dump(mode="json")
+                        ),
+                    }
+                )
+                return {script_input.name: resolved}, (refreshed,)
+
+            _, refreshed_inputs = _resolve_inputs()
+            widget.set_script_inputs(
+                refreshed_inputs,
+                primary_input=widget.primary_input,
+                auto_update=widget.source_auto_update,
+                state=widget.source_state,
+            )
+            widget._set_input_resolver(_resolve_inputs)
+            widget._set_managed_source_reload(widget._update_from_input_source)
+            self.sigSourceDataReplaced.connect(widget.handle_input_sources_replaced)
 
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:
@@ -4002,6 +4054,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         def new_close_event(event: QtGui.QCloseEvent) -> None:
             old_close_event(event)
             if event.isAccepted():
+                if isinstance(widget, erlab.interactive.utils.ToolWindow):
+                    widget._set_input_resolver(None)
                 with self._assoc_tools_lock:
                     if uid in self._associated_tools:
                         tool = self._associated_tools.pop(uid)
@@ -4011,6 +4065,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         widget.show()
         widget.raise_()
         widget.activateWindow()
+
+    @staticmethod
+    def _declare_full_data_tool_input(widget: QtWidgets.QWidget) -> None:
+        if not isinstance(widget, erlab.interactive.utils.ToolWindow):
+            return
+        widget.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    source_spec=full_data().model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
 
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
@@ -4042,8 +4110,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         if tool is None:
             return
-        if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(full_data())
+        self._declare_full_data_tool_input(tool)
         self.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -4052,8 +4119,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         tool = erlab.interactive.meshtool(
             self.data, data_name=self.watched_data_name, execute=False
         )
-        if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(full_data())
+        self._declare_full_data_tool_input(tool)
         self.add_tool_window(tool)
 
     def adjust_layout(

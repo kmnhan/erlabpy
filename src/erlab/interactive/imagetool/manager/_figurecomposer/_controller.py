@@ -221,7 +221,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         )
 
         source = FigureSourceState.from_script_input(
-            self._host._script_input_for_node(node)
+            self._host._lineage_controller._script_input_for_node(node)
         )
         alias = _source_unique_name(
             _source_alias_candidate(data) or source.name, reserved
@@ -582,7 +582,9 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         data_role = current_source.data_role
         data = source_node.data_for_role(data_role)
         source = FigureSourceState.from_script_input(
-            self._host._script_input_for_node(source_node, data_role=data_role)
+            self._host._lineage_controller._script_input_for_node(
+                source_node, data_role=data_role
+            )
         )
         if not tool.replace_source(source_name, source, data):
             return False

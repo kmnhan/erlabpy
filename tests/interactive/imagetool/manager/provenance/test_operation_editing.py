@@ -1,4 +1,3 @@
-import contextlib
 import pathlib
 import types
 import typing
@@ -626,14 +625,7 @@ def test_manager_paste_detached_trusted_script_propagates_cancel() -> None:
     def cancel(*_args, **_kwargs) -> None:
         raise manager_widgets._TrustedScriptReplayCancelled
 
-    controller._manager._ensure_script_provenance_trusted = cancel
-    controller._manager._extensions = types.SimpleNamespace(
-        execution=types.SimpleNamespace(
-            capture_replay_sources=lambda: contextlib.nullcontext(object()),
-            run_operation=lambda operation, value: operation.apply(value),
-        ),
-        replay_loader=lambda *_args, **_kwargs: None,
-    )
+    controller._manager._lineage_controller._ensure_script_provenance_trusted = cancel
 
     with pytest.raises(manager_widgets._TrustedScriptReplayCancelled):
         controller._paste_detached_steps(node, local, where="pasting")

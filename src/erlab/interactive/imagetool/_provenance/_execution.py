@@ -9,6 +9,7 @@ import json
 import pathlib
 import typing
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import xarray as xr
@@ -23,9 +24,12 @@ from erlab.interactive.imagetool._provenance._code import (
 )
 from erlab.interactive.imagetool._provenance._graph import (
     _REPLAY_ALIASES,
+    InputProvenanceResolver,
     LiveInputResolver,
     ReplayGraph,
     ReplayGraphError,
+    _memoized_by_identity,
+    _memoized_input_provenance_resolver,
     _validate_script_provenance,
     compile_replay_graph,
 )
@@ -33,6 +37,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileLoadSourceStatus,
+    ScriptInput,
     ToolProvenanceSpec,
     _script_input_reference_text,
     has_file_load_source,
@@ -51,6 +56,16 @@ if typing.TYPE_CHECKING:
     _CapabilityStatusResolver = Callable[
         [str, str, typing.Literal["routine", "loader"], str], _CapabilityStatus
     ]
+
+
+_MAX_SCRIPT_REPLAY_DEPTH = 20
+
+
+def _memoized_live_input_resolver(
+    resolver: LiveInputResolver | None,
+) -> LiveInputResolver | None:
+    """Cache one live-input decision for each exact input object."""
+    return None if resolver is None else _memoized_by_identity(resolver)
 
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
@@ -450,20 +465,13 @@ def replay_file_provenance(
         raise TypeError("Expected structured file provenance") from exc
 
 
-def file_load_source_status(
-    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+def _file_load_source_status(
+    load_source: FileLoadSource | None,
     *,
     extension_status_resolver: _CapabilityStatusResolver | None = None,
 ) -> FileLoadSourceStatus:
-    """Return the current availability of the recorded file-load source.
-
-    A managed ImageTool can supply its own resolver so session-specific extension
-    validation failures do not affect other manager instances.
-    """
-    spec = parse_tool_provenance_spec(value)
-    if spec is None or spec.file_load_source is None:
+    if load_source is None:
         return "no-file-load-source"
-    load_source = spec.file_load_source
     if not pathlib.Path(load_source.path).exists():
         return "missing-file"
     replay_call = load_source.replay_call
@@ -505,6 +513,184 @@ def file_load_source_status(
         if capability_status == "validation-failed":
             return "extension-validation-failed"
     return "loadable"
+
+
+def file_load_source_status(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
+) -> FileLoadSourceStatus:
+    """Return the current availability of the recorded file-load source.
+
+    A managed ImageTool can supply its own resolver so session-specific extension
+    validation failures do not affect other manager instances.
+    """
+    spec = parse_tool_provenance_spec(value)
+    return _file_load_source_status(
+        None if spec is None else spec.file_load_source,
+        extension_status_resolver=extension_status_resolver,
+    )
+
+
+@dataclass(frozen=True)
+class _ReplayCapability:
+    replayable: bool = False
+    requires_trust: bool = False
+    reloadable: bool = False
+
+
+def _require_file_load_source(load_source: FileLoadSource) -> None:
+    status = _file_load_source_status(load_source)
+    if status == "loadable":
+        return
+    if status == "missing-file":
+        message = "The recorded source file is not available"
+    elif status == "no-replay-call":
+        message = "The recorded source does not define replay loader metadata"
+    elif status == "missing-loader":
+        message = "The recorded source loader is not available"
+    else:
+        message = "The recorded provenance does not define a file source"
+    raise ReplayGraphError(message)
+
+
+def _validate_replay_graph_file_sources(graph: ReplayGraph) -> None:
+    """Require every reachable file node to have an available loader."""
+    for node in graph.nodes:
+        if node.kind == "file_load":
+            _require_file_load_source(node.payload["load_source"])
+
+
+def _script_validates(
+    spec: ToolProvenanceSpec,
+    external_input_names: set[str] | None,
+    strict: bool,
+) -> bool:
+    try:
+        _validate_script_provenance(
+            spec,
+            external_input_names=external_input_names,
+            strict_replay_code=strict,
+        )
+    except (ReplayGraphError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _analyze_replay_capability(
+    spec: ToolProvenanceSpec,
+    external_input_names: set[str] | None,
+    live_input_resolver: LiveInputResolver | None,
+    input_provenance_resolver: InputProvenanceResolver,
+    depth: int,
+    *,
+    check_reloadability: bool = True,
+) -> _ReplayCapability:
+    if spec.kind == "file":
+        return _ReplayCapability(
+            reloadable=check_reloadability
+            and file_load_source_status(spec) == "loadable"
+        )
+    if spec.kind != "script":
+        return _ReplayCapability()
+    if depth > _MAX_SCRIPT_REPLAY_DEPTH:
+        raise ReplayGraphError(
+            "Nested script provenance exceeded the maximum reload depth"
+        )
+    child_capabilities: list[_ReplayCapability] = []
+    inputs_reloadable = True
+    for script_input in spec.script_inputs:
+        if script_input.name in (external_input_names or ()) or (
+            live_input_resolver is not None
+            and live_input_resolver(script_input) is not None
+        ):
+            inputs_reloadable = False
+            continue
+        input_spec = input_provenance_resolver(script_input)
+        if input_spec is None:
+            inputs_reloadable = False
+            child_capabilities.append(_ReplayCapability())
+            continue
+        capability = _analyze_replay_capability(
+            input_spec,
+            None,
+            live_input_resolver,
+            input_provenance_resolver,
+            depth + int(input_spec.kind == "script"),
+            check_reloadability=check_reloadability,
+        )
+        child_capabilities.append(capability)
+        inputs_reloadable &= capability.reloadable
+
+    local_strict = _script_validates(spec, external_input_names, True)
+    local_trusted = local_strict or _script_validates(spec, external_input_names, False)
+    replayable = local_strict
+    requires_trust = (not local_strict and local_trusted) or (
+        local_strict
+        and any(capability.requires_trust for capability in child_capabilities)
+    )
+    file_source_reloadable = (
+        not check_reloadability
+        or spec.file_load_source is None
+        or file_load_source_status(spec) == "loadable"
+    )
+    reloadable = (
+        check_reloadability
+        and replayable
+        and inputs_reloadable
+        and file_source_reloadable
+    )
+    return _ReplayCapability(replayable, requires_trust, reloadable)
+
+
+def _compile_replay_preflight(
+    spec: ToolProvenanceSpec,
+    *,
+    live_input_resolver: LiveInputResolver | None,
+    input_provenance_resolver: InputProvenanceResolver,
+) -> ReplayGraph:
+    """Compile one reachable replay subtree without executing it."""
+    return compile_replay_graph(
+        spec,
+        live_input_resolver=live_input_resolver,
+        trusted_user_code=True,
+        _input_provenance_resolver=input_provenance_resolver,
+    )
+
+
+def _require_replay_authorized(
+    capability: _ReplayCapability,
+    *,
+    trusted_user_code: bool,
+) -> None:
+    if capability.requires_trust:
+        authorized = trusted_user_code
+    else:
+        authorized = capability.replayable
+    if authorized:
+        return
+    raise ReplayGraphError("The recorded operation cannot be replayed automatically")
+
+
+def _replay_capability(
+    value: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
+) -> _ReplayCapability:
+    try:
+        spec = parse_tool_provenance_spec(value)
+        if spec is None:
+            return _ReplayCapability()
+        return _analyze_replay_capability(
+            spec,
+            external_input_names,
+            _memoized_live_input_resolver(live_input_resolver),
+            _memoized_input_provenance_resolver(),
+            0,
+        )
+    except (ReplayGraphError, TypeError, ValueError):
+        return _ReplayCapability()
 
 
 def can_reload_without_trust(
@@ -556,71 +742,35 @@ def script_provenance_replayable(
     spec: typing.Any,
     *,
     external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
 ) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None:
-        return False
-    try:
-        _validate_script_provenance(
-            parsed,
-            external_input_names=external_input_names,
-        )
-    except (ReplayGraphError, TypeError, ValueError):
-        return False
-    return True
-
-
-def _script_provenance_validates(
-    spec: typing.Any,
-    *,
-    external_input_names: set[str] | None = None,
-    strict_replay_code: bool,
-) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
-    try:
-        _validate_script_provenance(
-            parsed,
-            external_input_names=external_input_names,
-            strict_replay_code=strict_replay_code,
-        )
-    except (ReplayGraphError, TypeError, ValueError):
-        return False
-    return True
+    return _replay_capability(
+        spec,
+        external_input_names=external_input_names,
+        live_input_resolver=live_input_resolver,
+    ).replayable
 
 
 def script_provenance_requires_trust(
     spec: typing.Any,
     *,
     external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
 ) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
-    strict_replayable = _script_provenance_validates(
-        parsed,
+    return _replay_capability(
+        spec,
         external_input_names=external_input_names,
-        strict_replay_code=True,
-    )
-    trusted_replayable = _script_provenance_validates(
-        parsed,
-        external_input_names=external_input_names,
-        strict_replay_code=False,
-    )
-    current_requires_trust = not strict_replayable and trusted_replayable
-    if current_requires_trust:
-        return True
-    if not strict_replayable:
-        return False
-    for script_input in parsed.script_inputs:
-        input_spec = script_input.parsed_provenance_spec()
-        if script_provenance_requires_trust(input_spec):
-            return True
-    return False
+        live_input_resolver=live_input_resolver,
+    ).requires_trust
 
 
-def _script_trust_payload(spec: typing.Any) -> dict[str, typing.Any] | None:
+def _reachable_script_trust_payload(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None,
+    live_input_resolver: LiveInputResolver | None,
+    input_provenance_resolver: InputProvenanceResolver,
+) -> dict[str, typing.Any] | None:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
         return None
@@ -636,7 +786,17 @@ def _script_trust_payload(spec: typing.Any) -> dict[str, typing.Any] | None:
         )
     inputs = []
     for script_input in parsed.script_inputs:
-        input_payload = _script_trust_payload(script_input.parsed_provenance_spec())
+        if script_input.name in (external_input_names or ()) or (
+            live_input_resolver is not None
+            and live_input_resolver(script_input) is not None
+        ):
+            continue
+        input_payload = _reachable_script_trust_payload(
+            input_provenance_resolver(script_input),
+            external_input_names=None,
+            live_input_resolver=live_input_resolver,
+            input_provenance_resolver=input_provenance_resolver,
+        )
         if input_payload is None:
             continue
         inputs.append({"name": script_input.name, "payload": input_payload})
@@ -648,8 +808,32 @@ def _script_trust_payload(spec: typing.Any) -> dict[str, typing.Any] | None:
     }
 
 
-def script_provenance_trust_key(spec: typing.Any) -> str | None:
-    payload = _script_trust_payload(spec)
+def _script_trust_payload(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
+) -> dict[str, typing.Any] | None:
+    """Return the trust payload for code reachable in one input snapshot."""
+    return _reachable_script_trust_payload(
+        spec,
+        external_input_names=external_input_names,
+        live_input_resolver=_memoized_live_input_resolver(live_input_resolver),
+        input_provenance_resolver=_memoized_input_provenance_resolver(),
+    )
+
+
+def script_provenance_trust_key(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
+) -> str | None:
+    payload = _script_trust_payload(
+        spec,
+        external_input_names=external_input_names,
+        live_input_resolver=live_input_resolver,
+    )
     if payload is None:
         return None
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -694,122 +878,239 @@ def rebuild_script_provenance(
     extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    _input_provenance_resolver: InputProvenanceResolver | None = None,
+    _preflighted: bool = False,
 ) -> tuple[xr.DataArray, typing.Any]:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
         raise ReplayGraphError("Selected provenance is not script-derived")
-    if depth > 20:
+    if depth > _MAX_SCRIPT_REPLAY_DEPTH:
         raise ReplayGraphError(
             "Nested script provenance exceeded the maximum reload depth"
         )
-    if trusted_user_code:
-        replayable = _script_provenance_validates(
+    resolve_live = _memoized_live_input_resolver(live_input_resolver)
+    resolve_input_provenance = (
+        _memoized_input_provenance_resolver()
+        if _input_provenance_resolver is None
+        else _input_provenance_resolver
+    )
+    if not _preflighted:
+        capability = _analyze_replay_capability(
             parsed,
-            strict_replay_code=False,
+            None,
+            resolve_live,
+            resolve_input_provenance,
+            depth,
+            check_reloadability=False,
         )
-    else:
-        replayable = script_provenance_replayable(parsed)
-    if not replayable:
-        raise ReplayGraphError(
-            "The recorded operation cannot be replayed automatically"
+        _require_replay_authorized(
+            capability,
+            trusted_user_code=trusted_user_code,
         )
+        preflight_graph = _compile_replay_preflight(
+            parsed,
+            live_input_resolver=resolve_live,
+            input_provenance_resolver=resolve_input_provenance,
+        )
+        _validate_replay_graph_file_sources(preflight_graph)
 
-    live_results: dict[
-        tuple[str, str | None, str], tuple[xr.DataArray, typing.Any]
-    ] = {}
-    live_misses: set[tuple[str, str | None, str]] = set()
-
-    def resolve_live(
-        script_input: typing.Any,
-    ) -> tuple[xr.DataArray, typing.Any] | None:
-        if live_input_resolver is None:
-            return None
-        key = (script_input.name, script_input.node_uid, script_input.data_role)
-        if key in live_results:
-            return live_results[key]
-        if key in live_misses:
-            return None
-        resolved = live_input_resolver(script_input)
-        if resolved is None:
-            live_misses.add(key)
-            return None
-        live_results[key] = resolved
-        return resolved
-
-    def resolve_inputs(current: typing.Any, current_depth: int) -> typing.Any:
-        if current_depth > 20:
-            raise ReplayGraphError(
-                "Nested script provenance exceeded the maximum reload depth"
-            )
-        resolved_inputs = []
-        for script_input in current.script_inputs:
-            resolved = resolve_live(script_input)
-            if resolved is not None:
-                resolved_inputs.append(resolved[1])
-                continue
-
-            input_spec = script_input.parsed_provenance_spec()
-            if input_spec is None:
-                input_reference = _script_input_reference_text(script_input)
-                raise ReplayGraphError(
-                    f"{input_reference} "
-                    "is not open and "
-                    "does not contain recorded source provenance."
-                )
-            if input_spec.kind == "file":
-                resolved_inputs.append(
-                    script_input.model_copy(
-                        update={
-                            "node_uid": None,
-                            "node_snapshot_token": None,
-                            "provenance_spec": input_spec.model_dump(mode="json"),
-                        }
-                    )
-                )
-                continue
-            if input_spec.kind == "script":
-                if trusted_user_code:
-                    input_replayable = _script_provenance_validates(
-                        input_spec,
-                        strict_replay_code=False,
-                    )
-                else:
-                    input_replayable = script_provenance_replayable(input_spec)
-                if not input_replayable:
-                    raise ReplayGraphError(
-                        "The recorded operation cannot be replayed automatically"
-                    )
-                rebuilt_input = resolve_inputs(input_spec, current_depth + 1)
-                resolved_inputs.append(
-                    script_input.model_copy(
-                        update={
-                            "node_uid": None,
-                            "node_snapshot_token": None,
-                            "provenance_spec": rebuilt_input.model_dump(mode="json"),
-                        }
-                    )
-                )
-                continue
-            raise ReplayGraphError(
-                f"{_script_input_reference_text(script_input)} "
-                "is not open and "
-                "does not contain reloadable script or file provenance."
-            )
-        return current.model_copy(update={"script_inputs": tuple(resolved_inputs)})
-
-    rebuilt_spec = resolve_inputs(parsed, depth)
+    replay_cache = {} if cache is None else cache
+    resolved_inputs, rebuilt_inputs = rebuild_script_inputs(
+        parsed.script_inputs,
+        live_input_resolver=resolve_live,
+        cache=replay_cache,
+        trusted_user_code=trusted_user_code,
+        depth=depth,
+        extension_executor=extension_executor,
+        extension_loader_executor=extension_loader_executor,
+        _input_provenance_resolver=resolve_input_provenance,
+        _preflighted=True,
+    )
+    rebuilt_spec = parsed.model_copy(update={"script_inputs": rebuilt_inputs})
     graph = compile_replay_graph(
         rebuilt_spec,
-        live_input_resolver=resolve_live,
+        live_input_resolver=lambda script_input: (
+            resolved_inputs[script_input.name],
+            script_input,
+        ),
         trusted_user_code=trusted_user_code,
         structured_file_replay=True,
     )
     return (
         execute_replay_graph(
             graph,
-            cache=cache,
+            cache=replay_cache,
             extension_executor=extension_executor,
             extension_loader_executor=extension_loader_executor,
         ),
         rebuilt_spec,
     )
+
+
+def rebuild_script_inputs(
+    script_inputs: Sequence[ScriptInput],
+    *,
+    live_input_resolver: LiveInputResolver | None = None,
+    recorded_input_authorizer: (
+        Callable[[ScriptInput, ToolProvenanceSpec], bool] | None
+    ) = None,
+    cache: dict[str, xr.DataArray] | None = None,
+    trusted_user_code: bool = False,
+    allow_recorded: bool = True,
+    depth: int = 0,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+    _input_provenance_resolver: InputProvenanceResolver | None = None,
+    _preflighted: bool = False,
+) -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
+    """Resolve named inputs and refresh their durable source snapshots.
+
+    Live manager nodes take priority. If ``allow_recorded`` is true and a live node is
+    unavailable, the recorded script or file provenance is replayed. The optional
+    authorizer runs only for a recorded script fallback that requires trusted execution.
+    All inputs are resolved before the caller mutates a ToolWindow.
+    """
+    replay_cache = {} if cache is None else cache
+    resolve_live = _memoized_live_input_resolver(live_input_resolver)
+    resolve_input_provenance = (
+        _memoized_input_provenance_resolver()
+        if _input_provenance_resolver is None
+        else _input_provenance_resolver
+    )
+    input_names = tuple(script_input.name for script_input in script_inputs)
+    if len(set(input_names)) != len(input_names):
+        raise ReplayGraphError("Duplicate named provenance input")
+
+    planned_inputs: list[
+        tuple[
+            ScriptInput,
+            tuple[xr.DataArray, typing.Any] | ToolProvenanceSpec,
+        ]
+    ] = []
+    for script_input in script_inputs:
+        resolved = None if resolve_live is None else resolve_live(script_input)
+        if resolved is not None:
+            planned_inputs.append((script_input, resolved))
+            continue
+        if not allow_recorded:
+            raise ReplayGraphError(
+                f"{script_input.label} is not available in this Manager"
+            )
+
+        input_spec = resolve_input_provenance(script_input)
+        if input_spec is None:
+            raise ReplayGraphError(
+                f"{_script_input_reference_text(script_input)} is not open and "
+                "does not contain recorded source provenance."
+            )
+        if input_spec.kind not in {"file", "script"}:
+            raise ReplayGraphError(
+                f"{_script_input_reference_text(script_input)} is not open and "
+                "does not contain reloadable script or file provenance."
+            )
+        planned_inputs.append((script_input, input_spec))
+
+    capabilities: dict[str, _ReplayCapability] = {}
+    if not _preflighted:
+        for script_input, resolved_or_spec in planned_inputs:
+            if (
+                not isinstance(resolved_or_spec, ToolProvenanceSpec)
+                or resolved_or_spec.kind != "script"
+            ):
+                continue
+            capabilities[script_input.name] = _analyze_replay_capability(
+                resolved_or_spec,
+                None,
+                resolve_live,
+                resolve_input_provenance,
+                depth + 1,
+                check_reloadability=False,
+            )
+
+    trusted_inputs: list[bool] = []
+    for script_input, resolved_or_spec in planned_inputs:
+        input_trusted_user_code = trusted_user_code
+        if (
+            isinstance(resolved_or_spec, ToolProvenanceSpec)
+            and resolved_or_spec.kind == "script"
+            and (capability := capabilities.get(script_input.name)) is not None
+        ):
+            if (
+                capability.requires_trust
+                and not input_trusted_user_code
+                and recorded_input_authorizer is not None
+            ):
+                input_trusted_user_code = recorded_input_authorizer(
+                    script_input,
+                    resolved_or_spec,
+                )
+            _require_replay_authorized(
+                capability,
+                trusted_user_code=input_trusted_user_code,
+            )
+        trusted_inputs.append(input_trusted_user_code)
+
+    preflight_graphs: dict[str, ReplayGraph] = {}
+    if not _preflighted:
+        for script_input, resolved_or_spec in planned_inputs:
+            if not isinstance(resolved_or_spec, ToolProvenanceSpec):
+                continue
+            preflight_graphs[script_input.name] = _compile_replay_preflight(
+                resolved_or_spec,
+                live_input_resolver=resolve_live,
+                input_provenance_resolver=resolve_input_provenance,
+            )
+        for graph in preflight_graphs.values():
+            _validate_replay_graph_file_sources(graph)
+
+    data_by_name: dict[str, xr.DataArray] = {}
+    refreshed_inputs: list[ScriptInput] = []
+    for (script_input, resolved_or_spec), input_trusted_user_code in zip(
+        planned_inputs, trusted_inputs, strict=True
+    ):
+        if not isinstance(resolved_or_spec, ToolProvenanceSpec):
+            data, refreshed_input = resolved_or_spec
+            data_by_name[script_input.name] = data
+            refreshed_inputs.append(refreshed_input)
+            continue
+
+        input_spec = resolved_or_spec
+        if input_spec.kind == "file":
+            graph = preflight_graphs.get(script_input.name)
+            if graph is None:
+                graph = compile_replay_graph(
+                    input_spec,
+                    _input_provenance_resolver=resolve_input_provenance,
+                )
+            data = execute_replay_graph(
+                graph,
+                cache=replay_cache,
+                extension_executor=extension_executor,
+                extension_loader_executor=extension_loader_executor,
+            )
+            rebuilt_spec = input_spec
+        elif input_spec.kind == "script":
+            data, rebuilt_spec = rebuild_script_provenance(
+                input_spec,
+                live_input_resolver=resolve_live,
+                cache=replay_cache,
+                depth=depth + 1,
+                trusted_user_code=input_trusted_user_code,
+                extension_executor=extension_executor,
+                extension_loader_executor=extension_loader_executor,
+                _input_provenance_resolver=resolve_input_provenance,
+                _preflighted=True,
+            )
+        data_by_name[script_input.name] = data
+        refreshed_inputs.append(
+            script_input.model_copy(
+                update={
+                    "node_uid": None,
+                    "node_snapshot_token": None,
+                    "provenance_spec": rebuilt_spec.model_dump(mode="json"),
+                }
+            )
+        )
+
+    return data_by_name, tuple(refreshed_inputs)

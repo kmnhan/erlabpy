@@ -17,6 +17,7 @@ from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.imagetool import _dialog_widgets, _kspace_conversion
 from erlab.interactive.imagetool import dialogs as imagetool_dialogs
 from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
     full_data,
     operation_group_range,
     script,
@@ -1700,7 +1701,7 @@ def test_ktool_angle_energy_cut(qtbot, anglemap) -> None:
 
     updated = cut.copy(deep=True)
     updated.data = np.asarray(updated.data) + 1.0
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
     assert win.energy_group.isEnabled() is False
     assert win.bz_group.isEnabled() is False
     assert win.images[1].data_array is not None
@@ -2886,7 +2887,7 @@ def test_ktool_configuration_state_edges(qtbot, anglemap) -> None:
     KspaceTool._clear_layout(LayoutReturningNone())
 
 
-def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
+def test_ktool_configuration_state_round_trip_output_provenance_and_update_inputs(
     qtbot, anglemap
 ) -> None:
     data = _make_da_ktool_data(anglemap)
@@ -2923,7 +2924,7 @@ def test_ktool_configuration_state_round_trip_output_provenance_and_update_data(
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) + 1.0
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
     assert win._source_configuration == int(AxesConfiguration.Type1DA)
     assert win.data.kspace.configuration == target_configuration
     xr.testing.assert_allclose(
@@ -3053,33 +3054,51 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
     win = ktool(data, execute=False)
     _add_hidden_tool(qtbot, win)
-    win.set_input_provenance_spec(
-        script(
-            start_label="Start from watched variable 'my_data'",
-            seed_code='derived = my_data.astype("float64")',
-            active_name="derived",
-        )
+    input_provenance = script(
+        start_label="Start from watched variable 'my_data'",
+        seed_code="derived = my_data.astype(np.float64)",
+        active_name="derived",
+    )
+    win.set_script_inputs(
+        (
+            ScriptInput(
+                name="input_data",
+                provenance_spec=input_provenance.model_dump(mode="json"),
+            ),
+        ),
+        primary_input="input_data",
     )
 
     code = win.copy_code()
 
-    assert "my_data.astype" in code
+    assert "input_data = my_data.astype(np.float64)" in code
     assert ".copy(deep=False)" not in code
-    assert "derived_kconv.kspace.set_normal(" in code
-    assert "derived_kconv = derived_kconv.kspace.convert(" in code
-    namespace = _exec_generated_code(code, my_data=data.copy(deep=True))
-    xr.testing.assert_allclose(namespace["derived_kconv"], win._converted_output())
+    assert "input_data.kspace.set_normal(" in code
+    assert "input_data_kconv = input_data.kspace.convert(" in code
+    assert "astype(np.float64)_kconv" not in code
+    namespace = _exec_generated_code(
+        code,
+        my_data=data.copy(deep=True),
+        np=np,
+    )
+    xr.testing.assert_allclose(namespace["input_data_kconv"], win._converted_output())
 
 
-def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
+def test_ktool_copy_code_replays_script_input_provenance(qtbot) -> None:
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
     source = selection(IselOperation(kwargs={"alpha": slice(2, 24)}))
-    parent_provenance = selection(IselOperation(kwargs={"hv": slice(0, 5)}))
     source_data = source.apply(data)
     win = ktool(source_data, execute=False)
     _add_hidden_tool(qtbot, win)
-    win.set_source_binding(source)
-    win.set_input_provenance_parent_fetcher(lambda: parent_provenance)
+    win.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                provenance_spec=source.to_replay_spec().model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+    )
 
     code = win.copy_code()
 
@@ -3089,7 +3108,7 @@ def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> No
     expected = win._assign_params(source_data.copy(deep=True)).kspace.convert(
         bounds=win.bounds, resolution=win.resolution
     )
-    xr.testing.assert_allclose(expected, namespace["derived_kconv"])
+    xr.testing.assert_allclose(expected, namespace["data_kconv"])
 
 
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
@@ -3219,7 +3238,7 @@ def test_ktool_deferred_restore_skips_default_calculations(
     assert restored_status.cmap_gamma == pytest.approx(1.4)
 
 
-def test_ktool_standalone_and_update_data_calculate_defaults_eager(
+def test_ktool_standalone_and_update_inputs_calculate_defaults_eager(
     qtbot, anglemap, monkeypatch
 ) -> None:
     data = _make_da_ktool_data(anglemap)
@@ -3245,7 +3264,7 @@ def test_ktool_standalone_and_update_data_calculate_defaults_eager(
     calls.clear()
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) + 1.0
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
     assert calls == [("bounds", win), ("resolution", win)]
 
 
@@ -3368,7 +3387,7 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
         win.calculate_resolution()
         win.get_data()
         win.copy_code()
-        win.update_data(updated)
+        win.update_inputs({"data": updated})
 
     assert not _missing_kspace_parameter_warnings(caught)
     assert win.data.attrs == original_attrs
@@ -3709,7 +3728,7 @@ def test_get_bz_lines_uses_legacy_hv_path_for_scalar_other_axis(monkeypatch) -> 
     assert np.allclose(midpoints, expected_midpoints)
 
 
-def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
+def test_ktool_update_inputs_preserves_state(qtbot, anglemap) -> None:
     data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
         deep=True
     )
@@ -3735,7 +3754,7 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     status = win.tool_status
     new_data = data.copy(deep=True)
     new_data.data = np.asarray(new_data.data) * 1.1
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win.tool_status == status
     assert win.data.kspace.alpha_scale == pytest.approx(1.1)
@@ -3748,27 +3767,44 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     assert win.images[1].data_array is not None
 
 
-def test_ktool_update_data_cancel_keeps_current_data(
+def test_ktool_update_inputs_cancel_keeps_current_data(
     qtbot,
     anglemap,
     accept_dialog,
+    monkeypatch,
 ) -> None:
     data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5))
     win = ktool(data, execute=False)
     assert isinstance(win, KspaceTool)
     _add_hidden_tool(qtbot, win)
     original_data = win.data.copy(deep=True)
+    old_snapshot = "old"
+    old_binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed_binding = old_binding.model_copy(update={"node_snapshot_token": "new"})
+    win.set_script_inputs((old_binding,), primary_input="data")
+    monkeypatch.setattr(win, "validate_update_inputs", lambda inputs: inputs)
+    results: list[bool] = []
 
     accept_dialog(
-        lambda: win.update_data(data.drop_vars("hv")),
+        lambda: results.append(
+            win._apply_inputs(
+                {"data": data.drop_vars("hv")},
+                (refreshed_binding,),
+            )
+        ),
         pre_call=lambda dialog: _set_input_coordinates(dialog, {"hv": 52.0}),
         accept_call=lambda dialog: dialog.reject(),
     )
 
+    assert results == [False]
     xr.testing.assert_identical(win.data, original_data)
+    assert win.source_state == "stale"
+    assert win.script_inputs == (old_binding,)
+    assert win._pending_script_inputs is None
+    assert win._source_refresh_deferred is False
 
 
-def test_ktool_update_data_rejects_unmappable_configuration(
+def test_ktool_validate_update_inputs_rejects_unmappable_configuration(
     qtbot,
     anglemap,
     monkeypatch,
@@ -3788,10 +3824,10 @@ def test_ktool_update_data_rejects_unmappable_configuration(
     )
 
     with pytest.raises(ValueError, match="incompatible configuration"):
-        win.update_data(object())
+        win.validate_update_inputs({"data": object()})
 
 
-def test_ktool_update_data_assigns_missing_coordinate(
+def test_ktool_update_inputs_assigns_missing_coordinate(
     qtbot,
     anglemap,
     accept_dialog,
@@ -3803,7 +3839,7 @@ def test_ktool_update_data_assigns_missing_coordinate(
     updated = data.drop_vars("hv")
 
     accept_dialog(
-        lambda: win.update_data(updated),
+        lambda: win.update_inputs({"data": updated}),
         pre_call=lambda dialog: _set_input_coordinates(dialog, {"hv": 52.0}),
     )
 
@@ -3837,7 +3873,7 @@ def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
     assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
 
 
-def test_ktool_update_data_with_single_energy_disables_energy_group(
+def test_ktool_update_inputs_with_single_energy_disables_energy_group(
     qtbot, anglemap
 ) -> None:
     initial = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
@@ -3849,14 +3885,14 @@ def test_ktool_update_data_with_single_energy_disables_energy_group(
     win = ktool(initial, execute=False)
     _add_hidden_tool(qtbot, win)
 
-    win.update_data(data)
+    win.update_inputs({"data": data})
     fixed_energy = float(data.eV.values[0])
     assert win.energy_group.isEnabled() is False
     assert win.center_spin.minimum() == pytest.approx(fixed_energy - 0.1, abs=1e-3)
     assert win.center_spin.maximum() == pytest.approx(fixed_energy + 0.1, abs=1e-3)
 
 
-def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
+def test_ktool_update_inputs_reconnects_energy_controls_after_single_energy(
     qtbot, anglemap, monkeypatch
 ) -> None:
     data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
@@ -3877,7 +3913,7 @@ def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
 
     monkeypatch.setattr(win, "update", _wrapped_update)
 
-    win.update_data(updated)
+    win.update_inputs({"data": updated})
     assert win.energy_group.isEnabled() is True
 
     update_calls.clear()
@@ -3889,7 +3925,7 @@ def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
     qtbot.wait_until(lambda: len(update_calls) > 0, timeout=5000)
 
 
-def test_ktool_update_data_rejects_noninteractive_replacement_for_cut(
+def test_ktool_validate_update_inputs_rejects_noninteractive_replacement_for_cut(
     qtbot, anglemap
 ) -> None:
     data = (
@@ -3899,7 +3935,7 @@ def test_ktool_update_data_rejects_noninteractive_replacement_for_cut(
     _add_hidden_tool(qtbot, win)
 
     with pytest.raises(ValueError, match="not compatible with the interactive tool"):
-        win.update_data(data.isel(eV=0))
+        win.validate_update_inputs({"data": data.isel(eV=0)})
 
 
 @pytest.mark.parametrize(
@@ -3915,7 +3951,7 @@ def test_ktool_update_data_rejects_noninteractive_replacement_for_cut(
         ("_has_hv", True, "incompatible photon-energy dimensions"),
     ],
 )
-def test_ktool_validate_update_data_rejects_incompatible_metadata(
+def test_ktool_validate_update_inputs_rejects_incompatible_metadata(
     qtbot, anglemap, monkeypatch, field, value, match
 ) -> None:
     data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
@@ -3939,4 +3975,4 @@ def test_ktool_validate_update_data_rejects_incompatible_metadata(
     )
 
     with pytest.raises(ValueError, match=match):
-        win.validate_update_data(object())
+        win.validate_update_inputs({"data": object()})

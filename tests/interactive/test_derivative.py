@@ -2,7 +2,7 @@ import ast
 import json
 import tempfile
 import typing
-from types import SimpleNamespace
+from collections.abc import Mapping
 
 import numpy as np
 import pyqtgraph as pg
@@ -117,8 +117,14 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         win.curv_factor_spin.setValue(40)
 
     check_generated_code(win)
-    win.set_source_binding(
-        full_data(),
+    script_input = ScriptInput(
+        name="data",
+        source_spec=full_data().model_dump(mode="json"),
+        provenance_spec=full_data().to_replay_spec().model_dump(mode="json"),
+    )
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=True,
         state="stale",
     )
@@ -134,7 +140,8 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
 
         assert win.tool_status == win_restored.tool_status
         assert str(win_restored.info_text) == str(win.info_text)
-        assert win_restored.source_spec == win.source_spec
+        assert win_restored.script_inputs == win.script_inputs
+        assert win_restored.primary_input == "data"
         assert win_restored.source_auto_update is True
         assert win_restored.source_state == "stale"
         check_generated_code(win_restored)
@@ -249,7 +256,7 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     xr.testing.assert_identical(win.result, namespace["result"])
 
     spec = script(
-        *win._copy_provenance(input_name="data"),
+        *win._copy_provenance(primary_input="data"),
         start_label="Compute derivative output",
         seed_code="derived = data",
         active_name="result",
@@ -401,17 +408,23 @@ def test_dtool_deferred_restore_delays_result_recompute(qtbot, monkeypatch) -> N
     assert calls == [restored]
 
 
-def test_dtool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
+def test_dtool_copy_code_replays_script_input_provenance(qtbot) -> None:
     data = xr.DataArray(
         np.arange(49).reshape((7, 7)), dims=["x", "y"], name="data"
     ).astype(np.float64)
     source = selection(IselOperation(kwargs={"y": slice(1, 6)}))
-    parent_provenance = selection(IselOperation(kwargs={"x": slice(0, 2)}))
     source_data = source.apply(data)
     win: DerivativeTool = dtool(source_data, execute=False)
     qtbot.addWidget(win)
-    win.set_source_binding(source)
-    win.set_input_provenance_parent_fetcher(lambda: parent_provenance)
+    win.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                provenance_spec=source.to_replay_spec().model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+    )
 
     code = win.copy_code()
 
@@ -423,7 +436,7 @@ def test_dtool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> No
     xr.testing.assert_identical(win.result, result)
 
 
-def test_dtool_update_data_preserves_state(qtbot) -> None:
+def test_dtool_update_inputs_preserves_state(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
     ).astype(np.float64)
@@ -446,7 +459,7 @@ def test_dtool_update_data_preserves_state(qtbot) -> None:
     win.curv_factor_spin.setValue(12.0)
 
     status = win.tool_status
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win.tool_status == status
     xr.testing.assert_identical(win.tool_data, new_data)
@@ -523,15 +536,21 @@ def test_dtool_output_imagetool_provenance_transposes_result(qtbot) -> None:
     xr.testing.assert_identical(result, win.result.T)
 
 
-def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
+def test_dtool_input_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
     ).astype(np.float64)
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    win.set_source_binding(
-        selection(TransposeOperation()),
+    source_spec = selection(TransposeOperation())
+    script_input = ScriptInput(
+        name="data",
+        source_spec=source_spec.model_dump(mode="json"),
+    )
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=True,
     )
 
@@ -541,13 +560,16 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
         coords={"x": np.arange(5), "y": np.arange(5), "z": np.arange(5)},
         name="data",
     )
-    win.handle_parent_source_replaced(parent_data)
+    win._set_input_resolver(
+        lambda: ({"data": source_spec.apply(parent_data)}, (script_input,))
+    )
+    win.handle_input_sources_replaced()
 
     assert win.source_state == "unavailable"
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_dtool_full_data_source_update_marks_unavailable_for_incompatible_data(
+def test_dtool_full_data_input_update_marks_unavailable_for_incompatible_data(
     qtbot,
 ) -> None:
     data = xr.DataArray(
@@ -556,27 +578,38 @@ def test_dtool_full_data_source_update_marks_unavailable_for_incompatible_data(
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    win.set_source_binding(
-        full_data(),
+    script_input = ScriptInput(
+        name="data",
+        source_spec=full_data().model_dump(mode="json"),
+    )
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=False,
     )
 
     parent_data = xr.DataArray(np.arange(5), dims=("x",), name="data")
-    win.handle_parent_source_replaced(parent_data)
+    win._set_input_resolver(lambda: ({"data": parent_data}, (script_input,)))
+    win.handle_input_sources_replaced()
 
     assert win.source_state == "unavailable"
     xr.testing.assert_identical(win.tool_data, data)
 
 
-def test_dtool_restored_source_binding_without_parent_stays_stale(qtbot) -> None:
+def test_dtool_restored_script_input_without_resolver_stays_stale(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
     ).astype(np.float64)
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    win.set_source_binding(
-        full_data(),
+    script_input = ScriptInput(
+        name="data",
+        source_spec=full_data().model_dump(mode="json"),
+    )
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=True,
         state="stale",
     )
@@ -590,11 +623,11 @@ def test_dtool_restored_source_binding_without_parent_stays_stale(qtbot) -> None
         assert isinstance(win_restored, DerivativeTool)
         assert win_restored.source_state == "stale"
 
-        assert win_restored._update_from_parent_source() is False
+        assert win_restored._update_from_input_source() is False
         assert win_restored.source_state == "stale"
 
 
-def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) -> None:
+def test_dtool_input_update_recovers_after_resolver_becomes_available(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
     ).astype(np.float64)
@@ -604,27 +637,32 @@ def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) 
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    win.set_source_binding(
-        full_data(),
+    script_input = ScriptInput(
+        name="data",
+        source_spec=full_data().model_dump(mode="json"),
+    )
+    win.set_script_inputs(
+        (script_input,),
+        primary_input="data",
         auto_update=True,
         state="stale",
     )
 
     available = False
 
-    def fetcher() -> xr.DataArray:
+    def resolver() -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
         if not available:
             raise LookupError("Parent tool is temporarily unavailable")
-        return updated
+        return {"data": updated}, (script_input,)
 
-    win.set_source_parent_fetcher(fetcher)
+    win._set_input_resolver(resolver)
 
-    assert win._update_from_parent_source() is False
-    assert win.source_state == "stale"
+    assert win._update_from_input_source() is False
+    assert win.source_state == "unavailable"
 
     available = True
 
-    assert win._update_from_parent_source() is True
+    assert win._update_from_input_source() is True
     assert win.source_state == "fresh"
     xr.testing.assert_identical(win.tool_data, updated)
 
@@ -764,7 +802,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         )
 
 
-def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
+def test_tool_window_script_input_helpers_and_failure_paths(qtbot) -> None:
     class _DummyState(BaseModel):
         value: int = 0
 
@@ -786,6 +824,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
             self._value = 0
             self.fail_validate = False
             self.fail_update = False
+            self.validate_calls = 0
 
         @property
         def tool_status(self) -> _DummyState:
@@ -799,24 +838,27 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        def validate_update_inputs(
+            self, inputs: Mapping[str, xr.DataArray]
+        ) -> Mapping[str, xr.DataArray]:
+            self.validate_calls += 1
             if self.fail_validate:
                 raise ValueError("invalid update")
-            return super().validate_update_data(new_data)
+            return super().validate_update_inputs(inputs)
 
-        def update_data(self, new_data: xr.DataArray) -> None:
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
             if self.fail_update:
                 raise RuntimeError("update failed")
-            self._data = new_data
+            self._data = inputs["data"]
 
         def _dummy_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'}.mean()"
+            return f"{primary_input or 'data'}.mean()"
 
     data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
     updated = xr.DataArray(
@@ -838,16 +880,26 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     tool.setCentralWidget(replacement)
     assert tool.centralWidget() is replacement
 
-    spec = selection(IselOperation(kwargs={"x": slice(0, 2)}))
-    tool.set_source_binding(spec, auto_update=True, state="stale")
-    assert tool.has_source_binding is True
+    source_spec = selection(IselOperation(kwargs={"x": slice(0, 2)}))
+    script_input = ScriptInput(
+        name="data",
+        source_spec=source_spec.model_dump(mode="json"),
+        provenance_spec=source_spec.to_replay_spec().model_dump(mode="json"),
+    )
+    tool.set_script_inputs(
+        (script_input,),
+        primary_input="data",
+        auto_update=True,
+        state="stale",
+    )
+    assert tool.script_inputs
     assert tool.source_status_text == "Update Available"
     assert "Automatic updates are enabled." in tool._source_status_button.toolTip()
-    copied_spec = tool.source_spec
-    assert copied_spec is not None
+    copied_input = tool.script_inputs[0]
     with pytest.raises(ValidationError, match="Instance is frozen"):
-        copied_spec.kind = "changed"
-    assert tool.source_spec == spec
+        copied_input.name = "changed"
+    assert tool.script_inputs == (script_input,)
+    assert tool.primary_input == "data"
 
     tool._set_source_state("unavailable")
     assert tool.source_status_text == "Update Unavailable"
@@ -862,73 +914,49 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.source_status_text == ""
     assert tool._source_status_bar.isHidden()
 
-    tool.set_source_binding(None, auto_update=True, state="stale")
-    assert tool.source_spec is None
-    assert tool.has_source_binding is False
-    assert tool.source_status_text == ""
-    assert tool._source_status_bar.isHidden()
+    with pytest.raises(ValueError, match="fixed"):
+        tool.set_script_inputs((), primary_input=None)
 
-    with pytest.raises(RuntimeError, match="not bound to an ImageTool source"):
-        tool._resolve_source_data(updated)
-
-    tool._set_source_state("fresh")
-    tool.handle_parent_source_replaced(updated)
-    assert tool.source_state == "fresh"
-
-    with pytest.raises(TypeError, match="ToolProvenanceSpec or None"):
-        tool.set_source_binding(
-            {"kind": "selection", "operations": [{"op": "invalid"}]}
-        )
-    tool.set_source_parent_fetcher(lambda: updated)
-    assert tool._update_from_parent_source() is False
-    assert tool.source_state == "unavailable"
-
-    tool.set_source_binding(full_data(), auto_update=True)
+    tool._set_input_resolver(lambda: ({"data": updated}, (script_input,)))
     tool.fail_validate = True
-    assert tool._update_from_parent_source() is False
+    assert tool._update_from_input_source() is False
     assert tool.source_state == "unavailable"
     tool.fail_validate = False
 
     tool.fail_update = True
-    assert tool._update_from_parent_source() is False
+    assert tool._update_from_input_source() is False
     assert tool.source_state == "unavailable"
     tool.fail_update = False
 
-    assert tool._update_from_parent_source() is True
+    assert tool._update_from_input_source() is True
     assert tool.source_state == "fresh"
     xr.testing.assert_identical(tool.tool_data, updated)
 
-    tool.set_source_binding(full_data(), auto_update=False)
-    tool.handle_parent_source_replaced(updated * 2)
+    tool._set_source_auto_update(False)
+    tool._set_input_resolver(lambda: ({"data": updated * 2}, (script_input,)))
+    tool.handle_input_sources_replaced()
     assert tool.source_state == "stale"
 
-    tool.set_source_binding(full_data(), auto_update=True)
+    tool._set_source_auto_update(True)
+    tool._set_input_resolver(lambda: ({"data": updated}, (script_input,)))
+    validate_calls = tool.validate_calls
     tool.fail_validate = True
-    tool.handle_parent_source_replaced(updated)
+    tool.handle_input_sources_replaced()
+    assert tool.validate_calls == validate_calls + 1
     assert tool.source_state == "unavailable"
     tool.fail_validate = False
 
     tool.fail_update = True
-    tool.handle_parent_source_replaced(updated)
+    tool.handle_input_sources_replaced()
     assert tool.source_state == "unavailable"
     tool.fail_update = False
 
-    bad_parent = SimpleNamespace(
-        kspace=SimpleNamespace(
-            _valid_offset_keys=(),
-            momentum_axes=(),
-            configuration=0,
-            _has_hv=False,
-        )
-    )
-    tool.set_source_binding(full_data(), auto_update=True)
-    tool.handle_parent_source_replaced(bad_parent)
+    tool._set_input_resolver(lambda: ({"wrong": updated}, (script_input,)))
+    tool.handle_input_sources_replaced()
     assert tool.source_state == "unavailable"
 
 
-def test_tool_copy_code_uses_current_tool_input_without_parent_provenance(
-    qtbot,
-) -> None:
+def test_tool_copy_code_uses_current_script_input(qtbot) -> None:
     class _DummyState(BaseModel):
         value: int = 0
 
@@ -963,14 +991,14 @@ def test_tool_copy_code_uses_current_tool_input_without_parent_provenance(
         def _dummy_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'}.mean()"
+            return f"{primary_input or 'data'}.mean()"
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
     data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
     parent = erlab.interactive.itool(data, execute=False, manager=False)
@@ -980,18 +1008,34 @@ def test_tool_copy_code_uses_current_tool_input_without_parent_provenance(
 
     tool = _DummyTool(data.isel(x=slice(0, 2)))
     qtbot.addWidget(tool)
-    tool.set_source_binding(full_data())
+    tool.set_script_inputs(
+        (ScriptInput(name="data"),),
+        primary_input="data",
+    )
     parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
 
     code = tool.copy_code()
-    assert ".isel(" not in code
+    assert ".isel(" in code
     namespace = _exec_generated_code(
         code,
-        {"data": tool.tool_data.copy(deep=True)},
+        {"data": data.copy(deep=True)},
     )
     result = namespace["result"]
     assert isinstance(result, xr.DataArray)
     xr.testing.assert_identical(result, data.isel(x=slice(0, 2)).mean())
+
+    multi_input_tool = _DummyTool(data)
+    qtbot.addWidget(multi_input_tool)
+    multi_input_tool.set_script_inputs(
+        (ScriptInput(name="data"), ScriptInput(name="right")),
+        primary_input="data",
+    )
+    with pytest.raises(ValueError, match="must declare one input"):
+        parent.slicer_area.add_tool_window(
+            multi_input_tool,
+            transfer_to_manager=False,
+        )
+    assert multi_input_tool._input_resolver is None
 
 
 def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
@@ -1029,28 +1073,33 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
         def _dummy_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'}.mean()"
+            return f"{primary_input or 'data'}.mean()"
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
     parent_provenance = {"spec": selection(IselOperation(kwargs={"x": slice(0, 2)}))}
 
     tool = _DummyTool(data.isel(x=slice(0, 2)))
     qtbot.addWidget(tool)
-    tool.set_source_binding(full_data())
-    tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
+    script_input = ScriptInput(
+        name="data",
+        provenance_spec=parent_provenance["spec"]
+        .to_replay_spec()
+        .model_dump(mode="json"),
+    )
+    tool.set_script_inputs((script_input,), primary_input="data")
 
     initial_code = tool.copy_code()
-    assert ".isel(" not in initial_code
+    assert ".isel(" in initial_code
     initial_namespace = _exec_generated_code(
         initial_code,
-        {"data": tool.tool_data.copy(deep=True)},
+        {"data": data.copy(deep=True)},
     )
     initial_result = initial_namespace["result"]
     assert isinstance(initial_result, xr.DataArray)
@@ -1058,30 +1107,41 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
 
     parent_provenance["spec"] = selection(IselOperation(kwargs={"y": slice(0, 2)}))
     stale_code = tool.copy_code()
-    assert ".isel(" not in stale_code
+    assert "x=slice" in stale_code
+    assert "y=slice" not in stale_code
     stale_namespace = _exec_generated_code(
         stale_code,
-        {"data": tool.tool_data.copy(deep=True)},
+        {"data": data.copy(deep=True)},
     )
     stale_result = stale_namespace["result"]
     assert isinstance(stale_result, xr.DataArray)
     xr.testing.assert_identical(stale_result, data.isel(x=slice(0, 2)).mean())
 
-    tool._data = data.isel(y=slice(0, 2))
-    tool.finalize_source_refresh()
+    refreshed_input = script_input.model_copy(
+        update={
+            "provenance_spec": parent_provenance["spec"]
+            .to_replay_spec()
+            .model_dump(mode="json")
+        }
+    )
+    assert tool._apply_inputs(
+        {"data": data.isel(y=slice(0, 2))},
+        (refreshed_input,),
+    )
 
     refreshed_code = tool.copy_code()
-    assert ".isel(" not in refreshed_code
+    assert "x=slice" not in refreshed_code
+    assert "y=slice" in refreshed_code
     refreshed_namespace = _exec_generated_code(
         refreshed_code,
-        {"data": tool.tool_data.copy(deep=True)},
+        {"data": data.copy(deep=True)},
     )
     refreshed_result = refreshed_namespace["result"]
     assert isinstance(refreshed_result, xr.DataArray)
     xr.testing.assert_identical(refreshed_result, data.isel(y=slice(0, 2)).mean())
 
 
-def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -> None:
+def test_tool_input_provenance_resyncs_when_resolver_refreshes_input(qtbot) -> None:
     class _DummyState(BaseModel):
         value: int = 0
 
@@ -1116,21 +1176,25 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
         def _dummy_expression(
             self,
             *,
-            input_name: str | None = None,
+            primary_input: str | None = None,
             data: xr.DataArray | None = None,
         ) -> str:
             del data
-            return f"{input_name or 'data'}.mean()"
+            return f"{primary_input or 'data'}.mean()"
 
-        def update_data(self, new_data: xr.DataArray) -> None:
-            self._data = new_data
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+            self._data = inputs["data"]
 
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
 
     tool = _DummyTool(data)
     qtbot.addWidget(tool)
-    tool.set_source_binding(selection(SqueezeOperation()))
-    tool.set_input_provenance_parent_fetcher(lambda: None)
+    input_provenance = selection(SqueezeOperation()).to_replay_spec()
+    script_input = ScriptInput(
+        name="data",
+        provenance_spec=input_provenance.model_dump(mode="json"),
+    )
+    tool.set_script_inputs((script_input,), primary_input="data")
 
     early_code = tool.copy_code()
     early_namespace = _exec_generated_code(early_code, {"data": data.copy(deep=True)})
@@ -1139,7 +1203,11 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
     xr.testing.assert_identical(early_result, data.mean())
     assert ".squeeze()" in early_code
 
-    tool.set_source_parent_fetcher(lambda: data)
+    refreshed_input = script_input.model_copy(
+        update={"provenance_spec": full_data().to_replay_spec().model_dump(mode="json")}
+    )
+    tool._set_input_resolver(lambda: ({"data": data}, (refreshed_input,)))
+    assert tool._update_from_input_source()
 
     refreshed_code = tool.copy_code()
     refreshed_namespace = _exec_generated_code(

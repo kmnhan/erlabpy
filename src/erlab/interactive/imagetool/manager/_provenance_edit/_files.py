@@ -504,7 +504,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             path=self._peer_path(peer),
             selection=replay_call.selection,
             active_name=_file_load_edit_active_name(peer.spec),
-            replay_steps=peer.spec.steps,
+            replay_steps=() if peer.spec.kind == "script" else peer.spec.steps,
         )
 
     def _provenance_spec_for(
@@ -661,7 +661,6 @@ def _replace_file_load_fields(
             "start_label": replacement.start_label,
             "seed_code": replacement.seed_code,
             "file_load_source": replacement.file_load_source,
-            "steps": replacement.steps,
         }
     )
 

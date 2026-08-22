@@ -30,6 +30,8 @@ if typing.TYPE_CHECKING:
 
     import lmfit
     import varname
+
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
 else:
     import lazy_loader as _lazy
 
@@ -41,6 +43,8 @@ _R = typing.TypeVar("_R")
 _T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
 _FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.10
+_PERSISTED_UNCERTAINTY_VAR = "__ftool_uncertainty__"
+_PERSISTED_WEIGHTS_VAR = "__ftool_weights__"
 _LMFIT_CALLABLE_WARNING_RE = re.compile(
     r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
 )
@@ -49,6 +53,119 @@ _PythonCodeEditor = erlab.interactive.utils.PythonCodeEditor
 _fit_worker_gc_lock = threading.Lock()
 _fit_worker_gc_depth = 0
 _fit_worker_gc_restore_enabled = False
+
+
+def _validate_uncertainty_input(
+    data: xr.DataArray, uncertainty: xr.DataArray | None
+) -> xr.DataArray | None:
+    """Validate an absolute standard-uncertainty input against fit data."""
+    if uncertainty is None:
+        return None
+    if not isinstance(uncertainty, xr.DataArray):
+        raise TypeError("`uncertainty` must be an xarray.DataArray")
+    if not np.issubdtype(uncertainty.dtype, np.number) or np.issubdtype(
+        uncertainty.dtype, np.complexfloating
+    ):
+        raise TypeError("`uncertainty` must contain real numeric values")
+    extra_dims = set(uncertainty.dims).difference(data.dims)
+    if extra_dims:
+        raise ValueError(
+            "`uncertainty` dimensions must be a subset of the data dimensions; "
+            f"unexpected dimensions: {sorted(map(str, extra_dims))}"
+        )
+    try:
+        aligned_data, aligned_uncertainty = xr.align(
+            data, uncertainty, join="exact", copy=False
+        )
+        broadcast_uncertainty = aligned_uncertainty.broadcast_like(
+            aligned_data
+        ).transpose(*aligned_data.dims)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            "`uncertainty` must align exactly and broadcast to the shape of `data`"
+        ) from exc
+    _validate_uncertainty_values(aligned_data, broadcast_uncertainty)
+    return uncertainty
+
+
+def _validate_uncertainty_values(
+    data: xr.DataArray, uncertainty: xr.DataArray
+) -> np.ndarray:
+    """Validate uncertainty values that correspond to finite fit data."""
+    data_values = np.asarray(data.values)
+    uncertainty_values = np.asarray(uncertainty.values)
+    invalid = ~np.isfinite(uncertainty_values) | (uncertainty_values <= 0)
+    if np.any(invalid & np.isfinite(data_values)):
+        raise ValueError(
+            "`uncertainty` must be finite and strictly positive wherever `data` "
+            "is finite"
+        )
+    return uncertainty_values
+
+
+def _broadcast_uncertainty(
+    data: xr.DataArray, uncertainty: xr.DataArray
+) -> xr.DataArray:
+    """Return uncertainty aligned and broadcast in data dimension order."""
+    _, aligned = xr.align(data, uncertainty, join="exact", copy=False)
+    return aligned.broadcast_like(data).transpose(*data.dims)
+
+
+def _validate_weights_input(
+    data: xr.DataArray, weights: xr.DataArray | None
+) -> xr.DataArray | None:
+    """Validate direct fit weights against fit data."""
+    if weights is None:
+        return None
+    if not isinstance(weights, xr.DataArray):
+        raise TypeError("`weights` must be an xarray.DataArray")
+    if not np.issubdtype(weights.dtype, np.number) or np.issubdtype(
+        weights.dtype, np.complexfloating
+    ):
+        raise TypeError("`weights` must contain real numeric values")
+    extra_dims = set(weights.dims).difference(data.dims)
+    if extra_dims:
+        raise ValueError(
+            "`weights` dimensions must be a subset of the data dimensions; "
+            f"unexpected dimensions: {sorted(map(str, extra_dims))}"
+        )
+    try:
+        aligned_data, aligned_weights = xr.align(
+            data, weights, join="exact", copy=False
+        )
+        broadcast_weights = aligned_weights.broadcast_like(aligned_data).transpose(
+            *aligned_data.dims
+        )
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            "`weights` must align exactly and broadcast to the shape of `data`"
+        ) from exc
+    _validate_weights_values(aligned_data, broadcast_weights)
+    return weights
+
+
+def _validate_weights_values(data: xr.DataArray, weights: xr.DataArray) -> np.ndarray:
+    """Validate weights that correspond to finite fit data."""
+    data_values = np.asarray(data.values)
+    weight_values = np.asarray(weights.values)
+    invalid = ~np.isfinite(weight_values) | (weight_values < 0)
+    if np.any(invalid & np.isfinite(data_values)):
+        raise ValueError(
+            "`weights` must be finite and nonnegative wherever `data` is finite"
+        )
+    return weight_values
+
+
+def _broadcast_weights(data: xr.DataArray, weights: xr.DataArray) -> xr.DataArray:
+    """Return weights aligned and broadcast in data dimension order."""
+    _, aligned = xr.align(data, weights, join="exact", copy=False)
+    return aligned.broadcast_like(data).transpose(*data.dims)
+
+
+def _uncertainty_from_weights(weights: xr.DataArray) -> xr.DataArray:
+    """Return display uncertainty derived from direct fit weights."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 1.0 / weights
 
 
 def _load_lmfit_for_ftool_restore(
@@ -646,6 +763,8 @@ class _FitWorker(QtCore.QThread):
         model: lmfit.Model,
         params: lmfit.Parameters,
         *,
+        weights: xr.DataArray | None = None,
+        scale_covar: bool = True,
         max_nfev: int,
         method: str,
         timeout: float,
@@ -655,6 +774,8 @@ class _FitWorker(QtCore.QThread):
         self._coord_name = coord_name
         self._model = model
         self._params = params.copy()
+        self._weights = weights
+        self._scale_covar = scale_covar
         self._max_nfev = max_nfev
         self._method = method
         self._timeout = timeout
@@ -696,6 +817,8 @@ class _FitWorker(QtCore.QThread):
                     self._coord_name,
                     model=self._model,
                     params=self._params,
+                    weights=self._weights,
+                    scale_covar=self._scale_covar,
                     max_nfev=self._max_nfev if self._max_nfev > 0 else None,
                     method=self._method,
                     iter_cb=_callback,
@@ -794,6 +917,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     _PERSISTED_FIT_RESULT_VAR: typing.ClassVar[str] = "__ftool_fit_result__"
     _PERSISTED_FIT_RESULT_DIM: typing.ClassVar[str] = "__ftool_fit_result_bytes__"
     _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
+    _direct_weights: xr.DataArray | None
+    _direct_weights_name: str
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -804,6 +929,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         normalize_mean: bool = False
         show_components: bool
         refit_on_source_update: bool = False
+        scale_covar: bool = True
+        normalize_residuals: bool = True
+        uncertainty_name: str = "uncertainty"
+        weights_name: str = "weights"
         timeout: float
         max_nfev: int
         method: str
@@ -815,6 +944,50 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     @property
     def tool_data(self) -> xr.DataArray:
         return self._data
+
+    @property
+    def uncertainty(self) -> xr.DataArray | None:
+        """Absolute standard uncertainty used for weighted fitting."""
+        return self._uncertainty
+
+    def _uncertainty_is_script_input(self) -> bool:
+        return any(item.name == self._uncertainty_name for item in self.script_inputs)
+
+    def current_provenance_spec(
+        self, *, flush_deferred_restore: bool = True
+    ) -> ToolProvenanceSpec | None:
+        if self._uncertainty is not None and not self._uncertainty_is_script_input():
+            return None
+        return super().current_provenance_spec(
+            flush_deferred_restore=flush_deferred_restore
+        )
+
+    def _set_uncertainty(self, uncertainty: xr.DataArray | None) -> None:
+        self._direct_weights = None
+        self._uncertainty = _validate_uncertainty_input(self._data, uncertainty)
+
+    def _set_direct_weights(
+        self, weights: xr.DataArray | None, *, weights_name: str | None = None
+    ) -> None:
+        self._direct_weights = _validate_weights_input(self._data, weights)
+        self._uncertainty = (
+            None
+            if self._direct_weights is None
+            else _uncertainty_from_weights(self._direct_weights)
+        )
+        if weights_name is not None:
+            self._direct_weights_name = weights_name
+            self._uncertainty_name = f"1 / ({weights_name})"
+        self._refresh_weighting_ui()
+
+    def _direct_weights_for_persistence(self) -> xr.DataArray | None:
+        return self._direct_weights
+
+    def _refresh_weighting_ui(self) -> None:
+        self.normalize_residuals_check.setEnabled(self._uncertainty is not None)
+        self._update_residual_axis_label()
+        self._populate_data_curve()
+        self._update_fit_curve()
 
     PLOT_RESAMPLE: int = 5
     FIT_COLOR: str = "c"
@@ -839,15 +1012,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         model: lmfit.Model | None = None,
         params: lmfit.Parameters | Mapping[str, typing.Any] = None,
         *,
+        uncertainty: xr.DataArray | None = None,
         data_name: str | None = None,
         model_name: str | None = None,
+        uncertainty_name: str | None = None,
+        scale_covar: bool | None = None,
     ) -> None:
         super().__init__()
+        self._uncertainty_name = uncertainty_name or "uncertainty"
+        self._direct_weights_name = "weights"
+        self._scale_covar_default = (
+            uncertainty is None if scale_covar is None else bool(scale_covar)
+        )
+        self._normalize_residuals_default = True
         self._fit_finished_connection_keys: set[tuple[object | None, object]] = set()
         self._reset_fit_state(
             data,
             model,
             params,
+            uncertainty=uncertainty,
             data_name=data_name,
             model_name=model_name,
         )
@@ -859,6 +1042,26 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _emit_info_changed(self, *_args: typing.Any) -> None:
         self.sigInfoChanged.emit()
+
+    def _scale_covar_toggled(self, checked: bool) -> None:
+        self._scale_covar_default = checked
+        self._mark_fit_stale()
+        self._write_state()
+
+    def _normalize_residuals_toggled(self, checked: bool) -> None:
+        self._normalize_residuals_default = checked
+        self._update_residual_axis_label()
+        self._update_fit_curve()
+        self._emit_info_changed()
+        self._write_state()
+
+    def _update_residual_axis_label(self) -> None:
+        normalized = (
+            self._uncertainty is not None and self.normalize_residuals_check.isChecked()
+        )
+        self.residual_plot.setLabel(
+            "left", "Normalized residual" if normalized else "Residual"
+        )
 
     @staticmethod
     def _bool_text(value: bool) -> str:
@@ -907,12 +1110,24 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             ),
             ("Normalize by mean", self._bool_text(self.normalize_check.isChecked())),
             ("Plot components", self._bool_text(self.components_check.isChecked())),
+            (
+                "Standard uncertainty",
+                self._uncertainty_name if self._uncertainty is not None else "None",
+            ),
         ]
 
     def _summary_fit_rows(self) -> list[tuple[str, str]]:
         return [
             ("Status", self._fit_status_text()),
             ("Method", self.method_combo.currentText()),
+            (
+                "Scale covariance",
+                self._bool_text(self.scale_covar_check.isChecked()),
+            ),
+            (
+                "Normalize residuals",
+                self._bool_text(self.normalize_residuals_check.isChecked()),
+            ),
             ("Timeout", f"{self.timeout_spin.value():.2f} s"),
             (
                 "Max nfev",
@@ -953,6 +1168,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         model: lmfit.Model | None,
         params: lmfit.Parameters | Mapping[str, typing.Any] | None,
         *,
+        uncertainty: xr.DataArray | None = None,
+        direct_weights: xr.DataArray | None = None,
         data_name: str | None,
         model_name: str | None,
     ) -> None:
@@ -962,8 +1179,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         running_thread = getattr(self, "_fit_thread", None)
         keep_running = running_thread is not None
+        running_scale_covar = getattr(self, "_fit_scale_covar", None)
 
         self._data: xr.DataArray = data
+        if uncertainty is not None and direct_weights is not None:
+            raise ValueError("Only one of `uncertainty` and direct weights can be set")
+        self._direct_weights = _validate_weights_input(data, direct_weights)
+        self._uncertainty = (
+            _validate_uncertainty_input(data, uncertainty)
+            if self._direct_weights is None
+            else _uncertainty_from_weights(self._direct_weights)
+        )
         self._coord_name: Hashable = data.dims[0]
         self._user_model: lmfit.Model | None = model
         if model is None:
@@ -1002,6 +1228,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_is_current: bool = False
         self._table_widths_initialized: bool = False
         self._fit_thread: _FitWorker | None = running_thread if keep_running else None
+        self._fit_scale_covar: bool | None = (
+            running_scale_covar if keep_running else None
+        )
         self._fit_start_time: float | None = None
         self._fit_running_multi: bool = False
         self._fit_cancel_requested: bool = keep_running
@@ -1010,6 +1239,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_total: int | None = None
         self._fit_multi_step: int = 0
         self._fit_multi_fit_data: xr.DataArray | None = None
+        self._fit_multi_weights: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
         self._fit_multi_last_live_refresh: float = 0.0
         self._fit_multi_live_refresh_pending: bool = False
@@ -1105,6 +1335,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             symbolPen=pg.mkPen(120, 120, 120),
             name="Data",
         )
+        self.data_errorbar = pg.ErrorBarItem(pen=pg.mkPen(120, 120, 120))
+        self.main_plot.addItem(self.data_errorbar)
         self.fit_curve = self.main_plot.plot(
             pen=pg.mkPen(self.FIT_COLOR, width=2), name="Fit"
         )
@@ -1371,6 +1603,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             "If checked, rerun the fit after this tool updates from ImageTool."
         )
         self.refit_on_source_update_check.toggled.connect(self._emit_info_changed)
+        self.scale_covar_check = QtWidgets.QCheckBox("Scale covariance")
+        self.scale_covar_check.setObjectName("ftoolScaleCovarCheck")
+        self.scale_covar_check.setChecked(self._scale_covar_default)
+        self.scale_covar_check.setToolTip(
+            "Scale the parameter covariance by reduced chi-square. Disable this "
+            "when supplied standard uncertainties are absolute."
+        )
+        self.scale_covar_check.toggled.connect(self._scale_covar_toggled)
+        self.normalize_residuals_check = QtWidgets.QCheckBox("Normalize residuals")
+        self.normalize_residuals_check.setObjectName("ftoolNormalizeResidualsCheck")
+        self.normalize_residuals_check.setChecked(self._normalize_residuals_default)
+        self.normalize_residuals_check.setEnabled(self._uncertainty is not None)
+        self._update_residual_axis_label()
+        self.normalize_residuals_check.setToolTip(
+            "Divide residuals by the supplied standard uncertainty."
+        )
+        self.normalize_residuals_check.toggled.connect(
+            self._normalize_residuals_toggled
+        )
         self.timeout_spin.valueChanged.connect(self._emit_info_changed)
         self.nfev_spin.valueChanged.connect(self._emit_info_changed)
         self.method_combo.currentTextChanged.connect(self._emit_info_changed)
@@ -1378,6 +1629,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         fit_layout.addRow("Timeout", self.timeout_spin)
         fit_layout.addRow("Max nfev", self.nfev_spin)
         fit_layout.addRow("Method", self.method_combo)
+        fit_layout.addRow(self.scale_covar_check)
+        fit_layout.addRow(self.normalize_residuals_check)
         fit_layout.addRow(self.refit_on_source_update_check)
         self._fit_tab_layout.addWidget(fit_group)
 
@@ -1938,6 +2191,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             normalize_mean=self.normalize_check.isChecked(),
             show_components=self.components_check.isChecked(),
             refit_on_source_update=self.refit_on_source_update_check.isChecked(),
+            scale_covar=self.scale_covar_check.isChecked(),
+            normalize_residuals=self.normalize_residuals_check.isChecked(),
+            uncertainty_name=self._uncertainty_name,
+            weights_name=self._direct_weights_name,
             timeout=self.timeout_spin.value(),
             max_nfev=self.nfev_spin.value(),
             method=self.method_combo.currentText(),
@@ -1994,6 +2251,15 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
             self.components_check.setChecked(status.show_components)
             self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
+            self._scale_covar_default = status.scale_covar
+            self._normalize_residuals_default = status.normalize_residuals
+            self._uncertainty_name = status.uncertainty_name
+            self._direct_weights_name = status.weights_name
+            with QtCore.QSignalBlocker(self.scale_covar_check):
+                self.scale_covar_check.setChecked(status.scale_covar)
+            with QtCore.QSignalBlocker(self.normalize_residuals_check):
+                self.normalize_residuals_check.setChecked(status.normalize_residuals)
+            self._update_residual_axis_label()
             self.timeout_spin.setValue(status.timeout)
             self.nfev_spin.setValue(status.max_nfev)
             self.method_combo.setCurrentText(status.method)
@@ -2088,12 +2354,21 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _update_domain_brushes(self) -> None:
         xvals = self._x_values()
+        data_values = self._normalized_data_values()
         brushes = self._domain_brushes(xvals)
         if brushes is None:
             return
-        self.data_curve.setData(
-            xvals, self._normalized_data_values(), symbolBrush=brushes
-        )
+        self.data_curve.setData(xvals, data_values, symbolBrush=brushes)
+        uncertainty_values = self._normalized_uncertainty_values()
+        if uncertainty_values is None:
+            self.data_errorbar.setData(x=None, y=None, top=None, bottom=None)
+        else:
+            self.data_errorbar.setData(
+                x=xvals,
+                y=data_values,
+                top=uncertainty_values,
+                bottom=uncertainty_values,
+            )
         if self._last_residual is not None:
             self.residual_curve.setData(xvals, self._last_residual, symbolBrush=brushes)
 
@@ -2193,12 +2468,70 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return data
         return data / norm
 
+    def _fit_uncertainty(self) -> xr.DataArray | None:
+        if self._uncertainty is None:
+            return None
+        uncertainty = _broadcast_uncertainty(self._data, self._uncertainty)
+        fit_data = self._fit_data_raw()
+        if self._fit_domain() is not None:
+            uncertainty = uncertainty.sel(
+                {self._coord_name: fit_data[self._coord_name]}
+            )
+        _validate_uncertainty_values(fit_data, uncertainty)
+        norm = self._fit_normalization_factor()
+        if norm is not None:
+            uncertainty = uncertainty / abs(norm)
+        return uncertainty
+
+    def _fit_weights(self) -> xr.DataArray | None:
+        if self._direct_weights is not None:
+            weights = self._direct_weights
+            fit_data = self._fit_data_raw()
+            if self._fit_domain() is not None and self._coord_name in weights.dims:
+                weights = weights.sel({self._coord_name: fit_data[self._coord_name]})
+            _validate_weights_values(fit_data, _broadcast_weights(fit_data, weights))
+            norm = self._fit_normalization_factor()
+            if norm is not None:
+                weights = weights * abs(norm)
+            return weights
+        uncertainty = self._fit_uncertainty()
+        return None if uncertainty is None else 1.0 / uncertainty
+
     def _normalized_data_values(self) -> np.ndarray:
         values = self._data.values
         norm = self._fit_normalization_factor()
         if norm is None:
             return values
         return values / norm
+
+    def _normalized_uncertainty_values(self) -> np.ndarray | None:
+        if self._uncertainty is None:
+            return None
+        if self._direct_weights is not None:
+            weights = typing.cast(
+                "np.ndarray", self._normalized_direct_weights_values()
+            )
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                values = 1.0 / weights
+            return np.where(np.isfinite(values), values, np.nan)
+        uncertainty = _broadcast_uncertainty(self._data, self._uncertainty)
+        values = np.asarray(
+            _validate_uncertainty_values(self._data, uncertainty), dtype=float
+        )
+        norm = self._fit_normalization_factor()
+        if norm is None:
+            return values
+        return values / abs(norm)
+
+    def _normalized_direct_weights_values(self) -> np.ndarray | None:
+        if self._direct_weights is None:
+            return None
+        weights = _broadcast_weights(self._data, self._direct_weights)
+        values = np.asarray(_validate_weights_values(self._data, weights), dtype=float)
+        norm = self._fit_normalization_factor()
+        if norm is None:
+            return values
+        return values * abs(norm)
 
     def _guess_params(self) -> None:
         if not hasattr(self._model, "guess"):
@@ -2622,9 +2955,20 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 self._last_result_ds.modelfit_results.compute().item(), "best_fit", None
             )
             if best_fit is not None and np.shape(best_fit) == data_values.shape:
-                return data_values - best_fit
-        yvals = self._model_eval_values(xvals)
-        return data_values - yvals
+                residuals = data_values - best_fit
+            else:
+                residuals = data_values - self._model_eval_values(xvals)
+        else:
+            residuals = data_values - self._model_eval_values(xvals)
+        if self.normalize_residuals_check.isChecked():
+            direct_weights = self._normalized_direct_weights_values()
+            if direct_weights is not None:
+                residuals = residuals * direct_weights
+            else:
+                uncertainty = self._normalized_uncertainty_values()
+                if uncertainty is not None:
+                    residuals = residuals / uncertainty
+        return residuals
 
     @staticmethod
     def _params_match_result(ds: xr.Dataset, params: lmfit.Parameters) -> bool:
@@ -2871,8 +3215,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             restore.data,
             restore.model,
             restore.params,
-            data_name="data",
-            model_name="model",
+            uncertainty=self._uncertainty,
+            data_name=self._data_name,
+            model_name=self._model_name,
         )
         self._last_result_ds = fit_ds.copy()
         self._set_fit_stats(restore.result)
@@ -2897,6 +3242,32 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
         return ds
+
+    def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
+        items = dict(super()._persistence_data_items())
+        direct_weights = self._direct_weights_for_persistence()
+        if direct_weights is not None:
+            items[_PERSISTED_WEIGHTS_VAR] = direct_weights
+        elif self.uncertainty is not None:
+            uncertainty_key = _PERSISTED_UNCERTAINTY_VAR
+            if any(item.name == "uncertainty" for item in self.script_inputs):
+                uncertainty_key = "uncertainty"
+            items[uncertainty_key] = self.uncertainty
+        return items
+
+    def _restore_persistence_data_items(
+        self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
+    ) -> None:
+        del ds
+        if _PERSISTED_WEIGHTS_VAR in data_items:
+            self._set_direct_weights(data_items[_PERSISTED_WEIGHTS_VAR])
+        else:
+            self._set_uncertainty(
+                data_items.get(
+                    "uncertainty", data_items.get(_PERSISTED_UNCERTAINTY_VAR)
+                )
+            )
+            self._refresh_weighting_ui()
 
     def _restore_persisted_fit_result_blob(
         self, blob: np.ndarray, *, fit_is_current: bool
@@ -2952,6 +3323,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_fit_stats(None)
         self._set_elapsed_status(elapsed, timed_out=True)
         self._mark_fit_stale()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _fit_errored(self, detailed_text: str | None = None) -> None:
         self._show_error(
@@ -2959,6 +3332,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         self._set_fit_stats(None)
         self._mark_fit_stale()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _fit_start_errored(self, *, multi: bool) -> None:
         self._fit_thread = None
@@ -2976,6 +3351,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         fit_data: xr.DataArray,
         params: lmfit.Parameters,
         *,
+        weights: xr.DataArray | None = None,
         multi: bool,
         step: int = 0,
         total: int = 0,
@@ -2988,11 +3364,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return False
 
         try:
+            scale_covar = self._fit_scale_covar
+            if scale_covar is None:
+                scale_covar = self.scale_covar_check.isChecked()
+                self._fit_scale_covar = scale_covar
             thread = _FitWorker(
                 fit_data,
                 self._coord_name,
                 self._model,
                 params,
+                weights=weights,
+                scale_covar=scale_covar,
                 max_nfev=self.nfev_spin.value(),
                 method=self.method_combo.currentText(),
                 timeout=self.timeout_spin.value(),
@@ -3101,6 +3483,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._finish_multi_fit()
         else:
             self._set_fit_running(False, multi=self._fit_running_multi)
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _run_fit(self) -> bool:
         def _on_success(result_ds: xr.Dataset) -> None:
@@ -3121,13 +3505,24 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         try:
             fit_data = self._fit_data()
+            weights = self._fit_weights()
         except Exception:
             self._fit_start_errored(multi=False)
             return False
 
+        if weights is None:
+            return self._start_fit_worker(
+                fit_data,
+                self._params,
+                multi=False,
+                on_success=_on_success,
+                on_timeout=_on_timeout,
+                on_error=_on_error,
+            )
         return self._start_fit_worker(
             fit_data,
             self._params,
+            weights=weights,
             multi=False,
             on_success=_on_success,
             on_timeout=_on_timeout,
@@ -3141,6 +3536,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         try:
             fit_data = self._fit_data()
+            weights = self._fit_weights()
         except Exception:
             self._fit_start_errored(multi=True)
             self._finish_multi_fit()
@@ -3149,6 +3545,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_total = count
         self._fit_multi_step = 0
         self._fit_multi_fit_data = fit_data
+        self._fit_multi_weights = weights
         self._fit_multi_params = self._params
         self._fit_multi_last_live_refresh = time.monotonic()
         self._fit_multi_live_refresh_pending = False
@@ -3195,16 +3592,29 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._fit_errored(message)
             self._finish_multi_fit()
 
-        started = self._start_fit_worker(
-            self._fit_multi_fit_data,
-            self._fit_multi_params,
-            multi=True,
-            step=self._fit_multi_step,
-            total=self._fit_multi_total,
-            on_success=_on_success,
-            on_timeout=_on_timeout,
-            on_error=_on_error,
-        )
+        if self._fit_multi_weights is None:
+            started = self._start_fit_worker(
+                self._fit_multi_fit_data,
+                self._fit_multi_params,
+                multi=True,
+                step=self._fit_multi_step,
+                total=self._fit_multi_total,
+                on_success=_on_success,
+                on_timeout=_on_timeout,
+                on_error=_on_error,
+            )
+        else:
+            started = self._start_fit_worker(
+                self._fit_multi_fit_data,
+                self._fit_multi_params,
+                weights=self._fit_multi_weights,
+                multi=True,
+                step=self._fit_multi_step,
+                total=self._fit_multi_total,
+                on_success=_on_success,
+                on_timeout=_on_timeout,
+                on_error=_on_error,
+            )
         if not started:
             self._finish_multi_fit()
 
@@ -3215,6 +3625,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_total = None
         self._fit_multi_step = 0
         self._fit_multi_fit_data = None
+        self._fit_multi_weights = None
         self._fit_multi_params = None
         self._fit_multi_live_refresh_pending = False
         self._fit_multi_refresh_pending = False
@@ -3230,6 +3641,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         total: int = 0,
         emit_info: bool = True,
     ) -> None:
+        scale_covar_changed = (
+            not running
+            and self._fit_scale_covar is not None
+            and self.scale_covar_check.isChecked() != self._fit_scale_covar
+        )
         if running:
             self.fit_button.setEnabled(False)
             self.fit_multi_button.setEnabled(False)
@@ -3247,6 +3663,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.fit_multi_button.setText("Fit ×20")
             self.cancel_fit_button.setEnabled(False)
             self.cancel_fit_button.setText("Cancel")
+            self._fit_scale_covar = None
+        self.scale_covar_check.setDisabled(running)
+        if scale_covar_changed:
+            self._mark_fit_stale(emit_info=False)
         if emit_info:
             self._emit_info_changed()
 
@@ -3293,9 +3713,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         return data_name, model_name, lines
 
-    def _copy_fit_data_name(
+    def _copy_fit_source_name(
         self,
-        data_name: str,
+        source_name: str,
         *,
         lines: list[str] | None = None,
     ) -> str:
@@ -3305,8 +3725,18 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 {self._coord_name: slice(*fit_domain)}
             )
             if lines is not None:
-                lines.append(f"{data_name}_crop = {data_name}.sel({sel_kw})")
-            data_name = f"{data_name}_crop"
+                lines.append(f"{source_name}_crop = {source_name}.sel({sel_kw})")
+            source_name = f"{source_name}_crop"
+
+        return source_name
+
+    def _copy_fit_data_name(
+        self,
+        data_name: str,
+        *,
+        lines: list[str] | None = None,
+    ) -> str:
+        data_name = self._copy_fit_source_name(data_name, lines=lines)
 
         if self.normalize_check.isChecked():
             if lines is not None:
@@ -3315,17 +3745,125 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         return data_name
 
+    def _copy_uncertainty_name(self, data_name: str, model_name: str) -> str:
+        """Return a generated uncertainty name that does not shadow an input."""
+        uncertainty_name = str(self._uncertainty_name)
+        reserved = set(
+            re.findall(
+                r"\b[A-Za-z_]\w*\b",
+                f"{data_name} {model_name} {uncertainty_name}",
+            )
+        )
+
+        generated_name = "fit_uncertainty"
+        suffix = 2
+        while any(
+            name == generated_name or name.startswith(f"{generated_name}_")
+            for name in reserved
+        ):
+            generated_name = f"fit_uncertainty_{suffix}"
+            suffix += 1
+        return generated_name
+
+    def _copy_weights_name(self, data_name: str, model_name: str) -> str:
+        """Return a generated weights name that does not shadow an input."""
+        weights_name = str(self._direct_weights_name)
+        reserved = set(
+            re.findall(
+                r"\b[A-Za-z_]\w*\b",
+                f"{data_name} {model_name} {weights_name}",
+            )
+        )
+
+        generated_name = "fit_weights"
+        suffix = 2
+        while any(
+            name == generated_name or name.startswith(f"{generated_name}_")
+            for name in reserved
+        ):
+            generated_name = f"fit_weights_{suffix}"
+            suffix += 1
+        return generated_name
+
+    def _copy_fit_uncertainty_name(
+        self,
+        data_name: str,
+        model_name: str,
+        *,
+        lines: list[str] | None = None,
+    ) -> str | None:
+        if self._uncertainty is None or self._direct_weights is not None:
+            return None
+        uncertainty_name = self._copy_uncertainty_name(data_name, model_name)
+        if lines is not None:
+            lines.append(
+                f"{uncertainty_name} = "
+                f"({self._uncertainty_name}).broadcast_like({data_name})"
+            )
+        uncertainty_name = self._copy_fit_source_name(uncertainty_name, lines=lines)
+        if self.normalize_check.isChecked():
+            raw_data_name = self._copy_fit_source_name(data_name)
+            if lines is not None:
+                lines.append(
+                    f"{uncertainty_name}_norm = {uncertainty_name} "
+                    f"/ abs({raw_data_name}.mean())"
+                )
+            uncertainty_name = f"{uncertainty_name}_norm"
+        return uncertainty_name
+
+    def _copy_fit_direct_weights_name(
+        self,
+        data_name: str,
+        model_name: str,
+        *,
+        lines: list[str] | None = None,
+    ) -> str | None:
+        if self._direct_weights is None:
+            return None
+        weights_name = self._copy_weights_name(data_name, model_name)
+        if lines is not None:
+            lines.append(f"{weights_name} = {self._direct_weights_name}")
+        if self._coord_name in self._direct_weights.dims:
+            weights_name = self._copy_fit_source_name(weights_name, lines=lines)
+        if self.normalize_check.isChecked():
+            raw_data_name = self._copy_fit_source_name(data_name)
+            if lines is not None:
+                lines.append(
+                    f"{weights_name}_norm = {weights_name} "
+                    f"* abs({raw_data_name}.mean())"
+                )
+            weights_name = f"{weights_name}_norm"
+        return weights_name
+
+    def _copy_fit_weights_name(
+        self,
+        data_name: str,
+        model_name: str,
+        *,
+        lines: list[str] | None = None,
+    ) -> str | None:
+        direct_weights_name = self._copy_fit_direct_weights_name(
+            data_name, model_name, lines=lines
+        )
+        if direct_weights_name is not None:
+            return direct_weights_name
+        uncertainty_name = self._copy_fit_uncertainty_name(
+            data_name, model_name, lines=lines
+        )
+        return None if uncertainty_name is None else f"1 / {uncertainty_name}"
+
     def _copy_prelude(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         data_name, model_name, lines = self._make_model_code(
-            input_name or self._data_name
+            primary_input or self._data_name
         )
 
         self._copy_fit_data_name(data_name, lines=lines)
+        self._copy_fit_weights_name(data_name, model_name, lines=lines)
 
         param_entries: list[str] = []
         param_kwargs: dict[str, typing.Any] = {}
@@ -3373,19 +3911,30 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _fit_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        data_name, model_name, _ = self._make_model_code(input_name or self._data_name)
-        data_name = self._copy_fit_data_name(data_name)
+        data_name, model_name, _ = self._make_model_code(
+            primary_input or self._data_name
+        )
+        input_data_name = data_name
+        data_name = self._copy_fit_data_name(input_data_name)
+        weights_name = self._copy_fit_weights_name(
+            input_data_name,
+            model_name,
+        )
+        fit_kwargs: dict[str, typing.Any] = {
+            "model": f"|{model_name}|",
+            "params": "|params|",
+            "method": self.method_combo.currentText(),
+            "scale_covar": self.scale_covar_check.isChecked(),
+        }
+        if weights_name is not None:
+            fit_kwargs["weights"] = f"|{weights_name}|"
         return erlab.interactive.utils.generate_code(
             self._data.xlm.modelfit,
             args=[self._coord_name],
-            kwargs={
-                "model": f"|{model_name}|",
-                "params": "|params|",
-                "method": self.method_combo.currentText(),
-            },
+            kwargs=fit_kwargs,
             name="modelfit",
             module=f"{data_name}.xlm",
         )
@@ -3891,51 +4440,72 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if emit_info:
             self._emit_info_changed()
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if data.ndim != 1:
             raise ValueError("`data` must be a 1D DataArray")
-        return data
+        validated = {"data": data}
+        if "uncertainty" in inputs:
+            uncertainty = _validate_uncertainty_input(data, inputs["uncertainty"])
+            if uncertainty is not None:
+                validated["uncertainty"] = uncertainty
+        elif self._direct_weights is not None:
+            _validate_weights_input(data, self._direct_weights)
+        else:
+            _validate_uncertainty_input(data, self._uncertainty)
+        return validated
 
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
         return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
+        old_cw = self.centralWidget()
+        if old_cw is not None:
+            old_cw.setParent(None)
+            old_cw.deleteLater()
 
-        def _apply_update(validated: xr.DataArray) -> bool:
-            old_cw = self.centralWidget()
-            if old_cw is not None:
-                old_cw.setParent(None)
-                old_cw.deleteLater()
+        explicit_uncertainty = inputs.get("uncertainty")
+        direct_weights = (
+            None if explicit_uncertainty is not None else self._direct_weights
+        )
+        self._reset_fit_state(
+            inputs["data"],
+            self._model,
+            self._params.copy(),
+            uncertainty=(
+                explicit_uncertainty
+                if explicit_uncertainty is not None
+                else self._uncertainty
+                if direct_weights is None
+                else None
+            ),
+            direct_weights=direct_weights,
+            data_name=self._data_name,
+            model_name=self._model_name,
+        )
+        self._build_ui()
+        with self._history_suppressed():
+            self.tool_status = status
+        self._set_fit_stats(None)
+        self._update_fit_curve()
+        self._write_history = True
+        self._reset_history_stack()
+        self._mark_fit_stale()
+        self.restoreGeometry(old_geom)
+        self._notify_data_changed()
 
-            self._reset_fit_state(
-                validated,
-                self._model,
-                self._params.copy(),
-                data_name=self._data_name,
-                model_name=self._model_name,
-            )
-            self._build_ui()
-            with self._history_suppressed():
-                self.tool_status = status
-            self._set_fit_stats(None)
-            self._update_fit_curve()
-            self._write_history = True
-            self._reset_history_stack()
-            self._mark_fit_stale()
-            self.restoreGeometry(old_geom)
-            self._notify_data_changed()
-
-            if had_fit and self.refit_on_source_update_check.isChecked():
-                self._source_refresh_deferred = self.has_source_binding
-                self._run_fit()
-                return False
-            return True
-
-        return self._perform_source_update(new_data, apply_update=_apply_update)
+        if had_fit and self.refit_on_source_update_check.isChecked():
+            if not self._run_fit():
+                return True
+            if self._source_refreshing:
+                self._defer_source_refresh()
+            return False
+        return True
 
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)
