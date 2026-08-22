@@ -1862,7 +1862,7 @@ def parse_tool_provenance_operation(
         original_code = payload["code"]
         payload["code"] = _migrate_legacy_nonuniform_restore_code(original_code)
         if payload["code"] != original_code:
-            payload["framework_owned"] = True
+            payload["uses_implicit_framework_imports"] = True
     return operation_type.model_validate(payload)
 
 

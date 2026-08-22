@@ -28,7 +28,9 @@ class ScriptCodeOperation(ToolProvenanceOperation):
     code: str | None
     copyable: bool = True
     visible: bool = True
-    framework_owned: bool = pydantic.Field(
+    # This is a code-generation hint. Serialized values do not establish origin or
+    # trust.
+    uses_implicit_framework_imports: bool = pydantic.Field(
         default=False,
         exclude_if=lambda value: not value,
     )

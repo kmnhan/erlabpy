@@ -1,4 +1,7 @@
-"""Extract stored Python at the provenance replay boundaries."""
+"""Inventory executable document content at provenance replay boundaries.
+
+Code-generation hints, including implicit imports, do not affect this inventory.
+"""
 
 from __future__ import annotations
 
@@ -118,7 +121,7 @@ def provenance_replay_node_code_trust_entries(
             code=code,
             context=context,
         )
-        for index, code in enumerate(node.payload.get("stored_code", ()))
+        for index, code in enumerate(node.payload.get("document_codes", ()))
         if isinstance(code, str) and code.strip()
     )
 
@@ -178,7 +181,6 @@ def _stored_spec_code_trust_entries(
         if (
             getattr(operation, "op", None) == "script_code"
             and bool(getattr(operation, "copyable", False))
-            and not bool(getattr(operation, "framework_owned", False))
             and isinstance(code, str)
             and code.strip()
         ):

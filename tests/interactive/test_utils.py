@@ -4095,9 +4095,11 @@ def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> N
 
     single_spec = tool.current_provenance_spec()
     assert single_spec is not None
-    expected_operation = operation.model_copy(update={"framework_owned": True})
+    expected_operation = operation.model_copy(
+        update={"uses_implicit_framework_imports": True}
+    )
     assert single_spec.operations == (expected_operation,)
-    assert operation.framework_owned is False
+    assert operation.uses_implicit_framework_imports is False
 
     tool._operations = [operation]
     sequence_spec = tool.current_provenance_spec()

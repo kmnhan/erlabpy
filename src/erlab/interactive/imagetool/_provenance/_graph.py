@@ -595,10 +595,10 @@ def _validate_script_provenance(
             if not script_operation.copyable or script_operation.code is None:
                 raise ReplayGraphError("Script provenance contains non-replayable code")
             has_replay_step = True
-            framework_owned = script_operation.framework_owned
+            uses_implicit_imports = script_operation.uses_implicit_framework_imports
             operation_available_names = available_names
             implicit_names_added: set[str] = set()
-            if framework_owned:
+            if uses_implicit_imports:
                 operation_available_names = set(available_names)
                 implicit_names_added = implicit_framework_names - available_names
                 operation_available_names.update(implicit_framework_names)
@@ -625,7 +625,7 @@ def _validate_script_provenance(
                     external_name_candidates=external_name_candidates,
                 )
             )
-            if framework_owned:
+            if uses_implicit_imports:
                 available_names.update(
                     name
                     for name in operation_available_names
@@ -1117,8 +1117,10 @@ def _compile_spec(
         pending_codes: list[str] = []
         pending_code_hoist_imports: list[bool] = []
         pending_code_external_names: list[tuple[str, ...]] = []
-        pending_code_framework_owned: list[bool] = []
-        pending_stored_code: list[str | None] = []
+        pending_code_implicit_imports: list[bool] = []
+        # This mirrors pending_codes. None identifies Python synthesized locally
+        # from a typed operation instead of source text stored in the document.
+        pending_document_codes: list[str | None] = []
 
         def relay_key(source_key: str) -> str:
             return graph.add_node(
@@ -1185,8 +1187,8 @@ def _compile_spec(
 
         def flush_script() -> None:
             nonlocal current_bindings, current_name, pending_code_hoist_imports
-            nonlocal pending_code_external_names, pending_code_framework_owned
-            nonlocal pending_codes, pending_stored_code, script_current_key
+            nonlocal pending_code_external_names, pending_code_implicit_imports
+            nonlocal pending_codes, pending_document_codes, script_current_key
             if not pending_codes:
                 return
             if len(pending_codes) > 1:
@@ -1196,9 +1198,9 @@ def _compile_spec(
                     if not _name_value_is_live(pending_codes[1:], seed_name):
                         del pending_codes[0]
                         del pending_code_external_names[0]
-                        del pending_code_framework_owned[0]
+                        del pending_code_implicit_imports[0]
                         del pending_code_hoist_imports[0]
-                        del pending_stored_code[0]
+                        del pending_document_codes[0]
             output_name = _script_codes_output_name(
                 pending_codes,
                 active_name=active_name,
@@ -1214,8 +1216,10 @@ def _compile_spec(
                         "bindings": current_bindings,
                         "codes": tuple(pending_codes),
                         "external_names": tuple(pending_code_external_names),
-                        "framework_owned": tuple(pending_code_framework_owned),
-                        "stored_code": tuple(pending_stored_code),
+                        "uses_implicit_framework_imports": tuple(
+                            pending_code_implicit_imports
+                        ),
+                        "document_codes": tuple(pending_document_codes),
                         "hoist_imports": tuple(pending_code_hoist_imports),
                     },
                 ),
@@ -1227,8 +1231,10 @@ def _compile_spec(
                     "bindings": current_bindings,
                     "codes": tuple(pending_codes),
                     "external_names": tuple(pending_code_external_names),
-                    "framework_owned": tuple(pending_code_framework_owned),
-                    "stored_code": tuple(pending_stored_code),
+                    "uses_implicit_framework_imports": tuple(
+                        pending_code_implicit_imports
+                    ),
+                    "document_codes": tuple(pending_document_codes),
                     "hoist_imports": tuple(pending_code_hoist_imports),
                 },
             )
@@ -1238,9 +1244,9 @@ def _compile_spec(
                 graph.add_alias(output_name, script_current_key)
             pending_codes = []
             pending_code_external_names = []
-            pending_code_framework_owned = []
+            pending_code_implicit_imports = []
             pending_code_hoist_imports = []
-            pending_stored_code = []
+            pending_document_codes = []
 
         def apply_context_binding(names: Sequence[str]) -> None:
             nonlocal current_bindings, current_name, script_current_key
@@ -1278,9 +1284,9 @@ def _compile_spec(
                 if not apply_simple_alias(seed_code):
                     pending_codes.append(seed_code)
                     pending_code_external_names.append(tuple(sorted(seed_caller_names)))
-                    pending_code_framework_owned.append(False)
+                    pending_code_implicit_imports.append(False)
                     pending_code_hoist_imports.append(False)
-                    pending_stored_code.append(parsed.seed_code)
+                    pending_document_codes.append(parsed.seed_code)
             else:
                 seed_setup_code, seed_load_code, seed_output_name = seed_file_load_parts
                 script_current_key = _add_file_load_node(
@@ -1314,18 +1320,16 @@ def _compile_spec(
                     pending_codes.append(operation_code)
                     accesses, _rebindings = _code_name_accesses(operation_code)
                     external_names = caller_names & accesses
-                    if script_operation.framework_owned:
+                    if script_operation.uses_implicit_framework_imports:
                         external_names -= _REPLAY_FRAMEWORK_IMPORTS.keys()
                     pending_code_external_names.append(tuple(sorted(external_names)))
-                    pending_code_framework_owned.append(
-                        script_operation.framework_owned
+                    pending_code_implicit_imports.append(
+                        script_operation.uses_implicit_framework_imports
                     )
                     pending_code_hoist_imports.append(
                         bool(getattr(script_operation, "hoist_imports", False))
                     )
-                    pending_stored_code.append(
-                        None if script_operation.framework_owned else operation_code
-                    )
+                    pending_document_codes.append(operation_code)
                 previous_input_policy = None
                 continue
 
@@ -1419,9 +1423,9 @@ def _compile_spec(
                         )
                     )
                     pending_code_external_names.append(())
-                    pending_code_framework_owned.append(True)
+                    pending_code_implicit_imports.append(True)
                     pending_code_hoist_imports.append(False)
-                    pending_stored_code.append(None)
+                    pending_document_codes.append(None)
                     continue
 
             ensure_script_current_key()
@@ -3127,7 +3131,7 @@ def emit_replay_code(
     copied_script_bindings = _copied_script_bindings(graph)
     chunks: list[tuple[str, bool]] = []
     chunk_external_names: list[tuple[str, ...]] = []
-    chunk_framework_owned: list[bool] = []
+    chunk_implicit_imports: list[bool] = []
     extension_setup_chunks: list[tuple[str, bool]] = []
     materialized_aliases: dict[str, str] = {}
     generated_copy_names: set[str] = set()
@@ -3213,11 +3217,11 @@ def emit_replay_code(
         *,
         group_imports: bool = False,
         external_names: tuple[str, ...] = (),
-        framework_owned: bool = True,
+        uses_implicit_framework_imports: bool = True,
     ) -> None:
         chunks.append((code, graph.display and group_imports))
         chunk_external_names.append(external_names)
-        chunk_framework_owned.append(framework_owned)
+        chunk_implicit_imports.append(uses_implicit_framework_imports)
 
     def extension_binding(node_key: str) -> tuple[str, str]:
         source_path, function_name = extension_references[node_key]
@@ -3347,10 +3351,10 @@ def emit_replay_code(
                     node.payload.get("external_names", ((),) * len(codes)),
                 )
             )
-            framework_owned_by_code = list(
+            implicit_imports_by_code = list(
                 typing.cast(
                     "tuple[bool, ...]",
-                    node.payload["framework_owned"],
+                    node.payload["uses_implicit_framework_imports"],
                 )
             )
             hoist_imports = list(
@@ -3443,7 +3447,7 @@ def emit_replay_code(
             if (
                 graph.display
                 and not any(hoist_imports)
-                and len(set(framework_owned_by_code)) == 1
+                and len(set(implicit_imports_by_code)) == 1
                 and _is_receiver_assignment_chain(codes, active_name)
             ):
                 codes = [
@@ -3463,20 +3467,20 @@ def emit_replay_code(
                         )
                     )
                 ]
-                framework_owned_by_code = [framework_owned_by_code[0]]
+                implicit_imports_by_code = [implicit_imports_by_code[0]]
                 hoist_imports = [False]
-            for code, group_imports, external_names, framework_owned in zip(
+            for code, group_imports, external_names, implicit_imports in zip(
                 codes,
                 hoist_imports,
                 external_names_by_code,
-                framework_owned_by_code,
+                implicit_imports_by_code,
                 strict=True,
             ):
                 append_code(
                     code,
                     group_imports=group_imports,
                     external_names=external_names,
-                    framework_owned=framework_owned,
+                    uses_implicit_framework_imports=implicit_imports,
                 )
             if active_name != name:
                 append_code(f"{name} = {active_name}")
@@ -3523,7 +3527,7 @@ def emit_replay_code(
             future_prologues.append(chunk_future_imports)
         chunks[index] = (body, group_imports)
 
-    framework_owned_names: set[str] = set()
+    implicit_framework_names: set[str] = set()
     framework_import_targets: dict[str, str] = {}
     for name, import_code in _REPLAY_FRAMEWORK_IMPORTS.items():
         bindings = typing.cast("dict[str, str]", _import_binding_targets(import_code))
@@ -3533,8 +3537,8 @@ def emit_replay_code(
     synthesize_framework_imports = (
         not graph.display or _semantic_emitted_step_count(graph) > 1
     )
-    for index, ((chunk, group_imports), framework_owned) in enumerate(
-        zip(chunks, chunk_framework_owned, strict=True)
+    for index, ((chunk, group_imports), implicit_imports) in enumerate(
+        zip(chunks, chunk_implicit_imports, strict=True)
     ):
         module = ast.parse(chunk, mode="exec")
         loaded_names = {
@@ -3550,9 +3554,9 @@ def emit_replay_code(
                 imported_bindings.update(bindings)
 
         bindings_at_body = known_framework_bindings | imported_bindings
-        if framework_owned:
+        if implicit_imports:
             framework_names = loaded_names & _REPLAY_FRAMEWORK_IMPORTS.keys()
-            framework_owned_names.update(
+            implicit_framework_names.update(
                 framework_names
                 | (imported_bindings.keys() & _REPLAY_FRAMEWORK_IMPORTS.keys())
             )
@@ -3586,7 +3590,7 @@ def emit_replay_code(
     external_capture_chunks: list[tuple[str, bool]] = []
     external_name_replacements: dict[str, str] = {}
     for external_name in sorted(
-        (graph.external_names & framework_owned_names) - {"load_script"}
+        (graph.external_names & implicit_framework_names) - {"load_script"}
     ):
         replacement = "input_data"
         suffix = 2

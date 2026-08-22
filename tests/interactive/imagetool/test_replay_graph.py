@@ -613,7 +613,7 @@ def test_replay_graph_omits_trivial_imports_for_one_framework_step() -> None:
     operation = ScriptCodeOperation(
         label="Copy data",
         code="result = xr.DataArray(np.asarray(data), dims=data.dims)",
-        framework_owned=True,
+        uses_implicit_framework_imports=True,
     )
     restored = ScriptCodeOperation.model_validate(operation.model_dump(mode="json"))
     spec = script(
@@ -627,7 +627,7 @@ def test_replay_graph_omits_trivial_imports_for_one_framework_step() -> None:
     code = typing.cast("str", spec.display_code())
     namespace = _exec_generated_code(code, {"data": data, "np": np, "xr": xr})
 
-    assert restored.framework_owned is True
+    assert restored.uses_implicit_framework_imports is True
     assert "import numpy" not in code
     assert "import xarray" not in code
     assert "result = data" not in code
@@ -681,12 +681,12 @@ def test_replay_graph_reserves_framework_names_for_script_outputs(
     )
 
 
-def test_replay_graph_reuses_user_owned_canonical_framework_import() -> None:
+def test_replay_graph_reuses_explicit_canonical_framework_import() -> None:
     spec = script(
         ScriptCodeOperation(
             label="Copy input",
             code="result = xr.DataArray(intermediate)",
-            framework_owned=True,
+            uses_implicit_framework_imports=True,
         ),
         start_label="Build data",
         seed_code="import xarray as xr\nintermediate = xr.DataArray([1.0])",
@@ -705,7 +705,7 @@ def test_replay_graph_restores_framework_import_after_user_alias_collision() -> 
         ScriptCodeOperation(
             label="Copy input",
             code="result = xr.DataArray(intermediate)",
-            framework_owned=True,
+            uses_implicit_framework_imports=True,
         ),
         start_label="Start from data",
         seed_code="import types as xr\nintermediate = data",
@@ -889,7 +889,7 @@ def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
             "active_name": "derived",
             "bindings": (("cached", external_key),),
             "codes": ("derived = cached + 1",),
-            "stored_code": ("derived = cached + 1",),
+            "document_codes": ("derived = cached + 1",),
             "hoist_imports": (False,),
         },
     )
@@ -2411,7 +2411,7 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("result = data_0",),
             "active_name": "result",
             "bindings": (("data_0", source_key),),
-            "framework_owned": (False,),
+            "uses_implicit_framework_imports": (False,),
         },
     )
 
@@ -2438,7 +2438,7 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("bad =",),
             "active_name": "derived",
             "bindings": (),
-            "framework_owned": (False,),
+            "uses_implicit_framework_imports": (False,),
         },
     )
     with pytest.raises(ReplayGraphError, match="Script replay code"):

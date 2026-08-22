@@ -6863,11 +6863,52 @@ def test_provenance_code_trust_entries_capture_live_unrestricted_code() -> None:
     )
 
 
+def test_implicit_framework_imports_do_not_bypass_code_trust() -> None:
+    saved = script(
+        ScriptCodeOperation(
+            label="Add",
+            code="derived = data_0 + 1",
+            uses_implicit_framework_imports=True,
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
+    ).model_dump(mode="json")
+    restored = parse_tool_provenance_spec(saved)
+    assert restored is not None
+
+    entries = provenance_code_trust_entries(
+        restored,
+        location_prefix="workspace/provenance",
+    )
+
+    assert [entry.code for entry in entries] == ["derived = data_0 + 1"]
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    with pytest.raises(TypeError, match="not trusted"):
+        replay_script_provenance(restored, {"data_0": data})
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            restored,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
+        data + 1,
+    )
+
+
 @pytest.mark.parametrize("raw_script", [False, True])
+@pytest.mark.parametrize("implicit_imports", [False, True])
 def test_signed_script_replay_uses_the_exact_graph_inventory(
     raw_script: bool,
+    implicit_imports: bool,
 ) -> None:
-    live = full_data(ScriptCodeOperation(label="Add", code="derived = data + 1"))
+    live = full_data(
+        ScriptCodeOperation(
+            label="Add",
+            code="derived = data + 1",
+            uses_implicit_framework_imports=implicit_imports,
+        )
+    )
     replay_spec = script(
         *live.operations,
         start_label="Replay live provenance",

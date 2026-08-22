@@ -4493,7 +4493,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 )
 
         operations = tuple(
-            operation.model_copy(update={"framework_owned": True})
+            operation.model_copy(update={"uses_implicit_framework_imports": True})
             if isinstance(operation, ScriptCodeOperation)
             else operation
             for operation in operations
