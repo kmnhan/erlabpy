@@ -1,3 +1,109 @@
+## Unreleased
+
+### ✨ Features
+
+- **explorer:** preview general data files (#565) ([f0e51a2](https://github.com/kmnhan/erlabpy/commit/f0e51a2fd3ee67c2dd8ffaf76984a08fd2b57ca7))
+
+  Data Explorer can now also preview generic HDF5, NetCDF, Zarr, IBW, and single-wave PXT data.
+
+- **manager:** add extension framework (#543) ([451dc74](https://github.com/kmnhan/erlabpy/commit/451dc74a18a2a67dc0864a8a5457fdd346660c0e))
+
+  ImageTool Manager can now register custom Python scripts that can extend analysis routines and file loaders.
+
+- **figurecomposer:** autocomplete labels and font sizes (#562) ([1e4fe82](https://github.com/kmnhan/erlabpy/commit/1e4fe82160adf81f016dcf00751e9101ded7d181))
+
+  Figure Composer now suggests common axis labels and named Matplotlib font sizes.
+
+- **figurecomposer:** add font size controls to text methods (#559) ([b719440](https://github.com/kmnhan/erlabpy/commit/b7194408af5ff09b2c9c2a8d6c7e7cac10954ab9))
+
+  Figure Composer now provides a dedicated font size control for various text annotation-related steps.
+
+- **figurecomposer:** allow creating empty figures (#552) ([40f973f](https://github.com/kmnhan/erlabpy/commit/40f973fd4167ca523f13224d7f4c3a4870488adc))
+
+  Adds a File menu command that creates an empty Figure Composer without ImageTool sources.
+
+- **figurecomposer:** support shared GridSpec axes (#550) ([e2cfcc0](https://github.com/kmnhan/erlabpy/commit/e2cfcc0480c133b3c92e29b6e75642608af1c075))
+
+- **analysis.gold:** add adaptive range adjustment for Fermi edge fitting (#544) ([86b9b70](https://github.com/kmnhan/erlabpy/commit/86b9b7074be5d4364fa2bd156b22a7d2ca7e116a))
+
+  Adds a new `adaptive` argument to Fermi edge fitting functions. When enabled, the algorithm tries to estimate an independent energy range for each EDC, which greatly improves results when there are bands or when the edge location differs a lot. Supplying a reasonable temperature and energy resolution improves the estimate. The argument can also be enabled in `goldtool`.
+
+- **figurecomposer:** add configurable export settings (#541) ([2254a88](https://github.com/kmnhan/erlabpy/commit/2254a881f1346d24c49589c193e8a6e42923194e))
+
+  Adds a new tab that controls how the figure is saved.
+
+- **figurecomposer:** add more controls (#540) ([5b9ed92](https://github.com/kmnhan/erlabpy/commit/5b9ed925c9587eb91dd0d47475e82a17a4bd865b))
+
+  Adds the following Figure Composer options:
+
+  - `axvline` and `axhline`: color and line style.
+
+  - `set_xticks` and `set_yticks`: minor ticks.
+
+  - `set_xlabel` and `set_ylabel`: label location.
+
+  - `set_title` and `eplt.set_titles`: title location.
+
+  - `text`, `figtext`, and related text methods: color, alignment, and rotation.
+
+  Also bumps the minimum supported Matplotlib version to 3.11.
+
+- **figurecomposer:** add minor tick controls to axes customization dialog (#534) ([1d83b96](https://github.com/kmnhan/erlabpy/commit/1d83b9683b0a280ac48787cac42c56e845cc3409))
+
+- **plotting:** add function to annotate core level energies (#536) ([b794734](https://github.com/kmnhan/erlabpy/commit/b794734ff7f011421219d44297a21e8aedc112d3))
+
+  Adds `eplt. plot_core_levels` that annotates core level energies as lines. This function is also available in figure composer.
+
+### 🐞 Bug Fixes
+
+- **manager:** preserve tool type labels in restored workspaces (#560) ([3b32cfe](https://github.com/kmnhan/erlabpy/commit/3b32cfec9b5becdb210ecc972b99dc6cdca40cc6))
+
+- **figurecomposer:** support extra line style kwargs (#561) ([65189f2](https://github.com/kmnhan/erlabpy/commit/65189f2b456f6e69eb86a632fb633e8d1dad28e7))
+
+  Figure Composer now accepts additional Matplotlib Line2D keyword arguments for BZ Overlay, Photon Energy Overlay, and Line/Profile steps. Users can set custom dash patterns, transparency, markers, and other advanced line properties.
+
+- **figurecomposer:** respect stylesheet title locations (#558) ([0761ab6](https://github.com/kmnhan/erlabpy/commit/0761ab62489c1dbc042af6164153af5f5da3a50b))
+
+  Add a Default location option to the `set_title` and `set_titles` steps. This option uses the title location from the active Matplotlib stylesheet.
+
+- **analysis.transform:** correctly shift coordinates for inputs containing NaNs (#557) ([f8f48e5](https://github.com/kmnhan/erlabpy/commit/f8f48e53ecdb844764b0c19e0efd6c0980e8e470))
+
+  Fixes an issue where the `shift` function would return an incorrect coordinate grid for shifts including NaNs with `shift_coords=True`.
+
+- **figurecomposer:** only show controls for selected Brillouin zone overlay mode (#553) ([2b998a0](https://github.com/kmnhan/erlabpy/commit/2b998a0badff9f2dbb4f6a9f2535ddcc6702c82d))
+
+- **ktool:** correct rotational guideline delta sign (#551) ([4cf838c](https://github.com/kmnhan/erlabpy/commit/4cf838c370768af88bba5c439eccb75893f4dd4e))
+
+  Fixes a problem where the sign of the inferred `delta` was sometimes incorrect when automatically filling `ktool` parameters from rotation guidelines.
+
+- **analysis:** rechunk Dask core dimensions automatically for incompatible routines (#549) ([c6a6887](https://github.com/kmnhan/erlabpy/commit/c6a68879b5237ef813e1b3c7341635347f8c68b1))
+
+- **manager:** preserve deferred tools after source removal (#548) ([37b9735](https://github.com/kmnhan/erlabpy/commit/37b9735034e180f7600ae013f27012f8006b913b))
+
+- **interactive:** restore `meshtool` workspace state safely (#546) ([2c31319](https://github.com/kmnhan/erlabpy/commit/2c3131985fc4c3dda9a009eda2664683522f7de2))
+
+  Fixes an issue where `meshtool` instances saved to `.itws` files would sometimes fail to load.
+
+- **manager:** properly support nested ImageTool selection (#542) ([31df100](https://github.com/kmnhan/erlabpy/commit/31df1006a7868860f6a815fa4b87e27d537b3638))
+
+- **io.ssrl52:** avoid implicit JIT during loading (#539) ([6bfd3f5](https://github.com/kmnhan/erlabpy/commit/6bfd3f539e992250b12f2642781bbffe3825ba3b))
+
+  Fixes a rare issue where loading older data with the ssrl52 loader in ImageTool manager could cause a stack overflow.
+
+- **imagetool:** handle binned unindexed selections (#538) ([cf43ccc](https://github.com/kmnhan/erlabpy/commit/cf43ccc99f0cd9c49445e9cb787d9a5a3343d5dd))
+
+- **imagetool:** omit placeholder dimensions from code copied from 1D profile selections (#537) ([7eb50f7](https://github.com/kmnhan/erlabpy/commit/7eb50f7cf0ca7f0816f6c0033fae04f808b70e89))
+
+- **manager:** preserve data when updating (#535) ([4ac62af](https://github.com/kmnhan/erlabpy/commit/4ac62af654765c774fc7dcf8391ef68fe51563cc))
+
+  Fixes an issue where updating the standalone version with an active workspace may overwrite it with an empty one.
+
+### ♻️ Code Refactor
+
+- **analysis.gold:** rename `fast` to `use_step_edge` (#547) ([dcb1cbd](https://github.com/kmnhan/erlabpy/commit/dcb1cbdfea00a8364f1a93ab28bcf953c5cc6550))
+
+  Rename the `fast` argument to be more intuitive. Existing code will still work.
+
 ## v3.26.1 (2026-08-06)
 
 ### 🐞 Bug Fixes
