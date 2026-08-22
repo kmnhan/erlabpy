@@ -52,16 +52,28 @@ A file loader has these additional requirements:
 
 ## Parameter annotations
 
-| Python annotation | Manager control |
-| --- | --- |
-| `bool` | Check box |
-| `int` | Integer input |
-| `float` | Numeric input |
-| `str` | Text input |
-| {class}`pathlib.Path` | Path input |
-| {data}`typing.Literal` | Choice input |
-| {class}`enum.Enum` | Choice input |
-| An optional form of a supported type, such as `float | None` | The corresponding input with a `None` state |
+:::{list-table}
+:header-rows: 1
+
+- - Python annotation
+  - Manager control
+- - `bool`
+  - Check box
+- - `int`
+  - Integer input
+- - `float`
+  - Numeric input
+- - `str`
+  - Text input
+- - {class}`pathlib.Path`
+  - Path input
+- - {data}`typing.Literal`
+  - Choice input
+- - {class}`enum.Enum`
+  - Choice input
+- - An optional form of a supported type, such as `float | None`
+  - The corresponding input with a `None` state
+:::
 
 `Literal` values and `Enum` member values must be Boolean, integer, finite
 floating-point, or string values. A default value must match its annotation. Only an

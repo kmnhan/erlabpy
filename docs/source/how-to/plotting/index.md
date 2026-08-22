@@ -70,7 +70,7 @@ figure-styles
 ```
 ::::
 
-::::{grid-item-card} First Brillouin zone mask
+::::{grid-item-card} Polygon masking
 :link: how-to-python-mask-polygon
 :link-type: ref
 :class-card: plotting-gallery-card

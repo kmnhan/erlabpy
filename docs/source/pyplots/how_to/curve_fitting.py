@@ -1,9 +1,9 @@
-import lmfit
 import matplotlib.pyplot as plt
+import numpy as np
 
 import erlab.analysis as era
 import erlab.plotting as eplt
-from erlab.io.exampledata import generate_data, generate_gold_edge
+from erlab.io.exampledata import generate_gold_edge
 
 
 def correct_curved_fermi_edge() -> None:
@@ -72,63 +72,94 @@ def fit_spectra_across_coordinate() -> None:
 
 
 def inspect_fit_components_and_residuals() -> None:
-    spectrum = generate_data(seed=1).T.qsel(ky=0.3, eV=0.0).sel(kx=slice(-0.75, 0.75))
-    coordinate = spectrum.kx.values
-    measured = spectrum.values / float(spectrum.max())
+    energy = np.linspace(-31.5, -22.0, 800)
+    peaks = [
+        era.fit.functions.voigt(
+            energy,
+            center=-25.0,
+            sigma=0.22,
+            gamma=0.12,
+            amplitude=0.60,
+        ),
+        era.fit.functions.voigt(
+            energy,
+            center=-28.0,
+            sigma=0.22,
+            gamma=0.14,
+            amplitude=0.40,
+        ),
+    ]
+    background = era.fit.functions.active_shirley(
+        energy,
+        peaks,
+        k_steps=[0.09, 0.09],
+        const_bkg=0.04,
+    )
+    expected = sum(peaks, start=np.zeros_like(energy)) + sum(
+        background.values(),
+        start=np.zeros_like(energy),
+    )
+    count_scale = 5000.0 / expected.max()
+    counts = np.random.default_rng(1).poisson(count_scale * expected)
+    intensity = counts / count_scale
 
-    model = lmfit.models.LorentzianModel(prefix="left_peak_")
-    model += lmfit.models.LorentzianModel(prefix="right_peak_")
-    model += lmfit.models.LinearModel(prefix="background_")
-    parameters = model.make_params(
-        left_peak_amplitude=0.04,
-        left_peak_center=-0.52,
-        left_peak_sigma=0.03,
-        right_peak_amplitude=0.04,
-        right_peak_center=0.52,
-        right_peak_sigma=0.03,
-        background_slope=0.0,
-        background_intercept=0.03,
+    model = era.fit.models.MultiPeakModel(
+        npeaks=2,
+        peak_shapes="voigt",
+        fd=False,
+        background="shirley",
+        convolve=False,
     )
-    lmfit_result = model.fit(
-        measured,
-        x=coordinate,
-        params=parameters,
-    )
+    params = model.guess(intensity, x=energy)
+    params["p0_center"].set(value=-25.0, min=-25.5, max=-24.5)
+    params["p0_sigma"].set(value=0.20, min=0.0, max=0.5)
+    params["p0_gamma"].set(value=0.10, min=0.0, max=0.5)
+    params["p1_center"].set(expr="p0_center - 3.0")
+    params["p1_sigma"].set(expr="p0_sigma")
+    params["p1_gamma"].set(value=0.10, min=0.0, max=0.5)
+    params["p1_amplitude"].set(expr="2 * p0_amplitude / 3")
+    fit_result = model.fit(intensity, x=energy, params=params)
+
+    components = fit_result.eval_components(x=energy)
+    residual = intensity - fit_result.best_fit
     _, axes = plt.subplots(
         2,
         1,
-        figsize=(6.4, 3.0),
+        figsize=(4.8, 3.6),
         layout="compressed",
         sharex=True,
         height_ratios=(3, 1),
     )
     axes[0].plot(
-        coordinate,
-        measured,
-        ".",
+        energy,
+        intensity,
+        "o",
         markersize=2,
-        color="0.25",
+        markerfacecolor="none",
+        markeredgecolor="0.25",
+        markeredgewidth=0.5,
         label="Measured data",
     )
-    axes[0].plot(coordinate, lmfit_result.best_fit, label="Best fit")
-    for name, component in lmfit_result.eval_components(x=coordinate).items():
-        label = name.rstrip("_").replace("_", " ").title()
-        axes[0].plot(
-            coordinate,
-            component,
-            "--",
-            label=label,
-        )
-    axes[0].set_ylabel("Normalized intensity")
+    axes[0].plot(energy, fit_result.best_fit, color="black", label="Best fit")
+    axes[0].plot(energy, components["2Peak_p0"], label=r"Bi 5d$_{5/2}$")
+    axes[0].plot(energy, components["2Peak_p1"], label=r"Bi 5d$_{3/2}$")
+    axes[0].plot(
+        energy,
+        components["2Peak_baseline"] + components["2Peak_shirley"],
+        "--",
+        color="0.45",
+        label="Shirley background",
+    )
+    axes[0].set_ylabel("Intensity (arb. units)")
     axes[0].legend(ncols=2)
 
     axes[1].axhline(0.0, color="0.5", linewidth=1)
     axes[1].plot(
-        coordinate,
-        measured - lmfit_result.best_fit,
-        ".-",
-        color="tab:red",
-        markersize=3,
+        energy,
+        residual,
+        ".",
+        color="0.25",
+        markersize=2,
     )
-    axes[1].set(xlabel=r"$k_x$ (Å$^{-1}$)", ylabel="Residual")
+    axes[1].set(xlabel=r"$E-E_F$ (eV)", ylabel="Residual")
     eplt.clean_labels(axes)
