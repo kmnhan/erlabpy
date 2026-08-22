@@ -172,7 +172,7 @@ def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
     assert adaptive_check.isChecked()
     assert step_edge_check.isChecked()
 
-    win.data_name = "era"
+    win.data_name = "gold_data"
     provenance = win.current_provenance_spec()
     assert provenance is not None
     replay_kwargs: dict[str, typing.Any] = {}
@@ -185,7 +185,7 @@ def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
         return xr.Dataset()
 
     monkeypatch.setattr(erlab.analysis.gold, "poly", capture_poly)
-    namespace = {"era": gold}
+    namespace = {"era": erlab.analysis, "gold_data": gold}
     exec(provenance.display_code(), namespace, namespace)  # noqa: S102
     assert isinstance(replay_args[0], xr.DataArray)
     assert replay_kwargs["adaptive"] is True

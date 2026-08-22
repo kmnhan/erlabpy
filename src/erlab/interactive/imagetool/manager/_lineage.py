@@ -938,11 +938,15 @@ class _LineageController:
             tool = node.tool_window
             inputs = () if tool is None else tool.script_inputs
             if tool is None or not inputs:
-                self._manager._dependency_tracker.pop_source_refreshes(target_uid)
+                self._manager._dependency_tracker.discard_source_refresh_chain(
+                    target_uid
+                )
                 return False
 
             def fail_refresh() -> bool:
-                self._manager._dependency_tracker.pop_source_refreshes(target_uid)
+                self._manager._dependency_tracker.discard_source_refresh_chain(
+                    target_uid
+                )
                 return False
 
             def defer_refresh() -> bool:

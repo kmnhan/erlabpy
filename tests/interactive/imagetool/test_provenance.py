@@ -8273,7 +8273,10 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     assert np.isnan(stderr.item())
 
     stderr_code = f"derived = {stderr_operation.expression_code('data')}"
-    stderr_namespace = _exec_generated_code(stderr_code, {"data": data})
+    stderr_namespace = _exec_generated_code(
+        stderr_code,
+        {"data": data, "era": erlab.analysis},
+    )
     xr.testing.assert_identical(stderr_namespace["derived"], stderr)
 
 

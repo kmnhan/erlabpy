@@ -1453,7 +1453,7 @@ class _ProvenanceEditController:
             ) as publication:
                 candidate = dialog.provenance_spec(
                     active_name=_file_load_edit_active_name(spec),
-                    replay_steps=spec.steps,
+                    replay_steps=() if spec.kind == "script" else spec.steps,
                 )
                 if spec.kind == "script":
                     candidate = _replace_file_load_fields(spec, candidate)
