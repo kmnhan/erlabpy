@@ -43,6 +43,35 @@ A workspace is not a substitute for:
 - Metadata that was not recorded.
 - Other variables and Python objects in the notebook kernel.
 
+## Stored executable content
+
+Some workspace state contains Python that can reproduce an analysis. Manager separates
+restoring the session from running this code. An unverified workspace opens with its
+non-executable state available and its stored executable content paused.
+
+| Stored content | Effect while paused |
+| --- | --- |
+| Recorded Python operations | Operations that require Python do not replay. |
+| Figure Composer Python and custom transforms | The preview can be incomplete, and export is unavailable for that incomplete figure. |
+| Saved fitting code and parameter expressions | The related restoration, replay, or fitting operation does not run. |
+
+Workspace approval applies to the complete current executable content. When ERLab opens
+a workspace whose executable content no longer matches its saved approval, it requires
+review again. When you add or change code through an explicit ERLab editing action,
+ERLab treats only that edit as local work. Unchanged code from the opened workspace
+remains paused until you approve it.
+
+After a successful save, an unchanged approved workspace normally opens without another
+review on the same computer. A trusted folder skips review for every `.itws` file in
+that folder and its subfolders.
+
+A standalone ImageTool does not run stored Python from provenance. Manager supplies the
+workspace review and replay workflow.
+
+Use the {ref}`workspace review procedure <how-to-gui-review-workspace-code>` when code
+is paused. The {ref}`Security settings <options-trusted-workspace-folders>` describe
+trusted folders and saved approvals.
+
 ## Extension scripts
 
 An extension operation records the script name, capability ID, and source hash. The

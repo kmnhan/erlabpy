@@ -1058,6 +1058,25 @@ ImageTool launch path and the manager launch path. The manager flow is slightly
 different because the tool row can be hidden, saved, restored, or rebound to watched
 notebook data.
 
+### Installed tool discovery
+
+A workspace records the module and qualified class name for each saved tool. A fresh
+Manager process accepts built-in tool classes and classes declared by installed
+packages. It does not import an arbitrary module name from a workspace.
+
+Add this entry point to the package that provides the tool:
+
+```toml
+[project.entry-points."erlab.interactive.tool_windows"]
+my-tool = "my_package.tools:MyTool"
+```
+
+Include this entry point in the metadata of the installed package. Its value must match
+the stored module and qualified class name. Manager reads installed entry-point
+metadata before it imports the package. A class defined in a notebook or ordinary
+script remains available after its module is imported in the current process, but a
+fresh Manager process cannot discover it automatically.
+
 ## Test and document the contribution
 
 Before opening a PR, make sure the new tool behaves like an ERLabPy tool, not just like

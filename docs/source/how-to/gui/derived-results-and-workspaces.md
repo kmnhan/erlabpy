@@ -113,6 +113,38 @@ another workspace must be added without replacing the current session.
 Watched notebook rows reopen disconnected. Recreate their variables and follow
 {ref}`imagetool-manager-reconnect-watches` to reconnect them.
 
+(how-to-gui-review-workspace-code)=
+
+## Reviewing stored workspace code
+
+Use this procedure when Manager shows the warning that stored executable content is
+paused.
+
+1. Confirm who created the `.itws` file and how you received it.
+2. Select {guilabel}`Review and Trust…` in the warning banner. You can also open
+   {menuselection}`File --> Workspace Properties` and select
+   {guilabel}`Review and Trust…` there.
+3. Inspect every item in the review details. The approval applies to the complete
+   workspace code listing, not only to the operation that was blocked.
+4. If a serialized fitting payload shows only a digest and you cannot verify its
+   source, cancel the review.
+5. If you accept all listed content, select
+   {guilabel}`Trust Workspace and Run Code`.
+6. Repeat the blocked action, such as {guilabel}`Reload Data` or a Figure Composer
+   render.
+
+If you cancel, data and other non-executable workspace state remain available. Manager
+keeps stored code paused.
+
+After a successful save, an unchanged approved workspace normally opens without another
+review on the same computer. If its executable content no longer matches the stored
+approval, review the workspace again.
+
+See {doc}`workspaces and provenance
+<../../explanation/workspaces-and-provenance>` for the content that ERLab pauses. Use
+the {ref}`Security settings <options-trusted-workspace-folders>` only for a controlled
+analysis folder.
+
 (how-to-gui-reduce-manager-memory)=
 
 ## Reducing Manager memory use

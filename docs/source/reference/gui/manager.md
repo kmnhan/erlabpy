@@ -88,7 +88,8 @@ The toolbar and row context menu provide these actions:
   recipe steps.
 - {guilabel}`Add to Figure…` creates or updates a Figure Composer figure.
 - {guilabel}`Reload Data` reloads file-backed data and repeats its recorded operations.
-  The action reports missing files or inputs when replay is not possible.
+  The action reports missing files or inputs when replay is not possible. Stored Python
+  remains paused until you review an unverified workspace.
 - {guilabel}`Edit Note` and {guilabel}`Copy Note` manage the plain-text note stored with
   a workspace row.
 
@@ -124,6 +125,47 @@ ImageTool transformation dialogs use {guilabel}`Result Placement`:
   top-level row.
 - {guilabel}`Replace Current` replaces the data in the active ImageTool.
 
+(imagetool-manager-workspace-properties)=
+
+## Workspace properties
+
+Open {menuselection}`File --> Workspace Properties` to inspect the active workspace.
+The dialog shows its path, file type, size, modification time, stored-code status,
+unsaved-change status, and number of open top-level windows.
+
+(imagetool-manager-code-trust)=
+
+### Stored code
+
+A `.itws` workspace can contain Python used by recorded operations, Figure Composer
+recipes, saved lmfit models or results, and parameter expressions. Manager restores
+data, window state, and other non-executable content before it allows stored code to
+run.
+
+The {guilabel}`Stored code` field has these values:
+
+| Value | Meaning |
+| --- | --- |
+| `No stored executable content` | The workspace has no stored Python that requires review. |
+| `Stored executable content is paused` | The workspace contains code that ERLab has not verified. |
+| `Trusted by saved signature` | The executable content matches a workspace that you previously approved and saved. |
+| `Trusted location` | The workspace is in a configured trusted folder. |
+| `Trusted local document` | The executable content belongs to the current local workspace session. |
+
+When review is available, the warning banner and Workspace Properties dialog show
+{guilabel}`Review and Trust…`. Approval applies to all executable content listed in the
+review dialog. If executable content in a saved workspace no longer matches its saved
+approval, ERLab pauses it again. When you add or change code in an ERLab editor, ERLab
+treats only that explicit edit as local work.
+
+A standalone ImageTool does not replay stored Python from provenance. Open the original
+workspace in Manager to review and replay it.
+
+Use {ref}`how-to-gui-review-workspace-code` for the review procedure. See
+{doc}`workspaces and provenance <../../explanation/workspaces-and-provenance>` for the
+effect of paused code. The {ref}`Security settings <options-trusted-workspace-folders>`
+describe trusted folders and saved approvals.
+
 ## Data Explorer and Console
 
 (imagetool-manager-data-explorer)=
@@ -146,7 +188,8 @@ When launched from the manager, loader options are shared with the manager's
 file-loading dialogs and across all Data Explorer tabs. This includes configured
 spreadsheet metadata.
 
-For the standalone tool page, see {ref}`guide-data-explorer`.
+For supported general file formats and standalone launch paths, see
+{ref}`guide-data-explorer`.
 
 ### Periodic Table
 

@@ -37,17 +37,26 @@ When Settings is opened from ImageTool Manager, a {guilabel}`Workspace` scope is
 available. Workspace settings are local overrides saved inside the manager's `.itws`
 workspace file. Turn on the checkbox to store a value.
 
+## Security
+
+The {guilabel}`Security` page is available in the {guilabel}`User` scope.
+
 (options-trusted-workspace-folders)=
 
-## Trusting a workspace folder
+### Trusted workspace folders
 
-A trusted workspace folder is an explicit choice to let every `.itws` file below that
-folder execute code stored in the file. Choose a dedicated analysis folder that only
-you and trusted collaborators can modify. Do not trust a download folder, a temporary
-folder, or a shared folder that untrusted users or processes can write to.
+Every `.itws` file in a trusted folder and its subfolders can run stored executable
+content without per-file review. Use {guilabel}`Add Folder…` to add a folder and
+{guilabel}`Remove` to remove the selected folder.
 
-To add a folder:
+Use a dedicated analysis folder that only you or trusted collaborators can modify. Do
+not add a downloads folder, temporary folder, or shared folder that untrusted users or
+programs can modify.
 
-1. Open the {guilabel}`Security` page in the {guilabel}`User` scope.
-2. Select {guilabel}`Add Folder…` beside {guilabel}`Trusted workspace folders`.
-3. Select the analysis folder that you control.
+### Saved workspace approvals
+
+{guilabel}`Reset Saved Trust…` removes approvals that ERLab stored for previously saved
+workspaces. It does not remove entries from {guilabel}`Trusted workspace folders`.
+
+See {ref}`imagetool-manager-code-trust` for the workspace status values and
+{ref}`how-to-gui-review-workspace-code` for per-workspace review.
