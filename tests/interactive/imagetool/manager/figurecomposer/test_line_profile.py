@@ -47,6 +47,7 @@ from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
 from ._common import (
     _activate_combo_text,
+    _delete_test_widgets,
     _expected_line_colormap_colors,
     _figure_composer_line_slice_source,
     _operation_section_button,
@@ -224,32 +225,36 @@ def test_imagetool_line_profile_seeds_public_nonuniform_coordinate(qtbot) -> Non
     assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(source_tool)
 
-    operation = figurecomposer_adapter.build_figure_composer_operation(
-        source_tool.slicer_area.profiles[0], source_name="data"
-    )
-
-    assert operation.kind == FigureOperationKind.LINE
-    assert operation.line_x == "sample_temp"
-    assert "sample_temp_idx" not in operation.model_dump_json()
-
-    composer = FigureComposerTool.from_sources(
-        {"data": source_tool.slicer_area._tool_source_parent_data()},
-        sources=(FigureSourceState(name="data", label="map"),),
-        operations=(operation,),
-        setup=FigureSubplotsState(),
-        primary_source="data",
-    )
-    qtbot.addWidget(composer)
-
-    figure = plt.figure()
+    composer: FigureComposerTool | None = None
+    figure: Figure | None = None
     try:
+        operation = figurecomposer_adapter.build_figure_composer_operation(
+            source_tool.slicer_area.profiles[0], source_name="data"
+        )
+
+        assert operation.kind == FigureOperationKind.LINE
+        assert operation.line_x == "sample_temp"
+        assert "sample_temp_idx" not in operation.model_dump_json()
+
+        composer = FigureComposerTool.from_sources(
+            {"data": source_tool.slicer_area._tool_source_parent_data()},
+            sources=(FigureSourceState(name="data", label="map"),),
+            operations=(operation,),
+            setup=FigureSubplotsState(),
+            primary_source="data",
+        )
+        qtbot.addWidget(composer)
+
+        figure = plt.figure()
         figurecomposer_rendering._render_into_figure(
             composer, figure, sync_visible=False
         )
         assert composer._operation_render_errors == {}
         assert any(axis.lines for axis in figure.axes)
     finally:
-        plt.close(figure)
+        if figure is not None:
+            plt.close(figure)
+        _delete_test_widgets(source_tool, composer)
 
 
 def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None:

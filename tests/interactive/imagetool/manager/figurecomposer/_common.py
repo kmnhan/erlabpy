@@ -85,6 +85,18 @@ class _SourcePickerDummyTool(
         self._status = status
 
 
+def _delete_test_widgets(*widgets: QtWidgets.QWidget | None) -> None:
+    """Delete test widgets in reverse creation order before pytest-qt resumes."""
+    for widget in reversed(widgets):
+        if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
+            widget.close()
+            widget.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+    QtWidgets.QApplication.processEvents()
+
+
 def _materialized_figure_tool(
     manager: erlab.interactive.imagetool.manager.ImageToolManager, figure_uid: str
 ) -> FigureComposerTool:
