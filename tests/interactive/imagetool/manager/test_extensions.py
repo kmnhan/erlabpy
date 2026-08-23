@@ -7207,13 +7207,13 @@ def test_catalog_change_refreshes_visible_extension_consumers(
         def refresh_loader_choices(self) -> None:
             calls.append("explorer")
 
-    with manager_context() as manager:
+    with manager_context() as manager, monkeypatch.context() as test_patch:
         controller = manager._extensions
         menu = controller.menu
         if menu is None:
             raise RuntimeError("The manager extension menu was not created")
-        monkeypatch.setattr(menu, "isVisible", lambda: True)
-        monkeypatch.setattr(controller, "_populate_menu", lambda: calls.append("menu"))
+        test_patch.setattr(menu, "isVisible", lambda: True)
+        test_patch.setattr(controller, "_populate_menu", lambda: calls.append("menu"))
         explorer = Explorer(manager)
         manager._standalone_app_windows["explorer"] = explorer
         tool = types.SimpleNamespace(
@@ -7222,8 +7222,8 @@ def test_catalog_change_refreshes_visible_extension_consumers(
         manager._tool_graph.nodes["extension-test-tool"] = types.SimpleNamespace(
             tool_window=tool
         )
-        monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
-        monkeypatch.setattr(manager, "_update_info", lambda: calls.append("details"))
+        test_patch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
+        test_patch.setattr(manager, "_update_info", lambda: calls.append("details"))
 
         try:
             controller._catalog_changed(controller.catalog.model)
