@@ -74,6 +74,7 @@ from erlab.interactive.imagetool._provenance._graph import _validate_script_code
 from ._common import (
     _activate_combo_index,
     _activate_combo_text,
+    _delete_test_widgets,
     _drag_widget,
     _expected_line_colormap_colors,
     _figure_composer_image_source,
@@ -630,15 +631,18 @@ def test_imagetool_main_image_seeds_nonuniform_plot_slices_selection(qtbot) -> N
     assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(tool)
 
-    tool.slicer_area.set_value(axis=0, value=30.0, cursor=0)
-    operation = figurecomposer_adapter.build_figure_composer_operation(
-        tool.slicer_area.images[2], source_name="data"
-    )
+    try:
+        tool.slicer_area.set_value(axis=0, value=30.0, cursor=0)
+        operation = figurecomposer_adapter.build_figure_composer_operation(
+            tool.slicer_area.images[2], source_name="data"
+        )
 
-    assert operation.kind == FigureOperationKind.PLOT_ARRAY
-    assert len(operation.map_selections) == 1
-    assert operation.map_selections[0].source == "data"
-    assert "sample_temp_idx" not in operation.model_dump_json()
+        assert operation.kind == FigureOperationKind.PLOT_ARRAY
+        assert len(operation.map_selections) == 1
+        assert operation.map_selections[0].source == "data"
+        assert "sample_temp_idx" not in operation.model_dump_json()
+    finally:
+        _delete_test_widgets(tool)
 
 
 def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
@@ -658,30 +662,36 @@ def test_imagetool_main_image_seeds_plot_slices_selection_with_spaced_dim(
     assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(tool)
 
-    tool.slicer_area.set_value(axis=0, value=1.0, cursor=0)
-    operation = figurecomposer_adapter.build_figure_composer_operation(
-        tool.slicer_area.images[2], source_name="data"
-    )
+    try:
+        tool.slicer_area.set_value(axis=0, value=1.0, cursor=0)
+        operation = figurecomposer_adapter.build_figure_composer_operation(
+            tool.slicer_area.images[2], source_name="data"
+        )
 
-    assert operation.kind == FigureOperationKind.PLOT_ARRAY
-    assert operation.map_selections == (
-        FigureDataSelectionState(source="data", qsel={"Track Shift": 1.0}),
-    )
+        assert operation.kind == FigureOperationKind.PLOT_ARRAY
+        assert operation.map_selections == (
+            FigureDataSelectionState(source="data", qsel={"Track Shift": 1.0}),
+        )
+    finally:
+        _delete_test_widgets(tool)
 
 
 def test_imagetool_rejects_uneditable_plot_slices_selection(qtbot) -> None:
     tool = erlab.interactive.imagetool.ImageTool(_unsupported_plot_slices_data())
     qtbot.addWidget(tool)
 
-    _set_unsupported_plot_slices_cursor_state(tool)
+    try:
+        _set_unsupported_plot_slices_cursor_state(tool)
 
-    with pytest.raises(
-        FigureComposerPlotSlicesSelectionError,
-        match="Cannot plot when more than one dimension",
-    ):
-        figurecomposer_adapter.build_figure_composer_operation(
-            tool.slicer_area.images[0], source_name="data"
-        )
+        with pytest.raises(
+            FigureComposerPlotSlicesSelectionError,
+            match="Cannot plot when more than one dimension",
+        ):
+            figurecomposer_adapter.build_figure_composer_operation(
+                tool.slicer_area.images[0], source_name="data"
+            )
+    finally:
+        _delete_test_widgets(tool)
 
 
 def test_imagetool_plot_slices_selection_warning_shows_error_detail(
