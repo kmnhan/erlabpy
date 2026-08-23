@@ -1889,27 +1889,25 @@ def test_pending_workspace_reload_reason_branches(
         script_spec = types.SimpleNamespace(kind="script", script_inputs=())
         monkeypatch.setattr(
             manager_lineage,
-            "_replay_capability",
+            "_script_replay_validation",
             lambda _spec, **_kwargs: types.SimpleNamespace(
-                replayable=False,
-                requires_trust=True,
+                permissive_replayable=False,
             ),
         )
-        trust_reason = controller._pending_imagetool_reload_unavailable_reason(
+        replay_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
                 uid="pending",
                 provenance_spec=script_spec,
                 _load_source_details=lambda: None,
             )
         )
-        assert trust_reason == "The recorded script steps cannot be reloaded."
+        assert replay_reason == "The recorded script steps cannot be reloaded."
 
         monkeypatch.setattr(
             manager_lineage,
-            "_replay_capability",
+            "_script_replay_validation",
             lambda _spec, **_kwargs: types.SimpleNamespace(
-                replayable=True,
-                requires_trust=True,
+                permissive_replayable=True,
             ),
         )
         assert (

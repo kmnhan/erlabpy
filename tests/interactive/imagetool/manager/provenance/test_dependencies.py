@@ -22,7 +22,6 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
-from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
@@ -66,6 +65,7 @@ from tests.interactive.imagetool.manager.helpers import (
 )
 
 from ._common import (
+    _authorize_execution,
     _seed_fit2d_param_results,
     _set_selection_point,
     _set_selection_range,
@@ -2173,6 +2173,7 @@ def test_script_imagetool_self_cycle_is_not_reported_as_reloadable(
         reason = manager._lineage_controller._node_reload_unavailable_reason(node)
         assert reason is not None
         assert "cycle" in reason.lower()
+        assert node.slicer_area._reload_unavailable_reason() is not None
         assert not node.slicer_area.reloadable
         assert not node.reload_source_data()
         xr.testing.assert_identical(node.current_public_data(), data)
@@ -2196,6 +2197,7 @@ def test_script_imagetool_self_cycle_is_not_reported_as_reloadable(
         )
 
         assert manager._lineage_controller._node_reload_unavailable_reason(node) is None
+        assert node.slicer_area._reload_unavailable_reason() is None
         assert node.slicer_area.reloadable
         assert node.reload_source_data()
         xr.testing.assert_identical(node.current_public_data(), updated)
@@ -2409,7 +2411,7 @@ def test_managed_inputs_refresh_once_after_sibling_outputs_update(
         assert consumer.seen == [(1.0, 11.0)]
 
 
-def test_managed_input_reload_resolves_live_data_before_trust(
+def test_managed_input_reload_uses_live_data_without_code_authorization(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -2445,15 +2447,15 @@ def test_managed_input_reload_resolves_live_data_before_trust(
             primary_input="data",
             state="stale",
         )
-        trust_requests: list[ToolProvenanceSpec] = []
         monkeypatch.setattr(
             manager._lineage_controller,
-            "_prompt_trusted_script_replay",
-            lambda spec, **_kwargs: trust_requests.append(spec) or True,
+            "_authorize_provenance_execution",
+            lambda *_args, **_kwargs: pytest.fail(
+                "live managed input requested code authorization"
+            ),
         )
 
         assert manager._lineage_controller._refresh_source_chain_to_uid(child_uid)
-        assert trust_requests == []
         assert tool.source_state == "fresh"
 
 
@@ -2508,11 +2510,16 @@ def test_manager_reload_ignores_unreachable_unsafe_live_input_fallback(
             show=False,
             provenance_spec=derived_spec,
         )
-        trust_requests: list[ToolProvenanceSpec] = []
+        authorized_code: list[str] = []
+
+        def authorize(entries: tuple[typing.Any, ...], **_kwargs: typing.Any):
+            authorized_code.extend(entry.code for entry in entries)
+            return _authorize_execution(entries)
+
         monkeypatch.setattr(
             manager._lineage_controller,
-            "_prompt_trusted_script_replay",
-            lambda spec, **_kwargs: trust_requests.append(spec) or True,
+            "_authorize_provenance_execution",
+            authorize,
         )
 
         derived_node = manager._node_for_target(2)
@@ -2530,7 +2537,8 @@ def test_manager_reload_ignores_unreachable_unsafe_live_input_fallback(
             derived_node.current_public_data().rename(None),
             (updated_left + right).rename(None),
         )
-        assert trust_requests == []
+        assert authorized_code
+        assert not any("import os" in code for code in authorized_code)
 
 
 def test_managed_input_recorded_fallback_tracks_nested_live_dependency(
@@ -3576,6 +3584,13 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
+        parent_tool.set_provenance_spec(
+            script(
+                start_label="Start from source data",
+                seed_code="derived = source_data",
+                active_name="derived",
+            )
+        )
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
             lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
@@ -3632,7 +3647,7 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
         namespace = _exec_generated_code(
             copied,
-            {"data": parent_tool.slicer_area.data.copy(deep=True)},
+            {"source_data": parent_tool.slicer_area.data.copy(deep=True)},
         )
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
@@ -4338,6 +4353,13 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
+        parent_tool.set_provenance_spec(
+            script(
+                start_label="Start from mesh data",
+                seed_code="derived = mesh_data",
+                active_name="derived",
+            )
+        )
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
             lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
@@ -4390,7 +4412,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         assert f"derived = {expected_name}.qsel(alpha=1, alpha_width=1)" in copied
         namespace = _exec_generated_code(
             copied,
-            {"data": parent_tool.slicer_area.data.copy(deep=True)},
+            {"mesh_data": parent_tool.slicer_area.data.copy(deep=True)},
         )
         generated = namespace["derived"]
         assert isinstance(generated, xr.DataArray)
@@ -4427,7 +4449,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             script(
                 ScriptCodeOperation(
                     label="Prepare parent data",
-                    code="prepared_parent = data + 1",
+                    code="prepared_parent = decay_data + 1",
                 ),
                 start_label="Start from test data",
                 active_name="prepared_parent",
@@ -4525,7 +4547,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             return any(
                 isinstance(node, ast.BinOp)
                 and isinstance(node.left, ast.Name)
-                and node.left.id == "data"
+                and node.left.id == "decay_data"
                 and isinstance(node.op, ast.Add)
                 and isinstance(node.right, ast.Constant)
                 and node.right.value == 1
@@ -4543,7 +4565,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         ):
             namespace = _exec_generated_code(
                 code,
-                {"data": fit_input.copy(deep=True)},
+                {"decay_data": fit_input.copy(deep=True)},
             )
             generated = namespace[active_name]
             assert isinstance(generated, xr.DataArray)
@@ -4589,6 +4611,86 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
             "modelfit_stderr",
             first_param_name,
         )
+
+
+def test_manager_file_backed_fit2d_parameter_full_code_is_self_contained(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    fit_input = xr.DataArray(
+        np.stack([((1.0 + 0.5 * index) * np.exp(-t / 2.0)) for index in y]),
+        dims=("y", "t"),
+        coords={"y": y, "t": t},
+        name="decay2d",
+    )
+    source_path = tmp_path / "decay.h5"
+    workspace_path = tmp_path / "fit.itws"
+    fit_input.to_netcdf(source_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            fit_input,
+            manager=True,
+            file_path=source_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+        child_uid, child = make_fit2d_child(manager, 0, model)
+        child.timeout_spin.setValue(30.0)
+        child.nfev_spin.setValue(0)
+        child.y_index_spin.setValue(child.y_min_spin.value())
+        child._run_fit_2d("up")
+        qtbot.wait_until(
+            lambda: (
+                child._fit_thread is None
+                and child._fit_2d_total == 0
+                and not child._fit_2d_indices
+            ),
+            timeout=10000,
+        )
+
+        parameter_name = next(iter(child._params))
+        parameter_index = child.param_plot_combo.findText(parameter_name)
+        assert parameter_index >= 0
+        child.param_plot_combo.setCurrentIndex(parameter_index)
+        expected = child._param_plot_dataarray(parameter_name, stderr=False)
+        child.param_plot._show_parameter_values()
+
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        output_uid = child_node._childtool_indices[0]
+
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert output_uid in manager._tool_graph.nodes
+
+        copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
+        assert str(source_path) in copied
+        namespace = _exec_generated_code(copied, {})
+        generated = namespace["parameter_values"]
+        assert isinstance(generated, xr.DataArray)
+        xr.testing.assert_identical(generated, expected)
 
 
 def test_manager_output_refresh_updates_stale_parent_source(
@@ -4908,7 +5010,6 @@ def test_manager_open_in_new_window_nests_image_tool_children(
         )
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert copied
-        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)

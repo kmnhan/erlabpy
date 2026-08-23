@@ -10,7 +10,6 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ToolProvenanceSpec,
@@ -508,7 +507,6 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             copied[-1],
             {"source_data": data.copy(deep=True)},
         )
-        assert not uses_default_replay_input(copied[-1])
         full_result = full_namespace["derived"]
         assert isinstance(full_result, xr.DataArray)
         xr.testing.assert_identical(

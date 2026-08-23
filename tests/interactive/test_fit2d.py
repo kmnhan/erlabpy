@@ -140,7 +140,7 @@ def _trust_allows_local_code_edit(trust) -> bool:
     return issue_execution_capability(trust, (entry,))[1] is not None
 
 
-def test_fit_dataset_scale_covar_requires_one_common_value(monkeypatch) -> None:
+def test_fit_dataset_settings_require_common_values(monkeypatch) -> None:
     model = lmfit.models.LinearModel()
 
     class _Result:
@@ -183,10 +183,9 @@ def test_fit_dataset_scale_covar_requires_one_common_value(monkeypatch) -> None:
     assert fit2d_module._fit_dataset_settings(common) == (False, False)
     assert fit2d_module._fit_dataset_settings(weighted) == (False, True)
     assert fit2d_module._fit_dataset_settings(mixed_weighted) == (False, None)
-    assert fit2d_module._fit_dataset_scale_covar(common) is False
-    assert fit2d_module._fit_dataset_scale_covar(mixed) is None
-    assert fit2d_module._fit_dataset_scale_covar(missing) is None
-    assert fit2d_module._fit_dataset_scale_covar(xr.Dataset()) is None
+    assert fit2d_module._fit_dataset_settings(mixed) == (None, False)
+    assert fit2d_module._fit_dataset_settings(missing) == (None, None)
+    assert fit2d_module._fit_dataset_settings(xr.Dataset()) == (None, None)
 
     original_compute = xr.DataArray.compute
 
@@ -196,7 +195,7 @@ def test_fit_dataset_scale_covar_requires_one_common_value(monkeypatch) -> None:
         return original_compute(self, **kwargs)
 
     monkeypatch.setattr(xr.DataArray, "compute", _raise_compute)
-    assert fit2d_module._fit_dataset_scale_covar(common) is None
+    assert fit2d_module._fit_dataset_settings(common) == (None, None)
 
 
 def test_ftool_uncertainty_name_fallback(qtbot, monkeypatch) -> None:

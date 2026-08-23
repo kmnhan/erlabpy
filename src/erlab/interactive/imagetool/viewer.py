@@ -2717,20 +2717,28 @@ class ImageSlicerArea(QtWidgets.QWidget):
             and provenance_requires_code_trust(provenance_spec)
             and self._stored_code_authorizer is None
         )
-        if self._managed_source_chain_reload_target() is not None or (
-            not stored_code_without_host
-            and (self._direct_reloadable() or self._provenance_reloadable())
-        ):
+        if self._managed_source_chain_reload_target() is not None:
             return True
-        manager = self._manager_instance if self._in_manager else None
-        if (
-            manager is not None
-            and self.provenance_spec is not None
-            and self.provenance_spec.kind == "script"
-            and self.provenance_spec.script_inputs
-        ):
+        if not stored_code_without_host and self._direct_reloadable():
+            return True
+        if (manager := self._script_input_reload_manager()) is not None:
             return manager._script_reload_from_slicer_area(self, execute=False)
-        return False
+        return not stored_code_without_host and self._provenance_reloadable()
+
+    def _script_input_reload_manager(
+        self,
+    ) -> erlab.interactive.imagetool.manager.ImageToolManager | None:
+        """Return the manager that owns this script's named-input reload."""
+        manager = self._manager_instance if self._in_manager else None
+        provenance_spec = self.provenance_spec
+        if (
+            manager is None
+            or provenance_spec is None
+            or provenance_spec.kind != "script"
+            or not provenance_spec.script_inputs
+        ):
+            return None
+        return manager
 
     def _managed_source_chain_reload_target(
         self,
@@ -3002,12 +3010,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             and self._stored_code_authorizer is None
         ):
             return self._provenance_reload_unavailable_reason()
-        if self._direct_reloadable() or self._provenance_reloadable():
+        if self._direct_reloadable():
             return None
-        if manager is not None:
+        if (manager := self._script_input_reload_manager()) is not None:
             target = manager.target_from_slicer_area(self)
             if target is not None:
                 return manager._reload_unavailable_reason_for_target(target)
+        if self._provenance_reloadable():
+            return None
         return self._local_reload_unavailable_reason()
 
     def _fetch_for_reload(self) -> xr.DataArray:
@@ -3108,6 +3118,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             provenance_spec is not None
             and authorize is not None
             and provenance_requires_code_trust(provenance_spec)
+            and self._provenance_reloadable()
         ):
             return (
                 self._fetch_for_provenance_reload(authorize=authorize),
@@ -3136,19 +3147,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return manager._reload_source_chain_for_child(target)
         manager = self._manager_instance if self._in_manager else None
         direct_reloadable = self._direct_reloadable()
-        managed_script_reload = (
-            not direct_reloadable
-            and manager is not None
-            and self.provenance_spec is not None
-            and self.provenance_spec.kind == "script"
-            and self.provenance_spec.script_inputs
-        )
         if (
-            manager is not None
-            and managed_script_reload
-            and manager._script_reload_from_slicer_area(self, execute=False)
+            not direct_reloadable
+            and (script_input_manager := self._script_input_reload_manager())
+            is not None
         ):
-            return manager._script_reload_from_slicer_area(self, execute=True)
+            return script_input_manager._script_reload_from_slicer_area(
+                self, execute=True
+            )
         provenance_spec = self.provenance_spec
         if (
             provenance_spec is not None
@@ -3176,11 +3182,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             and self._stored_code_authorizer is not None
             else None
         )
-        if (
-            execution_authorizer is not None
-            or self._direct_reloadable()
-            or self._provenance_reloadable()
-        ):
+        if direct_reloadable or self._provenance_reloadable():
             try:
                 replay_capture = (
                     contextlib.nullcontext(None)

@@ -19,7 +19,6 @@ from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ScriptInput,
@@ -497,7 +496,6 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
 
         assert prompted == [node.uid]
         assert copied
-        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(
             copied[-1], {"source_data": test_data.copy(deep=True)}
         )
@@ -595,7 +593,6 @@ def test_manager_file_backed_full_code_uses_load_code(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
-        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         xr.testing.assert_identical(namespace["derived"], test_data.qsel.mean("alpha"))
 

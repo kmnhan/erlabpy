@@ -48,7 +48,6 @@ if typing.TYPE_CHECKING:
         _controller as workspace_controller,
     )
 
-from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from tests.interactive.imagetool.manager.workspace._support import (
     _AddedTimeChildTool,
     _compute_first_value,
@@ -1102,7 +1101,6 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
-        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         xr.testing.assert_identical(
             namespace["derived"].rename(None),

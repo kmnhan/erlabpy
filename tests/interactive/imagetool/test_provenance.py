@@ -49,8 +49,6 @@ from erlab.interactive.imagetool._provenance._code import (
     _statement_store_count,
     _validate_active_name,
     _validate_script_replay_code,
-    rebase_default_replay_input,
-    uses_default_replay_input,
 )
 from erlab.interactive.imagetool._provenance._execution import (
     _load_file_source_data,
@@ -3293,56 +3291,6 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         {"data": 3, "other": 10},
     )
     assert invalidated_namespace["result"] == 4
-    rebased = rebase_default_replay_input(
-        "derived = data\nscale = 2\nresult = derived + scale",
-        "source_data",
-    )
-    rebased_namespace = _exec_generated_code(rebased, {"source_data": 3})
-    assert rebased_namespace["result"] == 5
-    assert rebased_namespace["derived"] == 3
-    assert uses_default_replay_input("result = data + 1")
-    assert not uses_default_replay_input("result = source_data + 1")
-    helper_code = (
-        "def normalize(data):\n"
-        "    return data / data.max()\n"
-        "\n"
-        "derived = normalize(data_0)"
-    )
-    assert not uses_default_replay_input(helper_code)
-    assert rebase_default_replay_input(helper_code, "source_data") == helper_code
-    mixed_helper_code = (
-        "def normalize(data):\n"
-        "    return data / data.max()\n"
-        "\n"
-        "derived = normalize(data)"
-    )
-    rebased_helper_code = rebase_default_replay_input(mixed_helper_code, "source_data")
-    assert "def normalize(data):\n    return data / data.max()" in rebased_helper_code
-    assert "derived = normalize(source_data)" in rebased_helper_code
-    free_input_helper_code = (
-        "def transform():\n    return data + 1\n\nderived = transform()"
-    )
-    assert uses_default_replay_input(free_input_helper_code)
-    rebased_free_helper_code = rebase_default_replay_input(
-        free_input_helper_code,
-        "source_data",
-    )
-    assert not uses_default_replay_input(rebased_free_helper_code)
-    free_helper_namespace = {"source_data": 3}
-    exec(  # noqa: S102
-        rebased_free_helper_code,
-        free_helper_namespace,
-        free_helper_namespace,
-    )
-    assert free_helper_namespace["derived"] == 4
-    same_line_lambdas = (
-        "first = lambda: data + 1; second = lambda: data + 2\n"
-        "derived = first() + second()"
-    )
-    rebased_lambdas = rebase_default_replay_input(same_line_lambdas, "source_data")
-    lambda_namespace = {"source_data": 1}
-    exec(rebased_lambdas, lambda_namespace, lambda_namespace)  # noqa: S102
-    assert lambda_namespace["derived"] == 5
     replaced_helper_code = _replace_code_identifiers(
         "def normalize(data):\n    return data / data.max()\n\nderived = data",
         {"data": "source_data", "derived": "result"},
@@ -3404,67 +3352,6 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         )
     with pytest.raises(TypeError, match="Script and file provenance use"):
         script(start_label="Start", active_name="derived")._display_operations()
-
-
-def test_rebase_default_replay_input_respects_lexical_scopes() -> None:
-    helper_code = (
-        "from __future__ import annotations\n\n"
-        "def transform(source):\n"
-        "    return data + source\n\n"
-        "derived = transform(1)"
-    )
-    rebased = rebase_default_replay_input(helper_code, "source")
-    namespace = {"source": 10}
-    exec(rebased, namespace, namespace)  # noqa: S102
-    assert namespace["derived"] == 11
-    assert not uses_default_replay_input(rebased)
-
-    if sys.version_info >= (3, 12):
-        class_comprehension = (
-            "class Container:\n"
-            "    data = 1\n"
-            "    values = [data for _ in range(1)]\n"
-            "    functions = [lambda: data for _ in range(1)]\n"
-            "derived = (Container.values, Container.functions[0]())"
-        )
-        rebased_comprehension = rebase_default_replay_input(
-            class_comprehension,
-            "source",
-        )
-        namespace = {"source": 10}
-        exec(rebased_comprehension, namespace, namespace)  # noqa: S102
-        assert namespace["derived"] == ([10], 10)
-
-        generic_code = (
-            "def transform[T](value: T) -> T:\n"
-            "    return data\n"
-            "\n"
-            "class Container[T]:\n"
-            "    value = data\n"
-            "\n"
-            "derived = transform(Container.value)"
-        )
-        rebased_generic = rebase_default_replay_input(generic_code, "source")
-        namespace = {"source": 10}
-        exec(rebased_generic, namespace, namespace)  # noqa: S102
-        assert namespace["derived"] == 10
-
-        type_alias_code = "type Payload[T] = tuple[T, type(data)]"
-        rebased_type_alias = rebase_default_replay_input(type_alias_code, "source")
-        namespace = {"source": 10}
-        exec(rebased_type_alias, namespace, namespace)  # noqa: S102
-        assert typing.get_args(namespace["Payload"].__value__)[1] is int
-        assert not uses_default_replay_input(rebased_type_alias)
-
-    if sys.version_info >= (3, 14):
-        annotation_code = (
-            "def transform(value: (lambda: data)()):\n"
-            "    return value\n"
-            "\n"
-            "derived = transform(1)"
-        )
-        rebased_annotation = rebase_default_replay_input(annotation_code, "source")
-        assert not uses_default_replay_input(rebased_annotation)
 
 
 def test_select_coord_operation_round_trips_and_applies() -> None:
@@ -6555,25 +6442,6 @@ class Child(Base, metaclass=data_5):
     assert "source_data" in _replace_code_identifiers(
         code,
         {"data_0": "source_data"},
-    )
-    rebased = rebase_default_replay_input(
-        """
-def normalize(value=data) -> data:
-    return value
-
-lambda_value = lambda value=data: value
-
-class Child(data):
-    pass
-
-derived = data
-""",
-        "source_data",
-    )
-    assert "source_data" in rebased
-    assert (
-        rebase_default_replay_input("derived = data", "not valid python(")
-        == "derived = data"
     )
     assert _simplify_display_code("derived =") == "derived ="
     assert _simplify_display_code("") == ""

@@ -1223,6 +1223,81 @@ def test_display_graph_uses_external_placeholders_for_unrecorded_inputs() -> Non
     xr.testing.assert_identical(namespace["result"], data * weights)
 
 
+def test_display_graph_reports_and_renames_required_caller_input() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        ScriptCodeOperation(
+            label="Offset source",
+            code=(
+                "def offset(source_data):\n"
+                "    return data + source_data\n\n"
+                "result = offset(1)"
+            ),
+        ),
+        start_label="Use caller data",
+        active_name="result",
+    )
+
+    graph = compile_replay_graph(spec, display=True)
+    (source_key,) = graph.required_input_keys("data")
+    code = emit_replay_code(
+        graph,
+        output_name="result",
+        input_name_overrides={source_key: "source_data"},
+    )
+
+    assert graph.required_input_keys() == (source_key,)
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"source_data": data})["result"],
+        data + 1,
+    )
+
+
+def test_display_graph_validates_input_name_overrides() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Combine sources", code="result = left + right"),
+        start_label="Use caller data",
+        active_name="result",
+    )
+    graph = compile_replay_graph(spec, display=True)
+    left_key, right_key = graph.required_input_keys()
+
+    with pytest.raises(ReplayGraphError, match="unknown key"):
+        emit_replay_code(graph, input_name_overrides={"missing": "source"})
+    with pytest.raises(ReplayGraphError, match="valid Python identifier"):
+        emit_replay_code(graph, input_name_overrides={left_key: "not valid"})
+    with pytest.raises(ReplayGraphError, match="distinct names"):
+        emit_replay_code(
+            graph,
+            input_name_overrides={left_key: "source", right_key: "source"},
+        )
+    with pytest.raises(ReplayGraphError, match="cannot use the requested name"):
+        emit_replay_code(graph, input_name_overrides={left_key: "np"})
+
+
+def test_display_graph_reports_no_input_for_nested_file_provenance() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Offset source", code="result = data + 1"),
+        start_label="Use recorded input",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                label="File source",
+                provenance_spec=_file_spec("scan.h5"),
+            ),
+        ),
+    )
+
+    graph = compile_replay_graph(spec, display=True)
+
+    assert graph.required_input_keys() == ()
+    assert "load_dataarray('scan.h5')" in emit_replay_code(
+        graph,
+        output_name="result",
+    )
+
+
 def test_display_graph_reuses_placeholder_for_same_live_input() -> None:
     data = xr.DataArray([1.0, 2.0], dims="x")
     snapshot_token = f"snapshot-{id(data)}"
@@ -5150,22 +5225,14 @@ def test_rebuild_preflight_work_scales_linearly(
             script_inputs=(ScriptInput(name="child", provenance_spec=spec),),
         )
 
-    capability_calls = 0
     compile_calls = 0
-    analyze = _execution._analyze_replay_capability
     compile_graph = _execution.compile_replay_graph
-
-    def counted_analyze(*args, **kwargs):
-        nonlocal capability_calls
-        capability_calls += 1
-        return analyze(*args, **kwargs)
 
     def counted_compile(*args, **kwargs):
         nonlocal compile_calls
         compile_calls += 1
         return compile_graph(*args, **kwargs)
 
-    monkeypatch.setattr(_execution, "_analyze_replay_capability", counted_analyze)
     monkeypatch.setattr(_execution, "compile_replay_graph", counted_compile)
 
     result, _rebuilt = rebuild_script_provenance(
@@ -5174,7 +5241,6 @@ def test_rebuild_preflight_work_scales_linearly(
     )
 
     xr.testing.assert_identical(result, xr.DataArray([1.0, 2.0], dims="x"))
-    assert capability_calls <= 2 * depth
     assert compile_calls <= 2 * depth
 
 

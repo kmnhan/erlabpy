@@ -564,10 +564,9 @@ def file_load_source_status(
 
 
 @dataclass(frozen=True)
-class _ReplayCapability:
-    replayable: bool = False
-    replayable_with_code: bool = False
-    reloadable: bool = False
+class _ScriptReplayValidation:
+    strict_replayable: bool = False
+    permissive_replayable: bool = False
 
 
 def _require_file_load_source(load_source: FileLoadSource) -> None:
@@ -592,79 +591,70 @@ def _validate_replay_graph_file_sources(graph: ReplayGraph) -> None:
             _require_file_load_source(node.payload["load_source"])
 
 
-def _script_validates(
-    spec: ToolProvenanceSpec,
-    external_input_names: set[str] | None,
-    strict: bool,
+def _script_provenance_validates(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+    strict_replay_code: bool,
 ) -> bool:
+    parsed = parse_tool_provenance_spec(spec)
+    if parsed is None or parsed.kind != "script":
+        return False
     try:
         _validate_script_provenance(
-            spec,
+            parsed,
             external_input_names=external_input_names,
-            strict_replay_code=strict,
+            strict_replay_code=strict_replay_code,
         )
     except (ReplayGraphError, TypeError, ValueError):
         return False
     return True
 
 
-def _analyze_replay_capability(
+def _analyze_script_replay_validation(
     spec: ToolProvenanceSpec,
     external_input_names: set[str] | None,
     live_input_resolver: LiveInputResolver | None,
     input_provenance_resolver: InputProvenanceResolver,
     depth: int,
-    *,
-    check_reloadability: bool = True,
-) -> _ReplayCapability:
-    if spec.kind == "file":
-        return _ReplayCapability(
-            reloadable=check_reloadability
-            and file_load_source_status(spec) == "loadable",
-        )
+) -> _ScriptReplayValidation:
     if spec.kind != "script":
-        return _ReplayCapability()
+        return _ScriptReplayValidation()
     if depth > _MAX_SCRIPT_REPLAY_DEPTH:
         raise ReplayGraphError(
             "Nested script provenance exceeded the maximum reload depth"
         )
-    inputs_reloadable = True
     for script_input in spec.script_inputs:
         if script_input.name in (external_input_names or ()) or (
             live_input_resolver is not None
             and live_input_resolver(script_input) is not None
         ):
-            inputs_reloadable = False
             continue
         input_spec = input_provenance_resolver(script_input)
         if input_spec is None:
-            inputs_reloadable = False
             continue
-        capability = _analyze_replay_capability(
+        _analyze_script_replay_validation(
             input_spec,
             None,
             live_input_resolver,
             input_provenance_resolver,
             depth + int(input_spec.kind == "script"),
-            check_reloadability=check_reloadability,
         )
-        inputs_reloadable &= capability.reloadable
 
-    local_strict = _script_validates(spec, external_input_names, True)
-    local_trusted = local_strict or _script_validates(spec, external_input_names, False)
-    replayable = local_strict
-    file_source_reloadable = (
-        not check_reloadability
-        or spec.file_load_source is None
-        or file_load_source_status(spec) == "loadable"
+    strict_replayable = _script_provenance_validates(
+        spec,
+        external_input_names=external_input_names,
+        strict_replay_code=True,
     )
-    reloadable = (
-        check_reloadability
-        and replayable
-        and inputs_reloadable
-        and file_source_reloadable
+    permissive_replayable = strict_replayable or _script_provenance_validates(
+        spec,
+        external_input_names=external_input_names,
+        strict_replay_code=False,
     )
-    return _ReplayCapability(replayable, local_trusted, reloadable)
+    return _ScriptReplayValidation(
+        strict_replayable=strict_replayable,
+        permissive_replayable=permissive_replayable,
+    )
 
 
 def _compile_replay_preflight(
@@ -683,17 +673,17 @@ def _compile_replay_preflight(
     )
 
 
-def _replay_capability(
+def _script_replay_validation(
     value: typing.Any,
     *,
     external_input_names: set[str] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
-) -> _ReplayCapability:
+) -> _ScriptReplayValidation:
     try:
         spec = parse_tool_provenance_spec(value)
         if spec is None:
-            return _ReplayCapability()
-        return _analyze_replay_capability(
+            return _ScriptReplayValidation()
+        return _analyze_script_replay_validation(
             spec,
             external_input_names,
             _memoized_live_input_resolver(live_input_resolver),
@@ -701,7 +691,7 @@ def _replay_capability(
             0,
         )
     except (ReplayGraphError, TypeError, ValueError):
-        return _ReplayCapability()
+        return _ScriptReplayValidation()
 
 
 def _can_reload_provenance(
@@ -791,32 +781,14 @@ def script_provenance_replayable(
     live_input_resolver: LiveInputResolver | None = None,
 ) -> bool:
     """Return whether a script can replay with the supplied input namespace."""
-    capability = _replay_capability(
+    validation = _script_replay_validation(
         spec,
         external_input_names=external_input_names,
         live_input_resolver=live_input_resolver,
     )
-    return capability.replayable_with_code if allow_code else capability.replayable
-
-
-def _script_provenance_validates(
-    spec: typing.Any,
-    *,
-    external_input_names: set[str] | None = None,
-    strict_replay_code: bool,
-) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
-    try:
-        _validate_script_provenance(
-            parsed,
-            external_input_names=external_input_names,
-            strict_replay_code=strict_replay_code,
-        )
-    except (ReplayGraphError, TypeError, ValueError):
-        return False
-    return True
+    return (
+        validation.permissive_replayable if allow_code else validation.strict_replayable
+    )
 
 
 def replay_script_provenance(

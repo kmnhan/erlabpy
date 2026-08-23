@@ -638,10 +638,9 @@ def copy_full_code_for_uid(
     monkeypatch,
     manager: ImageToolManager,
     uid: str,
-    *,
-    source_name: str = "data",
 ) -> str:
     copied: list[str] = []
+    unexpected_prompts: list[str] = []
     monkeypatch.setattr(
         erlab.interactive.utils,
         "copy_to_clipboard",
@@ -650,7 +649,7 @@ def copy_full_code_for_uid(
     monkeypatch.setattr(
         manager,
         "_prompt_replay_input_name",
-        lambda _node: source_name,
+        lambda node: unexpected_prompts.append(node.uid) or None,
     )
     manager.tree_view.clearSelection()
     select_child_tool(manager, uid)
@@ -663,5 +662,9 @@ def copy_full_code_for_uid(
         or manager._details_panel._unavailable_replay_code_details(node)
     )
     trigger_menu_action(menu, manager._metadata_copy_full_action)
+    assert not unexpected_prompts, (
+        "Copy Full Code unexpectedly requested a source variable for "
+        f"node {unexpected_prompts[0]!r}"
+    )
     assert copied
     return copied[-1]

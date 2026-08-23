@@ -149,6 +149,8 @@ from erlab.interactive.imagetool._provenance._code import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from erlab.interactive.imagetool._provenance._graph import ReplayGraph
+
 _SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
 _ReplayInputPolicy: typing.TypeAlias = typing.Literal["current", "restored"]
 ScriptInputDataRole: typing.TypeAlias = typing.Literal["source", "displayed"]
@@ -3558,12 +3560,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         entries.extend(operation.derivation_entry() for operation in self.operations)
         return entries
 
-    def _generated_code(
+    def _generated_replay_graph(
         self,
         *,
         parent_data: xr.DataArray | None = None,
-    ) -> str | None:
-        """Return concise public code that represents the recorded workflow.
+    ) -> tuple[ReplayGraph, str] | None:
+        """Compile the graph used for concise public replay code.
 
         Structured provenance remains the exact replay authority. Copied code omits
         ImageTool rendering repairs and other defensive runtime scaffolding.
@@ -3571,7 +3573,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         from erlab.interactive.imagetool._provenance._graph import (
             ReplayGraphError,
             compile_replay_graph,
-            emit_replay_code,
         )
 
         try:
@@ -3588,13 +3589,30 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 source = source.to_replay_spec()
             graph = compile_replay_graph(source, display=True)
             output_name = source.active_name
-            return (
-                emit_replay_code(
-                    graph,
-                    output_name=output_name,
-                )
-                or None
-            )
+            if output_name is None:  # pragma: no cover - model validation guard.
+                return None
+        except ReplayGraphError:
+            return None
+        else:
+            return graph, output_name
+
+    def _generated_code(
+        self,
+        *,
+        parent_data: xr.DataArray | None = None,
+    ) -> str | None:
+        """Return concise public code that represents the recorded workflow."""
+        from erlab.interactive.imagetool._provenance._graph import (
+            ReplayGraphError,
+            emit_replay_code,
+        )
+
+        compiled = self._generated_replay_graph(parent_data=parent_data)
+        if compiled is None:
+            return None
+        graph, output_name = compiled
+        try:
+            return emit_replay_code(graph, output_name=output_name) or None
         except ReplayGraphError:
             return None
 

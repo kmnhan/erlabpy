@@ -142,6 +142,15 @@ class ReplayGraph:
         """Return names that emitted script code receives from its caller."""
         return set(self._external_names)
 
+    def required_input_keys(self, name: str | None = None) -> tuple[str, ...]:
+        """Return graph inputs that emitted code must receive from its caller."""
+        return tuple(
+            node.key
+            for node in self.nodes
+            if node.kind in {"caller_input", "external_input"}
+            and (name is None or node.payload["name"] == name)
+        )
+
     def add_alias(self, public_name: str, key: str) -> None:
         if _is_semantic_replay_name(public_name):
             self.aliases.append((public_name, key))
@@ -1751,7 +1760,9 @@ def _node_names(
     graph: ReplayGraph,
     *,
     output_name: str | None = None,
+    input_name_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
+    input_name_overrides = dict(input_name_overrides or {})
     node_by_key = {node.key: node for node in graph.nodes}
 
     def emitted_key(key: str) -> str:
@@ -1764,17 +1775,24 @@ def _node_names(
     preferred_names: dict[str, str] = {}
     for node in graph.nodes:
         if node.kind == "caller_input":
-            preferred_names[node.key] = typing.cast("str", node.payload["name"])
+            preferred_names[node.key] = input_name_overrides.get(
+                node.key, typing.cast("str", node.payload["name"])
+            )
     external_names: set[str] = {
         *_REPLAY_PROTECTED_NAMES,
         *(
-            typing.cast("str", node.payload["name"])
+            preferred_names[node.key]
             for node in graph.nodes
             if node.kind == "caller_input"
         ),
     }
     for node in graph.nodes:
         if node.kind != "external_input":
+            continue
+        override = input_name_overrides.get(node.key)
+        if override is not None:
+            preferred_names[node.key] = override
+            external_names.add(override)
             continue
         base_name = typing.cast("str", node.payload["name"])
         external_name = base_name
@@ -1800,6 +1818,7 @@ def _node_names(
         preferred_names[emitted_key(graph.output_key)] = output_name
 
     reserved_names = graph.reserved_names
+    reserved_names.update(input_name_overrides.values())
     uses_extension_scripts = any(
         _is_extension_loader_node(node)
         or (
@@ -1875,6 +1894,12 @@ def _node_names(
             used.add(preferred_name)
         else:
             names[node.key] = next_temp()
+
+    for key, requested_name in input_name_overrides.items():
+        if names.get(key) != requested_name:
+            raise ReplayGraphError(
+                f"Replay input cannot use the requested name {requested_name!r}"
+            )
 
     for node in graph.nodes:
         if node.kind == "relay" or (
@@ -3326,12 +3351,30 @@ def emit_replay_code(
     *,
     output_name: str | None = None,
     include_all_aliases: bool = False,
+    input_name_overrides: Mapping[str, str] | None = None,
 ) -> str:
     from erlab.interactive.imagetool._provenance._operations._extension import (
         ExtensionRoutineOperation,
     )
 
-    names = _node_names(graph, output_name=output_name)
+    input_name_overrides = dict(input_name_overrides or {})
+    required_input_keys = set(graph.required_input_keys())
+    if unknown_keys := input_name_overrides.keys() - required_input_keys:
+        raise ReplayGraphError(
+            f"Replay input override references unknown key {min(unknown_keys)!r}"
+        )
+    for input_name in input_name_overrides.values():
+        if not input_name.isidentifier() or keyword.iskeyword(input_name):
+            raise ReplayGraphError(
+                f"Replay input name {input_name!r} is not a valid Python identifier"
+            )
+    if len(set(input_name_overrides.values())) != len(input_name_overrides):
+        raise ReplayGraphError("Replay input overrides must use distinct names")
+    names = _node_names(
+        graph,
+        output_name=output_name,
+        input_name_overrides=input_name_overrides,
+    )
     node_by_key = {node.key: node for node in graph.nodes}
     extension_references = _extension_script_references(graph)
     protected_graph = any(node.kind == "external_input" for node in graph.nodes)

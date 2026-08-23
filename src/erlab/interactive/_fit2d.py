@@ -111,11 +111,6 @@ def _fit_dataset_settings(
     return scale_covar, weighted
 
 
-def _fit_dataset_scale_covar(fit_ds: xr.Dataset) -> bool | None:
-    """Return the common covariance-scaling setting in saved fit results."""
-    return _fit_dataset_settings(fit_ds)[0]
-
-
 def _rebuild_ui(
     *,
     mark_fresh: bool = True,

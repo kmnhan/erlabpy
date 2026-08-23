@@ -14,7 +14,6 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive.imagetool import _kspace_conversion, itool
-from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from erlab.interactive.imagetool._provenance._execution import (
     replay_file_provenance,
     replay_script_provenance,
@@ -2320,7 +2319,6 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         trigger_menu_action(menu, manager._metadata_copy_full_action)
-        assert not uses_default_replay_input(copied[-1])
 
         namespace = _exec_generated_code(
             copied[-1], {"source_data": data.copy(deep=True)}

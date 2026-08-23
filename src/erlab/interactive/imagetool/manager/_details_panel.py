@@ -14,10 +14,6 @@ import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
 from erlab.interactive._widgets import _CenteredIconToolButton
-from erlab.interactive.imagetool._provenance._code import (
-    rebase_default_replay_input,
-    uses_default_replay_input,
-)
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     compile_replay_graph,
@@ -1513,21 +1509,59 @@ class _DetailsPanelController:
         )
         if node is None or not self._manager._metadata_full_code_available:
             return
-        code = node.derivation_code
-        if not code:
+        compiled = node._derivation_replay_graph()
+        if compiled is None:
             self._show_unavailable_replay_code_dialog(node)
             return
-        if uses_default_replay_input(code):
-            load_source = self._manager._load_source_for_replay(node)
-            if load_source is None:
-                source_name = self._manager._prompt_replay_input_name(node)
-                if source_name is None:
-                    return
-                code = rebase_default_replay_input(code, source_name)
-            else:
-                source_name, load_code = load_source
-                rebased_code = rebase_default_replay_input(code, source_name)
-                code = "\n\n".join(part for part in (load_code, rebased_code) if part)
+        graph, output_name = compiled
+        source_input_keys = graph.required_input_keys("data")
+        if len(source_input_keys) > 1:
+            self._show_unavailable_replay_code_dialog(node)
+            return
+        input_name_overrides: dict[str, str] = {}
+        load_code: str | None = None
+        if source_input_keys:
+            source_input_key = source_input_keys[0]
+            source_input_node = next(
+                graph_node
+                for graph_node in graph.nodes
+                if graph_node.key == source_input_key
+            )
+            source_name: str | None = None
+            if source_input_node.kind == "caller_input":
+                input_name = typing.cast("str", source_input_node.payload["name"])
+                current = node
+                while True:
+                    if (
+                        isinstance(current, _ImageToolWrapper)
+                        and current.watched
+                        and current._watched_varname == input_name
+                    ):
+                        source_name = input_name
+                        break
+                    if current.parent_uid is None or current.provenance_spec is None:
+                        break
+                    current = self._manager._parent_node(current)
+            if source_name is None:
+                load_source = self._manager._load_source_for_replay(node)
+                if load_source is None:
+                    source_name = self._manager._prompt_replay_input_name(node)
+                    if source_name is None:
+                        return
+                else:
+                    source_name, load_code = load_source
+            input_name_overrides[source_input_key] = source_name
+        try:
+            code = emit_replay_code(
+                graph,
+                output_name=output_name,
+                input_name_overrides=input_name_overrides,
+            )
+        except ReplayGraphError:
+            self._show_unavailable_replay_code_dialog(node)
+            return
+        if load_code is not None:
+            code = "\n\n".join(part for part in (load_code, code) if part)
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)
 

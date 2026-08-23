@@ -45,7 +45,6 @@ from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
     _deserialize_loader_kwargs,
     _file_path_stem,
-    _load_code_from_file_details,
     _load_source_details_from_file,
     _load_source_details_from_provenance,
     _LoadFunc,
@@ -61,6 +60,7 @@ if typing.TYPE_CHECKING:
     import os
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from erlab.interactive.imagetool._provenance._graph import ReplayGraph
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -1399,17 +1399,6 @@ class _ManagedWindowNode(QtCore.QObject):
         return None
 
     def load_source_code(self, *, assign: str = "data") -> str | None:
-        if self.imagetool is not None:
-            file_path = self.slicer_area._file_path
-            if file_path is None:
-                return None
-            return _load_code_from_file_details(
-                file_path,
-                self.slicer_area._load_func,
-                assign=assign,
-                source_input_dtype=self._load_source_input_dtype(),
-            )
-
         details = self._load_source_details()
         if details is None or details.load_code is None:
             return None
@@ -1426,11 +1415,6 @@ class _ManagedWindowNode(QtCore.QObject):
             return None
 
     def default_load_source_name(self) -> str | None:
-        if self.imagetool is not None:
-            file_path = self.slicer_area._file_path
-            if file_path is None:
-                return None
-            return _default_load_source_name(file_path)
         details = self._load_source_details()
         if details is None:
             return None
@@ -2303,14 +2287,16 @@ class _ManagedWindowNode(QtCore.QObject):
         return [entry.label for entry in self.derivation_entries]
 
     @property
-    def derivation_code(self) -> str | None:
+    def _derivation_provenance_spec(self) -> ToolProvenanceSpec | None:
         if self.tool_window is not None:
-            provenance_spec = self._tool_provenance_spec(
+            return self._tool_provenance_spec(
                 flush_deferred_restore=True,
                 refresh=True,
             )
-        else:
-            provenance_spec = self.displayed_provenance_spec
+        return self.displayed_provenance_spec
+
+    def _derivation_replay_graph(self) -> tuple[ReplayGraph, str] | None:
+        provenance_spec = self._derivation_provenance_spec
         if provenance_spec is None:
             return None
         if self.manager._is_figure_uid(self.uid) and provenance_spec.script_inputs:
@@ -2323,7 +2309,23 @@ class _ManagedWindowNode(QtCore.QObject):
                 compile_replay_graph(provenance_spec, trusted_user_code=True)
             except ReplayGraphError:
                 return None
-        return provenance_spec.display_code()
+        return provenance_spec._generated_replay_graph()
+
+    @property
+    def derivation_code(self) -> str | None:
+        from erlab.interactive.imagetool._provenance._graph import (
+            ReplayGraphError,
+            emit_replay_code,
+        )
+
+        compiled = self._derivation_replay_graph()
+        if compiled is None:
+            return None
+        graph, output_name = compiled
+        try:
+            return emit_replay_code(graph, output_name=output_name) or None
+        except ReplayGraphError:
+            return None
 
     def add_child_reference(self, uid: str, window: QtWidgets.QWidget | None) -> None:
         if uid not in self._childtool_indices:

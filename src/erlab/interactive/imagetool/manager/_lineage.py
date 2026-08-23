@@ -16,7 +16,7 @@ import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._execution import (
     _memoized_live_input_resolver,
-    _replay_capability,
+    _script_replay_validation,
     can_reload_without_trust,
     file_load_source_status,
     rebuild_script_inputs,
@@ -659,8 +659,8 @@ class _LineageController:
                     return typing.cast("xr.DataArray", None), item
                 return None
 
-            capability = _replay_capability(spec, live_input_resolver=resolve)
-            return capability.replayable_with_code
+            validation = _script_replay_validation(spec, live_input_resolver=resolve)
+            return validation.permissive_replayable
 
         def plan_inputs(
             inputs: Sequence[ScriptInput],
@@ -1153,11 +1153,11 @@ class _LineageController:
                     return typing.cast("xr.DataArray", None), item
                 return None
 
-            capability = _replay_capability(
+            validation = _script_replay_validation(
                 spec,
                 live_input_resolver=resolve_live,
             )
-            if capability.replayable_with_code:
+            if validation.permissive_replayable:
                 return None
             return "The recorded script steps cannot be reloaded."
         details = node._load_source_details()

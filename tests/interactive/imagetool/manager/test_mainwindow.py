@@ -113,7 +113,6 @@ from .helpers import (
     click_tree_view_pos,
     configure_goldtool_child,
     copy_full_code_for_uid,
-    metadata_derivation_texts,
     select_child_tool,
     select_tools,
     trigger_menu_action,
@@ -8346,6 +8345,13 @@ def test_manager_goldtool_output_itool_nests_under_tool(
 
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        manager.get_imagetool(0).set_provenance_spec(
+            provenance_model.script(
+                start_label="Start from gold data",
+                seed_code="derived = gold_data",
+                active_name="derived",
+            )
+        )
 
         tool = GoldTool(gold.copy(deep=True), data_name="gold_input")
         tool.set_script_inputs(
@@ -8378,11 +8384,6 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         manager.tree_view.clearSelection()
         select_child_tool(manager, output_uid)
         manager._update_info(uid=output_uid)
-        assert metadata_derivation_texts(manager) == [
-            "Start from current goldtool input data",
-            "Use data from ImageTool 0",
-            "Fit and correct current data with the polynomial edge model",
-        ]
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
         assert "era.gold.poly(" in copied
         assert "corrected = era.gold.correct_with_edge(" in copied
@@ -8404,6 +8405,13 @@ def test_manager_dtool_output_itool_nests_under_tool(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
+        parent_tool.set_provenance_spec(
+            provenance_model.script(
+                start_label="Start from source data",
+                seed_code="derived = source_data",
+                active_name="derived",
+            )
+        )
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
             lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
@@ -8442,7 +8450,7 @@ def test_manager_dtool_output_itool_nests_under_tool(
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
         namespace = _exec_generated_code(
             copied,
-            {"data": parent_tool.slicer_area.data.copy(deep=True)},
+            {"source_data": parent_tool.slicer_area.data.copy(deep=True)},
         )
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
@@ -8465,6 +8473,13 @@ def test_manager_ktool_output_itool_nests_under_tool(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
+        parent_tool.set_provenance_spec(
+            provenance_model.script(
+                start_label="Start from angle data",
+                seed_code="derived = angle_data",
+                active_name="derived",
+            )
+        )
         parent_tool.slicer_area.open_in_ktool()
         qtbot.wait_until(
             lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
