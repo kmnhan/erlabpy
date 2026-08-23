@@ -834,6 +834,14 @@ def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
         _ProvenanceOperationBlockRef(0, 2),
         _ProvenanceOperationBlockRef(2, 3),
     )
+    assert grouped_spec._operation_block_ref(_ProvenanceStepRef("start")) is None
+    assert grouped_spec._operation_block_ref(_ProvenanceStepRef("operation")) is None
+    assert (
+        grouped_spec._operation_block_ref(
+            _ProvenanceStepRef("operation", operation_index=3)
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

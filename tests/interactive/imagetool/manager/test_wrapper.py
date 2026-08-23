@@ -31,6 +31,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_note,
     _format_added_time,
     _format_chunk_summary,
+    _ImageToolWrapper,
     _ManagedWindowNode,
     _NodeProvenanceOwnerSnapshot,
     _preview_from_imagetool,
@@ -83,6 +84,49 @@ def test_wrapper_provenance_value_remap_requires_valid_specs() -> None:
     assert (
         _ManagedWindowNode._pending_tool_provenance({"source": "{"}, "source") is None
     )
+
+
+def test_wrapper_materializes_source_binding_without_changing_provenance() -> None:
+    source = xr.DataArray([1.0], dims=("x",))
+    spec = full_data()
+    invalidations: list[None] = []
+    node = types.SimpleNamespace(
+        _source_spec=None,
+        _source_binding=types.SimpleNamespace(materialize=lambda _data: spec),
+        _invalidate_provenance_caches=lambda: invalidations.append(None),
+    )
+
+    assert (
+        _ManagedWindowNode._materialized_source_spec(
+            typing.cast("_ManagedWindowNode", node), source
+        )
+        == spec
+    )
+    assert node._source_spec == spec
+    assert node._source_binding is None
+    assert invalidations == [None]
+
+
+def test_watched_source_dtype_change_marks_provenance_changed() -> None:
+    changes: list[None] = []
+    dirty: list[str] = []
+    node = types.SimpleNamespace(
+        uid="watched",
+        watched=True,
+        _source_input_dtype=None,
+        _mark_provenance_changed=lambda: changes.append(None),
+        manager=types.SimpleNamespace(
+            _mark_node_state_dirty=lambda uid: dirty.append(uid)
+        ),
+    )
+
+    _ImageToolWrapper.set_source_input_dtype(
+        typing.cast("_ImageToolWrapper", node), np.dtype("int64")
+    )
+
+    assert node._source_input_dtype == np.dtype("int64")
+    assert changes == [None]
+    assert dirty == ["watched"]
 
 
 def test_wrapper_provenance_owner_remap_rolls_back_atomically(

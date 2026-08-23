@@ -397,8 +397,6 @@ class _DetailsPanelController:
             tuple[tuple[str, _ProvenanceDisplayRow], ...],
         ]
     ]:
-        if not rows_by_node:
-            return []
         row_lists = tuple(rows for _node, rows in rows_by_node)
         limit = min(len(rows) for rows in row_lists)
         prefix = 0

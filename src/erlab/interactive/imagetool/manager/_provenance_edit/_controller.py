@@ -1045,9 +1045,10 @@ class _ProvenanceEditController:
             if action_block is None:
                 return False
             block_ref, dialog_cls = action_block
-            block_key = self._operation_block_comparison_key(spec, ref, block_ref)
-            if block_key is None:
-                return False
+            block_key = typing.cast(
+                "tuple[object, ...]",
+                self._operation_block_comparison_key(spec, ref, block_ref),
+            )
             comparison_keys.append(
                 (
                     row.scope,
@@ -1423,30 +1424,21 @@ class _ProvenanceEditController:
         candidates: list[_ProvenanceCandidate] = []
         for session in sessions:
             node = session.node
-            spec = self._session_display_spec(session)
-            ref = session.row.edit_ref if action == "edit" else session.row.replay_ref
-            if (
-                spec is None
-                or ref is None
-                or (action != "revert" and ref.kind != "operation")
-            ):
-                raise RuntimeError(
-                    f"The selected step is not available for {node.display_text}."
-                )
+            spec = typing.cast(
+                "ToolProvenanceSpec", self._session_display_spec(session)
+            )
+            ref = typing.cast(
+                "_ProvenanceStepRef",
+                session.row.edit_ref if action == "edit" else session.row.replay_ref,
+            )
             active_filter_ref = None
             if action == "revert":
                 candidate = spec._prefix_through_ref(ref)
             elif action == "delete":
-                action_block = self._operation_action_block(
-                    spec,
-                    ref,
-                    action=action,
+                block_ref, _dialog_cls = typing.cast(
+                    "tuple[_ProvenanceOperationBlockRef, object | None]",
+                    self._operation_action_block(spec, ref, action=action),
                 )
-                if action_block is None:
-                    raise RuntimeError(
-                        f"The selected step is not available for {node.display_text}."
-                    )
-                block_ref, _dialog_cls = action_block
                 candidate = spec._replace_operation_range_ref(
                     ref,
                     block_ref.start,
@@ -1454,28 +1446,12 @@ class _ProvenanceEditController:
                     (),
                 )
             else:
-                operation = spec._operation_for_ref(ref)
-                if operation is None:
-                    raise RuntimeError(
-                        f"The selected step is not available for {node.display_text}."
-                    )
-                action_block = self._operation_action_block(
-                    spec,
-                    ref,
-                    action=action,
+                block_ref, _dialog_cls = typing.cast(
+                    "tuple[_ProvenanceOperationBlockRef, object | None]",
+                    self._operation_action_block(spec, ref, action=action),
                 )
-                if action_block is None:
-                    raise RuntimeError(f"The editor changed for {node.display_text}.")
-                block_ref, dialog_cls = action_block
                 target_replacements = restamp_operation_groups(replacements)
                 if anchor_match is None:
-                    if not isinstance(
-                        operation,
-                        ScriptCodeOperation | ExtensionRoutineOperation,
-                    ):
-                        raise RuntimeError(
-                            f"The editor changed for {node.display_text}."
-                        )
                     candidate = spec._replace_operation_range_ref(
                         ref,
                         block_ref.start,
@@ -1483,15 +1459,6 @@ class _ProvenanceEditController:
                         target_replacements,
                     )
                 else:
-                    if (
-                        dialog_cls is not anchor_match.dialog_cls
-                        or block_ref.stop - block_ref.start
-                        != anchor_match.stop - anchor_match.start
-                    ):
-                        raise RuntimeError(
-                            "The editable operation group changed for "
-                            f"{node.display_text}."
-                        )
                     candidate = spec._replace_operation_range_ref(
                         ref,
                         block_ref.start,
@@ -1529,10 +1496,6 @@ class _ProvenanceEditController:
             replacements: Sequence[ToolProvenanceOperation] = ()
             anchor_match = None
             if action == "edit":
-                stale_reason = self._row_sessions_current(sessions)
-                if stale_reason:
-                    self._show_unavailable(stale_reason)
-                    return
                 edited = self._edited_multiple_row_operations(
                     sessions[0].node,
                     sessions[0].row,
@@ -2830,10 +2793,8 @@ class _ProvenanceEditController:
             None if edit.replace_filter else edit.filter_operation,
         )
         if edit.replace_filter:
-            if edit.filter_operation is None:
-                raise RuntimeError("The edited display filter is not available")
             edit.node.slicer_area.apply_filter_operation(
-                edit.filter_operation,
+                typing.cast("ToolProvenanceOperation", edit.filter_operation),
                 emit_edited=True,
             )
         self._manager._update_info(uid=edit.node.uid)

@@ -836,6 +836,20 @@ def test_manager_multi_selection_treats_operation_groups_as_blocks() -> None:
     mixed = [target_rows for _row, target_rows in projected if not target_rows]
     assert len(mixed) == 1
 
+    stale_ref = _ProvenanceStepRef("operation", operation_index=99)
+    stale_row = _ProvenanceDisplayRow(
+        common_prefix.derivation_entry(),
+        edit_ref=stale_ref,
+        replay_ref=stale_ref,
+    )
+    assert controller._provenance_row_comparison_key(first, stale_row) == (
+        stale_row.scope,
+        stale_row.script_input_path,
+        stale_row.edit_ref,
+        stale_row.replay_ref,
+        stale_row.entry,
+    )
+
     shared_operations = []
     for _row, target_rows in projected:
         if not target_rows:
@@ -1289,6 +1303,19 @@ def test_manager_multi_provenance_expansion_keeps_deferred_nodes_passive(
         )
         == 2
     )
+
+    stale_item = controller._metadata_derivation_item(
+        parent_rows[0],
+        target_rows=targets,
+    )
+    nodes.pop("second")
+    controller._populate_metadata_derivation_item_children(stale_item)
+    assert stale_item.childCount() == 0
+
+    selected_item = controller._metadata_derivation_item(parent_rows[0])
+    manager._selected_derivation_items = lambda: [selected_item]
+    manager._metadata_node_uid = None
+    assert controller._selected_derivation_target_rows() == ()
 
 
 def test_manager_provenance_context_menu_on_empty_space_keeps_paste(
