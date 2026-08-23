@@ -633,5 +633,10 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         select_child_tool(manager, child_uid)
         manager._update_info()
         assert metadata_detail_map(manager) == {}
-        assert metadata_derivation_texts(manager) == []
-        assert manager._build_metadata_derivation_menu() is None
+        assert manager.metadata_derivation_list.topLevelItemCount() == 1
+        assert manager.metadata_derivation_list.topLevelItem(0).isDisabled()
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert not manager._metadata_edit_step_action.isEnabled()
+        assert not manager._metadata_revert_step_action.isEnabled()
+        assert not manager._metadata_delete_step_action.isEnabled()

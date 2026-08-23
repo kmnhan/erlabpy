@@ -1759,6 +1759,11 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> _ProvenanceDisplayRow | None:
         return self._details_panel._selected_derivation_row()
 
+    def _selected_derivation_target_rows(
+        self,
+    ) -> tuple[tuple[str, _ProvenanceDisplayRow], ...]:
+        return self._details_panel._selected_derivation_target_rows()
+
     def _build_metadata_derivation_menu(
         self, *, include_row_actions: bool = True
     ) -> QtWidgets.QMenu | None:
@@ -1883,6 +1888,15 @@ class ImageToolManager(_ImageToolManagerBase):
     def _schedule_derivation_details_refresh(self, changed_uid: str) -> None:
         selected_uid = self._metadata_node_uid
         if selected_uid is None:
+            for selected_uid in self._details_panel._metadata_multi_node_uids:
+                selected = self._tool_graph.nodes.get(selected_uid)
+                while selected is not None:
+                    if selected.uid == changed_uid:
+                        self._schedule_selected_details_refresh()
+                        return
+                    if selected.parent_uid is None:
+                        break
+                    selected = self._tool_graph.nodes.get(selected.parent_uid)
             return
         selected = self._tool_graph.nodes.get(selected_uid)
         while selected is not None:

@@ -130,11 +130,369 @@ def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
         "_accept_provenance_edit",
         _unexpected_provenance_accept,
     )
-
     dialog.buttonBox.accepted.emit()
 
     assert warnings_shown
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_multi_provenance_grouped_edit_revert_and_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def kspace_group(alpha: float) -> tuple[ToolProvenanceOperation, ...]:
+        return stamp_operation_group(
+            (
+                KspaceConfigurationOperation(configuration=2),
+                KspaceSetNormalOperation(alpha=alpha, beta=2.0, delta=3.0),
+                KspaceConvertOperation(bounds=None, resolution=None),
+            ),
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        )
+
+    first_group = kspace_group(1.0)
+    second_group = kspace_group(1.0)
+    trailing = NormalizeOperation(dims=("x",), mode="area")
+    first_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*first_group, trailing))
+    second_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*second_group, trailing))
+    first = _fake_edit_node(first_spec, uid="first", display_text="ImageTool 0")
+    second = _fake_edit_node(second_spec, uid="second", display_text="ImageTool 1")
+    nodes = {"first": first, "second": second}
+    controller = _fake_edit_controller(
+        nodes=nodes,
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    first_row = next(
+        row
+        for row in first_spec.display_rows()
+        if row.edit_ref == _ProvenanceStepRef("operation", operation_index=2)
+    )
+    second_row = next(
+        row
+        for row in second_spec.display_rows()
+        if row.edit_ref == _ProvenanceStepRef("operation", operation_index=2)
+    )
+    target_rows = (("first", first_row), ("second", second_row))
+    assert controller.can_edit_rows(target_rows) == (True, "")
+    assert controller.can_revert_rows(target_rows) == (True, "")
+    assert controller.can_delete_rows(target_rows) == (True, "")
+
+    captured: list[
+        tuple[
+            str,
+            tuple[provenance_edit_controller._ProvenanceCandidate, ...],
+        ]
+    ] = []
+
+    def capture_candidates(
+        _sessions: typing.Any,
+        candidates: typing.Any,
+        *,
+        where: str,
+    ) -> None:
+        captured.append((where, tuple(candidates)))
+
+    anchor_match = provenance_editors._dialog_match_for_operation_ref(
+        first_spec,
+        typing.cast("_ProvenanceStepRef", first_row.edit_ref),
+    )
+    assert anchor_match is not None
+    replacement_group = kspace_group(4.0)
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: (replacement_group, anchor_match),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace_multiple",
+        capture_candidates,
+    )
+
+    controller.edit_rows(target_rows)
+
+    assert captured[-1][0] == "validating the edited provenance step"
+    edited_specs = tuple(candidate.spec for candidate in captured[-1][1])
+    edited_group_ids = tuple(spec.operations[0].group.id for spec in edited_specs)
+    assert edited_group_ids[0] != edited_group_ids[1]
+    assert all(
+        typing.cast("KspaceSetNormalOperation", spec.operations[1]).alpha == 4.0
+        for spec in edited_specs
+    )
+
+    monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    controller.revert_rows(target_rows)
+    assert captured[-1][0] == "validating the provenance revert target"
+    assert all(len(candidate.spec.operations) == 3 for candidate in captured[-1][1])
+
+    monkeypatch.setattr(controller, "_confirm_delete_multiple", lambda: True)
+    controller.delete_rows(target_rows)
+    assert captured[-1][0] == "validating the provenance delete target"
+    assert all(
+        candidate.spec.operations == (trailing,) for candidate in captured[-1][1]
+    )
+
+
+def test_manager_multi_provenance_requires_complete_matching_groups() -> None:
+    def kspace_group(configuration: int) -> tuple[ToolProvenanceOperation, ...]:
+        return stamp_operation_group(
+            (
+                KspaceConfigurationOperation(configuration=configuration),
+                KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+                KspaceConvertOperation(bounds=None, resolution=None),
+            ),
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        )
+
+    first_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*kspace_group(1)))
+    second_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*kspace_group(2)))
+    first = _fake_edit_node(first_spec, uid="first", display_text="ImageTool 0")
+    second = _fake_edit_node(second_spec, uid="second", display_text="ImageTool 1")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    target_rows = tuple(
+        (
+            uid,
+            next(
+                row
+                for row in spec.display_rows()
+                if row.edit_ref == _ProvenanceStepRef("operation", operation_index=2)
+            ),
+        )
+        for uid, spec in (("first", first_spec), ("second", second_spec))
+    )
+
+    for check in (
+        controller.can_edit_rows,
+        controller.can_revert_rows,
+        controller.can_delete_rows,
+    ):
+        available, _reason = check(target_rows)
+        assert not available
+
+
+def test_manager_provenance_group_markers_define_atomic_actions() -> None:
+    grouped = stamp_operation_group(
+        (
+            AffineCoordOperation(coord_name="x", scale=1.0, offset=1.0),
+            AffineCoordOperation(coord_name="x", scale=2.0, offset=0.0),
+        ),
+        kind="test-atomic-group",
+    )
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(
+            *grouped,
+            NormalizeOperation(dims=("x",), mode="area"),
+        )
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    group_rows = tuple(
+        next(
+            row
+            for row in spec.display_rows()
+            if row.replay_ref == _ProvenanceStepRef("operation", operation_index=index)
+        )
+        for index in range(2)
+    )
+
+    assert not controller.can_edit_row(group_rows[0])[0]
+    assert not controller.can_edit_row(group_rows[1])[0]
+    assert not controller.can_revert_row(group_rows[0])[0]
+    assert controller.can_revert_row(group_rows[1]) == (True, "")
+    assert controller.can_delete_row(group_rows[0]) == (True, "")
+    assert controller.can_delete_row(group_rows[1]) == (True, "")
+
+    for row in group_rows:
+        action_block = controller._operation_action_block(
+            spec,
+            typing.cast("_ProvenanceStepRef", row.replay_ref),
+            action="delete",
+        )
+        assert action_block is not None
+        block_ref, _dialog_cls = action_block
+        assert (block_ref.start, block_ref.stop) == (0, 2)
+
+
+def test_manager_multi_provenance_trust_and_preflight_failures_change_no_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+    replacement = operation.model_copy(update={"code": "derived = derived + 2"})
+    spec = script(
+        operation,
+        start_label="Start from a scalar",
+        seed_code="derived = 0",
+        active_name="derived",
+    )
+    first = _fake_edit_node(spec, uid="first", display_text="ImageTool 0")
+    second = _fake_edit_node(spec, uid="second", display_text="ImageTool 1")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    rows = tuple(
+        next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+        )
+        for _uid in ("first", "second")
+    )
+    target_rows = (("first", rows[0]), ("second", rows[1]))
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: ((replacement,), None),
+    )
+    validation_calls: list[str] = []
+    applied: list[typing.Any] = []
+    failures: list[Exception] = []
+    local_edits: list[tuple[tuple[typing.Any, ...], tuple[typing.Any, ...]]] = []
+    signal_count = 0
+    authorization_token = object()
+
+    @contextlib.contextmanager
+    def authorize_local_edit(
+        entries: tuple[typing.Any, ...],
+        *,
+        edited_entries: tuple[typing.Any, ...],
+        **_kwargs: typing.Any,
+    ):
+        local_edits.append((entries, edited_entries))
+        yield authorization_token
+
+    def validate(
+        node: typing.Any,
+        _scope: typing.Any,
+        _candidate: typing.Any,
+        *,
+        where: str,
+        authorization: object | None,
+        active_filter_ref: _ProvenanceStepRef | None,
+    ) -> typing.Any:
+        del active_filter_ref
+        assert authorization is authorization_token
+        validation_calls.append(node.uid)
+        if node.uid == "second":
+            raise RuntimeError(f"{where}: invalid data")
+        return types.SimpleNamespace(node=node)
+
+    def emit() -> None:
+        nonlocal signal_count
+        signal_count += 1
+
+    monkeypatch.setattr(controller, "_validated_edit", validate)
+    monkeypatch.setattr(controller, "_apply_validated_edit", applied.append)
+    monkeypatch.setattr(
+        controller._manager._workspace_controller,
+        "local_code_edit",
+        authorize_local_edit,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_show_failed",
+        lambda _title, exc: failures.append(exc),
+    )
+    controller._manager._sigDataReplaced.emit = emit
+
+    controller.edit_rows(target_rows)
+
+    assert validation_calls == ["first", "second"]
+    assert len(local_edits) == 1
+    assert tuple(len(group) for group in local_edits[0]) == (4, 2)
+    assert applied == []
+    assert signal_count == 0
+    assert len(failures) == 1
+    assert "ImageTool 1" in str(failures[0])
+    assert first.displayed_provenance_spec == spec
+    assert second.displayed_provenance_spec == spec
+
+    @contextlib.contextmanager
+    def deny_local_edit(*_args: typing.Any, **_kwargs: typing.Any):
+        yield None
+
+    monkeypatch.setattr(
+        controller._manager._workspace_controller,
+        "local_code_edit",
+        deny_local_edit,
+    )
+    controller.edit_rows(target_rows)
+
+    assert validation_calls == ["first", "second"]
+    assert applied == []
+    assert tuple(node.displayed_provenance_spec for node in (first, second)) == (
+        spec,
+        spec,
+    )
+
+
+def test_manager_multi_provenance_rejects_stale_edit_and_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    replacement = NormalizeOperation(dims=("x",), mode="minmax")
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(operation)
+    )
+    first = _fake_edit_node(spec, uid="first")
+    second = _fake_edit_node(spec, uid="second")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    rows = tuple(
+        next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+        )
+        for _uid in ("first", "second")
+    )
+    target_rows = (("first", rows[0]), ("second", rows[1]))
+    anchor_match = provenance_editors._dialog_match_for_operation_ref(
+        spec,
+        typing.cast("_ProvenanceStepRef", rows[0].edit_ref),
+    )
+    assert anchor_match is not None
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace_multiple",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a stale or canceled edit must not apply"
+        ),
+    )
+
+    def make_stale(_node: typing.Any, _row: typing.Any) -> typing.Any:
+        second.provenance_revision += 1
+        return (replacement,), anchor_match
+
+    monkeypatch.setattr(controller, "_edited_multiple_row_operations", make_stale)
+    controller.edit_rows(target_rows)
+    assert len(unavailable) == 1
+
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: None,
+    )
+    controller.edit_rows(target_rows)
+    assert len(unavailable) == 1
 
 
 @pytest.mark.parametrize("mode", ["empty", "error", "valid"])
@@ -1453,7 +1811,7 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     monkeypatch.setattr(
         controller,
         "_split_active_filter",
-        lambda _node, _spec: (base_candidate, filter_operation),
+        lambda _node, _spec, **_kwargs: (base_candidate, filter_operation),
     )
 
     edit = controller._validated_edit(
@@ -1571,7 +1929,7 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
     monkeypatch.setattr(
         controller,
         "_split_active_filter",
-        lambda _node, _spec: (
+        lambda _node, _spec, **_kwargs: (
             base_candidate,
             DivideByCoordOperation(coord_name="missing"),
         ),
@@ -1984,19 +2342,19 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
             assert controller.can_edit_row(row) == (True, "")
         if row.replay_ref is None or row.replay_ref.kind != "operation":
             continue
-        group = provenance_edit_controller._editable_group_range_for_ref(
+        action_block = controller._operation_action_block(
             spec,
             row.replay_ref,
+            action="delete",
         )
-        if group is None:
-            deletion_candidate = spec._replace_operation_ref(row.replay_ref, ())
-        else:
-            deletion_candidate = spec._replace_operation_range_ref(
-                row.replay_ref,
-                group[0],
-                group[1],
-                (),
-            )
+        assert action_block is not None
+        block_ref, _dialog_cls = action_block
+        deletion_candidate = spec._replace_operation_range_ref(
+            row.replay_ref,
+            block_ref.start,
+            block_ref.stop,
+            (),
+        )
         should_be_deletable = controller._script_spec_replayable_for_node(
             node,
             deletion_candidate,

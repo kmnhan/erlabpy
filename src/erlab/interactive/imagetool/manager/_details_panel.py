@@ -25,6 +25,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     script_inputs_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    DerivationEntry,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -38,6 +39,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
     _METADATA_DERIVATION_ROW_ROLE,
+    _METADATA_DERIVATION_TARGET_ROWS_ROLE,
     _QWIDGETSIZE_MAX,
     _ElidedValueLabel,
     _LoadSourceDetailsDialog,
@@ -67,6 +69,10 @@ _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
 _MAXIMUM_WRAPPED_METADATA_LINES = 4
 _MAXIMUM_DERIVATION_TOOLTIP_WIDTH = 720
+_MULTI_PROVENANCE_DIFFERENCE_LABEL = "Steps differ across selected ImageTools"
+_MULTI_PROVENANCE_DIFFERENCE_ROW = _ProvenanceDisplayRow(
+    DerivationEntry(_MULTI_PROVENANCE_DIFFERENCE_LABEL, None, False)
+)
 
 
 def _provenance_step_clipboard_payload(
@@ -134,6 +140,7 @@ class _DetailsPanelController:
         self._metadata_derivation_spec: ToolProvenanceSpec | None = None
         self._metadata_fields_cache: tuple[_MetadataField, ...] = ()
         self._metadata_derivation_key: tuple[object, ...] | None = None
+        self._metadata_multi_node_uids: tuple[str, ...] = ()
         self._info_content_cache: tuple[str, str] | None = None
         self._tool_preview_update_uid: str | None = None
         self._tool_preview_update_timer: QtCore.QTimer | None = None
@@ -281,6 +288,7 @@ class _DetailsPanelController:
         self._metadata_derivation_spec = None
         self._metadata_fields_cache = ()
         self._metadata_derivation_key = None
+        self._metadata_multi_node_uids = ()
         self._set_notes_node(None)
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
@@ -289,6 +297,7 @@ class _DetailsPanelController:
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
         same_node = self._manager._metadata_node_uid == node.uid
+        self._metadata_multi_node_uids = ()
         self._set_notes_node(node)
         displayed_spec = node.passive_displayed_provenance_spec
         self._manager._metadata_full_code_available = (
@@ -335,6 +344,175 @@ class _DetailsPanelController:
                 item = self._manager.metadata_derivation_list.topLevelItem(index)
                 if item is not None and item.isExpanded():
                     self._populate_metadata_derivation_item_children(item)
+        if fields_changed or derivation_changed:
+            self._manager._update_metadata_pane()
+
+    def _provenance_row_comparison_key(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+    ) -> tuple[object, ...]:
+        ref = row.replay_ref
+        if ref is not None and ref.kind == "operation":
+            spec = self._manager._provenance_edit_controller._display_spec_for_row(
+                node,
+                row,
+                passive=True,
+            )
+            operation = None if spec is None else spec._operation_for_ref(ref)
+            if spec is not None and operation is not None:
+                edit_controller = self._manager._provenance_edit_controller
+                block_key = edit_controller._operation_block_comparison_key(
+                    spec,
+                    ref,
+                )
+                return (
+                    row.scope,
+                    row.script_input_path,
+                    ref.kind,
+                    block_key
+                    if block_key is not None
+                    else edit_controller._operation_comparison_key(operation),
+                )
+        return (
+            row.scope,
+            row.script_input_path,
+            row.edit_ref,
+            row.replay_ref,
+            row.entry,
+        )
+
+    def _multi_provenance_rows(
+        self,
+        rows_by_node: tuple[
+            tuple[
+                _ImageToolWrapper | _ManagedWindowNode,
+                tuple[_ProvenanceDisplayRow, ...],
+            ],
+            ...,
+        ],
+    ) -> list[
+        tuple[
+            _ProvenanceDisplayRow,
+            tuple[tuple[str, _ProvenanceDisplayRow], ...],
+        ]
+    ]:
+        if not rows_by_node:
+            return []
+        row_lists = tuple(rows for _node, rows in rows_by_node)
+        limit = min(len(rows) for rows in row_lists)
+        prefix = 0
+        while prefix < limit:
+            first_key = self._provenance_row_comparison_key(
+                rows_by_node[0][0],
+                row_lists[0][prefix],
+            )
+            if not all(
+                self._provenance_row_comparison_key(node, rows[prefix]) == first_key
+                for node, rows in rows_by_node[1:]
+            ):
+                break
+            prefix += 1
+
+        suffix = 0
+        remaining_limit = limit - prefix
+        while suffix < remaining_limit:
+            first_row = row_lists[0][len(row_lists[0]) - suffix - 1]
+            first_key = self._provenance_row_comparison_key(
+                rows_by_node[0][0], first_row
+            )
+            if not all(
+                self._provenance_row_comparison_key(
+                    node,
+                    rows[len(rows) - suffix - 1],
+                )
+                == first_key
+                for node, rows in rows_by_node[1:]
+            ):
+                break
+            suffix += 1
+
+        projected: list[
+            tuple[
+                _ProvenanceDisplayRow,
+                tuple[tuple[str, _ProvenanceDisplayRow], ...],
+            ]
+        ] = []
+
+        def append_shared(indices: tuple[int, ...]) -> None:
+            target_rows = tuple(
+                (node.uid, rows[index])
+                for (node, rows), index in zip(
+                    rows_by_node,
+                    indices,
+                    strict=True,
+                )
+            )
+            projected.append((target_rows[0][1], target_rows))
+
+        for index in range(prefix):
+            append_shared((index,) * len(rows_by_node))
+        if any(len(rows) > prefix + suffix for rows in row_lists):
+            projected.append((_MULTI_PROVENANCE_DIFFERENCE_ROW, ()))
+        for offset in range(suffix, 0, -1):
+            append_shared(tuple(len(rows) - offset for rows in row_lists))
+        return projected
+
+    def _set_metadata_nodes(
+        self,
+        nodes: list[_ImageToolWrapper | _ManagedWindowNode],
+    ) -> None:
+        node_uids = tuple(node.uid for node in nodes)
+        same_selection = self._metadata_multi_node_uids == node_uids
+        self._manager._metadata_full_code_available = False
+        self._manager._metadata_node_uid = None
+        self._metadata_derivation_spec = None
+        self._metadata_multi_node_uids = node_uids
+        self._set_notes_node(None)
+        fields_changed = bool(self._metadata_fields_cache)
+        if fields_changed:
+            self._metadata_fields_cache = ()
+            self._manager._set_metadata_fields([])
+
+        derivation_key = (
+            "multi",
+            tuple(
+                (
+                    node.uid,
+                    node.derivation_display_rows_cache_key,
+                    self._script_input_labels_cache_key(node),
+                )
+                for node in nodes
+            ),
+        )
+        derivation_changed = derivation_key != self._metadata_derivation_key
+        if derivation_changed:
+            selected_rows: frozenset[_ProvenanceDisplayRow] = frozenset()
+            expanded_rows: frozenset[_ProvenanceDisplayRow] = frozenset()
+            if same_selection:
+                selected_rows, expanded_rows = self._metadata_derivation_view_state()
+            self._metadata_derivation_key = derivation_key
+            self._manager.metadata_derivation_list.set_item_children_populator(
+                self._populate_metadata_derivation_item_children
+            )
+            rows_by_node = tuple(
+                (node, tuple(self._current_derivation_display_rows(node)))
+                for node in nodes
+            )
+            with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
+                self._manager.metadata_derivation_list.clear()
+                for row, target_rows in self._multi_provenance_rows(rows_by_node):
+                    item = self._metadata_derivation_item(
+                        row,
+                        target_rows=target_rows,
+                    )
+                    self._manager.metadata_derivation_list.addItem(item)
+                    self._restore_metadata_derivation_item_state(
+                        item,
+                        row,
+                        selected_rows=selected_rows,
+                        expanded_rows=expanded_rows,
+                    )
         if fields_changed or derivation_changed:
             self._manager._update_metadata_pane()
 
@@ -505,12 +683,19 @@ class _DetailsPanelController:
     def _metadata_derivation_item(
         self,
         row: _ProvenanceDisplayRow,
+        *,
+        target_rows: tuple[tuple[str, _ProvenanceDisplayRow], ...] = (),
     ) -> _MetadataDerivationTreeItem:
         entry = row.entry
         item = _MetadataDerivationTreeItem(entry.label)
-        can_activate, activation_reason = (
-            self._manager._provenance_edit_controller.can_edit_row(row)
-        )
+        if target_rows:
+            can_activate, activation_reason = (
+                self._manager._provenance_edit_controller.can_edit_rows(target_rows)
+            )
+        else:
+            can_activate, activation_reason = (
+                self._manager._provenance_edit_controller.can_edit_row(row)
+            )
         tooltip_lines = [
             self._manager.metadata_derivation_list.fontMetrics().elidedText(
                 entry.label,
@@ -531,6 +716,9 @@ class _DetailsPanelController:
         item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
         item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
         item.setData(_METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
+        item.setData(_METADATA_DERIVATION_TARGET_ROWS_ROLE, target_rows)
+        if row is _MULTI_PROVENANCE_DIFFERENCE_ROW:
+            item.setDisabled(True)
         if not can_activate:
             item.setForeground(
                 self._manager.metadata_derivation_list.palette().color(
@@ -538,7 +726,9 @@ class _DetailsPanelController:
                     QtGui.QPalette.ColorRole.Text,
                 )
             )
-        if row.has_children:
+        if row.has_children or any(
+            target_row.has_children for _uid, target_row in target_rows
+        ):
             item.setChildIndicatorPolicy(
                 QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
             )
@@ -601,6 +791,42 @@ class _DetailsPanelController:
             return
         row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
         if not isinstance(row, _ProvenanceDisplayRow):
+            return
+        target_rows = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
+        if isinstance(target_rows, tuple) and len(target_rows) >= 2:
+            rows_by_node: list[
+                tuple[
+                    _ImageToolWrapper | _ManagedWindowNode,
+                    tuple[_ProvenanceDisplayRow, ...],
+                ]
+            ] = []
+            for uid, target_row in target_rows:
+                node = self._manager._tool_graph.nodes.get(uid)
+                if node is None or not isinstance(target_row, _ProvenanceDisplayRow):
+                    return
+                current_rows = tuple(
+                    self._current_derivation_display_row(
+                        child_row,
+                        node.passive_displayed_provenance_spec,
+                        include_history=False,
+                    )
+                    for child_row in target_row.materialized_children()
+                )
+                rows_by_node.append((node, current_rows))
+            for current_row, current_targets in self._multi_provenance_rows(
+                tuple(rows_by_node)
+            ):
+                child_item = self._metadata_derivation_item(
+                    current_row,
+                    target_rows=current_targets,
+                )
+                item.addChild(child_item)
+                self._restore_metadata_derivation_item_state(
+                    child_item,
+                    current_row,
+                    selected_rows=selected_rows,
+                    expanded_rows=expanded_rows,
+                )
             return
         for child_row in row.materialized_children():
             current_row = self._current_derivation_display_row(
@@ -1033,6 +1259,31 @@ class _DetailsPanelController:
             return row
         return None
 
+    def _selected_derivation_target_rows(
+        self,
+    ) -> tuple[tuple[str, _ProvenanceDisplayRow], ...]:
+        items = self._manager._selected_derivation_items()
+        if len(items) != 1:
+            return ()
+        target_rows = items[0].data(_METADATA_DERIVATION_TARGET_ROWS_ROLE)
+        if (
+            isinstance(target_rows, tuple)
+            and target_rows
+            and all(
+                isinstance(target, tuple)
+                and len(target) == 2
+                and isinstance(target[0], str)
+                and isinstance(target[1], _ProvenanceDisplayRow)
+                for target in target_rows
+            )
+        ):
+            return target_rows
+        row = items[0].data(_METADATA_DERIVATION_ROW_ROLE)
+        uid = self._manager._metadata_node_uid
+        if uid is not None and isinstance(row, _ProvenanceDisplayRow):
+            return ((uid, row),)
+        return ()
+
     def _build_metadata_derivation_menu(
         self, *, include_row_actions: bool = True
     ) -> QtWidgets.QMenu | None:
@@ -1040,15 +1291,19 @@ class _DetailsPanelController:
             return None
 
         menu = QtWidgets.QMenu(self._manager.metadata_derivation_list)
-        row = self._manager._selected_derivation_row() if include_row_actions else None
+        target_rows = (
+            self._manager._selected_derivation_target_rows()
+            if include_row_actions
+            else ()
+        )
         edit_enabled, edit_reason = (
-            self._manager._provenance_edit_controller.can_edit_row(row)
+            self._manager._provenance_edit_controller.can_edit_rows(target_rows)
         )
         revert_enabled, revert_reason = (
-            self._manager._provenance_edit_controller.can_revert_row(row)
+            self._manager._provenance_edit_controller.can_revert_rows(target_rows)
         )
         delete_enabled, delete_reason = (
-            self._manager._provenance_edit_controller.can_delete_row(row)
+            self._manager._provenance_edit_controller.can_delete_rows(target_rows)
         )
         reorder_enabled, reorder_reason = (
             self._manager._provenance_edit_controller.can_reorder_steps()
@@ -1277,24 +1532,26 @@ class _DetailsPanelController:
             erlab.interactive.utils.copy_to_clipboard(code)
 
     def _edit_selected_derivation_step(self) -> None:
-        self._manager._provenance_edit_controller.edit_row(
-            self._manager._selected_derivation_row()
+        self._manager._provenance_edit_controller.edit_rows(
+            self._manager._selected_derivation_target_rows()
         )
 
     def _activate_selected_derivation_step(self) -> None:
-        row = self._manager._selected_derivation_row()
-        editable, _reason = self._manager._provenance_edit_controller.can_edit_row(row)
+        target_rows = self._manager._selected_derivation_target_rows()
+        editable, _reason = self._manager._provenance_edit_controller.can_edit_rows(
+            target_rows
+        )
         if editable:
             self._manager._edit_selected_derivation_step()
 
     def _revert_selected_derivation_step(self) -> None:
-        self._manager._provenance_edit_controller.revert_row(
-            self._manager._selected_derivation_row()
+        self._manager._provenance_edit_controller.revert_rows(
+            self._manager._selected_derivation_target_rows()
         )
 
     def _delete_selected_derivation_step(self) -> None:
-        self._manager._provenance_edit_controller.delete_row(
-            self._manager._selected_derivation_row()
+        self._manager._provenance_edit_controller.delete_rows(
+            self._manager._selected_derivation_target_rows()
         )
 
     def _update_info(self, *, uid: str | None = None) -> None:
@@ -1425,7 +1682,15 @@ class _DetailsPanelController:
                         for i in selected_imagetools
                     ),
                 )
-                self._manager._clear_metadata()
+                if n_itool == n_total:
+                    self._set_metadata_nodes(
+                        [
+                            self._manager._node_for_target(target)
+                            for target in selected_imagetools
+                        ]
+                    )
+                else:
+                    self._manager._clear_metadata()
                 self._manager.preview_widget.setVisible(False)
 
     def _schedule_debounced_details_refresh(self, uid: str) -> None:

@@ -232,6 +232,7 @@ def _fake_edit_controller(
     parent: typing.Any | None = None,
     nodes: dict[str, typing.Any] | None = None,
     metadata_uid: str | None = None,
+    selected_targets: tuple[str, ...] = (),
     script_input_can_reload: Callable[..., bool] | None = None,
 ) -> provenance_edit_controller._ProvenanceEditController:
     graph_nodes = (
@@ -248,7 +249,7 @@ def _fake_edit_controller(
     manager = types.SimpleNamespace(
         _metadata_node_uid=metadata_uid,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
-        _selected_imagetool_targets=lambda: (),
+        _selected_imagetool_targets=lambda: selected_targets,
         _node_for_target=lambda target: graph_nodes[target],
         _parent_node=_parent_node,
         _extensions=types.SimpleNamespace(
@@ -291,6 +292,8 @@ def _fake_edit_controller(
             ),
         ),
         _update_info=lambda **_kwargs: None,
+        _workspace_ui_refresh_context=contextlib.nullcontext,
+        _sigDataReplaced=types.SimpleNamespace(emit=lambda: None),
     )
     return provenance_edit_controller._ProvenanceEditController(
         typing.cast("typing.Any", manager)
@@ -320,6 +323,7 @@ def _fake_edit_node(
         _provenance_revision=0,
         _derivation_display_rows_generation=0,
         _derivation_display_rows_lineage_generation=(0,),
+        provenance_revision=0,
         replay_source_data=None,
         has_replay_source=False,
         source_spec=source_spec,

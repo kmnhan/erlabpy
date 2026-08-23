@@ -1170,7 +1170,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._source_spec = require_live_source_spec(
                 self._source_spec.append_final_rename(name)
             )
-        self._invalidate_provenance_derived_state()
+        self._mark_provenance_changed()
 
     def _file_label_paths(self) -> tuple[pathlib.Path, ...]:
         paths: list[pathlib.Path] = []
@@ -1609,7 +1609,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if snapshot.imagetool is not None and node_provenance_changed:
             snapshot.imagetool.set_provenance_spec(self.provenance_spec)
         if node_provenance_changed or pending_attrs_changed:
-            self._invalidate_provenance_derived_state(refresh_display=True)
+            self._mark_provenance_changed(refresh_display=True)
 
     def remap_provenance_owners(
         self,
@@ -1793,7 +1793,7 @@ class _ManagedWindowNode(QtCore.QObject):
         return provenance_spec
 
     def _handle_tool_provenance_spec_promotion(self) -> None:
-        self._invalidate_provenance_derived_state(
+        self._invalidate_provenance_caches(
             refresh_display=True,
             invalidate_derivation=self.parent_uid is None or self.source_spec is None,
         )
@@ -1806,9 +1806,17 @@ class _ManagedWindowNode(QtCore.QObject):
             None if tool is None else (tool, tool.provenance_revision)
         )
         self._tool_provenance_spec_cache.clear()
-        self._invalidate_provenance_derived_state(
+        self._invalidate_provenance_caches(
             refresh_display=refresh_dependency,
             invalidate_derivation=self.parent_uid is None or self.source_spec is None,
+        )
+
+    def _mark_tool_provenance_changed(
+        self, *, refresh_dependency: bool = False
+    ) -> None:
+        self._provenance_revision += 1
+        self._invalidate_tool_provenance_spec_cache(
+            refresh_dependency=refresh_dependency
         )
 
     def _sync_tool_provenance_revision(
@@ -1827,18 +1835,15 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         if revision_matches:
             return False
-        self._invalidate_tool_provenance_spec_cache(
-            refresh_dependency=refresh_dependency
-        )
+        self._mark_tool_provenance_changed(refresh_dependency=refresh_dependency)
         return True
 
-    def _invalidate_provenance_derived_state(
+    def _invalidate_provenance_caches(
         self,
         *,
         refresh_display: bool = False,
         invalidate_derivation: bool = True,
     ) -> None:
-        self._provenance_revision += 1
         change = (
             _ManagedNodeChange.PROVENANCE
             if refresh_display
@@ -1849,6 +1854,18 @@ class _ManagedWindowNode(QtCore.QObject):
             self._derivation_display_rows_generation += 1
             change |= _ManagedNodeChange.DERIVATION
         self._notify_change(change)
+
+    def _mark_provenance_changed(
+        self,
+        *,
+        refresh_display: bool = False,
+        invalidate_derivation: bool = True,
+    ) -> None:
+        self._provenance_revision += 1
+        self._invalidate_provenance_caches(
+            refresh_display=refresh_display,
+            invalidate_derivation=invalidate_derivation,
+        )
 
     @property
     def displayed_provenance_spec(
@@ -2117,7 +2134,7 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
-        self._invalidate_provenance_derived_state()
+        self._mark_provenance_changed()
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -2174,7 +2191,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def provenance_revision(self) -> int:
-        """Return the revision for caches derived from this node's provenance."""
+        """Return the revision of this node's logical provenance content."""
         return self._provenance_revision
 
     @property
@@ -2287,7 +2304,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = None
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
-        self._invalidate_provenance_derived_state()
+        self._mark_provenance_changed()
         self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
             provenance_spec,
@@ -2337,7 +2354,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = None
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
-        self._invalidate_provenance_derived_state()
+        self._mark_provenance_changed()
         self._source_binding = None if self._source_spec is not None else source_binding
         self._source_auto_update = bool(auto_update)
         self._source_state = state if self.has_source_binding else "fresh"
@@ -2365,7 +2382,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._invalidate_provenance_derived_state()
+        self._mark_provenance_changed()
         self._source_binding = None
         self._replay_source_data = None
         self._replay_source_pending = False
@@ -2391,7 +2408,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._invalidate_provenance_derived_state()
+        self._mark_provenance_changed()
         self._source_binding = None
         self._source_auto_update = False
         self._output_id = None
@@ -2411,7 +2428,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return self._source_spec
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
-            self._invalidate_provenance_derived_state()
+            self._invalidate_provenance_caches()
             self._source_binding = None
             return self._source_spec
         raise RuntimeError("Node is not bound to an ImageTool source.")
@@ -2749,7 +2766,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_provenance_changed(self) -> None:
-        self._invalidate_provenance_derived_state(refresh_display=True)
+        self._mark_provenance_changed(refresh_display=True)
 
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
@@ -3029,7 +3046,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._watched_source_uid = source_uid
         self._watched_connected = connected
         if provenance_changed:
-            self._invalidate_provenance_derived_state()
+            self._mark_provenance_changed()
 
     def watched_metadata(self) -> dict[str, typing.Any]:
         """Return JSON-serializable watched binding metadata."""
@@ -3056,7 +3073,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             return
         self._source_input_dtype = dtype
         if self.watched:
-            self._invalidate_provenance_derived_state()
+            self._mark_provenance_changed()
         self.manager._mark_node_state_dirty(self.uid)
 
     @property
@@ -3141,7 +3158,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             self._watched_source_label = None
             self._watched_source_uid = None
             self._watched_connected = False
-            self._invalidate_provenance_derived_state()
+            self._mark_provenance_changed()
             self._notify_change(
                 _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
             )

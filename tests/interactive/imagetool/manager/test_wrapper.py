@@ -153,7 +153,7 @@ def test_wrapper_applies_tool_owned_source_provenance() -> None:
         _pending_workspace_payload_attrs=None,
         _source_spec=None,
         _provenance_spec=None,
-        _invalidate_provenance_derived_state=lambda **_kwargs: None,
+        _mark_provenance_changed=lambda **_kwargs: None,
     )
     snapshot = _NodeProvenanceOwnerSnapshot(
         imagetool=None,

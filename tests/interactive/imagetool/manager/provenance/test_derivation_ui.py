@@ -20,13 +20,15 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_script_provenance,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    DerivationEntry,
     FileDataSelection,
     ReplayStep,
     ScriptInput,
+    ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
+    _ProvenanceOperationBlockRef,
     _ProvenanceReorderBlock,
-    _ProvenanceReorderBlockRef,
     _ProvenanceReorderSection,
     _ProvenanceReorderSectionRef,
     _ProvenanceStepRef,
@@ -65,6 +67,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _TrustedProvenanceReplayCancelled,
 )
 from tests.interactive.imagetool.manager.helpers import (
+    select_child_tool,
     select_metadata_items,
     select_metadata_rows,
     select_tools,
@@ -73,6 +76,8 @@ from tests.interactive.imagetool.manager.helpers import (
 from ._common import (
     _add_file_replay_tool,
     _authorize_execution,
+    _fake_edit_controller,
+    _fake_edit_node,
     _manager_replay_file_spec,
     _provenance_paste_test_data,
     _set_aggregate,
@@ -657,6 +662,633 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
         assert not manager._metadata_revert_step_action.isEnabled()
         assert not manager._metadata_copy_selected_action.isEnabled()
         assert not manager._metadata_delete_step_action.isEnabled()
+
+
+def test_manager_multi_selection_projects_shared_provenance_without_loading(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    common_prefix = AssignAttrsOperation(attrs={"common": True})
+    first_group = stamp_operation_group(
+        (
+            AssignAttrsOperation(attrs={"batch": 1}),
+            AssignAttrsOperation(attrs={"batch": 2}),
+        ),
+        kind="test-shared-suffix",
+    )
+    second_group = stamp_operation_group(
+        (
+            AssignAttrsOperation(attrs={"batch": 1}),
+            AssignAttrsOperation(attrs={"batch": 2}),
+        ),
+        kind="test-shared-suffix",
+    )
+    common_suffix = NormalizeOperation(dims=("eV",), mode="area")
+    first_spec = _manager_replay_file_spec(
+        file_path,
+        common_prefix,
+        IselOperation(kwargs={"alpha": 0}),
+        *first_group,
+        common_suffix,
+    )
+    second_spec = _manager_replay_file_spec(
+        file_path,
+        common_prefix,
+        IselOperation(kwargs={"alpha": 1}),
+        *second_group,
+        common_suffix,
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        _add_file_replay_tool(
+            manager,
+            replay_file_provenance(first_spec),
+            first_spec,
+        )
+        _add_file_replay_tool(
+            manager,
+            replay_file_provenance(second_spec),
+            second_spec,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        roots = tuple(manager._tool_graph.root_wrappers.values())
+        for root in roots:
+            monkeypatch.setattr(
+                root,
+                "materialize_pending_workspace_payload",
+                lambda: pytest.fail("multi-selection must not materialize ImageTools"),
+            )
+        monkeypatch.setattr(
+            manager_details_panel,
+            "_preview_curve_for_node",
+            lambda _node: pytest.fail("multi-selection must not render previews"),
+        )
+        monkeypatch.setattr(
+            manager_details_panel,
+            "_preview_image_for_node",
+            lambda _node: pytest.fail("multi-selection must not render previews"),
+        )
+
+        selection_model = manager.tree_view.selectionModel()
+        with QtCore.QSignalBlocker(selection_model):
+            select_tools(manager, [0, 1])
+        manager._update_info()
+
+        tree = manager.metadata_derivation_list
+        items = [tree.topLevelItem(index) for index in range(tree.topLevelItemCount())]
+        assert all(item is not None for item in items)
+        items = typing.cast("list[QtWidgets.QTreeWidgetItem]", items)
+        target_rows = [
+            item.data(0, manager_widgets._METADATA_DERIVATION_TARGET_ROWS_ROLE)
+            for item in items
+        ]
+        mixed_indices = [
+            index for index, targets in enumerate(target_rows) if targets == ()
+        ]
+        assert len(mixed_indices) == 1
+        mixed_index = mixed_indices[0]
+        assert items[mixed_index].isDisabled()
+        assert all(len(targets) == 2 for targets in target_rows[:mixed_index])
+        assert all(len(targets) == 2 for targets in target_rows[mixed_index + 1 :])
+
+        grouped_target_rows = []
+        for targets in target_rows[mixed_index + 1 :]:
+            first_uid, first_row = targets[0]
+            second_uid, second_row = targets[1]
+            first_operation = manager._provenance_edit_controller._display_spec_for_row(
+                manager._tool_graph.nodes[first_uid],
+                first_row,
+                passive=True,
+            )._operation_for_ref(first_row.replay_ref)
+            second_operation = (
+                manager._provenance_edit_controller._display_spec_for_row(
+                    manager._tool_graph.nodes[second_uid],
+                    second_row,
+                    passive=True,
+                )._operation_for_ref(second_row.replay_ref)
+            )
+            if first_operation is not None and first_operation.group is not None:
+                grouped_target_rows.append(targets)
+                assert second_operation is not None
+                assert second_operation.group is not None
+                assert first_operation.group.id != second_operation.group.id
+        assert len(grouped_target_rows) == 2
+
+        suffix_targets = target_rows[-1]
+        editable, _reason = manager._provenance_edit_controller.can_edit_rows(
+            suffix_targets
+        )
+        assert editable
+        select_metadata_items(manager, [items[-1]])
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_edit_step_action.isEnabled()
+        assert manager._metadata_delete_step_action.isEnabled()
+        assert not manager._metadata_reorder_steps_action.isEnabled()
+        assert not manager.metadata_details_widget.isVisible()
+        assert not manager.preview_widget.isVisible()
+
+
+def test_manager_multi_selection_treats_operation_groups_as_blocks() -> None:
+    def grouped(first_value: int) -> tuple[ToolProvenanceOperation, ...]:
+        return stamp_operation_group(
+            (
+                AssignAttrsOperation(attrs={"batch": first_value}),
+                AssignAttrsOperation(attrs={"batch": 2}),
+            ),
+            kind="test-shared-group",
+        )
+
+    common_prefix = AssignAttrsOperation(attrs={"common": True})
+    common_suffix = NormalizeOperation(dims=("eV",), mode="area")
+    first_spec = full_data(common_prefix, *grouped(1), common_suffix)
+    second_spec = full_data(common_prefix, *grouped(9), common_suffix)
+    first = _fake_edit_node(first_spec, uid="first")
+    second = _fake_edit_node(second_spec, uid="second")
+    edit_controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast(
+            "typing.Any",
+            types.SimpleNamespace(_provenance_edit_controller=edit_controller),
+        )
+    )
+
+    projected = controller._multi_provenance_rows(
+        (
+            (first, first_spec.display_rows()),
+            (second, second_spec.display_rows()),
+        )
+    )
+    mixed = [target_rows for _row, target_rows in projected if not target_rows]
+    assert len(mixed) == 1
+
+    shared_operations = []
+    for _row, target_rows in projected:
+        if not target_rows:
+            continue
+        uid, row = target_rows[0]
+        spec = first_spec if uid == "first" else second_spec
+        if row.replay_ref is not None:
+            operation = spec._operation_for_ref(row.replay_ref)
+            if operation is not None:
+                shared_operations.append(operation)
+    assert shared_operations == [common_prefix, common_suffix]
+
+
+def test_manager_pending_materialization_preserves_provenance_revision(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        NormalizeOperation(dims=("eV",), mode="area"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = _add_file_replay_tool(manager, replay_file_provenance(spec), spec)
+        tool.hide()
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        workspace_path = tmp_path / "pending-revision.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        node = manager._tool_graph.root_wrappers[0]
+        assert node.pending_workspace_memory_payload is not None
+        assert node.imagetool is None
+        revision = node.provenance_revision
+        snapshot_token = node.snapshot_token
+        cache_key = node.derivation_display_rows_cache_key
+        passive_spec = node.passive_displayed_provenance_spec
+        assert passive_spec is not None
+
+        manager.get_imagetool(0)
+
+        assert node.pending_workspace_memory_payload is None
+        assert node.imagetool is not None
+        assert node.provenance_revision == revision
+        assert node.snapshot_token == snapshot_token
+        assert node.derivation_display_rows_cache_key != cache_key
+        assert node.displayed_provenance_spec == passive_spec
+
+        node.set_displayed_provenance(
+            passive_spec.append_operations(AssignAttrsOperation(attrs={"edited": True}))
+        )
+        assert node.provenance_revision > revision
+
+
+def test_manager_multi_edit_applies_after_deferred_materialization(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(
+        file_path,
+        NormalizeOperation(dims=("eV",), mode="area"),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for _index in range(2):
+            tool = _add_file_replay_tool(manager, replay_file_provenance(spec), spec)
+            tool.hide()
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        workspace_path = tmp_path / "pending-multi-edit.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        nodes = tuple(manager._tool_graph.root_wrappers.values())
+        assert all(node.pending_workspace_memory_payload is not None for node in nodes)
+        assert all(node.imagetool is None for node in nodes)
+
+        qtbot.wait_until(lambda: manager.tree_view._model.rowCount() == 2)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0, 1])
+        qtbot.wait_until(
+            lambda: len(manager._selected_imagetool_targets()) == 2,
+            timeout=5000,
+        )
+        manager._update_info()
+        qtbot.wait_until(
+            lambda: manager.metadata_derivation_list.topLevelItemCount() > 0,
+            timeout=5000,
+        )
+        suffix_item = manager.metadata_derivation_list.topLevelItem(
+            manager.metadata_derivation_list.topLevelItemCount() - 1
+        )
+        assert suffix_item is not None
+        select_metadata_items(manager, [suffix_item])
+        before_specs = tuple(node.provenance_spec for node in nodes)
+
+        accept_dialog(
+            manager._edit_selected_derivation_step,
+            accept_call=lambda dialog: dialog.reject(),
+        )
+
+        assert (
+            sum(node.pending_workspace_memory_payload is not None for node in nodes)
+            == 1
+        )
+        assert tuple(node.provenance_spec for node in nodes) == before_specs
+        manager._update_info()
+        suffix_item = manager.metadata_derivation_list.topLevelItem(
+            manager.metadata_derivation_list.topLevelItemCount() - 1
+        )
+        assert suffix_item is not None
+        select_metadata_items(manager, [suffix_item])
+
+        def edit_normalization(dialog: QtWidgets.QDialog) -> None:
+            typing.cast("typing.Any", dialog).opts[1].setChecked(True)
+
+        accept_dialog(
+            manager._edit_selected_derivation_step,
+            pre_call=edit_normalization,
+        )
+
+        for node in nodes:
+            assert node.pending_workspace_memory_payload is None
+            assert node.imagetool is not None
+            assert node.provenance_spec is not None
+            operation = node.provenance_spec.operations[-1]
+            assert isinstance(operation, NormalizeOperation)
+            assert operation.mode == "minmax"
+
+
+def test_manager_multi_selection_edits_shared_suffix_once(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    data = test_data.expand_dims(z=[0, 1])
+    data.to_netcdf(file_path, engine="h5netcdf")
+    suffix = QSelAggregationOperation(dims=("eV",), func="mean")
+    specs = tuple(
+        _manager_replay_file_spec(
+            file_path,
+            IselOperation(kwargs={"z": index}),
+            suffix,
+        )
+        for index in (0, 1)
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tools = tuple(
+            _add_file_replay_tool(manager, replay_file_provenance(spec), spec)
+            for spec in specs
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        selection_model = manager.tree_view.selectionModel()
+        with QtCore.QSignalBlocker(selection_model):
+            select_tools(manager, [0, 1])
+        manager._update_info()
+
+        suffix_item = manager.metadata_derivation_list.topLevelItem(
+            manager.metadata_derivation_list.topLevelItemCount() - 1
+        )
+        assert suffix_item is not None
+        select_metadata_items(manager, [suffix_item])
+        emissions = 0
+
+        def record_replacement() -> None:
+            nonlocal emissions
+            emissions += 1
+
+        manager._sigDataReplaced.connect(record_replacement)
+
+        def edit_suffix(dialog: QtWidgets.QDialog) -> None:
+            _set_aggregate(dialog, dims=("eV",), func="sum")
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=edit_suffix)
+
+        assert emissions == 1
+        for index, (tool, root) in enumerate(
+            zip(tools, manager._tool_graph.root_wrappers.values(), strict=True)
+        ):
+            assert root.provenance_spec is not None
+            assert root.provenance_spec.operations[-1] == QSelAggregationOperation(
+                dims=("eV",),
+                func="sum",
+            )
+            xr.testing.assert_identical(
+                tool.slicer_area._data.rename(None),
+                data.isel(z=index).qsel.sum("eV").rename(None),
+            )
+        assert manager.metadata_derivation_list.topLevelItemCount() > 0
+
+
+def test_manager_multi_selection_edits_active_filters(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    data = test_data + 1.0
+    data.to_netcdf(file_path, engine="h5netcdf")
+    spec = _manager_replay_file_spec(file_path)
+    operation = NormalizeOperation(dims=("alpha",), mode="area")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tools = tuple(
+            _add_file_replay_tool(manager, data.copy(deep=True), spec)
+            for _index in range(2)
+        )
+        for tool in tools:
+            tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+        selection_model = manager.tree_view.selectionModel()
+        with QtCore.QSignalBlocker(selection_model):
+            select_tools(manager, [0, 1])
+        manager._update_info()
+
+        filter_item = manager.metadata_derivation_list.topLevelItem(
+            manager.metadata_derivation_list.topLevelItemCount() - 1
+        )
+        assert filter_item is not None
+        select_metadata_items(manager, [filter_item])
+        emissions = 0
+
+        def record_replacement() -> None:
+            nonlocal emissions
+            emissions += 1
+
+        manager._sigDataReplaced.connect(record_replacement)
+
+        def edit_filter(dialog: QtWidgets.QDialog) -> None:
+            for check in dialog.dim_checks.values():  # type: ignore[attr-defined]
+                check.setChecked(False)
+            dialog.dim_checks["eV"].setChecked(True)  # type: ignore[attr-defined]
+            dialog.opts[2].setChecked(True)  # type: ignore[attr-defined]
+
+        accept_dialog(manager._edit_selected_derivation_step, pre_call=edit_filter)
+
+        assert emissions == 1
+        for tool in tools:
+            xr.testing.assert_identical(tool.slicer_area._data, data)
+            assert tool.slicer_area._accepted_filter_provenance_operation == (
+                NormalizeOperation(dims=("eV",), mode="min")
+            )
+
+
+def test_manager_multi_selection_disables_inherited_parent_rows(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    data = test_data.expand_dims(z=[0, 1]) + 1.0
+    data.to_netcdf(file_path, engine="h5netcdf")
+    parent_spec = _manager_replay_file_spec(
+        file_path,
+        NormalizeOperation(dims=("eV",), mode="area"),
+    )
+    source_spec = full_data(IselOperation(kwargs={"z": 0}))
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        parent_tool = _add_file_replay_tool(
+            manager,
+            replay_file_provenance(parent_spec),
+            parent_spec,
+        )
+        child_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(
+                source_spec.apply(parent_tool.slicer_area._data),
+                manager=False,
+                execute=False,
+            ),
+        )
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=source_spec,
+        )
+        select_tools(manager, [0])
+        select_child_tool(manager, child_uid)
+        assert manager._selected_imagetool_targets() == [0, child_uid]
+        manager._update_info()
+
+        projection_items = [
+            item
+            for index in range(manager.metadata_derivation_list.topLevelItemCount())
+            if (item := manager.metadata_derivation_list.topLevelItem(index))
+            is not None
+        ]
+        inherited_items = [
+            item
+            for item in projection_items
+            if (
+                targets := item.data(
+                    0, manager_widgets._METADATA_DERIVATION_TARGET_ROWS_ROLE
+                )
+            )
+            and all(
+                target_row.edit_ref is not None
+                and target_row.edit_ref.kind == "operation"
+                for _uid, target_row in targets
+            )
+        ]
+        assert inherited_items, [
+            item.data(0, manager_widgets._METADATA_DERIVATION_TARGET_ROWS_ROLE)
+            for item in projection_items
+        ]
+        inherited_item = inherited_items[0]
+        select_metadata_items(manager, [inherited_item])
+        target_rows = manager._selected_derivation_target_rows()
+        editable, _reason = manager._provenance_edit_controller.can_edit_rows(
+            target_rows
+        )
+        assert not editable
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert not manager._metadata_edit_step_action.isEnabled()
+        assert not manager._metadata_revert_step_action.isEnabled()
+        assert not manager._metadata_delete_step_action.isEnabled()
+        assert any(item.isDisabled() for item in projection_items)
+
+
+def test_manager_multi_provenance_expansion_keeps_deferred_nodes_passive(
+    qtbot,
+) -> None:
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    spec = full_data(operation)
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    child_row = _ProvenanceDisplayRow(
+        operation.derivation_entry(),
+        edit_ref=ref,
+        replay_ref=ref,
+    )
+    factory_calls = 0
+
+    def children_factory() -> tuple[_ProvenanceDisplayRow, ...]:
+        nonlocal factory_calls
+        factory_calls += 1
+        return (child_row,)
+
+    parent_rows = tuple(
+        _ProvenanceDisplayRow(
+            DerivationEntry("Recorded input", None),
+            _children_factory=children_factory,
+        )
+        for _index in range(2)
+    )
+
+    class DeferredNode:
+        def __init__(self, uid: str) -> None:
+            self.uid = uid
+            self.display_text = uid
+            self.is_imagetool = True
+            self.imagetool = None
+            self.pending_workspace_memory_payload = object()
+            self.parent_uid = None
+            self.source_spec = None
+            self.displayed_source_spec = None
+            self.has_replay_source = True
+
+        @property
+        def passive_displayed_provenance_spec(self) -> ToolProvenanceSpec:
+            return spec
+
+        @property
+        def displayed_provenance_spec(self) -> ToolProvenanceSpec:
+            pytest.fail("deferred provenance must stay passive")
+
+        def materialize_pending_workspace_payload(self) -> bool:
+            pytest.fail("tree expansion must not materialize deferred ImageTools")
+
+    nodes = {uid: DeferredNode(uid) for uid in ("first", "second")}
+    edit_controller = _fake_edit_controller(
+        nodes=typing.cast("dict[str, typing.Any]", nodes),
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    tree = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(tree)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=tree,
+        _tool_graph=types.SimpleNamespace(nodes=nodes),
+        _provenance_edit_controller=edit_controller,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    targets = tuple((uid, row) for uid, row in zip(nodes, parent_rows, strict=True))
+    item = controller._metadata_derivation_item(parent_rows[0], target_rows=targets)
+    tree.addTopLevelItem(item)
+
+    assert factory_calls == 0
+    controller._populate_metadata_derivation_item_children(item)
+
+    assert factory_calls == 2
+    assert item.childCount() == 1
+    projected_child = item.child(0)
+    assert projected_child is not None
+    assert (
+        len(
+            projected_child.data(
+                0,
+                manager_widgets._METADATA_DERIVATION_TARGET_ROWS_ROLE,
+            )
+        )
+        == 2
+    )
 
 
 def test_manager_provenance_context_menu_on_empty_space_keeps_paste(
@@ -1647,16 +2279,16 @@ def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
     )
     blocks = (
         _ProvenanceReorderBlock(
-            _ProvenanceReorderBlockRef(0, 1),
+            _ProvenanceOperationBlockRef(0, 1),
             entries,
             tooltip="Stage source details",
         ),
         _ProvenanceReorderBlock(
-            _ProvenanceReorderBlockRef(1, 2),
+            _ProvenanceOperationBlockRef(1, 2),
             (),
         ),
         _ProvenanceReorderBlock(
-            _ProvenanceReorderBlockRef(2, 5),
+            _ProvenanceOperationBlockRef(2, 5),
             entries[:1],
         ),
     )

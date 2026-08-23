@@ -25,6 +25,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
+    _ProvenanceOperationBlockRef,
     _ProvenanceStepRef,
     full_data,
     operation_group_range,
@@ -1052,7 +1053,8 @@ def test_manager_can_delete_row_reports_unavailable_branches(
             label="Broken",
             code="derived = data",
         ),
-        _replace_operation_ref=lambda *_args: (_ for _ in ()).throw(
+        _operation_block_ref=lambda _ref: _ProvenanceOperationBlockRef(0, 1),
+        _replace_operation_range_ref=lambda *_args: (_ for _ in ()).throw(
             ValueError("bad ref")
         ),
     )

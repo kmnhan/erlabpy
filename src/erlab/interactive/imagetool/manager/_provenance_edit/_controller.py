@@ -27,6 +27,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
+    _ProvenanceOperationBlockRef,
     _ProvenanceReorderSection,
     _ProvenanceStepRef,
     compose_display_provenance,
@@ -57,7 +58,6 @@ from erlab.interactive.imagetool.manager._extensions._dialogs import (
 from erlab.interactive.imagetool.manager._provenance_edit._editors import (
     _NATIVE_TERMINAL_CURRENT_DATA_EDITORS,
     _dialog_match_for_operation_ref,
-    _editable_group_range_for_ref,
     _OperationDialogMatch,
     _ScriptCodeEditDialog,
     _uneditable_operation_reason,
@@ -101,6 +101,7 @@ class _ValidatedProvenanceEdit:
     data: xr.DataArray
     spec: ToolProvenanceSpec
     filter_operation: ToolProvenanceOperation | None
+    replace_filter: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -119,6 +120,32 @@ class _ProvenanceReorderSession:
         ],
         ...,
     ]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ProvenanceRowSession:
+    node: _ImageToolWrapper | _ManagedWindowNode
+    row: _ProvenanceDisplayRow
+    root_spec: ToolProvenanceSpec
+    provenance_revision: int
+    node_snapshot_token: str
+    parent_snapshot_token: str | None
+    dependency_snapshot_tokens: tuple[
+        tuple[
+            str,
+            typing.Literal["source", "displayed"],
+            str | None,
+        ],
+        ...,
+    ]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ProvenanceCandidate:
+    node: _ImageToolWrapper | _ManagedWindowNode
+    scope: typing.Literal["display", "source"]
+    spec: ToolProvenanceSpec
+    active_filter_ref: _ProvenanceStepRef | None = None
 
 
 class _ProvenanceReplayFailure(RuntimeError):
@@ -672,7 +699,15 @@ class _ProvenanceEditController:
         self,
         row: _ProvenanceDisplayRow | None,
     ) -> tuple[bool, str]:
-        node = self._metadata_node()
+        return self._can_delete_row(self._metadata_node(), row)
+
+    def _can_delete_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode | None,
+        row: _ProvenanceDisplayRow | None,
+        *,
+        passive: bool = False,
+    ) -> tuple[bool, str]:
         if row is None or row.replay_ref is None:
             return False, "This row cannot be deleted."
         if row.replay_ref.kind != "operation":
@@ -682,23 +717,27 @@ class _ProvenanceEditController:
         node = typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)
         if self._source_child_parent_row(node, row):
             return False, "Delete the parent ImageTool row directly."
-        spec = self._display_spec_for_row(node, row)
+        spec = self._display_spec_for_row(node, row, passive=passive)
         if spec is None:
             return False, "This row does not have replayable provenance."
         if spec._operation_for_ref(row.replay_ref) is None:
             return False, "This operation is not available."
         if spec.kind == "script":
             try:
-                group = _editable_group_range_for_ref(spec, row.replay_ref)
-                if group is None:
-                    candidate = spec._replace_operation_ref(row.replay_ref, ())
-                else:
-                    candidate = spec._replace_operation_range_ref(
-                        row.replay_ref,
-                        group[0],
-                        group[1],
-                        (),
-                    )
+                action_block = self._operation_action_block(
+                    spec,
+                    row.replay_ref,
+                    action="delete",
+                )
+                if action_block is None:
+                    return False, "This script row is not a replayable step."
+                block_ref, _dialog_cls = action_block
+                candidate = spec._replace_operation_range_ref(
+                    row.replay_ref,
+                    block_ref.start,
+                    block_ref.stop,
+                    (),
+                )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
             if not self._script_spec_replayable_for_node(node, candidate):
@@ -713,7 +752,15 @@ class _ProvenanceEditController:
         self,
         row: _ProvenanceDisplayRow | None,
     ) -> tuple[bool, str]:
-        node = self._metadata_node()
+        return self._can_edit_row(self._metadata_node(), row)
+
+    def _can_edit_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode | None,
+        row: _ProvenanceDisplayRow | None,
+        *,
+        passive: bool = False,
+    ) -> tuple[bool, str]:
         if row is None or row.edit_ref is None:
             return False, "This row does not support editing."
         if not self._node_editable(node):
@@ -722,7 +769,7 @@ class _ProvenanceEditController:
         if self._source_child_parent_row(node, row):
             return False, "Edit the parent ImageTool row directly."
 
-        spec = self._display_spec_for_row(node, row)
+        spec = self._display_spec_for_row(node, row, passive=passive)
         if spec is None:
             return False, "This row does not have replayable provenance."
         if row.edit_ref.kind == "file_load":
@@ -778,6 +825,14 @@ class _ProvenanceEditController:
             if script_operation.code is None or not script_operation.copyable:
                 return False, "This script step does not contain editable code."
             if spec.kind == "script":
+                if (
+                    self._operation_action_block(spec, row.edit_ref, action="edit")
+                    is None
+                ):
+                    return (
+                        False,
+                        "No editor is available for this complete operation group.",
+                    )
                 return True, ""
         if spec.kind == "script":
             input_spec = spec._prefix_before_ref(row.edit_ref)
@@ -792,14 +847,26 @@ class _ProvenanceEditController:
         ):
             return False, "This live row needs a parent source to replay."
         if script_operation is not None:
+            if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
+                return (
+                    False,
+                    "No editor is available for this complete operation group.",
+                )
             return True, ""
         if isinstance(operation, ExtensionRoutineOperation):
+            if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
+                return (
+                    False,
+                    "No editor is available for this complete operation group.",
+                )
             descriptor, reason = self._extension_routine_edit_descriptor(operation)
             return descriptor is not None, reason
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
             reason = _uneditable_operation_reason(operation)
             return False, reason or "No editing dialog is available for this step."
+        if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
+            return False, "No editor is available for this complete operation group."
         if not row.script_input_path and active_filter_ref == row.edit_ref:
             return True, ""
         return True, ""
@@ -808,7 +875,15 @@ class _ProvenanceEditController:
         self,
         row: _ProvenanceDisplayRow | None,
     ) -> tuple[bool, str]:
-        node = self._metadata_node()
+        return self._can_revert_row(self._metadata_node(), row)
+
+    def _can_revert_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode | None,
+        row: _ProvenanceDisplayRow | None,
+        *,
+        passive: bool = False,
+    ) -> tuple[bool, str]:
         if row is None or row.replay_ref is None:
             return False, "This row is not replayable."
         if not self._node_editable(node):
@@ -818,15 +893,25 @@ class _ProvenanceEditController:
             return False, "Revert the parent ImageTool row directly."
         if row.replay_ref.kind == "script_input":
             return False, "Dependency input rows are not revert targets."
-        spec = self._display_spec_for_row(node, row)
+        spec = self._display_spec_for_row(node, row, passive=passive)
         if spec is None:
             return False, "This row does not have replayable provenance."
         if row.replay_ref.kind == "operation":
-            group = _editable_group_range_for_ref(spec, row.replay_ref)
-            if group is not None and row.replay_ref.operation_index != group[1] - 1:
+            action_block = self._operation_action_block(
+                spec,
+                row.replay_ref,
+                action="revert",
+            )
+            if action_block is None:
+                return False, "This row is not a replayable step."
+            block_ref, _dialog_cls = action_block
+            if (
+                block_ref.stop - block_ref.start > 1
+                and row.replay_ref.operation_index != block_ref.stop - 1
+            ):
                 return (
                     False,
-                    "Revert is available from the final momentum-conversion row.",
+                    "Revert is available from the final row in this operation group.",
                 )
         try:
             candidate = spec._prefix_through_ref(row.replay_ref)
@@ -852,6 +937,175 @@ class _ProvenanceEditController:
             if row.scope == "source" and node.parent_uid is not None:
                 return True, ""
             return False, "This live row needs a parent source to replay."
+        return True, ""
+
+    def _row_targets(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> tuple[
+        tuple[
+            tuple[
+                _ImageToolWrapper | _ManagedWindowNode,
+                _ProvenanceDisplayRow,
+            ],
+            ...,
+        ],
+        str,
+    ]:
+        if not target_rows:
+            return (), "Select one provenance step."
+        targets: list[
+            tuple[_ImageToolWrapper | _ManagedWindowNode, _ProvenanceDisplayRow]
+        ] = []
+        seen_uids: set[str] = set()
+        for uid, row in target_rows:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None or uid in seen_uids:
+                return (), "The selected ImageTools are no longer available."
+            seen_uids.add(uid)
+            targets.append((node, row))
+        return tuple(targets), ""
+
+    @staticmethod
+    def _operation_comparison_key(
+        operation: ToolProvenanceOperation,
+    ) -> dict[str, object]:
+        payload = operation.model_dump(mode="json")
+        group = payload.get("group")
+        if isinstance(group, dict):
+            group = dict(group)
+            group.pop("id", None)
+            payload["group"] = group
+        return payload
+
+    def _operation_block_comparison_key(
+        self,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        block_ref: _ProvenanceOperationBlockRef | None = None,
+    ) -> tuple[object, ...] | None:
+        """Return one member's position and its complete block value."""
+        if ref.operation_index is None:
+            return None
+        if block_ref is None:
+            block_ref = spec._operation_block_ref(ref)
+        if block_ref is None:
+            return None
+        return (
+            ref.operation_index - block_ref.start,
+            tuple(
+                self._operation_comparison_key(operation)
+                for operation in spec.operations[block_ref.start : block_ref.stop]
+            ),
+        )
+
+    @staticmethod
+    def _operation_action_block(
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        *,
+        action: typing.Literal["edit", "revert", "delete"],
+    ) -> tuple[_ProvenanceOperationBlockRef, object | None] | None:
+        if ref.kind != "operation" or ref.operation_index is None:
+            return None
+        block_ref = spec._operation_block_ref(ref)
+        if block_ref is None:
+            return None
+        dialog_cls: object | None = None
+        if action == "edit":
+            dialog_match = _dialog_match_for_operation_ref(spec, ref)
+            if dialog_match is not None:
+                if (dialog_match.start, dialog_match.stop) != (
+                    block_ref.start,
+                    block_ref.stop,
+                ):
+                    return None
+                dialog_cls = dialog_match.dialog_cls
+            elif block_ref.stop - block_ref.start > 1:
+                return None
+        return block_ref, dialog_cls
+
+    def _matching_operation_rows(
+        self,
+        targets: Sequence[
+            tuple[_ImageToolWrapper | _ManagedWindowNode, _ProvenanceDisplayRow]
+        ],
+        *,
+        action: typing.Literal["edit", "revert", "delete"],
+    ) -> bool:
+        comparison_keys: list[tuple[object, ...]] = []
+        for node, row in targets:
+            ref = row.edit_ref if action == "edit" else row.replay_ref
+            if ref is None or ref.kind != "operation":
+                return False
+            spec = self._display_spec_for_row(node, row, passive=True)
+            if spec is None or spec._operation_for_ref(ref) is None:
+                return False
+            action_block = self._operation_action_block(spec, ref, action=action)
+            if action_block is None:
+                return False
+            block_ref, dialog_cls = action_block
+            block_key = self._operation_block_comparison_key(spec, ref, block_ref)
+            if block_key is None:
+                return False
+            comparison_keys.append(
+                (
+                    row.scope,
+                    row.script_input_path,
+                    dialog_cls,
+                    block_key,
+                )
+            )
+        return all(key == comparison_keys[0] for key in comparison_keys[1:])
+
+    def can_delete_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> tuple[bool, str]:
+        return self._can_rows(target_rows, action="delete")
+
+    def can_edit_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> tuple[bool, str]:
+        return self._can_rows(target_rows, action="edit")
+
+    def can_revert_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> tuple[bool, str]:
+        return self._can_rows(target_rows, action="revert")
+
+    def _can_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+        *,
+        action: typing.Literal["edit", "revert", "delete"],
+    ) -> tuple[bool, str]:
+        targets, reason = self._row_targets(target_rows)
+        if not targets:
+            return False, reason
+        for node, row in targets:
+            if action == "edit":
+                available, reason = self._can_edit_row(
+                    node, row, passive=len(targets) > 1
+                )
+            elif action == "revert":
+                available, reason = self._can_revert_row(
+                    node, row, passive=len(targets) > 1
+                )
+            else:
+                available, reason = self._can_delete_row(
+                    node, row, passive=len(targets) > 1
+                )
+            if not available:
+                return False, reason
+        if len(targets) > 1 and not self._matching_operation_rows(
+            targets,
+            action=action,
+        ):
+            past_tense = {"edit": "edited", "revert": "reverted", "delete": "deleted"}
+            return False, f"Only one shared operation row can be {past_tense[action]}."
         return True, ""
 
     def edit_row(
@@ -887,6 +1141,12 @@ class _ProvenanceEditController:
             ):
                 return
             self._show_failed("Could Not Apply Provenance Edit", exc)
+
+    def edit_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> None:
+        self._dispatch_rows(target_rows, action="edit")
 
     def revert_row(
         self,
@@ -938,6 +1198,12 @@ class _ProvenanceEditController:
                 return
             self._show_failed("Could Not Revert Provenance Step", exc)
 
+    def revert_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> None:
+        self._dispatch_rows(target_rows, action="revert")
+
     def delete_row(
         self,
         row: _ProvenanceDisplayRow | None,
@@ -962,18 +1228,23 @@ class _ProvenanceEditController:
                 RuntimeError("No provenance spec is available"),
             )
             return
+        action_block = self._operation_action_block(
+            spec,
+            ref,
+            action="delete",
+        )
+        if action_block is None:
+            self._show_unavailable("The selected operation is not available.")
+            return
+        block_ref, _dialog_cls = action_block
         repair_root_candidate: ToolProvenanceSpec | None = None
         try:
-            group = _editable_group_range_for_ref(spec, ref)
-            if group is None:
-                candidate = spec._replace_operation_ref(ref, ())
-            else:
-                candidate = spec._replace_operation_range_ref(
-                    ref,
-                    group[0],
-                    group[1],
-                    (),
-                )
+            candidate = spec._replace_operation_range_ref(
+                ref,
+                block_ref.start,
+                block_ref.stop,
+                (),
+            )
             repair_root_candidate = self._root_candidate_for_row(node, row, candidate)
             self._validate_and_replace(
                 node,
@@ -993,6 +1264,378 @@ class _ProvenanceEditController:
             ):
                 return
             self._show_failed("Could Not Delete Provenance Step", exc)
+
+    def delete_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> None:
+        self._dispatch_rows(target_rows, action="delete")
+
+    def _dispatch_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+        *,
+        action: typing.Literal["edit", "revert", "delete"],
+    ) -> None:
+        if len(target_rows) <= 1:
+            row = target_rows[0][1] if target_rows else None
+            {
+                "edit": self.edit_row,
+                "revert": self.revert_row,
+                "delete": self.delete_row,
+            }[action](row)
+            return
+        available, reason = self._can_rows(target_rows, action=action)
+        if not available:
+            self._show_unavailable(reason)
+            return
+        self._apply_multiple_rows(target_rows, action=action)
+
+    def _row_sessions(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+    ) -> tuple[_ProvenanceRowSession, ...]:
+        targets, reason = self._row_targets(target_rows)
+        if not targets:
+            raise RuntimeError(reason)
+        sessions: list[_ProvenanceRowSession] = []
+        for node, row in targets:
+            root_spec = self._root_display_spec_for_row(node, row, passive=True)
+            if root_spec is None:
+                raise RuntimeError(
+                    f"No provenance spec is available for {node.display_text}."
+                )
+            parent_snapshot_token = None
+            if row.scope == "source":
+                if node.parent_uid is None:
+                    raise RuntimeError(
+                        f"{node.display_text} does not have a parent ImageTool."
+                    )
+                parent_snapshot_token = self._manager._parent_node(node).snapshot_token
+            sessions.append(
+                _ProvenanceRowSession(
+                    node=node,
+                    row=row,
+                    root_spec=root_spec,
+                    provenance_revision=node.provenance_revision,
+                    node_snapshot_token=node.snapshot_token,
+                    parent_snapshot_token=parent_snapshot_token,
+                    dependency_snapshot_tokens=self._dependency_snapshot_tokens(
+                        root_spec
+                    ),
+                )
+            )
+        return tuple(sessions)
+
+    def _selected_imagetool_uids(self) -> tuple[str, ...]:
+        try:
+            uids = [
+                self._manager._node_for_target(target).uid
+                for target in self._manager._selected_imagetool_targets()
+            ]
+        except (KeyError, IndexError):
+            return ()
+        return tuple(uids)
+
+    def _row_sessions_current(
+        self,
+        sessions: Sequence[_ProvenanceRowSession],
+    ) -> str:
+        selected_uids = self._selected_imagetool_uids()
+        session_uids = tuple(session.node.uid for session in sessions)
+        if len(selected_uids) != len(session_uids) or frozenset(
+            selected_uids
+        ) != frozenset(session_uids):
+            return "The ImageTool selection changed while the dialog was open."
+
+        for session in sessions:
+            node = session.node
+            if self._manager._tool_graph.nodes.get(
+                node.uid
+            ) is not node or not self._node_editable(node):
+                return "A selected ImageTool is no longer available."
+            if node.provenance_revision != session.provenance_revision:
+                return "Provenance changed while the dialog was open."
+            root_spec = self._root_display_spec_for_row(
+                node,
+                session.row,
+                passive=True,
+            )
+            if root_spec != session.root_spec:
+                return "Provenance changed while the dialog was open."
+            if node.snapshot_token != session.node_snapshot_token:
+                return "ImageTool data changed while the dialog was open."
+            if session.row.scope == "source":
+                if node.parent_uid is None:
+                    return "A parent ImageTool is no longer available."
+                parent = self._manager._parent_node(node)
+                if parent.snapshot_token != session.parent_snapshot_token:
+                    return "Parent ImageTool data changed while the dialog was open."
+            if (
+                self._dependency_snapshot_tokens(root_spec)
+                != session.dependency_snapshot_tokens
+            ):
+                return "A provenance input changed while the dialog was open."
+            display_spec = self._session_display_spec(session)
+            if display_spec is None:
+                return "A selected provenance row is no longer available."
+            for ref in (session.row.edit_ref, session.row.replay_ref):
+                if (
+                    ref is not None
+                    and ref.kind == "operation"
+                    and display_spec._operation_for_ref(ref) is None
+                ):
+                    return "A selected provenance row is no longer available."
+        return ""
+
+    def _session_display_spec(
+        self,
+        session: _ProvenanceRowSession,
+    ) -> ToolProvenanceSpec | None:
+        if not session.row.script_input_path:
+            return session.root_spec
+        return self._script_input_path_spec(
+            session.root_spec,
+            session.row.script_input_path,
+        )
+
+    def _session_root_candidate(
+        self,
+        session: _ProvenanceRowSession,
+        candidate: ToolProvenanceSpec,
+    ) -> ToolProvenanceSpec:
+        if not session.row.script_input_path:
+            return candidate
+        return self._replace_script_input_path_spec(
+            session.root_spec,
+            session.row.script_input_path,
+            candidate,
+        )
+
+    def _row_candidates(
+        self,
+        sessions: Sequence[_ProvenanceRowSession],
+        *,
+        action: typing.Literal["edit", "revert", "delete"],
+        replacements: Sequence[ToolProvenanceOperation] = (),
+        anchor_match: _OperationDialogMatch | None = None,
+    ) -> list[_ProvenanceCandidate]:
+        candidates: list[_ProvenanceCandidate] = []
+        for session in sessions:
+            node = session.node
+            spec = self._session_display_spec(session)
+            ref = session.row.edit_ref if action == "edit" else session.row.replay_ref
+            if (
+                spec is None
+                or ref is None
+                or (action != "revert" and ref.kind != "operation")
+            ):
+                raise RuntimeError(
+                    f"The selected step is not available for {node.display_text}."
+                )
+            active_filter_ref = None
+            if action == "revert":
+                candidate = spec._prefix_through_ref(ref)
+            elif action == "delete":
+                action_block = self._operation_action_block(
+                    spec,
+                    ref,
+                    action=action,
+                )
+                if action_block is None:
+                    raise RuntimeError(
+                        f"The selected step is not available for {node.display_text}."
+                    )
+                block_ref, _dialog_cls = action_block
+                candidate = spec._replace_operation_range_ref(
+                    ref,
+                    block_ref.start,
+                    block_ref.stop,
+                    (),
+                )
+            else:
+                operation = spec._operation_for_ref(ref)
+                if operation is None:
+                    raise RuntimeError(
+                        f"The selected step is not available for {node.display_text}."
+                    )
+                action_block = self._operation_action_block(
+                    spec,
+                    ref,
+                    action=action,
+                )
+                if action_block is None:
+                    raise RuntimeError(f"The editor changed for {node.display_text}.")
+                block_ref, dialog_cls = action_block
+                target_replacements = restamp_operation_groups(replacements)
+                if anchor_match is None:
+                    if not isinstance(
+                        operation,
+                        ScriptCodeOperation | ExtensionRoutineOperation,
+                    ):
+                        raise RuntimeError(
+                            f"The editor changed for {node.display_text}."
+                        )
+                    candidate = spec._replace_operation_range_ref(
+                        ref,
+                        block_ref.start,
+                        block_ref.stop,
+                        target_replacements,
+                    )
+                else:
+                    if (
+                        dialog_cls is not anchor_match.dialog_cls
+                        or block_ref.stop - block_ref.start
+                        != anchor_match.stop - anchor_match.start
+                    ):
+                        raise RuntimeError(
+                            "The editable operation group changed for "
+                            f"{node.display_text}."
+                        )
+                    candidate = spec._replace_operation_range_ref(
+                        ref,
+                        block_ref.start,
+                        block_ref.stop,
+                        target_replacements,
+                    )
+                if (
+                    not session.row.script_input_path
+                    and self._active_filter_ref(node, spec) == ref
+                ):
+                    active_filter_ref = ref
+            candidates.append(
+                _ProvenanceCandidate(
+                    node=node,
+                    scope=session.row.scope,
+                    spec=self._session_root_candidate(session, candidate),
+                    active_filter_ref=active_filter_ref,
+                )
+            )
+        return candidates
+
+    def _apply_multiple_rows(
+        self,
+        target_rows: Sequence[tuple[str, _ProvenanceDisplayRow]],
+        *,
+        action: typing.Literal["edit", "revert", "delete"],
+    ) -> None:
+        title = (
+            "Could Not Apply Provenance Edit"
+            if action == "edit"
+            else f"Could Not {action.title()} Provenance Step"
+        )
+        try:
+            sessions = self._row_sessions(target_rows)
+            replacements: Sequence[ToolProvenanceOperation] = ()
+            anchor_match = None
+            if action == "edit":
+                stale_reason = self._row_sessions_current(sessions)
+                if stale_reason:
+                    self._show_unavailable(stale_reason)
+                    return
+                edited = self._edited_multiple_row_operations(
+                    sessions[0].node,
+                    sessions[0].row,
+                )
+                if edited is None:
+                    return
+                replacements, anchor_match = edited
+            elif not (
+                self._confirm_revert()
+                if action == "revert"
+                else self._confirm_delete_multiple()
+            ):
+                return
+            stale_reason = self._row_sessions_current(sessions)
+            if stale_reason:
+                self._show_unavailable(stale_reason)
+                return
+            candidates = self._row_candidates(
+                sessions,
+                action=action,
+                replacements=replacements,
+                anchor_match=anchor_match,
+            )
+            self._validate_and_replace_multiple(
+                sessions,
+                candidates,
+                where=(
+                    "validating the edited provenance step"
+                    if action == "edit"
+                    else f"validating the provenance {action} target"
+                ),
+            )
+        except _TrustedProvenanceReplayCancelled:
+            return
+        except Exception as exc:
+            self._show_failed(title, exc)
+
+    def _validate_and_replace_multiple(
+        self,
+        sessions: Sequence[_ProvenanceRowSession],
+        candidates: Sequence[_ProvenanceCandidate],
+        *,
+        where: str,
+    ) -> None:
+        with (
+            self._manager._extensions.execution.capture_replay_sources()
+        ) as publication:
+            entry_groups = tuple(
+                self._provenance_local_edit_entries(
+                    candidate.node,
+                    candidate.scope,
+                    candidate.spec,
+                )
+                for candidate in candidates
+            )
+            entries = tuple(entry for group, _edited in entry_groups for entry in group)
+            edited_entries = tuple(
+                entry for _group, edited in entry_groups for entry in edited
+            )
+            with self._manager._workspace_controller.local_code_edit(
+                entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as authorization:
+                if entries and authorization is None:
+                    raise _TrustedProvenanceReplayCancelled
+                edits = tuple(
+                    self._validated_edit(
+                        candidate.node,
+                        candidate.scope,
+                        candidate.spec,
+                        where=f"{where} for {candidate.node.display_text}",
+                        authorization=authorization,
+                        active_filter_ref=candidate.active_filter_ref,
+                    )
+                    for candidate in candidates
+                )
+                stale_reason = self._row_sessions_current(sessions)
+                if stale_reason:
+                    self._show_unavailable(stale_reason)
+                    raise _TrustedProvenanceReplayCancelled
+                publication.require_current_for_publication()
+                with self._manager._workspace_ui_refresh_context():
+                    for edit in edits:
+                        self._apply_validated_edit(edit)
+                    publication.publish()
+        self._manager._sigDataReplaced.emit()
+
+    def _confirm_delete_multiple(self) -> bool:
+        msg_box = QtWidgets.QMessageBox(self._manager)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Delete Provenance")
+        msg_box.setText("Delete this provenance step from the selected ImageTools?")
+        msg_box.setInformativeText(
+            "The selected operation or operation group will be removed from every "
+            "selected ImageTool."
+        )
+        msg_box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        return msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes
 
     def _metadata_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
         uid = self._manager._metadata_node_uid
@@ -1050,17 +1693,23 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         row: _ProvenanceDisplayRow,
+        *,
+        passive: bool = False,
     ) -> ToolProvenanceSpec | None:
         if row.scope == "source":
             return node.displayed_source_spec
+        if passive:
+            return node.passive_displayed_provenance_spec
         return node.displayed_provenance_spec
 
     def _display_spec_for_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         row: _ProvenanceDisplayRow,
+        *,
+        passive: bool = False,
     ) -> ToolProvenanceSpec | None:
-        spec = self._root_display_spec_for_row(node, row)
+        spec = self._root_display_spec_for_row(node, row, passive=passive)
         if spec is None or not row.script_input_path:
             return spec
         return self._script_input_path_spec(spec, row.script_input_path)
@@ -1510,6 +2159,48 @@ class _ProvenanceEditController:
                 publication.publish()
             return
 
+    def _edited_multiple_row_operations(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+    ) -> (
+        tuple[
+            tuple[ToolProvenanceOperation, ...],
+            _OperationDialogMatch | None,
+        ]
+        | None
+    ):
+        ref = typing.cast("_ProvenanceStepRef", row.edit_ref)
+        spec = self._display_spec_for_row(node, row)
+        if spec is None:
+            raise RuntimeError("No provenance spec is available")
+        operation = spec._operation_for_ref(ref)
+        if operation is None:
+            raise RuntimeError("Selected operation is not available")
+        if isinstance(operation, ScriptCodeOperation):
+            replacement = self._edited_script_code_operation(operation)
+            if replacement is None:
+                return None
+            return (replacement,), None
+        if isinstance(operation, ExtensionRoutineOperation):
+            replacement = self._edited_extension_routine_operation(operation)
+            if replacement is None:
+                return None
+            return (replacement,), None
+        dialog_match = _dialog_match_for_operation_ref(spec, ref)
+        if dialog_match is None:
+            raise RuntimeError("No editing dialog is available for this step")
+        replacements = self._edited_native_operations(
+            node,
+            row,
+            spec,
+            ref,
+            dialog_match,
+        )
+        if replacements is None:
+            return None
+        return tuple(replacements), dialog_match
+
     def _edit_operation_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
@@ -1578,10 +2269,9 @@ class _ProvenanceEditController:
         ref: _ProvenanceStepRef,
         operation: ScriptCodeOperation,
     ) -> None:
-        dialog = _ScriptCodeEditDialog(operation, self._manager)
-        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+        replacement = self._edited_script_code_operation(operation)
+        if replacement is None:
             return
-        replacement = operation.model_copy(update={"code": dialog.code()})
         candidate = spec._replace_operation_ref(ref, (replacement,))
         root_candidate = self._root_candidate_for_row(node, row, candidate)
         self._validate_and_replace(
@@ -1590,6 +2280,15 @@ class _ProvenanceEditController:
             root_candidate,
             where="validating the edited Python code",
         )
+
+    def _edited_script_code_operation(
+        self,
+        operation: ScriptCodeOperation,
+    ) -> ScriptCodeOperation | None:
+        dialog = _ScriptCodeEditDialog(operation, self._manager)
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return None
+        return operation.model_copy(update={"code": dialog.code()})
 
     def _extension_routine_edit_descriptor(
         self,
@@ -1641,6 +2340,22 @@ class _ProvenanceEditController:
         ref: _ProvenanceStepRef,
         operation: ExtensionRoutineOperation,
     ) -> None:
+        replacement = self._edited_extension_routine_operation(operation)
+        if replacement is None:
+            return
+        candidate = spec._replace_operation_ref(ref, (replacement,))
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            root_candidate,
+            where="validating the edited extension routine",
+        )
+
+    def _edited_extension_routine_operation(
+        self,
+        operation: ExtensionRoutineOperation,
+    ) -> ExtensionRoutineOperation | None:
         descriptor, reason = self._extension_routine_edit_descriptor(operation)
         if descriptor is None:
             raise RuntimeError(reason)
@@ -1650,16 +2365,8 @@ class _ProvenanceEditController:
             values=operation.parameters,
         )
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
-            return
-        replacement = operation.model_copy(update={"parameters": dialog.parameters})
-        candidate = spec._replace_operation_ref(ref, (replacement,))
-        root_candidate = self._root_candidate_for_row(node, row, candidate)
-        self._validate_and_replace(
-            node,
-            row.scope,
-            root_candidate,
-            where="validating the edited extension routine",
-        )
+            return None
+        return operation.model_copy(update={"parameters": dialog.parameters})
 
     def _edited_native_operations(
         self,
@@ -1912,60 +2619,11 @@ class _ProvenanceEditController:
         with (
             self._manager._extensions.execution.capture_replay_sources()
         ) as publication:
-            current = (
-                node.displayed_source_spec
-                if scope == "source"
-                else node.displayed_provenance_spec
-            )
-            current_identities = {
-                entry.document_identity()
-                for entry in self._provenance_code_entries(
-                    current,
-                    node=node,
-                    scope=scope,
-                )
-            }
-            entries = self._provenance_code_entries(
+            entries, edited_entries = self._provenance_local_edit_entries(
+                node,
+                scope,
                 candidate,
-                node=node,
-                scope=scope,
             )
-            edited_entries = tuple(
-                entry
-                for entry in entries
-                if entry.document_identity() not in current_identities
-            )
-            if scope == "source" and node.parent_uid is not None:
-                parent = self._manager._parent_node(node)
-                displayed_candidate = compose_display_provenance(
-                    parent.displayed_provenance_spec,
-                    candidate,
-                    parent_data=parent.current_source_data(),
-                )
-                current_display_entries = self._provenance_code_entries(
-                    node.displayed_provenance_spec,
-                    node=node,
-                    scope="display",
-                )
-                current_display_identities = {
-                    entry.document_identity() for entry in current_display_entries
-                }
-                edited_execution_identities = {
-                    entry.execution_identity() for entry in edited_entries
-                }
-                edited_entries = (
-                    *edited_entries,
-                    *(
-                        entry
-                        for entry in self._provenance_code_entries(
-                            displayed_candidate,
-                            node=node,
-                            scope="display",
-                        )
-                        if entry.document_identity() not in current_display_identities
-                        and entry.execution_identity() in edited_execution_identities
-                    ),
-                )
             with self._manager._workspace_controller.local_code_edit(
                 entries,
                 edited_entries=edited_entries,
@@ -1984,6 +2642,68 @@ class _ProvenanceEditController:
                 publication.require_current_for_publication()
                 self._apply_validated_edit(edit)
                 publication.publish()
+
+    def _provenance_local_edit_entries(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        scope: typing.Literal["display", "source"],
+        candidate: ToolProvenanceSpec,
+    ) -> tuple[tuple[typing.Any, ...], tuple[typing.Any, ...]]:
+        current = (
+            node.displayed_source_spec
+            if scope == "source"
+            else node.displayed_provenance_spec
+        )
+        current_identities = {
+            entry.document_identity()
+            for entry in self._provenance_code_entries(
+                current,
+                node=node,
+                scope=scope,
+            )
+        }
+        entries = self._provenance_code_entries(
+            candidate,
+            node=node,
+            scope=scope,
+        )
+        edited_entries = tuple(
+            entry
+            for entry in entries
+            if entry.document_identity() not in current_identities
+        )
+        if scope == "source" and node.parent_uid is not None:
+            parent = self._manager._parent_node(node)
+            displayed_candidate = compose_display_provenance(
+                parent.displayed_provenance_spec,
+                candidate,
+                parent_data=parent.current_source_data(),
+            )
+            current_display_entries = self._provenance_code_entries(
+                node.displayed_provenance_spec,
+                node=node,
+                scope="display",
+            )
+            current_display_identities = {
+                entry.document_identity() for entry in current_display_entries
+            }
+            edited_execution_identities = {
+                entry.execution_identity() for entry in edited_entries
+            }
+            edited_entries = (
+                *edited_entries,
+                *(
+                    entry
+                    for entry in self._provenance_code_entries(
+                        displayed_candidate,
+                        node=node,
+                        scope="display",
+                    )
+                    if entry.document_identity() not in current_display_identities
+                    and entry.execution_identity() in edited_execution_identities
+                ),
+            )
+        return entries, edited_entries
 
     def _provenance_code_entries(
         self,
@@ -2019,10 +2739,13 @@ class _ProvenanceEditController:
         where: str,
         authorization: object | None = None,
         retain_active_filter: bool = True,
+        active_filter_ref: _ProvenanceStepRef | None = None,
     ) -> _ValidatedProvenanceEdit:
         if retain_active_filter:
             base_candidate, filter_operation = self._split_active_filter(
-                node, candidate
+                node,
+                candidate,
+                active_filter_ref=active_filter_ref,
             )
         else:
             base_candidate, filter_operation = candidate, None
@@ -2065,6 +2788,9 @@ class _ProvenanceEditController:
             data=source_data,
             spec=base_candidate,
             filter_operation=filter_operation,
+            replace_filter=(
+                active_filter_ref is not None and filter_operation is not None
+            ),
         )
 
     def _validate_filter_operation(
@@ -2101,8 +2827,15 @@ class _ProvenanceEditController:
             edit.scope,
             edit.data,
             edit.spec,
-            edit.filter_operation,
+            None if edit.replace_filter else edit.filter_operation,
         )
+        if edit.replace_filter:
+            if edit.filter_operation is None:
+                raise RuntimeError("The edited display filter is not available")
+            edit.node.slicer_area.apply_filter_operation(
+                edit.filter_operation,
+                emit_edited=True,
+            )
         self._manager._update_info(uid=edit.node.uid)
 
     def _file_load_batch_peers(
@@ -2426,11 +3159,13 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         spec: ToolProvenanceSpec,
+        *,
+        active_filter_ref: _ProvenanceStepRef | None = None,
     ) -> tuple[
         ToolProvenanceSpec,
         ToolProvenanceOperation | None,
     ]:
-        active_ref = self._active_filter_ref(node, spec)
+        active_ref = active_filter_ref or self._active_filter_ref(node, spec)
         if active_ref is None:
             return spec, None
         active_operation = spec._operation_for_ref(active_ref)

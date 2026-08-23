@@ -91,8 +91,8 @@ from erlab.interactive.imagetool._provenance._model import (
     _is_whole_array_rename_entry,
     _normalize_provenance_hashable,
     _ProvenanceDisplayContext,
+    _ProvenanceOperationBlockRef,
     _ProvenanceReorderBlock,
-    _ProvenanceReorderBlockRef,
     _ProvenanceReorderSection,
     _ProvenanceReorderSectionRef,
     _ProvenanceStepRef,
@@ -819,6 +819,21 @@ def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
     assert adjacent[0].group is not None
     assert adjacent[2].group is not None
     assert adjacent[0].group.id != adjacent[2].group.id
+
+    grouped_spec = full_data(*operations, AverageOperation(dims=("y",)))
+    assert grouped_spec._operation_block_ref(
+        _ProvenanceStepRef("operation", operation_index=0)
+    ) == _ProvenanceOperationBlockRef(0, 2)
+    assert grouped_spec._operation_block_ref(
+        _ProvenanceStepRef("operation", operation_index=1)
+    ) == _ProvenanceOperationBlockRef(0, 2)
+    assert grouped_spec._operation_block_ref(
+        _ProvenanceStepRef("operation", operation_index=2)
+    ) == _ProvenanceOperationBlockRef(2, 3)
+    assert grouped_spec._operation_block_refs() == (
+        _ProvenanceOperationBlockRef(0, 2),
+        _ProvenanceOperationBlockRef(2, 3),
+    )
 
 
 @pytest.mark.parametrize(
@@ -5001,7 +5016,7 @@ def test_tool_provenance_reorder_rejects_malformed_plans(
         )
 
     unknown_block = _ProvenanceReorderBlock(
-        _ProvenanceReorderBlockRef(0, 2),
+        _ProvenanceOperationBlockRef(0, 2),
         tuple(entry for block in section.blocks[:2] for entry in block.entries),
     )
     unknown_section = _ProvenanceReorderSection(
@@ -5056,7 +5071,7 @@ def test_tool_provenance_reorder_rejects_malformed_plans(
             "_reorder_sections",
             lambda self, **_kwargs: (),
         )
-        with pytest.raises(ValueError, match="Ungrouped provenance blocks"):
+        with pytest.raises(ValueError, match="complete structural block"):
             spec._reorder_operation_blocks(
                 (unknown_section,),
                 {unknown_section.ref: (unknown_block.ref,)},
@@ -5070,7 +5085,7 @@ def test_tool_provenance_reorder_rejects_malformed_plans(
         )
     )
     partial_group_block = _ProvenanceReorderBlock(
-        _ProvenanceReorderBlockRef(0, 1),
+        _ProvenanceOperationBlockRef(0, 1),
         (grouped_spec.operations[0].derivation_entry(),),
     )
     partial_group_section = _ProvenanceReorderSection(
@@ -5089,7 +5104,7 @@ def test_tool_provenance_reorder_rejects_malformed_plans(
             "_reorder_sections",
             lambda self, **_kwargs: (),
         )
-        with pytest.raises(ValueError, match="complete group"):
+        with pytest.raises(ValueError, match="complete structural block"):
             grouped_spec._reorder_operation_blocks(
                 (partial_group_section,),
                 {partial_group_section.ref: (partial_group_block.ref,)},
