@@ -320,7 +320,7 @@ def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
     assert win._append_persistence_payload(empty) is empty
 
     blob = np.array([1, 2, 3], dtype=np.uint8)
-    win._pending_persisted_fit_result_blob = blob
+    win._serialized_fit_result_blob = blob
     win._pending_persisted_fit_is_current = True
     appended = win._append_persistence_payload(empty)
     np.testing.assert_array_equal(
@@ -365,6 +365,9 @@ def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
     monkeypatch.setattr(win, "_update_fit_curve", lambda: calls.append("curve"))
     monkeypatch.setattr(win, "_mark_fit_fresh", lambda: calls.append("fresh"))
     monkeypatch.setattr(win, "_mark_fit_stale", lambda: calls.append("stale"))
+    payload_entry = win._fit_result_code_trust_entry(blob)
+    assert payload_entry is not None
+    win._saved_code_payload_entries = (payload_entry,)
 
     win._restore_persisted_fit_result_blob(blob, fit_is_current=True)
     win._restore_persisted_fit_result_blob(blob, fit_is_current=False)

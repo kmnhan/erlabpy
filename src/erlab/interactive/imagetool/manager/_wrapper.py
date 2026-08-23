@@ -23,7 +23,6 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import functools
-import importlib
 import json
 import keyword
 import logging
@@ -51,6 +50,7 @@ from erlab.interactive.imagetool._load_source import (
     _LoadFunc,
     _LoadSourceDetails,
     _parse_serialized_file_data_selection,
+    _registered_local_callable_loader,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
@@ -637,6 +637,10 @@ class _ManagedWindowNode(QtCore.QObject):
             self._window_kind = "imagetool"
             self._imagetool = value
             self._tool_window = None
+            self.manager._workspace_controller._configure_imagetool_code_trust(
+                value,
+                node_getter=lambda: self,
+            )
             self.manager._install_workspace_save_shortcut(value)
             self.manager._register_interaction_window(value)
             if self._provenance_spec is not None or self._source_spec is not None:
@@ -676,6 +680,14 @@ class _ManagedWindowNode(QtCore.QObject):
         self._tool_window = tool
         self._tool_provenance_revision_key = (tool, tool.provenance_revision)
         self._imagetool = None
+        self.manager._workspace_controller._configure_tool_code_trust(
+            tool,
+            location_getter=lambda: (
+                self.manager._workspace_controller.saving._workspace_node_path_for_node(
+                    self,
+                )
+            ),
+        )
         self.manager._install_workspace_save_shortcut(tool)
         self.manager._register_interaction_window(tool)
         tool.installEventFilter(self)
@@ -860,6 +872,8 @@ class _ManagedWindowNode(QtCore.QObject):
             old.slicer_area.sigDisplayedProvenanceChanged.disconnect(
                 self._handle_imagetool_provenance_changed
             )
+        old.slicer_area._set_stored_code_authorizer(None)
+        old.slicer_area._in_manager = False
         old._set_managed_reveal_callback(None)
         if close:
             old.close()
@@ -1348,19 +1362,10 @@ class _ManagedWindowNode(QtCore.QObject):
             restored_kwargs = _deserialize_loader_kwargs(kwargs)
         except Exception:
             return None
-        if ":" in fn:
-            try:
-                mod_name, qual = fn.split(":", maxsplit=1)
-                func_obj: typing.Any = importlib.import_module(mod_name)
-                for attr in qual.split("."):
-                    func_obj = getattr(func_obj, attr)
-            except Exception:
-                return None
-            if not callable(func_obj):
-                return None
-            return func_obj, restored_kwargs, selection
         if fn in erlab.io.loaders:
             return fn, restored_kwargs, selection
+        if func_obj := _registered_local_callable_loader(fn):
+            return func_obj, restored_kwargs, selection
         return None
 
     def load_source_code(self, *, assign: str = "data") -> str | None:
@@ -2795,11 +2800,10 @@ class _ManagedWindowNode(QtCore.QObject):
                         return False
                     parent_data = self.parent_source_data()
                     source_spec = self._materialized_source_spec(parent_data)
-                    resolved = source_spec.apply(
+                    resolved = self.manager._apply_provenance(
+                        source_spec,
                         parent_data,
-                        extension_executor=(
-                            self.manager._extensions.execution.run_operation
-                        ),
+                        reason="refresh this ImageTool from its parent",
                     )
                     provenance_spec = compose_display_provenance(
                         self.manager._parent_node(self).displayed_provenance_spec,
@@ -2856,11 +2860,10 @@ class _ManagedWindowNode(QtCore.QObject):
                     if not self.has_source_binding:
                         return False
                     source_spec = self._materialized_source_spec(parent_data)
-                    resolved = source_spec.apply(
+                    resolved = self.manager._apply_provenance(
+                        source_spec,
                         parent_data,
-                        extension_executor=(
-                            self.manager._extensions.execution.run_operation
-                        ),
+                        reason="refresh this ImageTool from its parent",
                     )
                     provenance_spec = compose_display_provenance(
                         self.manager._parent_node(self).displayed_provenance_spec,

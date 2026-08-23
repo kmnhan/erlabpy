@@ -706,8 +706,8 @@ def _transform_control() -> MethodControlSpec:
         object_name="figureComposerMethodTransformModeCombo",
         tooltip=(
             "Coordinate transform for this method.\n"
-            "Use custom only for trusted local expressions using ax, fig, "
-            "or mtransforms."
+            "Custom expressions can use ax, fig, or mtransforms. Saved expressions "
+            "run only when the document is trusted."
         ),
         options=(
             "data",

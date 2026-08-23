@@ -28,7 +28,9 @@ class ScriptCodeOperation(ToolProvenanceOperation):
     code: str | None
     copyable: bool = True
     visible: bool = True
-    framework_owned: bool = pydantic.Field(
+    # This is a code-generation hint. Serialized values do not establish origin or
+    # trust.
+    uses_implicit_framework_imports: bool = pydantic.Field(
         default=False,
         exclude_if=lambda value: not value,
     )
@@ -352,13 +354,29 @@ class ModelFitOperation(ToolProvenanceOperation):
     def preferred_replay_input_name(self) -> str:
         return "fit_data"
 
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
+    def apply(
+        self,
+        data: xr.DataArray,
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
         if self.fit_dim not in data.dims:
             raise ValueError(
                 f"Model-fit dimension {self.fit_dim!r} was not found in data"
             )
         mean_dim = self.fit_dim if isinstance(self.fit_dim, str) else (self.fit_dim,)
         fit_data = data / data.mean(mean_dim) if self.normalize else data
+        from erlab.interactive._code_trust import execution_capability_allows
+        from erlab.interactive.imagetool._provenance._trust import (
+            provenance_operation_code_trust_entries,
+        )
+
+        entries = provenance_operation_code_trust_entries(
+            self,
+            location_prefix="operation",
+        )
+        if not execution_capability_allows(authorization, entries):
+            raise PermissionError("Model-fit parameter expressions are not authorized")
         fit_result = fit_data.xlm.modelfit(
             self.fit_dim,
             model=self._model(),

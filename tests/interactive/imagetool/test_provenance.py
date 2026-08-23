@@ -17,13 +17,24 @@ from pydantic import ValidationError
 
 import erlab
 import erlab.extensions._api as extension_api
+import erlab.interactive.imagetool._load_source as imagetool_load_source
+from erlab.interactive._code_trust import (
+    create_manifest,
+    issue_execution_capability,
+    new_document_trust,
+)
+from erlab.interactive._code_trust._api import _document_trust_after_save
 from erlab.interactive.imagetool._load_source import (
     _load_provenance_from_file_details,
     _load_source_details_from_file,
     _load_source_details_from_provenance,
+    _register_local_callable_loader,
+    _registered_local_callable_loader,
 )
 from erlab.interactive.imagetool._provenance import _code
+from erlab.interactive.imagetool._provenance import _model as provenance_model
 from erlab.interactive.imagetool._provenance._code import (
+    _FIT_DATASET_MARKER,
     _MAPPING_MARKER,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _TUPLE_MARKER,
@@ -44,15 +55,15 @@ from erlab.interactive.imagetool._provenance._code import (
 from erlab.interactive.imagetool._provenance._execution import (
     _load_file_source_data,
     _parse_replay_input,
-    _resolve_importable_callable,
     _select_replay_input,
     can_reload_without_trust,
+    execute_replay_graph,
     file_load_source_status,
     replay_file_provenance,
     replay_script_provenance,
     script_provenance_replayable,
-    script_provenance_requires_trust,
 )
+from erlab.interactive.imagetool._provenance._graph import ReplayGraph, ReplayGraphError
 from erlab.interactive.imagetool._provenance._model import (
     _OPERATION_TYPES,
     ConsoleCall,
@@ -163,6 +174,27 @@ from erlab.interactive.imagetool._provenance._operations import (
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
 )
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_trust_entries,
+    provenance_operation_code_trust_entries,
+    provenance_requires_code_trust,
+)
+
+
+def _authorize_execution(entries: tuple[typing.Any, ...]) -> object:
+    _trust, capability = issue_execution_capability(new_document_trust(), entries)
+    if capability is None:  # pragma: no cover - local trust always issues one.
+        raise RuntimeError("Could not issue test execution capability")
+    return capability
+
+
+def _single_input_script(code: str) -> ToolProvenanceSpec:
+    return script(
+        ScriptCodeOperation(label="Run code", code=code),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
 
 
 def _exec_generated_code(
@@ -417,6 +449,8 @@ def test_script_replay_keeps_unused_aliases_lazy() -> None:
         "import sys\n"
         "import numpy as np\n"
         "import xarray as xr\n"
+        "from erlab.interactive._code_trust import "
+        "issue_execution_capability, new_document_trust\n"
         "from erlab.interactive.imagetool._provenance._execution import "
         "replay_script_provenance\n"
         "from erlab.interactive.imagetool._provenance._model import "
@@ -434,7 +468,12 @@ def test_script_replay_keeps_unused_aliases_lazy() -> None:
         "        ScriptInput(name='data_1', label='B'),\n"
         "    ),\n"
         ")\n"
-        "replay_script_provenance(spec, {'data_0': data, 'data_1': data})\n"
+        "replay_script_provenance(\n"
+        "    spec, {'data_0': data, 'data_1': data},\n"
+        "    authorize=lambda entries: issue_execution_capability(\n"
+        "        new_document_trust(), entries\n"
+        "    )[1],\n"
+        ")\n"
         "loaded = sorted(\n"
         "    name for name in sys.modules\n"
         "    if name.startswith('erlab.analysis.')\n"
@@ -460,6 +499,7 @@ def _file_replay_source(
     replay_call: typing.Any = None,
 ) -> typing.Any:
     if replay_call is None:
+        _register_local_callable_loader(xr.load_dataarray)
         replay_call = FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
@@ -1066,7 +1106,7 @@ def test_tool_provenance_migrates_legacy_parent_data_script_context() -> None:
     assert "script_context_bindings" not in spec.model_dump(mode="json")
     data = xr.DataArray([1.0, 2.0], dims=("x",))
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data": data}),
+        replay_script_provenance(spec, {"data": data}, authorize=_authorize_execution),
         data + data,
     )
 
@@ -1090,6 +1130,7 @@ def test_tool_provenance_migrates_legacy_top_level_operation_context(
         data: xr.DataArray,
         *,
         parent_data: xr.DataArray,
+        authorization: object | None = None,
     ) -> xr.DataArray:
         seen_contexts.append((data, parent_data))
         return original_apply(self, data)
@@ -1463,7 +1504,7 @@ def test_generated_provenance_code_preserves_effect_order_across_aliases() -> No
     )
     previous_error_state = np.seterr(divide="warn")
     try:
-        expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+        expected = replay_script_provenance(spec, {}, authorize=_authorize_execution)
         for code in (spec.derivation_code(), spec.display_code()):
             assert code is not None
             np.seterr(divide="warn")
@@ -1538,9 +1579,11 @@ def test_nonuniform_restore_statement_code_is_safe_to_reingest(
     )
 
     assert "lambda" not in code
-    assert not script_provenance_requires_trust(spec, external_input_names={"data"})
+    assert provenance_requires_code_trust(spec, external_input_names={"data"})
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data": internal}),
+        replay_script_provenance(
+            spec, {"data": internal}, authorize=_authorize_execution
+        ),
         public,
     )
 
@@ -3707,7 +3750,13 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
 
     reparsed_operation = parse_tool_provenance_operation(payload["operations"][0])
     assert isinstance(reparsed_operation, CorrectWithEdgeOperation)
-    decoded = reparsed_operation.decoded_edge_fit
+    entries = provenance_operation_code_trust_entries(
+        reparsed_operation,
+        location_prefix="operation",
+    )
+    with pytest.raises(PermissionError, match="not authorized"):
+        _ = reparsed_operation.decoded_edge_fit
+    decoded = reparsed_operation._decode_edge_fit(_authorize_execution(entries))
     xr.testing.assert_identical(
         decoded.drop_vars("modelfit_results"),
         gold_fit_res.drop_vars("modelfit_results"),
@@ -3721,7 +3770,7 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
     assert reparsed_spec is not None
     assert reparsed_spec.derivation_code() is None
     xr.testing.assert_allclose(
-        reparsed_spec.apply(gold),
+        reparsed_spec.apply(gold, authorization=_authorize_execution(entries)),
         erlab.analysis.gold.correct_with_edge(gold, gold_fit_res, shift_coords=False),
     )
 
@@ -3801,6 +3850,7 @@ def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None
             "left": data.copy(deep=True),
             "right": data.copy(deep=True),
         },
+        authorize=_authorize_execution,
     )
     xr.testing.assert_identical(
         replayed,
@@ -3841,7 +3891,9 @@ def test_tool_provenance_parse_keeps_non_active_self_assignments_as_script() -> 
         "script_code",
         "script_code",
     ]
-    replayed = replay_script_provenance(parsed, {"data": data})
+    replayed = replay_script_provenance(
+        parsed, {"data": data}, authorize=_authorize_execution
+    )
     xr.testing.assert_identical(replayed, data)
 
 
@@ -3878,7 +3930,9 @@ def test_tool_provenance_parse_keeps_script_input_self_assignment_as_script() ->
         "script_code",
         "script_code",
     ]
-    replayed = replay_script_provenance(parsed, {"data_0": data})
+    replayed = replay_script_provenance(
+        parsed, {"data_0": data}, authorize=_authorize_execution
+    )
     xr.testing.assert_identical(replayed, data)
 
 
@@ -3907,7 +3961,9 @@ def test_tool_provenance_parse_restores_active_alias_structured_steps() -> None:
 
     assert parsed is not None
     assert [operation.op for operation in parsed.operations] == ["sortby"]
-    replayed = replay_script_provenance(parsed, {"data": data})
+    replayed = replay_script_provenance(
+        parsed, {"data": data}, authorize=_authorize_execution
+    )
     xr.testing.assert_identical(replayed, data.sortby("x"))
 
 
@@ -4039,7 +4095,9 @@ def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
         "sortby",
         "qsel_aggregate",
     ]
-    replayed = replay_script_provenance(parsed, {"data": data})
+    replayed = replay_script_provenance(
+        parsed, {"data": data}, authorize=_authorize_execution
+    )
     xr.testing.assert_identical(
         replayed,
         data.sortby("x", ascending=False).qsel.mean("y"),
@@ -4186,6 +4244,7 @@ def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
             "data_0": data.copy(deep=True),
             "data_1": data.copy(deep=True),
         },
+        authorize=_authorize_execution,
     )
     xr.testing.assert_identical(
         derived,
@@ -4212,10 +4271,13 @@ def test_tool_provenance_script_context_binding_replays_current_output() -> None
         start_label="Start from current ImageTool data",
         active_name="result",
     )
-    current = replay_script_provenance(parent, {"data": data})
+    current = replay_script_provenance(
+        parent, {"data": data}, authorize=_authorize_execution
+    )
     expected = replay_script_provenance(
         local,
         {"data": current, "derived": current},
+        authorize=_authorize_execution,
     )
 
     composed = compose_full_provenance(
@@ -4240,7 +4302,9 @@ def test_tool_provenance_script_context_binding_replays_current_output() -> None
         binding.model_dump(mode="json") for binding in composed.script_context_bindings
     ] == [{"operation_index": 1, "names": ["data", "derived"]}]
 
-    replayed = replay_script_provenance(composed, {"data": data})
+    replayed = replay_script_provenance(
+        composed, {"data": data}, authorize=_authorize_execution
+    )
     xr.testing.assert_identical(replayed, expected)
     code = typing.cast("str", composed.derivation_code())
     assert "Start from current ImageTool data" not in code
@@ -5315,6 +5379,7 @@ def test_embedded_only_extension_provenance_suppresses_recorded_load_code(
 def test_provenance_file_source_capabilities_cover_script_backed_files(
     tmp_path: pathlib.Path,
 ) -> None:
+    _register_local_callable_loader(xr.load_dataarray)
     path = tmp_path / "scan.h5"
     xr.DataArray(np.arange(3.0), dims=("x",)).to_netcdf(path, engine="h5netcdf")
     replay_call = FileReplayCall(
@@ -5344,10 +5409,13 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
     for spec in (file_spec, script_spec):
         assert has_file_load_source(spec)
         assert file_load_source_status(spec) == "loadable"
-        assert can_reload_without_trust(spec)
         operation_refs = tuple(iter_operation_refs(spec))
         assert [ref.operation_index for ref, _op in operation_refs] == [0]
         assert isinstance(operation_refs[0][1], AverageOperation)
+    assert can_reload_without_trust(file_spec)
+    assert not provenance_requires_code_trust(file_spec)
+    assert not can_reload_without_trust(script_spec)
+    assert provenance_requires_code_trust(script_spec)
 
     incomplete_file_spec = file_spec.model_copy(update={"file_load_source": None})
     assert file_load_source_status(incomplete_file_spec) == "no-file-load-source"
@@ -5400,6 +5468,7 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
             )
         }
     )
+
     assert file_load_source_status(missing_callable_spec) == "missing-loader"
     assert not can_reload_without_trust(missing_callable_spec)
 
@@ -5413,7 +5482,63 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
     )
     assert not has_file_load_source(plain_script)
     assert file_load_source_status(plain_script) == "no-file-load-source"
-    assert can_reload_without_trust(plain_script)
+    assert not can_reload_without_trust(plain_script)
+    assert provenance_requires_code_trust(plain_script)
+    assert provenance_code_trust_entries(
+        plain_script,
+        location_prefix="workspace/provenance",
+    )
+
+
+def test_nested_callable_file_provenance_uses_only_the_script_trust_boundary(
+    tmp_path: pathlib.Path,
+) -> None:
+    _register_local_callable_loader(np.loadtxt)
+    path = tmp_path / "source.dat"
+    path.write_text("1 2\n3 4\n", encoding="utf-8")
+    nested = file_load(
+        start_label="Load nested input",
+        seed_code="derived = xarray.DataArray(path)",
+        file_load_source=FileLoadSource(
+            path=str(path),
+            loader_label="loadtxt",
+            loader_text="numpy.loadtxt",
+            kwargs_text="(none)",
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="numpy.loadtxt",
+                kwargs={},
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+    outer = script(
+        ScriptCodeOperation(label="Copy", code="derived = source.copy()"),
+        start_label="Use nested input",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="source",
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+    )
+
+    assert script_provenance_replayable(outer)
+    assert provenance_requires_code_trust(outer)
+    assert not can_reload_without_trust(outer)
+    assert {
+        entry.feature
+        for entry in provenance_code_trust_entries(
+            outer, location_prefix="workspace/provenance"
+        )
+    } == {
+        "erlab.provenance.script-code",
+    }
+    with pytest.raises(TypeError, match="not trusted"):
+        replay_script_provenance(outer, {})
+    result = replay_script_provenance(outer, {}, authorize=_authorize_execution)
+    xr.testing.assert_identical(result, xr.DataArray([[1.0, 2.0], [3.0, 4.0]]))
 
 
 def test_file_reload_checks_extension_routine_operations(
@@ -6652,6 +6777,7 @@ def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> Non
     result = replay_script_provenance(
         spec,
         {"data_0": left, "data_1": right},
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(
@@ -6664,152 +6790,408 @@ def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> Non
     )
 
 
-def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
-    data = xr.DataArray([1.0], dims=("x",))
-
-    def script_with_code(code: str) -> ToolProvenanceSpec:
-        return script(
-            ScriptCodeOperation(label="Import", code=code),
-            start_label="Run script",
-            active_name="derived",
-            script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
-        )
-
-    safe_import = script(
+def test_provenance_code_trust_entries_capture_unrestricted_graph() -> None:
+    unsafe = script(
         ScriptCodeOperation(
-            label="Use NumPy",
-            code="import numpy as np\nderived = data_0 + np.float64(1.0)",
+            label="Import",
+            code="import os\nderived = data_0 + int(os.path.exists('/'))",
+        ),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    entries = provenance_code_trust_entries(
+        unsafe, location_prefix="nodes/0/provenance"
+    )
+
+    assert [entry.feature for entry in entries] == ["erlab.provenance.script-code"]
+    assert entries[0].location.endswith("/0")
+    assert "import os" in entries[0].code
+
+    safe = _single_input_script("derived = data_0 + 1")
+    assert provenance_requires_code_trust(safe)
+    assert provenance_code_trust_entries(safe, location_prefix="safe")
+
+
+def test_provenance_code_trust_omits_compiler_proven_input_relay() -> None:
+    relay = script(
+        start_label="Use live input",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="data_0", label="Open ImageTool", node_uid="u"),
+        ),
+    )
+
+    assert provenance_code_trust_entries(relay, location_prefix="provenance") == ()
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    authorizations: list[tuple[typing.Any, ...]] = []
+
+    def authorize(entries: tuple[typing.Any, ...]) -> object:
+        authorizations.append(entries)
+        return _authorize_execution(entries)
+
+    xr.testing.assert_identical(
+        replay_script_provenance(relay, {"data_0": data}, authorize=authorize),
+        data,
+    )
+    assert authorizations == []
+
+
+def test_provenance_code_trust_entries_capture_live_unrestricted_code() -> None:
+    unsafe = full_data(
+        ScriptCodeOperation(
+            label="Import",
+            code="import os\nderived = data + int(os.path.exists('/'))",
+        )
+    )
+
+    entries = provenance_code_trust_entries(unsafe, location_prefix="nodes/0")
+
+    assert len(entries) == 1
+    assert entries[0].feature == "erlab.provenance.script-code"
+    assert entries[0].location == "nodes/0/operations/0"
+    assert entries[0].context == {
+        "active_name": "derived",
+        "binding_names": ["data", "derived", "parent_data"],
+    }
+    assert provenance_code_trust_entries(
+        full_data(ScriptCodeOperation(label="Add", code="derived = data + 1")),
+        location_prefix="safe",
+    )
+
+
+def test_implicit_framework_imports_do_not_bypass_code_trust() -> None:
+    saved = script(
+        ScriptCodeOperation(
+            label="Add",
+            code="derived = data_0 + 1",
+            uses_implicit_framework_imports=True,
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
+    ).model_dump(mode="json")
+    restored = parse_tool_provenance_spec(saved)
+    assert restored is not None
+
+    entries = provenance_code_trust_entries(
+        restored,
+        location_prefix="workspace/provenance",
+    )
+
+    assert [entry.code for entry in entries] == ["derived = data_0 + 1"]
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    with pytest.raises(TypeError, match="not trusted"):
+        replay_script_provenance(restored, {"data_0": data})
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            restored,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
+        data + 1,
+    )
+
+
+@pytest.mark.parametrize("raw_script", [False, True])
+@pytest.mark.parametrize("implicit_imports", [False, True])
+def test_signed_script_replay_uses_the_exact_graph_inventory(
+    raw_script: bool,
+    implicit_imports: bool,
+) -> None:
+    live = full_data(
+        ScriptCodeOperation(
+            label="Add",
+            code="derived = data + 1",
+            uses_implicit_framework_imports=implicit_imports,
+        )
+    )
+    replay_spec = script(
+        *live.operations,
+        start_label="Replay live provenance",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    saved_spec = replay_spec if raw_script else live
+    saved_entries = provenance_code_trust_entries(
+        saved_spec, location_prefix="workspace/provenance"
+    )
+    signed = _document_trust_after_save(
+        new_document_trust(),
+        create_manifest("erlab.workspace", 1, saved_entries),
+        saved_trusted_lineage=True,
+        signature_stored=True,
+    )
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    runtime_entries: tuple[typing.Any, ...] = ()
+
+    def authorize(entries: tuple[typing.Any, ...]) -> object | None:
+        nonlocal runtime_entries, signed
+        runtime_entries = entries
+        signed, capability = issue_execution_capability(signed, entries)
+        return capability
+
+    result = replay_script_provenance(
+        replay_spec,
+        (
+            {"data": data}
+            if raw_script
+            else {"data": data, "derived": data, "parent_data": data}
+        ),
+        authorize=authorize,
+    )
+
+    xr.testing.assert_identical(result, data + 1)
+    assert {entry.execution_identity() for entry in runtime_entries} == {
+        entry.execution_identity() for entry in saved_entries
+    }
+
+
+def test_provenance_code_trust_entries_capture_replay_context() -> None:
+    unsafe = script(
+        ScriptCodeOperation(
+            label="Import",
+            code="import os\nderived = data_0 + int(os.path.exists('/'))",
         ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    safe_erlab_import = script_with_code("import erlab\nderived = data_0.copy()")
-    safe_lmfit_import = script_with_code(
-        "import lmfit\nderived = data_0 + lmfit.Parameter('value', value=1.0).value"
+    changed_step = unsafe.steps[0].model_copy(
+        update={"context_names": ("selected_data",)}
     )
-    optional_approved_import = script_with_code(
-        "try:\n"
-        "    import xarray as xr\n"
-        "except ImportError:\n"
-        "    pass\n"
-        "derived = data_0 + xr.DataArray(1.0)"
+    changed = unsafe.model_copy(update={"steps": (changed_step,)})
+
+    assert provenance_code_trust_entries(
+        unsafe, location_prefix="nodes/0"
+    ) != provenance_code_trust_entries(changed, location_prefix="nodes/0")
+
+
+def test_provenance_code_trust_ignores_file_loader_arguments() -> None:
+    provenance = file_load(
+        start_label="Load data",
+        seed_code="data = custom_loader('scan.h5')",
+        file_load_source=FileLoadSource(
+            path="scan.h5",
+            loader_label="Custom loader",
+            loader_text="custom_loader",
+            kwargs_text="chunks=('x', 2)",
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="custom_loader.load",
+                kwargs={"chunks": ("x", 2)},
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
     )
-    nested_analysis_alias = script_with_code(
-        "def identity(value):\n"
-        "    _ = era\n"
-        "    return value\n"
-        "derived = identity(data_0)"
+
+    entries = provenance_code_trust_entries(
+        provenance,
+        location_prefix="nodes/0/provenance",
     )
-    optional_external_import = script_with_code(
-        "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data_0"
+
+    assert entries == ()
+
+
+def test_provenance_code_trust_omits_declarative_operation_state() -> None:
+    def entries(values: list[float], *, shift_coords: bool = True):
+        return provenance_code_trust_entries(
+            full_data(
+                ScriptCodeOperation(label="Run", code="derived = data + 1"),
+                CorrectWithEdgeOperation(
+                    edge_fit=xr.Dataset({"edge": ("x", values)}),
+                    shift_coords=shift_coords,
+                ),
+            ),
+            location_prefix="nodes/0/provenance",
+        )
+
+    baseline = entries([1.0, 2.0])
+
+    assert baseline == entries([10.0, 20.0])
+    assert baseline == entries([1.0, 2.0], shift_coords=False)
+
+
+def test_opaque_fit_result_provenance_requires_trust() -> None:
+    operation = CorrectWithEdgeOperation(
+        edge_fit={_FIT_DATASET_MARKER: "serialized-result"}
     )
-    unsafe_from_import = script_with_code(
-        "from numpy import __builtins__ as exposed\n"
-        "derived = data_0 + exposed['eval']('40 + 2')"
+    provenance = full_data(operation)
+
+    entries = provenance_code_trust_entries(
+        provenance,
+        location_prefix="nodes/0/provenance",
     )
-    unsafe_dotted_import = script_with_code(
-        "import numpy.testing._private.utils as exposed\n"
-        "derived = data_0 + int(exposed.os.path.exists('/'))"
+
+    assert provenance_requires_code_trust(provenance)
+    assert not can_reload_without_trust(provenance)
+    assert len(entries) == 1
+    assert entries[0].feature == "erlab.provenance.lmfit-result"
+    assert entries[0].location == "nodes/0/provenance/operations/0/edge-fit"
+    assert len(entries[0].context["payload_sha256"]) == 64
+
+    changed = full_data(
+        operation.model_copy(
+            update={"edge_fit": {_FIT_DATASET_MARKER: "changed-result"}}
+        )
     )
-    unsafe_internal_import = script_with_code(
-        "import erlab.interactive.imagetool._provenance._code as exposed\n"
-        "derived = data_0 + exposed.np.float64(1.0)"
+    assert entries != provenance_code_trust_entries(
+        changed,
+        location_prefix="nodes/0/provenance",
     )
-    unsafe_dunder_alias = script_with_code(
-        "import numpy as __builtins__\nderived = data_0"
+
+
+def test_opaque_fit_result_decode_requires_explicit_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoded = xr.Dataset({"edge": xr.DataArray([1.0], dims=("x",))})
+    payload = {_FIT_DATASET_MARKER: "serialized-result"}
+    calls: list[str] = []
+
+    def decode_fit_dataset(value: typing.Any) -> xr.Dataset:
+        calls.append(str(value))
+        return decoded
+
+    monkeypatch.setattr(provenance_model, "_decode_fit_dataset", decode_fit_dataset)
+
+    with pytest.raises(ValueError, match="requires code authorization"):
+        decode_provenance_value(payload)
+    assert calls == []
+
+    operation = CorrectWithEdgeOperation(edge_fit=payload)
+    assert calls == []
+    assert operation.derivation_entry().code is None
+    assert calls == []
+    with pytest.raises(PermissionError, match="not authorized"):
+        _ = operation.decoded_edge_fit
+    entries = provenance_operation_code_trust_entries(
+        operation,
+        location_prefix="operation",
     )
-    poisoned_import_policy = script_with_code(
+    xr.testing.assert_identical(
+        operation._decode_edge_fit(_authorize_execution(entries)),
+        decoded,
+    )
+    assert calls == ["serialized-result"]
+
+
+@pytest.mark.parametrize(
+    ("code", "offset"),
+    [
+        ("import numpy as np\nderived = data_0 + np.float64(1.0)", 1.0),
+        ("import erlab\nderived = data_0.copy()", 0.0),
+        (
+            "import lmfit\n"
+            "derived = data_0 + lmfit.Parameter('value', value=1.0).value",
+            1.0,
+        ),
+        (
+            "try:\n    import xarray as xr\nexcept ImportError:\n    pass\n"
+            "derived = data_0 + xr.DataArray(1.0)",
+            1.0,
+        ),
+        (
+            "def identity(value):\n    _ = era\n    return value\n"
+            "derived = identity(data_0)",
+            0.0,
+        ),
+    ],
+    ids=("numpy", "erlab", "lmfit", "optional-xarray", "analysis-alias"),
+)
+def test_trusted_script_replay_supports_standard_imports(
+    code: str, offset: float
+) -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    spec = _single_input_script(code)
+
+    assert script_provenance_replayable(spec)
+    assert provenance_requires_code_trust(spec)
+    with pytest.raises(TypeError, match="not trusted"):
+        replay_script_provenance(spec, {"data_0": data})
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            spec,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
+        data + offset,
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "offset"),
+    [
+        (
+            "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data_0",
+            0.0,
+        ),
+        (
+            "from numpy import __builtins__ as exposed\n"
+            "derived = data_0 + exposed['eval']('40 + 2')",
+            42.0,
+        ),
+        (
+            "import numpy.testing._private.utils as exposed\n"
+            "derived = data_0 + int(exposed.os.path.exists('/'))",
+            1.0,
+        ),
+        (
+            "import erlab.interactive.imagetool._provenance._code as exposed\n"
+            "derived = data_0 + exposed.np.float64(1.0)",
+            1.0,
+        ),
+        ("import numpy as __builtins__\nderived = data_0", 0.0),
+    ],
+    ids=("external", "from-import", "dotted", "internal", "dunder-alias"),
+)
+def test_explicit_trust_admits_unrestricted_imports(code: str, offset: float) -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    spec = _single_input_script(code)
+
+    assert not script_provenance_replayable(spec)
+    assert provenance_requires_code_trust(spec)
+    with pytest.raises(TypeError, match="not trusted"):
+        replay_script_provenance(spec, {"data_0": data})
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            spec,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
+        data + offset,
+    )
+
+
+def test_trusted_script_cannot_replace_the_import_policy() -> None:
+    data = xr.DataArray([1.0], dims=("x",))
+    poison = _single_input_script(
         "framework = erlab.interactive.imagetool._provenance._code\n"
-        "framework._SCRIPT_REPLAY_PREBOUND_IMPORTS = {\n"
-        "    'numpy': framework,\n"
-        "}\n"
+        "framework._SCRIPT_REPLAY_PREBOUND_IMPORTS = {'numpy': framework}\n"
         "import numpy as imported_numpy\n"
         "derived = data_0 + imported_numpy.float64(1.0)"
     )
+    safe = _single_input_script(
+        "import numpy as np\nderived = data_0 + np.float64(1.0)"
+    )
 
-    assert script_provenance_replayable(safe_import)
-    assert not script_provenance_requires_trust(safe_import)
-    xr.testing.assert_identical(
-        replay_script_provenance(safe_import, {"data_0": data}),
-        data + 1.0,
-    )
-    xr.testing.assert_identical(
-        replay_script_provenance(safe_erlab_import, {"data_0": data}),
-        data,
-    )
-    assert script_provenance_replayable(safe_lmfit_import)
-    assert not script_provenance_requires_trust(safe_lmfit_import)
-    xr.testing.assert_identical(
-        replay_script_provenance(safe_lmfit_import, {"data_0": data}),
-        data + 1.0,
-    )
-    assert script_provenance_replayable(optional_approved_import)
-    assert not script_provenance_requires_trust(optional_approved_import)
-    xr.testing.assert_identical(
-        replay_script_provenance(optional_approved_import, {"data_0": data}),
-        data + 1.0,
-    )
-    assert script_provenance_replayable(nested_analysis_alias)
-    xr.testing.assert_identical(
-        replay_script_provenance(nested_analysis_alias, {"data_0": data}),
-        data,
-    )
     assert "__import__" not in _SCRIPT_REPLAY_ALLOWED_BUILTINS
     assert not hasattr(_code, "_SCRIPT_REPLAY_PREBOUND_IMPORTS")
-
     try:
-        xr.testing.assert_identical(
-            replay_script_provenance(
-                poisoned_import_policy,
-                {"data_0": data},
-            ),
-            data + 1.0,
-        )
-        xr.testing.assert_identical(
-            replay_script_provenance(safe_import, {"data_0": data}),
-            data + 1.0,
-        )
+        for spec in (poison, safe):
+            xr.testing.assert_identical(
+                replay_script_provenance(
+                    spec,
+                    {"data_0": data},
+                    authorize=_authorize_execution,
+                ),
+                data + 1.0,
+            )
     finally:
         if hasattr(_code, "_SCRIPT_REPLAY_PREBOUND_IMPORTS"):
             del _code._SCRIPT_REPLAY_PREBOUND_IMPORTS
-
-    for unsafe, message in (
-        (optional_external_import, "unsupported Import"),
-        (unsafe_from_import, "unsupported ImportFrom"),
-        (unsafe_dotted_import, "unsupported Import"),
-        (unsafe_internal_import, "unsupported Import"),
-        (unsafe_dunder_alias, "unsupported Import"),
-    ):
-        assert not script_provenance_replayable(unsafe)
-        assert script_provenance_requires_trust(unsafe)
-        with pytest.raises(TypeError, match=message):
-            replay_script_provenance(unsafe, {"data_0": data})
-
-    xr.testing.assert_identical(
-        replay_script_provenance(
-            optional_external_import,
-            {"data_0": data},
-            trusted_user_code=True,
-        ),
-        data,
-    )
-    xr.testing.assert_identical(
-        replay_script_provenance(
-            unsafe_from_import,
-            {"data_0": data},
-            trusted_user_code=True,
-        ),
-        data + 42.0,
-    )
-    xr.testing.assert_identical(
-        replay_script_provenance(
-            unsafe_dotted_import,
-            {"data_0": data},
-            trusted_user_code=True,
-        ),
-        data + 1.0,
-    )
 
 
 def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> None:
@@ -6942,7 +7324,7 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
     assert script_provenance_replayable(rename_input)
     assert script_provenance_replayable(captured_helper_global)
     assert script_provenance_replayable(redefined_helper)
-    with pytest.raises(TypeError, match="unsupported Import"):
+    with pytest.raises(TypeError, match="not trusted"):
         replay_script_provenance(unsupported, {"data_0": data})
     with pytest.raises(ValueError, match="non-replayable"):
         replay_script_provenance(incomplete, {"data_0": data})
@@ -6957,23 +7339,43 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
     with pytest.raises(TypeError, match="unresolved name 'scale'"):
         replay_script_provenance(late_helper_global, {"data_0": data})
     xr.testing.assert_identical(
-        replay_script_provenance(active_input, {"data_0": data}),
+        replay_script_provenance(
+            active_input,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
         data.qsel.average("x"),
     )
     xr.testing.assert_identical(
-        replay_script_provenance(rename_input, {"data_0": data}),
+        replay_script_provenance(
+            rename_input,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
         data.rename("renamed"),
     )
     xr.testing.assert_identical(
-        replay_script_provenance(external_active_input, {"data_0": data}),
+        replay_script_provenance(
+            external_active_input,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
         data.qsel.average("x"),
     )
     xr.testing.assert_identical(
-        replay_script_provenance(captured_helper_global, {"data_0": data}),
+        replay_script_provenance(
+            captured_helper_global,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
         data + 2.0,
     )
     xr.testing.assert_identical(
-        replay_script_provenance(redefined_helper, {"data_0": data}),
+        replay_script_provenance(
+            redefined_helper,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
         data,
     )
 
@@ -6999,7 +7401,11 @@ def test_replay_script_provenance_accepts_console_module_aliases() -> None:
 
     assert script_provenance_replayable(spec)
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data_0": data}),
+        replay_script_provenance(
+            spec,
+            {"data_0": data},
+            authorize=_authorize_execution,
+        ),
         erlab.analysis.transform.rotate(data, 0.0, axes=("x", "y"), reshape=False),
     )
 
@@ -7685,6 +8091,7 @@ def test_console_operations_match_branch_specific_calls() -> None:
 
 
 def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
     image = xr.DataArray(
         np.arange(6).reshape((2, 3)),
         dims=("row", "col"),
@@ -7783,24 +8190,13 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
             FileDataSelection(kind="sequence_index", value=2),
         )
 
-    assert _resolve_importable_callable("xarray.load_dataarray") is xr.load_dataarray
-    with pytest.raises(ValueError, match="must be dotted"):
-        _resolve_importable_callable("load")
-    with pytest.raises(ModuleNotFoundError):
-        _resolve_importable_callable("missing_erlab_replay_loader.load")
-    with pytest.raises(AttributeError):
-        _resolve_importable_callable("xarray.missing_loader.load")
-    with pytest.raises(TypeError, match="not callable"):
-        _resolve_importable_callable("math.pi")
-
-    broken_module = tmp_path / "broken_loader.py"
-    broken_module.write_text(
-        "import missing_erlab_replay_dependency\n",
-        encoding="utf-8",
+    assert (
+        _registered_local_callable_loader("xarray.load_dataarray") is xr.load_dataarray
     )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    with pytest.raises(ModuleNotFoundError, match="missing_erlab_replay_dependency"):
-        _resolve_importable_callable("broken_loader.load")
+    assert (
+        _registered_local_callable_loader("xarray:load_dataarray") is xr.load_dataarray
+    )
+    assert _registered_local_callable_loader("missing.loader") is None
 
     source_file = tmp_path / "source.h5"
     image.to_netcdf(source_file, engine="h5netcdf")
@@ -7869,6 +8265,110 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
         replay_file_provenance(typing.cast("typing.Any", None))
 
 
+def test_unregistered_callable_file_replay_does_not_import_target(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
+    module_name = "unregistered_provenance_loader"
+    marker = tmp_path / "imported.txt"
+    (tmp_path / f"{module_name}.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+        "def load(path, **kwargs):\n    return path\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    load_source = _file_replay_source(
+        tmp_path / "source.dat",
+        replay_call=FileReplayCall(
+            kind="callable",
+            target=f"{module_name}.load",
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    pathlib.Path(load_source.path).touch()
+
+    spec = file_load(
+        start_label="Load source",
+        seed_code="derived = unavailable_loader('source.dat')",
+        file_load_source=load_source,
+    )
+    assert file_load_source_status(spec) == "missing-loader"
+    with pytest.raises(ValueError, match="not registered locally"):
+        _load_file_source_data(load_source)
+    assert module_name not in sys.modules
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("identifier", "loader"),
+    [
+        ("xarray.load_dataarray", xr.load_dataarray),
+        ("xarray.open_dataarray", xr.open_dataarray),
+        ("xarray.load_dataset", xr.load_dataset),
+        ("xarray.open_dataset", xr.open_dataset),
+        ("xarray.load_datatree", xr.load_datatree),
+        ("xarray.open_datatree", xr.open_datatree),
+    ],
+)
+def test_supported_callable_loader_resolution_survives_local_registry_reset(
+    identifier: str,
+    loader: collections.abc.Callable[..., typing.Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
+
+    assert _registered_local_callable_loader(identifier) is loader
+    assert _registered_local_callable_loader(identifier.replace(".", ":", 1)) is loader
+
+
+def test_local_callable_loader_cannot_override_supported_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def spoofed_loader(*args: typing.Any, **kwargs: typing.Any) -> None:
+        del args, kwargs
+
+    spoofed_loader.__module__ = "xarray"
+    spoofed_loader.__qualname__ = "load_dataarray"
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
+
+    assert _register_local_callable_loader(spoofed_loader) == "xarray.load_dataarray"
+    assert (
+        _registered_local_callable_loader("xarray.load_dataarray") is xr.load_dataarray
+    )
+
+
+def test_supported_callable_file_loader_restores_after_local_registry_reset(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_file = tmp_path / "source.h5"
+    data = xr.DataArray([1.0, 2.0], dims=("x",), name="signal")
+    data.to_netcdf(source_file, engine="h5netcdf")
+    load_source = _file_replay_source(
+        source_file,
+        replay_call=FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            kwargs={"engine": "h5netcdf"},
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    serialized = load_source.model_dump(mode="json")
+
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
+    restored = FileLoadSource.model_validate(serialized)
+
+    spec = file_load(
+        start_label="Load source",
+        seed_code="derived = xarray.load_dataarray('source.h5')",
+        file_load_source=restored,
+    )
+    assert file_load_source_status(spec) == "loadable"
+    xr.testing.assert_identical(_load_file_source_data(restored), data)
+
+
 def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None:
     del example_loader
     file_path = example_data_dir / "data_002.h5"
@@ -7895,6 +8395,7 @@ def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None
 def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     tmp_path,
 ) -> None:
+    _register_local_callable_loader(xr.load_dataarray)
     path = tmp_path / "source.h5"
     data = xr.DataArray(
         np.arange(12).reshape((3, 4)),
@@ -8222,8 +8723,50 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
         parameter="c2",
     )
 
-    expected = operation.apply(data)
+    entries = provenance_operation_code_trust_entries(
+        operation,
+        location_prefix="operation",
+    )
+    with pytest.raises(PermissionError, match="not authorized"):
+        operation.apply(data)
+    authorization = _authorize_execution(entries)
+    expected = operation.apply(data, authorization=authorization)
     np.testing.assert_allclose(expected, 2.0)
+
+    spec = full_data(operation)
+    entries = provenance_code_trust_entries(
+        spec,
+        location_prefix="nodes/0/provenance",
+    )
+    assert provenance_requires_code_trust(spec)
+    assert not can_reload_without_trust(spec)
+    assert len(entries) == 1
+    assert entries[0].feature == ("erlab.provenance.model-fit-parameter-expression")
+    assert entries[0].code == "2 * c2"
+    assert entries[0].context["parameter"] == "c1"
+
+    def replay_graph(*, legacy_trusted: bool = False) -> ReplayGraph:
+        graph = ReplayGraph(trusted_user_code=legacy_trusted)
+        input_key = graph.add_node("input", "live_input", payload={"data": data})
+        graph.output_key = graph.add_node(
+            "fit",
+            "operation",
+            parents=(input_key,),
+            payload={"operation": operation},
+        )
+        return graph
+
+    for graph in (replay_graph(), replay_graph(legacy_trusted=True)):
+        with pytest.raises(ReplayGraphError, match="not trusted"):
+            execute_replay_graph(graph)
+
+    xr.testing.assert_identical(
+        execute_replay_graph(
+            replay_graph(legacy_trusted=True),
+            authorize=_authorize_execution,
+        ),
+        expected,
+    )
 
     code = f"derived = {operation.expression_code('data')}"
     namespace = _exec_generated_code(

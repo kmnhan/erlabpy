@@ -415,18 +415,6 @@ def _add_method_control_row(
                     "Python expression for transform=.\n"
                     "Available names: ax, fig, mtransforms.",
                 )
-                trusted_check = editor.check_box(
-                    operation.trusted,
-                    _operation_trust_update_callback(editor),
-                    parent=layout.parentWidget(),
-                )
-                trusted_check.setObjectName("figureComposerMethodTransformTrustedCheck")
-                editor.add_form_row(
-                    layout,
-                    "Trusted",
-                    trusted_check,
-                    "Allow this custom transform expression to execute.",
-                )
         case MethodControlKind.ARG_COMBO:
             index = _control_arg_index(control)
             arg_value_getter: Callable[[FigureOperationState], typing.Any]
@@ -1087,17 +1075,7 @@ def _method_transform_update_callback(
     def update(text: str) -> None:
         editor.request_update_rebuild(
             method_transform=text,
-            trusted=text == "custom",
         )
-
-    return update
-
-
-def _operation_trust_update_callback(
-    editor: FigureOperationEditor,
-) -> Callable[[bool], None]:
-    def update(checked: bool) -> None:
-        editor.request_update(trusted=checked)
 
     return update
 

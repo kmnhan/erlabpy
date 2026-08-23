@@ -50,6 +50,7 @@ from erlab.interactive.imagetool._figurecomposer_adapter import (
     _PlotOperationBuilder,
     build_figure_composer_operation,
 )
+from erlab.interactive.imagetool._load_source import _register_local_callable_loader
 from erlab.interactive.imagetool._provenance._execution import replay_file_provenance
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -78,6 +79,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     InterpolationOperation,
     IselOperation,
     LeadingEdgeOperation,
+    ModelFitOperation,
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
@@ -93,6 +95,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SymmetrizeOperation,
     ThinOperation,
     UniformInterpolationOperation,
+    _ModelFitParameterSpec,
 )
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
@@ -1222,7 +1225,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     assert saved_state["axis_inversions"] == {"alpha": True}
     assert saved_state["splitter_sizes"] == area.splitter_sizes
     assert saved_state["file_path"] == str(file_path)
-    assert saved_state["load_func"][0].endswith(":load_dataarray")
+    assert saved_state["load_func"][0].endswith(".load_dataarray")
     assert saved_state["load_func"][1:] == [
         {"engine": "h5netcdf"},
         {"kind": "dataarray", "value": None},
@@ -1474,6 +1477,52 @@ def test_itool_state_loader_string_selection_roundtrip_and_reload(
     win.close()
 
 
+def test_itool_state_builtin_callable_loader_restores_after_registry_reset(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    data = xr.DataArray(
+        np.arange(4.0).reshape((2, 2)),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+        name="signal",
+    )
+    data.to_netcdf(file_path, engine="h5netcdf")
+    win = ImageTool(
+        data,
+        file_path=file_path,
+        load_func=(
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    qtbot.addWidget(win)
+    serialized = win.to_dataset()
+
+    monkeypatch.setattr(imagetool_load_source, "_LOCAL_CALLABLE_LOADERS", {})
+    restored = ImageTool.from_dataset(serialized)
+    qtbot.addWidget(restored)
+
+    assert restored.slicer_area._load_func == (
+        xr.load_dataarray,
+        {"engine": "h5netcdf"},
+        FileDataSelection(kind="dataarray"),
+    )
+    assert restored.slicer_area.reloadable
+
+    updated = data + 10.0
+    updated.to_netcdf(file_path, engine="h5netcdf")
+    with qtbot.wait_signal(restored.slicer_area.sigDataChanged):
+        restored.slicer_area.reload()
+    xarray.testing.assert_identical(restored.slicer_area.data, updated)
+
+    restored.close()
+    win.close()
+
+
 def test_itool_state_spreadsheet_metadata_source_roundtrip(
     qtbot,
     tmp_path: pathlib.Path,
@@ -1635,8 +1684,32 @@ def test_itool_restore_does_not_invoke_persisted_legacy_loader(
     qtbot.addWidget(restored)
 
     assert victim.read_text() == "preserve me"
+    assert restored.slicer_area._load_func is None
     restored.close()
     win.close()
+
+
+@pytest.mark.parametrize(
+    "load_func",
+    [
+        ["os:remove", 1, None],
+        ["os:remove", {}, {"invalid": True}],
+    ],
+)
+def test_itool_rejects_malformed_pending_loader_state(
+    qtbot,
+    tmp_path: pathlib.Path,
+    load_func: list[typing.Any],
+) -> None:
+    win = ImageTool(_TEST_DATA["2D"])
+    qtbot.addWidget(win)
+    file_path = tmp_path / "scan.h5"
+    file_path.touch()
+    win.slicer_area._file_path = file_path
+
+    assert not win.slicer_area._restore_serialized_load_func(load_func)
+    assert win.slicer_area._load_func is None
+    assert not win.slicer_area._direct_reloadable()
 
 
 def test_itool_legacy_dataset_selection_migrates_on_explicit_reload(
@@ -4218,6 +4291,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     monkeypatch,
     tmp_path: pathlib.Path,
 ) -> None:
+    _register_local_callable_loader(xr.load_dataarray)
     win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
     qtbot.addWidget(win)
     unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
@@ -4355,7 +4429,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     assert not win.slicer_area.reloadable
     reason = win.slicer_area._provenance_reload_unavailable_reason()
     assert reason is not None
-    assert "trust" in reason.lower()
+    assert "ImageTool Manager" in reason
 
     win.set_provenance_spec(
         file_load(
@@ -4397,6 +4471,74 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
 
     win.set_provenance_spec(None)
     with pytest.raises(RuntimeError, match="cannot be reloaded"):
+        win.slicer_area._fetch_reload_data()
+
+    win.close()
+
+
+def test_standalone_reload_never_executes_recorded_code(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    _register_local_callable_loader(xr.load_dataarray)
+    source_file = tmp_path / "source.h5"
+    marker = tmp_path / "executed.txt"
+    xr.DataArray(np.arange(3.0), dims=("x",)).to_netcdf(
+        source_file,
+        engine="h5netcdf",
+    )
+    seed_code = (
+        "import xarray\n\n"
+        f"derived = xarray.load_dataarray({str(source_file)!r}, "
+        "engine='h5netcdf')"
+    )
+    provenance = script(
+        ScriptCodeOperation(
+            label="Write marker",
+            code=(
+                "import pathlib\n"
+                f"pathlib.Path({str(marker)!r}).write_text("
+                "'executed', encoding='utf-8')\n"
+                "derived = derived"
+            ),
+        ),
+        start_label="Load script-backed file",
+        seed_code=seed_code,
+        active_name="derived",
+        file_load_source=FileLoadSource(
+            path=source_file,
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text='engine="h5netcdf"',
+            replay_call=FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs={"engine": "h5netcdf"},
+                selected_index=0,
+            ),
+            load_code=seed_code,
+        ),
+    )
+    win = ImageTool(
+        xr.DataArray(np.full(3, -1.0), dims=("x",)),
+        file_path=source_file,
+        load_func=(
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    qtbot.addWidget(win)
+    win.set_provenance_spec(provenance)
+    assert win.slicer_area._direct_reloadable()
+    assert not win.slicer_area.reloadable
+    reason = win.slicer_area._reload_unavailable_reason()
+    assert reason is not None
+    assert "ImageTool Manager" in reason
+    assert not win.slicer_area._reload()
+    assert not marker.exists()
+    np.testing.assert_array_equal(win.slicer_area.data.squeeze(), np.full(3, -1.0))
+    with pytest.raises(RuntimeError, match="requires authorization"):
         win.slicer_area._fetch_reload_data()
 
     win.close()
@@ -4490,6 +4632,7 @@ def test_itool_reload_unavailable_reason_metadata_branches(
     monkeypatch,
     tmp_path: pathlib.Path,
 ) -> None:
+    _register_local_callable_loader(xr.load_dataarray)
     win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
     qtbot.addWidget(win)
     unavailable_reasons = _record_reload_unavailable_dialog(monkeypatch)
@@ -13968,6 +14111,35 @@ def test_itool_filter_dialog_reopens_with_current_settings(
     xarray.testing.assert_identical(win.slicer_area.data, expected)
 
     win.close()
+
+
+def test_itool_filter_rejects_model_fit_expression_before_execution(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(expr="2 * c0"),
+        },
+        method="leastsq",
+        parameter="c0",
+    )
+    executions: list[None] = []
+    monkeypatch.setattr(
+        ModelFitOperation,
+        "apply",
+        lambda _operation, source: executions.append(None) or source,
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    with pytest.raises(TypeError, match="cannot be used as display filters"):
+        win.slicer_area.apply_filter_operation(operation)
+    assert executions == []
 
 
 def test_normalize_filter_dialog_reopens_with_current_settings(qtbot) -> None:

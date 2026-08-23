@@ -15,8 +15,10 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.utils
+from erlab.interactive._code_trust import issue_execution_capability, new_document_trust
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._load_source import _register_local_callable_loader
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
@@ -29,6 +31,26 @@ from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
+
+_register_local_callable_loader(xr.load_dataarray)
+
+
+def _authorize_execution(entries: tuple[typing.Any, ...]) -> object:
+    _trust, capability = issue_execution_capability(new_document_trust(), entries)
+    if capability is None:  # pragma: no cover - local trust always issues one.
+        raise RuntimeError("Could not issue test execution capability")
+    return capability
+
+
+@contextlib.contextmanager
+def _authorize_local_edit(
+    entries: tuple[typing.Any, ...],
+    *,
+    edited_entries: tuple[typing.Any, ...],
+    **_kwargs: typing.Any,
+):
+    del edited_entries
+    yield _authorize_execution(entries)
 
 
 def _manager_provenance_file_spec(path: pathlib.Path):
@@ -255,7 +277,19 @@ def _fake_edit_controller(
             data=xr.DataArray([1.0], dims=("x",)),
             provenance_spec=spec,
         ),
-        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
+        _apply_provenance=lambda spec, data, **kwargs: spec.apply(
+            data,
+            authorization=kwargs.get("authorization"),
+        ),
+        _authorize_provenance_execution=(
+            lambda entries, **_kwargs: _authorize_execution(entries)
+        ),
+        _workspace_controller=types.SimpleNamespace(
+            local_code_edit=_authorize_local_edit,
+            saving=types.SimpleNamespace(
+                _workspace_node_path_for_node=lambda current: f"nodes/{current.uid}"
+            ),
+        ),
         _update_info=lambda **_kwargs: None,
     )
     return provenance_edit_controller._ProvenanceEditController(

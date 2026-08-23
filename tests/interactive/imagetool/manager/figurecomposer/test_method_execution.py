@@ -16,6 +16,10 @@ import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
 import erlab.plotting as eplt
+from erlab.interactive._code_trust import (
+    document_trust_has_trusted_lineage,
+    new_document_trust,
+)
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -780,15 +784,10 @@ def test_figure_composer_method_custom_transform_errors() -> None:
             "method_transform_expression": "ax.transAxes",
         }
     )
-    empty = untrusted.model_copy(
-        update={"trusted": True, "method_transform_expression": ""}
-    )
-    not_transform = untrusted.model_copy(
-        update={"trusted": True, "method_transform_expression": "1"}
-    )
+    empty = untrusted.model_copy(update={"method_transform_expression": ""})
+    not_transform = untrusted.model_copy(update={"method_transform_expression": "1"})
 
-    with pytest.raises(ValueError, match="not trusted"):
-        method_execution._method_transform_code(untrusted, spec)
+    assert method_execution._method_transform_code(untrusted, spec) is not None
     with pytest.raises(ValueError, match="empty"):
         method_execution._method_transform_code(empty, spec)
     with pytest.raises(ValueError, match="empty"):
@@ -828,7 +827,6 @@ def test_figure_composer_loaded_custom_method_transform_requires_trust(qtbot) ->
                         "method_args": ((0.0, 1.0),),
                         "method_transform": "custom",
                         "method_transform_expression": "ax.transAxes",
-                        "trusted": True,
                     }
                 ),
             ),
@@ -843,12 +841,18 @@ def test_figure_composer_loaded_custom_method_transform_requires_trust(qtbot) ->
     operation = loaded.tool_status.operations[0]
     assert operation.method_transform == "custom"
     assert operation.method_transform_expression == "ax.transAxes"
-    assert operation.trusted is False
+    assert not document_trust_has_trusted_lineage(loaded._document_trust)
+    assert "trusted" not in operation.model_dump()
 
     figurecomposer_rendering._render_into_figure(
         loaded, loaded.figure, sync_visible=False
     )
-    assert "not trusted" in loaded._operation_render_errors[operation.operation_id]
+    assert loaded._operation_render_errors == {}
+    assert len(loaded.figure.axes[0].lines) == 0
+
+    loaded.set_document_trust(new_document_trust())
+
+    assert len(loaded.figure.axes[0].lines) == 1
 
 
 def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
@@ -1437,7 +1441,6 @@ def test_figure_composer_draw_error_follows_later_artist_mutation(qtbot) -> None
     mutation_operation = FigureOperationState.custom(
         label="invalid dashes",
         code="axs[0, 0].lines[0].set_dashes([1, -1])",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -1466,7 +1469,6 @@ def test_figure_composer_draw_error_marks_axes_mutation(qtbot) -> None:
     mutation_operation = FigureOperationState.custom(
         label="invalid aspect",
         code="axs[0, 0].set_aspect('equal', adjustable='datalim')",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,

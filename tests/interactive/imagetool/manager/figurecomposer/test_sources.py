@@ -1972,7 +1972,7 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
     ).sources == ("data",)
     assert (
         FigureComposerTool._operation_without_map_selections(
-            FigureOperationState.custom(label="custom", code="pass", trusted=True),
+            FigureOperationState.custom(label="custom", code="pass"),
             None,
         ).map_selections
         == ()
@@ -3571,7 +3571,7 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
         ),
         operations=(
             FigureOperationState.line(label="first line", source="first"),
-            FigureOperationState.custom(label="custom", code="pass", trusted=True),
+            FigureOperationState.custom(label="custom", code="pass"),
         ),
         primary_source="first",
     )
@@ -3916,7 +3916,6 @@ def test_figure_composer_provenance_replays_transitive_selected_source_chain(
             FigureOperationState.custom(
                 label="reserve source name",
                 code="sample_map = -1",
-                trusted=True,
             ),
             FigureOperationState.line(label="profile", source="selected_v"),
         ),
@@ -5061,7 +5060,7 @@ def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
     assert converted_sources.map_selections == ()
     assert (
         FigureComposerTool._legacy_selection_fallback_source(
-            FigureOperationState.custom(label="custom", code="pass", trusted=True),
+            FigureOperationState.custom(label="custom", code="pass"),
             "base",
         )
         is None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-import itertools
+import functools
 import pathlib
 import traceback
 import typing
@@ -21,13 +21,11 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_file_provenance,
     replay_script_provenance,
     script_provenance_replayable,
-    script_provenance_requires_trust,
 )
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
-    _direct_replay_source_name,
     _ProvenanceDisplayRow,
     _ProvenanceReorderSection,
     _ProvenanceStepRef,
@@ -48,6 +46,10 @@ from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     ScriptCodeOperation,
     SortByOperation,
+)
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_trust_entries,
+    script_replay_source_input_names,
 )
 from erlab.interactive.imagetool.manager._extensions._dialogs import (
     _ExtensionParameterDialog,
@@ -75,7 +77,9 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
 from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
     _ProvenanceReorderDialog,
 )
-from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
+from erlab.interactive.imagetool.manager._widgets import (
+    _TrustedProvenanceReplayCancelled,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -257,31 +261,14 @@ class _ProvenanceEditController:
             return None
 
         if spec.kind == "script":
-            external_input_names = self._script_replay_source_input_names(spec)
-            self_contained = script_provenance_replayable(
-                spec
-            ) or script_provenance_requires_trust(spec)
-            external_input_names = (
-                None if not external_input_names else set(external_input_names)
-            )
-            if not (
-                self_contained
-                or (
-                    external_input_names is not None
-                    and (
-                        script_provenance_replayable(
-                            spec,
-                            external_input_names=external_input_names,
-                        )
-                        or script_provenance_requires_trust(
-                            spec,
-                            external_input_names=external_input_names,
-                        )
-                    )
-                )
+            external_input_names = set(script_replay_source_input_names(spec))
+            if not script_provenance_replayable(
+                spec,
+                external_input_names=external_input_names or None,
+                allow_code=True,
             ):
                 return "This provenance contains recorded code that cannot be replayed."
-            if external_input_names is not None and not node.has_replay_source:
+            if external_input_names and not node.has_replay_source:
                 return "The original replay source is no longer available."
             for script_input in spec.script_inputs:
                 reason = self._manager._script_input_unavailable_reason(
@@ -297,15 +284,10 @@ class _ProvenanceEditController:
             if not isinstance(operation, ScriptCodeOperation):
                 continue
             step_spec = self._live_script_step_spec(operation)
-            if not (
-                script_provenance_replayable(
-                    step_spec,
-                    external_input_names=external_input_names,
-                )
-                or script_provenance_requires_trust(
-                    step_spec,
-                    external_input_names=external_input_names,
-                )
+            if not script_provenance_replayable(
+                step_spec,
+                external_input_names=external_input_names,
+                allow_code=True,
             ):
                 return (
                     "This live provenance contains recorded code that cannot be "
@@ -323,56 +305,21 @@ class _ProvenanceEditController:
             return "This live provenance no longer has its parent source data."
         return None
 
-    @staticmethod
-    def _script_replay_source_input_names(
-        spec: ToolProvenanceSpec,
-    ) -> tuple[str, ...]:
-        """Return the smallest supported alias set that makes replay self-contained."""
-        if (
-            spec.kind != "script"
-            or spec.script_inputs
-            or script_provenance_replayable(spec)
-            or script_provenance_requires_trust(spec)
-        ):
-            return ()
-        # ``parent_data`` is a schema-v2 ScriptCodeOperation compatibility alias.
-        # Remove it with the legacy parent-data replay shim in _provenance._model.
-        candidates = ["data", "derived", "parent_data"]
-        source_name = _direct_replay_source_name(spec)
-        if source_name is not None and source_name not in candidates:
-            candidates.insert(0, source_name)
-        for count in range(1, len(candidates) + 1):
-            for names in itertools.combinations(candidates, count):
-                external_input_names = set(names)
-                if script_provenance_replayable(
-                    spec,
-                    external_input_names=external_input_names,
-                ) or script_provenance_requires_trust(
-                    spec,
-                    external_input_names=external_input_names,
-                ):
-                    return names
-        return ()
-
     def _script_spec_replayable_for_node(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         spec: ToolProvenanceSpec,
     ) -> bool:
-        external_input_names = set(self._script_replay_source_input_names(spec))
+        external_input_names = set(script_replay_source_input_names(spec))
         if external_input_names and not node.has_replay_source:
             return False
         if external_input_names:
             return script_provenance_replayable(
                 spec,
                 external_input_names=external_input_names,
-            ) or script_provenance_requires_trust(
-                spec,
-                external_input_names=external_input_names,
+                allow_code=True,
             )
-        return script_provenance_replayable(spec) or script_provenance_requires_trust(
-            spec
-        )
+        return script_provenance_replayable(spec, allow_code=True)
 
     def can_reorder_steps(self) -> tuple[bool, str]:
         node = self._metadata_node()
@@ -488,7 +435,7 @@ class _ProvenanceEditController:
                 candidate,
                 where="validating the reordered provenance",
             )
-        except _TrustedScriptReplayCancelled:
+        except _TrustedProvenanceReplayCancelled:
             dialog.set_busy(False)
             return
         except Exception as exc:
@@ -539,7 +486,7 @@ class _ProvenanceEditController:
                     active_name=active_name,
                     contains_script=contains_script,
                 )
-            except _TrustedScriptReplayCancelled:
+            except _TrustedProvenanceReplayCancelled:
                 return
             except Exception as exc:
                 failures.append((node, exc))
@@ -598,26 +545,13 @@ class _ProvenanceEditController:
             candidate = node.displayed_source_spec.append_replacement_operations(
                 *operations
             )
-            with (
-                self._manager._extensions.execution.capture_replay_sources()
-            ) as publication:
-                try:
-                    data, candidate = self._replay_candidate_result(
-                        node,
-                        "source",
-                        candidate,
-                    )
-                    erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-                except Exception as exc:
-                    raise _ProvenanceReplayFailure(
-                        "validating the pasted provenance steps: "
-                        "replaying the requested provenance",
-                        exc,
-                    ) from exc
-                publication.require_current_for_publication()
-                self._replace_node_data(node, "source", data, candidate, None)
-                publication.publish()
-            self._manager._update_info(uid=node.uid)
+            self._validate_and_replace(
+                node,
+                "source",
+                candidate,
+                where="validating the pasted provenance steps",
+                retain_active_filter=False,
+            )
             return
 
         local = full_data(*operations)
@@ -639,49 +573,20 @@ class _ProvenanceEditController:
         ) as publication:
             current_data = node.current_public_data()
             replay_source_data = node.resolved_replay_source_data()
-            try:
-                if local.kind == "script":
-                    trusted_user_code = script_provenance_requires_trust(local)
-                    if trusted_user_code:
-                        self._manager._ensure_script_provenance_trusted(
-                            local,
-                            reason="paste these provenance steps",
-                        )
-                    data = replay_script_provenance(
-                        local,
-                        {
-                            "data": current_data,
-                            "derived": current_data,
-                        },
-                        trusted_user_code=trusted_user_code,
-                        extension_executor=(
-                            self._manager._extensions.execution.run_operation
-                        ),
-                        extension_loader_executor=(
-                            self._manager._extensions.replay_loader
-                        ),
-                    )
-                else:
-                    data = local.apply(
-                        current_data,
-                        extension_executor=(
-                            self._manager._extensions.execution.run_operation
-                        ),
-                    )
-                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-            except _TrustedScriptReplayCancelled:
-                raise
-            except Exception as exc:
-                raise _ProvenanceReplayFailure(
-                    f"{where}: replaying the requested provenance",
-                    exc,
-                ) from exc
-
+            script_context_names = ("data", "derived")
+            current_output_name = getattr(
+                node.displayed_provenance_spec,
+                "active_name",
+                None,
+            )
+            current_output_names = (
+                (current_output_name,) if isinstance(current_output_name, str) else ()
+            )
             if local.kind == "script":
                 spec = compose_full_provenance(
                     node.displayed_provenance_spec,
                     local,
-                    script_context_names=("data", "derived"),
+                    script_context_names=script_context_names,
                 )
             else:
                 spec = compose_full_provenance(
@@ -690,14 +595,77 @@ class _ProvenanceEditController:
                 )
             if spec is None:
                 spec = local.to_replay_spec()
-            publication.require_current_for_publication()
-            node.replace_with_detached_data(
-                data,
-                spec,
-                preserve_filter=False,
-                replay_source_data=replay_source_data,
+            current_entries = self._provenance_code_entries(
+                node.displayed_provenance_spec,
+                node=node,
+                scope="display",
             )
-            publication.publish()
+            entries = self._provenance_code_entries(
+                spec,
+                node=node,
+                scope="display",
+            )
+            current_identities = {
+                entry.document_identity() for entry in current_entries
+            }
+            edited_entries = tuple(
+                entry
+                for entry in entries
+                if entry.document_identity() not in current_identities
+            )
+            with self._manager._workspace_controller.local_code_edit(
+                entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as authorization:
+                if entries and authorization is None:
+                    raise _TrustedProvenanceReplayCancelled
+                try:
+                    if local.kind == "script":
+                        input_names = tuple(
+                            dict.fromkeys(
+                                (
+                                    *script_context_names,
+                                    *current_output_names,
+                                    *script_replay_source_input_names(local),
+                                )
+                            )
+                        )
+                        data = replay_script_provenance(
+                            local,
+                            dict.fromkeys(input_names, current_data),
+                            extension_executor=(
+                                self._manager._extensions.execution.run_operation
+                            ),
+                            extension_loader_executor=(
+                                self._manager._extensions.replay_loader
+                            ),
+                            authorize=self._capability_authorizer(authorization),
+                        )
+                    else:
+                        data = self._manager._apply_provenance(
+                            local,
+                            current_data,
+                            reason="paste these provenance steps",
+                            authorization=authorization,
+                        )
+                    erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
+                except _TrustedProvenanceReplayCancelled:
+                    raise
+                except Exception as exc:
+                    raise _ProvenanceReplayFailure(
+                        f"{where}: replaying the requested provenance",
+                        exc,
+                    ) from exc
+
+                publication.require_current_for_publication()
+                node.replace_with_detached_data(
+                    data,
+                    spec,
+                    preserve_filter=False,
+                    replay_source_data=replay_source_data,
+                )
+                publication.publish()
         self._manager._update_info(uid=node.uid)
 
     def can_delete_row(
@@ -908,7 +876,7 @@ class _ProvenanceEditController:
                 self._edit_file_load_row(node, row)
             else:
                 self._edit_operation_row(node, row)
-        except _TrustedScriptReplayCancelled:
+        except _TrustedProvenanceReplayCancelled:
             return
         except Exception as exc:
             if self._handle_missing_source_file(
@@ -957,7 +925,7 @@ class _ProvenanceEditController:
                 repair_root_candidate,
                 where="validating the provenance revert target",
             )
-        except _TrustedScriptReplayCancelled:
+        except _TrustedProvenanceReplayCancelled:
             return
         except Exception as exc:
             if self._handle_missing_source_file(
@@ -1013,7 +981,7 @@ class _ProvenanceEditController:
                 repair_root_candidate,
                 where="validating the provenance delete target",
             )
-        except _TrustedScriptReplayCancelled:
+        except _TrustedProvenanceReplayCancelled:
             return
         except Exception as exc:
             if self._handle_missing_source_file(
@@ -1722,7 +1690,7 @@ class _ProvenanceEditController:
                     row.scope,
                     spec._prefix_before_ref(start_ref),
                 )
-            except _TrustedScriptReplayCancelled:
+            except _TrustedProvenanceReplayCancelled:
                 raise
             except Exception as exc:
                 raise _ProvenanceReplayFailure(
@@ -1939,14 +1907,108 @@ class _ProvenanceEditController:
         candidate: ToolProvenanceSpec,
         *,
         where: str = "validating the provenance change",
+        retain_active_filter: bool = True,
     ) -> None:
         with (
             self._manager._extensions.execution.capture_replay_sources()
         ) as publication:
-            edit = self._validated_edit(node, scope, candidate, where=where)
-            publication.require_current_for_publication()
-            self._apply_validated_edit(edit)
-            publication.publish()
+            current = (
+                node.displayed_source_spec
+                if scope == "source"
+                else node.displayed_provenance_spec
+            )
+            current_identities = {
+                entry.document_identity()
+                for entry in self._provenance_code_entries(
+                    current,
+                    node=node,
+                    scope=scope,
+                )
+            }
+            entries = self._provenance_code_entries(
+                candidate,
+                node=node,
+                scope=scope,
+            )
+            edited_entries = tuple(
+                entry
+                for entry in entries
+                if entry.document_identity() not in current_identities
+            )
+            if scope == "source" and node.parent_uid is not None:
+                parent = self._manager._parent_node(node)
+                displayed_candidate = compose_display_provenance(
+                    parent.displayed_provenance_spec,
+                    candidate,
+                    parent_data=parent.current_source_data(),
+                )
+                current_display_entries = self._provenance_code_entries(
+                    node.displayed_provenance_spec,
+                    node=node,
+                    scope="display",
+                )
+                current_display_identities = {
+                    entry.document_identity() for entry in current_display_entries
+                }
+                edited_execution_identities = {
+                    entry.execution_identity() for entry in edited_entries
+                }
+                edited_entries = (
+                    *edited_entries,
+                    *(
+                        entry
+                        for entry in self._provenance_code_entries(
+                            displayed_candidate,
+                            node=node,
+                            scope="display",
+                        )
+                        if entry.document_identity() not in current_display_identities
+                        and entry.execution_identity() in edited_execution_identities
+                    ),
+                )
+            with self._manager._workspace_controller.local_code_edit(
+                entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as authorization:
+                if entries and authorization is None:
+                    raise _TrustedProvenanceReplayCancelled
+                edit = self._validated_edit(
+                    node,
+                    scope,
+                    candidate,
+                    where=where,
+                    authorization=authorization,
+                    retain_active_filter=retain_active_filter,
+                )
+                publication.require_current_for_publication()
+                self._apply_validated_edit(edit)
+                publication.publish()
+
+    def _provenance_code_entries(
+        self,
+        spec: ToolProvenanceSpec | None,
+        *,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        scope: typing.Literal["display", "source"],
+    ) -> tuple[typing.Any, ...]:
+        node_path = (
+            self._manager._workspace_controller.saving._workspace_node_path_for_node(
+                node
+            )
+        )
+        segment = "source/provenance" if scope == "source" else "provenance"
+        return provenance_code_trust_entries(
+            spec,
+            location_prefix=f"{node_path}/{segment}",
+        )
+
+    @staticmethod
+    def _capability_authorizer(authorization: object | None):
+        def authorize(_entries: tuple[typing.Any, ...]) -> object | None:
+            return authorization
+
+        return authorize
 
     def _validated_edit(
         self,
@@ -1955,15 +2017,23 @@ class _ProvenanceEditController:
         candidate: ToolProvenanceSpec,
         *,
         where: str,
+        authorization: object | None = None,
+        retain_active_filter: bool = True,
     ) -> _ValidatedProvenanceEdit:
-        base_candidate, filter_operation = self._split_active_filter(node, candidate)
+        if retain_active_filter:
+            base_candidate, filter_operation = self._split_active_filter(
+                node, candidate
+            )
+        else:
+            base_candidate, filter_operation = candidate, None
         try:
             source_data, base_candidate = self._replay_candidate_result(
                 node,
                 scope,
                 base_candidate,
+                authorization=authorization,
             )
-        except _TrustedScriptReplayCancelled:
+        except _TrustedProvenanceReplayCancelled:
             raise
         except Exception as exc:
             replay_target = (
@@ -2119,6 +2189,8 @@ class _ProvenanceEditController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
+        *,
+        authorization: object | None = None,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         if spec.kind == "file":
             return self._replay_file_candidate(spec), spec
@@ -2130,15 +2202,23 @@ class _ProvenanceEditController:
                 )
                 for operation in spec.operations
             ):
-                return self._replay_live_script_candidate(node, scope, spec), spec
+                return (
+                    self._replay_live_script_candidate(
+                        node,
+                        scope,
+                        spec,
+                        authorization=authorization,
+                    ),
+                    spec,
+                )
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
                 return (
-                    spec.apply(
+                    self._manager._apply_provenance(
+                        spec,
                         parent.current_source_data(),
-                        extension_executor=(
-                            self._manager._extensions.execution.run_operation
-                        ),
+                        reason="apply this provenance order",
+                        authorization=authorization,
                     ),
                     spec,
                 )
@@ -2146,41 +2226,38 @@ class _ProvenanceEditController:
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
             return (
-                spec.apply(
+                self._manager._apply_provenance(
+                    spec,
                     parent_data,
-                    extension_executor=(
-                        self._manager._extensions.execution.run_operation
-                    ),
+                    reason="apply this provenance order",
+                    authorization=authorization,
                 ),
                 spec,
             )
         if spec.kind == "script":
-            external_input_names = self._script_replay_source_input_names(spec)
+            external_input_names = script_replay_source_input_names(spec)
             if external_input_names:
                 source_data = node.resolved_replay_source_data()
                 if source_data is None:
                     raise RuntimeError("Script provenance needs its replay source")
                 replay_inputs = dict.fromkeys(external_input_names, source_data)
-                trusted_user_code = script_provenance_requires_trust(
-                    spec,
-                    external_input_names=set(replay_inputs),
-                )
-                if trusted_user_code:
-                    self._manager._ensure_script_provenance_trusted(
-                        spec,
-                        reason="apply this provenance order",
-                        external_input_names=set(replay_inputs),
-                    )
                 return (
                     replay_script_provenance(
                         spec,
                         replay_inputs,
-                        trusted_user_code=trusted_user_code,
                         extension_executor=(
                             self._manager._extensions.execution.run_operation
                         ),
                         extension_loader_executor=(
                             self._manager._extensions.replay_loader
+                        ),
+                        authorize=(
+                            functools.partial(
+                                self._manager._authorize_provenance_execution,
+                                reason="apply this provenance order",
+                            )
+                            if authorization is None
+                            else self._capability_authorizer(authorization)
                         ),
                     ),
                     spec,
@@ -2188,6 +2265,7 @@ class _ProvenanceEditController:
             result = self._manager._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
+                authorization=authorization,
             )
             return result.data, result.provenance_spec
         raise RuntimeError("Unsupported provenance kind")
@@ -2197,6 +2275,8 @@ class _ProvenanceEditController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
+        *,
+        authorization: object | None = None,
     ) -> xr.DataArray:
         if scope == "source" and node.parent_uid is not None:
             parent = self._manager._parent_node(node)
@@ -2212,42 +2292,30 @@ class _ProvenanceEditController:
             ),
             parent_data,
         )
-        for operation in spec.operations:
-            if not isinstance(
-                operation,
-                ScriptCodeOperation,
-            ):
-                if isinstance(operation, ExtensionRoutineOperation):
-                    data = self._manager._extensions.execution.run_operation(
-                        operation, data
-                    )
-                else:
-                    data = operation._apply_schema_v2(data, parent_data=parent_data)
-                continue
-            step_spec = self._live_script_step_spec(operation)
-            replay_inputs = {
+        replay_spec = script(
+            *spec.operations,
+            start_label="Replay live provenance",
+            seed_code="derived = data",
+            active_name="derived",
+        )
+        return replay_script_provenance(
+            replay_spec,
+            {
                 "data": data,
                 "derived": data,
                 "parent_data": parent_data,
-            }
-            trusted_user_code = script_provenance_requires_trust(
-                step_spec,
-                external_input_names=set(replay_inputs),
-            )
-            if trusted_user_code:
-                self._manager._ensure_script_provenance_trusted(
-                    step_spec,
-                    reason="apply this provenance step",
-                    external_input_names=set(replay_inputs),
+            },
+            authorize=(
+                functools.partial(
+                    self._manager._authorize_provenance_execution,
+                    reason="apply this provenance order",
                 )
-            data = replay_script_provenance(
-                step_spec,
-                replay_inputs,
-                trusted_user_code=trusted_user_code,
-                extension_executor=(self._manager._extensions.execution.run_operation),
-                extension_loader_executor=self._manager._extensions.replay_loader,
-            )
-        return data
+                if authorization is None
+                else self._capability_authorizer(authorization)
+            ),
+            extension_executor=self._manager._extensions.execution.run_operation,
+            extension_loader_executor=self._manager._extensions.replay_loader,
+        )
 
     @staticmethod
     def _live_script_step_spec(
@@ -2278,6 +2346,10 @@ class _ProvenanceEditController:
                         self._manager._extensions.execution.run_operation
                     ),
                     extension_loader_executor=(self._manager._extensions.replay_loader),
+                    authorize=functools.partial(
+                        self._manager._authorize_provenance_execution,
+                        reason="reload this file provenance",
+                    ),
                 )
             except Exception as exc:
                 if warning_details := _replay_warning_details(replay_warnings):

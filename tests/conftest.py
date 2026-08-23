@@ -9,6 +9,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -83,6 +84,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
 _TEST_OPTIONS_MANAGED_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH_TEST_MANAGED"
 _TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
+_TEST_CODE_TRUST_ENV_VAR = "ERLAB_CODE_TRUST_DIRECTORY"
+_TEST_CODE_TRUST_MANAGED_ENV_VAR = "ERLAB_CODE_TRUST_DIRECTORY_TEST_MANAGED"
+_TEST_CODE_TRUST_PATHS: list[pathlib.Path] = []
 _TEST_MANAGER_SETTINGS_ENV_VAR = "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH"
 _TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR = (
     "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH_TEST_MANAGED"
@@ -111,6 +115,17 @@ def pytest_configure(config: pytest.Config) -> None:
         os.environ[_TEST_OPTIONS_ENV_VAR] = str(settings_path)
         os.environ[_TEST_OPTIONS_MANAGED_ENV_VAR] = "1"
         _TEST_INTERACTIVE_OPTIONS_PATHS.append(settings_path)
+
+    if (
+        _TEST_CODE_TRUST_ENV_VAR not in os.environ
+        or os.environ.get(_TEST_CODE_TRUST_MANAGED_ENV_VAR) == "1"
+    ):
+        trust_path = pathlib.Path(tempfile.gettempdir()) / (
+            f"erlabpy-test-code-trust-{worker_id}-{os.getpid()}-{uuid.uuid4().hex}"
+        )
+        os.environ[_TEST_CODE_TRUST_ENV_VAR] = str(trust_path)
+        os.environ[_TEST_CODE_TRUST_MANAGED_ENV_VAR] = "1"
+        _TEST_CODE_TRUST_PATHS.append(trust_path)
 
     if (
         _TEST_MANAGER_SETTINGS_ENV_VAR not in os.environ
@@ -309,6 +324,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             settings_path.unlink()
     for catalog_directory in _TEST_EXTENSION_CATALOG_DIRECTORIES:
         catalog_directory.cleanup()
+    for trust_path in _TEST_CODE_TRUST_PATHS:
+        shutil.rmtree(trust_path, ignore_errors=True)
 
     if _XDIST_WORKER_ERRORS:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED

@@ -6,15 +6,15 @@ import contextlib
 import dataclasses
 import functools
 import gc
-import importlib
 import logging
+import pathlib
 import re
 import threading
 import time
 import traceback
 import typing
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
 import pydantic
@@ -23,6 +23,13 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
+from erlab.interactive._code_trust import execution_capability_allows
+from erlab.interactive._fit_code_trust import (
+    lmfit_expression_model_code_entries,
+    lmfit_model_code_entry,
+    lmfit_parameter_expression_entries,
+    lmfit_result_code_entry,
+)
 from erlab.interactive._widgets import _Separator
 
 if typing.TYPE_CHECKING:
@@ -41,6 +48,7 @@ _R = typing.TypeVar("_R")
 _T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
 _FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.10
+_REGISTERED_MODEL_CLASSES: dict[str, type[lmfit.Model]] = {}
 _LMFIT_CALLABLE_WARNING_RE = re.compile(
     r"^Could not unpack dill-encoded callable '([^']+)', saved with Python version .+$"
 )
@@ -49,6 +57,33 @@ _PythonCodeEditor = erlab.interactive.utils.PythonCodeEditor
 _fit_worker_gc_lock = threading.Lock()
 _fit_worker_gc_depth = 0
 _fit_worker_gc_restore_enabled = False
+
+
+class _FitCodeEditRejected(Exception):
+    """Abort one local fit-code edit without committing its trust transition."""
+
+
+def _reject_fit_code_edit(reason: str = "") -> typing.NoReturn:
+    """Exit a local edit through the framework rollback path."""
+    raise _FitCodeEditRejected(reason)
+
+
+def _model_class_reference(model_class: type[lmfit.Model]) -> str:
+    return f"{model_class.__module__}:{model_class.__qualname__}"
+
+
+@functools.cache
+def _library_lmfit_model_classes() -> tuple[type[lmfit.Model], ...]:
+    """Return model classes obtained from the installed lmfit package."""
+    classes = {lmfit.Model, lmfit.model.CompositeModel}
+    for candidate in vars(lmfit.models).values():
+        if (
+            isinstance(candidate, type)
+            and issubclass(candidate, lmfit.Model)
+            and candidate.__module__.startswith("lmfit.")
+        ):
+            classes.add(candidate)
+    return tuple(classes)
 
 
 def _load_lmfit_for_ftool_restore(
@@ -344,6 +379,11 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
         self._params_from_coord: dict[str, str] = params_from_coord
         self._param_names = list(params.keys()) if params is not None else []
 
+    @staticmethod
+    def _value(param: lmfit.Parameter) -> float:
+        """Read the cached value without evaluating a parameter expression."""
+        return float(param._val)
+
     @property
     def params(self) -> lmfit.Parameters:
         return self._params
@@ -404,7 +444,7 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
             if col == 0:
                 return param.name
             if col == 1:
-                return self._format_value(param.value)
+                return self._format_value(self._value(param))
             if col == 2:
                 if param.stderr is None:
                     return ""
@@ -484,7 +524,7 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
             return False
 
         try:
-            new_value = float(value) if col == 1 else float(param.value)
+            new_value = float(value) if col == 1 else self._value(param)
             new_min = float(param.min)
             new_max = float(param.max)
             if col == 3:
@@ -519,7 +559,7 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
     def edit_value_string(self, row: int, column: int) -> str:
         param = self._params[self._param_names[row]]
         if column == 1:
-            return self._format_value(param.value)
+            return self._format_value(self._value(param))
         if column == 2:
             if param.stderr is None:
                 return ""
@@ -543,14 +583,12 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
     def _is_expr_param(param: lmfit.Parameter) -> bool:
         return bool(param.expr)
 
-    @staticmethod
-    def _param_tooltip(param: lmfit.Parameter) -> str:
+    def _param_tooltip(self, param: lmfit.Parameter) -> str:
         expr = f"expr: {param.expr}\n" if param.expr else ""
-        value_line = f"value: {param.value}"
+        value = self._value(param)
+        value_line = f"value: {value}"
         if param.stderr is not None and np.isfinite(param.stderr):
-            uncertainty = _ParameterTableModel._format_uncertainty(
-                param.value, param.stderr
-            )
+            uncertainty = _ParameterTableModel._format_uncertainty(value, param.stderr)
             value_line = f"value: {uncertainty}"
         return (
             f"name: {param.name}\n"
@@ -794,6 +832,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     _PERSISTED_FIT_RESULT_VAR: typing.ClassVar[str] = "__ftool_fit_result__"
     _PERSISTED_FIT_RESULT_DIM: typing.ClassVar[str] = "__ftool_fit_result_bytes__"
     _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
+    _CODE_TRUST_DOMAIN = "erlab.fit1d-file"
+    _CODE_TRUST_POLICY_VERSION = 3
+    _MODEL_CODE_TRUST_FEATURE = "erlab.fit.serialized-model"
+    _PARAMETER_CODE_TRUST_FEATURE = "erlab.fit.parameter-expression"
+    _FIT_RESULT_CODE_TRUST_FEATURE = "erlab.fit.serialized-result"
+    _FIT_RESULT_CODE_TRUST_LOCATION = "fit-result"
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -811,6 +855,56 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         params: list[tuple[typing.Any, ...]]
         params_from_coord: dict[str, str]
         state2d: _State2D | None = None
+
+    @classmethod
+    def _model_code_trust_entry(cls, model_state: tuple[str, str]) -> typing.Any:
+        return lmfit_model_code_entry(
+            model_state[1],
+            feature=cls._MODEL_CODE_TRUST_FEATURE,
+            location="model",
+        )
+
+    @classmethod
+    def _parameter_code_trust_entries(
+        cls,
+        expressions: Iterable[tuple[typing.Any, typing.Any]],
+        *,
+        location_prefix: str,
+    ) -> tuple[typing.Any, ...]:
+        return lmfit_parameter_expression_entries(
+            expressions,
+            feature=cls._PARAMETER_CODE_TRUST_FEATURE,
+            location_prefix=location_prefix,
+        )
+
+    @classmethod
+    def _code_trust_entries_from_status(
+        cls, status: StateModel
+    ) -> tuple[typing.Any, ...]:
+        parameter_groups: list[tuple[str, Iterable[tuple[typing.Any, ...]]]] = [
+            ("parameters", status.params)
+        ]
+        if status.state2d is not None:
+            parameter_groups.extend(
+                (f"parameters-full/{index}", params or ())
+                for index, params in enumerate(status.state2d.params_full)
+            )
+            parameter_groups.extend(
+                (f"initial-parameters-full/{index}", params or ())
+                for index, params in enumerate(status.state2d.initial_params_full or ())
+            )
+        entries = [
+            entry
+            for location, params in parameter_groups
+            for entry in cls._parameter_code_trust_entries(
+                ((state[0], state[3]) for state in params if len(state) >= 4),
+                location_prefix=location,
+            )
+        ]
+        model_entry = cls._model_code_trust_entry(status.model_state)
+        if model_entry is not None:
+            entries.insert(0, model_entry)
+        return tuple(entries)
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -833,6 +927,21 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     sigFitFinished = QtCore.Signal(object)
 
+    @classmethod
+    def _register_model_class(cls, model_class: type[lmfit.Model]) -> None:
+        """Make one locally supplied model class available to saved state."""
+        _REGISTERED_MODEL_CLASSES[_model_class_reference(model_class)] = model_class
+
+    @classmethod
+    def _serialize_model_state(cls, model: lmfit.Model) -> tuple[str, str]:
+        """Serialize a model only at a locally authorized mutation boundary."""
+        model_class = type(model)
+        cls._register_model_class(model_class)
+        return (
+            _model_class_reference(model_class),
+            model.dumps(),
+        )
+
     def __init__(
         self,
         data: xr.DataArray,
@@ -843,6 +952,15 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         model_name: str | None = None,
     ) -> None:
         super().__init__()
+        for model_class in (
+            *_library_lmfit_model_classes(),
+            *self.MODEL_CHOICES.values(),
+        ):
+            self._register_model_class(model_class)
+        if model is not None:
+            self._register_model_class(type(model))
+        self._fit_execution_capability: object | None = None
+        self._pending_fit_status: Fit1DTool.StateModel | None = None
         self._fit_finished_connection_keys: set[tuple[object | None, object]] = set()
         self._reset_fit_state(
             data,
@@ -971,6 +1089,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         else:
             self._model = model
         self._sanitize_model_convolution_for_x()
+        self._serialized_model_state = self._serialize_model_state(self._model)
 
         self._model_load_path: str | None = None
         if data_name is None:
@@ -996,8 +1115,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._last_fit_y: np.ndarray | None = None
         self._last_residual: np.ndarray | None = None
         self._last_result_ds: xr.Dataset | None = None
-        self._pending_persisted_fit_result_blob: np.ndarray | None = None
-        self._pending_persisted_fit_is_current = False
+        self._serialized_fit_result_blob: np.ndarray | None = None
+        self._pending_persisted_fit_is_current: bool | None = None
         self._slider_drag_range: tuple[float, float] | None = None
         self._fit_is_current: bool = False
         self._table_widths_initialized: bool = False
@@ -1018,6 +1137,145 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_sequence_write_history: bool | None = None
         self._param_bounds_repair_names: list[str] | None = None
         self._write_history = False
+        self._refresh_fit_code_entries()
+
+    @staticmethod
+    def _live_parameter_expressions(
+        params: lmfit.Parameters,
+    ) -> tuple[tuple[typing.Any, typing.Any], ...]:
+        """Return nonempty expression source without evaluating parameter values."""
+        return tuple(
+            (param.name, param._expr) for param in params.values() if param._expr
+        )
+
+    def _parameter_value(self, param: lmfit.Parameter) -> float:
+        """Read a parameter without evaluating its expression."""
+        return float(param._val)
+
+    def _replace_current_params(self, params: lmfit.Parameters) -> None:
+        """Replace parameters and refresh the executable inventory if needed."""
+        expressions_changed = self._live_parameter_expressions(
+            self._params
+        ) != self._live_parameter_expressions(params)
+        self._params = params
+        if expressions_changed:
+            self._refresh_fit_code_entries()
+
+    def _fit_parameter_groups(
+        self,
+    ) -> tuple[tuple[str, lmfit.Parameters | None], ...]:
+        """Return each live parameter group represented in the saved state."""
+        return (("parameters", self._params),)
+
+    def _parameter_expression_edit_locations(self) -> frozenset[str]:
+        """Return parameter groups changed by a current-row expression edit."""
+        return frozenset({"parameters"})
+
+    def _build_fit_code_entries(
+        self,
+        *,
+        parameter_expression: tuple[str, str | None] | None = None,
+        parameter_group_overrides: Mapping[str, lmfit.Parameters | None] | None = None,
+    ) -> tuple[typing.Any, ...]:
+        """Build the exact live or candidate executable inventory."""
+        entries = []
+        model_entry = type(self)._model_code_trust_entry(self._serialized_model_state)
+        if model_entry is not None:
+            entries.append(model_entry)
+        edited_locations = self._parameter_expression_edit_locations()
+        for location, params in self._fit_parameter_groups():
+            if (
+                parameter_group_overrides is not None
+                and location in parameter_group_overrides
+            ):
+                params = parameter_group_overrides[location]
+            if params is None:
+                continue
+            expressions = self._live_parameter_expressions(params)
+            if parameter_expression is not None and location in edited_locations:
+                parameter_name, expression = parameter_expression
+                expressions = tuple(
+                    (
+                        param.name,
+                        expression if param.name == parameter_name else param._expr,
+                    )
+                    for param in params.values()
+                    if (expression if param.name == parameter_name else param._expr)
+                )
+            entries.extend(
+                type(self)._parameter_code_trust_entries(
+                    expressions,
+                    location_prefix=location,
+                )
+            )
+        return tuple(entries)
+
+    @staticmethod
+    def _new_fit_code_entries(
+        current: Iterable[typing.Any], candidate: Iterable[typing.Any]
+    ) -> tuple[typing.Any, ...]:
+        """Return candidate identities that are not in the committed inventory."""
+        current_identities = {entry.document_identity() for entry in current}
+        return tuple(
+            entry
+            for entry in candidate
+            if entry.document_identity() not in current_identities
+        )
+
+    def _fit_code_entries_with_model(
+        self, model_entries: Iterable[typing.Any]
+    ) -> tuple[typing.Any, ...]:
+        """Replace the current model entry and retain every parameter entry."""
+        return (
+            *model_entries,
+            *(
+                entry
+                for entry in self._fit_code_entries
+                if entry.feature != self._MODEL_CODE_TRUST_FEATURE
+            ),
+        )
+
+    def _refresh_fit_code_entries(self) -> None:
+        """Cache the exact executable inventory after a fit-code mutation."""
+        self._fit_code_entries = self._build_fit_code_entries()
+        self._fit_execution_capability = None
+
+    def _current_fit_execution_allowed(self, *, focus_on_block: bool = False) -> bool:
+        """Authorize the current model and parameter expressions."""
+        if execution_capability_allows(
+            self._fit_execution_capability, self._fit_code_entries
+        ):
+            return True
+        self._fit_execution_capability = self._issue_code_execution_capability(
+            self._fit_code_entries,
+            focus_on_block=focus_on_block,
+        )
+        return self._fit_execution_capability is not None
+
+    def _clear_model_curves(self) -> None:
+        """Clear derived curves without evaluating the current model."""
+        self.fit_curve.setData([], [])
+        self.residual_curve.setData([], [])
+        self._last_fit_y = None
+        self._last_residual = None
+        self._update_component_curves(np.array([]))
+
+    def _code_trust_changed(self) -> None:
+        """Retry deferred restores and refresh the guarded fit preview."""
+        self._fit_execution_capability = None
+        pending = self._pending_fit_status
+        if pending is not None:
+            with self._history_suppressed():
+                self.tool_status = pending
+            if self._pending_fit_status is not None:
+                return
+            self._reset_history_stack()
+        elif not self._current_fit_execution_allowed():
+            self._cancel_fit()
+            self._clear_model_curves()
+            return
+        self._restore_pending_fit_result()
+        self._update_fit_curve()
 
     def _fit_finished_connection_key(
         self, slot: Callable[..., typing.Any]
@@ -1167,7 +1425,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.table_splitter.setChildrenCollapsible(False)
 
         self.param_model: _ParameterTableModel = _ParameterTableModel(
-            self._params, self._params_from_coord, self
+            self._params,
+            self._params_from_coord,
+            self,
         )
         self.param_model.sigParamsChanged.connect(self._update_fit_curve)
         self.param_model.sigParamsChanged.connect(self._refresh_slider_from_model)
@@ -1610,8 +1870,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def _refresh_multipeak_model(self) -> None:
-        self.set_model(
-            self._make_model_from_choice("MultiPeakModel"), merge_params=True
+        self._set_model_from_local_edit(
+            self._make_model_from_choice("MultiPeakModel"),
+            merge_params=True,
         )
 
     def _build_multipeak_group(self) -> QtWidgets.QWidget:
@@ -1738,8 +1999,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         degree = int(self.poly_degree_spin.value())
         if degree == self._model.func.degree:
             return
-        self.set_model(
-            self._make_model_from_choice("PolynomialModel"), merge_params=True
+        self._set_model_from_local_edit(
+            self._make_model_from_choice("PolynomialModel"),
+            merge_params=True,
         )
 
     def _make_polynomial_model_kwargs(self) -> dict[str, typing.Any]:
@@ -1770,18 +2032,53 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.polynomial_group.setVisible(visible)
         self.polynomial_group.setEnabled(visible)
 
+    def _expression_model_edit_entries(
+        self, kwargs: Mapping[str, typing.Any]
+    ) -> tuple[typing.Any, ...]:
+        """Return the exact code that an ExpressionModel constructor can run."""
+        return lmfit_expression_model_code_entries(
+            str(kwargs["expr"]),
+            str(init_script) if (init_script := kwargs.get("init_script")) else None,
+            feature=self._MODEL_CODE_TRUST_FEATURE,
+            location="model",
+        )
+
     @QtCore.Slot()
     def _refresh_expression_model(self) -> None:
+        kwargs = self._make_expression_model_kwargs()
+        model_entries = self._expression_model_edit_entries(kwargs)
+        execution_entries = self._fit_code_entries_with_model(model_entries)
+        edited_entries = self._new_fit_code_entries(
+            self._fit_code_entries, execution_entries
+        )
+        previous_trust = self._current_document_trust()
+        applied = False
         try:
-            model = self._make_model_from_choice("ExpressionModel")
+            with self._local_code_edit(
+                execution_entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as capability:
+                if not execution_capability_allows(capability, execution_entries):
+                    return
+                model = lmfit.models.ExpressionModel(**kwargs)
+                self._apply_model(
+                    model,
+                    model_state=self._serialize_model_state(model),
+                    merge_params=True,
+                    refresh_views=False,
+                )
+                applied = True
         except Exception:
             self._show_error(
                 "Expression error",
                 "While creating the ExpressionModel from the given expression, "
                 "an error occurred. Please check the expression syntax.",
             )
-        else:
-            self.set_model(model, merge_params=True)
+        if applied:
+            self._finish_model_change(
+                refresh_fit=self._current_document_trust() == previous_trust
+            )
 
     def _make_expression_model_kwargs(self) -> dict[str, typing.Any]:
         kwargs = {
@@ -1790,9 +2087,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         }
         init_script: str | None = self.expr_init_script_dialog.get_script()
         if init_script:
-            # Check if the init script executes without errors
-            dummy_model = lmfit.models.ExpressionModel("x", independent_vars=["x"])
-            dummy_model.asteval.eval(init_script, raise_errors=True)
             kwargs["init_script"] = init_script
 
         return kwargs
@@ -1862,77 +2156,239 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         merge_params: bool = False,
         reset_params_from_coord: bool = False,
     ) -> None:
+        if merge_params and not self._current_fit_execution_allowed(
+            focus_on_block=True
+        ):
+            return
+        self._apply_model(
+            model,
+            model_load_path=model_load_path,
+            merge_params=merge_params,
+            reset_params_from_coord=reset_params_from_coord,
+        )
+
+    def _apply_model(
+        self,
+        model: lmfit.Model,
+        *,
+        model_state: tuple[str, str] | None = None,
+        model_load_path: str | None = None,
+        merge_params: bool = False,
+        reset_params_from_coord: bool = False,
+        refresh_views: bool = True,
+    ) -> None:
+        """Commit a model after its stored or local authorization succeeds."""
+        if model_state is None:
+            model_state = self._serialize_model_state(model)
         prev_params = self._params
         prev_model = self._model
         prev_widths = dict(self._slider_widths)
-        self._model = model
-        self._sanitize_model_convolution_for_x()
-        self._model_load_path = model_load_path
-
-        if reset_params_from_coord:
-            self._params_from_coord = {}
-        self._params = self._model.make_params()
+        params_from_coord = (
+            {} if reset_params_from_coord else self._params_from_coord.copy()
+        )
+        self._sanitize_model_convolution_for_x(model)
+        params = model.make_params()
         if merge_params and prev_params is not None and prev_model is not None:
-            self._merge_params(prev_params, self._params, prev_model, model)
-        for k in list(self._params_from_coord.keys()):
-            if k not in self._params:
-                del self._params_from_coord[k]
-        self._initial_params = self._params.copy()
-        self._slider_widths = {
-            name: width for name, width in prev_widths.items() if name in self._params
+            self._merge_params(prev_params, params, prev_model, model)
+        params_from_coord = {
+            name: coord for name, coord in params_from_coord.items() if name in params
         }
-        self.param_model.set_params(self._params, self._params_from_coord)
+        initial_params = params.copy()
+        slider_widths = {
+            name: width for name, width in prev_widths.items() if name in params
+        }
+        self._model = model
+        self._serialized_model_state = model_state
+        self._model_load_path = model_load_path
+        self._params = params
+        self._initial_params = initial_params
+        self._params_from_coord = params_from_coord
+        self._slider_widths = slider_widths
+        self._refresh_fit_code_entries()
+        self.param_model.set_params(
+            self._params,
+            self._params_from_coord,
+            emit_changed=False,
+        )
         self._sync_model_display()
         self._sync_model_specific_controls()
-        self._update_fit_curve()
-        self._mark_fit_stale()
         if self.param_model.rowCount() > 0:
             self.param_view.selectRow(0)
+        if refresh_views:
+            self._finish_model_change()
+        self._register_model_class(type(model))
+
+    def _finish_model_change(self, *, refresh_fit: bool = True) -> None:
+        """Notify model consumers after executable trust is committed."""
+        if refresh_fit:
+            self._update_fit_curve()
+        self._refresh_slider_from_model()
+        self._mark_fit_stale()
+        self._write_state()
+
+    def _set_model_from_local_edit(
+        self,
+        model: lmfit.Model,
+        *,
+        model_state: tuple[str, str] | None = None,
+        model_load_path: str | None = None,
+        merge_params: bool = False,
+        reset_params_from_coord: bool = False,
+    ) -> bool:
+        """Apply one explicit UI model edit under a scoped capability."""
+        if model_state is None:
+            model_state = self._serialize_model_state(model)
+        model_entry = type(self)._model_code_trust_entry(model_state)
+        model_entries = () if model_entry is None else (model_entry,)
+        execution_entries = self._fit_code_entries_with_model(model_entries)
+        edited_entries = self._new_fit_code_entries(
+            self._fit_code_entries, execution_entries
+        )
+        previous_trust = self._current_document_trust()
+        with self._local_code_edit(
+            execution_entries,
+            edited_entries=edited_entries,
+            focus_on_block=True,
+        ) as capability:
+            if not execution_capability_allows(capability, execution_entries):
+                return False
+            self._apply_model(
+                model,
+                model_state=model_state,
+                model_load_path=model_load_path,
+                merge_params=merge_params,
+                reset_params_from_coord=reset_params_from_coord,
+                refresh_views=False,
+            )
+        self._finish_model_change(
+            refresh_fit=self._current_document_trust() == previous_trust
+        )
+        return True
 
     @QtCore.Slot(int)
     def _on_model_choice_changed(self, _index: int) -> None:
         label = self.model_combo.currentData(role=QtCore.Qt.ItemDataRole.UserRole)
-        set_model_kw: dict[str, typing.Any] = {
-            "merge_params": True,
-            "reset_params_from_coord": True,
-        }
+        if label == "__file":
+            model_load_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Load lmfit model",
+                "",
+                "lmfit Model Files (*.sav *.json *.model);;All files (*)",
+            )
+            if not model_load_path:
+                self._sync_model_display()
+                return
+            try:
+                serialized = pathlib.Path(model_load_path).read_text()
+                candidate_entry = type(self)._model_code_trust_entry(("", serialized))
+                candidate_entries = (
+                    () if candidate_entry is None else (candidate_entry,)
+                )
+                capability = self._review_code_candidate(
+                    candidate_entries,
+                    document_name="lmfit model file",
+                    object_name="fit_model_file_code_trust_review_dialog",
+                    window_title="Review lmfit Model File",
+                )
+                if not execution_capability_allows(capability, candidate_entries):
+                    self._sync_model_display()
+                    return
+                model_loader = lmfit.model.Model(lambda x: x)
+                loaded_model = _load_lmfit_for_ftool_restore(
+                    lambda: model_loader.loads(serialized)
+                )
+                loaded_model_state = (
+                    _model_class_reference(type(loaded_model)),
+                    serialized,
+                )
+                if not self._set_model_from_local_edit(
+                    loaded_model,
+                    model_state=loaded_model_state,
+                    model_load_path=model_load_path,
+                    merge_params=True,
+                    reset_params_from_coord=True,
+                ):
+                    self._sync_model_display()
+            except Exception:
+                self._show_error(
+                    "Model creation failed",
+                    "Failed to load the selected model file. Reverting to the "
+                    "previous model.",
+                )
+                self._sync_model_display()
+            return
+
+        expression_kwargs: dict[str, typing.Any] | None = None
+        model_state: tuple[str, str] | None = None
+        model: lmfit.Model | None = None
+        if label == "ExpressionModel":
+            expression_kwargs = self._make_expression_model_kwargs()
+            model_entries = self._expression_model_edit_entries(expression_kwargs)
+        elif label == "__user":
+            model = self._user_model
+            if model is None:  # pragma: no cover - the User item requires a model.
+                self._sync_model_display()
+                return
+            model_state = self._serialize_model_state(model)
+            entry = type(self)._model_code_trust_entry(model_state)
+            model_entries = () if entry is None else (entry,)
+        else:
+            try:
+                model = self._make_model_from_choice(label)
+                model_state = self._serialize_model_state(model)
+                entry = type(self)._model_code_trust_entry(model_state)
+                model_entries = () if entry is None else (entry,)
+            except Exception:
+                self._show_error(
+                    "Model creation failed",
+                    f"Failed to create model '{label}'. Reverting to previous model.",
+                )
+                self._sync_model_display()
+                return
+
+        execution_entries = self._fit_code_entries_with_model(model_entries)
+        edited_entries = self._new_fit_code_entries(
+            self._fit_code_entries, execution_entries
+        )
+        previous_trust = self._current_document_trust()
+        applied = False
         try:
-            match label:
-                case "__file":
-                    path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                        self,
-                        "Load lmfit model",
-                        "",
-                        "lmfit Model Files (*.sav *.json *.model);;All files (*)",
-                    )
-                    if not path:
-                        self._sync_model_display()
-                        return
-                    model = lmfit.model.load_model(path)
-                    set_model_kw["model_load_path"] = path
-                case "__user":
-                    model = self._user_model
-                case _:
-                    model = self._make_model_from_choice(label)
+            with self._local_code_edit(
+                execution_entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as capability:
+                if not execution_capability_allows(capability, execution_entries):
+                    self._sync_model_display()
+                    return
+                if expression_kwargs is not None:
+                    model = lmfit.models.ExpressionModel(**expression_kwargs)
+                    model_state = self._serialize_model_state(model)
+                self._apply_model(
+                    typing.cast("lmfit.Model", model),
+                    model_state=typing.cast("tuple[str, str]", model_state),
+                    merge_params=True,
+                    reset_params_from_coord=True,
+                    refresh_views=False,
+                )
+                applied = True
         except Exception:
             self._show_error(
                 "Model creation failed",
                 f"Failed to create model '{label}'. Reverting to previous model.",
             )
             self._sync_model_display()
-            return
-        self.set_model(model, **set_model_kw)
+        if applied:
+            self._finish_model_change(
+                refresh_fit=self._current_document_trust() == previous_trust
+            )
 
     @property
     def tool_status(self) -> StateModel:
-        model_cls = self._model.__class__
         return self.StateModel(
             data_name=self._data_name,
             model_name=self._model_name,
-            model_state=(
-                f"{model_cls.__module__}:{model_cls.__qualname__}",
-                self._model.dumps(),
-            ),
+            model_state=self._serialized_model_state,
             model_load_path=self._model_load_path,
             domain=self._fit_domain(),
             normalize_mean=self.normalize_check.isChecked(),
@@ -1948,9 +2404,85 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
+        try:
+            with self._tool_status_code_execution(status) as (
+                entries,
+                capability,
+                local_edit,
+            ):
+                self._apply_fit1d_tool_status(
+                    status,
+                    entries,
+                    capability,
+                    local_edit=local_edit,
+                )
+        except _FitCodeEditRejected:
+            return
+
+    @contextlib.contextmanager
+    def _tool_status_code_execution(
+        self, status: StateModel
+    ) -> Iterator[tuple[tuple[typing.Any, ...], object | None, bool]]:
+        """Authorize status decoding as stored content or one explicit edit."""
+        entries = tuple(type(self)._code_trust_entries_from_status(status))
+        local_edit = (
+            entries != getattr(self, "_fit_code_entries", ())
+            and not self._restoring_from_dataset
+            and status is not self._pending_fit_status
+        )
+        if not local_edit:
+            yield entries, self._issue_code_execution_capability(entries), False
+            return
+
+        edited_entries = self._new_fit_code_entries(self._fit_code_entries, entries)
+        with self._local_code_edit(
+            entries,
+            edited_entries=edited_entries,
+            focus_on_block=True,
+        ) as capability:
+            if not execution_capability_allows(capability, entries):
+                _reject_fit_code_edit()
+            yield entries, capability, True
+
+    def _apply_fit1d_tool_status(
+        self,
+        status: StateModel,
+        entries: tuple[typing.Any, ...],
+        capability: object | None,
+        *,
+        local_edit: bool,
+    ) -> None:
+        """Apply one status after its complete executable inventory is authorized."""
         with self._history_suppressed():
             self._data_name = status.data_name
             self._model_name = status.model_name
+            self.components_check.setChecked(status.show_components)
+            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
+            self.timeout_spin.setValue(status.timeout)
+            self.nfev_spin.setValue(status.max_nfev)
+            self.method_combo.setCurrentText(status.method)
+            with QtCore.QSignalBlocker(self.normalize_check):
+                self.normalize_check.setChecked(status.normalize_mean)
+
+            self._slider_widths = dict(status.slider_widths)
+            if status.domain is not None:
+                with (
+                    QtCore.QSignalBlocker(self.domain_min_spin),
+                    QtCore.QSignalBlocker(self.domain_max_spin),
+                ):
+                    self.domain_min_spin.setValue(status.domain[0])
+                    self.domain_max_spin.setValue(status.domain[1])
+            self._domain_changed()
+
+            if capability is None:
+                self._pending_fit_status = status
+                self._clear_model_curves()
+                return
+            self._pending_fit_status = None
+            if not local_edit:
+                self._fit_code_entries = entries
+                self._fit_execution_capability = capability
+
             repaired_bounds = self._param_bounds_repair_names
             warn_repaired_bounds = repaired_bounds is None
             if repaired_bounds is None:
@@ -1967,20 +2499,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     lambda: model.loads(model_state),
                     params=restored_params,
                 )
-                mod_name, qual = cls_info.split(":")
-            except Exception:  # pragma: no cover
+            except Exception:
                 self._show_error("Model restore failed", "Failed to restore model.")
+                if local_edit:
+                    raise _FitCodeEditRejected from None
                 model = self._model
+                restored_model_state = self._serialized_model_state
             else:
-                with contextlib.suppress(Exception):
-                    mod = importlib.import_module(mod_name)
-                    cls_obj = mod
-                    for attr in qual.split("."):
-                        cls_obj = getattr(cls_obj, attr)
-                    model.__class__ = cls_obj
+                restored_model_state = status.model_state
+                model_class = _REGISTERED_MODEL_CLASSES.get(cls_info)
+                if model_class is not None:
+                    with contextlib.suppress(TypeError):
+                        model.__class__ = model_class
 
             if restored_params is None or len(restored_params) == 0:
-                self.set_model(model, model_load_path=status.model_load_path)
+                self._apply_model(
+                    model,
+                    model_state=restored_model_state,
+                    model_load_path=status.model_load_path,
+                )
             else:
                 # Saved params are authoritative during restore; generating model
                 # defaults here can evaluate incomplete deserialized model state.
@@ -1992,33 +2529,24 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 self._sync_model_display()
                 self._sync_model_specific_controls()
 
-            self.components_check.setChecked(status.show_components)
-            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
-            self.timeout_spin.setValue(status.timeout)
-            self.nfev_spin.setValue(status.max_nfev)
-            self.method_combo.setCurrentText(status.method)
-            with QtCore.QSignalBlocker(self.normalize_check):
-                self.normalize_check.setChecked(status.normalize_mean)
-
-            self._slider_widths = dict(status.slider_widths)
+            self._serialized_model_state = restored_model_state
 
             self._params_from_coord = self._sanitize_params_from_coord(
                 status.params_from_coord
             )
+            self._refresh_fit_code_entries()
+            if self._fit_code_entries == entries:
+                self._fit_execution_capability = capability
             self.param_model.set_params(self._params, self._params_from_coord)
             self._refresh_slider_from_model()
             self._mark_fit_stale()
 
-            if status.domain is not None:
-                with (
-                    QtCore.QSignalBlocker(self.domain_min_spin),
-                    QtCore.QSignalBlocker(self.domain_max_spin),
-                ):
-                    self.domain_min_spin.setValue(status.domain[0])
-                    self.domain_max_spin.setValue(status.domain[1])
-            self._domain_changed()
             if warn_repaired_bounds:
                 self._show_repaired_parameter_bounds_warning(repaired_bounds)
+
+    def _saved_tool_status(self) -> StateModel:
+        """Preserve blocked saved state until the document is approved."""
+        return self._pending_fit_status or self.tool_status
 
     def _sanitize_params_from_coord(
         self, params_from_coord: Mapping[str, str]
@@ -2201,6 +2729,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         return values / norm
 
     def _guess_params(self) -> None:
+        if not self._current_fit_execution_allowed(focus_on_block=True):
+            return
         if not hasattr(self._model, "guess"):
             self._show_warning("Guess not supported", "Model does not support guess().")
             return
@@ -2214,7 +2744,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         except Exception:  # pragma: no cover - GUI feedback
             self._show_error("Guess failed", "Failed to estimate initial parameters.")
             return
-        self._params = typing.cast("lmfit.Parameters", params)
+        self._replace_current_params(typing.cast("lmfit.Parameters", params))
         self._params_from_coord = {}
         self.param_model.set_params(self._params, self._params_from_coord)
         self._mark_fit_stale()
@@ -2233,7 +2763,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             case _:
                 pass
         self._params_from_coord = {}
-        self._params = self._initial_params.copy()
+        self._replace_current_params(self._initial_params.copy())
         self.param_model.set_params(self._params, self._params_from_coord)
         self._set_fit_stats(None)
         self._mark_fit_stale()
@@ -2259,13 +2789,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         return values
 
     def _update_fit_curve(self) -> None:
+        if not self._current_fit_execution_allowed():
+            self._clear_model_curves()
+            return
         xvals = self._x_values()
         if self._has_non_finite_params():
-            self.fit_curve.setData([], [])
-            self.residual_curve.setData([], [])
-            self._last_fit_y = None
-            self._last_residual = None
-            self._update_component_curves(np.array([]))
+            self._clear_model_curves()
             self._update_peak_lines(xvals)
             return
 
@@ -2302,7 +2831,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _serialize_params(
         params: lmfit.Parameters,
     ) -> list[tuple[typing.Any, ...]]:
-        return [p.__getstate__() for p in params.values()]
+        # lmfit's Parameter.__getstate__ reads ``value``. For an expression
+        # parameter, that read evaluates the expression. Copy the same stable state
+        # fields directly so review, history, and save code never execute it.
+        return [
+            (
+                param.name,
+                param._val,
+                param._vary,
+                param._expr,
+                param.min,
+                param.max,
+                param.brute_step,
+                param.stderr,
+                param.correl,
+                param.init_value,
+                param.user_data,
+            )
+            for param in params.values()
+        ]
 
     @staticmethod
     def _repair_equal_bound_param_state(
@@ -2515,8 +3062,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return False
         return sum(segment.size for segment in segments) == xvals.size
 
-    def _sanitize_model_convolution_for_x(self) -> None:
-        func = getattr(self._model, "func", None)
+    def _sanitize_model_convolution_for_x(
+        self, model: lmfit.Model | None = None
+    ) -> None:
+        func = getattr(self._model if model is None else model, "func", None)
         if (
             isinstance(func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction)
             and func.convolve
@@ -2728,10 +3277,15 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _store_multi_fit_result(
         self, result_ds: xr.Dataset, t0: float
     ) -> lmfit.Parameters:
+        self._invalidate_fit_result_payload()
         self._last_result_ds = result_ds.copy()
         result = self._last_result_ds.modelfit_results.compute().item()
-        self._params = result.params.copy()
+        self._replace_current_params(result.params.copy())
         self._fit_is_current = True
+        # Fit2D copies the current slice into its full result state in this hook.
+        # Update subclass-owned state before serializing the shared result payload.
+        self._sync_fit_result_state(notify=False)
+        self._cache_fit_result_payload()
         self._fit_multi_last_elapsed = time.perf_counter() - t0
         self._fit_multi_live_refresh_pending = True
         self._fit_multi_refresh_pending = True
@@ -2784,9 +3338,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         pass
 
     def _set_fit_ds(self, result_ds: xr.Dataset, t0: float) -> lmfit.Parameters:
+        self._invalidate_fit_result_payload()
         self._last_result_ds = result_ds.copy()
         result = self._last_result_ds.modelfit_results.compute().item()
-        self._params = result.params.copy()
+        self._replace_current_params(result.params.copy())
         self.param_model.set_params(
             self._params, self._params_from_coord, emit_changed=False
         )
@@ -2795,6 +3350,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         elapsed = time.perf_counter() - t0
         self._set_fit_stats(result, elapsed=elapsed)
         self._sync_fit_result_state()
+        self._cache_fit_result_payload()
         self._mark_fit_fresh()
         self.sigFitFinished.emit(self._params.copy())
         if self._source_refresh_deferred:
@@ -2875,44 +3431,110 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             model_name="model",
         )
         self._last_result_ds = fit_ds.copy()
+        self._cache_fit_result_payload()
         self._set_fit_stats(restore.result)
 
+    @classmethod
+    def _fit_result_code_trust_entry(cls, blob: np.ndarray):
+        return lmfit_result_code_entry(
+            np.asarray(blob, dtype=np.uint8).tobytes(),
+            feature=cls._FIT_RESULT_CODE_TRUST_FEATURE,
+            location=cls._FIT_RESULT_CODE_TRUST_LOCATION,
+        )
+
+    def _code_trust_payload_entries(self):
+        blob = self._fit_result_blob_for_persistence()
+        if blob is None:
+            return ()
+        entry = self._fit_result_code_trust_entry(blob)
+        return () if entry is None else (entry,)
+
+    def _code_trust_payload_entries_from_dataset(self, ds: xr.Dataset):
+        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+            return ()
+        blob = np.asarray(ds[self._PERSISTED_FIT_RESULT_VAR].values, dtype=np.uint8)
+        entry = self._fit_result_code_trust_entry(blob)
+        return () if entry is None else (entry,)
+
+    def _fit_result_dataset_for_persistence(self) -> xr.Dataset | None:
+        """Return the current fit-result dataset before opaque serialization."""
+        return self._last_result_ds
+
+    def _cache_fit_result_payload(self) -> None:
+        """Cache the current result payload for save and deferred restore."""
+        result = self._fit_result_dataset_for_persistence()
+        self._serialized_fit_result_blob = (
+            None
+            if result is None
+            else erlab.interactive.utils._serialize_fit_dataset_blob(result)
+        )
+        self._pending_persisted_fit_is_current = None
+
+    def _invalidate_fit_result_payload(self) -> None:
+        """Discard all saved and deferred state for replaced fit results."""
+        self._serialized_fit_result_blob = None
+        self._pending_persisted_fit_is_current = None
+        self._discard_restore_work(key=self._PERSISTED_FIT_RESULT_VAR)
+
+    def _fit_result_blob_for_persistence(self) -> np.ndarray | None:
+        if self._serialized_fit_result_blob is None:
+            if self._fit_result_dataset_for_persistence() is None:
+                return None
+            self._cache_fit_result_payload()
+        if self._serialized_fit_result_blob is None:  # pragma: no cover
+            return None
+        return np.array(self._serialized_fit_result_blob, copy=True)
+
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
-        if self._pending_persisted_fit_result_blob is not None:
-            ds = ds.copy()
-            ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
-                np.array(self._pending_persisted_fit_result_blob, copy=True),
-                dims=(self._PERSISTED_FIT_RESULT_DIM,),
-            )
-            ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(
-                self._pending_persisted_fit_is_current
-            )
-            return ds
-        if self._last_result_ds is None:
+        blob = self._fit_result_blob_for_persistence()
+        if blob is None:
             return ds
         ds = ds.copy()
         ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
-            erlab.interactive.utils._serialize_fit_dataset_blob(self._last_result_ds),
+            blob,
             dims=(self._PERSISTED_FIT_RESULT_DIM,),
         )
-        ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
+        ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(
+            self._pending_persisted_fit_is_current
+            if self._pending_persisted_fit_is_current is not None
+            else self._fit_is_current
+        )
         return ds
 
-    def _restore_persisted_fit_result_blob(
-        self, blob: np.ndarray, *, fit_is_current: bool
+    def _apply_restored_fit_result(
+        self, result_ds: xr.Dataset, *, fit_is_current: bool
     ) -> None:
-        self._last_result_ds = _load_lmfit_for_ftool_restore(
-            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
-        )
-        result = self._last_result_ds.modelfit_results.compute().item()
+        """Attach one authorized decoded result payload."""
+        self._last_result_ds = result_ds
+        result = result_ds.modelfit_results.compute().item()
         self._set_fit_stats(result)
         self._update_fit_curve()
         if fit_is_current:
             self._mark_fit_fresh()
         else:
             self._mark_fit_stale()
-        self._pending_persisted_fit_result_blob = None
-        self._pending_persisted_fit_is_current = False
+
+    def _restore_pending_fit_result(self) -> None:
+        """Materialize the one owned result blob when it is still pending."""
+        blob = self._serialized_fit_result_blob
+        fit_is_current = self._pending_persisted_fit_is_current
+        if blob is None or fit_is_current is None:
+            return
+        self._restore_persisted_fit_result_blob(blob, fit_is_current=fit_is_current)
+
+    def _restore_persisted_fit_result_blob(
+        self, blob: np.ndarray, *, fit_is_current: bool
+    ) -> None:
+        self._serialized_fit_result_blob = np.array(blob, copy=True)
+        self._pending_persisted_fit_is_current = fit_is_current
+        entry = self._fit_result_code_trust_entry(blob)
+        if entry is not None and not self._authorize_code_execution((entry,)):
+            return
+        result_ds = _load_lmfit_for_ftool_restore(
+            lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
+        )
+        self._apply_restored_fit_result(result_ds, fit_is_current=fit_is_current)
+        self._pending_persisted_fit_is_current = None
 
     def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
         if self._PERSISTED_FIT_RESULT_VAR not in ds:
@@ -2922,19 +3544,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             copy=True,
         )
         fit_is_current = bool(ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False))
-        self._pending_persisted_fit_result_blob = blob
+        self._serialized_fit_result_blob = blob
         self._pending_persisted_fit_is_current = fit_is_current
         self._run_or_defer_restore_work(
-            lambda: self._restore_persisted_fit_result_blob(
-                blob,
-                fit_is_current=fit_is_current,
-            ),
+            self._restore_pending_fit_result,
             key=self._PERSISTED_FIT_RESULT_VAR,
             run_on_show=True,
         )
 
     def _flush_restore_work_for_save(self) -> None:
-        if self._pending_persisted_fit_result_blob is None:
+        if self._pending_persisted_fit_is_current is None:
             super()._flush_restore_work_for_save()
             return
         self._flush_restore_work(skip=(self._PERSISTED_FIT_RESULT_VAR,))
@@ -2985,6 +3604,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     ) -> bool:
         if self._fit_thread is not None:
             self._show_warning("Fit running", "A fit is already running.")
+            return False
+        if not self._current_fit_execution_allowed(focus_on_block=True):
             return False
 
         try:
@@ -3500,26 +4121,61 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         param = self.param_model.param_at(row)
         if not self._can_edit_expr(param) or not param.expr:
             return
-        param.set(expr="")
-        self._notify_param_change(row)
+        execution_entries = self._build_fit_code_entries(
+            parameter_expression=(str(param.name), None)
+        )
+        edited_entries = self._new_fit_code_entries(
+            self._fit_code_entries, execution_entries
+        )
+        with self._local_code_edit(
+            execution_entries,
+            edited_entries=edited_entries,
+            focus_on_block=True,
+        ) as capability:
+            if not execution_capability_allows(capability, execution_entries):
+                return
+            param.set(expr="")
+            self._refresh_fit_code_entries()
+            self._notify_param_change(row)
+            if self._fit_code_entries == execution_entries:
+                self._fit_execution_capability = capability
 
     def _set_param_expr(self, row: int, expr: str) -> None:
         param = self.param_model.param_at(row)
         if not self._can_edit_expr(param):
             return
-        is_valid, error = self._validate_param_expr(param, expr)
-        if not is_valid:
+        execution_entries = self._build_fit_code_entries(
+            parameter_expression=(str(param.name), expr)
+        )
+        edited_entries = self._new_fit_code_entries(
+            self._fit_code_entries, execution_entries
+        )
+        try:
+            with self._local_code_edit(
+                execution_entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as capability:
+                if not execution_capability_allows(capability, execution_entries):
+                    return
+                is_valid, error = self._validate_param_expr(param, expr)
+                if not is_valid:
+                    _reject_fit_code_edit(error)
+                if str(param.name) in self._params_from_coord:
+                    del self._params_from_coord[str(param.name)]
+                param.set(expr=expr)
+                param.vary = False
+                self._refresh_fit_code_entries()
+                self._notify_param_change(row)
+                if self._fit_code_entries == execution_entries:
+                    self._fit_execution_capability = capability
+        except _FitCodeEditRejected as exc:
+            error = str(exc)
             details = f" due to the following reason:\n\n{error}" if error else "."
             self._show_warning(
                 "Invalid Expression",
                 f"Expression could not be parsed or evaluated{details}",
             )
-            return
-        if str(param.name) in self._params_from_coord:
-            del self._params_from_coord[str(param.name)]
-        param.set(expr=expr)
-        param.vary = False
-        self._notify_param_change(row)
 
     def _validate_param_expr(
         self, param: lmfit.Parameter, expr: str
@@ -3588,7 +4244,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         name = self._peak_param_name(peak_index, suffix)
         if name not in self._params:
             return None
-        value = self._params[name].value
+        value = self._parameter_value(self._params[name])
         if value is None:
             return None
         return float(value)
@@ -3609,19 +4265,20 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._show_slider_message("")
             return
         param = self._get_current_param()
+        value = self._parameter_value(param)
         if self._slider_dragging and not param.expr:
             self._slider_updating = True
             with (
                 QtCore.QSignalBlocker(self.param_value_spin),
                 QtCore.QSignalBlocker(self.param_value_slider),
             ):
-                self.param_value_spin.setValue(param.value)
+                self.param_value_spin.setValue(value)
                 if self._slider_drag_range is None:
-                    slider_min, slider_max, _ = self._slider_range(param.value, param)
+                    slider_min, slider_max, _ = self._slider_range(value, param)
                     self._slider_drag_range = (slider_min, slider_max)
                 else:
                     slider_min, slider_max = self._slider_drag_range
-                self._set_slider_position(param.value, slider_min, slider_max)
+                self._set_slider_position(value, slider_min, slider_max)
             self._slider_updating = False
             return
 
@@ -3631,11 +4288,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         if param.expr:
             self._show_slider_message(f"expr: {param.expr}")
-            self._set_slider_values(param.value, None, None, None)
+            self._set_slider_values(value, None, None, None)
             return
-        if not np.isfinite(param.value):
+        if not np.isfinite(value):
             self._show_slider_message(
-                f"value: {_ParameterTableModel._format_value(param.value)}"
+                f"value: {_ParameterTableModel._format_value(value)}"
             )
             return
 
@@ -3643,8 +4300,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_slider_enabled(not is_from_coord)
         self._set_slider_widget_visibility(True)
 
-        slider_min, slider_max, width = self._slider_range(param.value, param)
-        self._set_slider_values(param.value, width, slider_min, slider_max)
+        slider_min, slider_max, width = self._slider_range(value, param)
+        self._set_slider_values(value, width, slider_min, slider_max)
         self.param_value_spin.setReadOnly(is_from_coord)
 
         with QtCore.QSignalBlocker(self.param_mode_combo):
@@ -3783,7 +4440,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if param_coord == "__fixed":
             if current_name in self._params_from_coord:
                 del self._params_from_coord[current_name]
-            self._update_param_value(float(param.value))
+            self._update_param_value(self._parameter_value(param))
         else:
             self._params_from_coord[current_name] = str(param_coord)
             self._update_param_value(float(self._data[param_coord].values))
@@ -3875,7 +4532,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.elapsed_label.setText("Elapsed")
 
     def _has_non_finite_params(self) -> bool:
-        return any(not np.isfinite(param.value) for param in self._params.values())
+        return any(
+            not np.isfinite(self._parameter_value(param))
+            for param in self._params.values()
+        )
 
     def _mark_fit_stale(self, *, emit_info: bool = True) -> None:
         self._fit_is_current = False
@@ -3902,10 +4562,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def update_data(self, new_data: xr.DataArray) -> bool:
         had_fit = self._last_result_ds is not None
-        status = self.tool_status
+        status = self._saved_tool_status()
         old_geom = self.saveGeometry()
 
         def _apply_update(validated: xr.DataArray) -> bool:
+            self._invalidate_fit_result_payload()
             old_cw = self.centralWidget()
             if old_cw is not None:
                 old_cw.setParent(None)

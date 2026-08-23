@@ -940,7 +940,7 @@ class FigureDocument:
             if not enabled_only or operation.enabled
             if not executable_only
             or operation.kind != FigureOperationKind.CUSTOM
-            or operation.trusted
+            or bool(operation.code.strip())
             for source_name in self.operation_source_names(operation)
         }
 

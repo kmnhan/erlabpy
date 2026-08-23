@@ -64,6 +64,7 @@ from tests.interactive.imagetool.manager.helpers import (
 
 from ._common import (
     _add_file_replay_tool,
+    _authorize_execution,
     _fake_edit_controller,
     _fake_edit_node,
     _manager_replay_file_spec,
@@ -900,6 +901,9 @@ def test_manager_paste_steps_validation_error_branches(
             (ScriptCodeOperation(label="script", code="derived = data"),),
         )
 
+    parent = _fake_edit_node(full_data(), uid="parent")
+    parent.current_source_data = lambda: xr.DataArray([1.0], dims=("x",))
+    controller = _fake_edit_controller(node, parent=parent)
     monkeypatch.setattr(
         controller,
         "_replay_candidate_result",
@@ -1244,7 +1248,9 @@ def test_manager_delete_invalid_script_step_rolls_back(
         seed_code="derived = data",
         active_name="result",
     )
-    displayed = replay_script_provenance(spec, {"data": data})
+    displayed = replay_script_provenance(
+        spec, {"data": data}, authorize=_authorize_execution
+    )
 
     with manager_context() as manager:
         tool = itool(displayed, manager=False, execute=False)
@@ -1300,7 +1306,9 @@ def test_manager_copy_paste_structured_provenance_steps(
         seed_code="derived = data",
         active_name="derived",
     )
-    dest_data = replay_script_provenance(dest_spec, {"data": dest_base})
+    dest_data = replay_script_provenance(
+        dest_spec, {"data": dest_base}, authorize=_authorize_execution
+    )
 
     with manager_context() as manager:
         source_tool = itool(source_data, manager=False, execute=False)
@@ -2015,7 +2023,9 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         seed_code="derived = data",
         active_name="result",
     )
-    script_data = replay_script_provenance(script_spec, {"data": data})
+    script_data = replay_script_provenance(
+        script_spec, {"data": data}, authorize=_authorize_execution
+    )
 
     with manager_context() as manager:
         parent_tool = itool(data, manager=False, execute=False)
@@ -2060,6 +2070,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         expected = replay_script_provenance(
             script_spec,
             {"data": child_data},
+            authorize=_authorize_execution,
         )
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
         assert child_node.source_spec is None
@@ -2145,7 +2156,9 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
         seed_code="derived = data",
         active_name="result",
     )
-    dest_data = replay_script_provenance(dest_base_spec, {"data": data})
+    dest_data = replay_script_provenance(
+        dest_base_spec, {"data": data}, authorize=_authorize_execution
+    )
     copied_operation = ScriptCodeOperation(
         label="Offset copied result",
         code="result = derived + 2.0",
@@ -2156,7 +2169,9 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
         seed_code="derived = data",
         active_name="result",
     )
-    source_data = replay_script_provenance(source_spec, {"data": data})
+    source_data = replay_script_provenance(
+        source_spec, {"data": data}, authorize=_authorize_execution
+    )
 
     with manager_context() as manager:
         dest_tool = itool(dest_data, manager=False, execute=False)

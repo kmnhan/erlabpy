@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import typing
 
 import matplotlib as mpl
@@ -14,6 +15,7 @@ from matplotlib.figure import Figure
 
 import erlab
 import erlab.plotting as eplt
+from erlab.interactive._code_trust import execute_with_capability
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_style_context,
@@ -33,6 +35,7 @@ from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
     _valid_source_variable,
 )
+from erlab.interactive._figurecomposer._trust import figure_operation_execution_entries
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -373,6 +376,30 @@ def _iter_axes(axis_obj: object) -> tuple[matplotlib.axes.Axes, ...]:
     return (typing.cast("matplotlib.axes.Axes", axis_obj),)
 
 
+def _operation_will_render(tool: FigureComposerTool, operation: typing.Any) -> bool:
+    """Return whether the whole-recipe renderer can reach one operation."""
+    from erlab.interactive._figurecomposer._operations import _registry
+
+    if not operation.enabled:
+        return False
+    spec = _registry.spec_for(operation.kind)
+    return not (
+        spec.has_invalid_target(tool._document, operation)
+        or tool.operation_editor.has_input_error(operation)
+    )
+
+
+def _render_operation(
+    tool: FigureComposerTool,
+    spec: typing.Any,
+    operation: typing.Any,
+    figure: Figure,
+    axs: typing.Any,
+) -> None:
+    with _track_operation_artists(figure, operation.operation_id):
+        spec.render(tool, operation, figure, axs)
+
+
 def _render_into_figure(
     tool: FigureComposerTool, figure: Figure, *, sync_visible: bool
 ) -> None:
@@ -383,17 +410,33 @@ def _render_into_figure(
     render_errors: dict[str, str] = {}
     with _tool_figure_options_context(tool), _figure_style_context():
         axs = _make_axes(tool, figure, sync_visible=sync_visible)
-        for operation in tool._document.recipe.operations:
-            if not operation.enabled:
+        for operation_index, operation in enumerate(tool._document.recipe.operations):
+            if not _operation_will_render(tool, operation):
                 continue
             spec = _registry.spec_for(operation.kind)
-            if spec.has_invalid_target(
-                tool._document, operation
-            ) or tool.operation_editor.has_input_error(operation):
-                continue
+            entries = figure_operation_execution_entries(
+                tool._document.recipe,
+                operation_index,
+                location_prefix="figure",
+            )
+            capability = (
+                tool._issue_code_execution_capability(entries) if entries else None
+            )
             try:
-                with _track_operation_artists(figure, operation.operation_id):
-                    spec.render(tool, operation, figure, axs)
+                executed, _result = execute_with_capability(
+                    capability,
+                    entries,
+                    functools.partial(
+                        _render_operation,
+                        tool,
+                        spec,
+                        operation,
+                        figure,
+                        axs,
+                    ),
+                )
+                if not executed:
+                    continue
             except Exception as exc:
                 render_errors[operation.operation_id] = _render_error_text(exc)
     tool._set_operation_render_errors(render_errors)

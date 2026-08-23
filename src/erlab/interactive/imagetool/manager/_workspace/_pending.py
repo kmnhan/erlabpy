@@ -8,6 +8,7 @@ import collections
 import collections.abc
 import contextlib
 import copy
+import functools
 import html
 import json
 import logging
@@ -34,6 +35,9 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
+)
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_operation_requires_code_trust,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
@@ -228,6 +232,11 @@ class _PendingWorkspacePayloads:
         if not isinstance(filter_payload, dict):
             raise TypeError("Invalid pending filter operation")
         operation = parse_tool_provenance_operation(filter_payload)
+        if provenance_operation_requires_code_trust(operation):
+            raise TypeError(
+                "Operations that can execute stored Python cannot be used as display "
+                "filters"
+            )
         source_shape = tuple(data.sizes[dim] for dim in data.dims)
         filtered = operation.apply(data)
         if filtered.ndim != data.ndim or set(filtered.dims) != set(data.dims):
@@ -1008,7 +1017,7 @@ class _PendingWorkspacePayloads:
                 ds = ds.copy(deep=False)
                 pending_attrs = node.pending_workspace_payload_attrs
                 if pending_attrs is not None:
-                    ds.attrs.update(pending_attrs)
+                    ds.attrs = dict(pending_attrs)
                 ds.attrs["itool_name"] = "" if name is None else name
                 ds = self._loader._dataset_without_missing_workspace_colormap(
                     ds, payload_path
@@ -1072,7 +1081,8 @@ class _PendingWorkspacePayloads:
             pending_attrs = node.pending_workspace_payload_attrs
             if pending_attrs is not None:
                 ds = ds.copy(deep=False)
-                ds.attrs.update(pending_attrs)
+                ds.attrs = dict(pending_attrs)
+            ds = self._loader._tool_dataset_without_saved_input_provenance(ds)
 
             source_parent_data, tool_data_reference_resolver = (
                 self._loader._workspace_tool_restore_references(
@@ -1086,6 +1096,12 @@ class _PendingWorkspacePayloads:
             )
 
             with self._controller._workspace_load_context():
+                entry_locator = functools.partial(
+                    self._controller._locate_tool_code_trust_entries,
+                    location_getter=lambda: (
+                        self._controller.saving._workspace_node_path_for_node(node)
+                    ),
+                )
                 tool: erlab.interactive.utils.ToolWindow = (
                     erlab.interactive.utils.ToolWindow.from_dataset(
                         ds,
@@ -1093,10 +1109,13 @@ class _PendingWorkspacePayloads:
                         _tool_data_reference_resolver=tool_data_reference_resolver,
                         _materialize_tool_data_references=True,
                         _defer_restore_work=True,
+                        _code_trust=self._manager._workspace_state.code_trust,
+                        _code_trust_entry_locator=entry_locator,
                     )
                 )
                 if node.parent_uid is None:
                     self._loader._require_workspace_root_tool_is_figure(tool)
+                    tool.set_input_provenance_spec(None)
                     node.window = tool
                     if not tool._tool_display_name:
                         tool._tool_display_name = node.name
@@ -1104,9 +1123,6 @@ class _PendingWorkspacePayloads:
                     self._manager._figure_collection.sync(select_uid=None)
                 else:
                     parent = self._manager._node_for_target(node.parent_uid)
-                    node.window = tool
-                    if not tool._tool_display_name:
-                        tool._tool_display_name = parent.name
                     parent_uid = parent.uid
 
                     def _source_parent_fetcher() -> xr.DataArray:
@@ -1119,10 +1135,14 @@ class _PendingWorkspacePayloads:
                             parent_uid
                         ).displayed_provenance_spec
 
+                    tool.set_input_provenance_spec(None)
                     tool.set_source_parent_fetcher(_source_parent_fetcher)
                     tool.set_input_provenance_parent_fetcher(
                         _input_provenance_parent_fetcher
                     )
+                    node.window = tool
+                    if not tool._tool_display_name:
+                        tool._tool_display_name = parent.name
                     self._manager._tool_graph.add_child_reference(
                         parent.uid, node.uid, tool
                     )

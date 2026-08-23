@@ -351,7 +351,7 @@ def test_figure_document_renames_source_references_atomically() -> None:
             operations=(
                 FigureOperationState.plot_array(label="array", source="selected"),
                 FigureOperationState.custom(
-                    label="python", code="result = data + selected", trusted=True
+                    label="python", code="result = data + selected"
                 ),
             ),
             primary_source="data",
@@ -374,7 +374,7 @@ def test_figure_document_renames_source_references_atomically() -> None:
         update={
             "operations": (
                 FigureOperationState.custom(
-                    label="ambiguous", code="renamed = renamed + 1", trusted=True
+                    label="ambiguous", code="renamed = renamed + 1"
                 ),
             )
         }
@@ -714,7 +714,7 @@ def test_figure_document_pastes_operations_and_sources_atomically() -> None:
     )
     preserved_result = preserved.paste_operations(
         0,
-        (FigureOperationState.custom(label="code", code="pass", trusted=True),),
+        (FigureOperationState.custom(label="code", code="pass"),),
         (metadata_source,),
         {"metadata_only": data},
         {},
@@ -895,9 +895,7 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
             "method_plot_yerr": FigureMethodPlotValueState(source="third"),
         }
     )
-    custom = FigureOperationState.custom(
-        label="custom", code="result = second + first", trusted=False
-    )
+    custom = FigureOperationState.custom(label="custom", code="result = second + first")
     operations = (
         FigureOperationState(kind=FigureOperationKind.SET_PALETTE, label="palette"),
         plot_array,
@@ -984,7 +982,10 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
     )
     assert document.operation_source_names(custom) == ("first", "second")
     assert document.direct_sources_used_by_recipe() == {"first", "second"}
-    assert document.direct_sources_used_by_recipe(executable_only=True) == set()
+    assert document.direct_sources_used_by_recipe(executable_only=True) == {
+        "first",
+        "second",
+    }
 
 
 def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
@@ -1546,7 +1547,6 @@ def test_figure_composer_generated_code_skips_disabled_operations(qtbot) -> None
                 FigureOperationState.custom(
                     label="disabled Python",
                     code="raise RuntimeError('must not run')",
-                    trusted=True,
                 ).model_copy(update={"enabled": False}),
             ),
             primary_source="data",

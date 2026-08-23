@@ -12,6 +12,10 @@ import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._stylesheets
+from erlab.interactive._code_trust import (
+    document_trust_has_trusted_lineage,
+    new_document_trust,
+)
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureGridSpecAxesState,
@@ -29,9 +33,6 @@ from erlab.interactive._figurecomposer._model import (
 )
 from erlab.interactive._figurecomposer._operations import (
     _custom_code as figurecomposer_custom_code_operation,
-)
-from erlab.interactive._figurecomposer._ui import (
-    _operation_panel as figurecomposer_operation_panel,
 )
 
 from ._common import (
@@ -59,7 +60,6 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
             "arr = xr.DataArray(values)\n"
             "eplt.clean_labels(ax)"
         ),
-        trusted=True,
     )
     assert (
         figurecomposer_custom_code_operation._section_summary(
@@ -110,11 +110,8 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         == frozenset()
     )
     assert figurecomposer_custom_code_operation._custom_axes_alias_lines(tool) == []
-    assert (
-        figurecomposer_custom_code_operation._code_lines(
-            tool, operation.model_copy(update={"trusted": False})
-        )
-        == []
+    assert operation.code in "\n".join(
+        figurecomposer_custom_code_operation._code_lines(tool, operation)
     )
     assert (
         figurecomposer_custom_code_operation._required_imports(
@@ -480,7 +477,6 @@ def test_figure_composer_custom_code_read_write_source_is_dependency(
     operation = FigureOperationState.custom(
         label="read-write source",
         code=code,
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -512,7 +508,6 @@ def test_figure_composer_source_rename_refactors_custom_python(qtbot) -> None:
                 FigureOperationState.custom(
                     label="summary",
                     code=code,
-                    trusted=True,
                 ),
             ),
             primary_source="data",
@@ -547,7 +542,6 @@ def test_figure_composer_source_rename_rejects_ambiguous_python(
     operation = FigureOperationState.custom(
         label="summary",
         code=code,
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -573,7 +567,6 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
     operation = FigureOperationState.custom(
         label="code",
         code="ax.set_title('old')",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -633,7 +626,6 @@ def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
     operation = FigureOperationState.custom(
         label="code",
         code="ax.set_title('old')",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -694,12 +686,10 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
     first_operation = FigureOperationState.custom(
         label="first",
         code="ax.set_title('old')",
-        trusted=True,
     )
     second_operation = FigureOperationState.custom(
         label="second",
         code="ax.set_xlabel('other')",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -740,7 +730,6 @@ def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> Non
     operation = FigureOperationState.custom(
         label="code",
         code="ax.set_title('old')",
-        trusted=True,
     )
     tool = FigureComposerTool(
         data,
@@ -789,7 +778,6 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
             "assert 'sample_temp' in data.dims\n"
             "assert 'sample_temp_idx' not in data.dims"
         ),
-        trusted=True,
     )
     tool = FigureComposerTool(
         internal,
@@ -840,7 +828,6 @@ def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> N
                 FigureOperationState.custom(
                     label="custom",
                     code="ax.set_title('trusted')",
-                    trusted=True,
                 ),
             ),
             primary_source=status.primary_source,
@@ -850,7 +837,9 @@ def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> N
 
     loaded = erlab.interactive.utils.ToolWindow.from_dataset(custom_tool.to_dataset())
     qtbot.addWidget(loaded)
-    assert loaded.tool_status.operations[0].trusted is False
+    assert not document_trust_has_trusted_lineage(loaded._document_trust)
+    assert "trusted" not in loaded.tool_status.operations[0].model_dump()
+    assert "set_title" in loaded.generated_code()
 
 
 def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
@@ -871,7 +860,6 @@ def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
                         "ax.set_title(str(np.array([1])[0]))\n"
                         "fig.__dict__['_eplt_name'] = eplt.__name__"
                     ),
-                    trusted=True,
                 ),
             ),
             primary_source="data",
@@ -906,7 +894,6 @@ def test_figure_composer_custom_code_codegen_nested_class_import(qtbot) -> None:
                         "    return Result\n"
                         "fig.custom_total = build().total"
                     ),
-                    trusted=True,
                 ),
             ),
             primary_source="data",
@@ -950,7 +937,6 @@ def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
                         "import statistics\n"
                         "fig.source_mean = statistics.fmean([float(custom_source)])"
                     ),
-                    trusted=True,
                 ),
                 FigureOperationState.line(label="line", source="custom_source"),
             ),
@@ -1000,7 +986,6 @@ def test_figure_composer_source_name_map_does_not_rewrite_custom_locals(
                 FigureOperationState.custom(
                     label="custom",
                     code=("data_0 = 1\nfig.__dict__['custom_data_0'] = data_0"),
-                    trusted=True,
                 ),
             ),
             primary_source="data_0",
@@ -1040,7 +1025,6 @@ def test_figure_composer_source_name_map_assigns_custom_aliases_simultaneously(
                         "fig.__dict__['custom_values'] = "
                         "(float(a.values[0]), float(b.values[0]))"
                     ),
-                    trusted=True,
                 ),
             ),
             primary_source="a",
@@ -1169,7 +1153,6 @@ def test_figure_composer_source_alias_editor_rejects_ambiguous_python(qtbot) -> 
                 FigureOperationState.custom(
                     label="summary",
                     code="data = data.mean()",
-                    trusted=True,
                 ),
             ),
             primary_source="data",
@@ -1233,7 +1216,6 @@ def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
                         "axs['main-axis'].set_xlabel('energy')\n"
                         "fig.custom_total = float(np.sum())"
                     ),
-                    trusted=True,
                 ),
             ),
             primary_source="data",
@@ -1253,7 +1235,7 @@ def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
     assert namespace["fig"].custom_total == 3.0
 
 
-def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> None:
+def test_figure_composer_untrusted_custom_code_is_paused(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),
@@ -1263,9 +1245,8 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     operation = FigureOperationState.custom(
         label="custom",
         code="ax.set_title('loaded')",
-        trusted=False,
     )
-    tool = FigureComposerTool(
+    local_tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
             sources=(FigureSourceState(name="data", label="data"),),
@@ -1273,35 +1254,25 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
             primary_source="data",
         ),
     )
+    tool = erlab.interactive.utils.ToolWindow.from_dataset(local_tool.to_dataset())
+    assert isinstance(tool, FigureComposerTool)
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
 
     item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
-    assert _operation_status_codes(tool, 0) == ("render_error",)
-    assert "Custom code is not trusted" in item.toolTip(
-        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
-    )
+    assert _operation_status_codes(tool, 0) == ()
+    assert not document_trust_has_trusted_lineage(tool._document_trust)
+    assert not tool._code_trust_banner.isHidden()
+    assert tool.figure.axes[0].get_title() == ""
     assert _operation_source_status_label(tool).isHidden()
 
-    tool.operation_panel.operation_list.setCurrentItem(
-        tool.operation_panel.operation_list.topLevelItem(0)
-    )
-    tool.operation_editor.select_section("code")
-    trusted_check = tool.operation_editor.stack.currentWidget().findChild(
-        QtWidgets.QCheckBox, "figureComposerCustomCodeTrustedCheck"
-    )
-    assert trusted_check is not None
-    assert not trusted_check.isChecked()
+    tool.set_document_trust(new_document_trust())
 
-    trusted_check.setChecked(True)
-
-    assert tool.tool_status.operations[0].trusted is True
-    qtbot.waitUntil(lambda: not tool._operation_render_errors, timeout=1000)
+    qtbot.waitUntil(lambda: tool.figure.axes[0].get_title() == "loaded", timeout=1000)
     item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
     assert _operation_status_codes(tool, 0) == ()
-    assert "Custom code is not trusted" not in item.toolTip(
-        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
-    )
+    assert tool._code_trust_banner.isHidden()
+    assert tool.figure.axes[0].get_title() == "loaded"
     assert _operation_source_status_label(tool).isHidden()

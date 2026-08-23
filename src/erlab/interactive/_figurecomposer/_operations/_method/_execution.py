@@ -194,8 +194,6 @@ def _render_method_transform(
                 _transform_component(figure, axis, operation.method_transform_y),
             )
         case "custom":
-            if not operation.trusted:
-                raise ValueError("Custom transform expression is not trusted")
             expression = operation.method_transform_expression.strip()
             if not expression:
                 raise ValueError("Custom transform expression is empty")
@@ -235,8 +233,6 @@ def _method_transform_code(
                 f"mtransforms.blended_transform_factory({x_transform}, {y_transform})"
             )
         case "custom":
-            if not operation.trusted:
-                raise ValueError("Custom transform expression is not trusted")
             expression = operation.method_transform_expression.strip()
             if not expression:
                 raise ValueError("Custom transform expression is empty")
@@ -278,7 +274,12 @@ def _render_args_kwargs(
     ):
         kwargs.setdefault(spec.text_values_kwarg, list(operation.text_values))
     if axis is not None and figure is not None:
-        transform = _render_method_transform(operation, spec, figure=figure, axis=axis)
+        transform = _render_method_transform(
+            operation,
+            spec,
+            figure=figure,
+            axis=axis,
+        )
         if transform is not None:
             kwargs["transform"] = transform
     if _is_layout_engine_method(spec):
@@ -520,8 +521,7 @@ def _call_parts(args: Sequence[typing.Any], kwargs: dict[str, typing.Any]) -> st
 def _method_requires_transform_import(operation: FigureOperationState) -> bool:
     spec = _method_spec(operation)
     return _method_has_transform_control(spec) and (
-        operation.method_transform == "blend"
-        or (operation.method_transform == "custom" and operation.trusted)
+        operation.method_transform == "blend" or operation.method_transform == "custom"
     )
 
 

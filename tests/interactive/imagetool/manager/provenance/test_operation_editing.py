@@ -386,6 +386,7 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return current, candidate
@@ -556,6 +557,9 @@ def test_manager_extension_operation_uses_extension_executor_for_filter_and_repl
 
     controller._manager._extensions = types.SimpleNamespace(
         execution=types.SimpleNamespace(run_operation=run_operation),
+        replay_loader=lambda *_args, **_kwargs: pytest.fail(
+            "routine provenance must not use extension loader execution"
+        ),
         unavailable_reason_for_node=lambda _uid: "extension unavailable",
     )
 
@@ -608,7 +612,7 @@ def test_manager_extension_operation_edit_raises_when_descriptor_is_unavailable(
         )
 
 
-def test_manager_paste_detached_trusted_script_propagates_cancel() -> None:
+def test_manager_paste_detached_untrusted_script_propagates_cancel() -> None:
     data = xr.DataArray([1.0], dims=("x",))
     local = script(
         ScriptCodeOperation(
@@ -623,10 +627,11 @@ def test_manager_paste_detached_trusted_script_propagates_cancel() -> None:
     node.resolved_replay_source_data = lambda: data
     controller = _fake_edit_controller(node)
 
-    def cancel(*_args, **_kwargs) -> None:
-        raise manager_widgets._TrustedScriptReplayCancelled
+    @contextlib.contextmanager
+    def block_local_edit(*_args, **_kwargs):
+        yield None
 
-    controller._manager._ensure_script_provenance_trusted = cancel
+    controller._manager._workspace_controller.local_code_edit = block_local_edit
     controller._manager._extensions = types.SimpleNamespace(
         execution=types.SimpleNamespace(
             capture_replay_sources=lambda: contextlib.nullcontext(object()),
@@ -635,7 +640,7 @@ def test_manager_paste_detached_trusted_script_propagates_cancel() -> None:
         replay_loader=lambda *_args, **_kwargs: None,
     )
 
-    with pytest.raises(manager_widgets._TrustedScriptReplayCancelled):
+    with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
         controller._paste_detached_steps(node, local, where="pasting")
 
 
@@ -928,6 +933,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return current, candidate
@@ -1126,6 +1132,7 @@ def test_manager_affine_coord_edit_falls_back_to_replay(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return replay_data, candidate
@@ -1210,6 +1217,7 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return replay_data, candidate
@@ -1294,6 +1302,7 @@ def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed_specs.append(candidate)
         return data, candidate
@@ -1325,14 +1334,14 @@ def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
         *_args: object,
         **_kwargs: object,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
-        raise manager_widgets._TrustedScriptReplayCancelled
+        raise manager_widgets._TrustedProvenanceReplayCancelled
 
     monkeypatch.setattr(
         controller,
         "_replay_candidate_result",
         _raise_replay_cancelled,
     )
-    with pytest.raises(manager_widgets._TrustedScriptReplayCancelled):
+    with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
         controller._edited_native_operations(
             typing.cast("typing.Any", _fake_edit_node(spec)),
             row,
@@ -1431,6 +1440,7 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed_specs.append(spec)
         return data, spec
@@ -1485,11 +1495,15 @@ def test_manager_provenance_validation_rejects_highdim_reorder_result(
         active_name="derived",
     )
     reordered = original.model_copy(update={"steps": tuple(reversed(original.steps))})
-    controller = _fake_edit_controller()
     node = types.SimpleNamespace(
+        uid="node",
         imagetool=None,
+        displayed_provenance_spec=original,
+        displayed_source_spec=None,
+        parent_uid=None,
         resolved_replay_source_data=lambda: source,
     )
+    controller = _fake_edit_controller(node)
     applied_edits: list[typing.Any] = []
     monkeypatch.setattr(controller, "_apply_validated_edit", applied_edits.append)
 
@@ -1543,6 +1557,7 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         nonlocal calls
         calls += 1

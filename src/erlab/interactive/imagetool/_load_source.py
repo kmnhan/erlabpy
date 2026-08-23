@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import importlib
 import pathlib
+import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+import xarray as xr
 
 import erlab
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
@@ -61,6 +63,23 @@ _LoadFunc: typing.TypeAlias = tuple[
 _LoadKind: typing.TypeAlias = typing.Literal[
     "erlab_loader", "callable", "extension_loader"
 ]
+
+# These are the public loaders that ImageTool provides without an extension. Keep
+# this registry explicit so a saved workspace cannot cause an import of its target.
+_SUPPORTED_CALLABLE_LOADERS: Mapping[str, Callable[..., typing.Any]] = (
+    types.MappingProxyType(
+        {
+            "xarray.load_dataarray": xr.load_dataarray,
+            "xarray.open_dataarray": xr.open_dataarray,
+            "xarray.load_dataset": xr.load_dataset,
+            "xarray.open_dataset": xr.open_dataset,
+            "xarray.load_datatree": xr.load_datatree,
+            "xarray.open_datatree": xr.open_datatree,
+        }
+    )
+)
+
+_LOCAL_CALLABLE_LOADERS: dict[str, Callable[..., typing.Any]] = {}
 
 
 def _file_path_stem(path: str | os.PathLike[str]) -> str:
@@ -482,6 +501,30 @@ def _loader_callable_text(loader: Callable[..., typing.Any]) -> str | None:
     return f"{module}.{qualname}"
 
 
+def _register_local_callable_loader(
+    loader: Callable[..., typing.Any],
+) -> str | None:
+    """Register a locally supplied callable loader by its stable identifier."""
+    identifier = _loader_callable_text(loader)
+    if identifier is not None:
+        _LOCAL_CALLABLE_LOADERS[identifier] = loader
+    return identifier
+
+
+def _registered_local_callable_loader(
+    identifier: str,
+) -> Callable[..., typing.Any] | None:
+    """Return a supported loader without importing a workspace target."""
+    module, separator, qualname = identifier.partition(":")
+    if separator:
+        if not module or not qualname or ":" in qualname:
+            return None
+        identifier = f"{module}.{qualname}"
+    return _SUPPORTED_CALLABLE_LOADERS.get(identifier) or _LOCAL_CALLABLE_LOADERS.get(
+        identifier
+    )
+
+
 def _import_for_callable(loader: Callable[..., typing.Any], target: str) -> str:
     module = getattr(loader, "__module__", None)
     if isinstance(module, str) and target.startswith(f"{module}."):
@@ -660,7 +703,7 @@ def _resolve_load_func(
             cast_float64=cast_float64,
         )
 
-    target = _loader_callable_text(loader)
+    target = _register_local_callable_loader(loader)
     if target is None:
         return None
     return _ResolvedLoadFunc(

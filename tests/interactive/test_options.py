@@ -23,6 +23,7 @@ from erlab.interactive._options.parameters import (
     SavefigDpiWidget,
     SavefigPaddingWidget,
     StylesheetListWidget,
+    TrustedFoldersWidget,
 )
 from erlab.interactive._options.schema import (
     AppOptions,
@@ -134,8 +135,8 @@ def test_dialog_initial_settings(dialog: OptionDialog):
 def test_dialog_native_structure(dialog: OptionDialog):
     assert dialog.findChild(QtWidgets.QDialogButtonBox) is None
     assert dialog.findChild(QtWidgets.QTabBar, "settingsScopeTabs").count() == 1
-    assert dialog.findChild(QtWidgets.QListWidget, "settingsCategoryList").count() == 4
-    assert dialog.findChild(QtWidgets.QStackedWidget, "settingsPageStack").count() == 4
+    assert dialog.findChild(QtWidgets.QListWidget, "settingsCategoryList").count() == 5
+    assert dialog.findChild(QtWidgets.QStackedWidget, "settingsPageStack").count() == 5
     assert dialog.findChild(QtWidgets.QPushButton, "settingsRevertButton") is not None
     page = dialog.findChild(QtWidgets.QScrollArea, "settingsPage_user_colors")
     if page is None:
@@ -195,6 +196,19 @@ def test_dialog_default_directory_control_has_accessible_description(
     assert description
     assert control.toolTip() == ""
     assert control.accessibleDescription() == description
+
+
+def test_dialog_security_settings_are_user_only(qtbot) -> None:
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dialog = OptionDialog(manager)
+    qtbot.addWidget(dialog)
+
+    path = "security/trusted_workspace_folders"
+    control = _control(dialog, "user", path, TrustedFoldersWidget)
+
+    assert isinstance(control, TrustedFoldersWidget)
+    assert ("workspace", path) not in dialog._rows
 
 
 def test_dialog_recent_workspace_limit_control(dialog: OptionDialog):
