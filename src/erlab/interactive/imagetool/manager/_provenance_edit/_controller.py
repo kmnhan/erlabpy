@@ -1419,7 +1419,6 @@ class _ProvenanceEditController:
         *,
         action: typing.Literal["edit", "revert", "delete"],
         replacements: Sequence[ToolProvenanceOperation] = (),
-        anchor_match: _OperationDialogMatch | None = None,
     ) -> list[_ProvenanceCandidate]:
         candidates: list[_ProvenanceCandidate] = []
         for session in sessions:
@@ -1451,20 +1450,12 @@ class _ProvenanceEditController:
                     self._operation_action_block(spec, ref, action=action),
                 )
                 target_replacements = restamp_operation_groups(replacements)
-                if anchor_match is None:
-                    candidate = spec._replace_operation_range_ref(
-                        ref,
-                        block_ref.start,
-                        block_ref.stop,
-                        target_replacements,
-                    )
-                else:
-                    candidate = spec._replace_operation_range_ref(
-                        ref,
-                        block_ref.start,
-                        block_ref.stop,
-                        target_replacements,
-                    )
+                candidate = spec._replace_operation_range_ref(
+                    ref,
+                    block_ref.start,
+                    block_ref.stop,
+                    target_replacements,
+                )
                 if (
                     not session.row.script_input_path
                     and self._active_filter_ref(node, spec) == ref
@@ -1494,7 +1485,6 @@ class _ProvenanceEditController:
         try:
             sessions = self._row_sessions(target_rows)
             replacements: Sequence[ToolProvenanceOperation] = ()
-            anchor_match = None
             if action == "edit":
                 edited = self._edited_multiple_row_operations(
                     sessions[0].node,
@@ -1502,7 +1492,7 @@ class _ProvenanceEditController:
                 )
                 if edited is None:
                     return
-                replacements, anchor_match = edited
+                replacements = edited
             elif not (
                 self._confirm_revert()
                 if action == "revert"
@@ -1517,7 +1507,6 @@ class _ProvenanceEditController:
                 sessions,
                 action=action,
                 replacements=replacements,
-                anchor_match=anchor_match,
             )
             self._validate_and_replace_multiple(
                 sessions,
@@ -2126,13 +2115,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         row: _ProvenanceDisplayRow,
-    ) -> (
-        tuple[
-            tuple[ToolProvenanceOperation, ...],
-            _OperationDialogMatch | None,
-        ]
-        | None
-    ):
+    ) -> tuple[ToolProvenanceOperation, ...] | None:
         ref = typing.cast("_ProvenanceStepRef", row.edit_ref)
         spec = self._display_spec_for_row(node, row)
         if spec is None:
@@ -2144,12 +2127,12 @@ class _ProvenanceEditController:
             replacement = self._edited_script_code_operation(operation)
             if replacement is None:
                 return None
-            return (replacement,), None
+            return (replacement,)
         if isinstance(operation, ExtensionRoutineOperation):
             replacement = self._edited_extension_routine_operation(operation)
             if replacement is None:
                 return None
-            return (replacement,), None
+            return (replacement,)
         dialog_match = _dialog_match_for_operation_ref(spec, ref)
         if dialog_match is None:
             raise RuntimeError("No editing dialog is available for this step")
@@ -2162,7 +2145,7 @@ class _ProvenanceEditController:
         )
         if replacements is None:
             return None
-        return tuple(replacements), dialog_match
+        return tuple(replacements)
 
     def _edit_operation_row(
         self,

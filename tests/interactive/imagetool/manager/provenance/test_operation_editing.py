@@ -200,16 +200,11 @@ def test_manager_multi_provenance_grouped_edit_revert_and_delete(
     ) -> None:
         captured.append((where, tuple(candidates)))
 
-    anchor_match = provenance_editors._dialog_match_for_operation_ref(
-        first_spec,
-        typing.cast("_ProvenanceStepRef", first_row.edit_ref),
-    )
-    assert anchor_match is not None
     replacement_group = kspace_group(4.0)
     monkeypatch.setattr(
         controller,
         "_edited_multiple_row_operations",
-        lambda _node, _row: (replacement_group, anchor_match),
+        lambda _node, _row: replacement_group,
     )
     monkeypatch.setattr(
         controller,
@@ -541,7 +536,7 @@ def test_manager_multi_provenance_trust_and_preflight_failures_change_no_target(
     monkeypatch.setattr(
         controller,
         "_edited_multiple_row_operations",
-        lambda _node, _row: ((replacement,), None),
+        lambda _node, _row: (replacement,),
     )
     validation_calls: list[str] = []
     applied: list[typing.Any] = []
@@ -649,11 +644,6 @@ def test_manager_multi_provenance_rejects_stale_edit_and_cancel(
         for _uid in ("first", "second")
     )
     target_rows = (("first", rows[0]), ("second", rows[1]))
-    anchor_match = provenance_editors._dialog_match_for_operation_ref(
-        spec,
-        typing.cast("_ProvenanceStepRef", rows[0].edit_ref),
-    )
-    assert anchor_match is not None
     unavailable: list[str] = []
     monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
     monkeypatch.setattr(
@@ -666,7 +656,7 @@ def test_manager_multi_provenance_rejects_stale_edit_and_cancel(
 
     def make_stale(_node: typing.Any, _row: typing.Any) -> typing.Any:
         second.provenance_revision += 1
-        return (replacement,), anchor_match
+        return (replacement,)
 
     monkeypatch.setattr(controller, "_edited_multiple_row_operations", make_stale)
     controller.edit_rows(target_rows)
@@ -874,7 +864,7 @@ def test_manager_multi_provenance_rechecks_sessions_after_preflight(
     monkeypatch.setattr(
         controller,
         "_edited_multiple_row_operations",
-        lambda _node, _row: ((replacement,), None),
+        lambda _node, _row: (replacement,),
     )
     applied: list[object] = []
     unavailable: list[str] = []
@@ -969,7 +959,7 @@ def test_manager_multi_operation_special_editor_paths(
     if cancel:
         assert edited is None
     else:
-        assert edited == ((replacement,), None)
+        assert edited == (replacement,)
 
 
 def test_manager_multi_operation_editor_rejects_stale_anchor() -> None:
