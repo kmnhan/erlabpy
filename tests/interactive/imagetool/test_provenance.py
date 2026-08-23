@@ -62,7 +62,6 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_file_provenance,
     replay_script_provenance,
     script_provenance_replayable,
-    script_provenance_requires_trust,
 )
 from erlab.interactive.imagetool._provenance._graph import ReplayGraph, ReplayGraphError
 from erlab.interactive.imagetool._provenance._model import (
@@ -1362,12 +1361,12 @@ def test_external_input_bypasses_trust_required_recorded_fallback() -> None:
     )
 
     assert script_provenance_replayable(spec, external_input_names={"right"})
-    assert not script_provenance_requires_trust(
-        spec,
-        external_input_names={"right"},
-    )
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"right": data}),
+        replay_script_provenance(
+            spec,
+            {"right": data},
+            authorize=_authorize_execution,
+        ),
         data,
     )
 
@@ -8835,7 +8834,7 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     stderr_operation = operation.model_copy(
         update={"parameter": "c0", "output": "stderr"}
     )
-    stderr = stderr_operation.apply(data)
+    stderr = stderr_operation.apply(data, authorization=authorization)
     assert stderr.name == "c0_stderr"
     assert np.isnan(stderr.item())
 

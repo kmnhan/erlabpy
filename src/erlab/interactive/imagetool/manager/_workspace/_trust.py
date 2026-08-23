@@ -31,6 +31,9 @@ _MANAGER_LIVE_SOURCE_SPEC_ATTR = "manager_node_live_source_spec"
 _MANAGER_PROVENANCE_SPEC_ATTR = "manager_node_provenance_spec"
 _ITOOL_PROVENANCE_SPEC_ATTR = "itool_provenance_spec"
 _TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
+_TOOL_SCRIPT_INPUTS_ATTR = "tool_script_inputs"
+_TOOL_PRIMARY_INPUT_ATTR = "tool_primary_input"
+_TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
 _PROVENANCE_ATTRS = (_MANAGER_PROVENANCE_SPEC_ATTR, _ITOOL_PROVENANCE_SPEC_ATTR)
 _SOURCE_ATTRS = {
     _MANAGER_LIVE_SOURCE_SPEC_ATTR: "source",
@@ -44,6 +47,9 @@ _CODE_TRUST_ATTRS = frozenset(
         CODE_PAYLOAD_ENTRIES_ATTR,
         "tool_cls_qualname",
         "tool_state",
+        _TOOL_SCRIPT_INPUTS_ATTR,
+        _TOOL_PRIMARY_INPUT_ATTR,
+        _TOOL_DATA_REFERENCES_ATTR,
     )
 )
 

@@ -3546,7 +3546,6 @@ class Fit2DTool(Fit1DTool):
         return ScriptCodeOperation(
             label=f"Fit model and extract {param_name!r} parameter {output_label}",
             code=code,
-            framework_owned=True,
         )
 
     def _parameter_output_provenance(

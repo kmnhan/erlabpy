@@ -660,7 +660,7 @@ class _LineageController:
                 return None
 
             capability = _replay_capability(spec, live_input_resolver=resolve)
-            return capability.replayable or capability.requires_trust
+            return capability.replayable_with_code
 
         def plan_inputs(
             inputs: Sequence[ScriptInput],
@@ -908,7 +908,7 @@ class _LineageController:
                 if boundary_tool is not None and boundary_tool._source_refresh_deferred:
                     blocker = boundary
             if blocker is None:
-                if kind == "apply" and tracker.source_refresh_queued(uid, target_uid):
+                if tracker.source_refresh_queued(uid, target_uid):
                     deferred = True
                     continue
                 return "failed"
@@ -996,9 +996,7 @@ class _LineageController:
                     extension_executor=(
                         self._manager._extensions.execution.run_operation
                     ),
-                    extension_loader_executor=(
-                        self._manager._extensions.replay_loader
-                    ),
+                    extension_loader_executor=self._manager._extensions.replay_loader,
                     authorize=self._provenance_execution_authorizer(
                         reason="reload this tool input"
                     ),
@@ -1159,7 +1157,7 @@ class _LineageController:
                 spec,
                 live_input_resolver=resolve_live,
             )
-            if capability.replayable:
+            if capability.replayable_with_code:
                 return None
             return "The recorded script steps cannot be reloaded."
         details = node._load_source_details()

@@ -1132,6 +1132,8 @@ _TOOL_PRIMARY_INPUT_ATTR = "tool_primary_input"
 _TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
 _TOOL_DATA_BLOB_NAME_ATTR = "tool_data_blob_name"
 _SAVED_TOOL_DATA_NAME = "<saved-tool-data>"
+_TOOL_INPUT_CODE_TRUST_DOMAIN = "erlab.tool-inputs"
+_TOOL_INPUT_CODE_TRUST_POLICY_VERSION = 1
 
 
 def _normalize_tool_source_state(
@@ -5727,6 +5729,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 raise ValueError(
                     "Referenced tool data source provenance is not replayable"
                 )
+            source_input = typing.cast("ScriptInput", source_input)
+            source_index = typing.cast("int", source_index)
             capability = cls._saved_provenance_capability(
                 source_spec,
                 location_prefix=(
@@ -6098,32 +6102,50 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         attrs: Mapping[str, typing.Any],
     ) -> CodeTrustManifest | None:
         """Return executable content from saved state and opaque-payload metadata."""
-        if cls._CODE_TRUST_DOMAIN is None:
-            return None
         script_inputs, _primary_input = cls._saved_script_input_metadata(attrs)
         references = cls._saved_tool_data_references_from_metadata(attrs)
+        input_entries = tuple(cls._script_inputs_code_trust_entries(script_inputs))
+        reference_entries = tuple(cls._saved_reference_code_trust_entries(references))
+        if cls._CODE_TRUST_DOMAIN is None:
+            entries = (*input_entries, *reference_entries)
+            if not entries:
+                return None
+            return create_manifest(
+                _TOOL_INPUT_CODE_TRUST_DOMAIN,
+                _TOOL_INPUT_CODE_TRUST_POLICY_VERSION,
+                entries,
+            )
         return create_manifest(
             cls._CODE_TRUST_DOMAIN,
             cls._CODE_TRUST_POLICY_VERSION,
             (
                 *cls._code_trust_entries_from_status(status),
                 *code_payload_entries_from_metadata(attrs),
-                *cls._script_inputs_code_trust_entries(script_inputs),
-                *cls._saved_reference_code_trust_entries(references),
+                *input_entries,
+                *reference_entries,
             ),
         )
 
     def _current_code_trust_manifest(self) -> CodeTrustManifest | None:
         """Return executable content for the current in-memory document."""
+        input_entries = tuple(
+            self._script_inputs_code_trust_entries(self._script_inputs)
+        )
         if self._CODE_TRUST_DOMAIN is None:
-            return None
+            if not input_entries:
+                return None
+            return create_manifest(
+                _TOOL_INPUT_CODE_TRUST_DOMAIN,
+                _TOOL_INPUT_CODE_TRUST_POLICY_VERSION,
+                input_entries,
+            )
         return create_manifest(
             self._CODE_TRUST_DOMAIN,
             self._CODE_TRUST_POLICY_VERSION,
             (
                 *self._code_trust_entries_from_status(self._saved_tool_status()),
                 *self._code_trust_payload_entries(),
-                *self._script_inputs_code_trust_entries(self._script_inputs),
+                *input_entries,
             ),
         )
 

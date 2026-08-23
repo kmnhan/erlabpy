@@ -566,7 +566,7 @@ def file_load_source_status(
 @dataclass(frozen=True)
 class _ReplayCapability:
     replayable: bool = False
-    requires_trust: bool = False
+    replayable_with_code: bool = False
     reloadable: bool = False
 
 
@@ -618,10 +618,9 @@ def _analyze_replay_capability(
     check_reloadability: bool = True,
 ) -> _ReplayCapability:
     if spec.kind == "file":
-        loadable = file_load_source_status(spec) == "loadable"
         return _ReplayCapability(
-            replayable=True,
-            reloadable=check_reloadability and loadable,
+            reloadable=check_reloadability
+            and file_load_source_status(spec) == "loadable",
         )
     if spec.kind != "script":
         return _ReplayCapability()
@@ -629,8 +628,6 @@ def _analyze_replay_capability(
         raise ReplayGraphError(
             "Nested script provenance exceeded the maximum reload depth"
         )
-    child_capabilities: list[_ReplayCapability] = []
-    inputs_replayable = True
     inputs_reloadable = True
     for script_input in spec.script_inputs:
         if script_input.name in (external_input_names or ()) or (
@@ -641,9 +638,7 @@ def _analyze_replay_capability(
             continue
         input_spec = input_provenance_resolver(script_input)
         if input_spec is None:
-            inputs_replayable = False
             inputs_reloadable = False
-            child_capabilities.append(_ReplayCapability())
             continue
         capability = _analyze_replay_capability(
             input_spec,
@@ -653,19 +648,11 @@ def _analyze_replay_capability(
             depth + int(input_spec.kind == "script"),
             check_reloadability=check_reloadability,
         )
-        child_capabilities.append(capability)
-        inputs_replayable &= capability.replayable
         inputs_reloadable &= capability.reloadable
 
     local_strict = _script_validates(spec, external_input_names, True)
-    local_permissive = local_strict or _script_validates(
-        spec, external_input_names, False
-    )
-    replayable = local_permissive and inputs_replayable
-    requires_trust = replayable and (
-        not local_strict
-        or any(capability.requires_trust for capability in child_capabilities)
-    )
+    local_trusted = local_strict or _script_validates(spec, external_input_names, False)
+    replayable = local_strict
     file_source_reloadable = (
         not check_reloadability
         or spec.file_load_source is None
@@ -674,11 +661,10 @@ def _analyze_replay_capability(
     reloadable = (
         check_reloadability
         and replayable
-        and not requires_trust
         and inputs_reloadable
         and file_source_reloadable
     )
-    return _ReplayCapability(replayable, requires_trust, reloadable)
+    return _ReplayCapability(replayable, local_trusted, reloadable)
 
 
 def _compile_replay_preflight(
@@ -810,7 +796,7 @@ def script_provenance_replayable(
         external_input_names=external_input_names,
         live_input_resolver=live_input_resolver,
     )
-    return capability.replayable and (allow_code or not capability.requires_trust)
+    return capability.replayable_with_code if allow_code else capability.replayable
 
 
 def _script_provenance_validates(
@@ -831,19 +817,6 @@ def _script_provenance_validates(
     except (ReplayGraphError, TypeError, ValueError):
         return False
     return True
-
-
-def script_provenance_requires_trust(
-    spec: typing.Any,
-    *,
-    external_input_names: set[str] | None = None,
-    live_input_resolver: LiveInputResolver | None = None,
-) -> bool:
-    return _replay_capability(
-        spec,
-        external_input_names=external_input_names,
-        live_input_resolver=live_input_resolver,
-    ).requires_trust
 
 
 def replay_script_provenance(
@@ -960,9 +933,9 @@ def rebuild_script_inputs(
     """Resolve named inputs and refresh their durable source snapshots.
 
     Live manager nodes take priority. If ``allow_recorded`` is true and a live node is
-    unavailable, the recorded script or file provenance is replayed. The optional
-    The document host authorizes executable recorded provenance at its final replay
-    boundary. All inputs are resolved before the caller mutates a ToolWindow.
+    unavailable, the recorded script or file provenance is replayed. The document
+    host authorizes executable recorded provenance at its final replay boundary. All
+    inputs are resolved before the caller mutates a ToolWindow.
     """
     replay_cache = {} if cache is None else cache
     resolve_live = _memoized_live_input_resolver(live_input_resolver)

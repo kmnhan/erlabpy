@@ -48,7 +48,6 @@ if typing.TYPE_CHECKING:
     import h5py
     import xarray as xr
 
-    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._workspace._controller import (
         _WorkspaceController,
     )
@@ -1026,6 +1025,10 @@ class _PendingWorkspacePayloads:
             if pending_attrs is not None:
                 ds = ds.copy(deep=False)
                 ds.attrs = dict(pending_attrs)
+            ds = self._loader._workspace_tool_dataset_with_canonical_inputs(
+                ds,
+                parent_target=node.parent_uid,
+            )
             ds = self._loader._tool_dataset_without_saved_input_provenance(ds)
 
             source_parent_data, tool_data_reference_resolver = (
@@ -1061,7 +1064,6 @@ class _PendingWorkspacePayloads:
                 tool._set_source_state(node.source_state)
                 if node.parent_uid is None:
                     self._loader._require_workspace_root_tool_is_figure(tool)
-                    tool.set_input_provenance_spec(None)
                     node.window = tool
                     if not tool._tool_display_name:
                         tool._tool_display_name = node.name
@@ -1069,23 +1071,6 @@ class _PendingWorkspacePayloads:
                     self._manager._figure_collection.sync(select_uid=None)
                 else:
                     parent = self._manager._node_for_target(node.parent_uid)
-                    parent_uid = parent.uid
-
-                    def _source_parent_fetcher() -> xr.DataArray:
-                        return self._loader._workspace_tool_reference_source_data(
-                            parent_uid, owner_node=node
-                        )
-
-                    def _input_provenance_parent_fetcher() -> ToolProvenanceSpec | None:
-                        return self._manager._node_for_target(
-                            parent_uid
-                        ).displayed_provenance_spec
-
-                    tool.set_input_provenance_spec(None)
-                    tool.set_source_parent_fetcher(_source_parent_fetcher)
-                    tool.set_input_provenance_parent_fetcher(
-                        _input_provenance_parent_fetcher
-                    )
                     node.window = tool
                     if not tool._tool_display_name:
                         tool._tool_display_name = parent.name

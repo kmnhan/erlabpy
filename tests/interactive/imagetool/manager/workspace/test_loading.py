@@ -36,7 +36,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceSpec,
-    compose_display_provenance,
+    compose_full_provenance,
     full_data,
     script,
 )
@@ -83,12 +83,12 @@ class _ManagedInputAuthorityTool(_AddedTimeChildTool):
     )
 
     def _copy_expression(
-        self, *, input_name: str | None, data: xr.DataArray | None
+        self, *, primary_input: str | None, data: xr.DataArray | None
     ) -> str | None:
         del data
-        if input_name is None:
+        if primary_input is None:
             return None
-        return f"{input_name}.rename('tool-result')"
+        return f"{primary_input}.rename('tool-result')"
 
 
 def _workspace_sweep_json(value: typing.Any) -> typing.Any:
@@ -1105,24 +1105,33 @@ def test_managed_tool_rebuilds_input_provenance_from_parent(
             provenance_spec=parent_provenance,
         )
         child = _ManagedInputAuthorityTool(source_spec.apply(data))
-        child.set_source_binding(source_spec)
-        child.set_input_provenance_spec(_injected_input_provenance())
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    data_role="displayed",
+                    source_spec=source_spec.model_dump(mode="json"),
+                    provenance_spec=_injected_input_provenance().model_dump(
+                        mode="json"
+                    ),
+                ),
+            ),
+            primary_input="data",
+        )
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=False,
+        )
 
-        expected = compose_display_provenance(
+        expected = compose_full_provenance(
             manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
             source_spec,
-            parent_data=data,
         )
-        assert child._effective_input_provenance_spec() == expected
+        assert child.script_inputs[0].parsed_provenance_spec() == expected
         current = child.current_provenance_spec()
         assert current is not None
         assert "attacker" not in current.display_code()
-
-        figure = _WorkspaceSweepFigureTool(data)
-        figure.set_input_provenance_spec(_injected_input_provenance())
-        figure_uid = manager.add_figuretool(figure, show=False)
-        assert figure._effective_input_provenance_spec() is None
 
         fname = tmp_path / "managed-input-authority.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
@@ -1135,11 +1144,6 @@ def test_managed_tool_rebuilds_input_provenance_from_parent(
                 erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
                 not in payload.attrs
             )
-        figure_path = f"figures/{figure_uid}"
-        figure_attrs = _current_workspace_payload_attrs(fname, figure_path)
-        assert (
-            erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in figure_attrs
-        )
 
 
 def test_legacy_tool_input_provenance_is_not_raw_copied(
@@ -1171,8 +1175,21 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
             provenance_spec=parent_provenance,
         )
         child = _ManagedInputAuthorityTool(source_spec.apply(data))
-        child.set_source_binding(source_spec)
-        child_uid = manager.add_childtool(child, 0, show=False)
+        child.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    data_role="displayed",
+                    source_spec=source_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=False,
+        )
         manager._workspace_controller.saving._save_workspace_document(fname)
 
     node_path = f"0/childtools/{child_uid}"
@@ -1206,12 +1223,12 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
 
         assert child_node.pending_workspace_tool_payload is None
         restored = typing.cast("_ManagedInputAuthorityTool", child_node.tool_window)
-        expected = compose_display_provenance(
+        restored_input = restored.script_inputs[0]
+        expected = compose_full_provenance(
             manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
-            restored.source_spec,
-            parent_data=manager._tool_graph.root_wrappers[0].current_source_data(),
+            restored_input.parsed_source_spec(),
         )
-        assert restored._effective_input_provenance_spec() == expected
+        assert restored_input.parsed_provenance_spec() == expected
         current = restored.current_provenance_spec()
         assert current is not None
         assert "attacker" not in current.display_code()

@@ -1248,7 +1248,7 @@ class _WorkspaceSaver:
                         kind != "tool"
                         or (
                             not has_saved_input_provenance
-                            and self._pending_workspace_tool_references_available(node)
+                            and self._pending_workspace_tool_reference_status(node)[0]
                         )
                     )
                 )

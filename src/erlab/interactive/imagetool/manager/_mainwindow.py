@@ -2422,9 +2422,6 @@ class ImageToolManager(_ImageToolManagerBase):
             data_role=data_role,
         )
 
-    def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
-        return self._lineage_controller._script_provenance_inputs_current(spec)
-
     def _resolve_live_script_input_for_reload(
         self,
         script_input: ScriptInput,
@@ -2432,17 +2429,6 @@ class ImageToolManager(_ImageToolManagerBase):
         target_node_uid: str | None = None,
     ) -> tuple[xr.DataArray, ScriptInput] | None:
         return self._lineage_controller._resolve_live_script_input_for_reload(
-            script_input,
-            target_node_uid=target_node_uid,
-        )
-
-    def _script_input_can_reload(
-        self,
-        script_input: ScriptInput,
-        *,
-        target_node_uid: str | None = None,
-    ) -> bool:
-        return self._lineage_controller._script_input_can_reload(
             script_input,
             target_node_uid=target_node_uid,
         )
@@ -2837,7 +2823,6 @@ class ImageToolManager(_ImageToolManagerBase):
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
-        tool.set_input_provenance_spec(None)
         node = _ManagedWindowNode(
             self,
             self._next_node_uid(uid),

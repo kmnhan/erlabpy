@@ -573,7 +573,10 @@ def test_fit1d_uncertainty_persistence_roundtrip(qtbot) -> None:
     )
     qtbot.addWidget(win)
 
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset(),
+        _code_trust=new_document_trust(),
+    )
     qtbot.addWidget(restored)
     assert isinstance(restored, Fit1DTool)
     xr.testing.assert_identical(restored.uncertainty, uncertainty)

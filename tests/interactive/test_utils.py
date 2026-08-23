@@ -5425,16 +5425,16 @@ def test_tool_window_saved_source_reference_authorizes_before_execution(
 
 
 def test_tool_window_manifest_includes_saved_source_expressions() -> None:
-    class _SourceTrustTool(_PersistentTool):
-        _CODE_TRUST_DOMAIN = "test.tool-source"
+    script_input = ScriptInput(
+        name="data",
+        source_spec=full_data(_expression_fit_operation()).model_dump(mode="json"),
+    )
+    attrs = erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+        (script_input,),
+        "data",
+    )
 
-    attrs = {
-        erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR: json.dumps(
-            full_data(_expression_fit_operation()).model_dump(mode="json")
-        )
-    }
-
-    manifest = _SourceTrustTool._code_trust_manifest_from_saved_metadata(
+    manifest = _PersistentTool._code_trust_manifest_from_saved_metadata(
         _PersistentToolState(),
         attrs,
     )
@@ -5444,43 +5444,8 @@ def test_tool_window_manifest_includes_saved_source_expressions() -> None:
         "erlab.provenance.model-fit-parameter-expression"
     ]
     assert manifest.entries[0].location == (
-        "tool-source/provenance/operations/0/parameters/c1"
+        "tool-inputs/0:data/source/operations/0/parameters/c1"
     )
-
-
-def test_tool_window_local_code_edit_changes_signed_trust_to_local_lineage(
-    qtbot,
-) -> None:
-    class _SourceTrustTool(_PersistentTool):
-        _CODE_TRUST_DOMAIN = "test.tool-source"
-
-    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
-    tool = _SourceTrustTool(data)
-    qtbot.addWidget(tool)
-
-    def source(expression: str) -> ToolProvenanceSpec:
-        return full_data(_expression_fit_operation(expression))
-
-    tool.set_source_binding(source("2 * c0"))
-    manifest = tool._current_code_trust_manifest()
-    assert manifest is not None
-    signed = _document_trust_after_save(
-        new_document_trust(),
-        manifest,
-        saved_trusted_lineage=True,
-        signature_stored=True,
-    )
-    tool.set_document_trust(signed)
-    changed_source = source("3 * c0")
-    changed_entries = tuple(tool._source_spec_code_trust_entries(changed_source))
-    with tool._local_code_edit(
-        changed_entries,
-        edited_entries=changed_entries,
-    ) as capability:
-        assert execution_capability_allows(capability, changed_entries)
-        tool.set_source_binding(changed_source)
-
-    assert tool._authorize_code_execution(changed_entries)
 
 
 def test_tool_window_local_code_edit_commits_only_after_success(qtbot) -> None:

@@ -1533,8 +1533,10 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
 
         monkeypatch.setattr(
             manager._lineage_controller,
-            "_ensure_script_provenance_trusted",
-            lambda *_args, **_kwargs: False,
+            "_authorize_provenance_execution",
+            lambda *_args, **_kwargs: pytest.fail(
+                "file fallback must not request code authorization"
+            ),
         )
         child.tool_window.set_script_inputs(
             (script_input.model_copy(update={"node_uid": "removed-parent"}),),

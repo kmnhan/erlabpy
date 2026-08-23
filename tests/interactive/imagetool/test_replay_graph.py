@@ -29,7 +29,6 @@ from erlab.interactive.imagetool._provenance._execution import (
     rebuild_script_provenance,
     replay_script_provenance,
     script_provenance_replayable,
-    script_provenance_requires_trust,
 )
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
@@ -530,21 +529,6 @@ class Child(Base, metaclass=data_5):
         external_input_spec,
         external_input_names={"data"},
     )
-    assert not script_provenance_requires_trust(
-        script(
-            start_label="Run script",
-            seed_code="derived =",
-            active_name="derived",
-        ),
-    )
-    assert not script_provenance_requires_trust(
-        script(
-            ScriptCodeOperation(label="Broken", code="derived ="),
-            start_label="Run script",
-            seed_code="derived = 0",
-            active_name="derived",
-        ),
-    )
     assert _single_assignment_output_name("derived: xr.DataArray = data") == "derived"
     assert _single_assignment_output_name("derived =") is None
     assert _single_assignment_output_name("obj.value = data") is None
@@ -962,7 +946,7 @@ def test_rebuild_script_inputs_controls_recorded_fallback(
     resolved, refreshed = rebuild_script_inputs(
         (script_input,),
         live_input_resolver=lambda _input: None,
-        recorded_input_authorizer=lambda *_args: pytest.fail(
+        authorize=lambda *_args: pytest.fail(
             "file fallback must not request script authorization"
         ),
         allow_recorded=True,
@@ -1006,7 +990,7 @@ def test_rebuild_script_inputs_controls_recorded_fallback(
     resolved, refreshed = rebuild_script_inputs(
         (script_input,),
         live_input_resolver=lambda item: (expected, item),
-        recorded_input_authorizer=lambda *_args: pytest.fail(
+        authorize=lambda *_args: pytest.fail(
             "live input must not authorize recorded provenance"
         ),
     )
@@ -1084,6 +1068,7 @@ def test_rebuild_script_provenance_cache_separates_live_inputs(
     result, _ = rebuild_script_provenance(
         spec,
         live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(result, source.mean("x") + displayed.mean("x"))
@@ -1133,6 +1118,7 @@ def test_rebuild_cache_separates_live_input_source_transforms() -> None:
     result, _ = rebuild_script_provenance(
         spec,
         live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
     )
 
     expected = xr.concat(
@@ -1276,7 +1262,11 @@ def test_display_graph_rejects_reserved_external_input_name() -> None:
     )
 
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"xr": data}),
+        replay_script_provenance(
+            spec,
+            {"xr": data},
+            authorize=_authorize_execution,
+        ),
         data,
     )
     with pytest.raises(ReplayGraphError, match="conflicts with a replay global"):
@@ -1380,7 +1370,7 @@ def test_rebuild_executes_nested_script_once(monkeypatch) -> None:
         ),
     )
 
-    result, _ = rebuild_script_provenance(spec, trusted_user_code=True)
+    result, _ = rebuild_script_provenance(spec, authorize=_authorize_execution)
 
     assert calls == 2
     xr.testing.assert_identical(
@@ -1389,9 +1379,7 @@ def test_rebuild_executes_nested_script_once(monkeypatch) -> None:
     )
 
 
-def test_rebuild_validates_all_inputs_before_nested_execution(
-    tmp_path: pathlib.Path, monkeypatch
-) -> None:
+def test_rebuild_validates_all_inputs_before_nested_execution(monkeypatch) -> None:
     calls = 0
 
     def counted_random():
@@ -1408,21 +1396,23 @@ def test_rebuild_validates_all_inputs_before_nested_execution(
         start_label="Create left input",
         active_name="left",
     )
-    path = tmp_path / "source.nc"
-    xr.DataArray([10.0, 20.0], dims="x").to_netcdf(path)
-    invalid_file = _file_spec(path).model_copy(update={"seed_code": "right ="})
+    invalid_script = script(
+        start_label="Create right input",
+        seed_code="right =",
+        active_name="right",
+    )
     spec = script(
         ScriptCodeOperation(label="Add inputs", code="result = left + right"),
         start_label="Add inputs",
         active_name="result",
         script_inputs=(
             ScriptInput(name="left", provenance_spec=nested),
-            ScriptInput(name="right", provenance_spec=invalid_file),
+            ScriptInput(name="right", provenance_spec=invalid_script),
         ),
     )
 
     with pytest.raises(ReplayGraphError, match="not valid Python"):
-        rebuild_script_provenance(spec, trusted_user_code=True)
+        rebuild_script_provenance(spec, authorize=_authorize_execution)
 
     assert calls == 0
 
@@ -1592,17 +1582,20 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     assert rebuilt_displayed.script_inputs[0].data_role == "displayed"
 
     miss_calls = 0
-    duplicate_file_input = ScriptInput(
-        name="data_0",
+    shared_file_input = ScriptInput(
+        name="left",
         label="Closed file input",
         node_uid="same-uid",
         provenance_spec=file_spec,
     )
-    duplicate_file_spec = script(
-        ScriptCodeOperation(label="Copy", code="derived = data_0"),
+    shared_file_spec = script(
+        ScriptCodeOperation(label="Add", code="derived = left + right"),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(duplicate_file_input, duplicate_file_input),
+        script_inputs=(
+            shared_file_input,
+            shared_file_input.model_copy(update={"name": "right"}),
+        ),
     )
 
     def miss_live(_script_input):
@@ -1611,11 +1604,11 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
         return
 
     rebuilt_from_miss, _rebuilt_from_miss_spec = rebuild_script_provenance(
-        duplicate_file_spec,
+        shared_file_spec,
         live_input_resolver=miss_live,
         authorize=_authorize_execution,
     )
-    xr.testing.assert_identical(rebuilt_from_miss, data)
+    xr.testing.assert_identical(rebuilt_from_miss, data * 2.0)
     assert miss_calls == 2
 
     unsupported_nested = script(
@@ -4827,12 +4820,9 @@ def test_live_inputs_bypass_unreachable_unsafe_fallback() -> None:
         return None
 
     assert script_provenance_replayable(spec)
-    assert script_provenance_requires_trust(spec)
+    assert not script_provenance_replayable(unsafe_right_spec)
+    assert script_provenance_replayable(unsafe_right_spec, allow_code=True)
     assert script_provenance_replayable(
-        spec,
-        live_input_resolver=resolve_live,
-    )
-    assert not script_provenance_requires_trust(
         spec,
         live_input_resolver=resolve_live,
     )
@@ -4840,6 +4830,7 @@ def test_live_inputs_bypass_unreachable_unsafe_fallback() -> None:
     result, _rebuilt_spec = rebuild_script_provenance(
         spec,
         live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(result, left + right)
@@ -4923,15 +4914,13 @@ def test_live_input_resolution_uses_exact_input_across_nested_scopes() -> None:
             return live_shared, script_input
         return None
 
-    assert script_provenance_requires_trust(
-        spec,
-        live_input_resolver=resolve_live,
-    )
+    assert not script_provenance_replayable(recorded_shared)
+    assert script_provenance_replayable(recorded_shared, allow_code=True)
 
     result, _rebuilt_spec = rebuild_script_provenance(
         spec,
         live_input_resolver=resolve_live,
-        trusted_user_code=True,
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(
@@ -4970,6 +4959,7 @@ def test_rebuild_nested_live_inputs_uses_first_resolution() -> None:
     result, _rebuilt = rebuild_script_provenance(
         spec,
         live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(result, left + right)
@@ -5000,6 +4990,7 @@ def test_live_input_bypasses_invalid_recorded_fallback() -> None:
     result, _rebuilt_spec = rebuild_script_provenance(
         spec,
         live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
     )
 
     xr.testing.assert_identical(result, data)
@@ -5019,52 +5010,13 @@ def test_external_input_bypasses_invalid_recorded_fallback() -> None:
         external_input_names={"data"},
     )
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"data": data}),
+        replay_script_provenance(
+            spec,
+            {"data": data},
+            authorize=_authorize_execution,
+        ),
         data,
     )
-
-
-def test_nested_trust_rejection_precedes_any_input_load(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    loaded = xr.DataArray([1.0, 2.0], dims="x")
-    load_calls: list[str] = []
-
-    def load_dataarray(path: str) -> xr.DataArray:
-        load_calls.append(path)
-        return loaded
-
-    monkeypatch.setattr(xr, "load_dataarray", load_dataarray)
-    source_path = tmp_path / "unused.nc"
-    source_path.touch()
-    unsafe_fallback = script(
-        ScriptCodeOperation(
-            label="Use trusted code",
-            code="import os\nblocked = int(os.path.exists(os.devnull))",
-        ),
-        start_label="Run trusted code",
-        active_name="blocked",
-    )
-    nested_fallback = script(
-        start_label="Copy blocked input",
-        seed_code="blocked = child",
-        active_name="blocked",
-        script_inputs=(ScriptInput(name="child", provenance_spec=unsafe_fallback),),
-    )
-
-    with pytest.raises(ReplayGraphError, match="recorded operation"):
-        rebuild_script_inputs(
-            (
-                ScriptInput(
-                    name="loaded",
-                    provenance_spec=_file_spec(source_path),
-                ),
-                ScriptInput(name="blocked", provenance_spec=nested_fallback),
-            )
-        )
-
-    assert load_calls == []
 
 
 def test_invalid_later_fallback_precedes_any_input_load(
@@ -5074,20 +5026,19 @@ def test_invalid_later_fallback_precedes_any_input_load(
     loaded = xr.DataArray([1.0, 2.0], dims="x")
     load_calls: list[str] = []
 
-    def load_dataarray(path: str) -> xr.DataArray:
-        load_calls.append(path)
+    def load_file_source(load_source, **_kwargs) -> xr.DataArray:
+        load_calls.append(load_source.path)
         return loaded
 
-    monkeypatch.setattr(xr, "load_dataarray", load_dataarray)
+    monkeypatch.setattr(_execution, "_load_file_source_data", load_file_source)
     source_path = tmp_path / "unused.nc"
     source_path.touch()
     file_spec = _file_spec(source_path)
-    invalid_file = file_spec.model_copy(update={"seed_code": "child ="})
     invalid_fallback = script(
+        ScriptCodeOperation(label="Invalid code", code="result ="),
         start_label="Copy invalid input",
-        seed_code="result = child",
         active_name="result",
-        script_inputs=(ScriptInput(name="child", provenance_spec=invalid_file),),
+        script_inputs=(ScriptInput(name="child", provenance_spec=file_spec),),
     )
 
     with pytest.raises(ReplayGraphError, match="not valid Python"):
@@ -5110,11 +5061,11 @@ def test_missing_later_callable_precedes_any_file_load(
     loaded = xr.DataArray([1.0, 2.0], dims="x")
     load_calls: list[str] = []
 
-    def load_dataarray(path: str) -> xr.DataArray:
-        load_calls.append(path)
+    def load_file_source(load_source, **_kwargs) -> xr.DataArray:
+        load_calls.append(load_source.path)
         return loaded
 
-    monkeypatch.setattr(xr, "load_dataarray", load_dataarray)
+    monkeypatch.setattr(_execution, "_load_file_source_data", load_file_source)
     file_spec = _file_spec(source_path)
     load_source = file_spec.file_load_source
     assert load_source is not None
@@ -5217,7 +5168,10 @@ def test_rebuild_preflight_work_scales_linearly(
     monkeypatch.setattr(_execution, "_analyze_replay_capability", counted_analyze)
     monkeypatch.setattr(_execution, "compile_replay_graph", counted_compile)
 
-    result, _rebuilt = rebuild_script_provenance(spec)
+    result, _rebuilt = rebuild_script_provenance(
+        spec,
+        authorize=_authorize_execution,
+    )
 
     xr.testing.assert_identical(result, xr.DataArray([1.0, 2.0], dims="x"))
     assert capability_calls <= 2 * depth
@@ -5256,7 +5210,11 @@ def test_external_input_name_does_not_leak_into_nested_fallback(
         external_input_names={"left"},
     )
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"left": outer_left}),
+        replay_script_provenance(
+            spec,
+            {"left": outer_left},
+            authorize=_authorize_execution,
+        ),
         expected,
     )
     code = typing.cast("str", spec.display_code())
@@ -5289,7 +5247,11 @@ def test_display_graph_rejects_nested_store_over_external_input() -> None:
     )
 
     xr.testing.assert_identical(
-        replay_script_provenance(spec, {"left": left}),
+        replay_script_provenance(
+            spec,
+            {"left": left},
+            authorize=_authorize_execution,
+        ),
         left + right,
     )
     with pytest.raises(ReplayGraphError, match="provenance name 'left'"):

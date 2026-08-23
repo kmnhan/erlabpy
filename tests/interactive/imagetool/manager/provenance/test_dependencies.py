@@ -3329,12 +3329,12 @@ def test_managed_input_reload_cancellation_preserves_state(
             lambda *_args, **_kwargs: None,
         )
 
-        def _cancel_trust(*_args, **_kwargs) -> bool:
-            raise manager_widgets._TrustedScriptReplayCancelled
+        def _cancel_trust(*_args, **_kwargs) -> None:
+            raise manager_widgets._TrustedProvenanceReplayCancelled
 
         monkeypatch.setattr(
             manager._lineage_controller,
-            "_ensure_script_provenance_trusted",
+            "_authorize_provenance_execution",
             _cancel_trust,
         )
 

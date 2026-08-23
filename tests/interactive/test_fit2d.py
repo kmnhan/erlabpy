@@ -957,7 +957,10 @@ def test_fit2d_weighted_fit_broadcasts_uncertainty(
     assert values is not None
     assert win.output_imagetool_provenance(values_output_id, values) is None
 
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset(),
+        _code_trust=new_document_trust(),
+    )
     qtbot.addWidget(restored)
     assert isinstance(restored, Fit2DTool)
     xr.testing.assert_identical(restored.uncertainty, uncertainty)
@@ -1880,7 +1883,8 @@ def test_fit2d_open_weighted_saved_fit_dataset(
         np.testing.assert_array_equal(result.weights, weights)
 
     workspace_restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        win.to_dataset()
+        win.to_dataset(),
+        _code_trust=new_document_trust(),
     )
     qtbot.addWidget(workspace_restored)
     assert isinstance(workspace_restored, Fit2DTool)
@@ -3411,7 +3415,9 @@ def test_fit2d_parameter_output_provenance_preserves_managed_uncertainty(
         assert spec is not None
         assert isinstance(spec.operations[-1], ScriptCodeOperation)
         replayed = replay_script_provenance(
-            spec, {"data": data, "uncertainty": uncertainty}
+            spec,
+            {"data": data, "uncertainty": uncertainty},
+            authorize=_authorize_execution,
         )
         xr.testing.assert_allclose(replayed, expected)
 
