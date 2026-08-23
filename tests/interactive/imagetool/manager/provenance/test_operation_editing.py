@@ -1,7 +1,9 @@
 import contextlib
+import dataclasses
 import pathlib
 import types
 import typing
+import uuid
 
 import numpy as np
 import pytest
@@ -19,6 +21,7 @@ from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
@@ -31,6 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
+    AssignAttrsOperation,
     DivideByCoordOperation,
     ExtensionRoutineOperation,
     GaussianFilterOperation,
@@ -130,11 +134,914 @@ def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
         "_accept_provenance_edit",
         _unexpected_provenance_accept,
     )
-
     dialog.buttonBox.accepted.emit()
 
     assert warnings_shown
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_multi_provenance_grouped_edit_revert_and_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def kspace_group(alpha: float) -> tuple[ToolProvenanceOperation, ...]:
+        return stamp_operation_group(
+            (
+                KspaceConfigurationOperation(configuration=2),
+                KspaceSetNormalOperation(alpha=alpha, beta=2.0, delta=3.0),
+                KspaceConvertOperation(bounds=None, resolution=None),
+            ),
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        )
+
+    first_group = kspace_group(1.0)
+    second_group = kspace_group(1.0)
+    trailing = NormalizeOperation(dims=("x",), mode="area")
+    first_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*first_group, trailing))
+    second_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*second_group, trailing))
+    first = _fake_edit_node(first_spec, uid="first", display_text="ImageTool 0")
+    second = _fake_edit_node(second_spec, uid="second", display_text="ImageTool 1")
+    nodes = {"first": first, "second": second}
+    controller = _fake_edit_controller(
+        nodes=nodes,
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    first_row = next(
+        row
+        for row in first_spec.display_rows()
+        if row.edit_ref == _ProvenanceStepRef("operation", operation_index=2)
+    )
+    second_row = next(
+        row
+        for row in second_spec.display_rows()
+        if row.edit_ref == _ProvenanceStepRef("operation", operation_index=2)
+    )
+    target_rows = (("first", first_row), ("second", second_row))
+    assert controller.can_edit_rows(target_rows) == (True, "")
+    assert controller.can_revert_rows(target_rows) == (True, "")
+    assert controller.can_delete_rows(target_rows) == (True, "")
+
+    captured: list[
+        tuple[
+            str,
+            tuple[provenance_edit_controller._ProvenanceCandidate, ...],
+        ]
+    ] = []
+
+    def capture_candidates(
+        _sessions: typing.Any,
+        candidates: typing.Any,
+        *,
+        where: str,
+    ) -> None:
+        captured.append((where, tuple(candidates)))
+
+    replacement_group = kspace_group(4.0)
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: replacement_group,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace_multiple",
+        capture_candidates,
+    )
+
+    controller.edit_rows(target_rows)
+
+    assert captured[-1][0] == "validating the edited provenance step"
+    edited_specs = tuple(candidate.spec for candidate in captured[-1][1])
+    edited_group_ids = tuple(spec.operations[0].group.id for spec in edited_specs)
+    assert edited_group_ids[0] != edited_group_ids[1]
+    assert all(
+        typing.cast("KspaceSetNormalOperation", spec.operations[1]).alpha == 4.0
+        for spec in edited_specs
+    )
+
+    monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    controller.revert_rows(target_rows)
+    assert captured[-1][0] == "validating the provenance revert target"
+    assert all(len(candidate.spec.operations) == 3 for candidate in captured[-1][1])
+
+    monkeypatch.setattr(controller, "_confirm_delete_multiple", lambda: True)
+    controller.delete_rows(target_rows)
+    assert captured[-1][0] == "validating the provenance delete target"
+    assert all(
+        candidate.spec.operations == (trailing,) for candidate in captured[-1][1]
+    )
+
+    captured_count = len(captured)
+    monkeypatch.setattr(controller, "_confirm_delete_multiple", lambda: False)
+    controller.delete_rows(target_rows)
+    assert len(captured) == captured_count
+
+
+def test_manager_multi_provenance_requires_complete_matching_groups() -> None:
+    def kspace_group(configuration: int) -> tuple[ToolProvenanceOperation, ...]:
+        return stamp_operation_group(
+            (
+                KspaceConfigurationOperation(configuration=configuration),
+                KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+                KspaceConvertOperation(bounds=None, resolution=None),
+            ),
+            kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+        )
+
+    first_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*kspace_group(1)))
+    second_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(*kspace_group(2)))
+    first = _fake_edit_node(first_spec, uid="first", display_text="ImageTool 0")
+    second = _fake_edit_node(second_spec, uid="second", display_text="ImageTool 1")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    target_rows = tuple(
+        (
+            uid,
+            next(
+                row
+                for row in spec.display_rows()
+                if row.edit_ref == _ProvenanceStepRef("operation", operation_index=2)
+            ),
+        )
+        for uid, spec in (("first", first_spec), ("second", second_spec))
+    )
+
+    for check in (
+        controller.can_edit_rows,
+        controller.can_revert_rows,
+        controller.can_delete_rows,
+    ):
+        available, _reason = check(target_rows)
+        assert not available
+
+
+def test_manager_provenance_group_markers_define_atomic_actions() -> None:
+    grouped = stamp_operation_group(
+        (
+            AffineCoordOperation(coord_name="x", scale=1.0, offset=1.0),
+            AffineCoordOperation(coord_name="x", scale=2.0, offset=0.0),
+        ),
+        kind="test-atomic-group",
+    )
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(
+            *grouped,
+            NormalizeOperation(dims=("x",), mode="area"),
+        )
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    group_rows = tuple(
+        next(
+            row
+            for row in spec.display_rows()
+            if row.replay_ref == _ProvenanceStepRef("operation", operation_index=index)
+        )
+        for index in range(2)
+    )
+
+    assert not controller.can_edit_row(group_rows[0])[0]
+    assert not controller.can_edit_row(group_rows[1])[0]
+    assert not controller.can_revert_row(group_rows[0])[0]
+    assert controller.can_revert_row(group_rows[1]) == (True, "")
+    assert controller.can_delete_row(group_rows[0]) == (True, "")
+    assert controller.can_delete_row(group_rows[1]) == (True, "")
+
+    for row in group_rows:
+        action_block = controller._operation_action_block(
+            spec,
+            typing.cast("_ProvenanceStepRef", row.replay_ref),
+            action="delete",
+        )
+        assert action_block is not None
+        block_ref, _dialog_cls = action_block
+        assert (block_ref.start, block_ref.stop) == (0, 2)
+
+
+def test_manager_multi_provenance_group_guard_paths() -> None:
+    script_operations = stamp_operation_group(
+        (
+            ScriptCodeOperation(label="First", code="derived = derived + 1"),
+            ScriptCodeOperation(label="Second", code="derived = derived + 2"),
+        ),
+        kind="test-script-group",
+    )
+    complete_script = script(
+        *script_operations,
+        start_label="Start from a scalar",
+        seed_code="derived = 0",
+        active_name="derived",
+    )
+    partial_script = script(
+        script_operations[0],
+        start_label="Start from a scalar",
+        seed_code="derived = 0",
+        active_name="derived",
+    )
+    partial_node = _fake_edit_node(partial_script)
+    partial_controller = _fake_edit_controller(partial_node)
+    partial_row = partial_script.display_rows()[1]
+    partial_ref = typing.cast("_ProvenanceStepRef", partial_row.replay_ref)
+
+    assert not partial_controller.can_delete_row(partial_row)[0]
+    assert (
+        partial_controller._operation_block_comparison_key(
+            partial_script,
+            partial_ref,
+        )
+        is None
+    )
+    assert (
+        partial_controller._operation_action_block(
+            partial_script,
+            partial_ref,
+            action="delete",
+        )
+        is None
+    )
+    assert (
+        partial_controller._operation_block_comparison_key(
+            partial_script,
+            _ProvenanceStepRef("operation"),
+        )
+        is None
+    )
+
+    complete_node = _fake_edit_node(complete_script)
+    complete_controller = _fake_edit_controller(complete_node)
+    complete_row = complete_script.display_rows()[1]
+    complete_ref = typing.cast("_ProvenanceStepRef", complete_row.edit_ref)
+    assert not complete_controller.can_edit_row(complete_row)[0]
+    assert (
+        complete_controller._operation_action_block(
+            complete_script,
+            complete_ref,
+            action="edit",
+        )
+        is None
+    )
+
+    full_data_script_group = full_data(*script_operations)
+    full_data_script_node = _fake_edit_node(full_data_script_group)
+    full_data_script_node.has_replay_source = True
+    assert not _fake_edit_controller(full_data_script_node).can_edit_row(
+        full_data_script_group.display_rows()[1]
+    )[0]
+
+    extension = ExtensionRoutineOperation(
+        script_name="lab.py",
+        source_hash="a" * 64,
+        routine_id="scale",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    extension_group = stamp_operation_group(
+        (
+            extension,
+            NormalizeOperation(dims=("x",), mode="area"),
+        ),
+        kind="test-extension-group",
+    )
+    extension_spec = full_data(*extension_group)
+    extension_node = _fake_edit_node(extension_spec)
+    extension_node.has_replay_source = True
+    assert not _fake_edit_controller(extension_node).can_edit_row(
+        extension_spec.display_rows()[1]
+    )[0]
+
+    invalid_ref = _ProvenanceStepRef("operation", operation_index=99)
+    invalid_row = dataclasses.replace(
+        partial_row,
+        edit_ref=invalid_ref,
+        replay_ref=invalid_ref,
+    )
+    assert not partial_controller._matching_operation_rows(
+        ((partial_node, invalid_row),),
+        action="delete",
+    )
+    assert not partial_controller._matching_operation_rows(
+        ((partial_node, partial_row),),
+        action="delete",
+    )
+
+
+def test_manager_multi_provenance_rejects_unavailable_dispatch_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(NormalizeOperation(dims=("x",), mode="area")))
+    second_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(NormalizeOperation(dims=("x",), mode="minmax")))
+    first = _fake_edit_node(first_spec, uid="first")
+    second = _fake_edit_node(second_spec, uid="second")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    first_row = first_spec.display_rows()[-1]
+    second_row = second_spec.display_rows()[-1]
+
+    assert controller._row_targets((("missing", first_row),))[0] == ()
+    assert (
+        controller._row_targets((("first", first_row), ("first", first_row)))[0] == ()
+    )
+
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller,
+        "_apply_multiple_rows",
+        lambda *_args, **_kwargs: pytest.fail("mismatched rows must not apply"),
+    )
+
+    controller.edit_rows((("first", first_row), ("second", second_row)))
+
+    assert len(unavailable) == 1
+
+
+def test_manager_delete_rechecks_operation_block_before_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(operation)
+    )
+    grouped = stamp_operation_group(
+        (
+            operation,
+            NormalizeOperation(dims=("x",), mode="minmax"),
+        ),
+        kind="test-stale-group",
+    )
+    stale_spec = _manager_provenance_file_spec(
+        pathlib.Path("scan.h5")
+    ).append_replay_stage(full_data(grouped[0]))
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    specs = iter((spec, stale_spec))
+    monkeypatch.setattr(
+        controller,
+        "_display_spec_for_row",
+        lambda *_args, **_kwargs: next(specs),
+    )
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+
+    controller.delete_row(spec.display_rows()[-1])
+
+    assert len(unavailable) == 1
+
+
+def test_manager_multi_provenance_trust_and_preflight_failures_change_no_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+    replacement = operation.model_copy(update={"code": "derived = derived + 2"})
+    spec = script(
+        operation,
+        start_label="Start from a scalar",
+        seed_code="derived = 0",
+        active_name="derived",
+    )
+    first = _fake_edit_node(spec, uid="first", display_text="ImageTool 0")
+    second = _fake_edit_node(spec, uid="second", display_text="ImageTool 1")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    rows = tuple(
+        next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+        )
+        for _uid in ("first", "second")
+    )
+    target_rows = (("first", rows[0]), ("second", rows[1]))
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: (replacement,),
+    )
+    validation_calls: list[str] = []
+    applied: list[typing.Any] = []
+    failures: list[Exception] = []
+    local_edits: list[tuple[tuple[typing.Any, ...], tuple[typing.Any, ...]]] = []
+    signal_count = 0
+    authorization_token = object()
+
+    @contextlib.contextmanager
+    def authorize_local_edit(
+        entries: tuple[typing.Any, ...],
+        *,
+        edited_entries: tuple[typing.Any, ...],
+        **_kwargs: typing.Any,
+    ):
+        local_edits.append((entries, edited_entries))
+        yield authorization_token
+
+    def validate(
+        node: typing.Any,
+        _scope: typing.Any,
+        _candidate: typing.Any,
+        *,
+        where: str,
+        authorization: object | None,
+        active_filter_ref: _ProvenanceStepRef | None,
+    ) -> typing.Any:
+        del active_filter_ref
+        assert authorization is authorization_token
+        validation_calls.append(node.uid)
+        if node.uid == "second":
+            raise RuntimeError(f"{where}: invalid data")
+        return types.SimpleNamespace(node=node)
+
+    def emit() -> None:
+        nonlocal signal_count
+        signal_count += 1
+
+    monkeypatch.setattr(controller, "_validated_edit", validate)
+    monkeypatch.setattr(controller, "_apply_validated_edit", applied.append)
+    monkeypatch.setattr(
+        controller._manager._workspace_controller,
+        "local_code_edit",
+        authorize_local_edit,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_show_failed",
+        lambda _title, exc: failures.append(exc),
+    )
+    controller._manager._sigDataReplaced.emit = emit
+
+    controller.edit_rows(target_rows)
+
+    assert validation_calls == ["first", "second"]
+    assert len(local_edits) == 1
+    assert tuple(len(group) for group in local_edits[0]) == (4, 2)
+    assert applied == []
+    assert signal_count == 0
+    assert len(failures) == 1
+    assert "ImageTool 1" in str(failures[0])
+    assert first.displayed_provenance_spec == spec
+    assert second.displayed_provenance_spec == spec
+
+    @contextlib.contextmanager
+    def deny_local_edit(*_args: typing.Any, **_kwargs: typing.Any):
+        yield None
+
+    monkeypatch.setattr(
+        controller._manager._workspace_controller,
+        "local_code_edit",
+        deny_local_edit,
+    )
+    controller.edit_rows(target_rows)
+
+    assert validation_calls == ["first", "second"]
+    assert applied == []
+    assert tuple(node.displayed_provenance_spec for node in (first, second)) == (
+        spec,
+        spec,
+    )
+
+
+def test_manager_multi_provenance_rejects_stale_edit_and_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    replacement = NormalizeOperation(dims=("x",), mode="minmax")
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(operation)
+    )
+    first = _fake_edit_node(spec, uid="first")
+    second = _fake_edit_node(spec, uid="second")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    rows = tuple(
+        next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+        )
+        for _uid in ("first", "second")
+    )
+    target_rows = (("first", rows[0]), ("second", rows[1]))
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace_multiple",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a stale or canceled edit must not apply"
+        ),
+    )
+
+    def make_stale(_node: typing.Any, _row: typing.Any) -> typing.Any:
+        second.provenance_revision += 1
+        return (replacement,)
+
+    monkeypatch.setattr(controller, "_edited_multiple_row_operations", make_stale)
+    controller.edit_rows(target_rows)
+    assert len(unavailable) == 1
+
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: None,
+    )
+    controller.edit_rows(target_rows)
+    assert len(unavailable) == 1
+
+
+def test_manager_multi_provenance_session_capture_validates_targets() -> None:
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(operation)
+    )
+    row = spec.display_rows()[-1]
+
+    empty_controller = _fake_edit_controller(nodes={}, metadata_uid=None)
+    with pytest.raises(RuntimeError):
+        empty_controller._row_sessions(())
+
+    missing_spec = _fake_edit_node(None, uid="missing")
+    missing_controller = _fake_edit_controller(
+        nodes={"missing": missing_spec},
+        metadata_uid=None,
+        selected_targets=("missing",),
+    )
+    with pytest.raises(RuntimeError):
+        missing_controller._row_sessions((("missing", row),))
+
+    source_row = dataclasses.replace(row, scope="source")
+    child = _fake_edit_node(
+        spec,
+        uid="child",
+        source_display_spec=spec,
+    )
+    child_controller = _fake_edit_controller(
+        nodes={"child": child},
+        metadata_uid=None,
+        selected_targets=("child",),
+    )
+    with pytest.raises(RuntimeError):
+        child_controller._row_sessions((("child", source_row),))
+
+    parent = types.SimpleNamespace(snapshot_token=uuid.uuid4().hex)
+    parent_snapshot = parent.snapshot_token
+    child.parent_uid = "parent"
+    child_controller = _fake_edit_controller(
+        parent=parent,
+        nodes={"child": child},
+        metadata_uid=None,
+        selected_targets=("child",),
+    )
+    sessions = child_controller._row_sessions((("child", source_row),))
+    assert sessions[0].parent_snapshot_token == parent_snapshot
+
+
+def test_manager_multi_provenance_session_stale_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    spec = _manager_provenance_file_spec(pathlib.Path("scan.h5")).append_replay_stage(
+        full_data(operation)
+    )
+    first = _fake_edit_node(spec, uid="first")
+    second = _fake_edit_node(spec, uid="second")
+    nodes = {"first": first, "second": second}
+    controller = _fake_edit_controller(
+        nodes=nodes,
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    rows = (spec.display_rows()[-1], spec.display_rows()[-1])
+    sessions = controller._row_sessions((("first", rows[0]), ("second", rows[1])))
+    assert controller._row_sessions_current(sessions) == ""
+
+    controller._manager._selected_imagetool_targets = lambda: ("missing",)
+    assert controller._selected_imagetool_uids() == ()
+    assert controller._row_sessions_current(sessions)
+    controller._manager._selected_imagetool_targets = lambda: ("first", "second")
+
+    nodes["second"] = _fake_edit_node(spec, uid="second")
+    assert controller._row_sessions_current(sessions)
+    nodes["second"] = second
+
+    second.passive_displayed_provenance_spec = spec.append_operations(
+        AssignAttrsOperation(attrs={"changed": True})
+    )
+    assert controller._row_sessions_current(sessions)
+    second.passive_displayed_provenance_spec = spec
+
+    second.snapshot_token = uuid.uuid4().hex
+    assert controller._row_sessions_current(sessions)
+    second.snapshot_token = sessions[1].node_snapshot_token
+
+    dependency_tokens = controller._dependency_snapshot_tokens
+    monkeypatch.setattr(
+        controller,
+        "_dependency_snapshot_tokens",
+        lambda _spec: (("dependency", "displayed", "changed"),),
+    )
+    assert controller._row_sessions_current(sessions)
+    monkeypatch.setattr(controller, "_dependency_snapshot_tokens", dependency_tokens)
+
+    controller._manager._selected_imagetool_targets = lambda: ("first",)
+    invalid_path_row = dataclasses.replace(rows[0], script_input_path=(99,))
+    invalid_path_session = dataclasses.replace(
+        sessions[0],
+        row=invalid_path_row,
+    )
+    assert controller._row_sessions_current((invalid_path_session,))
+
+    invalid_ref = _ProvenanceStepRef("operation", operation_index=99)
+    invalid_ref_row = dataclasses.replace(
+        rows[0],
+        edit_ref=invalid_ref,
+        replay_ref=invalid_ref,
+    )
+    invalid_ref_session = dataclasses.replace(
+        sessions[0],
+        row=invalid_ref_row,
+    )
+    assert controller._row_sessions_current((invalid_ref_session,))
+
+
+def test_manager_multi_provenance_source_session_stale_guards() -> None:
+    spec = full_data(NormalizeOperation(dims=("x",), mode="area"))
+    row = dataclasses.replace(spec.display_rows()[-1], scope="source")
+    parent = types.SimpleNamespace(snapshot_token=uuid.uuid4().hex)
+    child = _fake_edit_node(
+        spec,
+        uid="child",
+        source_display_spec=spec,
+        parent_uid="parent",
+    )
+    controller = _fake_edit_controller(
+        parent=parent,
+        nodes={"child": child},
+        metadata_uid=None,
+        selected_targets=("child",),
+    )
+    sessions = controller._row_sessions((("child", row),))
+    assert controller._row_sessions_current(sessions) == ""
+
+    child.parent_uid = None
+    assert controller._row_sessions_current(sessions)
+    child.parent_uid = "parent"
+
+    parent.snapshot_token = uuid.uuid4().hex
+    assert controller._row_sessions_current(sessions)
+
+
+def test_manager_multi_provenance_nested_session_spec_replacement() -> None:
+    nested = full_data(NormalizeOperation(dims=("x",), mode="area"))
+    root = script(
+        start_label="Use recorded input",
+        seed_code="derived = source",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="source",
+                label="Source",
+                provenance_spec=nested,
+            ),
+        ),
+    )
+    nested_row = dataclasses.replace(
+        nested.display_rows()[-1],
+        script_input_path=(0,),
+    )
+    node = _fake_edit_node(root)
+    controller = _fake_edit_controller(node)
+    session = controller._row_sessions((("node", nested_row),))[0]
+
+    assert controller._session_display_spec(session) == nested
+    replacement = full_data(NormalizeOperation(dims=("x",), mode="minmax"))
+    candidate = controller._session_root_candidate(session, replacement)
+    assert candidate.script_inputs[0].parsed_provenance_spec() == replacement
+
+
+def test_manager_multi_provenance_rechecks_sessions_after_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+    replacement = operation.model_copy(update={"code": "derived = derived + 2"})
+    spec = script(
+        operation,
+        start_label="Start from a scalar",
+        seed_code="derived = 0",
+        active_name="derived",
+    )
+    first = _fake_edit_node(spec, uid="first")
+    second = _fake_edit_node(spec, uid="second")
+    controller = _fake_edit_controller(
+        nodes={"first": first, "second": second},
+        metadata_uid=None,
+        selected_targets=("first", "second"),
+    )
+    rows = (spec.display_rows()[1], spec.display_rows()[1])
+    target_rows = (("first", rows[0]), ("second", rows[1]))
+    monkeypatch.setattr(
+        controller,
+        "_edited_multiple_row_operations",
+        lambda _node, _row: (replacement,),
+    )
+    applied: list[object] = []
+    unavailable: list[str] = []
+
+    def validate(node: typing.Any, *_args: typing.Any, **_kwargs: typing.Any) -> object:
+        if node.uid == "second":
+            node.snapshot_token = uuid.uuid4().hex
+        return types.SimpleNamespace(node=node)
+
+    monkeypatch.setattr(controller, "_validated_edit", validate)
+    monkeypatch.setattr(controller, "_apply_validated_edit", applied.append)
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+
+    controller.edit_rows(target_rows)
+
+    assert applied == []
+    assert len(unavailable) == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (QtWidgets.QMessageBox.StandardButton.Yes, True),
+        (QtWidgets.QMessageBox.StandardButton.Cancel, False),
+    ],
+)
+def test_manager_multi_delete_confirmation_paths(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: QtWidgets.QMessageBox.StandardButton,
+    expected: bool,
+) -> None:
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    controller = provenance_edit_controller._ProvenanceEditController(
+        typing.cast("typing.Any", manager)
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", lambda _dialog: answer)
+
+    assert controller._confirm_delete_multiple() is expected
+
+
+@pytest.mark.parametrize(
+    ("operation", "replacement", "editor_name"),
+    [
+        (
+            ScriptCodeOperation(label="Offset", code="derived = derived + 1"),
+            ScriptCodeOperation(label="Offset", code="derived = derived + 2"),
+            "_edited_script_code_operation",
+        ),
+        (
+            ExtensionRoutineOperation(
+                script_name="lab.py",
+                source_hash="a" * 64,
+                routine_id="scale",
+                routine_name="Scale",
+                parameters={"scale": 2.0},
+            ),
+            ExtensionRoutineOperation(
+                script_name="lab.py",
+                source_hash="a" * 64,
+                routine_id="scale",
+                routine_name="Scale",
+                parameters={"scale": 3.0},
+            ),
+            "_edited_extension_routine_operation",
+        ),
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_manager_multi_operation_special_editor_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: ToolProvenanceOperation,
+    replacement: ToolProvenanceOperation,
+    editor_name: str,
+    cancel: bool,
+) -> None:
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    monkeypatch.setattr(
+        controller,
+        editor_name,
+        lambda _operation: None if cancel else replacement,
+    )
+
+    edited = controller._edited_multiple_row_operations(
+        node,
+        spec.display_rows()[1],
+    )
+
+    if cancel:
+        assert edited is None
+    else:
+        assert edited == (replacement,)
+
+
+def test_manager_multi_operation_editor_rejects_stale_anchor() -> None:
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Operation", None),
+        edit_ref=ref,
+        replay_ref=ref,
+    )
+
+    missing_spec_node = _fake_edit_node(None)
+    missing_spec_controller = _fake_edit_controller(missing_spec_node)
+    with pytest.raises(RuntimeError):
+        missing_spec_controller._edited_multiple_row_operations(
+            missing_spec_node,
+            row,
+        )
+
+    spec = full_data(NormalizeOperation(dims=("x",), mode="area"))
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    missing_ref = _ProvenanceStepRef("operation", operation_index=99)
+    with pytest.raises(RuntimeError):
+        controller._edited_multiple_row_operations(
+            node,
+            dataclasses.replace(row, edit_ref=missing_ref, replay_ref=missing_ref),
+        )
+
+    uneditable_spec = full_data(TransposeOperation(dims=("x",)))
+    uneditable_node = _fake_edit_node(uneditable_spec)
+    with pytest.raises(RuntimeError):
+        _fake_edit_controller(uneditable_node)._edited_multiple_row_operations(
+            uneditable_node,
+            uneditable_spec.display_rows()[1],
+        )
+
+
+def test_manager_script_code_editor_cancel_returns_no_replacement(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    controller = provenance_edit_controller._ProvenanceEditController(
+        typing.cast("typing.Any", manager)
+    )
+    monkeypatch.setattr(
+        provenance_edit_controller._ScriptCodeEditDialog,
+        "exec",
+        lambda _dialog: int(QtWidgets.QDialog.DialogCode.Rejected),
+    )
+
+    assert (
+        controller._edited_script_code_operation(
+            ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+        )
+        is None
+    )
+
+    operation = ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+    spec = full_data(operation)
+    row = spec.display_rows()[1]
+    node = _fake_edit_node(spec)
+    edit_controller = _fake_edit_controller(node)
+    monkeypatch.setattr(
+        edit_controller,
+        "_edited_script_code_operation",
+        lambda _operation: None,
+    )
+    monkeypatch.setattr(
+        edit_controller,
+        "_validate_and_replace",
+        lambda *_args, **_kwargs: pytest.fail("a canceled edit must not apply"),
+    )
+
+    edit_controller._edit_script_code_operation_row(
+        node,
+        row,
+        spec,
+        typing.cast("_ProvenanceStepRef", row.edit_ref),
+        operation,
+    )
 
 
 @pytest.mark.parametrize("mode", ["empty", "error", "valid"])
@@ -1453,7 +2360,7 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     monkeypatch.setattr(
         controller,
         "_split_active_filter",
-        lambda _node, _spec: (base_candidate, filter_operation),
+        lambda _node, _spec, **_kwargs: (base_candidate, filter_operation),
     )
 
     edit = controller._validated_edit(
@@ -1571,7 +2478,7 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
     monkeypatch.setattr(
         controller,
         "_split_active_filter",
-        lambda _node, _spec: (
+        lambda _node, _spec, **_kwargs: (
             base_candidate,
             DivideByCoordOperation(coord_name="missing"),
         ),
@@ -1984,19 +2891,19 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
             assert controller.can_edit_row(row) == (True, "")
         if row.replay_ref is None or row.replay_ref.kind != "operation":
             continue
-        group = provenance_edit_controller._editable_group_range_for_ref(
+        action_block = controller._operation_action_block(
             spec,
             row.replay_ref,
+            action="delete",
         )
-        if group is None:
-            deletion_candidate = spec._replace_operation_ref(row.replay_ref, ())
-        else:
-            deletion_candidate = spec._replace_operation_range_ref(
-                row.replay_ref,
-                group[0],
-                group[1],
-                (),
-            )
+        assert action_block is not None
+        block_ref, _dialog_cls = action_block
+        deletion_candidate = spec._replace_operation_range_ref(
+            row.replay_ref,
+            block_ref.start,
+            block_ref.stop,
+            (),
+        )
         should_be_deletable = controller._script_spec_replayable_for_node(
             node,
             deletion_candidate,

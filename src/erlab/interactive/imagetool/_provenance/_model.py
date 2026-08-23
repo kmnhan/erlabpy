@@ -225,8 +225,8 @@ class _ProvenanceDisplayRow:
 
 
 @dataclass(frozen=True)
-class _ProvenanceReorderBlockRef:
-    """Original operation range represented by one reorder-dialog row."""
+class _ProvenanceOperationBlockRef:
+    """Complete operation range that must be handled as one structural block."""
 
     start: int
     stop: int
@@ -236,7 +236,7 @@ class _ProvenanceReorderBlockRef:
 class _ProvenanceReorderBlock:
     """One atomic provenance block exposed by the reorder dialog."""
 
-    ref: _ProvenanceReorderBlockRef
+    ref: _ProvenanceOperationBlockRef
     entries: tuple[DerivationEntry, ...]
     label: str | None = None
     tooltip: str | None = None
@@ -3031,6 +3031,42 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return None
         return entry
 
+    def _operation_block_ref(
+        self,
+        ref: _ProvenanceStepRef,
+    ) -> _ProvenanceOperationBlockRef | None:
+        """Return the complete structural block containing an operation row."""
+        if ref.kind != "operation" or ref.operation_index is None:
+            return None
+        operation_index = ref.operation_index
+        if not 0 <= operation_index < len(self.operations):
+            return None
+        operation = self.operations[operation_index]
+        if operation.group is None:
+            return _ProvenanceOperationBlockRef(
+                operation_index,
+                operation_index + 1,
+            )
+        group_range = operation_group_range(self.operations, operation_index)
+        if group_range is None:
+            return None
+        return _ProvenanceOperationBlockRef(*group_range)
+
+    def _operation_block_refs(self) -> tuple[_ProvenanceOperationBlockRef, ...]:
+        """Return every complete group and ungrouped operation in recipe order."""
+        blocks: list[_ProvenanceOperationBlockRef] = []
+        operation_index = 0
+        while operation_index < len(self.operations):
+            ref = self._operation_block_ref(
+                _ProvenanceStepRef("operation", operation_index=operation_index)
+            )
+            if ref is None:
+                operation_index += 1
+                continue
+            blocks.append(ref)
+            operation_index = ref.stop
+        return tuple(blocks)
+
     def _reorderable_operation_blocks(
         self,
         *,
@@ -3048,19 +3084,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             self._operation_reorder_entry(operation) for operation in operations
         )
         blocks: list[_ProvenanceReorderBlock] = []
-        operation_index = 0
-        while operation_index < len(operations):
-            operation = operations[operation_index]
-            group_range = operation_group_range(operations, operation_index)
-            if operation.group is not None and group_range is None:
-                operation_index += 1
-                continue
-            start, stop = (
-                (operation_index, operation_index + 1)
-                if group_range is None
-                else group_range
-            )
-            operation_index = stop
+        for block_ref in self._operation_block_refs():
+            start, stop = block_ref.start, block_ref.stop
             entries = tuple(
                 entry
                 for index in range(start, stop)
@@ -3079,7 +3104,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 continue
             blocks.append(
                 _ProvenanceReorderBlock(
-                    _ProvenanceReorderBlockRef(start, stop),
+                    block_ref,
                     entries,
                 )
             )
@@ -3119,7 +3144,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         sections: Sequence[_ProvenanceReorderSection],
         orders: Mapping[
             _ProvenanceReorderSectionRef,
-            Sequence[_ProvenanceReorderBlockRef],
+            Sequence[_ProvenanceOperationBlockRef],
         ],
     ) -> ToolProvenanceSpec:
         """Return a validated spec with allowed provenance blocks permuted."""
@@ -3132,6 +3157,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         allowed_block_refs = {
             block.ref for block in self._reorderable_operation_blocks()
         }
+        structural_block_refs = set(self._operation_block_refs())
         index_order = list(range(len(self.operations)))
         occupied_ranges: list[tuple[int, int]] = []
         for section in sections:
@@ -3159,19 +3185,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     raise ValueError(
                         "Provenance reorder blocks must partition their section"
                     )
-                operation = self.operations[block_ref.start]
-                group_range = operation_group_range(
-                    self.operations,
-                    block_ref.start,
-                )
-                if operation.group is None:
-                    if block_ref.stop != block_ref.start + 1:
-                        raise ValueError(
-                            "Ungrouped provenance blocks must contain one operation"
-                        )
-                elif group_range != (block_ref.start, block_ref.stop):
+                if block_ref not in structural_block_refs:
                     raise ValueError(
-                        "Grouped provenance blocks must contain the complete group"
+                        "Provenance blocks must contain one complete structural block"
                     )
                 cursor = block_ref.stop
             if cursor != section_ref.stop or len(set(expected_blocks)) != len(

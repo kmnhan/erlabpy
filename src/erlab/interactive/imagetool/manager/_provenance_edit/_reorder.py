@@ -10,8 +10,8 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from erlab.interactive.imagetool._provenance._model import (
+        _ProvenanceOperationBlockRef,
         _ProvenanceReorderBlock,
-        _ProvenanceReorderBlockRef,
         _ProvenanceReorderSection,
         _ProvenanceReorderSectionRef,
     )
@@ -123,7 +123,7 @@ class _ProvenanceReorderListModel(QtCore.QAbstractListModel):
             and -1 <= row <= len(self._blocks)
         )
 
-    def order(self) -> tuple[_ProvenanceReorderBlockRef, ...]:
+    def order(self) -> tuple[_ProvenanceOperationBlockRef, ...]:
         return tuple(block.ref for block in self._blocks)
 
     def move_row(self, source_row: int, target_row: int) -> bool:
@@ -152,7 +152,7 @@ class _ProvenanceReorderListModel(QtCore.QAbstractListModel):
 
     def reset_order(
         self,
-        order: Sequence[_ProvenanceReorderBlockRef],
+        order: Sequence[_ProvenanceOperationBlockRef],
     ) -> bool:
         requested = tuple(order)
         current = self.order()
@@ -208,7 +208,7 @@ class _ProvenanceReorderListView(QtWidgets.QListView):
         self.scrollTo(moved_index)
         return True
 
-    def select_block(self, block_ref: _ProvenanceReorderBlockRef | None) -> None:
+    def select_block(self, block_ref: _ProvenanceOperationBlockRef | None) -> None:
         if block_ref is None:
             return
         try:
@@ -406,7 +406,7 @@ class _ProvenanceReorderDialog(QtWidgets.QDialog):
         self,
     ) -> dict[
         _ProvenanceReorderSectionRef,
-        tuple[_ProvenanceReorderBlockRef, ...],
+        tuple[_ProvenanceOperationBlockRef, ...],
     ]:
         return {
             section_ref: view.reorder_model.order()

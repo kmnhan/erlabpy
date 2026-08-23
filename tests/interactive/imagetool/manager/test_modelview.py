@@ -1620,12 +1620,18 @@ def test_presentation_change_refreshes_only_relevant_multi_selection(
         manager._flush_idle_work(force=True)
         assert updates == [None]
 
+        second_uid = manager._tool_graph.root_wrappers[1].uid
+        manager._details_panel._metadata_multi_node_uids = ("missing", second_uid)
+        manager._schedule_derivation_details_refresh(second_uid)
+        manager._flush_idle_work(force=True)
+        assert updates == [None, None]
+
         manager._tool_graph.notify_node_change(
             None,
             _ManagedNodeChange.PRESENTATION,
         )
         manager._flush_idle_work(force=True)
-        assert updates == [None, None]
+        assert updates == [None, None, None]
 
 
 def test_presentation_changes_refresh_only_dependent_details(
