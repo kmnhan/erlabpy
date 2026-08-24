@@ -642,6 +642,51 @@ def test_tool_window_script_input_transforms_are_defensive_copies(qtbot) -> None
     assert tool.script_inputs == (refreshed,)
 
 
+@pytest.mark.parametrize(
+    ("script_inputs", "primary_input", "error_type", "message"),
+    [
+        ((object(),), "data", TypeError, "ScriptInput"),
+        (
+            (ScriptInput(name="data"), ScriptInput(name="data")),
+            "data",
+            ValueError,
+            "unique",
+        ),
+        (
+            (ScriptInput(name="data"),),
+            None,
+            ValueError,
+            "explicit primary_input",
+        ),
+        (
+            (ScriptInput(name="data"),),
+            "missing",
+            ValueError,
+            "must name",
+        ),
+        ((), "data", ValueError, "requires at least"),
+    ],
+)
+def test_tool_window_rejects_invalid_script_input_bindings(
+    qtbot,
+    script_inputs: tuple[object, ...],
+    primary_input: str | None,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    tool = _PersistentTool(xr.DataArray([1.0], dims="x"))
+    qtbot.addWidget(tool)
+
+    with pytest.raises(error_type, match=message):
+        tool.set_script_inputs(
+            typing.cast("tuple[ScriptInput, ...]", script_inputs),
+            primary_input=primary_input,
+        )
+
+    assert tool.script_inputs == ()
+    assert tool.primary_input is None
+
+
 def test_tool_window_custom_history_cannot_skip_provenance_signal(
     qtbot, monkeypatch
 ) -> None:
@@ -4455,6 +4500,65 @@ def test_tool_window_named_input_update_validates_before_mutation(qtbot) -> None
     assert tool.source_state == "fresh"
 
 
+def test_tool_window_input_transaction_rejects_name_changes(qtbot, monkeypatch) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+
+    def update(_inputs: Mapping[str, xr.DataArray]) -> typing.NoReturn:
+        pytest.fail("invalid inputs must not be applied")
+
+    with pytest.raises(ValueError, match="declared input names"):
+        tool._update_inputs_transaction(
+            {"data": data},
+            expected_names={"data", "weights"},
+            update=update,
+        )
+
+    monkeypatch.setattr(
+        tool,
+        "validate_update_inputs",
+        lambda inputs: {"data": inputs["data"]},
+    )
+    with pytest.raises(ValueError, match="validated inputs"):
+        tool._update_inputs_transaction(
+            {"data": data, "weights": data},
+            expected_names={"data", "weights"},
+            update=update,
+        )
+
+
+def test_tool_window_source_refresh_guards(qtbot, monkeypatch) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+    update_calls: list[None] = []
+    monkeypatch.setattr(
+        tool,
+        "_update_from_input_source",
+        lambda: update_calls.append(None),
+    )
+
+    tool.abort_source_refresh()
+    assert tool.source_state == "fresh"
+    with pytest.raises(RuntimeError, match="only be deferred"):
+        tool._defer_source_refresh()
+
+    tool._source_auto_update = True
+    tool._source_refreshing = True
+    tool._rerun_source_refresh()
+    tool._source_refreshing = False
+    tool._source_refresh_deferred = True
+    tool._rerun_source_refresh()
+    assert update_calls == []
+
+    tool._source_refresh_deferred = False
+    tool._source_auto_update = False
+    tool._rerun_source_refresh()
+    assert update_calls == []
+    assert tool.source_state == "stale"
+
+
 def test_tool_window_persistence_replacement_uses_complete_named_inputs(
     qtbot,
     monkeypatch,
@@ -5452,6 +5556,47 @@ def test_tool_window_manifest_includes_saved_source_expressions() -> None:
     ]
     assert manifest.entries[0].location == (
         "tool-inputs/0:data/source/operations/0/parameters/c1"
+    )
+
+
+def test_tool_window_saved_script_input_attrs_validate_primary_input() -> None:
+    assert erlab.interactive.utils.ToolWindow._saved_script_input_attrs((), None) == {}
+
+    with pytest.raises(ValueError, match="requires at least"):
+        erlab.interactive.utils.ToolWindow._saved_script_input_attrs((), "data")
+    with pytest.raises(ValueError, match="must name"):
+        erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+            (ScriptInput(name="data"),),
+            "missing",
+        )
+
+
+def test_tool_window_current_manifest_includes_input_expressions(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x")
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+
+    assert tool._current_code_trust_manifest() is None
+
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                provenance_spec=full_data(_expression_fit_operation()).model_dump(
+                    mode="json"
+                ),
+            ),
+        ),
+        primary_input="data",
+    )
+    manifest = tool._current_code_trust_manifest()
+
+    assert manifest is not None
+    assert [entry.feature for entry in manifest.entries] == [
+        "erlab.provenance.model-fit-parameter-expression"
+    ]
+    assert manifest.entries[0].location == (
+        "tool-inputs/0:data/provenance/operations/0/parameters/c1"
     )
 
 

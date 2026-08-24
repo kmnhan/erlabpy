@@ -575,12 +575,10 @@ def _require_file_load_source(load_source: FileLoadSource) -> None:
         return
     if status == "missing-file":
         message = "The recorded source file is not available"
-    elif status == "no-replay-call":
-        message = "The recorded source does not define replay loader metadata"
     elif status == "missing-loader":
         message = "The recorded source loader is not available"
     else:
-        message = "The recorded provenance does not define a file source"
+        message = "The recorded extension loader is not available"
     raise ReplayGraphError(message)
 
 
@@ -592,17 +590,14 @@ def _validate_replay_graph_file_sources(graph: ReplayGraph) -> None:
 
 
 def _script_provenance_validates(
-    spec: typing.Any,
+    spec: ToolProvenanceSpec,
     *,
     external_input_names: set[str] | None = None,
     strict_replay_code: bool,
 ) -> bool:
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
     try:
         _validate_script_provenance(
-            parsed,
+            spec,
             external_input_names=external_input_names,
             strict_replay_code=strict_replay_code,
         )

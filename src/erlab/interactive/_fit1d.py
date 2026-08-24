@@ -5117,9 +5117,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("`data` must be a 1D DataArray")
         validated = {"data": data}
         if "uncertainty" in inputs:
-            uncertainty = _validate_uncertainty_input(data, inputs["uncertainty"])
-            if uncertainty is not None:
-                validated["uncertainty"] = uncertainty
+            uncertainty = inputs["uncertainty"]
+            _validate_uncertainty_input(data, uncertainty)
+            validated["uncertainty"] = uncertainty
         elif self._direct_weights is not None:
             _validate_weights_input(data, self._direct_weights)
         else:

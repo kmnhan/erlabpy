@@ -961,7 +961,6 @@ class _WorkspaceSaver:
                 for item in script_inputs
             ):
                 attrs.pop(erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR, None)
-            attrs.pop(erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR, None)
         elif erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR not in attrs:
             attrs.pop(erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR, None)
         has_saved_inputs = bool(script_inputs) or any(

@@ -66,7 +66,9 @@ from erlab.interactive.imagetool._provenance._model import (
     compose_full_provenance,
     file_load,
     full_data,
+    parse_script_inputs,
     public_data,
+    rebase_script_inputs_node_uids,
     script,
     selection,
 )
@@ -918,6 +920,24 @@ def test_script_input_parsing_does_not_affect_model_equality() -> None:
     assert without_provenance.parsed_provenance_spec() is None
 
 
+def test_script_input_parsing_validates_boundary_values() -> None:
+    with pytest.raises(TypeError, match="source spec must be"):
+        ScriptInput(name="data", source_spec=object())
+    with pytest.raises(TypeError, match="must be a live ToolProvenanceSpec"):
+        ScriptInput(
+            name="data",
+            source_spec=script(start_label="Use data", active_name="data"),
+        )
+
+    assert parse_script_inputs(None) == ()
+    for invalid in ('"data"', 1):
+        with pytest.raises(TypeError, match="must be a sequence"):
+            parse_script_inputs(invalid)
+
+    script_inputs = (ScriptInput(name="data", node_uid="source"),)
+    assert rebase_script_inputs_node_uids(script_inputs, {}) == script_inputs
+
+
 def test_rebuild_script_inputs_controls_recorded_fallback(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1004,6 +1024,21 @@ def test_rebuild_script_inputs_controls_recorded_fallback(
                 "duplicate names must fail before resolution"
             ),
         )
+
+    for recorded_spec, message in (
+        (None, "does not contain recorded source provenance"),
+        (full_data(), "does not contain reloadable script or file provenance"),
+    ):
+        with pytest.raises(ReplayGraphError, match=message):
+            rebuild_script_inputs(
+                (
+                    ScriptInput(
+                        name="detached",
+                        label="Detached input",
+                        provenance_spec=recorded_spec,
+                    ),
+                )
+            )
 
 
 @pytest.mark.parametrize(
@@ -1273,6 +1308,56 @@ def test_display_graph_validates_input_name_overrides() -> None:
         )
     with pytest.raises(ReplayGraphError, match="cannot use the requested name"):
         emit_replay_code(graph, input_name_overrides={left_key: "np"})
+
+
+def test_display_graph_disambiguates_and_overrides_external_input_names() -> None:
+    graph = ReplayGraph(display=True)
+    script_code = "def add_values():\n    return left + right\n\nresult = add_values()"
+    caller_key = graph.add_node(
+        "caller",
+        "caller_input",
+        payload={"name": "source"},
+    )
+    external_key = graph.add_node(
+        "external",
+        "external_input",
+        payload={"name": "source"},
+    )
+    graph.output_key = graph.add_node(
+        "script",
+        "script",
+        parents=(caller_key, external_key),
+        cacheable=False,
+        payload={
+            "active_name": "result",
+            "bindings": (("left", caller_key), ("right", external_key)),
+            "codes": (script_code,),
+            "document_codes": (script_code,),
+            "external_names": ((),),
+            "hoist_imports": (False,),
+            "uses_implicit_framework_imports": (False,),
+        },
+    )
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    other = xr.DataArray([3.0, 4.0], dims="x")
+
+    code = emit_replay_code(graph, output_name="result")
+    namespace = _exec_generated_code(
+        code,
+        {"source": source, "source_2": other},
+    )
+    xr.testing.assert_identical(namespace["result"], source + other)
+
+    overridden_code = emit_replay_code(
+        graph,
+        output_name="result",
+        input_name_overrides={external_key: "weights"},
+    )
+    overridden = _exec_generated_code(
+        overridden_code,
+        {"source": source, "weights": other},
+    )
+    xr.testing.assert_identical(overridden["result"], source + other)
 
 
 def test_display_graph_reports_no_input_for_nested_file_provenance() -> None:
@@ -5127,6 +5212,53 @@ def test_invalid_later_fallback_precedes_any_input_load(
     assert load_calls == []
 
 
+def test_rebuild_script_inputs_rejects_unavailable_file_sources_before_loading(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "source.nc"
+    path.touch()
+    base_spec = _file_spec(path)
+    load_source = base_spec.file_load_source
+    assert load_source is not None
+
+    extension_unavailable = base_spec.model_copy(
+        update={
+            "file_load_source": load_source.model_copy(
+                update={
+                    "replay_call": FileReplayCall(
+                        kind="extension_loader",
+                        target="missing_loader.py",
+                        source_hash="a" * 64,
+                        capability_id="load_data",
+                        selection=FileDataSelection(kind="dataarray"),
+                    )
+                }
+            )
+        }
+    )
+    monkeypatch.setattr(
+        _execution,
+        "_registered_script_capability_status",
+        lambda *_args: "disabled",
+    )
+    monkeypatch.setattr(
+        _execution,
+        "_load_file_source_data",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unavailable sources must fail before loading"
+        ),
+    )
+
+    for spec, message in (
+        (_file_spec(tmp_path / "missing.nc"), "source file is not available"),
+        (_erlab_file_spec(path, "missing-loader"), "loader is not available"),
+        (extension_unavailable, "extension loader is not available"),
+    ):
+        with pytest.raises(ReplayGraphError, match=message):
+            rebuild_script_inputs((ScriptInput(name="source", provenance_spec=spec),))
+
+
 def test_missing_later_callable_precedes_any_file_load(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
@@ -5323,6 +5455,34 @@ def test_display_graph_rejects_nested_store_over_external_input() -> None:
     with pytest.raises(ReplayGraphError, match="provenance name 'left'"):
         emit_replay_code(compile_replay_graph(spec, display=True))
     assert spec.display_code() is None
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (
+            "from math import *\nresult = left",
+            "opaque namespace import",
+        ),
+        (
+            "np = left\nresult = left",
+            "overwrite replay global 'np'",
+        ),
+    ],
+)
+def test_display_graph_rejects_unsafe_multi_input_namespace_changes(
+    code: str,
+    message: str,
+) -> None:
+    spec = script(
+        ScriptCodeOperation(label="Use input", code=code),
+        start_label="Use input",
+        active_name="result",
+        script_inputs=(ScriptInput(name="left"),),
+    )
+
+    with pytest.raises(ReplayGraphError, match=message):
+        emit_replay_code(compile_replay_graph(spec, display=True))
 
 
 @pytest.mark.parametrize(

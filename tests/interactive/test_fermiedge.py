@@ -877,6 +877,7 @@ def test_goldtool_abort_fit_task_disconnects_late_worker_signals(qtbot, gold) ->
         lambda _center, _stderr: late_calls.append("finished")
     )
     task.signals.sigFailed.connect(lambda _message: late_calls.append("failed"))
+    win._source_refresh_deferred = True
 
     win._abort_fit_task()
     task.signals.sigIterated.emit(1)
@@ -887,6 +888,11 @@ def test_goldtool_abort_fit_task_disconnects_late_worker_signals(qtbot, gold) ->
 
     assert win._fit_task is None
     assert late_calls == []
+    assert not win._source_refresh_deferred
+
+    win._source_refresh_deferred = True
+    win._abort_fit_task()
+    assert not win._source_refresh_deferred
 
 
 def test_edge_fit_task_aborted_before_run_skips_fit(gold, monkeypatch) -> None:
@@ -1081,18 +1087,23 @@ def test_goldtool_late_task_results_do_not_update_while_closing(qtbot, gold) -> 
     assert not hasattr(win, "edge_center")
 
 
-def test_goldtool_perform_edge_fit_ignores_closing_updates(qtbot, gold) -> None:
+def test_goldtool_perform_edge_fit_ignores_closing_updates(
+    qtbot, gold, monkeypatch
+) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
 
     class _ThreadPoolDouble:
         def __init__(self) -> None:
             self.started_tasks: list[EdgeFitTask] = []
+            self.raise_on_start = False
 
         def activeThreadCount(self) -> int:
             return 0
 
         def start(self, task: EdgeFitTask) -> None:
+            if self.raise_on_start:
+                raise RuntimeError("start failed")
             self.started_tasks.append(task)
 
     threadpool = _ThreadPoolDouble()
@@ -1103,6 +1114,18 @@ def test_goldtool_perform_edge_fit_ignores_closing_updates(qtbot, gold) -> None:
     assert threadpool.started_tasks == [win._fit_task]
 
     win._abort_fit_task()
+    failures: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **kwargs: failures.append((args, kwargs)),
+    )
+    threadpool.raise_on_start = True
+    win.perform_edge_fit()
+
+    assert win._fit_task is None
+    assert len(failures) == 1
+
     win._fit_closing = True
     win.perform_edge_fit()
 
@@ -1245,11 +1268,13 @@ def test_goldtool_handle_fit_failed_ignores_stale_and_closing_tasks(
     assert critical_calls == []
 
     win._fit_closing = False
+    win._source_refresh_deferred = True
     win._handle_fit_failed("current failure", task=current_task)
 
     assert win._fit_task is None
     assert disconnected == [current_task]
     assert len(critical_calls) == 1
+    assert not win._source_refresh_deferred
 
     win._handle_fit_failed("taskless failure")
 
@@ -2491,8 +2516,9 @@ def test_restool_start_fit_worker_returns_false_when_thread_exists(qtbot) -> Non
     win._fit_thread = None
 
 
-def test_restool_start_fit_worker_sets_signature_when_missing(
-    qtbot, monkeypatch
+@pytest.mark.parametrize("start_fails", [False, True], ids=["started", "start-error"])
+def test_restool_start_fit_worker_handles_thread_start(
+    qtbot, monkeypatch, start_fails: bool
 ) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
@@ -2512,6 +2538,8 @@ def test_restool_start_fit_worker_sets_signature_when_missing(
             self.sigErrored = _DummySignal()
             self.sigCancelled = _DummySignal()
             self.started = False
+            self.deleted = False
+            created.append(self)
 
         def cancel(self) -> None:
             return
@@ -2523,18 +2551,34 @@ def test_restool_start_fit_worker_sets_signature_when_missing(
             return True
 
         def start(self) -> None:
+            if start_fails:
+                raise RuntimeError("start failed")
             self.started = True
 
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    created: list[_DummyThread] = []
     monkeypatch.setattr("erlab.interactive.fermiedge.ResolutionFitThread", _DummyThread)
     monkeypatch.setattr(win, "_current_fit_signature", lambda: ("sig",))
+    failures: list[str] = []
+    monkeypatch.setattr(win, "_fit_failed", failures.append)
     win._fit_thread = None
     win._fit_signature_current = None
     win._fit_cancel_requested = True
 
-    assert win._start_fit_worker()
-    assert isinstance(win._fit_thread, _DummyThread)
+    assert win._start_fit_worker() is not start_fails
     assert win._fit_cancel_requested is False
+    assert len(created) == 1
+    if start_fails:
+        assert win._fit_thread is None
+        assert created[0].deleted
+        assert failures == ["Fit failed to start"]
+        return
+
+    assert isinstance(win._fit_thread, _DummyThread)
     assert win._fit_thread.started
+    assert failures == []
     win._fit_thread = None
 
 

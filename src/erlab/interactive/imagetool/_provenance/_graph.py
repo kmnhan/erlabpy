@@ -3381,10 +3381,9 @@ def emit_replay_code(
     copied_script_bindings = _copied_script_bindings(graph)
     aliases = list(graph.aliases) if include_all_aliases else []
     if output_name is not None:
-        if graph.output_key is None:
-            raise ReplayGraphError("Replay graph has no output")
-        output_alias = (output_name, graph.output_key)
-        output_node = node_by_key[graph.output_key]
+        output_key = typing.cast("str", graph.output_key)
+        output_alias = (output_name, output_key)
+        output_node = node_by_key[output_key]
         omit_mutating_display_alias = (
             graph.display
             and output_node.kind == "operation"

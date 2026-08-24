@@ -1634,6 +1634,17 @@ def test_fit1d_validate_update_inputs_invalid_input_keeps_existing_ui(qtbot) -> 
     with pytest.raises(ValueError, match="1D DataArray"):
         win.validate_update_inputs({"data": bad_data})
 
+    uncertainty = xr.full_like(data, 0.2)
+    validated = win.validate_update_inputs({"data": data, "uncertainty": uncertainty})
+    xr.testing.assert_identical(validated["data"], data)
+    xr.testing.assert_identical(validated["uncertainty"], uncertainty)
+
+    win._set_direct_weights(xr.ones_like(data))
+    with pytest.raises(ValueError, match="align exactly"):
+        win.validate_update_inputs(
+            {"data": data.assign_coords(x=np.asarray(data.x) + 1.0)}
+        )
+
     assert win.centralWidget() is old_central
     assert old_central is not None
     assert old_central.parent() is not None
@@ -1809,7 +1820,10 @@ def test_fit1d_refit_start_failure_commits_published_input(qtbot, monkeypatch) -
     xr.testing.assert_identical(win.tool_data, updated)
 
 
-def test_fit1d_async_refit_failure_commits_published_input(qtbot, monkeypatch) -> None:
+@pytest.mark.parametrize("terminal", ["error", "timeout"])
+def test_fit1d_async_refit_terminal_commits_published_input(
+    qtbot, monkeypatch, terminal: str
+) -> None:
     data = _make_1d_data()
     updated = data * 1.1
     win = erlab.interactive.ftool(data, execute=False)
@@ -1826,7 +1840,10 @@ def test_fit1d_async_refit_failure_commits_published_input(qtbot, monkeypatch) -
 
     assert win._apply_inputs({"data": updated}, (refreshed_binding,)) is False
     assert win._source_refresh_deferred is True
-    win._fit_errored("fit failed")
+    if terminal == "error":
+        win._fit_errored("fit failed")
+    else:
+        win._fit_timed_out(fit1d.time.perf_counter())
 
     assert win.source_state == "fresh"
     assert win.script_inputs == (refreshed_binding,)

@@ -2474,10 +2474,9 @@ class ScriptInput(pydantic.BaseModel):
             raise TypeError(
                 "script input source spec must be a ToolProvenanceSpec or mapping"
             )
-        live_source_spec = require_live_source_spec(source_spec)
-        if live_source_spec is None:
-            raise ValueError("script input source spec must be a live source spec")
-        return live_source_spec.model_dump(mode="json")
+        source_spec = typing.cast("ToolProvenanceSpec", source_spec)
+        require_live_source_spec(source_spec)
+        return source_spec.model_dump(mode="json")
 
     def parsed_source_spec(self) -> ToolProvenanceSpec | None:
         """Parse the relative transform applied to the live input value."""

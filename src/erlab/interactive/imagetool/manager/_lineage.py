@@ -751,14 +751,16 @@ class _LineageController:
             if node.slicer_area._provenance_reloadable():
                 add_action("reload", node.uid)
                 return None
-            if spec is not None and (spec.kind == "file" or has_file_load_source(spec)):
-                if reason := self._file_load_source_unavailable_reason(
-                    spec, "This result"
-                ):
-                    return reason
-                if spec.kind == "file":
-                    add_action("reload", node.uid)
-                    return None
+            if (
+                spec is not None
+                and (spec.kind == "file" or has_file_load_source(spec))
+                and (
+                    reason := self._file_load_source_unavailable_reason(
+                        spec, "This result"
+                    )
+                )
+            ):
+                return reason
             if spec is not None and spec.kind == "script" and not spec.script_inputs:
                 return "This result has no recorded inputs."
             return node.slicer_area._local_reload_unavailable_reason()

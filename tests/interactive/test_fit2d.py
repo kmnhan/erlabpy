@@ -1193,6 +1193,17 @@ def test_fit2d_validate_update_inputs_invalid_input_keeps_existing_ui(qtbot) -> 
     with pytest.raises(ValueError, match="2D DataArray"):
         win.validate_update_inputs({"data": bad_data})
 
+    uncertainty = xr.full_like(data, 0.2)
+    validated = win.validate_update_inputs({"data": data, "uncertainty": uncertainty})
+    xr.testing.assert_identical(validated["data"], data)
+    xr.testing.assert_identical(validated["uncertainty"], uncertainty)
+
+    win._set_direct_weights(xr.ones_like(data))
+    with pytest.raises(ValueError, match="align exactly"):
+        win.validate_update_inputs(
+            {"data": data.assign_coords(x=np.asarray(data.x) + 1.0)}
+        )
+
     assert win.centralWidget() is old_central
     assert old_central is not None
     assert old_central.parent() is not None
@@ -1830,6 +1841,29 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> No
     assert win_restored.copy_full_button.isEnabled()
     assert win_restored.save_full_button.isEnabled()
     assert not win_restored.scale_covar_check.isChecked()
+
+
+def test_fit2d_failed_saved_fit_restore_closes_new_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fit_ds = xr.Dataset({"modelfit_data": _make_2d_data()})
+    closed: list[Fit2DTool] = []
+    original_close = Fit2DTool.close
+
+    def fail_restore(*_args, **_kwargs):
+        raise RuntimeError("restore failed")
+
+    def record_close(tool: Fit2DTool) -> bool:
+        closed.append(tool)
+        return original_close(tool)
+
+    monkeypatch.setattr(Fit2DTool, "_restore_from_fit_dataset", fail_restore)
+    monkeypatch.setattr(Fit2DTool, "close", record_close)
+
+    with pytest.raises(RuntimeError, match="restore failed"):
+        erlab.interactive.ftool(fit_ds, execute=False)
+
+    assert len(closed) == 1
 
 
 def test_fit2d_open_weighted_saved_fit_dataset(
@@ -3887,6 +3921,69 @@ def test_fit2d_param_plot_open_parameter_values_does_not_launch_without_valid_st
     assert not manager.weighted_ftool_calls
 
 
+def test_fit2d_param_plot_reports_empty_parameter_data(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_2d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    _seed_param_plot_for_figure(win, "p0_center")
+    empty = xr.DataArray([], dims="y")
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(win, "_param_plot_dataarrays", lambda _name: (empty, empty))
+    monkeypatch.setattr(
+        win, "_show_warning", lambda title, text: warnings.append((title, text))
+    )
+
+    assert win.param_plot._current_param_dataarrays() is None
+    assert len(warnings) == 1
+
+
+def test_fit2d_parameter_output_target_uses_managed_output_state(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    opened: list[tuple[xr.DataArray, dict[str, object]]] = []
+    state: dict[str, object | None] = {"tool": None, "target": None}
+
+    def open_output(output_data: xr.DataArray, **kwargs: object) -> object | None:
+        opened.append((output_data, kwargs))
+        return state["tool"]
+
+    monkeypatch.setattr(win, "_open_output_imagetool", open_output)
+    monkeypatch.setattr(
+        win,
+        "_output_imagetool_target",
+        lambda _output_id: state["target"],
+    )
+
+    assert (
+        win._parameter_output_target(
+            "p0_center", Fit2DTool.Output.PARAMETER_VALUES, data
+        )
+        is None
+    )
+
+    state.update(tool=object(), target="values_target")
+    assert (
+        win._parameter_output_target(
+            "p0_center", Fit2DTool.Output.PARAMETER_VALUES, data
+        )
+        == "values_target"
+    )
+
+    state["target"] = object()
+    assert (
+        win._parameter_output_target(
+            "p0_center", Fit2DTool.Output.PARAMETER_VALUES, data
+        )
+        is None
+    )
+    assert len(opened) == 3
+    assert all(call[1]["prompt_on_reuse"] is False for call in opened)
+
+
 @pytest.mark.parametrize(
     ("failed_output", "values_preexisting", "expected_removals"),
     [
@@ -3954,8 +4051,29 @@ def test_fit2d_param_plot_open_parameter_values_does_not_launch_on_output_failur
     assert not manager.weighted_ftool_calls
 
 
+@pytest.mark.parametrize(
+    ("preexisting", "expected_removals"),
+    [
+        ((), ["values_target", "stderr_target"]),
+        (
+            (Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT,),
+            ["stderr_target"],
+        ),
+        ((Fit2DTool.Output.PARAMETER_STDERR,), ["values_target"]),
+        (
+            (
+                Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT,
+                Fit2DTool.Output.PARAMETER_STDERR,
+            ),
+            [],
+        ),
+    ],
+)
 def test_fit2d_param_plot_open_parameter_values_cleans_up_failed_launch(
-    qtbot, monkeypatch
+    qtbot,
+    monkeypatch,
+    preexisting: tuple[Fit2DTool.Output, ...],
+    expected_removals: list[str],
 ) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
@@ -3977,6 +4095,22 @@ def test_fit2d_param_plot_open_parameter_values_cleans_up_failed_launch(
             else "stderr_target"
         ),
     )
+    output_ids = {
+        output: win._parameter_output_id(output, param_name)
+        for output in (
+            Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT,
+            Fit2DTool.Output.PARAMETER_STDERR,
+        )
+    }
+    monkeypatch.setattr(
+        win,
+        "_output_imagetool_target",
+        lambda output_id: (
+            "preexisting"
+            if any(output_id == output_ids[output] for output in preexisting)
+            else None
+        ),
+    )
     cleared_output_ids: list[str] = []
     monkeypatch.setattr(
         win, "_clear_output_imagetool_target", cleared_output_ids.append
@@ -3985,12 +4119,14 @@ def test_fit2d_param_plot_open_parameter_values_cleans_up_failed_launch(
     win.param_plot._open_parameter_values_in_ftool()
 
     assert manager.weighted_ftool_calls == [("values_target", "stderr_target")]
-    assert manager.remove_calls == ["values_target", "stderr_target"]
+    assert manager.remove_calls == expected_removals
     assert cleared_output_ids == [
-        win._parameter_output_id(
-            Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT, param_name
-        ),
-        win._parameter_output_id(Fit2DTool.Output.PARAMETER_STDERR, param_name),
+        output_ids[
+            Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT
+            if target == "values_target"
+            else Fit2DTool.Output.PARAMETER_STDERR
+        ]
+        for target in expected_removals
     ]
 
 

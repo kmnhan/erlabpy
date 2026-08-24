@@ -1858,6 +1858,7 @@ class Fit2DTool(Fit1DTool):
 
     def _parameter_output_targets(
         self,
+        manager: ImageToolManager,
         param_name: str,
         values: xr.DataArray,
         stderr: xr.DataArray,
@@ -1874,9 +1875,7 @@ class Fit2DTool(Fit1DTool):
             if stderr_target is not None:
                 return values_target, stderr_target
             if previous_values_target is None:
-                manager, _ = self._managed_output_imagetool_parent()
-                if manager is not None:
-                    manager._remove_childtool(values_target)
+                manager._remove_childtool(values_target)
                 self._clear_output_imagetool_target(values_output_id)
         self._show_warning(
             "Could not open parameter data",
@@ -1968,6 +1967,7 @@ class Fit2DTool(Fit1DTool):
             self._output_imagetool_target(output_id) for output_id in output_ids
         )
         targets = self._parameter_output_targets(
+            manager,
             param_name,
             values,
             stderr,
@@ -2008,7 +2008,7 @@ class Fit2DTool(Fit1DTool):
             if target_figure is None:
                 return
 
-        targets = self._parameter_output_targets(param_name, values, stderr)
+        targets = self._parameter_output_targets(manager, param_name, values, stderr)
         if targets is None:
             return
         values_target, stderr_target = targets
@@ -2773,9 +2773,9 @@ class Fit2DTool(Fit1DTool):
             raise ValueError("`data` must be a 2D DataArray")
         validated = {"data": data}
         if "uncertainty" in inputs:
-            uncertainty = _validate_uncertainty_input(data, inputs["uncertainty"])
-            if uncertainty is not None:
-                validated["uncertainty"] = uncertainty
+            uncertainty = inputs["uncertainty"]
+            _validate_uncertainty_input(data, uncertainty)
+            validated["uncertainty"] = uncertainty
         elif self._direct_weights_full is not None:
             _validate_weights_input(data, self._direct_weights_full)
         else:
