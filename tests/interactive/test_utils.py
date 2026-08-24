@@ -5332,6 +5332,7 @@ def test_tool_window_rejects_unreplayable_saved_source_reference() -> None:
             ds.attrs["tool_source_spec"] = raw_source_spec
         with pytest.raises(ValueError, match="not replayable"):
             erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+                "data",
                 {"kind": "parent_source"},
                 ds,
                 source_parent_data=data,
@@ -5345,6 +5346,7 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
 
     with pytest.raises(ValueError, match="parent data is unavailable"):
         erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            "data",
             {"kind": "parent_source"},
             ds,
             source_parent_data=None,
@@ -5353,6 +5355,7 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
 
     with pytest.raises(ValueError, match="no manager-node resolver"):
         erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            "data",
             {"kind": "manager_node"},
             ds,
             source_parent_data=None,
@@ -5361,6 +5364,7 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
 
     with pytest.raises(ValueError, match="could not be resolved"):
         erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            "data",
             {"kind": "manager_node", "node_uid": "missing"},
             ds,
             source_parent_data=None,
@@ -5369,6 +5373,7 @@ def test_tool_window_resolves_saved_reference_errors() -> None:
 
     with pytest.raises(ValueError, match="Unsupported"):
         erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            "data",
             {"kind": "unexpected"},
             ds,
             source_parent_data=None,
@@ -5405,6 +5410,7 @@ def test_tool_window_saved_source_reference_authorizes_before_execution(
 
     with pytest.raises(ValueError, match="untrusted code"):
         erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+            "data",
             {"kind": "parent_source"},
             ds,
             source_parent_data=data,
@@ -5414,6 +5420,7 @@ def test_tool_window_saved_source_reference_authorizes_before_execution(
     assert executions == []
 
     resolved = erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+        "data",
         {"kind": "parent_source"},
         ds,
         source_parent_data=data,

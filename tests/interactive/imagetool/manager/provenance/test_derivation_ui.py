@@ -1596,6 +1596,11 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
 
     manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={"available": _Dependency()}),
+        _workspace_controller=types.SimpleNamespace(
+            issue_code_execution_capability=lambda entries, **_kwargs: (
+                _authorize_execution(entries)
+            ),
+        ),
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None,
             capability_status=lambda *_args: "ready",
@@ -1613,9 +1618,6 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
                     )
                 ),
             ),
-        ),
-        _authorize_provenance_execution=lambda entries, **_kwargs: _authorize_execution(
-            entries
         ),
     )
     manager._lineage_controller = manager_lineage._LineageController(

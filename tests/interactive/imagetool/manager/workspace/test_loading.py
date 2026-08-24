@@ -1868,8 +1868,15 @@ def test_pending_tool_reference_reads_owner_workspace(
             owner_node=owner_node,
         )
 
-        restored = resolver(reference)
-        assert restored is not None
+        restored = (
+            erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
+                "data",
+                reference,
+                ds,
+                source_parent_data=None,
+                reference_resolver=resolver,
+            )
+        )
         xr.testing.assert_identical(restored, resolved.rename("transformed"))
         assert workspace_paths == [imported_path]
 

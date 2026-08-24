@@ -1615,7 +1615,9 @@ def test_manager_figure_workspace_reference_helper_edges(
         with monkeypatch.context() as context:
             context.setattr(root_node, "data_for_role", unavailable_data)
             assert not controller._tool_data_reference_matches_current_data(
-                current_reference, data
+                current_reference,
+                data,
+                owner_node=figure_node,
             )
 
         saved_references = {"source": current_reference}

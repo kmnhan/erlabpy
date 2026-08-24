@@ -1156,7 +1156,6 @@ class _WorkspaceLoader:
             )
             return target
 
-        ds = self._tool_dataset_without_saved_input_provenance(ds)
         uid = self._manager._next_node_uid(self._workspace_saved_uid_from_dataset(ds))
         if parent_target is None:
             location_prefix = f"figures/{uid}"
@@ -1177,6 +1176,7 @@ class _WorkspaceLoader:
                 ds,
                 parent_target=parent_target,
             )
+            ds = self._tool_dataset_without_saved_input_provenance(ds)
             with _workspace_load_stage(profiler, "tool reference restore"):
                 source_parent_data, tool_data_reference_resolver = (
                     self._workspace_tool_restore_references(

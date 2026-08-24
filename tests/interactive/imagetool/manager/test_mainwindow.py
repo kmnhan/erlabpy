@@ -4480,9 +4480,21 @@ def test_manager_metadata_full_code_generated_only_when_copied(
 ) -> None:
     calls: list[str] = []
     copied: list[str] = []
+    graph = types.SimpleNamespace(required_input_keys=lambda _kind: ())
 
-    def fake_derivation_code(wrapper):
+    def fake_derivation_replay_graph(wrapper):
         calls.append(wrapper.uid)
+        return graph, "derived"
+
+    def fake_emit_replay_code(
+        received_graph,
+        *,
+        output_name: str,
+        input_name_overrides: dict[str, str],
+    ) -> str:
+        assert received_graph is graph
+        assert output_name == "derived"
+        assert input_name_overrides == {}
         return "derived = xr.DataArray([1.0])"
 
     monkeypatch.setattr(
@@ -4493,6 +4505,11 @@ def test_manager_metadata_full_code_generated_only_when_copied(
 
     with manager_context() as manager:
         manager.show()
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("input-independent replay must not prompt"),
+        )
         itool(xr.DataArray([1.0], dims=("x",)), manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
@@ -4503,8 +4520,13 @@ def test_manager_metadata_full_code_generated_only_when_copied(
 
         monkeypatch.setattr(
             type(wrapper),
-            "derivation_code",
-            property(fake_derivation_code),
+            "_derivation_replay_graph",
+            fake_derivation_replay_graph,
+        )
+        monkeypatch.setattr(
+            manager_details_panel,
+            "emit_replay_code",
+            fake_emit_replay_code,
         )
         manager._set_metadata_node(wrapper)
 

@@ -1304,7 +1304,7 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     )
 
     workspace_restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        weighted_restored.to_dataset()
+        weighted_restored.to_dataset(), _code_trust=new_document_trust()
     )
     qtbot.addWidget(workspace_restored)
     assert isinstance(workspace_restored, Fit1DTool)
@@ -5033,7 +5033,7 @@ def test_fit1d_source_replacement_discards_pending_result_retry(qtbot) -> None:
     assert tool._pending_persisted_fit_is_current is True
     assert tool._last_result_ds is None
 
-    assert tool.update_data(data + 1.0)
+    assert tool.update_inputs({"data": data + 1.0})
     tool.set_document_trust(new_document_trust())
 
     assert tool._serialized_fit_result_blob is None

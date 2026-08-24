@@ -5040,7 +5040,7 @@ def test_fit2d_source_replacement_discards_pending_result_retry(qtbot) -> None:
     assert tool._pending_persisted_fit_is_current is True
     assert all(result is None for result in tool._result_ds_full)
 
-    assert tool.update_data(data + 1.0)
+    assert tool.update_inputs({"data": data + 1.0})
     tool.set_document_trust(new_document_trust())
 
     assert tool._serialized_fit_result_blob is None

@@ -1916,18 +1916,41 @@ def test_manager_node_reference_validation_applies_source_spec(
         )
         node = manager._tool_graph.root_wrappers[0]
         source_spec = full_data(IselOperation(kwargs={"x": slice(1, None)}))
+        owner_tool = _AddedTimeChildTool(data.isel(x=slice(1, None)))
+        owner_tool.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    source_spec=source_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
+        owner_uid = manager.add_childtool(
+            owner_tool,
+            script_inputs={"data": 0},
+            show=False,
+        )
+        owner_node = manager._child_node(owner_uid)
         reference = {
             "kind": "manager_node",
             "node_uid": node.uid,
             "node_snapshot_token": node.snapshot_token,
+            "input_name": "data",
             "source_spec": source_spec.model_dump(mode="json"),
         }
 
         controller = manager._workspace_controller
         assert controller._tool_data_reference_matches_current_data(
-            reference, data.isel(x=slice(1, None))
+            reference,
+            data.isel(x=slice(1, None)),
+            owner_node=owner_node,
         )
-        assert not controller._tool_data_reference_matches_current_data(reference, data)
+        assert not controller._tool_data_reference_matches_current_data(
+            reference,
+            data,
+            owner_node=owner_node,
+        )
 
 
 def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:

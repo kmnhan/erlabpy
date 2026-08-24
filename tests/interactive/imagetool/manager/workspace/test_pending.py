@@ -1736,21 +1736,22 @@ def test_wrapper_pending_workspace_branch_helpers(
         original_tool = wrapper._imagetool
         wrapper._imagetool = None
         try:
-            monkeypatch.setattr(
-                wrapper,
-                "_load_source_details",
-                lambda: types.SimpleNamespace(load_code="data = 1"),
-            )
-            assert wrapper.load_source_code() == "data = 1"
-            assert wrapper.load_source_code(assign="renamed") == "renamed = 1"
-            with pytest.raises(ValueError, match="valid Python identifier"):
-                wrapper.load_source_code(assign="bad name")
-            monkeypatch.setattr(
-                wrapper,
-                "_load_source_details",
-                lambda: types.SimpleNamespace(load_code="data ="),
-            )
-            assert wrapper.load_source_code(assign="renamed") is None
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    wrapper,
+                    "_load_source_details",
+                    lambda: types.SimpleNamespace(load_code="data = 1"),
+                )
+                assert wrapper.load_source_code() == "data = 1"
+                assert wrapper.load_source_code(assign="renamed") == "renamed = 1"
+                with pytest.raises(ValueError, match="valid Python identifier"):
+                    wrapper.load_source_code(assign="bad name")
+                patch.setattr(
+                    wrapper,
+                    "_load_source_details",
+                    lambda: types.SimpleNamespace(load_code="data ="),
+                )
+                assert wrapper.load_source_code(assign="renamed") is None
         finally:
             wrapper._imagetool = original_tool
 

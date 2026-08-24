@@ -1542,6 +1542,7 @@ def test_manager_script_replay_uses_workspace_document_trust() -> None:
     assert len(trust_checks) == 1
     assert trust_checks[0] is entries
 
+
 def test_manager_script_replay_stops_when_workspace_code_is_untrusted() -> None:
     manager = types.SimpleNamespace(
         _workspace_controller=types.SimpleNamespace(
@@ -1653,6 +1654,7 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
         )
         is None
     )
+
 
 def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     monkeypatch: pytest.MonkeyPatch,

@@ -30,6 +30,10 @@ import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
+from erlab.interactive._code_trust import (
+    issue_complete_execution_capability,
+    new_document_trust,
+)
 from erlab.interactive._figurecomposer import (
     FigureDataSelectionState,
     FigureOperationKind,
@@ -4688,6 +4692,7 @@ def test_itool_reload_unavailable_reason_metadata_branches(
             ScriptCodeOperation(label="Use input", code="derived = data"),
             start_label="Run script",
             active_name="derived",
+            script_inputs=(ScriptInput(name="data"),),
         )
     )
     assert win.slicer_area._provenance_reload_unavailable_reason() is not None
@@ -5355,8 +5360,12 @@ def test_standalone_transformed_tool_input_records_resolved_fallback(qtbot) -> N
     provenance_child = add_child()
     fallback = provenance_child.script_inputs[0].parsed_provenance_spec()
     assert fallback == compose_full_provenance(parent_provenance, source_spec)
+
+    def authorize(entries):
+        return issue_complete_execution_capability(new_document_trust(), entries)[1]
+
     xarray.testing.assert_identical(
-        replay_script_provenance(fallback, {}),
+        replay_script_provenance(fallback, {}, authorize=authorize),
         resolved,
     )
 
