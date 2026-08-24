@@ -259,7 +259,9 @@ autodoc_default_options = {
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented"
 autodoc_typehints_format = "short"
-autodoc_preserve_defaults = True
+# Plot directives share this process. Preserved defaults replace live numeric
+# defaults with Sphinx wrappers, which breaks dynamic model construction.
+autodoc_preserve_defaults = False
 autodoc_inherit_docstrings = False
 
 # -- sphinx_autodoc_typehints settings ---------------------------------------
