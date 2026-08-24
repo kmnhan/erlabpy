@@ -1919,6 +1919,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addAction(manager.reindex_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.concat_action)
+        self._menu.addAction(manager.weighted_ftool_action)
         self._menu.addAction(manager.metadata_editor_action)
         self._menu.addAction(manager.batch_action)
         self._menu.addAction(manager.create_figure_action)
@@ -2130,7 +2131,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                     target = None
                 if target is None:
                     return
-                self._model.manager._show_dependency_reload_dialog(target)
+                self._model.manager._lineage_controller._show_dependency_reload_dialog(
+                    target
+                )
 
     def _show_dask_badge_menu(
         self,

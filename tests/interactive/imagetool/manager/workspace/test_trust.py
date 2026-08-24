@@ -67,6 +67,7 @@ from erlab.interactive.utils import ToolWindow
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
+    add_source_childtool,
 )
 
 if typing.TYPE_CHECKING:
@@ -506,12 +507,19 @@ def test_signed_workspace_rejects_payload_metadata_added_outside_manifest(
     reset_saved_code_trust(domain="erlab.workspace")
     workspace_path = tmp_path / "injected-pending-payload.itws"
     data = xr.DataArray(np.arange(5.0), dims="x", name="data")
+    monkeypatch.setattr(
+        QtWidgets.QDialog,
+        "exec",
+        lambda dialog: pytest.fail(
+            f"Unexpected dialog: {type(dialog).__name__} {dialog.windowTitle()!r}"
+        ),
+    )
 
     with manager_context() as manager:
         manager.add_imagetool(ImageTool(data), show=False)
         fit_tool = Fit1DTool(data)
         qtbot.addWidget(fit_tool)
-        fit_uid = manager.add_childtool(fit_tool, 0, show=False)
+        fit_uid = add_source_childtool(manager, fit_tool, 0, show=False)
         fit_tool.hide()
 
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
@@ -580,7 +588,7 @@ def test_signed_workspace_materializes_unchanged_fit_payload(
         qtbot.addWidget(fit_tool)
         fit_tool._serialized_fit_result_blob = np.arange(8, dtype=np.uint8)
         fit_tool._pending_persisted_fit_is_current = False
-        fit_uid = manager.add_childtool(fit_tool, 0, show=False)
+        fit_uid = add_source_childtool(manager, fit_tool, 0, show=False)
         fit_tool.hide()
 
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
@@ -617,8 +625,22 @@ def test_signed_workspace_materializes_child_parent_source_code(
         manager.add_imagetool(ImageTool(parent_data), show=False)
         child = _TrustProbeTool(child_data)
         qtbot.addWidget(child)
-        child.set_source_binding(source_spec)
-        child_uid = manager.add_childtool(child, 0, show=True)
+        child.set_script_inputs(
+            (
+                ScriptInput(
+                    name="data",
+                    data_role="displayed",
+                    source_spec=source_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_input="data",
+        )
+        parent_uid = manager._node_for_target(0).uid
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": 0},
+            show=True,
+        )
 
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
         references = json.loads(
@@ -626,9 +648,12 @@ def test_signed_workspace_materializes_child_parent_source_code(
                 workspace_path, f"0/childtools/{child_uid}"
             )["tool_data_references"]
         )
-        assert references[interactive_utils._SAVED_TOOL_DATA_NAME] == {
-            "kind": "parent_source"
-        }
+        reference = references[interactive_utils._SAVED_TOOL_DATA_NAME]
+        assert reference["kind"] == "manager_node"
+        assert reference["input_name"] == "data"
+        assert reference["node_uid"] == parent_uid
+        assert reference["data_role"] == "displayed"
+        assert reference["source_spec"] == source_spec.model_dump(mode="json")
         assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
 
     with manager_context() as manager:
@@ -640,7 +665,7 @@ def test_signed_workspace_materializes_child_parent_source_code(
         assert manager._workspace_state.code_trust == signed
         assert node.tool_window is not None
         assert node.tool_window._document_trust == signed
-        assert node.tool_window.source_spec == source_spec
+        assert node.tool_window.script_inputs[0].parsed_source_spec() == source_spec
         assert node.tool_window.tool_data.dims == ("y",)
 
 
@@ -1293,7 +1318,7 @@ def test_workspace_host_routes_materialized_tool_trust_to_one_state(
 
         tool = _TrustProbeTool(data)
         qtbot.addWidget(tool)
-        manager.add_childtool(tool, 0, show=False)
+        add_source_childtool(manager, tool, 0, show=False)
 
         assert not document_trust_has_trusted_lineage(tool._current_document_trust())
 
@@ -1882,7 +1907,7 @@ def test_workspace_host_retains_tool_payload_verification_failure(
         tool.set_document_trust(untrusted_document_trust(), notify=False)
 
         manager._workspace_state.code_trust = trusted_location_document_trust()
-        manager.add_childtool(tool, 0, show=False)
+        add_source_childtool(manager, tool, 0, show=False)
 
         assert not document_trust_is_trusted(manager._workspace_state.code_trust)
         assert not document_trust_is_trusted(tool._current_document_trust())

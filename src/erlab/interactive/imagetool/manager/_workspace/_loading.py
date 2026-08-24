@@ -399,23 +399,6 @@ class _WorkspaceLoader:
             with contextlib.suppress(Exception):
                 dataset.close()
 
-    @staticmethod
-    def _workspace_reference_key(
-        workspace_path: str | os.PathLike[str], payload_path: str
-    ) -> tuple[pathlib.Path, str]:
-        normalized = workspace_arrays._normalized_file_path(workspace_path)
-        return pathlib.Path(
-            os.fsdecode(workspace_path) if normalized is None else normalized
-        ), payload_path.strip("/")
-
-    @staticmethod
-    def _open_workspace_imagetool_reference_dataset(
-        workspace_path: str | os.PathLike[str], payload_path: str
-    ) -> xr.Dataset:
-        return workspace_arrays.open_workspace_dataset(
-            workspace_path, payload_path, chunks={}
-        )
-
     def _workspace_imagetool_reference_dataset(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
@@ -442,11 +425,17 @@ class _WorkspaceLoader:
         owner_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] | None = None,
     ) -> xr.Dataset:
-        key = self._workspace_reference_key(workspace_path, payload_path)
+        normalized = workspace_arrays._normalized_file_path(workspace_path)
+        key = (
+            pathlib.Path(
+                os.fsdecode(workspace_path) if normalized is None else normalized
+            ),
+            payload_path.strip("/"),
+        )
 
         def _open() -> xr.Dataset:
-            return self._open_workspace_imagetool_reference_dataset(
-                workspace_path, payload_path
+            return workspace_arrays.open_workspace_dataset(
+                workspace_path, payload_path, chunks={}
             )
 
         if reference_datasets is not None:
@@ -605,9 +594,12 @@ class _WorkspaceLoader:
         tool_cls = erlab.interactive.utils.ToolWindow
         tool_data_references = tool_cls._saved_tool_data_references(ds)
         source_parent_data: xr.DataArray | None = None
-        if parent_target is not None and any(
-            reference.get("kind") == "parent_source"
-            for reference in tool_data_references.values()
+        if parent_target is not None and (
+            any(
+                reference.get("kind") == "parent_source"
+                for reference in tool_data_references.values()
+            )
+            or erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in ds.attrs
         ):
             source_parent_data = _source_data_for_target(parent_target)
 
@@ -635,7 +627,7 @@ class _WorkspaceLoader:
                     )
                     if pending_owner is None:
                         return None
-                    return self._saved_workspace_reference_source_data_for_uid(
+                    resolved = self._saved_workspace_reference_source_data_for_uid(
                         node_uid,
                         snapshot_token=(
                             snapshot_token
@@ -647,6 +639,9 @@ class _WorkspaceLoader:
                         reference_datasets=reference_datasets,
                         workspace_path=pending_owner[0],
                     )
+                    if resolved is None:
+                        return None
+                    return resolved
                 if (
                     isinstance(snapshot_token, str)
                     and snapshot_token
@@ -662,8 +657,7 @@ class _WorkspaceLoader:
                     if saved_data is not None:
                         return saved_data
                 return _source_data_for_target(
-                    target,
-                    typing.cast("ScriptInputDataRole", data_role),
+                    target, typing.cast("ScriptInputDataRole", data_role)
                 )
             except resolver_error_types:
                 if log_resolver_errors:
@@ -702,6 +696,58 @@ class _WorkspaceLoader:
             attrs.get(erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR)
         )
         return erlab.interactive.utils._normalize_tool_source_state(source_state)
+
+    def _workspace_tool_dataset_with_canonical_inputs(
+        self,
+        ds: xr.Dataset,
+        *,
+        parent_target: int | str | None,
+    ) -> xr.Dataset:
+        """Convert released unary ToolWindow metadata to one canonical input."""
+        inputs_attr = erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR
+        if parent_target is None or inputs_attr in ds.attrs:
+            return ds
+
+        legacy_attrs = (
+            erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
+            erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR,
+            erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+        )
+        if not any(key in ds.attrs for key in legacy_attrs):
+            return ds
+
+        tool_cls = erlab.interactive.utils.ToolWindow
+        try:
+            script_inputs, primary_input = tool_cls._saved_script_input_metadata(
+                ds.attrs
+            )
+            primary_index = tuple(item.name for item in script_inputs).index(
+                primary_input
+            )
+            primary_script_input = script_inputs[primary_index]
+            source_spec = primary_script_input.parsed_source_spec()
+        except Exception:
+            logger.warning("Ignoring invalid saved ToolWindow input", exc_info=True)
+            return ds
+
+        parent_node = self._manager._node_for_target(parent_target)
+        bound_input = self._manager._lineage_controller._script_input_for_node(
+            parent_node,
+            name=primary_input,
+            source_spec=source_spec,
+            fallback_provenance_spec=primary_script_input.provenance_spec,
+            data_role="displayed",
+        )
+        updated_inputs = list(script_inputs)
+        updated_inputs[primary_index] = bound_input
+        migrated = ds.copy(deep=False)
+        migrated.attrs = dict(ds.attrs)
+        migrated.attrs.update(
+            tool_cls._saved_script_input_attrs(updated_inputs, primary_input)
+        )
+        if source_spec is not None:
+            migrated.attrs.pop(erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR, None)
+        return migrated
 
     def _root_workspace_imagetool_kwargs(
         self, ds: xr.Dataset, kwargs: dict[str, typing.Any]
@@ -1087,6 +1133,10 @@ class _WorkspaceLoader:
         reserved_uids: Mapping[str, str] | None = None,
     ) -> int | str:
         if pending_workspace_tool_payload is not None:
+            ds = self._workspace_tool_dataset_with_canonical_inputs(
+                ds,
+                parent_target=parent_target,
+            )
             self.pending._validate_pending_workspace_tool_dataset(
                 ds, parent_target=parent_target
             )
@@ -1106,7 +1156,6 @@ class _WorkspaceLoader:
             )
             return target
 
-        ds = self._tool_dataset_without_saved_input_provenance(ds)
         uid = self._manager._next_node_uid(self._workspace_saved_uid_from_dataset(ds))
         if parent_target is None:
             location_prefix = f"figures/{uid}"
@@ -1123,6 +1172,11 @@ class _WorkspaceLoader:
 
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
         try:
+            ds = self._workspace_tool_dataset_with_canonical_inputs(
+                ds,
+                parent_target=parent_target,
+            )
+            ds = self._tool_dataset_without_saved_input_provenance(ds)
             with _workspace_load_stage(profiler, "tool reference restore"):
                 source_parent_data, tool_data_reference_resolver = (
                     self._workspace_tool_restore_references(
@@ -1166,7 +1220,7 @@ class _WorkspaceLoader:
                         note=ds.attrs.get("manager_node_note"),
                     )
                 else:
-                    target = self._manager.add_childtool(
+                    target = self._manager._actions_controller._register_childtool(
                         tool,
                         parent_target,
                         show=_workspace_dataset_window_visible(ds, "tool"),
@@ -1178,15 +1232,6 @@ class _WorkspaceLoader:
                         created_time=ds.attrs.get("manager_node_added_at"),
                         note=ds.attrs.get("manager_node_note"),
                     )
-                    parent_uid = self._manager._node_for_target(parent_target).uid
-                    registered_node = self._manager._node_for_target(target)
-
-                    def _source_parent_fetcher() -> xr.DataArray:
-                        return self._workspace_tool_reference_source_data(
-                            parent_uid, owner_node=registered_node
-                        )
-
-                    tool.set_source_parent_fetcher(_source_parent_fetcher)
                 registered_node = self._manager._node_for_target(target)
                 registered_node._set_workspace_tool_data_references(
                     type(tool)._saved_tool_data_references(ds)
@@ -1958,8 +2003,8 @@ class _WorkspaceLoader:
                 if loaded_count == 0 and self._skipped_workspace_nodes:
                     self._raise_no_workspace_windows_loaded()
                 with profiler.stage("link/layout restore"):
-                    self._manager._rebase_loaded_workspace_dependency_refs(
-                        loaded_targets_by_uid,
+                    self._manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
+                        loaded_targets_by_uid
                     )
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if replace:
@@ -2160,7 +2205,7 @@ class _WorkspaceLoader:
                     if loaded_count == 0 and self._skipped_workspace_nodes:
                         self._raise_no_workspace_windows_loaded()
                     with profiler.stage("link/layout restore"):
-                        self._manager._rebase_loaded_workspace_dependency_refs(
+                        self._manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
                             loaded_targets_by_uid
                         )
                         self._restore_workspace_link_groups(

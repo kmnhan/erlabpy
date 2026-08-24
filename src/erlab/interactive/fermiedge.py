@@ -606,10 +606,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._fit_task: EdgeFitTask | None = None
         self._fit_closing = False
         self.sigAbortFitting.connect(self._abort_fit_task)
-        self._pending_update_request: _GoldUpdateRequest | None = None
-        self._pending_update_timer = QtCore.QTimer(self)
-        self._pending_update_timer.setSingleShot(True)
-        self._pending_update_timer.timeout.connect(self._flush_pending_update)
 
         # Resize roi to data bounds
         eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
@@ -1094,42 +1090,26 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._reset_history_stack()
 
         if request.had_fit and request.refit:
-            self._source_refresh_deferred = self.has_source_binding
             self.perform_edge_fit()
+            if self._fit_task is None:
+                return True
+            if self._source_refreshing:
+                self._defer_source_refresh()
             return False
         return True
 
-    @QtCore.Slot()
-    def _flush_pending_update(self) -> None:
-        request = self._pending_update_request
-        if request is None:
-            return
-        if self._threadpool.activeThreadCount():
-            self._pending_update_timer.start(50)
-            return
-        self._pending_update_request = None
-        if self._apply_update_request(request):
-            self.finalize_source_refresh()
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+        return self._apply_update_request(self._make_update_request(inputs["data"]))
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
-        self._source_refresh_deferred = False
-        data = self.validate_update_data(new_data)
-        request = self._make_update_request(data)
-        self._pending_update_request = request
-        self._abort_fit_task()
-        if self._threadpool.activeThreadCount():
-            self._pending_update_timer.start(50)
-            return False
-        self._pending_update_request = None
-        return self._apply_update_request(request)
-
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if data.ndim != 2 or "eV" not in data.dims:
             raise ValueError("`data` must be a 2D DataArray with an `eV` dimension")
         if data.dims[0] != "eV":
             data = data.copy().T
-        return data
+        return {"data": data}
 
     def _toggle_step_edge(self) -> None:
         self.params_edge.widgets["Fix T"].setDisabled(
@@ -1164,11 +1144,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
-        if (
-            self._pending_update_request is not None
-            or self._fit_closing
-            or not erlab.interactive.utils.qt_is_valid(self)
-        ):
+        if self._fit_closing or not erlab.interactive.utils.qt_is_valid(self):
             return
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
@@ -1206,7 +1182,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         task.signals.sigFailed.connect(
             lambda message, task=task: self._handle_fit_failed(message, task=task)
         )
-        self._threadpool.start(task)
+        try:
+            self._threadpool.start(task)
+        except Exception:
+            self._handle_fit_failed(traceback.format_exc(), task=task)
+            return
         self._emit_info_changed()
 
     def _show_empty_fit_selection_warning(self) -> None:
@@ -1270,12 +1250,16 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def _abort_fit_task(self) -> None:
         task = self._fit_task
         if task is None:
+            if self._source_refresh_deferred:
+                self.finalize_source_refresh()
             return
         self._fit_task = None
         self._disconnect_fit_task_signals(task)
         task.abort_fit()
         self.progress.reset()
         self._emit_info_changed()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     def _handle_fit_failed(
         self, message: str, *, task: EdgeFitTask | None = None
@@ -1297,6 +1281,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             "An error occurred during fitting. See details below.",
             detailed_text=erlab.interactive.utils._format_traceback(message),
         )
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     @property
     def edge_func(self) -> "Callable":
@@ -1498,9 +1484,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def _current_mode_copy_label(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del primary_input, data
         return self._copy_label(
             self._current_fit_mode(), include_corrected=self.data_corr is not None
         )
@@ -1508,68 +1495,74 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def _current_mode_copy_assign(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del primary_input, data
         return "corrected" if self.data_corr is not None else "model_result"
 
     def _current_mode_corrected_label(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del primary_input, data
         return self._copy_label(self._current_fit_mode(), include_corrected=True)
 
     def _current_mode_copy_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del data
         if self.data_corr is not None:
             return self._corrected_expression(
                 self._current_fit_mode(),
-                input_name=input_name,
+                input_name=primary_input,
             )
         return self._fit_expression(
             self._current_fit_mode(),
-            input_name=input_name,
+            input_name=primary_input,
         )
 
     def _current_mode_copy_prelude(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del data
         if self.data_corr is None:
             return ""
         return "model_result = " + self._fit_expression(
             self._current_fit_mode(),
-            input_name=input_name,
+            input_name=primary_input,
         )
 
     def _current_mode_corrected_prelude(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del data
         return "model_result = " + self._fit_expression(
             self._current_fit_mode(),
-            input_name=input_name,
+            input_name=primary_input,
         )
 
     def _current_mode_corrected_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        del data
         return self._corrected_expression(
             self._current_fit_mode(),
-            input_name=input_name,
+            input_name=primary_input,
         )
 
     def _corrected_output(self) -> xr.DataArray:
@@ -1585,8 +1578,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     def _stop_server(self, *, timeout_ms: int | None = None) -> bool:
         """Stop the fitter thread properly."""
-        self._pending_update_request = None
-        self._pending_update_timer.stop()
         self._abort_fit_task()
         if timeout_ms is None:
             timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
@@ -2071,7 +2062,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
         return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
         had_fit = self._result_ds is not None
         status = self.tool_status.model_copy(
             update={"results": ("No fit results", "—", "—", "—", "—")}
@@ -2087,20 +2078,24 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self._reset_history_stack()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
-                self._source_refresh_deferred = self.has_source_binding
-                self.do_fit()
+                if not self.do_fit():
+                    return True
+                if self._source_refreshing:
+                    self._defer_source_refresh()
                 return False
             return True
 
-        return self._perform_source_update(new_data, apply_update=_apply_update)
+        return _apply_update(inputs["data"])
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if (data.ndim != 2) or ("eV" not in data.dims):
             raise ValueError("Data must be 2D and have an 'eV' dimension.")
         if data.dims.index("eV") != 1:
             data = data.T
-        return data
+        return {"data": data}
 
     def _update_edc(self) -> None:
         """Calculate averaged EDC and update the plot."""
@@ -2211,14 +2206,21 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         was_cancelled = self._fit_cancel_requested
         self._fit_cancel_requested = False
         closing = self._fit_closing or not erlab.interactive.utils.qt_is_valid(self)
-        if action is not None and not closing:
-            action()
-        if self._fit_queued and not was_cancelled and not closing:
+        restart_started = False
+        try:
+            if action is not None and not closing:
+                action()
+            restart_requested = self._fit_queued and not was_cancelled and not closing
             self._fit_queued = False
-            self._start_fit_worker()
-        elif closing:
+            if restart_requested:
+                restart_started = self._start_fit_worker()
+        except Exception:
             self._fit_queued = False
-        thread.deleteLater()
+            self._handle_fit_error(traceback.format_exc(), self._fit_signature_current)
+        finally:
+            thread.deleteLater()
+            if self._source_refresh_deferred and not restart_started:
+                self.finalize_source_refresh()
 
     def _start_fit_worker(self) -> bool:
         if (
@@ -2265,7 +2267,15 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
         self._fit_thread = thread
         self._fit_cancel_requested = False
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._fit_thread = None
+            with contextlib.suppress(Exception):
+                thread.deleteLater()
+            logger.exception("Failed to start resolution fit worker")
+            self._fit_failed("Fit failed to start")
+            return False
         return True
 
     def _handle_fit_cancelled(self) -> None:
@@ -2285,7 +2295,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._replace_last_state()
 
     def _handle_fit_error(
-        self, message: str, fit_signature: tuple[typing.Any, ...]
+        self, message: str, fit_signature: tuple[typing.Any, ...] | None
     ) -> None:
         if fit_signature != self._fit_signature_current:
             return
@@ -2350,18 +2360,21 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         with self._history_suppressed():
             self._emit_info_changed()
         self._replace_last_state()
-        if self._source_refresh_deferred:
-            self.finalize_source_refresh()
 
     @QtCore.Slot()
-    def do_fit(self) -> None:
+    def do_fit(self) -> bool:
         """Perform a fit on the averaged EDC and update results."""
         self._invalidate_displayed_fit_if_stale()
         if self._fit_running():
             self._fit_queued = True
-            return
+            return False
         self._fit_queued = False
-        self._start_fit_worker()
+        try:
+            return self._start_fit_worker()
+        except Exception:
+            logger.exception("Failed to prepare resolution fit worker")
+            self._fit_failed("Fit failed to start")
+            return False
 
     def connect_signals(self) -> None:
         self.x0_spin.valueChanged.connect(self._update_region)
@@ -2414,14 +2427,14 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     def _copy_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         data_name = erlab.interactive.utils.generate_code(
             xr.DataArray.sel,
             args=[],
             kwargs={self.y_dim: slice(*self.y_range)},
-            module=input_name or self.data_name,
+            module=primary_input or self.data_name,
         )
 
         # Check if any parameters are the same as the automatically guessed ones

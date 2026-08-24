@@ -18,7 +18,6 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
-import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive.imagetool._load_source import (
@@ -1374,13 +1373,13 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
             ),
         ),
     )
-    manager._script_input_can_reload = lambda *_args, **_kwargs: True
-    manager._rebuild_script_provenance = lambda *_args, **_kwargs: pytest.fail(
-        "selection edit should not rebuild script provenance"
-    )
-    manager._authorize_provenance_execution = lambda *_args, **_kwargs: False
-    manager._apply_provenance = lambda provenance, data, **_kwargs: provenance.apply(
-        data
+    manager._lineage_controller = types.SimpleNamespace(
+        _script_input_unavailable_reason=lambda *_args, **_kwargs: None,
+        _rebuild_script_provenance=lambda *_args, **_kwargs: pytest.fail(
+            "selection edit should not rebuild script provenance"
+        ),
+        _authorize_provenance_execution=lambda *_args, **_kwargs: None,
+        _apply_provenance=lambda provenance, data, **_kwargs: provenance.apply(data),
     )
     manager._update_info = lambda **_kwargs: None
     controller = provenance_edit_controller._ProvenanceEditController(
@@ -1656,46 +1655,33 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
         is None
     )
 
-    forwarded: list[tuple[tuple[object, ...], str, bool]] = []
-    entries = (object(),)
-    capability = object()
-
-    def authorize_script_provenance_execution(
-        entries_arg: tuple[object, ...],
-        *,
-        reason: str,
-        raise_on_block: bool = True,
-    ) -> object:
-        forwarded.append((entries_arg, reason, raise_on_block))
-        return capability
-
-    manager = types.SimpleNamespace(
-        _lineage_controller=types.SimpleNamespace(
-            _authorize_provenance_execution=(authorize_script_provenance_execution)
-        )
-    )
-
-    assert (
-        manager_mainwindow.ImageToolManager._authorize_provenance_execution(
-            typing.cast("typing.Any", manager),
-            entries,
-            reason="reload this result",
-        )
-        is capability
-    )
-
-    assert forwarded == [(entries, "reload this result", True)]
-
 
 def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
 ) -> None:
-    spec = _trust_required_script_spec()
+    original_spec = _trust_required_script_spec()
+    source_path = tmp_path / "source.h5"
+    source_path.touch()
+    spec = original_spec.model_copy(
+        update={
+            "script_inputs": (
+                original_spec.script_inputs[0].model_copy(
+                    update={
+                        "provenance_spec": _manager_replay_file_spec(
+                            source_path
+                        ).model_dump(mode="json")
+                    }
+                ),
+            )
+        }
+    )
     ensured: list[str] = []
     trusted_flags: list[bool] = []
     manager = types.SimpleNamespace(
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args, **_kwargs: None,
             replay_loader=lambda *_args, **_kwargs: pytest.fail(
                 "built-in provenance must not use extension loader execution"
             ),
@@ -1705,20 +1691,27 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
                 )
             ),
         ),
-        _script_input_can_reload=lambda *_args, **_kwargs: True,
-        _resolve_live_script_input_for_reload=lambda *_args, **_kwargs: None,
+        _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
     capability = object()
     controller._authorize_provenance_execution = (  # type: ignore[method-assign]
         lambda _entries, *, reason, **_kwargs: ensured.append(reason) or capability
     )
+    monkeypatch.setattr(
+        controller,
+        "_node_reload_unavailable_reason",
+        lambda *_args, **_kwargs: None,
+    )
     node = types.SimpleNamespace(
         is_imagetool=True,
         imagetool=object(),
+        tool_window=None,
+        slicer_area=types.SimpleNamespace(_direct_reloadable=lambda: False),
         provenance_spec=spec,
         uid="node",
     )
+    manager._tool_graph.nodes[node.uid] = node
 
     def rebuild_script_provenance(
         spec_arg: ToolProvenanceSpec,

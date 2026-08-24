@@ -258,6 +258,16 @@ and right-click context menus:
   Combine selected data with {func}`xarray.concat` and open the result in a new
   ImageTool window.
 
+- {guilabel}`Open in ftool…`
+
+  Select two ImageTool rows. The dialog assigns one row to {guilabel}`Data` and one row
+  to {guilabel}`Standard uncertainty`. Use {guilabel}`Swap` to exchange the assignments.
+  The manager opens a weighted `ftool`. The data ImageTool remains the parent row. The
+  standard uncertainty ImageTool remains a named dependency of `ftool`.
+
+  The standard uncertainty must align with, and broadcast to, the data. If it is missing
+  or incompatible, the manager does not open an unweighted `ftool`.
+
 - {guilabel}`New Empty Figure`
 
   Create a Figure Composer window without data sources or recipe steps.

@@ -542,7 +542,11 @@ class _WorkspaceController:
         )
 
     def _tool_data_reference_matches_current_data(
-        self, reference: Mapping[str, typing.Any], data: xr.DataArray
+        self,
+        reference: Mapping[str, typing.Any],
+        data: xr.DataArray,
+        *,
+        owner_node: _ManagedWindowNode,
     ) -> bool:
         if not self._tool_data_reference_matches_current_snapshot(reference):
             return False
@@ -556,6 +560,44 @@ class _WorkspaceController:
         )
         try:
             resolved = node.data_for_role(data_role)
+            tool = owner_node.tool_window
+            if tool is None:
+                return False
+            input_name = reference.get("input_name")
+            script_input = next(
+                (
+                    (index, item)
+                    for index, item in enumerate(tool.script_inputs)
+                    if item.name == input_name
+                ),
+                None,
+            )
+            authorization = None
+            if script_input is not None:
+                index, item = script_input
+                entries = tuple(
+                    tool._source_spec_code_trust_entries(
+                        item.parsed_source_spec(),
+                        location_prefix=f"tool-inputs/{index}:{item.name}/source",
+                    )
+                )
+                if entries:
+                    entries = self._locate_tool_code_trust_entries(
+                        entries,
+                        location_getter=lambda: (
+                            self.saving._workspace_node_path_for_node(owner_node)
+                        ),
+                    )
+                    authorization = self.issue_code_execution_capability(entries)
+                    if authorization is None:
+                        return False
+            resolved = (
+                erlab.interactive.utils.ToolWindow._apply_saved_tool_data_reference(
+                    reference,
+                    resolved,
+                    authorization=authorization,
+                )
+            )
         except Exception:
             return False
         return erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(

@@ -15,10 +15,11 @@ import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive.imagetool._provenance._model import ScriptInput
 
 if typing.TYPE_CHECKING:
     import pathlib
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from erlab.interactive.fermiedge import GoldTool
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -360,6 +361,10 @@ class _UnserializableChildTool(
         super().__init__()
         self._data = data
         self._status = _UnserializableChildState()
+        self.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -372,6 +377,9 @@ class _UnserializableChildTool(
     @tool_status.setter
     def tool_status(self, status: _UnserializableChildState) -> None:
         self._status = status
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self._data = inputs["data"]
 
     def _raise_serialization_error(self) -> typing.NoReturn:
         raise ValueError(
@@ -402,7 +410,15 @@ def make_fit2d_child(
         data, model=exp_decay_model, params=params, execute=False
     )
     assert isinstance(tool, Fit2DTool)
-    child_uid = manager.add_childtool(tool, parent, show=False)
+    tool.set_script_inputs(
+        (ScriptInput(name="data", data_role="displayed"),),
+        primary_input="data",
+    )
+    child_uid = manager.add_childtool(
+        tool,
+        script_inputs={"data": parent},
+        show=False,
+    )
     return child_uid, tool
 
 
@@ -421,7 +437,15 @@ def make_fit1d_child(
         data, model=exp_decay_model, params=params, execute=False
     )
     assert isinstance(tool, Fit1DTool)
-    child_uid = manager.add_childtool(tool, parent, show=False)
+    tool.set_script_inputs(
+        (ScriptInput(name="data", data_role="displayed"),),
+        primary_input="data",
+    )
+    child_uid = manager.add_childtool(
+        tool,
+        script_inputs={"data": parent},
+        show=False,
+    )
     return child_uid, tool
 
 
@@ -614,10 +638,9 @@ def copy_full_code_for_uid(
     monkeypatch,
     manager: ImageToolManager,
     uid: str,
-    *,
-    source_name: str = "data",
 ) -> str:
     copied: list[str] = []
+    unexpected_prompts: list[str] = []
     monkeypatch.setattr(
         erlab.interactive.utils,
         "copy_to_clipboard",
@@ -626,13 +649,22 @@ def copy_full_code_for_uid(
     monkeypatch.setattr(
         manager,
         "_prompt_replay_input_name",
-        lambda _node: source_name,
+        lambda node: unexpected_prompts.append(node.uid) or None,
     )
     manager.tree_view.clearSelection()
     select_child_tool(manager, uid)
     manager._update_info(uid=uid)
     menu = manager._build_metadata_derivation_menu()
     assert menu is not None
+    node = manager._node_for_target(uid)
+    assert node.derivation_code, (
+        manager._details_panel._unavailable_replay_code_traceback(node)
+        or manager._details_panel._unavailable_replay_code_details(node)
+    )
     trigger_menu_action(menu, manager._metadata_copy_full_action)
+    assert not unexpected_prompts, (
+        "Copy Full Code unexpectedly requested a source variable for "
+        f"node {unexpected_prompts[0]!r}"
+    )
     assert copied
     return copied[-1]

@@ -1,7 +1,7 @@
 import functools
 import typing
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import matplotlib as mpl
@@ -44,6 +44,7 @@ from erlab.interactive.imagetool._provenance._graph import (
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
+    ScriptInput,
     ToolProvenanceSpec,
     file_load,
     script,
@@ -71,6 +72,10 @@ class _SourcePickerDummyTool(
         super().__init__()
         self._data = data
         self._status = _SourcePickerDummyState()
+        self.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -83,6 +88,9 @@ class _SourcePickerDummyTool(
     @tool_status.setter
     def tool_status(self, status: _SourcePickerDummyState) -> None:
         self._status = status
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
+        self._data = inputs["data"]
 
 
 def _delete_test_widgets(*widgets: QtWidgets.QWidget | None) -> None:

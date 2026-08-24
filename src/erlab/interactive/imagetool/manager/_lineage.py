@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import functools
+import itertools
+import json
 import logging
 import pathlib
 import traceback
@@ -13,27 +15,33 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._execution import (
+    _memoized_live_input_resolver,
+    _script_replay_validation,
     can_reload_without_trust,
     file_load_source_status,
+    rebuild_script_inputs,
     rebuild_script_provenance,
-    script_provenance_replayable,
 )
-from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
+from erlab.interactive.imagetool._provenance._graph import (
+    LiveInputResolver,
+    ReplayGraphError,
+)
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ScriptInputDataRole,
     ScriptInputDependencyRef,
     ToolProvenanceSpec,
+    compose_full_provenance,
     has_file_load_source,
     rebase_script_input_node_uids,
+    rebase_script_inputs_node_uids,
     script,
-    script_input_dependency_refs,
+    to_replay_provenance_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
-from erlab.interactive.imagetool._provenance._trust import (
-    provenance_code_trust_entries,
-    script_replay_source_input_names,
-)
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
+from erlab.interactive.imagetool.manager._dependency import _combine_source_states
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
     _DEPENDENCY_STATUS_LABELS,
@@ -48,7 +56,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
     import xarray as xr
 
@@ -58,21 +66,21 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_InputResolutionAction = tuple[typing.Literal["reload", "refresh", "apply"], str]
+
+
+class _InputResolutionPlan(typing.NamedTuple):
+    target_uid: str | None
+    script_inputs: tuple[ScriptInput, ...]
+    actions: tuple[_InputResolutionAction, ...]
+    live_uids: frozenset[str]
+    unavailable_reason: str | None
+
 
 class _LineageController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
-
-    @staticmethod
-    def _script_provenance_runnable(
-        spec: ToolProvenanceSpec,
-    ) -> bool:
-        input_names = set(script_replay_source_input_names(spec))
-        return script_provenance_replayable(
-            spec,
-            external_input_names=input_names or None,
-            allow_code=True,
-        )
+        self._tool_input_refresh_uids: set[str] = set()
 
     def _authorize_provenance_execution(
         self,
@@ -165,22 +173,20 @@ class _LineageController:
             return None
         tooltip = _DEPENDENCY_STATUS_TOOLTIPS[status]
         node = self._manager._tool_graph.nodes.get(uid)
-        if node is not None and self._manager._node_can_reload_script_inputs(node):
+        if node is not None and self._node_can_reload_script_inputs(node):
             tooltip += " Click for Reload Data options."
-        if (
-            status == "missing"
-            and self._manager._missing_dependencies_have_recorded_file(uid)
-        ):
+        if status == "missing" and self._missing_dependencies_have_recorded_file(uid):
             tooltip += " Recorded source files found for at least one missing input."
         return tooltip
 
     def dependency_input_summary_for_uid(self, uid: str) -> str | None:
-        refs = self._manager._dependency_refs_for_uid(uid)
+        refs = self._dependency_refs_for_uid(uid)
         if not refs:
             return None
 
-        node = self._manager._tool_graph.nodes.get(uid)
-        spec = None if node is None else node.provenance_spec
+        script_inputs = self._dependency_script_inputs(
+            self._manager._tool_graph.nodes.get(uid)
+        )
         parts: list[str] = []
         seen: set[tuple[str, str, str | None, str]] = set()
         for ref in refs:
@@ -200,7 +206,11 @@ class _LineageController:
                 current = f"currently {parent.display_text}"
             else:
                 current = "parent no longer open"
-                if self._manager._dependency_ref_has_recorded_file(spec, ref):
+                has_recorded_file = self._dependency_ref_has_recorded_file_in_inputs(
+                    script_inputs,
+                    ref,
+                )
+                if has_recorded_file:
                     current += "; recorded source file found"
             name = " ".join(ref.name.split())
             label = " ".join(ref.label.split())
@@ -226,7 +236,7 @@ class _LineageController:
         if details:
             msg_box.setDetailedText(details)
 
-        if not self._manager._node_can_reload_script_inputs(node):
+        if not self._node_can_reload_script_inputs(node):
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
             msg_box.setText("This result cannot be reloaded from its recorded inputs.")
             msg_box.setInformativeText(
@@ -251,7 +261,7 @@ class _LineageController:
         msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", reload_button))
         msg_box.exec()
         if msg_box.clickedButton() is reload_button:
-            self._manager._reload_script_derived_target(target)
+            self._reload_script_derived_target(target)
         elif msg_box.clickedButton() is cancel_button:
             return
 
@@ -284,29 +294,16 @@ class _LineageController:
         )
         load_source = spec.file_load_source
         if source_status == "no-file-load-source" or load_source is None:
-            return (
-                f"{label} has no recorded source file. Reopen the input or recreate "
-                "the result from reloadable inputs, then try again."
-            )
+            return f"{label} has no recorded source file."
         file_path = pathlib.Path(load_source.path)
         if source_status == "missing-file":
-            return (
-                f"The source file for {label} is not available:\n"
-                f"{file_path}\n\n"
-                "Reconnect the drive or restore the file, then try again."
-            )
+            return f"The source file for {label} is not available:\n{file_path}"
         replay_call = load_source.replay_call
         if source_status == "no-replay-call" or replay_call is None:
-            return (
-                f"{label} has file provenance, but the loader information needed "
-                "to read it is missing. Reopen the input or recreate the result "
-                "from reloadable inputs, then try again."
-            )
+            return f"{label} does not have recorded loader information."
         if source_status == "missing-loader":
             return (
-                f"The saved loader {replay_call.target!r} for {label} is not "
-                "available in this ImageTool session. Reopen the input from its "
-                "file with an available loader."
+                f"The saved loader {replay_call.target!r} for {label} is unavailable."
             )
         if source_status == "extension-disabled":
             return (
@@ -346,14 +343,12 @@ class _LineageController:
             )
         return None
 
-    def _dependency_ref_has_recorded_file(
+    def _dependency_ref_has_recorded_file_in_inputs(
         self,
-        spec: ToolProvenanceSpec | None,
+        script_inputs: Sequence[ScriptInput],
         ref: ScriptInputDependencyRef,
     ) -> bool:
-        if spec is None:
-            return False
-        for script_input in spec.script_inputs:
+        for script_input in script_inputs:
             if (
                 script_input.name == ref.name
                 and script_input.node_uid == ref.node_uid
@@ -362,28 +357,67 @@ class _LineageController:
                 and self._script_input_has_recorded_file(script_input)
             ):
                 return True
-            if self._dependency_ref_has_recorded_file(
-                script_input.parsed_provenance_spec(), ref
+            fallback = script_input.parsed_provenance_spec()
+            if self._dependency_ref_has_recorded_file_in_inputs(
+                () if fallback is None else fallback.script_inputs,
+                ref,
             ):
                 return True
         return False
 
+    @staticmethod
+    def _dependency_script_inputs(
+        node: _ImageToolWrapper | _ManagedWindowNode | None,
+    ) -> tuple[ScriptInput, ...]:
+        if node is None or node.tool_script_inputs:
+            return () if node is None else node.tool_script_inputs
+        spec = node.provenance_spec
+        return () if spec is None else spec.script_inputs
+
     def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
-        node = self._manager._tool_graph.nodes.get(uid)
-        spec = None if node is None else node.provenance_spec
+        script_inputs = self._dependency_script_inputs(
+            self._manager._tool_graph.nodes.get(uid)
+        )
         return any(
             self._manager._tool_graph.nodes.get(ref.node_uid) is None
-            and self._manager._dependency_ref_has_recorded_file(spec, ref)
-            for ref in self._manager._dependency_refs_for_uid(uid)
+            and self._dependency_ref_has_recorded_file_in_inputs(script_inputs, ref)
+            for ref in self._dependency_refs_for_uid(uid)
         )
-
-    def _dependency_dependent_uids(self, uid: str) -> list[str]:
-        return self._manager._dependency_tracker.dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
         refresh_figures = False
         tree_uids: list[str] = []
-        for dependent_uid in self._manager._dependency_dependent_uids(uid):
+        for dependent_uid in self._manager._dependency_tracker.dependent_uids(uid):
+            dependent = self._manager._tool_graph.nodes.get(dependent_uid)
+            if dependent is not None and dependent.tool_script_inputs:
+                state = self._tool_input_source_state(dependent)
+                status = self._manager._dependency_tracker.status_for_uid(dependent_uid)
+                tool = dependent.tool_window
+                if state == "unavailable":
+                    self._propagate_source_state_from_uid(
+                        dependent.uid,
+                        "unavailable",
+                    )
+                elif state == "stale" or (
+                    status == "changed"
+                    and (tool is None or not tool.source_auto_update)
+                ):
+                    self._propagate_source_state_from_uid(
+                        dependent.uid,
+                        "stale",
+                    )
+                elif status == "changed":
+                    if tool is not None and tool._source_refresh_deferred:
+                        self._manager._dependency_tracker.queue_source_refresh(
+                            dependent_uid,
+                            dependent_uid,
+                            automatic=True,
+                        )
+                    else:
+                        self._refresh_tool_inputs(
+                            dependent_uid,
+                            allow_recorded=False,
+                        )
             self._manager._schedule_details_refresh(dependent_uid)
             if self._manager._is_figure_uid(dependent_uid):
                 refresh_figures = True
@@ -392,6 +426,27 @@ class _LineageController:
         self._manager.tree_view.refresh_many(tree_uids)
         if refresh_figures:
             self._manager._figure_collection.sync()
+
+    def _tool_input_source_state(
+        self,
+        node: _ManagedWindowNode,
+        *,
+        state_overrides: Mapping[str, _ManagedWindowNode._source_state_type]
+        | None = None,
+    ) -> _ManagedWindowNode._source_state_type:
+        """Return the aggregate availability state of all live ToolWindow inputs.
+
+        Snapshot changes are separate. A fresh input with a changed snapshot can be
+        refreshed automatically, while a stale input cannot.
+        """
+        overrides = {} if state_overrides is None else state_overrides
+        source_states: list[_ManagedWindowNode._source_state_type] = []
+        for ref in self._dependency_refs_for_uid(node.uid):
+            source = self._manager._tool_graph.nodes.get(ref.node_uid)
+            if source is None:
+                return "unavailable"
+            source_states.append(overrides.get(ref.node_uid, source.source_state))
+        return _combine_source_states(source_states)
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -410,15 +465,29 @@ class _LineageController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
+        name: str | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        fallback_provenance_spec: dict[str, typing.Any] | None = None,
         detached_input_uid: str | None = None,
         data_role: ScriptInputDataRole = "displayed",
     ) -> ScriptInput:
-        input_provenance = node.provenance_for_role(data_role)
-        provenance_spec = (
-            input_provenance.model_dump(mode="json")
-            if input_provenance is not None
-            else None
+        input_provenance = to_replay_provenance_spec(
+            node.provenance_for_role(data_role)
         )
+        resolved_provenance = (
+            None
+            if input_provenance is None
+            else compose_full_provenance(input_provenance, source_spec)
+        )
+        provenance_spec = (
+            resolved_provenance.model_dump(mode="json")
+            if resolved_provenance is not None
+            else fallback_provenance_spec
+        )
+        source_payload = (
+            None if source_spec is None else source_spec.model_dump(mode="json")
+        )
+        input_name = self._script_input_name_for_node(node) if name is None else name
         if isinstance(node, _ImageToolWrapper):
             label = f"ImageTool {node.index}"
         else:
@@ -432,17 +501,19 @@ class _LineageController:
             label += f": {node.name}"
         if node.uid == detached_input_uid:
             return ScriptInput(
-                name=self._manager._script_input_name_for_node(node),
+                name=input_name,
                 label=label,
                 data_role=data_role,
+                source_spec=source_payload,
                 provenance_spec=provenance_spec,
             )
         return ScriptInput(
-            name=self._manager._script_input_name_for_node(node),
+            name=input_name,
             label=label,
             node_uid=node.uid,
             node_snapshot_token=node.snapshot_token_for_role(data_role),
             data_role=data_role,
+            source_spec=source_payload,
             provenance_spec=provenance_spec,
         )
 
@@ -465,7 +536,7 @@ class _LineageController:
             start_label=start_label,
             active_name=active_name,
             script_inputs=tuple(
-                self._manager._script_input_for_node(
+                self._script_input_for_node(
                     self._manager._node_for_target(target),
                     detached_input_uid=detached_input_uid,
                     data_role=data_role,
@@ -491,7 +562,7 @@ class _LineageController:
             tool,
             show=True,
             activate=True,
-            provenance_spec=self._manager._multi_input_script_provenance(
+            provenance_spec=self._multi_input_script_provenance(
                 input_targets,
                 operation_label=operation_label,
                 operation_code=operation_code,
@@ -499,18 +570,21 @@ class _LineageController:
             ),
         )
 
-    def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
-        for ref in script_input_dependency_refs(spec):
-            parent = self._manager._tool_graph.nodes.get(ref.node_uid)
-            if parent is None:
-                return False
-            if (
-                ref.node_snapshot_token is not None
-                and parent.snapshot_token_for_role(ref.data_role)
-                != ref.node_snapshot_token
-            ):
-                return False
-        return True
+    def _live_script_input_node(
+        self,
+        script_input: ScriptInput,
+        target_node_uid: str | None = None,
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        uid = script_input.node_uid
+        node = self._manager._tool_graph.nodes.get(uid or "")
+        if (
+            uid == target_node_uid
+            or node is None
+            or node.source_state != "fresh"
+            or self.dependency_status_for_uid(node.uid) in {"changed", "missing"}
+        ):
+            return None
+        return node
 
     def _resolve_live_script_input_for_reload(
         self,
@@ -518,66 +592,445 @@ class _LineageController:
         *,
         target_node_uid: str | None = None,
     ) -> tuple[xr.DataArray, ScriptInput] | None:
-        spec = script_input.parsed_provenance_spec()
-        if script_input.node_uid is None:
-            return None
-        if target_node_uid is not None and script_input.node_uid == target_node_uid:
-            return None
-        node = self._manager._tool_graph.nodes.get(script_input.node_uid)
+        node = self._live_script_input_node(
+            script_input, target_node_uid=target_node_uid
+        )
         if node is None:
             return None
-        if (
-            spec is not None
-            and spec.kind == "script"
-            and not self._manager._script_provenance_inputs_current(spec)
-        ):
-            return None
-        data = node.data_for_role(script_input.data_role)
-        return (
-            data,
-            self._manager._script_input_for_node(
-                node,
-                data_role=script_input.data_role,
-            ).model_copy(update={"name": script_input.name}),
+        owner_node = self._manager._tool_graph.nodes.get(target_node_uid or "")
+        data = node.data_for_role(script_input.data_role, owner_node=owner_node)
+        source_spec = script_input.parsed_source_spec()
+        if source_spec is not None:
+            data = source_spec.apply(
+                data,
+                extension_executor=self._manager._extensions.execution.run_operation,
+            )
+        return data, self._script_input_for_node(
+            node,
+            name=script_input.name,
+            source_spec=source_spec,
+            data_role=script_input.data_role,
         )
 
-    def _script_input_can_reload(
+    def _live_input_resolver(
         self,
-        script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> bool:
-        spec = script_input.parsed_provenance_spec()
-        is_target_input = (
-            target_node_uid is not None and script_input.node_uid == target_node_uid
-        )
-        if script_input.node_uid is not None and not is_target_input:
-            node = self._manager._tool_graph.nodes.get(script_input.node_uid)
-            if node is not None and (
-                spec is None
-                or spec.kind != "script"
-                or self._manager._script_provenance_inputs_current(spec)
-            ):
-                return True
-        if spec is None:
-            return False
-        source_status = file_load_source_status(
-            spec,
-            extension_status_resolver=self._manager._extensions.capability_status,
-        )
-        if source_status != "no-file-load-source" and source_status != "loadable":
-            return False
-        if spec.kind == "file":
-            return source_status == "loadable"
-        if spec.kind != "script":
-            return False
-        return self._script_provenance_runnable(spec) and all(
-            self._manager._script_input_can_reload(
-                nested_input,
-                target_node_uid=target_node_uid,
+        live_uids: frozenset[str] | None = None,
+    ) -> LiveInputResolver | None:
+        return _memoized_live_input_resolver(
+            lambda item: (
+                self._resolve_live_script_input_for_reload(
+                    item, target_node_uid=target_node_uid
+                )
+                if live_uids is None or item.node_uid in live_uids
+                else None
             )
-            for nested_input in spec.script_inputs
         )
+
+    def _input_resolution_plan(
+        self,
+        script_inputs: Sequence[ScriptInput],
+        *,
+        target_node_uid: str | None = None,
+        allow_recorded: bool = True,
+        force_live_reload: bool = False,
+        reload_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
+    ) -> _InputResolutionPlan:
+        root_inputs = tuple(script_inputs)
+        actions: list[_InputResolutionAction] = []
+        live_uids: set[str] = set()
+
+        def add_action(
+            kind: typing.Literal["reload", "refresh", "apply"], uid: str
+        ) -> None:
+            if (action := (kind, uid)) not in actions:
+                actions.append(action)
+
+        def provenance_runnable(
+            spec: ToolProvenanceSpec, target_uid: str | None
+        ) -> bool:
+            def resolve(item: ScriptInput):
+                if (
+                    self._live_script_input_node(item, target_node_uid=target_uid)
+                    is not None
+                    or item.node_uid in live_uids
+                ):
+                    return typing.cast("xr.DataArray", None), item
+                return None
+
+            validation = _script_replay_validation(spec, live_input_resolver=resolve)
+            return validation.permissive_replayable
+
+        def plan_inputs(
+            inputs: Sequence[ScriptInput],
+            target_uid: str | None,
+            force: bool,
+            visiting: frozenset[str],
+            depth: int,
+        ) -> str | None:
+            if depth > 20:
+                return "Nested inputs exceeded the maximum reload depth."
+            for script_input in inputs:
+                reason = plan_input(script_input, target_uid, force, visiting, depth)
+                if reason is not None:
+                    return reason
+            return None
+
+        def plan_node(
+            node: _ImageToolWrapper | _ManagedWindowNode,
+            force: bool,
+            visiting: frozenset[str],
+            depth: int,
+        ) -> str | None:
+            if depth > 20:
+                return "Nested inputs exceeded the maximum reload depth."
+            if not node.is_imagetool and node.tool_window is None:
+                return "This tool cannot be reloaded directly."
+            if node.uid in visiting:
+                return "The named inputs contain a dependency cycle."
+            visiting = visiting | {node.uid}
+
+            extension_reason = self._manager._extensions.unavailable_reason_for_node(
+                node.uid
+            )
+            if extension_reason is not None:
+                return extension_reason
+
+            tool = node.tool_window
+            if tool is not None:
+                inputs = tool.script_inputs
+                if not inputs:
+                    return "This tool does not have recorded source inputs."
+                if reason := plan_inputs(inputs, node.uid, force, visiting, depth + 1):
+                    return reason
+                add_action("apply", node.uid)
+                return None
+
+            if node.imagetool is None:
+                if node.pending_workspace_memory_payload is None:
+                    return "This ImageTool window is not open."
+                spec = node.provenance_spec
+                script_inputs = (
+                    spec.script_inputs
+                    if spec is not None and spec.kind == "script"
+                    else ()
+                )
+                if script_inputs and (
+                    reason := plan_inputs(
+                        script_inputs,
+                        node.uid,
+                        False,
+                        visiting,
+                        depth + 1,
+                    )
+                ):
+                    return reason
+                reason = self._pending_imagetool_reload_unavailable_reason(
+                    node,
+                    resolved_live_uids=(
+                        frozenset(live_uids) if script_inputs else None
+                    ),
+                )
+                if reason is None:
+                    add_action("reload", node.uid)
+                return reason
+            spec = node.provenance_spec
+            if node.slicer_area._direct_reloadable():
+                add_action("reload", node.uid)
+                return None
+            if spec is not None and spec.kind == "script" and spec.script_inputs:
+                if reason := plan_inputs(
+                    spec.script_inputs, node.uid, False, visiting, depth + 1
+                ):
+                    return reason
+                if not provenance_runnable(spec, node.uid):
+                    return "This result contains code that cannot be replayed."
+                add_action("reload", node.uid)
+                return None
+            if node.slicer_area._provenance_reloadable():
+                add_action("reload", node.uid)
+                return None
+            if (
+                spec is not None
+                and (spec.kind == "file" or has_file_load_source(spec))
+                and (
+                    reason := self._file_load_source_unavailable_reason(
+                        spec, "This result"
+                    )
+                )
+            ):
+                return reason
+            if spec is not None and spec.kind == "script" and not spec.script_inputs:
+                return "This result has no recorded inputs."
+            return node.slicer_area._local_reload_unavailable_reason()
+
+        def plan_input(
+            script_input: ScriptInput,
+            target_uid: str | None,
+            force: bool,
+            visiting: frozenset[str],
+            depth: int,
+        ) -> str | None:
+            source_uid = script_input.node_uid
+            if source_uid is not None and source_uid == target_uid:
+                return "The named inputs contain a dependency cycle."
+            if (
+                self._live_script_input_node(script_input, target_node_uid=target_uid)
+                is not None
+                and not force
+            ):
+                live_uids.add(typing.cast("str", script_input.node_uid))
+                return None
+            if not allow_recorded:
+                return f"{script_input.label} is not available in this Manager."
+
+            source = (
+                None
+                if source_uid is None
+                else self._manager._tool_graph.nodes.get(source_uid)
+            )
+            if source is not None:
+                boundary = source
+                if not source.tool_script_inputs and not isinstance(
+                    source, _ImageToolWrapper
+                ):
+                    boundary = None
+                    if source.is_imagetool:
+                        boundary = self._reload_boundary_for_child(source.uid) or source
+                if boundary is not None:
+                    action_count = len(actions)
+                    previous_live_uids = set(live_uids)
+                    reason = plan_node(boundary, force, visiting, depth + 1)
+                    if reason is None:
+                        if boundary.uid != source.uid:
+                            add_action("refresh", source.uid)
+                        live_uids.add(source.uid)
+                        return None
+                    if force:
+                        return reason
+                    del actions[action_count:]
+                    live_uids.intersection_update(previous_live_uids)
+                elif force:
+                    return f"{script_input.label} is not connected to a reload source."
+
+            spec = script_input.parsed_provenance_spec()
+            if spec is None:
+                return f"{script_input.label} has no recorded reload source."
+            if spec.kind == "file" or has_file_load_source(spec):
+                if reason := self._file_load_source_unavailable_reason(
+                    spec, script_input.label
+                ):
+                    return reason
+                if spec.kind == "file":
+                    return None
+            if spec.kind != "script":
+                return f"{script_input.label} has no replayable recorded provenance."
+            reason = plan_inputs(
+                spec.script_inputs, target_uid, False, visiting, depth + 1
+            )
+            if reason is not None:
+                return reason
+            if not provenance_runnable(spec, target_uid):
+                return f"{script_input.label} contains code that cannot be replayed."
+            return None
+
+        unavailable_reason = (
+            plan_inputs(root_inputs, target_node_uid, force_live_reload, frozenset(), 0)
+            if reload_node is None
+            else plan_node(reload_node, force_live_reload, frozenset(), 0)
+        )
+        return _InputResolutionPlan(
+            target_node_uid,
+            root_inputs,
+            tuple(actions),
+            frozenset(live_uids),
+            unavailable_reason,
+        )
+
+    def _execute_input_resolution_plan(
+        self,
+        plan: _InputResolutionPlan,
+        *,
+        allow_recorded: bool = True,
+        reloaded_uids: set[str],
+    ) -> _InputResolutionPlan | typing.Literal["deferred", "failed"]:
+        if plan.unavailable_reason is not None:
+            return "failed"
+        deferred = False
+        target_uid = plan.target_uid
+        if target_uid is None:
+            return "failed"
+        tracker = self._manager._dependency_tracker
+        for kind, uid in plan.actions:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None:
+                return "failed"
+            if kind != "refresh" and uid in reloaded_uids:
+                continue
+            if (
+                kind == "apply"
+                and node.source_state == "fresh"
+                and self.dependency_status_for_uid(uid) == "current"
+                and any(
+                    item.node_uid in plan.live_uids for item in node.tool_script_inputs
+                )
+            ):
+                reloaded_uids.add(uid)
+                continue
+            if kind == "reload" and self._node_can_reload_script_inputs(node):
+                updated = self._reload_script_derived_target(
+                    uid,
+                    continuation_uids=() if target_uid == uid else (target_uid,),
+                    reloaded_uids=reloaded_uids,
+                )
+            elif kind == "reload":
+                updated = node.reload_source_data()
+            elif kind == "refresh":
+                updated = self._refresh_source_chain_to_uid(uid)
+            else:
+                updated = self._refresh_tool_inputs(
+                    uid,
+                    allow_recorded=True,
+                    continuation_uids=() if target_uid == uid else (target_uid,),
+                    reloaded_uids=reloaded_uids,
+                )
+            if updated:
+                if kind != "refresh":
+                    reloaded_uids.add(uid)
+                continue
+
+            tool = node.tool_window
+            blocker = (
+                node if tool is not None and tool._source_refresh_deferred else None
+            )
+            if blocker is None and not isinstance(node, _ImageToolWrapper):
+                boundary = self._reload_boundary_for_child(uid)
+                boundary_tool = None if boundary is None else boundary.tool_window
+                if boundary_tool is not None and boundary_tool._source_refresh_deferred:
+                    blocker = boundary
+            if blocker is None:
+                if tracker.source_refresh_queued(uid, target_uid):
+                    deferred = True
+                    continue
+                return "failed"
+            if blocker.uid != uid:
+                tracker.queue_source_refresh(blocker.uid, uid)
+            tracker.queue_source_refresh(uid, target_uid)
+            deferred = True
+        if deferred:
+            return "deferred"
+        plan = self._input_resolution_plan(
+            plan.script_inputs,
+            target_node_uid=target_uid,
+            allow_recorded=allow_recorded,
+        )
+        return (
+            plan if plan.unavailable_reason is None and not plan.actions else "failed"
+        )
+
+    def _refresh_tool_inputs(
+        self,
+        target_uid: str,
+        *,
+        allow_recorded: bool,
+        continuation_uids: Sequence[str] = (),
+        force_live_reload: bool = False,
+        reloaded_uids: set[str] | None = None,
+    ) -> bool:
+        reloaded_uids = set() if reloaded_uids is None else reloaded_uids
+        if target_uid in reloaded_uids:
+            return True
+        if target_uid in self._tool_input_refresh_uids:
+            return False
+        self._tool_input_refresh_uids.add(target_uid)
+        try:
+            node = self._manager._child_node(target_uid)
+            tool = node.tool_window
+            inputs = () if tool is None else tool.script_inputs
+            if tool is None or not inputs:
+                self._manager._dependency_tracker.discard_source_refresh_chain(
+                    target_uid
+                )
+                return False
+
+            def fail_refresh() -> bool:
+                self._manager._dependency_tracker.discard_source_refresh_chain(
+                    target_uid
+                )
+                return False
+
+            def defer_refresh() -> bool:
+                for continuation_uid in continuation_uids:
+                    self._manager._dependency_tracker.queue_source_refresh(
+                        target_uid,
+                        continuation_uid,
+                    )
+                return False
+
+            if tool._source_refresh_deferred:
+                return defer_refresh()
+
+            plan = self._input_resolution_plan(
+                inputs,
+                target_node_uid=target_uid,
+                allow_recorded=allow_recorded,
+                force_live_reload=force_live_reload,
+            )
+            plan = self._execute_input_resolution_plan(
+                plan,
+                allow_recorded=allow_recorded,
+                reloaded_uids=reloaded_uids,
+            )
+            if plan == "deferred":
+                return defer_refresh()
+            if plan == "failed":
+                return fail_refresh()
+            resolve_live = self._live_input_resolver(
+                target_node_uid=plan.target_uid,
+                live_uids=plan.live_uids,
+            )
+
+            try:
+                resolved, refreshed_inputs = rebuild_script_inputs(
+                    plan.script_inputs,
+                    live_input_resolver=resolve_live,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                    extension_loader_executor=self._manager._extensions.replay_loader,
+                    authorize=self._provenance_execution_authorizer(
+                        reason="reload this tool input"
+                    ),
+                    allow_recorded=allow_recorded,
+                )
+                with node._suspend_descendant_propagation():
+                    updated = tool._apply_inputs(resolved, refreshed_inputs)
+            except _TrustedProvenanceReplayCancelled:
+                return fail_refresh()
+            except Exception as exc:
+                if not isinstance(exc, ReplayGraphError):
+                    logger.exception(
+                        "Failed to update %s from named Manager inputs", tool.tool_name
+                    )
+                self._propagate_source_state_from_uid(node.uid, "unavailable")
+                return fail_refresh()
+
+            if updated:
+                self._propagate_source_change_from_uid(target_uid)
+                self._resume_pending_source_refreshes(target_uid)
+            elif tool.source_state != "fresh":
+                self._propagate_source_state_from_uid(target_uid, tool.source_state)
+                if tool._source_refresh_deferred:
+                    defer_refresh()
+                else:
+                    fail_refresh()
+            node._notify_change(_ManagedNodeChange.ROW)
+            if updated:
+                reloaded_uids.add(target_uid)
+            return updated
+        finally:
+            self._tool_input_refresh_uids.discard(target_uid)
 
     def _script_input_unavailable_reason(
         self,
@@ -585,50 +1038,9 @@ class _LineageController:
         *,
         target_node_uid: str | None = None,
     ) -> str | None:
-        spec = script_input.parsed_provenance_spec()
-        is_target_input = (
-            target_node_uid is not None and script_input.node_uid == target_node_uid
-        )
-        if script_input.node_uid is not None and not is_target_input:
-            node = self._manager._tool_graph.nodes.get(script_input.node_uid)
-            if node is not None and (
-                spec is None
-                or spec.kind != "script"
-                or self._manager._script_provenance_inputs_current(spec)
-            ):
-                return None
-        if spec is None:
-            return (
-                f"{script_input.label} has no recorded reload source. Reopen the "
-                "input or recreate the result from reloadable inputs, then try "
-                "again."
-            )
-        if spec.kind == "file" or has_file_load_source(spec):
-            reason = self._file_load_source_unavailable_reason(spec, script_input.label)
-            if reason is not None:
-                return reason
-            if spec.kind == "file":
-                return None
-        if spec.kind != "script":
-            return (
-                f"{script_input.label} has recorded provenance that cannot be "
-                "reloaded. Reopen the input or recreate the result from "
-                "reloadable inputs, then try again."
-            )
-        if not self._script_provenance_runnable(spec):
-            return (
-                f"{script_input.label} was created from recorded code that "
-                "cannot be replayed. Recreate the result from reloadable "
-                "inputs to enable reload."
-            )
-        for nested_input in spec.script_inputs:
-            reason = self._manager._script_input_unavailable_reason(
-                nested_input,
-                target_node_uid=target_node_uid,
-            )
-            if reason is not None:
-                return reason
-        return None
+        return self._input_resolution_plan(
+            (script_input,), target_node_uid=target_node_uid
+        ).unavailable_reason
 
     def _rebuild_script_provenance(
         self,
@@ -637,19 +1049,9 @@ class _LineageController:
         target_node_uid: str | None = None,
         authorization: object | None = None,
     ) -> _ScriptRebuildResult:
-        def _resolve_live_input(
-            script_input: ScriptInput,
-        ) -> (
-            tuple[
-                xr.DataArray,
-                ScriptInput,
-            ]
-            | None
-        ):
-            return self._manager._resolve_live_script_input_for_reload(
-                script_input,
-                target_node_uid=target_node_uid,
-            )
+        resolve_live = self._live_input_resolver(
+            target_node_uid=target_node_uid,
+        )
 
         def authorize(entries):
             if authorization is None:
@@ -662,7 +1064,7 @@ class _LineageController:
         try:
             data, rebuilt_spec = rebuild_script_provenance(
                 spec,
-                live_input_resolver=_resolve_live_input,
+                live_input_resolver=resolve_live,
                 extension_executor=self._manager._extensions.execution.run_operation,
                 extension_loader_executor=self._manager._extensions.replay_loader,
                 authorize=authorize,
@@ -695,122 +1097,79 @@ class _LineageController:
             and spec is not None
             and spec.kind == "script"
             and bool(spec.script_inputs)
-            and self._script_provenance_runnable(spec)
-            and all(
-                self._manager._script_input_can_reload(
-                    script_input,
-                    target_node_uid=node.uid,
-                )
-                for script_input in spec.script_inputs
-            )
+            and self._node_reload_unavailable_reason(node) is None
         )
 
     def _node_reload_unavailable_reason(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
         if not node.is_imagetool:
-            return (
-                "This tool cannot be reloaded directly. Recreate it from a "
-                "reloadable ImageTool input to enable reload."
-            )
-        if node.imagetool is None:
-            if node.pending_workspace_memory_payload is not None:
-                return self._pending_imagetool_reload_unavailable_reason(node)
-            return (
-                "This ImageTool window is not open. Show or reopen the data, "
-                "then try again."
-            )
+            return "This tool cannot be reloaded directly."
+        return self._input_resolution_plan(
+            (),
+            target_node_uid=node.uid,
+            reload_node=node,
+        ).unavailable_reason
+
+    def _pending_imagetool_reload_unavailable_reason(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        resolved_live_uids: frozenset[str] | None = None,
+    ) -> str | None:
+        spec = node.provenance_spec
         extension_reason = self._manager._extensions.unavailable_reason_for_node(
             node.uid
         )
         if extension_reason is not None:
             return extension_reason
-        if (
-            node.slicer_area._direct_reloadable()
-            or node.slicer_area._provenance_reloadable()
-        ):
-            return None
-
-        spec = node.provenance_spec
-        if spec is not None and (spec.kind == "file" or has_file_load_source(spec)):
-            reason = self._file_load_source_unavailable_reason(spec, "This result")
-            if reason is not None:
-                return reason
-        if spec is not None and spec.kind == "script":
-            if not spec.script_inputs:
-                return (
-                    "This result has no recorded inputs. Reopen or recreate it "
-                    "from reloadable inputs to enable reload."
-                )
-            if not self._script_provenance_runnable(spec):
-                return (
-                    "This result was created from recorded code that cannot be "
-                    "replayed. Recreate it from reloadable inputs to enable reload."
-                )
-            for script_input in spec.script_inputs:
-                reason = self._manager._script_input_unavailable_reason(
-                    script_input,
-                    target_node_uid=node.uid,
-                )
+        if spec is not None:
+            if can_reload_without_trust(
+                spec,
+                extension_status_resolver=self._manager._extensions.capability_status,
+            ):
+                return None
+            if spec.kind == "file" or has_file_load_source(spec):
+                reason = self._file_load_source_unavailable_reason(spec, "This result")
                 if reason is not None:
                     return reason
-            return None
-
-        return node.slicer_area._local_reload_unavailable_reason()
-
-    def _pending_imagetool_reload_unavailable_reason(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> str | None:
-        spec = node.provenance_spec
-        if spec is not None and can_reload_without_trust(
-            spec,
-            extension_status_resolver=self._manager._extensions.capability_status,
-        ):
-            return None
-        if spec is not None and (spec.kind == "file" or has_file_load_source(spec)):
-            reason = self._file_load_source_unavailable_reason(spec, "This result")
-            if reason is not None:
-                return reason
         if spec is not None and spec.kind == "script":
-            if not spec.script_inputs:
-                return (
-                    "This result has no recorded inputs. Reopen or recreate it "
-                    "from reloadable inputs to enable reload."
+            if spec.script_inputs and resolved_live_uids is None:
+                plan = self._input_resolution_plan(
+                    spec.script_inputs,
+                    target_node_uid=node.uid,
                 )
-            if self._script_provenance_runnable(spec):
-                for script_input in spec.script_inputs:
-                    reason = self._manager._script_input_unavailable_reason(
-                        script_input,
+                if plan.unavailable_reason is not None:
+                    return plan.unavailable_reason
+                resolved_live_uids = plan.live_uids
+
+            def resolve_live(item: ScriptInput):
+                if item.node_uid in (resolved_live_uids or ()) or (
+                    resolved_live_uids is None
+                    and self._live_script_input_node(
+                        item,
                         target_node_uid=node.uid,
                     )
-                    if reason is not None:
-                        return reason
+                    is not None
+                ):
+                    return typing.cast("xr.DataArray", None), item
                 return None
-            return (
-                "This data was created from recorded script steps that cannot be "
-                "reloaded automatically from the saved provenance. Reopen or recreate "
-                "it from reloadable inputs to enable reload."
+
+            validation = _script_replay_validation(
+                spec,
+                live_input_resolver=resolve_live,
             )
+            if validation.permissive_replayable:
+                return None
+            return "The recorded script steps cannot be reloaded."
         details = node._load_source_details()
-        if details is not None:
-            if not details.path.exists():
-                return (
-                    "The source file for this data is not available:\n"
-                    f"{details.path}\n\n"
-                    "Reconnect the drive or restore the file, then try again."
-                )
-            if details.load_code is not None:
-                return None
-            return (
-                "This data has file metadata, but the loader information needed "
-                "to read it is missing. Reopen the input from its file with an "
-                "available loader."
-            )
-        return (
-            "This data was not opened from a reloadable file or recorded input. "
-            "Reopen it from a file, or recreate it from reloadable ImageTool inputs, "
-            "to enable reload."
-        )
+        if details is None:
+            return "This data does not have a reloadable source."
+        if not details.path.exists():
+            return f"The source file is not available:\n{details.path}"
+        if details.load_code is None:
+            return "The source file does not have loader information."
+        return None
 
     def _script_reload_from_slicer_area(
         self,
@@ -818,19 +1177,18 @@ class _LineageController:
         *,
         execute: bool,
     ) -> bool:
-        """Check or reload script provenance for a managed slicer area."""
         target = self._manager.target_from_slicer_area(slicer_area)
         if target is None:
             return False
-        if not self._manager._node_can_reload_script_inputs(
+        if not self._node_can_reload_script_inputs(
             self._manager._node_for_target(target)
         ):
             return False
-        return not execute or self._manager._reload_script_derived_target(target)
+        return not execute or self._reload_script_derived_target(target)
 
-    def _workspace_loaded_uid_map(
+    def _rebase_loaded_workspace_dependency_refs(
         self, loaded_targets_by_uid: Mapping[str, int | str]
-    ) -> dict[str, str]:
+    ) -> None:
         uid_map: dict[str, str] = {}
         for saved_uid, target in loaded_targets_by_uid.items():
             try:
@@ -839,42 +1197,107 @@ class _LineageController:
                 continue
             if actual_uid != saved_uid:
                 uid_map[saved_uid] = actual_uid
-        return uid_map
-
-    def _rebase_loaded_workspace_dependency_refs(
-        self,
-        loaded_targets_by_uid: Mapping[str, int | str],
-    ) -> None:
-        """Rebase loaded-node dependencies within the incoming workspace scope."""
-        uid_map = self._manager._workspace_loaded_uid_map(loaded_targets_by_uid)
         if not uid_map:
             return
-        for target in loaded_targets_by_uid.values():
+
+        self._rebase_node_dependency_refs(loaded_targets_by_uid.values(), uid_map)
+
+    @staticmethod
+    def _rebase_tool_data_reference_node_uids(
+        references: Mapping[str, Mapping[str, typing.Any]],
+        uid_map: Mapping[str, str],
+    ) -> dict[str, dict[str, typing.Any]]:
+        rebased = {name: dict(reference) for name, reference in references.items()}
+        for reference in rebased.values():
+            if reference.get("kind") != "manager_node":
+                continue
+            node_uid = reference.get("node_uid")
+            if isinstance(node_uid, str) and node_uid in uid_map:
+                reference["node_uid"] = uid_map[node_uid]
+        return rebased
+
+    def _rebase_node_dependency_refs(
+        self,
+        targets: Iterable[int | str],
+        uid_map: Mapping[str, str],
+    ) -> None:
+        """Rebase all framework and tool-owned references for selected nodes."""
+        if not uid_map:
+            return
+
+        for target in targets:
             try:
                 node = self._manager._node_for_target(target)
             except KeyError:
                 continue
+            if node.tool_window is not None:
+                tool = node.tool_window
+                rebased_inputs = rebase_script_inputs_node_uids(
+                    tool.script_inputs,
+                    uid_map,
+                )
+                if rebased_inputs != tool.script_inputs:
+                    tool.set_script_inputs(
+                        rebased_inputs,
+                        primary_input=tool.primary_input,
+                        auto_update=tool.source_auto_update,
+                        state=tool.source_state,
+                    )
+                tool.rebase_source_node_uids(uid_map)
+                references = node._workspace_tool_data_references
+                rebased_references = self._rebase_tool_data_reference_node_uids(
+                    references, uid_map
+                )
+                if rebased_references != references:
+                    node._set_workspace_tool_data_references(rebased_references)
+            elif node.pending_workspace_payload_kind == "tool":
+                attrs = node.pending_workspace_payload_attrs
+                tool_inputs = node.tool_script_inputs
+                rebased_inputs = rebase_script_inputs_node_uids(tool_inputs, uid_map)
+                updated_attrs: dict[str, typing.Any] | None = None
+                if attrs is not None and rebased_inputs != tool_inputs:
+                    updated_attrs = dict(attrs)
+                    updated_attrs.update(
+                        erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+                            rebased_inputs, node.tool_primary_input
+                        )
+                    )
+                if attrs is not None:
+                    raw_references = attrs.get(
+                        erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR
+                    )
+                    if isinstance(raw_references, (str, bytes, bytearray)):
+                        try:
+                            references = json.loads(raw_references)
+                        except (TypeError, ValueError, UnicodeDecodeError):
+                            pass
+                        else:
+                            if (
+                                isinstance(references, dict)
+                                and (
+                                    rebased_references := (
+                                        self._rebase_tool_data_reference_node_uids(
+                                            references, uid_map
+                                        )
+                                    )
+                                )
+                                != references
+                            ):
+                                if updated_attrs is None:
+                                    updated_attrs = dict(attrs)
+                                updated_attrs[
+                                    erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR
+                                ] = json.dumps(rebased_references)
+                if updated_attrs is not None:
+                    node.update_pending_workspace_payload_attrs(updated_attrs)
             if node.provenance_spec is None:
                 continue
-            if node.tool_window is not None:
-                node.tool_window.rebase_source_node_uids(uid_map)
             rebased = rebase_script_input_node_uids(
                 node.provenance_spec,
                 uid_map,
             )
             if rebased != node.provenance_spec:
                 node.set_displayed_provenance(rebased, advance_snapshot=False)
-
-    def _selected_reload_targets(
-        self,
-    ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
-        selected_reload_candidates = self._manager._selected_reload_candidates()
-        if selected_reload_candidates is None:
-            return None
-        reload_targets, child_targets, unavailable_reason = selected_reload_candidates
-        if unavailable_reason is not None:
-            return None
-        return reload_targets, child_targets
 
     def _selected_reload_candidates(
         self,
@@ -895,23 +1318,24 @@ class _LineageController:
             reload_targets.append(target)
 
         for index in selected_roots:
-            unavailable_reason = self._manager._reload_unavailable_reason_for_target(
-                index
-            )
+            unavailable_reason = self._reload_unavailable_reason_for_target(index)
             if unavailable_reason is not None:
                 return [], {}, unavailable_reason
             _add_reload_target(index)
 
         for uid in selected_children:
-            reload_target = self._manager._reload_target_for_child(uid)
+            reload_target = self._reload_target_for_child(uid)
             if reload_target is None:
-                return [], {}, self._manager._reload_unavailable_reason_for_child(uid)
+                return [], {}, self._reload_unavailable_reason_for_child(uid)
             _add_reload_target(reload_target)
-            child_targets.setdefault(reload_target, []).append(uid)
+            if reload_target != uid:
+                child_targets.setdefault(reload_target, []).append(uid)
 
         return reload_targets, child_targets, None
 
-    def _reload_target_for_child(self, uid: str) -> int | str | None:
+    def _reload_boundary_for_child(
+        self, uid: str
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
         try:
             current: _ImageToolWrapper | _ManagedWindowNode = self._manager._child_node(
                 uid
@@ -921,25 +1345,32 @@ class _LineageController:
         if not current.has_source_binding:
             return None
 
-        reload_target: int | str | None = None
+        reload_boundary: _ImageToolWrapper | _ManagedWindowNode | None = None
         while True:
+            if current.tool_script_inputs:
+                return current
+            if (
+                current.is_imagetool
+                and self._node_reload_unavailable_reason(current) is None
+            ):
+                reload_boundary = current
+            if isinstance(current, _ImageToolWrapper):
+                break
             try:
-                parent = self._manager._parent_node(current)
+                current = self._manager._parent_node(current)
             except KeyError:
                 break
-            if (
-                parent.is_imagetool
-                and self._node_reload_unavailable_reason(parent) is None
-            ):
-                reload_target = (
-                    parent.index
-                    if isinstance(parent, _ImageToolWrapper)
-                    else parent.uid
-                )
-            if isinstance(parent, _ImageToolWrapper):
-                break
-            current = parent
-        return reload_target
+        return reload_boundary
+
+    def _reload_target_for_child(self, uid: str) -> int | str | None:
+        boundary = self._reload_boundary_for_child(uid)
+        if boundary is None:
+            return None
+        if boundary.tool_script_inputs and not boundary.can_reload_source_data():
+            return None
+        if isinstance(boundary, _ImageToolWrapper):
+            return boundary.index
+        return boundary.uid
 
     def _reload_unavailable_reason_for_child(self, uid: str) -> str:
         try:
@@ -950,6 +1381,12 @@ class _LineageController:
             return (
                 "This tool does not have a recorded source input. Reopen or "
                 "recreate it from reloadable ImageTool data to enable reload."
+            )
+        boundary = self._reload_boundary_for_child(uid)
+        if boundary is not None and boundary.tool_script_inputs:
+            return boundary.reload_unavailable_reason() or (
+                "One or more named inputs cannot be reloaded. Restore or reopen "
+                "the missing inputs, then try again."
             )
         return (
             "This tool cannot reload because its source chain has no reloadable "
@@ -962,19 +1399,65 @@ class _LineageController:
         except KeyError:
             return "The selected item is no longer available. Select an open item."
         if isinstance(target, str):
-            if self._manager._reload_target_for_child(target) is not None:
+            if self._reload_target_for_child(target) is not None:
                 return None
-            return self._manager._reload_unavailable_reason_for_child(target)
+            return self._reload_unavailable_reason_for_child(target)
         return self._node_reload_unavailable_reason(node)
 
     def _reload_source_chain_for_child(self, uid: str) -> bool:
-        """Reload the nearest reloadable ancestor, then refresh a child node."""
-        reload_target = self._manager._reload_target_for_child(uid)
+        reload_target = self._reload_target_for_child(uid)
         if reload_target is None:
             return False
-        if not self._manager.get_imagetool(reload_target).slicer_area._reload():
+        return self._reload_target_with_continuations(
+            reload_target,
+            () if reload_target == uid else (uid,),
+        )
+
+    def _reload_target_with_continuations(
+        self,
+        target: int | str,
+        target_uids: Sequence[str],
+        *,
+        reloaded_uids: set[str] | None = None,
+    ) -> bool:
+        node = self._manager._node_for_target(target)
+        reloaded_uids = set() if reloaded_uids is None else reloaded_uids
+        if node.uid in reloaded_uids:
+            reloaded = True
+        elif node.tool_script_inputs:
+            reloaded = self._refresh_tool_inputs(
+                node.uid,
+                allow_recorded=True,
+                continuation_uids=target_uids,
+                force_live_reload=True,
+                reloaded_uids=reloaded_uids,
+            )
+        elif self._node_can_reload_script_inputs(node):
+            reloaded = self._reload_script_derived_target(
+                target,
+                continuation_uids=target_uids,
+                reloaded_uids=reloaded_uids,
+            )
+        else:
+            reloaded = node.reload_source_data()
+        if not reloaded:
+            tool = node.tool_window
+            if (
+                tool is not None
+                and tool.source_state == "stale"
+                and tool._source_refresh_deferred
+            ):
+                for target_uid in target_uids:
+                    self._manager._dependency_tracker.queue_source_refresh(
+                        node.uid,
+                        target_uid,
+                    )
             return False
-        return self._manager._refresh_source_chain_to_uid(uid)
+        reloaded_uids.add(node.uid)
+        refreshed = True
+        for target_uid in target_uids:
+            refreshed &= self._refresh_source_chain_to_uid(target_uid)
+        return refreshed
 
     def show_selected_source_updates(self) -> None:
         """Show automatic update controls for the selected child window."""
@@ -983,11 +1466,19 @@ class _LineageController:
             return
         self._manager._child_node(uid).show_source_update_dialog(parent=self._manager)
 
-    def _child_targets_of(self, target: int | str) -> list[str]:
-        return list(self._manager._node_for_target(target)._childtool_indices)
-
     def _refresh_source_chain_to_uid(self, uid: str) -> bool:
-        """Refresh stale ancestors before refreshing a managed child node."""
+        node = self._manager._tool_graph.nodes.get(uid)
+        if (
+            node is not None
+            and not node.has_source_binding
+            and self._node_can_reload_script_inputs(node)
+        ):
+            if (
+                node.source_state == "fresh"
+                and self.dependency_status_for_uid(uid) == "current"
+            ):
+                return True
+            return self._reload_script_derived_target(uid)
         try:
             node = self._manager._child_node(uid)
         except KeyError:
@@ -1004,26 +1495,31 @@ class _LineageController:
             refresh_chain.append(parent)
             node = parent
 
-        for node in reversed(refresh_chain):
+        refresh_chain.reverse()
+        for index, node in enumerate(refresh_chain):
             current_uid = node.uid
 
             if not node.has_source_binding or node.source_state == "fresh":
                 continue
             updated = node._update_from_parent_source()
             if updated and node.source_state == "fresh":
+                self._resume_pending_source_refreshes(current_uid)
                 continue
             tool = node.tool_window
             if (
                 tool is not None
                 and tool.source_state == "stale"
-                and getattr(tool, "_source_refresh_deferred", False)
+                and tool._source_refresh_deferred
             ):
-                self._manager._dependency_tracker.queue_source_refresh(current_uid, uid)
+                for blocker, target in itertools.pairwise(refresh_chain[index:]):
+                    self._manager._dependency_tracker.queue_source_refresh(
+                        blocker.uid,
+                        target.uid,
+                    )
                 return False
             if node.source_state != "fresh":
-                self._manager._mark_descendants_source_state(
-                    current_uid, node.source_state
-                )
+                self._propagate_source_state_from_uid(current_uid, node.source_state)
+            self._manager._dependency_tracker.pop_source_refreshes(current_uid)
             return False
 
         try:
@@ -1031,33 +1527,126 @@ class _LineageController:
         except KeyError:
             return False
 
-    def _resume_pending_source_refreshes(self, uid: str) -> None:
-        target_uids = self._manager._dependency_tracker.pop_source_refreshes(uid)
+    def _resume_pending_source_refreshes(
+        self,
+        uid: str,
+        *,
+        require_self_refresh: bool = False,
+    ) -> bool:
+        target_intents = self._manager._dependency_tracker.pop_source_refresh_intents(
+            uid
+        )
+        target_uids = set(target_intents)
+        if require_self_refresh and uid not in target_uids:
+            self._manager._dependency_tracker.discard_source_refreshes(target_uids)
+            return False
+        self_refresh = uid in target_uids
+        if self_refresh:
+            target_uids.remove(uid)
+            source = self._manager._tool_graph.nodes.get(uid)
+            if (
+                target_intents[uid]
+                and all(target_intents.values())
+                and source is not None
+                and source.tool_window is not None
+                and not source.tool_window.source_auto_update
+            ):
+                source._set_source_state("stale")
+                return False
+            refreshed = bool(
+                source is not None
+                and source.tool_script_inputs
+                and self._refresh_tool_inputs(uid, allow_recorded=True)
+            )
+            if not refreshed:
+                if (
+                    source is not None
+                    and source.tool_window is not None
+                    and source.tool_window._source_refresh_deferred
+                ):
+                    for target_uid in target_uids:
+                        self._manager._dependency_tracker.queue_source_refresh(
+                            uid,
+                            target_uid,
+                        )
+                    return True
+                self._manager._dependency_tracker.discard_source_refreshes(target_uids)
+                return False
         for target_uid in list(target_uids):
-            if target_uid not in self._manager._tool_graph.nodes:
+            target = self._manager._tool_graph.nodes.get(target_uid)
+            if target is None:
                 continue
-            self._manager._refresh_source_chain_to_uid(target_uid)
+            if target.tool_script_inputs:
+                if target.source_state == "fresh" and self.dependency_status_for_uid(
+                    target_uid
+                ) not in {"changed", "missing"}:
+                    continue
+                self._refresh_tool_inputs(
+                    target_uid,
+                    allow_recorded=True,
+                )
+            else:
+                self._refresh_source_chain_to_uid(target_uid)
+        return self_refresh
 
     def _parent_source_data_for_uid(self, uid: str) -> xr.DataArray:
         node = self._manager._child_node(uid)
         parent = self._manager._parent_node(node)
         return parent.current_source_data()
 
-    def _mark_descendants_source_state(
+    def _propagate_source_state_from_uid(
         self,
         uid: str,
         state: _ManagedWindowNode._source_state_type,
     ) -> None:
-        for child_uid in self._manager._iter_descendant_uids(uid):
-            node = self._manager._child_node(child_uid)
-            if node.tool_window is not None and node.tool_window.has_source_binding:
-                if node.tool_window.source_state != state:
-                    node.tool_window._set_source_state(state)
-            elif node.has_source_binding:
-                node._set_source_state(state)
+        if state == "fresh":
+            raise ValueError("fresh source state requires a completed data update")
+        source = self._manager._tool_graph.nodes.get(uid)
+        if source is not None:
+            source._set_source_state(state)
+        pending = [uid]
+        seen = {uid}
+        propagated_states = {uid: state}
+        while pending:
+            source_uid = pending.pop()
+            source = self._manager._tool_graph.nodes.get(source_uid)
+            if source is None:
+                continue
 
-    def _mark_descendants_source_unavailable(self, uid: str) -> None:
-        self._manager._mark_descendants_source_state(uid, "unavailable")
+            target_uids: list[str] = []
+            for child_uid in source._childtool_indices:
+                child = self._manager._tool_graph.nodes.get(child_uid)
+                if (
+                    child is not None
+                    and child.is_imagetool
+                    and child.has_source_binding
+                ):
+                    target_uids.append(child_uid)
+            for dependent_uid in self._manager._dependency_tracker.dependent_uids(
+                source_uid
+            ):
+                dependent = self._manager._tool_graph.nodes.get(dependent_uid)
+                if dependent is not None and dependent.tool_script_inputs:
+                    target_uids.append(dependent_uid)
+
+            for target_uid in target_uids:
+                if target_uid in seen:
+                    continue
+                seen.add(target_uid)
+                target = self._manager._tool_graph.nodes.get(target_uid)
+                if target is None:
+                    continue
+                target_state = propagated_states[source_uid]
+                if target.tool_script_inputs:
+                    target_state = self._tool_input_source_state(
+                        target,
+                        state_overrides=propagated_states,
+                    )
+                    if target_state == "fresh":
+                        continue
+                target._set_source_state(target_state)
+                propagated_states[target_uid] = target_state
+                pending.append(target_uid)
 
     def _propagate_source_change_from_uid(
         self, uid: str, parent_data: xr.DataArray | None = None
@@ -1066,23 +1655,25 @@ class _LineageController:
             try:
                 parent_data = self._manager._node_for_target(uid).current_source_data()
             except Exception:
-                self._manager._mark_descendants_source_unavailable(uid)
+                self._propagate_source_state_from_uid(uid, "unavailable")
                 return
         for child_uid in list(self._manager._node_for_target(uid)._childtool_indices):
             try:
                 child = self._manager._child_node(child_uid)
             except KeyError:
                 continue
+            if not child.is_imagetool:
+                # The dependency graph owns named-input refreshes. The tree edge
+                # only selects where the tool appears.
+                continue
             previous_state = child.source_state
             updated = child.handle_parent_source_replaced(parent_data)
             if updated or child.source_state != previous_state:
                 self._manager.tree_view.refresh(child_uid)
             if updated:
-                self._manager._propagate_source_change_from_uid(child_uid)
+                self._propagate_source_change_from_uid(child_uid)
             elif child.source_state != "fresh":
-                self._manager._mark_descendants_source_state(
-                    child_uid, child.source_state
-                )
+                self._propagate_source_state_from_uid(child_uid, child.source_state)
 
     def show_selected(self) -> None:
         """Show selected windows."""
@@ -1108,8 +1699,7 @@ class _LineageController:
             node.hide()
 
     def reload_selected(self) -> None:
-        """Reload data in selected ImageTool windows."""
-        selected_reload_candidates = self._manager._selected_reload_candidates()
+        selected_reload_candidates = self._selected_reload_candidates()
         if selected_reload_candidates is None:
             return
 
@@ -1121,16 +1711,13 @@ class _LineageController:
             )
             return
 
-        reloaded_targets: set[int | str] = set()
+        reloaded_uids: set[str] = set()
         for target in reload_targets:
-            if self._manager.get_imagetool(target).slicer_area._reload():
-                reloaded_targets.add(target)
-
-        for target, child_uids in child_targets.items():
-            if target not in reloaded_targets:
-                continue
-            for uid in child_uids:
-                self._manager._refresh_source_chain_to_uid(uid)
+            self._reload_target_with_continuations(
+                target,
+                child_targets.get(target, ()),
+                reloaded_uids=reloaded_uids,
+            )
 
     @staticmethod
     def _reload_incompatibility_details(
@@ -1218,18 +1805,41 @@ class _LineageController:
             replay_source_data=node.replay_source_data,
         )
         self._manager.tree_view.refresh(node.uid)
+        self._resume_pending_source_refreshes(node.uid)
 
-    def _reload_script_derived_target(self, target: int | str) -> bool:
-        """Reload a script-derived ImageTool from its recorded inputs."""
+    def _reload_script_derived_target(
+        self,
+        target: int | str,
+        *,
+        continuation_uids: Sequence[str] = (),
+        reloaded_uids: set[str] | None = None,
+    ) -> bool:
         node = self._manager._node_for_target(target)
         spec = node.provenance_spec
         if spec is None:
+            return False
+        reloaded_uids = set() if reloaded_uids is None else reloaded_uids
+        plan = self._input_resolution_plan(
+            spec.script_inputs,
+            target_node_uid=node.uid,
+        )
+        plan = self._execute_input_resolution_plan(
+            plan,
+            reloaded_uids=reloaded_uids,
+        )
+        if isinstance(plan, str):
+            if plan == "deferred":
+                for continuation_uid in continuation_uids:
+                    self._manager._dependency_tracker.queue_source_refresh(
+                        node.uid,
+                        continuation_uid,
+                    )
             return False
         with (
             self._manager._extensions.execution.capture_replay_sources()
         ) as publication:
             try:
-                result = self._manager._rebuild_script_provenance(
+                result = self._rebuild_script_provenance(
                     spec,
                     target_node_uid=node.uid,
                 )
@@ -1249,18 +1859,16 @@ class _LineageController:
                 current, result.data
             ):
                 publication.require_current_for_publication()
-                self._manager._replace_script_reload_target(node, result)
+                self._replace_script_reload_target(node, result)
                 self._manager._status_bar.showMessage("Reloaded data from inputs", 5000)
                 publication.publish()
                 return True
 
-            details = self._manager._reload_incompatibility_details(
-                current, result.data
-            )
-            match self._manager._prompt_incompatible_reload_commit(details):
+            details = self._reload_incompatibility_details(current, result.data)
+            match self._prompt_incompatible_reload_commit(details):
                 case "replace":
                     publication.require_current_for_publication()
-                    self._manager._replace_script_reload_target(node, result)
+                    self._replace_script_reload_target(node, result)
                     self._manager._status_bar.showMessage(
                         "Reloaded data from inputs", 5000
                     )
@@ -1306,7 +1914,7 @@ class _LineageController:
         num_selected_children: int = len(child_uids)
         num_implicit_children: int = 0
         for i in indices:
-            for uid in self._manager._child_targets_of(i):
+            for uid in self._manager._node_for_target(i)._childtool_indices:
                 if uid not in child_uids:  # pragma: no branch
                     num_implicit_children += 1
 

@@ -223,6 +223,8 @@ def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -
     child._result_ds_full = [
         _fit2d_param_result_dataset(params) for params in params_list
     ]
+    child._fit_is_current = True
+    child._update_full_fit_saveable()
     child._update_param_plot_options()
 
 
@@ -233,7 +235,7 @@ def _fake_edit_controller(
     nodes: dict[str, typing.Any] | None = None,
     metadata_uid: str | None = None,
     selected_targets: tuple[str, ...] = (),
-    script_input_can_reload: Callable[..., bool] | None = None,
+    script_input_unavailable_reason: Callable[..., str | None] | None = None,
 ) -> provenance_edit_controller._ProvenanceEditController:
     graph_nodes = (
         nodes if nodes is not None else ({} if node is None else {"node": node})
@@ -246,12 +248,31 @@ def _fake_edit_controller(
             raise RuntimeError("missing parent")
         return parent
 
+    lineage_controller = types.SimpleNamespace(
+        _script_input_unavailable_reason=(
+            script_input_unavailable_reason
+            if script_input_unavailable_reason is not None
+            else lambda *_args, **_kwargs: None
+        ),
+        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
+            data=xr.DataArray([1.0], dims=("x",)),
+            provenance_spec=spec,
+        ),
+        _apply_provenance=lambda spec, data, **kwargs: spec.apply(
+            data,
+            authorization=kwargs.get("authorization"),
+        ),
+        _authorize_provenance_execution=(
+            lambda entries, **_kwargs: _authorize_execution(entries)
+        ),
+    )
     manager = types.SimpleNamespace(
         _metadata_node_uid=metadata_uid,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
         _selected_imagetool_targets=lambda: selected_targets,
         _node_for_target=lambda target: graph_nodes[target],
         _parent_node=_parent_node,
+        _available_file_loaders=erlab.interactive.utils.file_loaders,
         _extensions=types.SimpleNamespace(
             replay_loader=lambda *_args, **_kwargs: pytest.fail(
                 "built-in provenance must not use extension loader execution"
@@ -268,29 +289,13 @@ def _fake_edit_controller(
                 ),
             ),
         ),
-        _available_file_loaders=erlab.interactive.utils.file_loaders,
-        _script_input_can_reload=(
-            script_input_can_reload
-            if script_input_can_reload is not None
-            else lambda *_args, **_kwargs: True
-        ),
-        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
-            data=xr.DataArray([1.0], dims=("x",)),
-            provenance_spec=spec,
-        ),
-        _apply_provenance=lambda spec, data, **kwargs: spec.apply(
-            data,
-            authorization=kwargs.get("authorization"),
-        ),
-        _authorize_provenance_execution=(
-            lambda entries, **_kwargs: _authorize_execution(entries)
-        ),
         _workspace_controller=types.SimpleNamespace(
             local_code_edit=_authorize_local_edit,
             saving=types.SimpleNamespace(
                 _workspace_node_path_for_node=lambda current: f"nodes/{current.uid}"
             ),
         ),
+        _lineage_controller=lineage_controller,
         _update_info=lambda **_kwargs: None,
         _workspace_ui_refresh_context=contextlib.nullcontext,
         _sigDataReplaced=types.SimpleNamespace(emit=lambda: None),

@@ -525,7 +525,7 @@ def test_meshtool_autofind_invalid_peaks_reraises_in_manager(
     assert win.p1_spin1.value() == 20
 
 
-def test_meshtool_update_data_preserves_state(qtbot, meshy_data) -> None:
+def test_meshtool_update_inputs_preserves_state(qtbot, meshy_data) -> None:
     win: MeshTool = meshtool(meshy_data, execute=False)
     qtbot.addWidget(win)
 
@@ -548,7 +548,7 @@ def test_meshtool_update_data_preserves_state(qtbot, meshy_data) -> None:
     assert win._corrected is not None
     assert win._mesh is not None
 
-    win.update_data(new_data)
+    win.update_inputs({"data": new_data})
 
     assert win.tool_status == status
     xr.testing.assert_identical(win.tool_data, new_data)

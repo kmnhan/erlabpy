@@ -29,7 +29,7 @@ import enum
 import functools
 import importlib.resources
 import typing
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
 
 import numpy as np
 import pydantic
@@ -494,9 +494,9 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         if tool is not None:
             self._itool = tool
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> None:
         status = self.tool_status
-        data = self.validate_update_data(new_data)
+        data = inputs["data"]
 
         data_has_nan = bool(data.isnull().any())
         if data_has_nan:
@@ -512,11 +512,13 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             self.update_preprocess()
         self._reset_history_stack()
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        data = erlab.interactive.utils.parse_data(new_data)
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        data = erlab.interactive.utils.parse_data(inputs["data"])
         if data.ndim != 2:
             raise ValueError("Input DataArray must be 2D")
-        return data
+        return {"data": data}
 
     def _result_provenance(
         self, *, transpose_output: bool = False
@@ -567,28 +569,28 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     def _provenance_seed_code(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         del data
-        return f"derived = {input_name or self.data_name}"
+        return f"derived = {primary_input or self.data_name}"
 
     def _copy_provenance(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> tuple[ToolProvenanceOperation, ...]:
-        del input_name, data
+        del primary_input, data
         return self._result_provenance()
 
     def _output_provenance(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> tuple[ToolProvenanceOperation, ...]:
-        del input_name, data
+        del primary_input, data
         return self._result_provenance(transpose_output=True)
 
     def _result_output_data(self) -> xr.DataArray:

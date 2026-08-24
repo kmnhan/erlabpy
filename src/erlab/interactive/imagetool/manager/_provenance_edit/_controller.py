@@ -298,9 +298,11 @@ class _ProvenanceEditController:
             if external_input_names and not node.has_replay_source:
                 return "The original replay source is no longer available."
             for script_input in spec.script_inputs:
-                reason = self._manager._script_input_unavailable_reason(
-                    script_input,
-                    target_node_uid=node.uid,
+                reason = (
+                    self._manager._lineage_controller._script_input_unavailable_reason(
+                        script_input,
+                        target_node_uid=node.uid,
+                    )
                 )
                 if reason is not None:
                     return reason
@@ -670,7 +672,7 @@ class _ProvenanceEditController:
                             authorize=self._capability_authorizer(authorization),
                         )
                     else:
-                        data = self._manager._apply_provenance(
+                        data = self._manager._lineage_controller._apply_provenance(
                             local,
                             current_data,
                             reason="paste these provenance steps",
@@ -925,10 +927,11 @@ class _ProvenanceEditController:
             if not self._script_spec_replayable_for_node(node, candidate):
                 return False, "This script step cannot be replayed."
             if not all(
-                self._manager._script_input_can_reload(
+                self._manager._lineage_controller._script_input_unavailable_reason(
                     script_input,
                     target_node_uid=node.uid,
                 )
+                is None
                 for script_input in candidate.script_inputs
             ):
                 return False, "This script step has unavailable inputs."
@@ -2018,7 +2021,7 @@ class _ProvenanceEditController:
             ) as publication:
                 candidate = dialog.provenance_spec(
                     active_name=_file_load_edit_active_name(spec),
-                    replay_steps=spec.steps,
+                    replay_steps=() if spec.kind == "script" else spec.steps,
                 )
                 if spec.kind == "script":
                     candidate = _replace_file_load_fields(spec, candidate)
@@ -2891,7 +2894,7 @@ class _ProvenanceEditController:
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
                 return (
-                    self._manager._apply_provenance(
+                    self._manager._lineage_controller._apply_provenance(
                         spec,
                         parent.current_source_data(),
                         reason="apply this provenance order",
@@ -2903,7 +2906,7 @@ class _ProvenanceEditController:
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
             return (
-                self._manager._apply_provenance(
+                self._manager._lineage_controller._apply_provenance(
                     spec,
                     parent_data,
                     reason="apply this provenance order",
@@ -2930,7 +2933,7 @@ class _ProvenanceEditController:
                         ),
                         authorize=(
                             functools.partial(
-                                self._manager._authorize_provenance_execution,
+                                self._manager._lineage_controller._authorize_provenance_execution,
                                 reason="apply this provenance order",
                             )
                             if authorization is None
@@ -2939,7 +2942,7 @@ class _ProvenanceEditController:
                     ),
                     spec,
                 )
-            result = self._manager._rebuild_script_provenance(
+            result = self._manager._lineage_controller._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
                 authorization=authorization,
@@ -2984,7 +2987,7 @@ class _ProvenanceEditController:
             },
             authorize=(
                 functools.partial(
-                    self._manager._authorize_provenance_execution,
+                    self._manager._lineage_controller._authorize_provenance_execution,
                     reason="apply this provenance order",
                 )
                 if authorization is None
@@ -3024,7 +3027,7 @@ class _ProvenanceEditController:
                     ),
                     extension_loader_executor=(self._manager._extensions.replay_loader),
                     authorize=functools.partial(
-                        self._manager._authorize_provenance_execution,
+                        self._manager._lineage_controller._authorize_provenance_execution,
                         reason="reload this file provenance",
                     ),
                 )

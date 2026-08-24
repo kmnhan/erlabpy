@@ -32,12 +32,12 @@ In practice, `ToolWindow` enables several things:
 - standard undo/redo actions for the lightweight UI state stored in `tool_status`;
 - integration with the ImageTool manager, including tool naming, preview images, rich
   info text, and manager refresh notifications through `sigInfoChanged`;
-- remembering which ImageTool data and selection opened the tool, including saved
-  metadata, stale or unavailable status tracking, and the built-in update dialog;
+- remembering which ImageTool inputs opened the tool, including saved metadata, stale
+  or unavailable status tracking, and the built-in update dialog;
 - ImageTool windows declared in `IMAGE_TOOL_OUTPUTS` that appear as child rows of the
   tool in the ImageTool manager and can be reopened, refreshed, and persisted; and
-- the update hooks used by tools that can react when ImageTool data changes, such as
-  `validate_update_data()`, `update_data()`, and `_cancel_background_work()`.
+- the update hooks used by tools that can react when ImageTool inputs change:
+  `validate_update_inputs()`, `update_inputs()`, and `_cancel_background_work()`.
 
 Use `ToolWindow` when your tool should do any of the following:
 
@@ -48,8 +48,11 @@ Use `ToolWindow` when your tool should do any of the following:
 
 `ToolWindow` assumes a few things about your implementation:
 
-- The constructor accepts `data` as its single positional input. Additional options can
-  be keyword arguments.
+- The constructor accepts `data` as its primary positional input. Additional initial
+  inputs and options can be keyword arguments. The Manager records durable input
+  bindings separately when it registers the tool. A saveable multi-input tool must
+  let restore omit its non-primary constructor inputs. Restore supplies their saved
+  values through one complete `update_inputs()` call.
 - The nested `StateModel` contains the lightweight UI state that participates in
   undo/redo history.
 - `tool_data` returns the main `DataArray`.
@@ -62,15 +65,17 @@ As a practical authoring checklist:
 - Required for the core `ToolWindow` interface:
   constructor with `data`, `StateModel`, `tool_data`, and `tool_status`.
 - Required if the tool can be refreshed from ImageTool data:
-  `update_data()`. In practice, this is the normal baseline for repository tools, so
-  the examples below implement it even in the minimal case. Return `False` when the
-  new data is accepted but the tool cannot publish a fresh result yet.
+  `update_inputs()`. It always receives the complete named input mapping, including for
+  a tool with one input. Return `False` when the tool does not apply the input. Call
+  `_defer_source_refresh()` first if accepted asynchronous work will apply it later.
+  Override `validate_update_inputs()` when the tool
+  must normalize an input or validate relationships between inputs.
 - Optional, but strongly recommended for user-facing tools:
   `tool_name` (the base class default is just `"tool"`).
 - Optional for tools with expensive or bulky save-only state:
   `_append_persistence_payload()` and `_restore_persistence_payload()`.
 - Optional manager / provenance integration:
-  `validate_update_data()`, `_cancel_background_work()`, `preview_imageitem`,
+  `validate_update_inputs()`, `_cancel_background_work()`, `preview_imageitem`,
   `info_text`, `COPY_PROVENANCE`, `IMAGE_TOOL_OUTPUTS`, and
   `detached_output_imagetool_provenance()`.
 
@@ -91,9 +96,14 @@ up the corresponding `ToolWindow` surface:
   optional; implement `info_text`, `preview_imageitem`, and emit `sigInfoChanged` when
   either changes.
 - Refresh the tool when the ImageTool that opened it changes:
-  `update_data()` is part of the minimal tool surface; `validate_update_data()` and
-  `_cancel_background_work()` are optional additions when normalization or worker
-  shutdown matter.
+  implement `update_inputs()` and read the primary array by its stable name, usually
+  `inputs["data"]`. `validate_update_inputs()` and `_cancel_background_work()` are
+  optional additions when normalization or worker shutdown matter.
+- Refresh a tool from several ImageTool or ToolWindow results:
+  register named targets through
+  `ImageToolManager.add_childtool(..., script_inputs=...)`. The Manager reads the
+  primary input from the `ToolWindow` declaration. Use `parent` only to select where
+  the row appears. The update contract is unchanged from the one-input case.
 - Generate code that repeats the tool's main action:
   optional; usually set `COPY_PROVENANCE` to a `ToolScriptProvenanceDefinition`. Prefer
   `label + expression_method + assign` for the common single-step case, add
@@ -155,11 +165,13 @@ use Qt Designer) next to it. The rest of this page uses two real examples:
 
 If you only want to remember the minimum required pieces, this is it. The tool below is still
 fully functional: it displays a scaled 2D array, saves and restores its state, and can
-accept replacement data. It intentionally does **not** implement any of the optional
-manager integration or provenance hooks, but it still includes `update_data()` because
-that is the practical baseline for tools that may be launched from ImageTool.
+accept replacement data. It intentionally does **not** implement optional manager
+metadata or provenance hooks. It still implements `update_inputs()` because this is the
+one refresh contract for every `ToolWindow`.
 
 ```python
+from collections.abc import Mapping
+
 import pydantic
 import pyqtgraph as pg
 import xarray as xr
@@ -204,7 +216,7 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
         self._reset_history_stack()
 
     def _coerce_data(self, data: xr.DataArray) -> xr.DataArray:
-        # Minimal tools can validate inline instead of overriding validate_update_data().
+        # Minimal tools can share constructor and refresh validation in one helper.
         parsed = erlab.interactive.utils.parse_data(data)
         if parsed.ndim != 2:
             raise ValueError("`data` must be 2D")
@@ -230,9 +242,9 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
         self.scale_spin.setValue(status.scale)
         self._refresh()
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
-        # This is the minimal refresh path: replace the data and repaint.
-        self._data = self._coerce_data(new_data)
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+        # Even a one-input tool receives the complete named input mapping.
+        self._data = self._coerce_data(inputs["data"])
         with self._history_suppressed():
             self._refresh()
         self._reset_history_stack()
@@ -252,7 +264,7 @@ That is the minimum `ToolWindow` surface to keep in your head:
 - nested `StateModel`;
 - `tool_data`;
 - `tool_status` getter and setter; and
-- `update_data`.
+- `update_inputs`.
 
 Everything below is optional integration that you add when the tool needs it.
 
@@ -286,6 +298,7 @@ tool row.
 ```python
 import enum
 import typing
+from collections.abc import Mapping
 
 import pydantic
 import pyqtgraph as pg
@@ -334,7 +347,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         super().__init__()
 
         # Validate the input once up front and keep a stable variable name around.
-        self._data = self.validate_update_data(data)
+        self._data = self._validate_data(data)
         self._data_name = data_name or (self._data.name or "data")
         self._filtered_itool: QtWidgets.QWidget | None = None
 
@@ -414,19 +427,25 @@ class MyTool(erlab.interactive.utils.ToolWindow):
             self.reference_check.setChecked(status.show_reference)
         self._refresh(notify=False)
 
-    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        # Optional but recommended: normalize / reject data updates in one place.
-        data = erlab.interactive.utils.parse_data(new_data)
+    @staticmethod
+    def _validate_data(data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(data)
         if data.ndim != 2:
             raise ValueError("`data` must be 2D")
         return data
 
-    def update_data(self, new_data: xr.DataArray) -> bool:
-        # Preserve the existing UI state while swapping in replacement data.
+    def validate_update_inputs(
+        self, inputs: Mapping[str, xr.DataArray]
+    ) -> Mapping[str, xr.DataArray]:
+        validated = dict(super().validate_update_inputs(inputs))
+        validated["data"] = self._validate_data(validated["data"])
+        return validated
+
+    def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+        # Inputs have already passed validate_update_inputs().
         status = self.tool_status
-        validated = self.validate_update_data(new_data)
         with self._history_suppressed():
-            self._data = validated
+            self._data = inputs["data"]
             self.tool_status = status
             self._notify_data_changed()
         self._reset_history_stack()
@@ -448,12 +467,12 @@ class MyTool(erlab.interactive.utils.ToolWindow):
     def _filter_expression(
         self,
         *,
-        input_name: str | None = None,
+        primary_input: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
         # Optional provenance method: return the final expression only.
         del data
-        input_expr = input_name or "data"
+        input_expr = primary_input or "data"
         window = self._filter_window()
         rolling_kwargs = ", ".join(f"{dim}={window}" for dim in self.tool_data.dims)
         return (
@@ -494,6 +513,10 @@ Some implementation details matter:
   and is stored separately in workspace files. If you need to persist expensive
   calculated arrays, use the explicit persistence hooks instead of `tool_status` so
   ordinary history snapshots stay cheap.
+- For a tool with several canonical inputs, override `_persistence_data_items()` and
+  store each non-primary input under its exact input name. The base class stores the
+  primary input as `<saved-tool-data>`. Restore validates and applies the complete
+  mapping once. Keep auxiliary arrays in `_restore_persistence_data_items()`.
 - Keep workspace restore cheap. If a saved tool has optional cached results, preview
   images, deserialized fit objects, or rendered figures, validate the saved state
   eagerly but defer that derived work through `ToolWindow` restore hooks. Hidden tools
@@ -513,7 +536,7 @@ Some implementation details matter:
   it to `self.copy_code`. Declaring `COPY_PROVENANCE` only tells `ToolWindow` how to
   generate the code when that slot is called.
 - Keep provenance methods on the shared `ToolWindow` calling convention:
-  `(*, input_name: str | None = None, data: xr.DataArray | None = None)`. Most
+  `(*, primary_input: str | None = None, data: xr.DataArray | None = None)`. Most
   single-step methods should return only the unassigned final expression. Let
   `ToolScriptProvenanceDefinition(assign=...)` or `assign_method=...` define the final
   variable name, and use `prelude_method` only when the generated code needs setup
@@ -544,8 +567,8 @@ Some implementation details matter:
   create any user-facing action.
 
 `DerivativeTool` in `erlab.interactive.derivative` is a good synchronous example:
-`tool_status` captures the preprocessing controls, and `update_data()` swaps in the new
-array while preserving the current settings.
+`tool_status` captures the preprocessing controls, and `update_inputs()` swaps in the
+new named input while preserving the current settings.
 
 ## Defer expensive restored work
 
@@ -650,37 +673,37 @@ should usually be able to react when the ImageTool that opened it changes.
 
 `ToolWindow` gives you three hooks for this:
 
-- `validate_update_data(new_data)`: normalize or reject replacement data before it
-  reaches the live UI.
-- `update_data(new_data)`: apply the new data without creating a brand-new window.
-  Return `False` when the input was accepted but the tool must stay stale until a
-  deferred recomputation or result publication finishes.
+- `validate_update_inputs(inputs)`: normalize or reject the complete named mapping
+  before it reaches the live UI.
+- `update_inputs(inputs)`: apply the already-validated mapping without creating a new
+  window. Return `False` when the tool does not apply the input. If accepted
+  asynchronous work will apply it later, call `_defer_source_refresh()` before you
+  return `False`.
 - `_cancel_background_work(timeout_ms=...)`: stop worker threads or queued tasks before
-  mutating the UI, if your tool fits in the background.
+  mutating the UI, if your tool runs work in the background.
 
 There are three common update strategies in the current codebase:
 
 1. In-place updates for simple tools.
 
-   `DerivativeTool` and `KspaceToolGUI` validate the new array, preserve `tool_status`,
-   replace their cached data, and recompute the plots.
+   `DerivativeTool` and `KspaceToolGUI` validate the `"data"` input, preserve
+   `tool_status`, replace their cached data, and recompute the plots.
 
 2. Rebuild-and-restore updates for tools whose UI depends heavily on the input data.
 
    `Fit1DTool` and `Fit2DTool` snapshot `tool_status`, tear down the central widget,
-   rebuild the UI, then restore the saved state. In that case, prefer
-   `self._perform_source_update(...)` so validation and background-task cancellation
-   stay in one place.
+   rebuild the UI, then restore the saved state. The base input transaction performs
+   validation and background-task cancellation before it calls `update_inputs()`.
 
 3. Deferred updates for tools that accept the new input before they can publish a fresh
    result.
 
-   `GoldTool.update_data()` returns `False` while a queued data update or refit is
-   still pending, and `Fit1DTool`, `Fit2DTool`, and `ResolutionTool` return `False`
-   when they have accepted new data but must finish an asynchronous refit before their
-   current outputs are fresh again. Returning `False` keeps the tool marked as
-   stale until that follow-up work finishes and the tool calls
-   `finalize_source_refresh()`.
+   `GoldTool`, `Fit1DTool`, `Fit2DTool`, and `ResolutionTool` call
+   `_defer_source_refresh()` after they start an asynchronous refit. They then return
+   `False` to keep the input transaction pending. These tools publish the replacement
+   input before the refit starts. They therefore call `finalize_source_refresh()` when
+   the refit succeeds, fails, is cancelled, or times out. Their fit-specific state
+   still reports that the calculated result is stale or failed.
 
 When your tool has worker threads, a typical pattern is:
 
@@ -689,27 +712,118 @@ def _cancel_background_work(self, *, timeout_ms: int) -> bool:
     return self._threadpool.waitForDone(timeout_ms)
 
 
-def update_data(self, new_data: xr.DataArray) -> bool:
+def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
     status = self.tool_status
     old_geom = self.saveGeometry()
-
-    def _apply_update(validated: xr.DataArray) -> bool:
-        with self._history_suppressed():
-            self._data = validated
-            self._rebuild_ui()
-            self.tool_status = status
-            self.restoreGeometry(old_geom)
-            self._notify_data_changed()
-        self._reset_history_stack()
-        return True
-
-    return self._perform_source_update(new_data, apply_update=_apply_update)
+    with self._history_suppressed():
+        self._data = inputs["data"]
+        self._rebuild_ui()
+        self.tool_status = status
+        self.restoreGeometry(old_geom)
+        self._notify_data_changed()
+    self._reset_history_stack()
+    return True
 ```
 
-If `_apply_update(...)` starts asynchronous follow-up work such as a refit, return
-`False` instead and call `finalize_source_refresh()` only after the new result has been
-published. This is what prevents rows created by the tool from updating against old
-calculated arrays.
+If `update_inputs(...)` starts asynchronous follow-up work such as a refit, call
+`_defer_source_refresh()` and return `False`. Call `finalize_source_refresh()` only
+after the new input or result is published. If the tool already published the new
+input, also finalize the input transaction when a follow-up calculation fails or is
+cancelled. Keep the calculation's own result state stale or failed. Call
+`abort_source_refresh()` only when the tool staged the input without publishing it. A
+bare `False` discards the pending binding update. With automatic updates enabled, the
+framework coalesces source changes that arrive during explicitly deferred work and
+applies the newest input after the current work settles. With automatic updates
+disabled, it commits the completed input and leaves the tool stale for the newer
+source. This prevents a new data array from keeping the old input binding.
+
+### Consume several Manager inputs
+
+A `ToolWindow` can depend on several ImageTool or ToolWindow results. The Manager keeps
+these named dependencies as a graph even though the tree shows the tool under only one
+row. Register all inputs together at the launch site:
+
+```python
+from erlab.interactive.imagetool.provenance import ScriptInput
+
+
+tool.set_script_inputs(
+    (ScriptInput(name="data"), ScriptInput(name="right")),
+    primary_input="data",
+)
+tool_uid = manager.add_childtool(
+    tool,
+    script_inputs={"data": data_target, "right": right_target},
+    parent=data_target,
+)
+```
+
+Each target is a Manager root index or node UID. The input names are durable identifiers
+that the tool update and provenance code use. Their insertion order is also preserved.
+The declaration fixes the names, roles, transforms, order, and primary input before the
+Manager binds them to live targets. The default `data_role="displayed"` uses the values
+currently displayed by an ImageTool, including an accepted filter. Use
+`data_role="source"` only when the tool intentionally consumes the durable unfiltered
+source array.
+The optional arguments have different purposes:
+
+- `parent` selects the one input whose row contains the tool in the tree. It does
+  not change the dependency graph.
+- The `ToolWindow.primary_input` declaration selects the input used as the primary
+  tool data. Structured provenance operations start from this input.
+
+If `parent` is omitted, it defaults to the primary input. Removing a non-tree input
+keeps the tool row and marks its source unavailable. Removing the tree parent removes
+the nested tool with that branch. Workspace save, load, import, and node-UID rebasing
+preserve all named bindings.
+
+Implement one update transaction for the complete input mapping:
+
+```python
+from collections.abc import Mapping
+
+import xarray as xr
+
+
+def validate_update_inputs(
+    self, inputs: Mapping[str, xr.DataArray]
+) -> Mapping[str, xr.DataArray]:
+    validated = dict(super().validate_update_inputs(inputs))
+    left, right = xr.align(validated["data"], validated["right"], join="exact")
+    validated["data"] = left
+    validated["right"] = right
+    return validated
+
+
+def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+    self._data = inputs["data"]
+    self._right = inputs["right"]
+    self._refresh()
+    return True
+```
+
+The framework checks that the names match the fixed bindings. It resolves all inputs,
+calls `validate_update_inputs()` once, and then calls `update_inputs()` once. The tool
+does not observe a partly refreshed input set. For asynchronous work, call
+`_defer_source_refresh()`, return `False`, and then call
+`finalize_source_refresh()` or `abort_source_refresh()` when the work stops.
+
+The Manager owns the complete input lifecycle. It resolves live nodes before it uses
+recorded provenance, requests trust only for a recorded fallback, and propagates stale
+or unavailable state through all active dependency edges. Workspace import remaps
+saved node UIDs while it preserves saved revision tokens. Subtree duplication preserves
+the initial revision tokens of the copied nodes and remaps binding UIDs. A `ToolWindow`
+does not fetch Manager nodes or select a replay policy. It only validates and applies
+the complete mapping that the Manager supplies.
+
+`script_inputs` and `primary_input` are the canonical input state on every refreshable
+Manager child `ToolWindow`. Input names, roles, transforms, order, and the primary
+input stay fixed after the first binding. The Manager can refresh node UIDs, snapshot
+tokens, labels, and fallback provenance. Use
+`add_childtool(..., script_inputs=...)` so target validation, dependency registration,
+persistence, and refresh callbacks stay consistent. Figure Composer is a separate
+Manager collection. It owns a dynamic `FigureSourceState` map instead of fixed child
+tool inputs.
 
 If the tool is launched from an ImageTool selection, the launch site should also record
 which ImageTool data and selection opened it:
@@ -718,6 +832,11 @@ which ImageTool data and selection opened it:
   active cursor or cropped selection.
 - Use ``erlab.interactive.imagetool.provenance.full_data()`` when the whole current
   array should be used again during an update.
+- Store that live transform on the matching `ScriptInput.source_spec`. Store the
+  already-transformed result's complete replay source on
+  `ScriptInput.provenance_spec`. Replay uses this fallback as-is and does not apply the
+  live transform again. The Manager updates the live node UID and snapshot token
+  without changing the fixed name, role, or transform.
 - To describe a tool's data transformations, import concrete operation models from
   ``erlab.interactive.imagetool._provenance._operations`` when a tool needs to write
   or modify the saved operation list explicitly. Pass those operation instances to
@@ -768,9 +887,9 @@ which ImageTool data and selection opened it:
   but should stay hidden from the steps list and generated code, such as an internal
   bookkeeping rename. If the step should remain visible but code generation should
   stop, return ``DerivationEntry(..., code=None)`` instead.
-- Ensure the caller sets `set_source_binding(...)`; the manager wrapper will provide
-  `set_source_parent_fetcher(...)` and `set_input_provenance_parent_fetcher(...)` when
-  the tool is attached to an ImageTool in the manager.
+- Ensure the launch path declares `script_inputs` and `primary_input`. A standalone
+  ImageTool installs one resolver for the complete mapping. The Manager registers the
+  same bindings as graph dependencies. The `ToolWindow` does not fetch parent data.
 
 If the tool offers "Copy Code" or otherwise generates code from its current input, also
 implement provenance for that code path:
@@ -885,8 +1004,11 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
 - `to_dataset()` / `from_dataset()` if the tool is savable, including any
   `_append_persistence_payload()` / `_restore_persistence_payload()` roundtrip when the
   tool uses them;
-- `validate_update_data()` and `update_data()` branches, including {guilabel}`Stale` or
-  {guilabel}`Unavailable` cases after the ImageTool that opened the tool changes;
+- `validate_update_inputs()` and `update_inputs()` as one atomic update, including the
+  one-input case and {guilabel}`Stale` or {guilabel}`Unavailable` states after a source
+  changes;
+- multi-input bindings when applicable, including a removed non-tree input and workspace
+  restore;
 - deferred restore behavior for any expensive restored cache, preview, render, or
   result recomputation;
 - dialog accept and cancel paths for any new dialogs, including {guilabel}`Save` and
@@ -896,7 +1018,7 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
 - generated code from `COPY_PROVENANCE` and every `IMAGE_TOOL_OUTPUTS` definition that
   provides provenance: execute it in an explicit namespace and assert that the
   resulting object exactly matches the expected `DataArray`; do not assert source
-  formatting unless that exact formatting is the behavior under test; and
+  formatting unless that exact formatting is the behavior under test;
 - grouped provenance behavior when applicable: serialization, full-group copy/paste
   preserving editability, partial copy/paste stripping group metadata while staying
   replayable, grouped edit replacement, grouped delete/revert behavior, and generated

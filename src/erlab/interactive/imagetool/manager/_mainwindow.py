@@ -105,7 +105,6 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._provenance._model import (
         ScriptInput,
         ScriptInputDataRole,
-        ScriptInputDependencyRef,
         ToolProvenanceSpec,
         _ProvenanceDisplayRow,
     )
@@ -545,6 +544,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
 
+        self.weighted_ftool_action = QtWidgets.QAction("Open in ftool…", self)
+        self.weighted_ftool_action.setObjectName("manager_open_weighted_ftool_action")
+        self.weighted_ftool_action.triggered.connect(self.show_weighted_ftool_dialog)
+        self.weighted_ftool_action.setToolTip(
+            "Open two selected ImageTools as data and standard uncertainty in ftool"
+        )
+
         self.batch_action = QtWidgets.QAction("Batch Operation…", self)
         self.batch_action.setObjectName("manager_batch_operation_action")
         self.batch_action.triggered.connect(self.show_batch_operations)
@@ -697,6 +703,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.edit_menu.addAction(self.reindex_action)
         self.edit_menu.addSeparator()
         self.edit_menu.addAction(self.concat_action)
+        self.edit_menu.addAction(self.weighted_ftool_action)
         self.edit_menu.addAction(self.metadata_editor_action)
         self.edit_menu.addAction(self.batch_action)
         self.edit_menu.addAction(self.create_figure_action)
@@ -1256,9 +1263,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def _next_node_uid(self, preferred: str | None = None) -> str:
         return self._tool_graph.next_uid(preferred)
 
-    def _consume_node_uid(self, uid: str) -> None:
-        self._tool_graph.consume_uid(uid)
-
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
         self._tool_graph.register_root(wrapper)
         self._dependency_tracker.note_uid(wrapper.uid)
@@ -1293,7 +1297,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
-    def _unregister_node(self, uid: str) -> None:
+    def _unregister_node(self, uid: str, *, refresh_dependents: bool = True) -> None:
         node = self._tool_graph.unregister_node(uid)
         if node is None:
             return
@@ -1301,7 +1305,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._invalidate_workspace_link_color_cache()
         self._cancel_managed_node_change(uid)
         self._dependency_tracker.clear_uid(uid)
-        if not self._workspace_state.closing_document:
+        if refresh_dependents and not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
             self._figure_workflows._refresh_figure_source_controls()
         if self._workspace_state.loading_depth == 0:
@@ -1332,9 +1336,6 @@ class ImageToolManager(_ImageToolManagerBase):
             if child is None or isinstance(child, _ImageToolWrapper):
                 continue
             self._unregister_node(child_uid)
-            if child.tool_window is not None:
-                child.tool_window.set_source_parent_fetcher(None)
-                child.tool_window.set_input_provenance_parent_fetcher(None)
             child.dispose()
 
     def _workspace_link_keys_for_subtree(self, uid: str) -> set[str]:
@@ -1500,6 +1501,9 @@ class ImageToolManager(_ImageToolManagerBase):
             self._tool_graph.reindex_roots()
 
         self.tree_view.refresh()
+        self._figure_workflows._refresh_figure_source_controls()
+        if self._metadata_node_uid is not None:
+            self._schedule_details_refresh(self._metadata_node_uid)
         self._mark_workspace_structure_dirty("Reindexed root windows")
 
     @QtCore.Slot(int)
@@ -2289,11 +2293,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def open(self, *, native: bool = True) -> None:
         self._data_ingress.open(native=native)
 
-    def _dependency_refs_for_uid(
-        self, uid: str
-    ) -> tuple[ScriptInputDependencyRef, ...]:
-        return self._lineage_controller._dependency_refs_for_uid(uid)
-
     def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
         return self._lineage_controller.dependency_status_for_uid(uid)
 
@@ -2308,28 +2307,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def dependency_input_summary_for_uid(self, uid: str) -> str | None:
         return self._lineage_controller.dependency_input_summary_for_uid(uid)
-
-    def _show_dependency_reload_dialog(self, target: int | str) -> None:
-        self._lineage_controller._show_dependency_reload_dialog(target)
-
-    def _script_input_has_recorded_file(
-        self,
-        script_input: ScriptInput,
-    ) -> bool:
-        return self._lineage_controller._script_input_has_recorded_file(script_input)
-
-    def _dependency_ref_has_recorded_file(
-        self,
-        spec: ToolProvenanceSpec | None,
-        ref: ScriptInputDependencyRef,
-    ) -> bool:
-        return self._lineage_controller._dependency_ref_has_recorded_file(spec, ref)
-
-    def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
-        return self._lineage_controller._missing_dependencies_have_recorded_file(uid)
-
-    def _dependency_dependent_uids(self, uid: str) -> list[str]:
-        return self._lineage_controller._dependency_dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
         if self._workspace_ui_refresh_defer_depth > 0:
@@ -2445,9 +2422,6 @@ class ImageToolManager(_ImageToolManagerBase):
             data_role=data_role,
         )
 
-    def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
-        return self._lineage_controller._script_provenance_inputs_current(spec)
-
     def _resolve_live_script_input_for_reload(
         self,
         script_input: ScriptInput,
@@ -2455,17 +2429,6 @@ class ImageToolManager(_ImageToolManagerBase):
         target_node_uid: str | None = None,
     ) -> tuple[xr.DataArray, ScriptInput] | None:
         return self._lineage_controller._resolve_live_script_input_for_reload(
-            script_input,
-            target_node_uid=target_node_uid,
-        )
-
-    def _script_input_can_reload(
-        self,
-        script_input: ScriptInput,
-        *,
-        target_node_uid: str | None = None,
-    ) -> bool:
-        return self._lineage_controller._script_input_can_reload(
             script_input,
             target_node_uid=target_node_uid,
         )
@@ -2538,70 +2501,19 @@ class ImageToolManager(_ImageToolManagerBase):
             execute=execute,
         )
 
-    def _workspace_loaded_uid_map(
-        self, loaded_targets_by_uid: Mapping[str, int | str]
-    ) -> dict[str, str]:
-        return self._lineage_controller._workspace_loaded_uid_map(loaded_targets_by_uid)
-
-    def _rebase_loaded_workspace_dependency_refs(
-        self,
-        loaded_targets_by_uid: Mapping[str, int | str],
-    ) -> None:
-        self._lineage_controller._rebase_loaded_workspace_dependency_refs(
-            loaded_targets_by_uid,
-        )
-
-    def _selected_reload_targets(
-        self,
-    ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
-        return self._lineage_controller._selected_reload_targets()
-
-    def _selected_reload_candidates(
-        self,
-    ) -> tuple[list[int | str], dict[int | str, list[str]], str | None] | None:
-        return self._lineage_controller._selected_reload_candidates()
-
-    def _reload_target_for_child(self, uid: str) -> int | str | None:
-        return self._lineage_controller._reload_target_for_child(uid)
-
-    def _reload_unavailable_reason_for_child(self, uid: str) -> str:
-        return self._lineage_controller._reload_unavailable_reason_for_child(uid)
-
     def _reload_unavailable_reason_for_target(self, target: int | str) -> str | None:
         return self._lineage_controller._reload_unavailable_reason_for_target(target)
 
+    def _reload_target_for_child(self, uid: str) -> int | str | None:
+        """Return the reload boundary used by an attached ImageTool."""
+        return self._lineage_controller._reload_target_for_child(uid)
+
     def _reload_source_chain_for_child(self, uid: str) -> bool:
+        """Reload the source chain requested by an attached ImageTool."""
         return self._lineage_controller._reload_source_chain_for_child(uid)
 
     def show_selected_source_updates(self) -> None:
         self._lineage_controller.show_selected_source_updates()
-
-    def _child_targets_of(self, target: int | str) -> list[str]:
-        return self._lineage_controller._child_targets_of(target)
-
-    def _refresh_source_chain_to_uid(self, uid: str) -> bool:
-        return self._lineage_controller._refresh_source_chain_to_uid(uid)
-
-    def _resume_pending_source_refreshes(self, uid: str) -> None:
-        self._lineage_controller._resume_pending_source_refreshes(uid)
-
-    def _parent_source_data_for_uid(self, uid: str) -> xr.DataArray:
-        return self._lineage_controller._parent_source_data_for_uid(uid)
-
-    def _mark_descendants_source_state(
-        self,
-        uid: str,
-        state: _ManagedWindowNode._source_state_type,
-    ) -> None:
-        self._lineage_controller._mark_descendants_source_state(uid, state)
-
-    def _mark_descendants_source_unavailable(self, uid: str) -> None:
-        self._lineage_controller._mark_descendants_source_unavailable(uid)
-
-    def _propagate_source_change_from_uid(
-        self, uid: str, parent_data: xr.DataArray | None = None
-    ) -> None:
-        self._lineage_controller._propagate_source_change_from_uid(uid, parent_data)
 
     def reveal_nodes(self, uids: Iterable[str]) -> bool:
         """Reveal manager nodes in their corresponding manager collection."""
@@ -2692,25 +2604,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def reload_selected(self) -> None:
         self._lineage_controller.reload_selected()
 
-    @staticmethod
-    def _reload_incompatibility_details(
-        current: xr.DataArray, rebuilt: xr.DataArray
-    ) -> str:
-        return _LineageController._reload_incompatibility_details(current, rebuilt)
-
-    def _prompt_incompatible_reload_commit(self, details: str) -> str:
-        return self._lineage_controller._prompt_incompatible_reload_commit(details)
-
-    def _replace_script_reload_target(
-        self,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        result: _ScriptRebuildResult,
-    ) -> None:
-        self._lineage_controller._replace_script_reload_target(node, result)
-
-    def _reload_script_derived_target(self, target: int | str) -> bool:
-        return self._lineage_controller._reload_script_derived_target(target)
-
     def remove_selected(self) -> None:
         self._lineage_controller.remove_selected()
 
@@ -2748,6 +2641,19 @@ class ImageToolManager(_ImageToolManagerBase):
     def concat_selected(self) -> None:
         self._actions_controller.concat_selected()
 
+    def show_weighted_ftool_dialog(self) -> None:
+        self._actions_controller.show_weighted_ftool_dialog()
+
+    def open_weighted_ftool(
+        self,
+        data_target: int | str,
+        uncertainty_target: int | str,
+    ) -> str | None:
+        return self._actions_controller.open_weighted_ftool(
+            data_target,
+            uncertainty_target,
+        )
+
     def batch_target_count(self) -> int:
         return self._actions_controller.batch_target_count()
 
@@ -2775,13 +2681,6 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def rename_imagetool(self, index: int, new_name: str) -> None:
         self._actions_controller.rename_imagetool(index, new_name)
-
-    def _duplicate_subtree(
-        self, target: int | str, *, parent_override: int | str | None = None
-    ) -> int | str:
-        return self._actions_controller._duplicate_subtree(
-            target, parent_override=parent_override
-        )
 
     def duplicate_imagetool(self, index: int | str) -> int | str:
         return self._actions_controller.duplicate_imagetool(index)
@@ -2891,8 +2790,9 @@ class ImageToolManager(_ImageToolManagerBase):
     def add_childtool(
         self,
         tool: erlab.interactive.utils.ToolWindow,
-        index: int | str,
         *,
+        script_inputs: Mapping[str, int | str],
+        parent: int | str | None = None,
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
@@ -2902,7 +2802,8 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> str:
         return self._actions_controller.add_childtool(
             tool,
-            index,
+            script_inputs=script_inputs,
+            parent=parent,
             show=show,
             uid=uid,
             snapshot_token=snapshot_token,
@@ -2922,7 +2823,6 @@ class ImageToolManager(_ImageToolManagerBase):
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
-        tool.set_input_provenance_spec(None)
         node = _ManagedWindowNode(
             self,
             self._next_node_uid(uid),

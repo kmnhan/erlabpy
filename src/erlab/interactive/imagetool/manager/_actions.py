@@ -17,6 +17,7 @@ from erlab.interactive._file_loaders import builtin_file_loader_for_id
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_display_provenance,
@@ -29,11 +30,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     RestoreNonuniformDimsOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
+from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
     _ConcatDialog,
     _RenameDialog,
     _StoreDialog,
+    _WeightedFtoolDialog,
 )
 from erlab.interactive.imagetool.manager._widgets import _WATCHED_VAR_COLORS
 from erlab.interactive.imagetool.manager._window_layout import (
@@ -343,7 +346,9 @@ class _ActionsController:
         note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
-        self._manager._unregister_node(uid)
+        # The promoted wrapper keeps the same UID. Do not expose the short gap
+        # between unregistering the child and registering the root to dependents.
+        self._manager._unregister_node(uid, refresh_dependents=False)
 
         with self._manager._workspace_load_context():
             new_index = self._manager.add_imagetool(
@@ -462,6 +467,60 @@ class _ActionsController:
         """Concatenate the selected data using :func:`xarray.concat`."""
         dlg = self._concat_dialog
         dlg.open()
+
+    def show_weighted_ftool_dialog(self) -> None:
+        """Assign two selected ImageTools as data and uncertainty inputs."""
+        targets = self._manager._selected_imagetool_targets()
+        if len(targets) != 2 or self._manager._selected_tool_uids():
+            return
+        dialog = _WeightedFtoolDialog(
+            self._manager,
+            [(target, self._target_display_text(target)) for target in targets],
+        )
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return
+        self.open_weighted_ftool(dialog.data_target, dialog.uncertainty_target)
+
+    def open_weighted_ftool(
+        self,
+        data_target: int | str,
+        uncertainty_target: int | str,
+    ) -> str | None:
+        """Open a managed ftool with separate data and uncertainty inputs."""
+        if data_target == uncertainty_target:
+            raise ValueError("Data and uncertainty must use different ImageTools.")
+        data_node = self._manager._node_for_target(data_target)
+        uncertainty_node = self._manager._node_for_target(uncertainty_target)
+        if not data_node.is_imagetool or not uncertainty_node.is_imagetool:
+            raise TypeError("Weighted ftool inputs must be ImageTools.")
+
+        try:
+            tool = erlab.interactive.ftool(
+                data_node.data_for_role("displayed"),
+                uncertainty=uncertainty_node.data_for_role("displayed"),
+                data_name="data",
+                uncertainty_name="uncertainty",
+                execute=False,
+            )
+        except Exception:
+            self._show_operation_error(
+                "Could not open weighted ftool",
+                "Could not open ftool with the selected data and standard uncertainty.",
+            )
+            return None
+
+        tool.set_script_inputs(
+            (ScriptInput(name="data"), ScriptInput(name="uncertainty")),
+            primary_input="data",
+        )
+        return self.add_childtool(
+            tool,
+            script_inputs={
+                "data": data_target,
+                "uncertainty": uncertainty_target,
+            },
+            parent=data_target,
+        )
 
     @property
     def _batch_dialog(self) -> _BatchOperationDialog:
@@ -903,9 +962,17 @@ class _ActionsController:
             node_uid_counter=self._manager._tool_graph.uid_counter
         )
         duplicated: int | str | None = None
+        uid_map: dict[str, str] = {}
         try:
             with self._manager._workspace_load_context():
-                duplicated = self._manager._duplicate_subtree(target)
+                duplicated = self._duplicate_subtree(
+                    target,
+                    uid_map=uid_map,
+                )
+                self._manager._lineage_controller._rebase_node_dependency_refs(
+                    uid_map.values(),
+                    uid_map,
+                )
             self._finish_duplicated_subtree(duplicated)
         except Exception:
             try:
@@ -919,7 +986,11 @@ class _ActionsController:
         return duplicated
 
     def _duplicate_subtree(
-        self, target: int | str, *, parent_override: int | str | None = None
+        self,
+        target: int | str,
+        *,
+        parent_override: int | str | None = None,
+        uid_map: dict[str, str],
     ) -> int | str:
         node = self._manager._node_for_target(target)
         new_target: int | str | None = None
@@ -940,6 +1011,8 @@ class _ActionsController:
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
                         replay_source_data=node.resolved_replay_source_data(),
+                        snapshot_token=node.snapshot_token,
+                        source_snapshot_token=node.source_snapshot_token,
                         note=node.note,
                     )
                 else:
@@ -959,6 +1032,8 @@ class _ActionsController:
                         source_state=persistence.source_state,
                         output_id=persistence.output_id,
                         replay_source_data=persistence.replay_source_data,
+                        snapshot_token=node.snapshot_token,
+                        source_snapshot_token=node.source_snapshot_token,
                         note=node.note,
                     )
             else:
@@ -971,7 +1046,11 @@ class _ActionsController:
                         )
                     )
                     new_target = self._manager.add_figuretool(
-                        duplicated_tool, show=False, note=node.note
+                        duplicated_tool,
+                        show=False,
+                        snapshot_token=node.snapshot_token,
+                        source_snapshot_token=node.source_snapshot_token,
+                        note=node.note,
                     )
                 else:
                     parent_target = (
@@ -979,12 +1058,22 @@ class _ActionsController:
                         if parent_override is not None
                         else self._manager._parent_node(node).uid
                     )
-                    new_target = self._manager.add_childtool(
-                        tool.duplicate(), parent_target, show=False, note=node.note
+                    new_target = self._register_childtool(
+                        tool.duplicate(),
+                        parent_target,
+                        show=False,
+                        snapshot_token=node.snapshot_token,
+                        source_snapshot_token=node.source_snapshot_token,
+                        note=node.note,
                     )
 
+            uid_map[node.uid] = self._manager._node_for_target(new_target).uid
             for child_uid in tuple(node._childtool_indices):
-                self._manager._duplicate_subtree(child_uid, parent_override=new_target)
+                self._duplicate_subtree(
+                    child_uid,
+                    parent_override=new_target,
+                    uid_map=uid_map,
+                )
         except Exception:
             if new_target is not None:
                 self._discard_duplicated_subtree(new_target)
@@ -1344,12 +1433,10 @@ class _ActionsController:
             if replacement is None:
                 # A notebook-side update replaces the watched variable itself, so
                 # prior ImageTool operations no longer describe the displayed array.
-                wrapper.set_detached_provenance(
+                wrapper.replace_with_detached_data(
+                    prepared.data,
                     None,
                     replay_source_data=None,
-                )
-                self._manager.get_imagetool(idx).slicer_area.replace_source_data(
-                    prepared.data
                 )
             else:
                 # Rebuild provenance from the updated watched source and only the
@@ -1573,8 +1660,9 @@ class _ActionsController:
     def add_childtool(
         self,
         tool: erlab.interactive.utils.ToolWindow,
-        index: int | str,
         *,
+        script_inputs: Mapping[str, int | str],
+        parent: int | str | None = None,
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
@@ -1591,39 +1679,92 @@ class _ActionsController:
         ----------
         tool
             The tool window to add.
-        index
-            Target of the parent managed window.
+        script_inputs
+            Named Manager targets consumed by the tool.
+        parent
+            Optional named input target used to place the tool in the tree. The
+            primary input target is used when omitted.
         show
             Whether to show the tool window after adding it, by default `True`.
         """
         if tool.manager_collection == "figures":
-            return self._manager.add_figuretool(
-                tool,
-                show=show,
-                uid=uid,
-                snapshot_token=snapshot_token,
-                source_snapshot_token=source_snapshot_token,
-                created_time=created_time,
-                note=note,
+            raise ValueError("Figure tools must be registered with add_figuretool()")
+
+        input_targets = dict(script_inputs)
+        if not input_targets:
+            raise ValueError("script_inputs must not be empty")
+
+        tool_inputs = tool.script_inputs
+        declared_inputs = {item.name: item for item in tool_inputs}
+        if not declared_inputs or set(declared_inputs) != set(input_targets):
+            raise ValueError(
+                "script_inputs must match the ToolWindow input declarations"
             )
+        primary_input = tool.primary_input
+        if primary_input is None:
+            raise ValueError("Child ToolWindows must define a primary input")
+        input_names = tuple(item.name for item in tool_inputs)
+        input_nodes = {
+            name: self._manager._node_for_target(input_targets[name])
+            for name in input_names
+        }
+        parent_target = input_targets[primary_input] if parent is None else parent
+        parent_node = self._manager._node_for_target(parent_target)
+        if all(parent_node is not input_node for input_node in input_nodes.values()):
+            raise ValueError("parent must select one of the named input targets")
+        bound_inputs: list[ScriptInput] = []
+        for name in input_names:
+            declaration = declared_inputs[name]
+            bound_input = self._manager._lineage_controller._script_input_for_node(
+                input_nodes[name],
+                name=name,
+                source_spec=declaration.parsed_source_spec(),
+                data_role=declaration.data_role,
+            )
+            bound_inputs.append(bound_input)
+        source_state = _combine_source_states(
+            (
+                tool.source_state,
+                *(node.source_state for node in input_nodes.values()),
+            )
+        )
+        tool.set_script_inputs(
+            tuple(bound_inputs),
+            primary_input=primary_input,
+            auto_update=tool.source_auto_update,
+            state=source_state,
+        )
+        return self._register_childtool(
+            tool,
+            parent_target,
+            show=show,
+            uid=uid,
+            snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
+            created_time=created_time,
+            note=note,
+        )
 
-        parent = self._manager._node_for_target(index)
-
-        def _parent_source_fetcher(parent_uid: str = parent.uid) -> xr.DataArray:
-            return self._manager._node_for_target(parent_uid).current_source_data()
-
-        def _parent_provenance_fetcher(
-            parent_uid: str = parent.uid,
-        ) -> ToolProvenanceSpec | None:
-            return self._manager._node_for_target(parent_uid).displayed_provenance_spec
-
-        tool.set_input_provenance_spec(None)
-        tool.set_source_parent_fetcher(_parent_source_fetcher)
-        tool.set_input_provenance_parent_fetcher(_parent_provenance_fetcher)
+    def _register_childtool(
+        self,
+        tool: erlab.interactive.utils.ToolWindow,
+        parent: int | str,
+        *,
+        show: bool,
+        uid: str | None = None,
+        snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
+        note: str | bytes | None = None,
+    ) -> str:
+        """Register a ToolWindow whose canonical inputs are already bound."""
+        if not tool.script_inputs or tool.primary_input is None:
+            raise ValueError("Child ToolWindows must define script inputs")
+        parent_node = self._manager._node_for_target(parent)
         node = _ManagedWindowNode(
             self._manager,
             self._manager._next_node_uid(uid),
-            parent.uid,
+            parent_node.uid,
             tool,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
@@ -1631,9 +1772,9 @@ class _ActionsController:
             note=note,
         )
         if not tool._tool_display_name:
-            tool._tool_display_name = parent.name
+            tool._tool_display_name = parent_node.name
         self._manager._register_child_node(node)
-        self._manager.tree_view.childtool_added(node.uid, index)
+        self._manager.tree_view.childtool_added(node.uid, parent)
         self._manager._mark_node_added(node.uid)
         if self._manager._is_figure_node(node):
             self._manager._figure_collection.sync(select_uid=node.uid if show else None)
@@ -1767,7 +1908,15 @@ class _ActionsController:
         target = self._manager.target_from_slicer_area(parent_slicer_area)
         if target is not None:
             if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                self._manager.add_childtool(tool, target)
+                if len(tool.script_inputs) != 1 or tool.primary_input is None:
+                    raise ValueError(
+                        "ToolWindows opened from ImageTool must declare one input"
+                    )
+                self._manager.add_childtool(
+                    tool,
+                    script_inputs={tool.script_inputs[0].name: target},
+                    parent=target,
+                )
                 return
             if isinstance(tool, ImageTool):
                 self._manager.add_imagetool_child(tool, target)

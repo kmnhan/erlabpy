@@ -798,25 +798,10 @@ class _ScopeAwareTransformer(ast.NodeTransformer):
     visit_GeneratorExp = _visit_comprehension
 
 
-class _ModuleNameReplacer(_ScopeAwareTransformer):
-    def __init__(self, code: str, target: str, replacement: ast.expr) -> None:
+class _ModuleNameLoadCounter(_ScopeAwareTransformer):
+    def __init__(self, code: str, target: str) -> None:
         super().__init__(code)
         self._target = target
-        self._replacement = replacement
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        if (
-            node.id == self._target
-            and isinstance(node.ctx, ast.Load)
-            and self._resolves_to_module(node.id)
-        ):
-            return _clone_expr(self._replacement)
-        return node
-
-
-class _ModuleNameLoadCounter(_ModuleNameReplacer):
-    def __init__(self, code: str, target: str) -> None:
-        super().__init__(code, target, ast.Name(id=target, ctx=ast.Load()))
         self.count = 0
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
@@ -826,26 +811,6 @@ class _ModuleNameLoadCounter(_ModuleNameReplacer):
             and self._resolves_to_module(node.id)
         ):
             self.count += 1
-        return node
-
-
-class _ModuleNameReplacementCollisionDetector(_ScopeAwareTransformer):
-    def __init__(self, code: str, target: str, replacement_names: set[str]) -> None:
-        super().__init__(code)
-        self._target = target
-        self._replacement_names = replacement_names
-        self.collision = False
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        if (
-            node.id == self._target
-            and isinstance(node.ctx, ast.Load)
-            and self._resolves_to_module(node.id)
-            and any(
-                not self._resolves_to_module(name) for name in self._replacement_names
-            )
-        ):
-            self.collision = True
         return node
 
 
@@ -1198,97 +1163,6 @@ def _code_uses_name_any_scope(code: str, name: str) -> bool:
         and isinstance(node.ctx, ast.Load)
         for node in ast.walk(module)
     )
-
-
-def _scope_identifiers(table: symtable.SymbolTable) -> set[str]:
-    identifiers = set(table.get_identifiers())
-    for child in table.get_children():
-        identifiers.update(_scope_identifiers(child))
-    return identifiers
-
-
-def _collision_free_source_name(code: str, input_expr: ast.expr) -> str:
-    unavailable = _scope_identifiers(symtable.symtable(code, "<provenance>", "exec"))
-    unavailable.update(
-        node.id for node in ast.walk(input_expr) if isinstance(node, ast.Name)
-    )
-    name = "source_data"
-    suffix = 2
-    while name in unavailable:
-        name = f"source_data_{suffix}"
-        suffix += 1
-    return name
-
-
-def rebase_default_replay_input(code: str, input_name: str) -> str:
-    """Replace the generic ``data`` replay input in generated code.
-
-    Manager clipboard actions use this when a concrete source is known, such as a
-    watched variable, a load snippet target, or a user-provided variable name.
-    """
-    if not _code_uses_name(code, "data"):
-        return code
-
-    try:
-        input_expr = ast.parse(input_name, mode="eval").body
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
-
-    replacement_names = {
-        node.id
-        for node in ast.walk(input_expr)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    }
-    collision_detector = _ModuleNameReplacementCollisionDetector(
-        code,
-        "data",
-        replacement_names,
-    )
-    collision_detector.visit(module)
-    source_assignment: ast.Assign | None = None
-    if collision_detector.collision:
-        source_name = _collision_free_source_name(code, input_expr)
-        source_assignment = ast.Assign(
-            targets=[ast.Name(id=source_name, ctx=ast.Store())],
-            value=input_expr,
-        )
-        input_expr = ast.Name(id=source_name, ctx=ast.Load())
-
-    replacer = _ModuleNameReplacer(code, "data", input_expr)
-    rebased = typing.cast("ast.Module", replacer.visit(module))
-    _remove_unused_generated_import_relays(
-        rebased,
-        replacer.generated_import_relay_ids,
-    )
-    if source_assignment is not None:
-        insert_at = 0
-        if (
-            rebased.body
-            and isinstance(rebased.body[0], ast.Expr)
-            and isinstance(rebased.body[0].value, ast.Constant)
-            and isinstance(rebased.body[0].value.value, str)
-        ):
-            insert_at = 1
-        while insert_at < len(rebased.body):
-            statement = rebased.body[insert_at]
-            if not (
-                isinstance(statement, ast.ImportFrom)
-                and statement.module == "__future__"
-            ):
-                break
-            insert_at += 1
-        rebased.body.insert(insert_at, source_assignment)
-    rebased = ast.fix_missing_locations(rebased)
-    return _simplify_display_code(
-        ast.unparse(rebased),
-        inline_targets={"derived"},
-    )
-
-
-def uses_default_replay_input(code: str) -> bool:
-    """Return whether generated replay code refers to the generic ``data`` input."""
-    return _code_uses_name(code, "data")
 
 
 def _receiver_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:

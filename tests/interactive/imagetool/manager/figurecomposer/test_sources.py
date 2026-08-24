@@ -4147,7 +4147,7 @@ def test_figure_composer_full_code_keeps_needed_base_and_selected_sources(
     xr.testing.assert_identical(captured[1], data.qsel(hv=39.274))
 
 
-def test_figure_composer_full_code_falls_back_for_live_selected_source(
+def test_figure_composer_display_code_uses_live_selected_source(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -4185,7 +4185,8 @@ def test_figure_composer_full_code_falls_back_for_live_selected_source(
     spec = tool.current_provenance_spec()
     assert spec is not None
     assert tuple(script_input.name for script_input in spec.script_inputs) == ("live",)
-    assert spec.display_code() is None
+    display_code = spec.display_code()
+    assert display_code is not None
 
     code = tool.generated_code()
     assert "data_3_selected = data_3.qsel(hv=39.274)" in code
@@ -4197,6 +4198,10 @@ def test_figure_composer_full_code_falls_back_for_live_selected_source(
         "plot_array",
         lambda arr, **_kwargs: captured.append(arr),
     )
+    display_namespace = _exec_generated_code(display_code, {"data_3": data})
+    assert isinstance(display_namespace["fig"], Figure)
+    xr.testing.assert_identical(captured.pop(), data.qsel(hv=39.274))
+
     namespace = _exec_generated_code(code, {"data_3": data})
     assert isinstance(namespace["fig"], Figure)
     xr.testing.assert_identical(captured[0], data.qsel(hv=39.274))
