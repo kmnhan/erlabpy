@@ -292,15 +292,13 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
         dialog.setNameFilters(["xarray HDF5 Files (*.h5)", "All files (*)"])
         dialog.setDefaultSuffix("h5")
 
-        if os.environ.get("PYTEST_VERSION") is not None:
-            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
-
         last_dir = pg.PlotItem.lastFileDir
         if not last_dir:
             last_dir = erlab.interactive.imagetool.manager._get_recent_directory()
         if not last_dir:
             last_dir = os.getcwd()
-        dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
+        dialog.setDirectory(last_dir)
+        dialog.selectFile(f"{default_name}.h5")
 
         if dialog.exec():
             filename = dialog.selectedFiles()[0]

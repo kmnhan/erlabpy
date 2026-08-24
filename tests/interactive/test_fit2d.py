@@ -4312,11 +4312,11 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_branches(
 
     real_dialog = QtWidgets.QFileDialog
     captured_dirs: list[str] = []
+    captured_files: list[str] = []
 
     class _DialogStub:
         AcceptMode = real_dialog.AcceptMode
         FileMode = real_dialog.FileMode
-        Option = real_dialog.Option
 
         def __init__(self, *args, **kwargs) -> None:
             self._selected = [str(tmp_path / "unused.h5")]
@@ -4333,11 +4333,11 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_branches(
         def setDefaultSuffix(self, suffix) -> None:
             self._suffix = suffix
 
-        def setOption(self, *args, **kwargs) -> None:
-            self._option = (args, kwargs)
-
         def setDirectory(self, directory: str) -> None:
             captured_dirs.append(directory)
+
+        def selectFile(self, filename: str) -> None:
+            captured_files.append(filename)
 
         def exec(self) -> bool:
             return False
@@ -4346,7 +4346,6 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_branches(
             return self._selected
 
     monkeypatch.setattr(QtWidgets, "QFileDialog", _DialogStub)
-    monkeypatch.delenv("PYTEST_VERSION", raising=False)
 
     monkeypatch.setattr(pg.PlotItem, "lastFileDir", str(tmp_path), raising=False)
     monkeypatch.setattr(
@@ -4357,18 +4356,20 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_branches(
 
     win.param_plot._save_dataarray_as_hdf5(xr.DataArray([1.0], name=""))
     win.param_plot._save_dataarray_as_hdf5(xr.DataArray([2.0], name=5))
-    assert captured_dirs[-2].endswith("data.h5")
-    assert captured_dirs[-1].endswith("5.h5")
+    assert captured_dirs[-2:] == [str(tmp_path), str(tmp_path)]
+    assert captured_files[-2:] == ["data.h5", "5.h5"]
 
     monkeypatch.setattr(pg.PlotItem, "lastFileDir", "", raising=False)
     win.param_plot._save_dataarray_as_hdf5(xr.DataArray([3.0], name="named"))
-    assert captured_dirs[-1] == str(tmp_path / "recent" / "named.h5")
+    assert captured_dirs[-1] == str(tmp_path / "recent")
+    assert captured_files[-1] == "named.h5"
 
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager, "_get_recent_directory", lambda: ""
     )
     win.param_plot._save_dataarray_as_hdf5(xr.DataArray([4.0], name="cwdname"))
-    assert captured_dirs[-1] == os.path.join(os.getcwd(), "cwdname.h5")
+    assert captured_dirs[-1] == os.getcwd()
+    assert captured_files[-1] == "cwdname.h5"
 
 
 def test_fit2d_param_plot_save_dataarray_as_hdf5_handles_write_error(
@@ -4382,7 +4383,6 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_handles_write_error(
     class _DialogStub:
         AcceptMode = QtWidgets.QFileDialog.AcceptMode
         FileMode = QtWidgets.QFileDialog.FileMode
-        Option = QtWidgets.QFileDialog.Option
 
         def __init__(self, *args, **kwargs) -> None:
             self._init_args = (args, kwargs)
@@ -4399,11 +4399,11 @@ def test_fit2d_param_plot_save_dataarray_as_hdf5_handles_write_error(
         def setDefaultSuffix(self, suffix) -> None:
             self._suffix = suffix
 
-        def setOption(self, *args, **kwargs) -> None:
-            self._option = (args, kwargs)
-
         def setDirectory(self, directory: str) -> None:
             self._directory = directory
+
+        def selectFile(self, filename: str) -> None:
+            self._filename = filename
 
         def exec(self) -> bool:
             return True
