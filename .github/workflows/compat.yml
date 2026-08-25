@@ -101,7 +101,7 @@ jobs:
           cat tests/test-data.env >> "$GITHUB_ENV"
           echo "ERLAB_TEST_DATA_DIR=$ERLAB_TEST_DATA_CACHE_DIR/kmnhan-erlabpy-data-${ERLAB_TEST_DATA_COMMIT:0:7}" >> "$GITHUB_ENV"
 
-      - uses: pyvista/setup-headless-display-action@v4
+      - uses: pyvista/setup-headless-display-action@v5
         with:
           pyvista: false
           qt: true
