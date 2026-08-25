@@ -24,7 +24,10 @@ from erlab.interactive._code_trust import (
     trusted_location_document_trust,
     untrusted_document_trust,
 )
-from erlab.interactive._code_trust._api import _document_trust_after_save
+from erlab.interactive._code_trust._api import (
+    _document_trust_after_save,
+    _group_manifest_review_entries,
+)
 from erlab.interactive._code_trust._core import CodeTrustEntry, CodeTrustManifest
 from erlab.interactive._code_trust._locations import (
     document_path_is_trusted,
@@ -184,6 +187,39 @@ def test_manifest_review_includes_signed_execution_context() -> None:
 
     assert manifest.entries[0].code in review
     assert serialized_context in review
+
+
+def test_manifest_review_groups_equal_code_across_locations() -> None:
+    repeated = tuple(
+        code_trust.create_entry(
+            "erlab.fit.parameter-expression",
+            f"parameters-full/{index}/p1_sigma",
+            "p0_sigma",
+            {"parameter": "p1_sigma"},
+        )
+        for index in range(233)
+    )
+    different_context = code_trust.create_entry(
+        "erlab.fit.parameter-expression",
+        "parameters/p0_sigma",
+        "p0_sigma",
+        {"parameter": "p0_sigma"},
+    )
+    manifest = code_trust.create_manifest(
+        "test.review", 1, (*repeated, different_context)
+    )
+    identity = manifest.canonical_bytes()
+
+    groups = _group_manifest_review_entries(manifest)
+    review = code_trust.manifest_review_text(manifest)
+
+    assert len(groups) == 2
+    assert len(groups[0][1]) == 233
+    assert groups[1][1] == ("parameters/p0_sigma",)
+    assert "233 locations" in review
+    assert "and 223 more" in review
+    assert review.count("\np0_sigma\n") == 2
+    assert manifest.canonical_bytes() == identity
 
 
 @pytest.mark.parametrize("approve", [False, True])

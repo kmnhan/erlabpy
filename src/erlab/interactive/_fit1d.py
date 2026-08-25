@@ -27,6 +27,7 @@ from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive._fit_code_trust import (
     lmfit_expression_model_code_entries,
     lmfit_model_code_entry,
+    lmfit_model_safe_parameter_expressions,
     lmfit_parameter_expression_entries,
     lmfit_result_code_entry,
 )
@@ -991,7 +992,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             model_state[1],
             feature=cls._MODEL_CODE_TRUST_FEATURE,
             location="model",
+            model_reference=model_state[0],
         )
+
+    @staticmethod
+    def _safe_model_parameter_expressions(
+        model_state: tuple[str, str],
+    ) -> dict[str, str]:
+        return lmfit_model_safe_parameter_expressions(model_state[1], model_state[0])
 
     @classmethod
     def _parameter_code_trust_entries(
@@ -999,11 +1007,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         expressions: Iterable[tuple[typing.Any, typing.Any]],
         *,
         location_prefix: str,
+        safe_expressions: Mapping[str, str] | None = None,
     ) -> tuple[typing.Any, ...]:
         return lmfit_parameter_expression_entries(
             expressions,
             feature=cls._PARAMETER_CODE_TRUST_FEATURE,
             location_prefix=location_prefix,
+            safe_expressions=safe_expressions,
         )
 
     @classmethod
@@ -1022,12 +1032,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 (f"initial-parameters-full/{index}", params or ())
                 for index, params in enumerate(status.state2d.initial_params_full or ())
             )
+        safe_expressions = cls._safe_model_parameter_expressions(status.model_state)
         entries = [
             entry
             for location, params in parameter_groups
             for entry in cls._parameter_code_trust_entries(
                 ((state[0], state[3]) for state in params if len(state) >= 4),
                 location_prefix=location,
+                safe_expressions=safe_expressions,
             )
         ]
         model_entry = cls._model_code_trust_entry(status.model_state)
@@ -1413,6 +1425,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if model_entry is not None:
             entries.append(model_entry)
         edited_locations = self._parameter_expression_edit_locations()
+        safe_expressions = self._safe_model_parameter_expressions(
+            self._serialized_model_state
+        )
         for location, params in self._fit_parameter_groups():
             if (
                 parameter_group_overrides is not None
@@ -1436,6 +1451,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 type(self)._parameter_code_trust_entries(
                     expressions,
                     location_prefix=location,
+                    safe_expressions=safe_expressions,
                 )
             )
         return tuple(entries)

@@ -2480,6 +2480,44 @@ def test_fit2d_reset_params_all(qtbot, monkeypatch) -> None:
     assert all(not mapping for mapping in win._params_from_coord_full)
 
 
+def test_fit2d_trust_omits_repeated_model_hints(qtbot) -> None:
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        2,
+        "voigt voigt",
+        fd=False,
+        background="none",
+        convolve=False,
+    )
+    tool = erlab.interactive.ftool(
+        _make_2d_data(), model=model, params=model.make_params(), execute=False
+    )
+    qtbot.addWidget(tool)
+    assert isinstance(tool, Fit2DTool)
+    status = tool.tool_status
+    assert status.state2d is not None
+    params = []
+    for state in status.params:
+        updated = list(state)
+        if state[0] == "p1_sigma":
+            updated[3] = "p0_sigma"
+        params.append(tuple(updated))
+    repeated_params = [params for _index in range(233)]
+    changed = status.model_copy(
+        update={
+            "params": params,
+            "state2d": status.state2d.model_copy(
+                update={"params_full": repeated_params}
+            ),
+        }
+    )
+
+    entries = type(tool)._code_trust_entries_from_status(changed)
+
+    assert len(entries) == 234
+    assert {entry.code for entry in entries} == {"p0_sigma"}
+    assert {entry.context["parameter"] for entry in entries} == {"p1_sigma"}
+
+
 def test_fit2d_fill_expression_commits_local_lineage(qtbot) -> None:
     tool, _model, params = _make_linear_fit2d_tool(qtbot, expression=True)
     source_params = params.copy()
