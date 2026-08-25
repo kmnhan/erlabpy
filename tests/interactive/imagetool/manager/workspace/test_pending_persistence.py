@@ -11,7 +11,7 @@ import h5py
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui
 
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
@@ -1343,23 +1343,12 @@ def test_generation_save_detaches_pending_figure_composer_from_removed_source(
 def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
     qtbot,
     monkeypatch,
+    accept_dialog,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class _AcceptingMessageDialog(QtWidgets.QDialog):
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-            super().__init__()
-
-        def exec(self):
-            return QtWidgets.QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(
-        erlab.interactive.utils, "MessageDialog", _AcceptingMessageDialog
-    )
-
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="source")
     with manager_context() as manager:
         root = itool(data, manager=False, execute=False)
@@ -1394,9 +1383,19 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
             _record_skipped,
         )
 
-        assert manager._workspace_controller.loading._load_workspace_file(
-            fname, replace=True, associate=True, mark_dirty=False, select=False
+        loaded: list[bool] = []
+        accept_dialog(
+            lambda: loaded.append(
+                manager._workspace_controller.loading._load_workspace_file(
+                    fname,
+                    replace=True,
+                    associate=True,
+                    mark_dirty=False,
+                    select=False,
+                )
+            )
         )
+        assert loaded == [True]
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         assert child_uid not in manager._tool_graph.nodes
