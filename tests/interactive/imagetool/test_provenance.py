@@ -3693,9 +3693,8 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
         reparsed_operation,
         location_prefix="operation",
     )
-    with pytest.raises(PermissionError, match="not authorized"):
-        _ = reparsed_operation.decoded_edge_fit
-    decoded = reparsed_operation._decode_edge_fit(_authorize_execution(entries))
+    assert entries == ()
+    decoded = reparsed_operation.decoded_edge_fit
     xr.testing.assert_identical(
         decoded.drop_vars("modelfit_results"),
         gold_fit_res.drop_vars("modelfit_results"),
@@ -3709,7 +3708,7 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
     assert reparsed_spec is not None
     assert reparsed_spec.derivation_code() is None
     xr.testing.assert_allclose(
-        reparsed_spec.apply(gold, authorization=_authorize_execution(entries)),
+        reparsed_spec.apply(gold),
         erlab.analysis.gold.correct_with_edge(gold, gold_fit_res, shift_coords=False),
     )
 

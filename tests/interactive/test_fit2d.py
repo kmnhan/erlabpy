@@ -409,7 +409,7 @@ def _lmfit_json_with_callable_pyversion(
 
 
 def _saved_ftool_dataset_with_callable_pyversion(
-    ds: xr.Dataset, callable_name: str, pyversion: str = "3.13"
+    ds: xr.Dataset, callable_name: str, pyversion: str = "0.0"
 ) -> xr.Dataset:
     ds = ds.copy()
     state = json.loads(ds.attrs["tool_state"])
