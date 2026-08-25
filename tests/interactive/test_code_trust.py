@@ -222,6 +222,23 @@ def test_manifest_review_groups_equal_code_across_locations() -> None:
     assert manifest.canonical_bytes() == identity
 
 
+def test_manifest_review_lists_each_location_for_small_groups() -> None:
+    entries = tuple(
+        code_trust.create_entry(
+            "test.repeated-code",
+            f"operations/{index}",
+            "run()",
+        )
+        for index in range(2)
+    )
+
+    review = code_trust.manifest_review_text(
+        code_trust.create_manifest("test.review", 1, entries)
+    )
+
+    assert all(entry.location in review for entry in entries)
+
+
 @pytest.mark.parametrize("approve", [False, True])
 def test_code_trust_review_dialog_returns_selected_action(
     qtbot, monkeypatch: pytest.MonkeyPatch, approve: bool

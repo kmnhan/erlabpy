@@ -1,6 +1,8 @@
+import base64
 import contextlib
 import gc
 import json
+import pickle
 
 import lmfit
 import numpy as np
@@ -832,9 +834,42 @@ def test_fit1d_saved_model_class_does_not_import_document_target(
             id="erlab-embedded-multipeak-options",
         ),
         pytest.param(
+            erlab.analysis.fit.models.MultiPeakModel(
+                fd=False,
+                background="shirley",
+                convolve=False,
+            ),
+            None,
+            id="erlab-embedded-multipeak-shirley",
+        ),
+        pytest.param(
+            erlab.analysis.fit.models.MultiPeakModel(
+                fd=False,
+                background="constant",
+                convolve=False,
+            ),
+            None,
+            id="erlab-embedded-multipeak-constant",
+        ),
+        pytest.param(
+            erlab.analysis.fit.models.MultiPeakModel(
+                fd=False,
+                background="polynomial",
+                degree=3,
+                convolve=False,
+            ),
+            None,
+            id="erlab-embedded-multipeak-polynomial",
+        ),
+        pytest.param(
             erlab.analysis.fit.models.PolynomialModel(),
             None,
             id="erlab-embedded-polynomial",
+        ),
+        pytest.param(
+            erlab.analysis.fit.models.FermiEdge2dModel(),
+            None,
+            id="erlab-embedded-fermi-edge-2d",
         ),
         pytest.param(
             erlab.analysis.fit.models.StepEdgeModel(),
@@ -904,6 +939,231 @@ def test_lmfit_code_trust_rejects_modified_embedded_library_model() -> None:
     assert wrong_reference_entry is not None
     assert "serialized-callable" in entry.code
     assert "serialized-callable" in wrong_reference_entry.code
+
+
+def test_lmfit_code_trust_serialized_helper_guards() -> None:
+    class EmptySerializedModel:
+        def dumps(self) -> str:
+            return "{}"
+
+    assert fit_code_trust._wrapped_list({"__class__": "List", "value": ()}) is None
+    assert fit_code_trust._serialized_model_dict(object()) is None
+    assert fit_code_trust._serialized_model_dict(EmptySerializedModel()) is None
+    assert fit_code_trust._common_model_kwargs({}) is None
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"oversample": None},
+        {"other": 3},
+    ],
+)
+def test_lmfit_code_trust_rejects_non_scalar_pickle_state(
+    state: dict[str, object],
+) -> None:
+    payload = base64.b64encode(pickle.dumps(state)).decode()
+
+    assert fit_code_trust._pickle_scalar_after_key(payload, "oversample") is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "non-string-callable",
+        "non-string-name",
+        "no-peaks",
+        "non-contiguous-peaks",
+        "unknown-shape",
+        "partial-fermi-dirac",
+        "non-contiguous-polynomial",
+        "high-degree-polynomial",
+    ],
+)
+def test_lmfit_code_trust_rejects_invalid_multipeak_options(case: str) -> None:
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        1,
+        "voigt",
+        fd=False,
+        background="none",
+        convolve=False,
+    )
+    item = json.loads(model.dumps())["value"][0]
+    names = item["param_root_names"]["value"]
+
+    if case == "non-string-callable":
+        item["funcdef"]["value"] = 1
+    elif case == "non-string-name":
+        names.append(1)
+    elif case == "no-peaks":
+        names.clear()
+    elif case == "non-contiguous-peaks":
+        names[:] = [name.replace("p0_", "p1_") for name in names]
+    elif case == "unknown-shape":
+        names[:] = ["p0_center"]
+        item["param_hints"].clear()
+    elif case == "partial-fermi-dirac":
+        names.append("temp")
+    elif case == "non-contiguous-polynomial":
+        names.append("c1")
+    elif case == "high-degree-polynomial":
+        names.extend(f"c{index}" for index in range(12))
+
+    assert fit_code_trust._multipeak_candidate_options(item) is None
+
+
+def test_lmfit_code_trust_known_model_candidate_guards() -> None:
+    common = {"name": "model", "prefix": "", "nan_policy": "raise"}
+    wrapped = {"__class__": "List", "value": ["c0", "c1"]}
+
+    assert not list(
+        fit_code_trust._known_model_candidates({"funcname": "PolynomialFunction"})
+    )
+    assert not list(
+        fit_code_trust._known_model_candidates(
+            {**common, "funcname": "PolynomialFunction"}
+        )
+    )
+    assert not list(
+        fit_code_trust._known_model_candidates(
+            {
+                **common,
+                "funcname": "PolynomialFunction",
+                "param_root_names": {
+                    "__class__": "List",
+                    "value": ["c0", "c2"],
+                },
+            }
+        )
+    )
+    assert not list(
+        fit_code_trust._known_model_candidates(
+            {
+                **common,
+                "funcname": "PolynomialFunction",
+                "param_root_names": {
+                    "__class__": "List",
+                    "value": [f"c{index}" for index in range(22)],
+                },
+            }
+        )
+    )
+    assert not list(
+        fit_code_trust._known_model_candidates(
+            {**common, "funcname": "FermiEdge2dFunction"}
+        )
+    )
+    assert not list(
+        fit_code_trust._known_model_candidates(
+            {
+                **common,
+                "funcname": "FermiEdge2dFunction",
+                "param_root_names": {"__class__": "List", "value": []},
+            }
+        )
+    )
+    assert not list(
+        fit_code_trust._known_model_candidates(
+            {
+                **common,
+                "funcname": "FermiEdge2dFunction",
+                "param_root_names": {
+                    "__class__": "List",
+                    "value": [f"c{index}" for index in range(22)],
+                },
+            }
+        )
+    )
+    candidates = list(
+        fit_code_trust._known_model_candidates(
+            {
+                **common,
+                "funcname": "FermiEdge2dFunction",
+                "param_root_names": wrapped,
+            }
+        )
+    )
+
+    assert len(candidates) == 1
+    assert isinstance(candidates[0], erlab.analysis.fit.models.FermiEdge2dModel)
+
+
+@pytest.mark.parametrize("serialized", ["{", "[]"])
+def test_lmfit_code_trust_known_model_match_rejects_invalid_json(
+    serialized: str,
+) -> None:
+    assert fit_code_trust._compute_known_model_match(serialized, None) is None
+
+
+def test_lmfit_code_trust_known_model_match_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_candidate_error(_item: dict[str, object]):
+        raise RuntimeError("candidate construction failed")
+
+    monkeypatch.setattr(
+        fit_code_trust, "_known_model_candidates", raise_candidate_error
+    )
+
+    assert fit_code_trust._compute_known_model_match("{}", None) is None
+
+
+def test_lmfit_code_trust_payload_match_uses_serialized_memo_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = {"funcdef": {}}
+    serialized_item = json.dumps(
+        item,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    match = ("test:Model", ())
+    memo = {(serialized_item, None): (item, match)}
+
+    def unexpected_match(*_args):
+        pytest.fail("The exact payload memo entry was not used")
+
+    monkeypatch.setattr(fit_code_trust, "_known_model_match", unexpected_match)
+
+    assert fit_code_trust._payload_model_match(item, None, memo) == match
+
+
+def test_lmfit_code_trust_payload_match_stores_serialized_memo_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = {"funcdef": {}}
+    serialized_item = json.dumps(
+        item,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    match = ("test:Model", ())
+    memo = {}
+
+    monkeypatch.setattr(fit_code_trust, "_known_model_match", lambda *_args: match)
+
+    assert fit_code_trust._payload_model_match(item, None, memo) == match
+    assert memo == {(serialized_item, None): (item, match)}
+
+
+def test_lmfit_code_trust_rejects_non_json_model_items() -> None:
+    payload_item = {"funcdef": {"value": "callable"}, "bad": float("nan")}
+    serialized_item = {
+        "funcname": "CustomFunction",
+        "funcdef": {},
+        "param_hints": {},
+        "bad": float("nan"),
+    }
+
+    assert fit_code_trust._payload_model_match(payload_item, None, {}) is None
+    assert fit_code_trust._safe_model_matches(
+        None,
+        serialized_items=(("root", serialized_item, None),),
+    ) == ({}, frozenset())
 
 
 def test_lmfit_code_trust_omits_exact_model_parameter_hints() -> None:

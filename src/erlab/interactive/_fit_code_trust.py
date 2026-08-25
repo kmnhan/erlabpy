@@ -130,21 +130,23 @@ def _pickle_scalar_after_key(payload: str, key: str) -> int | bool | None:
     """Read one primitive pickle state value without constructing any objects."""
     try:
         operations = pickletools.genops(base64.b64decode(payload, validate=True))
+        key_found = False
         for operation, argument, _position in operations:
-            if operation.name not in {"SHORT_BINUNICODE", "BINUNICODE"}:
+            if not key_found:
+                key_found = (
+                    operation.name in {"SHORT_BINUNICODE", "BINUNICODE"}
+                    and argument == key
+                )
                 continue
-            if argument != key:
+            if operation.name == "MEMOIZE":
                 continue
-            for value_operation, value_argument, _position in operations:
-                if value_operation.name == "MEMOIZE":
-                    continue
-                if value_operation.name == "NEWTRUE":
-                    return True
-                if value_operation.name == "NEWFALSE":
-                    return False
-                if value_operation.name in {"BININT", "BININT1", "BININT2"}:
-                    return typing.cast("int", value_argument)
-                return None
+            if operation.name == "NEWTRUE":
+                return True
+            if operation.name == "NEWFALSE":
+                return False
+            if operation.name in {"BININT", "BININT1", "BININT2"}:
+                return typing.cast("int", argument)
+            return None
     except (TypeError, ValueError):
         return None
     return None
@@ -420,7 +422,7 @@ def _payload_model_match(
     if key is None:
         key = (serialized_item, model_reference)
         cached = memo.get(key)
-        if cached is not None and item == cached[0]:
+        if cached is not None:
             return cached[1]
     match = _known_model_match(serialized_item, model_reference)
     if match is None:
@@ -532,8 +534,7 @@ def _executable_details(
                 )
             )
             continue
-        if item is None:
-            continue
+        item = typing.cast("dict[str, typing.Any]", item)
         if item.get("__class__") == "Callable":
             importer = item.get("importer")
             name = item.get("__name__")
