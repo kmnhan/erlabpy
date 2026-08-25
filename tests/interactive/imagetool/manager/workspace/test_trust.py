@@ -6,6 +6,7 @@ import sys
 import typing
 from types import SimpleNamespace
 
+import lmfit
 import numpy as np
 import pydantic
 import pytest
@@ -484,7 +485,10 @@ def test_workspace_manifest_includes_serialized_fit_callables(qtbot) -> None:
     from erlab.interactive._fit1d import Fit1DTool
 
     data = xr.DataArray(np.arange(3.0), dims="x", name="data")
-    tool = Fit1DTool(data)
+    model = lmfit.Model(lambda x, slope=1.0, intercept=0.0: slope * x + intercept)
+    params = model.make_params()
+    params["intercept"].expr = "2 * slope"
+    tool = Fit1DTool(data, model=model, params=params)
     qtbot.addWidget(tool)
     tool._serialized_fit_result_blob = np.arange(8, dtype=np.uint8)
     tool._pending_persisted_fit_is_current = False
@@ -517,7 +521,7 @@ def test_signed_workspace_rejects_payload_metadata_added_outside_manifest(
 
     with manager_context() as manager:
         manager.add_imagetool(ImageTool(data), show=False)
-        fit_tool = Fit1DTool(data)
+        fit_tool = Fit1DTool(data, model=lmfit.Model(lambda x: x))
         qtbot.addWidget(fit_tool)
         fit_uid = add_source_childtool(manager, fit_tool, 0, show=False)
         fit_tool.hide()

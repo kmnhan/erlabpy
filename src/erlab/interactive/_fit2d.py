@@ -2391,6 +2391,9 @@ class Fit2DTool(Fit1DTool):
         candidate_entries = self._fit_code_entries_with_params_full(
             candidate_params_full
         )
+        safe_expressions = self._safe_model_parameter_expressions(
+            self._serialized_model_state
+        )
         evaluation_entries = (
             *(
                 entry
@@ -2400,6 +2403,7 @@ class Fit2DTool(Fit1DTool):
             *self._parameter_code_trust_entries(
                 self._live_parameter_expressions(params),
                 location_prefix="evaluation",
+                safe_expressions=safe_expressions,
             ),
         )
         code_changed = candidate_entries != self._fit_code_entries
@@ -2483,6 +2487,9 @@ class Fit2DTool(Fit1DTool):
             else [self._initial_params] * len(self._params_full)
         )
         candidate_entries = self._fit_code_entries_with_params_full(source_params_full)
+        safe_expressions = self._safe_model_parameter_expressions(
+            self._serialized_model_state
+        )
         evaluation_entries = (
             *(
                 entry
@@ -2495,6 +2502,7 @@ class Fit2DTool(Fit1DTool):
                 for entry in self._parameter_code_trust_entries(
                     self._live_parameter_expressions(params),
                     location_prefix=f"evaluation/{index}",
+                    safe_expressions=safe_expressions,
                 )
             ),
         )

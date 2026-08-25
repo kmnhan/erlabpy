@@ -99,16 +99,42 @@ def relocate_document_trust(
     )
 
 
-def manifest_review_text(manifest: CodeTrustManifest) -> str:
-    """Return plain text for review of all executable manifest entries."""
-    blocks: list[str] = []
+def _group_manifest_review_entries(
+    manifest: CodeTrustManifest,
+) -> tuple[tuple[CodeTrustEntry, tuple[str, ...]], ...]:
+    """Group equal execution content while retaining its document locations."""
+    representatives: dict[bytes, CodeTrustEntry] = {}
+    locations: dict[bytes, list[str]] = {}
     for entry in manifest.entries:
-        block = f"[{entry.feature} — {entry.location}]\n{entry.code}"
+        identity = entry.execution_identity()
+        representatives.setdefault(identity, entry)
+        locations.setdefault(identity, []).append(entry.location)
+    return tuple(
+        (entry, tuple(locations[identity]))
+        for identity, entry in representatives.items()
+    )
+
+
+def manifest_review_text(manifest: CodeTrustManifest) -> str:
+    """Return compact plain text for review of executable manifest entries."""
+    blocks: list[str] = []
+    for entry, locations in _group_manifest_review_entries(manifest):
+        location_label = (
+            locations[0] if len(locations) == 1 else f"{len(locations)} locations"
+        )
+        block = f"[{entry.feature} — {location_label}]\n{entry.code}"
         if entry.context:
             context = json.dumps(
                 entry.payload()["context"], ensure_ascii=False, sort_keys=True, indent=2
             )
             block = f"{block}\nExecution context:\n{context}"
+        if len(locations) > 1:
+            shown_locations = locations[:10]
+            location_text = "\n".join(f"- {location}" for location in shown_locations)
+            remaining = len(locations) - len(shown_locations)
+            if remaining:
+                location_text = f"{location_text}\n- and {remaining} more"
+            block = f"{block}\nLocations:\n{location_text}"
         blocks.append(block)
     return "\n\n".join(blocks)
 
