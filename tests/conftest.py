@@ -35,6 +35,7 @@ import lmfit
 import numexpr
 import numpy as np
 import pooch
+import pyperclip
 import pytest
 import requests
 import xarray as xr
@@ -338,6 +339,23 @@ def _restore_interactive_options_between_tests() -> Iterator[None]:
         yield
     finally:
         erlab.interactive.options.restore()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pyperclip() -> Iterator[None]:
+    clipboard_text = ""
+
+    def copy_to_memory(content: object) -> None:
+        nonlocal clipboard_text
+        clipboard_text = str(content)
+
+    def paste_from_memory() -> str:
+        return clipboard_text
+
+    with pytest.MonkeyPatch.context() as clipboard_patch:
+        clipboard_patch.setattr(pyperclip, "copy", copy_to_memory)
+        clipboard_patch.setattr(pyperclip, "paste", paste_from_memory)
+        yield
 
 
 @pytest.fixture(autouse=True)

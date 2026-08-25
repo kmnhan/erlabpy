@@ -164,21 +164,6 @@ def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[s
     return reasons
 
 
-@pytest.fixture(autouse=True)
-def isolate_pyperclip(monkeypatch) -> None:
-    clipboard_text = ""
-
-    def copy_to_memory(content: object) -> None:
-        nonlocal clipboard_text
-        clipboard_text = str(content)
-
-    def paste_from_memory() -> str:
-        return clipboard_text
-
-    monkeypatch.setattr(pyperclip, "copy", copy_to_memory)
-    monkeypatch.setattr(pyperclip, "paste", paste_from_memory)
-
-
 _TEST_DATA: dict[str, xr.DataArray] = {
     "2D": xr.DataArray(
         np.arange(25).reshape((5, 5)),
