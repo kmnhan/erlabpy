@@ -41,7 +41,6 @@ from erlab.interactive.imagetool.manager._widgets import (
     _QWIDGETSIZE_MAX,
     _ElidedValueLabel,
     _LoadSourceDetailsDialog,
-    _MetadataDerivationTreeItem,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -339,7 +338,7 @@ class _DetailsPanelController:
         self._metadata_multi_node_uids = ()
         self._set_notes_node(None)
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
-            self._manager.metadata_derivation_list.clear()
+            self._manager.metadata_derivation_list._clear_contents_safely()
         self._manager._set_metadata_fields([])
         self._manager._update_metadata_pane()
 
@@ -378,7 +377,7 @@ class _DetailsPanelController:
             )
 
             with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
-                self._manager.metadata_derivation_list.clear()
+                self._manager.metadata_derivation_list._clear_contents_safely()
                 for row in self._current_derivation_display_rows(node):
                     item = self._metadata_derivation_item(row)
                     self._manager.metadata_derivation_list.addItem(item)
@@ -548,7 +547,7 @@ class _DetailsPanelController:
                 for node in nodes
             )
             with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
-                self._manager.metadata_derivation_list.clear()
+                self._manager.metadata_derivation_list._clear_contents_safely()
                 for row, target_rows in self._multi_provenance_rows(rows_by_node):
                     item = self._metadata_derivation_item(
                         row,
@@ -733,9 +732,9 @@ class _DetailsPanelController:
         row: _ProvenanceDisplayRow,
         *,
         target_rows: tuple[tuple[str, _ProvenanceDisplayRow], ...] = (),
-    ) -> _MetadataDerivationTreeItem:
+    ) -> QtWidgets.QTreeWidgetItem:
         entry = row.entry
-        item = _MetadataDerivationTreeItem(entry.label)
+        item = QtWidgets.QTreeWidgetItem([entry.label])
         if target_rows:
             can_activate, activation_reason = (
                 self._manager._provenance_edit_controller.can_edit_rows(target_rows)
@@ -759,20 +758,21 @@ class _DetailsPanelController:
             and not entry.label.startswith("Start from ")
         ):
             tooltip_lines.extend(("", "Replay code is unavailable for this step."))
-        item.setToolTip("\n".join(tooltip_lines))
-        item.setData(_METADATA_DERIVATION_CODE_ROLE, entry.code)
-        item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
-        item.setData(_METADATA_DERIVATION_ROW_ROLE, row)
-        item.setData(_METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
-        item.setData(_METADATA_DERIVATION_TARGET_ROWS_ROLE, target_rows)
+        item.setToolTip(0, "\n".join(tooltip_lines))
+        item.setData(0, _METADATA_DERIVATION_CODE_ROLE, entry.code)
+        item.setData(0, _METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
+        item.setData(0, _METADATA_DERIVATION_ROW_ROLE, row)
+        item.setData(0, _METADATA_DERIVATION_ACTIVATABLE_ROLE, can_activate)
+        item.setData(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE, target_rows)
         if row is _MULTI_PROVENANCE_DIFFERENCE_ROW:
             item.setDisabled(True)
         if not can_activate:
             item.setForeground(
+                0,
                 self._manager.metadata_derivation_list.palette().color(
                     QtGui.QPalette.ColorGroup.Disabled,
                     QtGui.QPalette.ColorRole.Text,
-                )
+                ),
             )
         if row.has_children or any(
             target_row.has_children for _uid, target_row in target_rows
@@ -1201,9 +1201,9 @@ class _DetailsPanelController:
         self._manager.metadata_details_widget.sync_height_for_width()
         self._manager.metadata_group.updateGeometry()
 
-    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
+    def _selected_derivation_items(self) -> list[QtWidgets.QTreeWidgetItem]:
         items = typing.cast(
-            "list[_MetadataDerivationTreeItem]",
+            "list[QtWidgets.QTreeWidgetItem]",
             list(self._manager.metadata_derivation_list.selectedItems()),
         )
         display_order = getattr(
@@ -1216,9 +1216,11 @@ class _DetailsPanelController:
     def _selected_derivation_code(self) -> str | None:
         codes: list[str] = []
         for item in self._manager._selected_derivation_items():
-            if not bool(item.data(_METADATA_DERIVATION_COPYABLE_ROLE)):
+            if not bool(item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE)):
                 continue
-            code = typing.cast("str | None", item.data(_METADATA_DERIVATION_CODE_ROLE))
+            code = typing.cast(
+                "str | None", item.data(0, _METADATA_DERIVATION_CODE_ROLE)
+            )
             if code:
                 codes.append(code)
         if not codes:
@@ -1238,7 +1240,7 @@ class _DetailsPanelController:
         step_specs: list[ToolProvenanceSpec] = []
         script_active_names: list[str] = []
         for item in self._manager._selected_derivation_items():
-            row = item.data(_METADATA_DERIVATION_ROW_ROLE)
+            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
             if not isinstance(
                 row,
                 _ProvenanceDisplayRow,
@@ -1247,9 +1249,9 @@ class _DetailsPanelController:
             ref = row.replay_ref
             if ref is None or ref.kind != "operation":
                 continue
-            if not bool(item.data(_METADATA_DERIVATION_COPYABLE_ROLE)):
+            if not bool(item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE)):
                 continue
-            if not item.data(_METADATA_DERIVATION_CODE_ROLE):
+            if not item.data(0, _METADATA_DERIVATION_CODE_ROLE):
                 continue
             spec = self._manager._provenance_edit_controller._display_spec_for_row(
                 node,
@@ -1322,7 +1324,7 @@ class _DetailsPanelController:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return None
-        row = items[0].data(_METADATA_DERIVATION_ROW_ROLE)
+        row = items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
         if isinstance(row, _ProvenanceDisplayRow):
             return row
         return None
@@ -1333,7 +1335,7 @@ class _DetailsPanelController:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return ()
-        target_rows = items[0].data(_METADATA_DERIVATION_TARGET_ROWS_ROLE)
+        target_rows = items[0].data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
         if (
             isinstance(target_rows, tuple)
             and target_rows
@@ -1346,7 +1348,7 @@ class _DetailsPanelController:
             )
         ):
             return target_rows
-        row = items[0].data(_METADATA_DERIVATION_ROW_ROLE)
+        row = items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
         uid = self._manager._metadata_node_uid
         if uid is not None and isinstance(row, _ProvenanceDisplayRow):
             return ((uid, row),)

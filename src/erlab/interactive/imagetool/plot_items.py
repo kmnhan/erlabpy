@@ -543,6 +543,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             for i, text in enumerate(["None", "C2", "C4", "C6"]):
                 qact = QtWidgets.QAction(text)
+                qact.setObjectName(f"itoolGuideline{text}Action")
                 qact.setCheckable(True)
                 qact.toggled.connect(
                     lambda b, idx=i: self._set_guidelines(idx) if b else None
@@ -552,6 +553,9 @@ class ItoolPlotItem(pg.PlotItem):
             self._guideline_actions[0].setChecked(True)
 
             self._guideline_follow_action = QtWidgets.QAction("Follow Active Cursor")
+            self._guideline_follow_action.setObjectName(
+                "itoolGuidelineFollowCursorAction"
+            )
             self._guideline_follow_action.setCheckable(True)
             self._guideline_follow_action.toggled.connect(
                 self._set_guidelines_follow_cursor

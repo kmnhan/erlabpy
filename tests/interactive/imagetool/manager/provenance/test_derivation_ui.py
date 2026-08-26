@@ -129,8 +129,8 @@ def test_manager_provenance_tooltip_elides_long_labels(
 
     item = controller._metadata_derivation_item(row)
 
-    tooltip_label, tooltip_reason = item.toolTip().split("\n\n", maxsplit=1)
-    assert item.text() == row.entry.label
+    tooltip_label, tooltip_reason = item.toolTip(0).split("\n\n", maxsplit=1)
+    assert item.text(0) == row.entry.label
     assert tooltip_label != row.entry.label
     assert "…" in tooltip_label
     assert (
@@ -138,7 +138,9 @@ def test_manager_provenance_tooltip_elides_long_labels(
         <= manager_details_panel._MAXIMUM_DERIVATION_TOOLTIP_WIDTH
     )
     assert tooltip_reason == activation_reason
-    assert item.data(manager_widgets._METADATA_DERIVATION_CODE_ROLE) == row.entry.code
+    assert (
+        item.data(0, manager_widgets._METADATA_DERIVATION_CODE_ROLE) == row.entry.code
+    )
 
 
 def test_manager_provenance_tooltip_keeps_short_label(qtbot) -> None:
@@ -159,7 +161,7 @@ def test_manager_provenance_tooltip_keeps_short_label(qtbot) -> None:
 
     item = controller._metadata_derivation_item(row)
 
-    assert item.toolTip() == row.entry.label
+    assert item.toolTip(0) == row.entry.label
 
 
 def test_manager_provenance_file_load_edit_accept_and_cancel(
@@ -431,13 +433,14 @@ def test_manager_provenance_rows_dim_when_not_activatable(
         load_item = manager.metadata_derivation_list.item(0)
         assert load_item is not None
         assert (
-            load_item.data(manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE)
+            load_item.data(0, manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE)
             is True
         )
         assert (
-            load_item.data(manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE) is False
+            load_item.data(0, manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE)
+            is False
         )
-        assert load_item.foreground().style() == QtCore.Qt.BrushStyle.NoBrush
+        assert load_item.foreground(0).style() == QtCore.Qt.BrushStyle.NoBrush
         select_metadata_rows(manager, [0])
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
@@ -457,14 +460,16 @@ def test_manager_provenance_rows_dim_when_not_activatable(
             if item is None:
                 continue
             if item.data(
-                manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE
-            ) and not item.data(manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE):
+                0, manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE
+            ) and not item.data(
+                0, manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE
+            ):
                 script_operation_item = item
                 break
         assert script_operation_item is not None
-        assert script_operation_item.toolTip()
+        assert script_operation_item.toolTip(0)
         assert script_operation_item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled
-        assert script_operation_item.foreground().color() == (
+        assert script_operation_item.foreground(0).color() == (
             manager.metadata_derivation_list.palette().color(
                 QtGui.QPalette.ColorGroup.Disabled,
                 QtGui.QPalette.ColorRole.Text,
@@ -579,9 +584,9 @@ def test_manager_provenance_row_activation_ignores_noneditable_row(
             if candidate is None:
                 continue
             if candidate.data(
-                manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE
+                0, manager_widgets._METADATA_DERIVATION_COPYABLE_ROLE
             ) and not candidate.data(
-                manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE
+                0, manager_widgets._METADATA_DERIVATION_ACTIVATABLE_ROLE
             ):
                 item = candidate
                 break
@@ -2723,7 +2728,7 @@ def test_manager_provenance_script_structured_row_can_revert(
             item = manager.metadata_derivation_list.item(row_index)
             if (
                 item is not None
-                and item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+                and item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
                 == aggregate_row
             ):
                 aggregate_item = item

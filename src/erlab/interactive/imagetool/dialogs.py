@@ -5866,7 +5866,13 @@ class AssignCoordsDialog(DataTransformDialog):
     )
 
     def setup_widgets(self) -> None:
+        apply_button = self.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        if apply_button is not None:  # pragma: no branch
+            apply_button.setObjectName("coordinateEditorApplyButton")
         self._mode_tabs = QtWidgets.QTabWidget(self)
+        self._mode_tabs.setObjectName("coordinateEditorModeTabs")
         self.layout_.addRow(self._mode_tabs)
 
         scalar_coords: dict[str, float] = {}
@@ -5889,6 +5895,7 @@ class AssignCoordsDialog(DataTransformDialog):
             if k not in self.slicer_area.data.dims
         )
         self._coord_combo = QtWidgets.QComboBox()
+        self._coord_combo.setObjectName("coordinateEditorCoordinateSelector")
         self._coord_combo.addItems(existing_coord_names)
         existing_layout.addWidget(self._coord_combo)
 
@@ -5898,6 +5905,14 @@ class AssignCoordsDialog(DataTransformDialog):
             np.array([0, 1]),
             scalar_coords=scalar_coords,
         )
+        values_page = self.coord_widget.edit_mode_tabs.widget(0)
+        if values_page is not None:  # pragma: no branch
+            values_page.setObjectName("coordinateEditorValuesPage")
+        scale_offset_page = self.coord_widget.edit_mode_tabs.widget(1)
+        if scale_offset_page is not None:  # pragma: no branch
+            scale_offset_page.setObjectName("coordinateEditorScaleOffsetPage")
+        if self.coord_widget.offset_label is not None:  # pragma: no branch
+            self.coord_widget.offset_label.setObjectName("coordinateEditorOffsetLabel")
         self._coord_selection_changed()
         existing_layout.addWidget(self.coord_widget)
         self._mode_tabs.addTab(existing_widget, "Edit Existing")

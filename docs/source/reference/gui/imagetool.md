@@ -159,9 +159,10 @@ reduction dialog before ImageTool creates a window.
 - Drag with the left mouse button to pan. Drag with the right mouse button or use the
   wheel to zoom. Scroll on an individual axis to zoom only that dimension.
 
-- Drag a cursor line to change the slicing position. You can also hold {kbd}`Ctrl` and
-  drag on a plot. The {menuselection}`View --> Cursor Control` submenu lists keyboard
-  commands for moving the active cursor.
+- Drag a cursor line to change the slicing position. You can also hold
+  {kbd}`Command` on macOS or {kbd}`Ctrl` on other platforms, and then drag on a plot.
+  The {menuselection}`View --> Cursor Control` submenu lists keyboard commands for
+  moving the active cursor.
 
 - Binning displays the average over the selected bin width. Shaded regions beside the
   cursor lines show the averaged range. Binning does not change the stored data.
@@ -190,8 +191,9 @@ For a procedure that synchronizes slices and bins across windows, see
   set separately in the binning panel. To switch the active cursor, simply click on it
   or select it from dropdown menu in the cursor panel.
 
-- To move all cursors simultaneously, hold {kbd}`Alt` while dragging a cursor line, or
-  use {kbd}`Ctrl+Alt` while dragging on the image.
+- To move all cursors simultaneously, hold {kbd}`Option` on macOS or {kbd}`Alt` on
+  other platforms while you drag a cursor line. On the image, use
+  {kbd}`Command+Option` on macOS or {kbd}`Ctrl+Alt` on other platforms.
 
 - Right-click on an image plot or line plot to open a useful context menu. Common
   options include copying the slicing code, locking the aspect ratio on image plots,

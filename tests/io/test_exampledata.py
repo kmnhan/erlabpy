@@ -1,5 +1,8 @@
 import numpy as np
+import pytest
+import xarray as xr
 
+import erlab
 from erlab.io.exampledata import (
     generate_data,
     generate_data_angles,
@@ -75,6 +78,93 @@ def test_generate_data_angles() -> None:
 
     assert data.attrs["sample_temp"] == 20.0
     assert data.attrs["configuration"] == 1
+
+
+def test_generate_data_angles_geometry() -> None:
+    data = generate_data_angles(
+        (7, 5, 3),
+        noise=False,
+        extended=False,
+        normal_emission=(2.0, -1.5),
+        delta_offset=-4.0,
+        assign_attributes=True,
+    )
+
+    assert dict(data.kspace.offsets) == {
+        "delta": -4.0,
+        "xi": -2.0,
+        "beta": -1.5,
+    }
+    np.testing.assert_allclose(data.kspace._forward_func(2.0, -1.5), 0.0, atol=1e-14)
+
+
+def test_generate_data_angles_geometry_defaults_are_compatible() -> None:
+    default = generate_data_angles((4, 3, 5), seed=2, assign_attributes=True)
+    explicit = generate_data_angles(
+        (4, 3, 5),
+        seed=2,
+        assign_attributes=True,
+        normal_emission=(0.0, 0.0),
+        delta_offset=0.0,
+    )
+
+    xr.testing.assert_identical(default, explicit)
+
+
+@pytest.mark.parametrize(("extended", "expected_calls"), [(False, 1), (True, 2)])
+def test_generate_data_angles_geometry_reaches_each_mapping_path(
+    monkeypatch: pytest.MonkeyPatch, extended: bool, expected_calls: int
+) -> None:
+    original = erlab.analysis.kspace.get_kconv_forward
+    calls: list[dict[str, float]] = []
+
+    def get_forward(configuration):
+        forward = original(configuration)
+
+        def record(*args, **kwargs):
+            calls.append(kwargs.copy())
+            return forward(*args, **kwargs)
+
+        return record
+
+    monkeypatch.setattr(erlab.analysis.kspace, "get_kconv_forward", get_forward)
+
+    data = generate_data_angles(
+        (5, 4, 3),
+        noise=False,
+        extended=extended,
+        normal_emission=(2.0, -1.5),
+        delta_offset=-4.0,
+    )
+
+    assert len(calls) == expected_calls
+    assert all(
+        call
+        == {
+            "delta": -4.0,
+            "xi": 0.0,
+            "xi0": -2.0,
+            "beta0": -1.5,
+        }
+        for call in calls
+    )
+    np.testing.assert_allclose(data.alpha, np.linspace(-15.0, 15.0, 5))
+    np.testing.assert_allclose(data.beta, np.linspace(-15.0, 15.0, 4))
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"normal_emission": (0.0,)}, "finite 2-tuple"),
+        ({"normal_emission": (0.0, np.inf)}, "finite 2-tuple"),
+        ({"normal_emission": iter((0.0, 0.0))}, "finite 2-tuple"),
+        ({"delta_offset": [0.0]}, "finite scalar"),
+        ({"delta_offset": np.nan}, "finite scalar"),
+    ],
+)
+def test_generate_data_angles_invalid_geometry(kwargs, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        generate_data_angles((3, 3, 3), **kwargs)
 
 
 def test_generate_gold_edge() -> None:

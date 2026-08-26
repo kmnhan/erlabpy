@@ -934,6 +934,14 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     def createMenus(self) -> None:
         menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
+        self.menu_dict["fileMenu"].setObjectName("itoolFileMenu")
+        self.menu_dict["editMenu"].setObjectName("itoolEditMenu")
+        self.menu_dict["viewMenu"].setObjectName("itoolViewMenu")
+        self.menu_dict["windowMenu"].setObjectName("itoolWindowMenu")
+        self.menu_dict["Rotation Guidelines"].setObjectName(
+            "itoolRotationGuidelinesMenu"
+        )
+        self.action_dict["Edit Coordinates"].setObjectName("itoolEditCoordinatesAction")
         typing.cast(
             "QtGui.QAction", self.menu_dict["windowMenu"].menuAction()
         ).setVisible(False)

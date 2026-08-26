@@ -930,6 +930,7 @@ class MessageDialog(QtWidgets.QDialog):
 
         # "Show Details…" toggle button
         self._details_toggle = QtWidgets.QToolButton()
+        self._details_toggle.setObjectName("messageDialogDetailsToggle")
         self._details_toggle.setCheckable(True)
         self._details_toggle.setChecked(False)
         self._details_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)

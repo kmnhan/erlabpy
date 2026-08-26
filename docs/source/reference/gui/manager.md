@@ -60,6 +60,14 @@ derived-result procedures, see {ref}`how-to-gui-update-derived-results`.
 For extension controls and states, see {ref}`imagetool-manager-extensions`. For
 extension procedures, see {ref}`how-to-gui-manager-extensions`.
 
+(imagetool-manager-tutorial)=
+
+## Tutorial
+
+Select {menuselection}`Help --> Tutorial` to start the Manager tutorial. Follow the
+instructions in the application. See {doc}`Manager tutorial
+<../../tutorials/gui/manager-quick-start>` for the launch steps.
+
 (imagetool-manager-organize)=
 
 ## Data and tool tree

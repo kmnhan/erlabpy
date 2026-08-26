@@ -63,7 +63,6 @@ from erlab.interactive.imagetool.manager._widgets import (
     _ElidedValueLabel,
     _HeightForWidthFrame,
     _MetadataDerivationListWidget,
-    _MetadataDerivationTreeItem,
     _SingleImagePreview,
     _StandaloneAppSpec,
     _WarningEmitter,
@@ -642,6 +641,10 @@ class ImageToolManager(_ImageToolManagerBase):
         self.about_action.setIcon(QtGui.QIcon.fromTheme("help-about"))
         self.about_action.triggered.connect(self.about)
 
+        self.tutorial_action = QtWidgets.QAction("Tutorial", self)
+        self.tutorial_action.setObjectName("manager_tutorial_action")
+        self.tutorial_action.triggered.connect(self.open_tutorial)
+
         self.check_update_action = QtWidgets.QAction("Check for Updates", self)
         self.check_update_action.setMenuRole(
             QtWidgets.QAction.MenuRole.ApplicationSpecificRole
@@ -748,6 +751,8 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         self._help_menu_action = self.help_menu.menuAction()
         self.help_menu.setObjectName("manager_help_menu")
+        self.help_menu.addAction(self.tutorial_action)
+        self.help_menu.addSeparator()
         self.help_menu.addAction(self.about_action)
         self.help_menu.addAction(self.check_update_action)
         self.help_menu.addAction(release_notes_action)
@@ -880,6 +885,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self.metadata_details_page = QtWidgets.QWidget(self.inspector_tabs)
+        self.metadata_details_page.setObjectName("managerDetailsPage")
         metadata_details_page_layout = QtWidgets.QVBoxLayout(self.metadata_details_page)
         metadata_details_page_layout.setContentsMargins(
             inspector_margin,
@@ -911,6 +917,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self.metadata_provenance_page = QtWidgets.QWidget(self.inspector_tabs)
+        self.metadata_provenance_page.setObjectName("managerProvenancePage")
         metadata_provenance_page_layout = QtWidgets.QVBoxLayout(
             self.metadata_provenance_page
         )
@@ -920,6 +927,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_derivation_list = _MetadataDerivationListWidget(
             self.metadata_provenance_page
         )
+        self.metadata_derivation_list.setObjectName("metadata_derivation_list")
         self.metadata_derivation_list.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -955,6 +963,7 @@ class ImageToolManager(_ImageToolManagerBase):
         metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
 
         self.notes_page = QtWidgets.QWidget(self.inspector_tabs)
+        self.notes_page.setObjectName("managerNotesPage")
         notes_page_layout = QtWidgets.QVBoxLayout(self.notes_page)
         notes_page_layout.setContentsMargins(0, 0, 0, 0)
         notes_page_layout.setSpacing(4)
@@ -1753,7 +1762,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _update_metadata_pane(self) -> None:
         self._details_panel._update_metadata_pane()
 
-    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
+    def _selected_derivation_items(self) -> list[QtWidgets.QTreeWidgetItem]:
         return self._details_panel._selected_derivation_items()
 
     def _selected_derivation_code(self) -> str | None:
@@ -2071,6 +2080,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def open_new_manager_instance(self) -> None:
         self._widgets_controller.open_new_manager_instance()
+
+    def open_tutorial(self) -> None:
+        self._widgets_controller.open_tutorial()
 
     def check_for_updates(self) -> None:
         self._widgets_controller.check_for_updates()

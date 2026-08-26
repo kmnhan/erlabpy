@@ -194,7 +194,11 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         erlab.interactive.utils.load_ui(
             str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui")), self
         )
+        self.setObjectName("ktoolWindow")
         self.setWindowTitle("Momentum Conversion")
+        self.tab.setObjectName("ktoolParametersPage")
+        self.tab_2.setObjectName("ktoolVisualizationPage")
+        self.open_btn.setObjectName("ktoolOpenInImageToolButton")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
         self.images: tuple[
@@ -1212,6 +1216,7 @@ class KspaceTool(KspaceToolGUI):
         self._normal_emission_spins = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
             spin = QtWidgets.QDoubleSpinBox()
+            spin.setObjectName(f"ktoolNormalEmission{axis.title()}Spin")
             spin.setRange(-360, 360)
             spin.setSingleStep(0.01)
             spin.setDecimals(3)

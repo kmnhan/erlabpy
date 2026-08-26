@@ -28,7 +28,7 @@ from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
@@ -90,15 +90,23 @@ def _manager_settings() -> QtCore.QSettings:
     )
 
 
-def _launch_new_manager_instance() -> None:
+def _launch_new_manager_instance(*, extra_args: Iterable[str] = ()) -> None:
+    extra_args = list(extra_args)
     command = [sys.executable]
     if sys.platform == "darwin" and erlab.utils.misc._IS_PACKAGED:
         for parent in pathlib.Path(sys.executable).resolve().parents:
             if parent.suffix == ".app":
                 command = ["/usr/bin/open", "-n", str(parent)]
+                if extra_args:
+                    command.extend(["--args", *extra_args])
                 break
+        else:
+            command.extend(extra_args)
     elif not erlab.utils.misc._IS_PACKAGED:
         command.extend(["-m", "erlab.interactive.imagetool.manager"])
+        command.extend(extra_args)
+    else:
+        command.extend(extra_args)
 
     kwargs: dict[str, typing.Any] = {
         "stdin": subprocess.DEVNULL,
@@ -120,63 +128,6 @@ def _launch_new_manager_instance() -> None:
 
 class _WarningEmitter(QtCore.QObject):
     warning_received = QtCore.Signal(str, int, str, str)
-
-
-class _MetadataDerivationTreeItem(QtWidgets.QTreeWidgetItem):
-    def __init__(self, text: str = "") -> None:
-        super().__init__([text])
-
-    def text(self, column: int = 0) -> str:
-        return super().text(column)
-
-    def setText(self, *args: typing.Any) -> None:
-        if len(args) == 1:
-            super().setText(0, args[0])
-            return
-        if len(args) == 2:
-            super().setText(args[0], args[1])
-            return
-        raise TypeError("setText() takes 1 or 2 arguments")
-
-    def data(self, *args: typing.Any) -> typing.Any:
-        if len(args) == 1:
-            return super().data(0, args[0])
-        if len(args) == 2:
-            return super().data(args[0], args[1])
-        raise TypeError("data() takes 1 or 2 arguments")
-
-    def setData(self, *args: typing.Any) -> None:
-        if len(args) == 2:
-            super().setData(0, args[0], args[1])
-            return
-        if len(args) == 3:
-            super().setData(args[0], args[1], args[2])
-            return
-        raise TypeError("setData() takes 2 or 3 arguments")
-
-    def toolTip(self, column: int = 0) -> str:
-        return super().toolTip(column)
-
-    def setToolTip(self, *args: typing.Any) -> None:
-        if len(args) == 1:
-            super().setToolTip(0, args[0])
-            return
-        if len(args) == 2:
-            super().setToolTip(args[0], args[1])
-            return
-        raise TypeError("setToolTip() takes 1 or 2 arguments")
-
-    def foreground(self, column: int = 0) -> QtGui.QBrush:
-        return super().foreground(column)
-
-    def setForeground(self, *args: typing.Any) -> None:
-        if len(args) == 1:
-            super().setForeground(0, QtGui.QBrush(args[0]))
-            return
-        if len(args) == 2:
-            super().setForeground(args[0], QtGui.QBrush(args[1]))
-            return
-        raise TypeError("setForeground() takes 1 or 2 arguments")
 
 
 class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
@@ -228,6 +179,27 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
 
     def addItem(self, item: QtWidgets.QTreeWidgetItem) -> None:
         self.addTopLevelItem(item)
+
+    def _clear_contents_safely(self) -> None:
+        """Remove items after transferring each item to Python ownership."""
+        # QTreeWidget.clear() can delete items while PySide6 still has live wrappers.
+        # Pass each nested item through takeTopLevelItem() before it is released.
+        detached: list[QtWidgets.QTreeWidgetItem] = []
+        selection_model = self.selectionModel()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(QtCore.QSignalBlocker(self))
+            if selection_model is not None:  # pragma: no branch - always available
+                stack.enter_context(QtCore.QSignalBlocker(selection_model))
+            self.setCurrentItem(None)
+            self.clearSelection()
+            while self.topLevelItemCount():
+                item = self.takeTopLevelItem(self.topLevelItemCount() - 1)
+                if item is None:  # pragma: no cover - invalid Qt tree state
+                    continue
+                children = item.takeChildren()
+                detached.append(item)
+                for child in children:
+                    self.addTopLevelItem(child)
 
     def setUniformItemSizes(self, enabled: bool) -> None:
         self.setUniformRowHeights(enabled)
@@ -1969,6 +1941,26 @@ class _WidgetsController:
                 title="New Manager Window",
                 text="Could not open another ImageTool Manager window.",
             )
+
+    def open_tutorial(self) -> None:
+        """Open the tutorial in another Manager process."""
+        replace_current_manager = (
+            self._manager.workspace_path is None
+            and not self._manager._tool_graph.nodes
+            and not self._manager.is_workspace_modified
+        )
+        try:
+            _launch_new_manager_instance(extra_args=["--tutorial"])
+        except Exception:
+            logger.exception("Failed to open the ImageTool Manager tutorial")
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                title="Tutorial",
+                text="Could not open the ImageTool Manager tutorial.",
+            )
+            return
+        if replace_current_manager:
+            self._manager.close()
 
     def check_for_updates(self) -> None:
         from erlab.interactive.imagetool.manager._updater_gui import AutoUpdater

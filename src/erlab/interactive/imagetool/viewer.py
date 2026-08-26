@@ -1999,17 +1999,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.view_all_act.setIcon(QtGui.QIcon.fromTheme("zoom-fit-best"))
 
         self.transpose_act = QtWidgets.QAction("&Transpose Main Image", self)
+        self.transpose_act.setObjectName("itoolTransposeMainImageAction")
         self.transpose_act.setShortcut("T")
         self.transpose_act.triggered.connect(self.transpose_main_image)
         self.transpose_act.setToolTip("Transpose the main image")
 
         self.add_cursor_act = QtWidgets.QAction("&Add Cursor", self)
+        self.add_cursor_act.setObjectName("itoolAddCursorAction")
         self.add_cursor_act.setShortcut("Shift+A")
         self.add_cursor_act.triggered.connect(self.add_cursor)
         self.add_cursor_act.setToolTip("Add a new cursor")
         self.add_cursor_act.setIcon(QtGui.QIcon.fromTheme("list-add"))
 
         self.rem_cursor_act = QtWidgets.QAction("&Remove Cursor", self)
+        self.rem_cursor_act.setObjectName("itoolRemoveCursorAction")
         self.rem_cursor_act.setShortcut("Shift+R")
         self.rem_cursor_act.setDisabled(True)
         self.rem_cursor_act.triggered.connect(self.remove_current_cursor)
@@ -2082,6 +2085,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.lock_levels_act.toggled.connect(self.lock_levels)
 
         self.ktool_act = QtWidgets.QAction("Open ktool", self)
+        self.ktool_act.setObjectName("itoolOpenKtoolAction")
         self.ktool_act.triggered.connect(self.open_in_ktool)
         self.ktool_act.setToolTip(
             "Open data in the interactive momentum conversion tool"

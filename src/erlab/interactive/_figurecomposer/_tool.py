@@ -1348,9 +1348,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.show_figure_button.clicked.connect(self._show_figure_window_requested)
         copy_button = QtWidgets.QPushButton("Copy Python", root)
+        copy_button.setObjectName("figureComposerCopyPythonButton")
         copy_button.setToolTip("Copy standalone Python code for this figure recipe.")
         copy_button.clicked.connect(self.copy_code)
         export_button = QtWidgets.QPushButton("Export", root)
+        export_button.setObjectName("figureComposerExportButton")
         export_button.setToolTip("Save the rendered Matplotlib figure to a file.")
         export_button.clicked.connect(self.export_figure)
 

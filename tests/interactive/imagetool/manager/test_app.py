@@ -1851,6 +1851,32 @@ def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -
     ]
 
 
+def test_launch_new_manager_instance_appends_source_process_arguments(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(manager_widgets.sys, "platform", "linux")
+    monkeypatch.setattr(manager_widgets.sys, "executable", "/env/bin/python")
+    monkeypatch.setattr(
+        manager_widgets.subprocess,
+        "Popen",
+        lambda command, **_kwargs: calls.append(command),
+    )
+
+    manager_widgets._launch_new_manager_instance(extra_args=["--tutorial"])
+
+    assert calls == [
+        [
+            "/env/bin/python",
+            "-m",
+            "erlab.interactive.imagetool.manager",
+            "--tutorial",
+        ]
+    ]
+
+
 def test_launch_new_manager_instance_uses_macos_app_bundle(
     monkeypatch, tmp_path
 ) -> None:
@@ -1869,11 +1895,17 @@ def test_launch_new_manager_instance_uses_macos_app_bundle(
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_widgets._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance(extra_args=["--tutorial"])
 
     assert calls == [
         (
-            ["/usr/bin/open", "-n", str(app_bundle.resolve())],
+            [
+                "/usr/bin/open",
+                "-n",
+                str(app_bundle.resolve()),
+                "--args",
+                "--tutorial",
+            ],
             {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
@@ -1888,7 +1920,7 @@ def test_launch_new_manager_instance_uses_macos_app_bundle(
 def test_launch_new_manager_instance_uses_windows_detached_flags(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, typing.Any]]] = []
 
-    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
     monkeypatch.setattr(manager_widgets.sys, "platform", "win32")
     monkeypatch.setattr(manager_widgets.sys, "executable", r"C:\env\python.exe")
     monkeypatch.setattr(
@@ -1906,11 +1938,14 @@ def test_launch_new_manager_instance_uses_windows_detached_flags(monkeypatch) ->
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_widgets._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance(extra_args=["--tutorial"])
 
     assert calls == [
         (
-            [r"C:\env\python.exe", "-m", "erlab.interactive.imagetool.manager"],
+            [
+                r"C:\env\python.exe",
+                "--tutorial",
+            ],
             {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
@@ -1946,6 +1981,143 @@ def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
             "Could not open another ImageTool Manager window.",
         )
     ]
+
+
+def test_manager_tutorial_action_replaces_empty_untitled_manager(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+        action = action_map_by_object_name(manager.help_menu)["manager_tutorial_action"]
+        assert action is manager.tutorial_action
+
+        action.trigger()
+
+        assert close_results == [True]
+        assert not manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_action_preserves_nonempty_manager(
+    qtbot,
+    test_data,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: bool(manager._tool_graph.nodes))
+
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_action_preserves_file_backed_empty_manager(
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        adopt_workspace_path(manager, tmp_path / "workspace.itws")
+
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_action_preserves_modified_empty_manager(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        manager._workspace_state.context_modified = True
+        assert manager.is_workspace_modified
+
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_launch_failure_preserves_empty_manager(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dialogs: list[tuple[object, str, str]] = []
+
+    def fail_launch(*, extra_args=()) -> None:
+        del extra_args
+        raise RuntimeError("launch failed")
+
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        fail_launch,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda parent, *, title, text: dialogs.append((parent, title, text)),
+    )
+
+    with manager_context() as manager:
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+        assert dialogs == [
+            (
+                manager,
+                "Tutorial",
+                "Could not open the ImageTool Manager tutorial.",
+            )
+        ]
 
 
 def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(

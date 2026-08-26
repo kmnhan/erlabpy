@@ -163,7 +163,7 @@ def generate_data(
     Parameters
     ----------
     shape
-        The shape of the generated data, by default (250, 250, 300)
+        The shape of the generated data, by default ``(500, 60, 500)``.
     krange
         Momentum range in inverse angstroms. Can be a single float, a tuple of floats
         representing the range, or a dictionary with ``kx`` and ``ky`` keys mapping to
@@ -276,6 +276,8 @@ def generate_data_angles(
     extended: bool = True,
     polarization: Sequence[float] = (0.0, 0.0, 1.0),
     inner_potential: float = 10.0,
+    normal_emission: tuple[float, float] = (0.0, 0.0),
+    delta_offset: float = 0.0,
 ) -> xr.DataArray:
     """Generate simulated data for a given shape in angle space.
 
@@ -291,9 +293,9 @@ def generate_data_angles(
         Binding energy range in electronvolts, by default (-0.45, 0.12)
     hv
         The photon energy in eV. Note that the sample work function is assumed to be 4.5
-        eV, by default 30.0
+        eV, by default 50.0.
     configuration
-        The experimental configuration, by default Type1DA
+        The experimental configuration, by default ``Type1``.
     temp
         The temperature in Kelvins for the Fermi-Dirac cutoff. If 0, no cutoff is
         applied, by default 20.0
@@ -308,9 +310,9 @@ def generate_data_angles(
     Simag
         The imaginary part of the self energy, by default 0.03
     angres
-        Broadening in angle in degrees, by default 0.01
+        Broadening in angle in degrees, by default 0.1.
     Eres
-        Broadening in energy in electronvolts, by default 2.0e-3
+        Broadening in energy in electronvolts, by default 10.0e-3.
     noise
         Whether to add noise to the generated data, by default `True`
     seed
@@ -331,6 +333,11 @@ def generate_data_angles(
         is `True`
     inner_potential
         Inner potential in eV, by default 10.0. Only used if `extended` is `True`.
+    normal_emission
+        Raw ``(alpha, beta)`` angles in degrees at normal emission, by default
+        ``(0.0, 0.0)``.
+    delta_offset
+        Azimuthal offset in degrees, by default 0.0.
 
     Returns
     -------
@@ -338,6 +345,51 @@ def generate_data_angles(
         The generated data with coordinates for alpha, beta, and eV.
 
     """
+    try:
+        normal_values = np.asarray(normal_emission, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("`normal_emission` must be a finite 2-tuple.") from exc
+    if normal_values.shape != (2,) or not np.all(np.isfinite(normal_values)):
+        raise ValueError("`normal_emission` must be a finite 2-tuple.")
+    normal_alpha, normal_beta = normal_values
+    try:
+        delta_value = np.asarray(delta_offset, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("`delta_offset` must be a finite scalar.") from exc
+    if delta_value.shape != () or not np.isfinite(delta_value):
+        raise ValueError("`delta_offset` must be a finite scalar.")
+    delta_offset = float(delta_value)
+
+    configuration = erlab.constants.AxesConfiguration(configuration)
+    offset_params = erlab.analysis.kspace._offsets_from_normal_emission(
+        configuration,
+        float(normal_alpha),
+        float(normal_beta),
+        xi=0.0,
+        chi=(
+            0.0
+            if configuration
+            in (
+                erlab.constants.AxesConfiguration.Type1DA,
+                erlab.constants.AxesConfiguration.Type2DA,
+            )
+            else None
+        ),
+    )
+    angle_params = {
+        "delta": delta_offset,
+        "xi": 0.0,
+        "xi0": offset_params["xi"],
+    }
+    if configuration in (
+        erlab.constants.AxesConfiguration.Type1,
+        erlab.constants.AxesConfiguration.Type2,
+    ):
+        angle_params["beta0"] = offset_params["beta"]
+    else:
+        angle_params["chi"] = 0.0
+        angle_params["chi0"] = offset_params["chi"]
+
     if isinstance(angrange, dict):
         alpha = np.linspace(*angrange["alpha"], shape[0])
         beta = np.linspace(*angrange["beta"], shape[1])
@@ -359,7 +411,7 @@ def generate_data_angles(
     Ekin = hv - 4.5 + eV_extended[None, None, :]
 
     kxv, kyv = erlab.analysis.kspace.get_kconv_forward(configuration)(
-        a_mesh, b_mesh, Ekin
+        a_mesh, b_mesh, Ekin, **angle_params
     )
 
     # k-point grid
@@ -387,7 +439,7 @@ def generate_data_angles(
 
         Ekin = dummy_data.hv - 4.5 + dummy_data.eV
         kx, ky = erlab.analysis.kspace.get_kconv_forward(configuration)(
-            dummy_data.alpha, dummy_data.beta, Ekin
+            dummy_data.alpha, dummy_data.beta, Ekin, **angle_params
         )
 
         c1, c2 = 143.0, 0.054
@@ -461,6 +513,10 @@ def generate_data_angles(
         out = out.assign_attrs(
             configuration=int(configuration), sample_temp=temp, sample_workfunction=4.5
         )
+        if not np.allclose(normal_values, 0.0) or delta_offset != 0.0:
+            out.attrs["delta_offset"] = delta_offset
+            for key, value in offset_params.items():
+                out.attrs[f"{key}_offset"] = value
 
     return out.squeeze()
 

@@ -208,15 +208,16 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         *,
         copyable: bool = True,
         code: str | None = "derived = data",
-    ) -> QtWidgets.QListWidgetItem:
-        list_item = QtWidgets.QListWidgetItem()
-        list_item.setData(manager_details_panel._METADATA_DERIVATION_ROW_ROLE, row)
-        list_item.setData(
+    ) -> QtWidgets.QTreeWidgetItem:
+        tree_item = QtWidgets.QTreeWidgetItem()
+        tree_item.setData(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE, row)
+        tree_item.setData(
+            0,
             manager_details_panel._METADATA_DERIVATION_COPYABLE_ROLE,
             copyable,
         )
-        list_item.setData(manager_details_panel._METADATA_DERIVATION_CODE_ROLE, code)
-        return list_item
+        tree_item.setData(0, manager_details_panel._METADATA_DERIVATION_CODE_ROLE, code)
+        return tree_item
 
     operation_ref = _ProvenanceStepRef("operation", operation_index=0)
     script_row_a = _ProvenanceDisplayRow(
@@ -397,37 +398,17 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
 
     parent_item = derivation_list.topLevelItem(0)
     assert parent_item is not None
-    assert parent_item.text() == "Use data_0 from Parent"
-    parent_tree_item = typing.cast(
-        "manager_widgets._MetadataDerivationTreeItem",
-        parent_item,
-    )
-    parent_tree_item.setText("Use data_0 from Renamed Parent")
-    assert parent_tree_item.text() == "Use data_0 from Renamed Parent"
-    parent_tree_item.setText(0, "Use data_0 from Parent")
-    assert parent_tree_item.text(0) == "Use data_0 from Parent"
-    parent_tree_item.setData(QtCore.Qt.ItemDataRole.UserRole + 20, "one-arg")
-    assert parent_tree_item.data(QtCore.Qt.ItemDataRole.UserRole + 20) == "one-arg"
-    parent_tree_item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 21, "two-arg")
-    assert parent_tree_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 21) == "two-arg"
-    parent_tree_item.setToolTip("one-arg tooltip")
-    assert parent_tree_item.toolTip() == "one-arg tooltip"
-    parent_tree_item.setToolTip(0, "two-arg tooltip")
-    assert parent_tree_item.toolTip(0) == "two-arg tooltip"
-    parent_tree_item.setForeground(QtGui.QColor("red"))
-    assert parent_tree_item.foreground().color() == QtGui.QColor("red")
-    parent_tree_item.setForeground(0, QtGui.QColor("blue"))
-    assert parent_tree_item.foreground(0).color() == QtGui.QColor("blue")
-    with pytest.raises(TypeError):
-        parent_tree_item.setText()
-    with pytest.raises(TypeError):
-        parent_tree_item.data()
-    with pytest.raises(TypeError):
-        parent_tree_item.setData(QtCore.Qt.ItemDataRole.UserRole)
-    with pytest.raises(TypeError):
-        parent_tree_item.setToolTip()
-    with pytest.raises(TypeError):
-        parent_tree_item.setForeground()
+    assert type(parent_item) is QtWidgets.QTreeWidgetItem
+    assert parent_item.text(0) == "Use data_0 from Parent"
+    parent_item.setText(0, "Use data_0 from Renamed Parent")
+    assert parent_item.text(0) == "Use data_0 from Renamed Parent"
+    parent_item.setText(0, "Use data_0 from Parent")
+    parent_item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 20, "value")
+    assert parent_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 20) == "value"
+    parent_item.setToolTip(0, "tooltip")
+    assert parent_item.toolTip(0) == "tooltip"
+    parent_item.setForeground(0, QtGui.QColor("blue"))
+    assert parent_item.foreground(0).color() == QtGui.QColor("blue")
 
     assert parent_item.childCount() == 0
     assert parent_item.childIndicatorPolicy() == (
@@ -437,15 +418,15 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     assert parent_item.childCount() == 1
     child_item = parent_item.child(0)
     assert child_item is not None
-    assert child_item.text() == "Offset parent"
+    assert child_item.text(0) == "Offset parent"
     assert (
-        child_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+        child_item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
         is child_row
     )
     sibling_item = derivation_list.topLevelItem(1)
     assert sibling_item is not None
     assert (
-        sibling_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+        sibling_item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
         is sibling_row
     )
     assert derivation_list.count() == 3
@@ -465,12 +446,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     assert derivation_list.conceptual_row(child_item) == 1
     assert derivation_list.conceptual_row(sibling_item) == 2
     assert derivation_list.display_order(child_item) == 1
-    assert (
-        derivation_list.display_order(
-            manager_widgets._MetadataDerivationTreeItem("orphan")
-        )
-        == -1
-    )
+    assert derivation_list.display_order(QtWidgets.QTreeWidgetItem(["orphan"])) == -1
     derivation_list.setUniformItemSizes(True)
     assert derivation_list.uniformRowHeights()
 
@@ -749,6 +725,47 @@ def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
     assert materialization_calls == 1
 
 
+def test_metadata_derivation_tree_repopulates_with_plain_qt_items(qtbot) -> None:
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (True, "")
+        ),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    child_row = _ProvenanceDisplayRow(DerivationEntry("Child", None))
+    parent_row = _ProvenanceDisplayRow(
+        DerivationEntry("Parent", None), children=(child_row,)
+    )
+    retained_items: list[QtWidgets.QTreeWidgetItem] = []
+
+    for _generation in range(500):
+        derivation_list._clear_contents_safely()
+        parent_item = controller._metadata_derivation_item(parent_row)
+        child_item = controller._metadata_derivation_item(child_row)
+        assert type(parent_item) is QtWidgets.QTreeWidgetItem
+        assert type(child_item) is QtWidgets.QTreeWidgetItem
+        parent_item.addChild(child_item)
+        derivation_list.addItem(parent_item)
+        derivation_list.setCurrentItem(child_item)
+        child_item.setSelected(True)
+        parent_item.setExpanded(True)
+        retained_items.extend((parent_item, child_item))
+
+    derivation_list._clear_contents_safely()
+    assert derivation_list.topLevelItemCount() == 0
+    assert derivation_list.currentItem() is None
+    assert derivation_list.selectedItems() == []
+    assert len(retained_items) == 1000
+    assert all(erlab.interactive.utils.qt_is_valid(item) for item in retained_items)
+    assert all(item.parent() is None for item in retained_items)
+    assert all(item.treeWidget() is None for item in retained_items)
+
+
 def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     source_spec = script(
         start_label="Build source",
@@ -814,8 +831,8 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
 
     input_item = derivation_list.topLevelItem(1)
     assert input_item is not None
-    assert input_item.text() == "Use data_10 from ImageTool 4: 3 V"
-    assert "ImageTool 10" not in input_item.text()
+    assert input_item.text(0) == "Use data_10 from ImageTool 4: 3 V"
+    assert "ImageTool 10" not in input_item.text(0)
 
     graph.structure_generation += 1
     controller._set_metadata_node(node)
@@ -826,7 +843,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     updated_input_item = derivation_list.topLevelItem(1)
     assert updated_input_item is not None
     assert updated_input_item is not input_item
-    assert updated_input_item.text() == "Use data_10 from ImageTool 7.1: 3 V"
+    assert updated_input_item.text(0) == "Use data_10 from ImageTool 7.1: 3 V"
 
 
 def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None:
@@ -876,8 +893,8 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
 
     input_item = derivation_list.topLevelItem(1)
     assert input_item is not None
-    assert input_item.text() == "Missing source for data_10"
-    assert "ImageTool 10" not in input_item.text()
+    assert input_item.text(0) == "Missing source for data_10"
+    assert "ImageTool 10" not in input_item.text(0)
 
 
 def test_manager_copy_selected_derivation_code_fallbacks(
@@ -2202,7 +2219,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         for row_index in (1, 2):
             row_item = manager.metadata_derivation_list.item(row_index)
             assert row_item is not None
-            row = row_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            row = row_item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
             assert isinstance(row, _ProvenanceDisplayRow)
             editable, reason = manager._provenance_edit_controller.can_edit_row(row)
             assert not editable
@@ -2259,7 +2276,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         for row_index in (1, 2, 3):
             row_item = manager.metadata_derivation_list.item(row_index)
             assert row_item is not None
-            row = row_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            row = row_item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
             assert isinstance(row, _ProvenanceDisplayRow)
             editable, reason = manager._provenance_edit_controller.can_edit_row(row)
             assert editable, reason

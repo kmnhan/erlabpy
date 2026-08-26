@@ -161,8 +161,8 @@ and momentum conversion. It also shows the optional Python call for opening the 
 ImageTool without interrupting the notebook workflow with GUI instructions.
 
 To understand how GUI and Python work together, see {ref}`workflow-bridge`. To learn the
-current Manager workflow without a notebook, follow the
-{doc}`Manager quick start <tutorials/gui/manager-quick-start>`.
+current Manager workflow without a notebook, start the
+{doc}`Manager tutorial <tutorials/gui/manager-quick-start>`.
 
 The two workflows can exchange data and reproducible code, but they are taught
 separately. See {ref}`workflow-bridge` for the relationship between them.

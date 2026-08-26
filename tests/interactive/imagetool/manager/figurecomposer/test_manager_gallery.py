@@ -122,7 +122,7 @@ def test_selected_figure_details_track_root_reindexing(
 
         def _derivation_labels() -> list[str]:
             return [
-                item.text()
+                item.text(0)
                 for row in range(manager.metadata_derivation_list.topLevelItemCount())
                 if (item := manager.metadata_derivation_list.topLevelItem(row))
                 is not None
