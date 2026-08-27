@@ -22,7 +22,10 @@ only when you implement a subclass of {class}`erlab.interactive.utils.ToolWindow
 .. automethod:: erlab.interactive.utils.ToolWindow._reset_history_stack
 .. automethod:: erlab.interactive.utils.ToolWindow._replace_last_state
 .. automethod:: erlab.interactive.utils.ToolWindow._notify_data_changed
-.. automethod:: erlab.interactive.utils.ToolWindow._perform_source_update
+.. automethod:: erlab.interactive.utils.ToolWindow.validate_update_inputs
+   :no-index:
+.. automethod:: erlab.interactive.utils.ToolWindow.update_inputs
+   :no-index:
 .. automethod:: erlab.interactive.utils.ToolWindow._launch_output_imagetool
 .. automethod:: erlab.interactive.utils.ToolWindow._launch_detached_output_imagetool
 ```
@@ -40,7 +43,8 @@ functions remain the supported user interface.
    :no-members:
 .. autoclass:: erlab.interactive.fermiedge.GoldTool
    :no-members:
-.. automethod:: erlab.interactive.fermiedge.GoldTool.update_data
+.. automethod:: erlab.interactive.fermiedge.GoldTool.validate_update_inputs
+.. automethod:: erlab.interactive.fermiedge.GoldTool.update_inputs
 .. autoclass:: erlab.interactive.fermiedge.ResolutionTool
    :no-members:
 .. autoclass:: erlab.interactive._mesh.MeshTool

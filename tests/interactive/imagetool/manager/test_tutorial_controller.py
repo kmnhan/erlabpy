@@ -134,7 +134,8 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     assert ids.index("manager-overview") < ids.index("select-manager-provenance")
     assert ids.index("select-manager-provenance") < ids.index("provenance-overview")
     assert ids.index("switch-to-manager-operations") < ids.index("select-converted-map")
-    assert ids.index("select-converted-map") < ids.index("select-reusable-operations")
+    assert ids.index("select-converted-map") < ids.index("expand-input-history")
+    assert ids.index("expand-input-history") < ids.index("select-reusable-operations")
     assert ids.index("paste-reusable-operations") < ids.index("new-figure")
     assert "open-figure-context-menu" not in ids
     assert ids.index("new-figure") < ids.index("switch-to-figure-composer")
@@ -192,6 +193,7 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         "select-manager-provenance",
         "select-cut",
         "select-converted-map",
+        "expand-input-history",
         "select-reusable-operations",
         "copy-reusable-operations",
         "select-raw-cut",
@@ -1039,6 +1041,13 @@ def test_tutorial_real_workflow(
             QtCore.Qt.MouseButton.LeftButton,
             pos=manager.tree_view.visualRect(converted_index).center(),
         )
+        complete_action("expand-input-history")
+
+        input_item = controller._reusable_input_item()
+        assert input_item is not None
+        assert input_item.childCount() > 0
+        assert not input_item.isExpanded()
+        input_item.setExpanded(True)
         complete_action("select-reusable-operations")
 
         from erlab.interactive.imagetool import _kspace_conversion
@@ -1051,8 +1060,8 @@ def test_tutorial_real_workflow(
 
         converted_uid = controller._converted_map_uid()
         assert converted_uid is not None
-        spec = manager._tool_graph.nodes[converted_uid].displayed_provenance_spec
-        assert spec is not None
+        node = manager._tool_graph.nodes[converted_uid]
+        assert node.displayed_provenance_spec is not None
 
         def select_reusable_operation_items() -> None:
             operation_items = []
@@ -1064,7 +1073,15 @@ def test_tutorial_real_workflow(
                     continue
                 row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
                 ref = getattr(row, "replay_ref", None)
-                operation = None if ref is None else spec._operation_for_ref(ref)
+                spec = manager._provenance_edit_controller._display_spec_for_row(
+                    node,
+                    row,
+                )
+                operation = (
+                    None
+                    if ref is None or spec is None
+                    else spec._operation_for_ref(ref)
+                )
                 if operation is None:
                     continue
                 if (
@@ -1081,6 +1098,8 @@ def test_tutorial_real_workflow(
 
             assert len(operation_items) == 1
             assert len(group_items) == 2
+            assert operation_items[0].parent() is input_item
+            assert input_item.isExpanded()
             operation_list.clearSelection()
             for item in (*operation_items, *group_items):
                 item.setSelected(True)

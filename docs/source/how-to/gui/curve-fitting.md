@@ -29,6 +29,23 @@ store the result with {func}`xarray_lmfit.save_fit`.
 Use {ref}`how-to-gui-fit-stack-with-ftool` for a stack of curves and
 {ref}`how-to-gui-reopen-saved-fit` to continue work from a saved result.
 
+(how-to-gui-weighted-fit)=
+
+## Fitting with standard uncertainties
+
+1. Open the measured values and their absolute standard uncertainties as two ImageTool
+   rows in Manager.
+2. Select both rows.
+3. Right-click either selected row and choose {guilabel}`Open in ftool…`.
+4. Confirm the {guilabel}`Data` and {guilabel}`Standard uncertainty` assignments. Use
+   {guilabel}`Swap` if they are reversed.
+5. Select {guilabel}`OK`.
+6. Continue with the fitting procedure in {ref}`how-to-gui-fit-data`.
+
+The uncertainty coordinates must align with the data coordinates. Its dimensions must
+be a subset of the data dimensions so that xarray can broadcast it to the data shape.
+Uncertainty values must be finite and positive where the data is finite.
+
 (how-to-gui-fit-fermi-edge-separate-ranges)=
 
 ## Fermi edge fitting with separate EDC ranges
@@ -77,6 +94,11 @@ definitions.
 8. Choose {guilabel}`Fit ⤒` or {guilabel}`Fit ⤓` for the required sequence direction.
 9. Inspect the parameter plot and fitted curve at each suspicious or failed index.
 10. Correct failed fits before choosing {guilabel}`Save fit` or {guilabel}`Copy code`.
+
+To fit selected parameter values with their standard errors, right-click the parameter
+plot and choose {guilabel}`Open parameter values in ftool`. This action omits points
+without a finite, positive standard error. If no valid points remain, `ftool` does not
+open.
 
 When ftool is managed, parameter maps opened in ImageTool appear below the ftool row.
 Use {guilabel}`Refit after update` only when compatible input changes should repeat the

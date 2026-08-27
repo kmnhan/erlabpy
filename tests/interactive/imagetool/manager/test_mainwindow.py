@@ -5372,10 +5372,10 @@ def test_load_source_details_controller_skips_edit_when_node_disappears(
 def test_details_panel_selected_derivation_row_rejects_unexpected_item_data(
     qtbot,
 ) -> None:
-    derivation_list = QtWidgets.QListWidget()
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
     qtbot.addWidget(derivation_list)
-    item = QtWidgets.QListWidgetItem("row")
-    item.setData(manager_details_panel._METADATA_DERIVATION_ROW_ROLE, object())
+    item = QtWidgets.QTreeWidgetItem(["row"])
+    item.setData(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE, object())
     derivation_list.addItem(item)
     item.setSelected(True)
 

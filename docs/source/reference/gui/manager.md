@@ -92,6 +92,13 @@ The toolbar and row context menu provide these actions:
   this operation.
 - {guilabel}`Concatenate` calls {func}`xarray.concat` for selected ImageTool data and
   opens the result.
+- {guilabel}`Open in ftool…` opens a weighted fit from two selected ImageTool rows.
+  The dialog assigns one row to {guilabel}`Data` and one to
+  {guilabel}`Standard uncertainty`; use {guilabel}`Swap` to exchange them. The data
+  row remains the parent, and the uncertainty row remains a named `ftool` dependency.
+  The uncertainty must align with and broadcast to the data. Its values must be finite
+  and positive where the data is finite. If it is missing or incompatible, Manager
+  does not open an unweighted `ftool`.
 - {guilabel}`New Empty Figure` creates a Figure Composer window without data sources or
   recipe steps.
 - {guilabel}`Add to Figure…` creates or updates a Figure Composer figure.

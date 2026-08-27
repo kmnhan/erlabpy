@@ -20,6 +20,17 @@ There are three ways to start `ftool`.
    eri.ftool(data, model=my_model)
    ```
 
+   For a weighted fit, supply the absolute standard uncertainty of each data point:
+
+   ```python
+   eri.ftool(values, uncertainty=standard_uncertainty)
+   ```
+
+   `ftool` displays these values as one-standard-deviation error bars and passes their
+   reciprocal to lmfit as weights. The uncertainty may omit dimensions that xarray can
+   broadcast from the data. Its coordinates must align with the data coordinates. Its
+   values must be finite and positive where the data is finite.
+
 2. From the ImageTool context menu
 
    Right-click an image plot or line plot and choose {guilabel}`ftool`.
@@ -139,6 +150,10 @@ For two-dimensional input, ftool shows an image, one selected curve, and a
 parameter-versus-coordinate plot. {guilabel}`Transpose` controls which dimension is the
 fitted coordinate. {guilabel}`Index` and the yellow cursor select the curve displayed
 in the fit panel.
+
+When working in ImageTool Manager, open the parameter values in `ftool` to fit them
+using their standard errors. The weighted fit omits points without a finite, positive
+standard error. If no valid points remain, `ftool` does not open.
 
 :::::{tab-set}
 

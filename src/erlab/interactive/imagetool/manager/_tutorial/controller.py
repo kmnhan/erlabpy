@@ -1122,6 +1122,19 @@ class _TutorialController(TourController):
                 auto_advance=False,
             ),
             TourStep(
+                "expand-input-history",
+                "Input history",
+                "Select the arrow beside the highlighted input row to show the "
+                "steps that were applied before the momentum conversion.",
+                mode="action",
+                target=self._reusable_input_target,
+                allowed_inputs=actions,
+                allowed_objects=(lambda: self._manager.metadata_derivation_list,),
+                completion=self._reusable_input_expanded,
+                reveal=self._show_converted_map_provenance,
+                auto_advance=False,
+            ),
+            TourStep(
                 "select-reusable-operations",
                 "Steps to reuse",
                 "In the [[ui:managerProvenancePage]] tab, select these three rows: "
@@ -1415,6 +1428,7 @@ class _TutorialController(TourController):
                 "Reveal in Manager",
             ),
             "select-converted-map": lambda: self._select_uid(self._converted_map_uid()),
+            "expand-input-history": self._debug_expand_reusable_input,
             "select-reusable-operations": self._debug_select_reusable_operations,
             "copy-reusable-operations": lambda: self._debug_trigger(
                 self._manager._metadata_copy_selected_action,
@@ -1561,6 +1575,35 @@ class _TutorialController(TourController):
         )
 
     def _debug_select_reusable_operations(self) -> None:
+        items = self._reusable_operation_items()
+        if items is None:
+            raise RuntimeError("The three reusable provenance rows are not available.")
+        operation_list = self._manager.metadata_derivation_list
+        operation_list.clearSelection()
+        for item in items:
+            item.setSelected(True)
+        operation_list.setCurrentItem(
+            items[1],
+            0,
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+
+    def _debug_expand_reusable_input(self) -> None:
+        item = self._reusable_input_item()
+        if item is None:
+            raise RuntimeError("The input provenance row is not available.")
+        item.setExpanded(True)
+
+    def _reusable_operation_items(
+        self,
+    ) -> (
+        tuple[
+            QtWidgets.QTreeWidgetItem,
+            QtWidgets.QTreeWidgetItem,
+            QtWidgets.QTreeWidgetItem,
+        ]
+        | None
+    ):
         from erlab.interactive.imagetool import _kspace_conversion
         from erlab.interactive.imagetool._provenance._operations import (
             AffineCoordOperation,
@@ -1571,10 +1614,10 @@ class _TutorialController(TourController):
 
         uid = self._converted_map_uid()
         if uid is None:
-            raise RuntimeError("The converted map is not available.")
-        spec = self._manager._tool_graph.nodes[uid].displayed_provenance_spec
-        if spec is None:
-            raise RuntimeError("The converted map provenance is not available.")
+            return None
+        node = self._manager._tool_graph.nodes.get(uid)
+        if node is None or node.displayed_provenance_spec is None:
+            return None
         operation_items: list[QtWidgets.QTreeWidgetItem] = []
         group_items: list[QtWidgets.QTreeWidgetItem] = []
         operation_list = self._manager.metadata_derivation_list
@@ -1584,12 +1627,20 @@ class _TutorialController(TourController):
                 continue
             row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
             ref = getattr(row, "replay_ref", None)
-            operation = None if ref is None else spec._operation_for_ref(ref)
+            spec = self._manager._provenance_edit_controller._display_spec_for_row(
+                node,
+                row,
+            )
+            operation = (
+                None if ref is None or spec is None else spec._operation_for_ref(ref)
+            )
             if operation is None:
                 continue
             if (
                 isinstance(operation, AffineCoordOperation)
                 and operation.coord_name == "eV"
+                and np.isclose(operation.scale, 1.0)
+                and np.isclose(operation.offset, -45.5)
             ):
                 operation_items.append(item)
             if (
@@ -1599,15 +1650,28 @@ class _TutorialController(TourController):
             ):
                 group_items.append(item)
         if len(operation_items) != 1 or len(group_items) != 2:
-            raise RuntimeError("The three reusable provenance rows are not available.")
-        operation_list.clearSelection()
-        for item in (*operation_items, *group_items):
-            item.setSelected(True)
-        operation_list.setCurrentItem(
-            group_items[0],
-            0,
-            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
-        )
+            return None
+        return operation_items[0], group_items[0], group_items[1]
+
+    def _reusable_input_item(self) -> QtWidgets.QTreeWidgetItem | None:
+        items = self._reusable_operation_items()
+        if items is None:
+            return None
+        return items[0].parent()
+
+    def _reusable_input_target(self) -> ModelIndexTarget | None:
+        item = self._reusable_input_item()
+        if item is None:
+            return None
+        operation_list = self._manager.metadata_derivation_list
+        index = operation_list.indexFromItem(item)
+        if not index.isValid():
+            return None
+        return ModelIndexTarget(operation_list, index)
+
+    def _reusable_input_expanded(self) -> bool:
+        item = self._reusable_input_item()
+        return item is not None and item.isExpanded()
 
     def _debug_paste_reusable_operations(self) -> None:
         self._manager._build_metadata_derivation_menu(include_row_actions=False)
