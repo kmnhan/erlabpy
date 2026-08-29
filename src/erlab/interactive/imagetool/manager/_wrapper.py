@@ -356,6 +356,10 @@ def _dataarray_name(data: xr.DataArray | None) -> str:
     return "" if name.strip() == "" else name
 
 
+def _normalize_dataarray_name(name: str) -> str | None:
+    return None if name.strip() == "" else name
+
+
 def _append_unique_path(paths: list[pathlib.Path], path: str | pathlib.Path) -> None:
     normalized = pathlib.Path(path).expanduser()
     with contextlib.suppress(OSError, RuntimeError):
@@ -1171,18 +1175,21 @@ class _ManagedWindowNode(QtCore.QObject):
     def _rename_imagetool_data(self, name: str, *, record_provenance: bool) -> None:
         if self.imagetool is None:
             return
-        if name == self.name:
+        slicer_area = self.slicer_area
+        data_name = _normalize_dataarray_name(name)
+        if data_name == slicer_area._data.name or (
+            data_name is not None and name == self.name
+        ):
             self.imagetool.setWindowTitle(self.label_text)
             return
-        slicer_area = self.slicer_area
-        slicer_area._data = slicer_area._data.rename(name)
-        slicer_area.array_slicer._obj = slicer_area.array_slicer._obj.rename(name)
+        slicer_area._data = slicer_area._data.rename(data_name)
+        slicer_area.array_slicer._obj = slicer_area.array_slicer._obj.rename(data_name)
         if slicer_area._accepted_filter_data is not None:
             slicer_area._accepted_filter_data = (
-                slicer_area._accepted_filter_data.rename(name)
+                slicer_area._accepted_filter_data.rename(data_name)
             )
         if record_provenance:
-            self._record_data_rename_provenance(name)
+            self._record_data_rename_provenance(data_name)
         self._invalidate_info_text_cache()
         self.imagetool.setWindowTitle(self.label_text)
         self._notify_change(
@@ -1190,7 +1197,7 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         self.manager._mark_node_state_dirty(self.uid)
 
-    def _record_data_rename_provenance(self, name: str) -> None:
+    def _record_data_rename_provenance(self, name: str | None) -> None:
         spec = self.provenance_spec
         if spec is not None:
             self._provenance_spec = spec.append_final_rename(name)
@@ -3230,11 +3237,12 @@ class _ImageToolWrapper(_ManagedWindowNode):
             np.dtype(np.float64),
         ):
             seed_source = f"{seed_source}.astype(np.float64)"
-        return script(
+        spec = script(
             start_label=f"Start from watched variable {varname!r}",
             seed_code=f"derived = {seed_source}",
             active_name="derived",
         )
+        return spec.append_final_rename(_normalize_dataarray_name(self.name))
 
     def _watched_root_provenance_spec(self) -> ToolProvenanceSpec | None:
         if self._provenance_spec is not None or self._source_spec is not None:

@@ -5462,11 +5462,9 @@ def test_image_open_in_new_window_preserves_spaced_qsel_dimension(qtbot) -> None
     image = win.slicer_area.images[2]
     win.slicer_area.set_value(axis=0, value=1.0, cursor=0)
     expected = image.current_data
+    assert expected.name == "map"
     source_spec = image.make_tool_source_spec()
-    xarray.testing.assert_identical(
-        source_spec.apply(data).rename(None),
-        expected.rename(None),
-    )
+    xarray.testing.assert_identical(source_spec.apply(data), expected)
 
     image.open_in_new_window()
     qtbot.wait_until(
@@ -5475,20 +5473,14 @@ def test_image_open_in_new_window_preserves_spaced_qsel_dimension(qtbot) -> None
     )
     child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
 
-    xarray.testing.assert_identical(
-        child.slicer_area.data.rename(None),
-        expected.rename(None),
-    )
+    xarray.testing.assert_identical(child.slicer_area.data, expected)
     assert child.provenance_spec is not None
     display_code = child.provenance_spec.display_code()
     assert display_code is not None
     assert "qsel({" in display_code
     assert "Track Shift" in display_code
     namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
-    xarray.testing.assert_identical(
-        namespace["derived"].rename(None),
-        expected.rename(None),
-    )
+    xarray.testing.assert_identical(namespace["derived"], expected)
 
     child.close()
     win.close()
@@ -5510,6 +5502,7 @@ def test_image_open_in_new_window_handles_binned_unindexed_dimension(qtbot) -> N
     source_spec = image.make_tool_source_spec()
     resolved = source_spec.apply(data)
     xr.testing.assert_identical(resolved, expected)
+    assert image.current_data.name == expected.name == "map"
     np.testing.assert_allclose(image.current_data.values, expected.values)
 
     image.open_in_new_window()
@@ -5519,6 +5512,7 @@ def test_image_open_in_new_window_handles_binned_unindexed_dimension(qtbot) -> N
     )
     child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
 
+    assert child.slicer_area.data.name == expected.name == "map"
     np.testing.assert_allclose(child.slicer_area.data.values, expected.values)
     assert child.provenance_spec is not None
     display_code = child.provenance_spec.display_code()
@@ -5549,10 +5543,7 @@ def test_image_open_in_new_window_restores_nonuniform_public_dims(qtbot) -> None
 
     assert image.current_data.dims == ("sample_temp", "eV")
     assert "sample_temp_idx" not in image.current_data.dims
-    xarray.testing.assert_identical(
-        image.current_data.rename(None),
-        expected.rename(None),
-    )
+    xarray.testing.assert_identical(image.current_data, expected)
 
     image.open_in_new_window()
     qtbot.wait_until(
@@ -5563,12 +5554,65 @@ def test_image_open_in_new_window_restores_nonuniform_public_dims(qtbot) -> None
 
     assert child.slicer_area._data.dims == ("sample_temp", "eV")
     assert child.slicer_area.displayed_data.dims == ("sample_temp", "eV")
-    xarray.testing.assert_identical(
-        child.slicer_area.displayed_data.rename(None),
-        expected.rename(None),
-    )
+    xarray.testing.assert_identical(child.slicer_area.displayed_data, expected)
 
     child.close()
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("data_name", "expected_filename"),
+    [("scan", "scan.h5"), (None, "data.h5"), ("", "data.h5")],
+)
+@pytest.mark.parametrize("accept", [False, True])
+def test_save_current_data_uses_data_name_for_default_filename(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    data_name: str | None,
+    expected_filename: str,
+    accept: bool,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        name=data_name,
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    real_file_dialog = QtWidgets.QFileDialog
+
+    class _FileDialog(real_file_dialog):
+        instance: typing.ClassVar[QtWidgets.QFileDialog | None] = None
+
+        def __init__(self) -> None:
+            super().__init__()
+            type(self).instance = self
+
+        def exec(self) -> int:
+            if accept:
+                return int(real_file_dialog.DialogCode.Accepted.value)
+            return int(real_file_dialog.DialogCode.Rejected.value)
+
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _FileDialog)
+    monkeypatch.setattr(pg.PlotItem, "lastFileDir", str(tmp_path))
+
+    win.slicer_area.main_image.save_current_data()
+
+    dialog = _FileDialog.instance
+    assert dialog is not None
+    assert dialog.directory().absolutePath() == str(tmp_path)
+    assert dialog.selectedFiles() == [str(tmp_path / expected_filename)]
+    if accept:
+        expected_data = win.slicer_area.main_image.current_data
+        if expected_data.name == "":
+            expected_data = expected_data.rename(None)
+        xr.testing.assert_identical(
+            xr.load_dataarray(tmp_path / expected_filename, engine="h5netcdf"),
+            expected_data,
+        )
+    else:
+        assert not (tmp_path / expected_filename).exists()
     win.close()
 
 
@@ -9486,7 +9530,7 @@ def test_crop_to_view_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
 
     expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
     public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
-    source_spec = dialog.source_spec("ignored")
+    source_spec = dialog.source_spec()
     code = dialog.make_code()
 
     assert source_spec.kind == "public_data"
@@ -9530,7 +9574,7 @@ def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) 
 
     expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
     public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
-    source_spec = dialog.source_spec("ignored")
+    source_spec = dialog.source_spec()
     code = dialog.make_code()
 
     assert source_spec.kind == "public_data"
@@ -9960,7 +10004,7 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
     qtbot.addWidget(dialog)
     dialog.dim_checks["y"].setChecked(True)
 
-    spec = dialog.source_spec("ignored")
+    spec = dialog.source_spec()
     expected = erlab.utils.array._restore_nonuniform_dims(
         dialog.process_data(win.slicer_area.data)
     )
@@ -10046,7 +10090,7 @@ def test_aggregate_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> 
     dialog.dim_checks["y"].setChecked(True)
     _set_combo_data(dialog.reducer_combo, "sum")
 
-    spec = dialog.source_spec("ignored")
+    spec = dialog.source_spec()
     expected = erlab.utils.array._restore_nonuniform_dims(
         dialog.process_data(win.slicer_area.data)
     )
@@ -11564,7 +11608,7 @@ def test_selection_dialog_uses_public_nonuniform_dimensions(qtbot) -> None:
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
     )
-    spec = dialog.source_spec("ignored")
+    spec = dialog.source_spec()
     assert spec.kind == "public_data"
     xarray.testing.assert_identical(spec.apply(win.slicer_area.data), expected)
 

@@ -2967,7 +2967,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             )
         return self.append_operations(operation)
 
-    def append_final_rename(self, name: str) -> ToolProvenanceSpec:
+    def append_final_rename(self, name: str | None) -> ToolProvenanceSpec:
         return self.drop_trailing_rename().append_operations(
             _operation_instance("rename", name=name)
         )

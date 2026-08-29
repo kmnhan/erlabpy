@@ -24,7 +24,10 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     full_data,
 )
-from erlab.interactive.imagetool._provenance._operations import AverageOperation
+from erlab.interactive.imagetool._provenance._operations import (
+    AverageOperation,
+    RenameOperation,
+)
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
 from tests.interactive.imagetool.manager.helpers import (
@@ -113,7 +116,9 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
         tool = manager.get_imagetool(0)
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.replay_source_data is None
-        xr.testing.assert_identical(wrapper.resolved_replay_source_data(), test_data)
+        xr.testing.assert_identical(
+            wrapper.resolved_replay_source_data(), test_data.rename("data")
+        )
         wrapper.set_detached_provenance(
             full_data(AverageOperation(dims=("alpha",))),
             replay_source_data=test_data,
@@ -124,11 +129,13 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
         with qtbot.wait_signal(tool.slicer_area.sigSourceDataReplaced):
             manager._data_watched_update("data", "kernel-0", updated)
 
-        xr.testing.assert_identical(tool.slicer_area.data, updated)
+        xr.testing.assert_identical(tool.slicer_area.data, updated.rename("data"))
         assert wrapper.provenance_spec is not None
-        assert wrapper.provenance_spec.operations == ()
+        assert wrapper.provenance_spec.operations == (RenameOperation(name="data"),)
         assert wrapper.replay_source_data is None
-        xr.testing.assert_identical(wrapper.resolved_replay_source_data(), updated)
+        xr.testing.assert_identical(
+            wrapper.resolved_replay_source_data(), updated.rename("data")
+        )
 
 
 def test_manager_high_dimensional_watched_data_errors_without_reduction_dialog(
@@ -253,7 +260,9 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert wrapper._watched_source_uid == "kernel-a"
         assert wrapper._watched_connected is False
         assert wrapper.replay_source_data is None
-        xr.testing.assert_identical(wrapper.resolved_replay_source_data(), test_data)
+        xr.testing.assert_identical(
+            wrapper.resolved_replay_source_data(), test_data.rename("data")
+        )
 
         with qtbot.wait_signal(manager._sigReplyData) as blocker:
             manager._send_watch_info()
@@ -406,21 +415,25 @@ def test_manager_watched_root_provenance_uses_variable_name(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    source = test_data.rename("source_array")
+
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         manager._data_ingress.receive_data(
-            [test_data], {}, watched_var=("my_data", "kernel-0")
+            [source], {}, watched_var=("my_data", "kernel-0")
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
+        assert source.name == "source_array"
+        assert node.name == "my_data"
         provenance = node.provenance_spec
         assert provenance is not None
         code = provenance.display_code()
         assert code is not None
-        namespace = _exec_generated_code(code, {"my_data": test_data.copy(deep=True)})
+        namespace = _exec_generated_code(code, {"my_data": source.copy(deep=True)})
         derived = namespace["derived"]
         assert isinstance(derived, xr.DataArray)
         xr.testing.assert_identical(derived, manager.get_imagetool(0).slicer_area.data)
@@ -447,7 +460,7 @@ def test_manager_watched_root_provenance_uses_variable_name(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         namespace = _exec_generated_code(
             copied[-1],
-            {"my_data": test_data.copy(deep=True)},
+            {"my_data": source.copy(deep=True)},
         )
         derived = namespace["derived"]
         assert isinstance(derived, xr.DataArray)

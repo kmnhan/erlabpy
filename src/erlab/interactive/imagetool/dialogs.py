@@ -755,9 +755,7 @@ class DataTransformDialog(_DataManipulationDialog):
     def source_spec_for_data(
         self,
         data: xr.DataArray,
-        new_name: str | None = None,
     ) -> ToolProvenanceSpec:
-        del new_name
         operations = self.source_operations()
         builder = public_data if self.apply_on_nonuniform_data else full_data
         if not self.apply_on_nonuniform_data:
@@ -768,28 +766,24 @@ class DataTransformDialog(_DataManipulationDialog):
                 )
         return builder(*operations)
 
-    def source_spec(self, new_name: str | None = None) -> ToolProvenanceSpec:
-        return self.source_spec_for_data(self.slicer_area.data, new_name)
+    def source_spec(self) -> ToolProvenanceSpec:
+        return self.source_spec_for_data(self.slicer_area.data)
 
     def _detached_provenance_spec(
         self,
         parent_provenance: ToolProvenanceSpec | None,
         source_spec: ToolProvenanceSpec,
-        new_name: str,
     ) -> ToolProvenanceSpec:
         return self._compose_transform_provenance(
             parent_provenance,
             source_spec,
-            new_name,
         )
 
     @staticmethod
     def _compose_transform_provenance(
         base_spec: ToolProvenanceSpec | None,
         source_spec: ToolProvenanceSpec,
-        new_name: str,
     ) -> ToolProvenanceSpec:
-        del new_name
         if base_spec is None:
             return source_spec
         with contextlib.suppress(TypeError):
@@ -809,18 +803,15 @@ class DataTransformDialog(_DataManipulationDialog):
     def _compose_replace_source_spec(
         self,
         existing_spec: ToolProvenanceSpec,
-        new_name: str,
     ) -> ToolProvenanceSpec:
         return self._compose_transform_provenance(
             existing_spec,
-            self.source_spec(new_name),
-            new_name,
+            self.source_spec(),
         )
 
     def _rewrite_target_provenance(
         self,
         target: int | str,
-        new_name: str,
         fallback_spec: ToolProvenanceSpec | None,
     ) -> bool:
         manager, _ = self._manager_target()
@@ -830,7 +821,7 @@ class DataTransformDialog(_DataManipulationDialog):
         source_spec = node.displayed_source_spec
         if source_spec is not None:
             node.set_source_binding(
-                self._compose_replace_source_spec(source_spec, new_name),
+                self._compose_replace_source_spec(source_spec),
                 auto_update=node.source_auto_update,
                 state=node.source_state,
             )
@@ -839,7 +830,7 @@ class DataTransformDialog(_DataManipulationDialog):
         replay_source_data = node.resolved_replay_source_data()
         if displayed_provenance is not None:
             node.set_detached_provenance(
-                self._compose_replace_source_spec(displayed_provenance, new_name),
+                self._compose_replace_source_spec(displayed_provenance),
                 replay_source_data=replay_source_data,
             )
             return True
@@ -989,9 +980,6 @@ class DataTransformDialog(_DataManipulationDialog):
             return
 
         input_name = self.slicer_area.data.name
-        new_name = ""
-        if input_name is not None:
-            new_name = str(input_name)
 
         try:
             if self.apply_on_nonuniform_data:
@@ -1011,7 +999,7 @@ class DataTransformDialog(_DataManipulationDialog):
             processed = processed.rename(input_name)
 
             manager, target = self._manager_target()
-            source_spec = self.source_spec(new_name)
+            source_spec = self.source_spec()
             parent_provenance = self.slicer_area.displayed_provenance_spec()
             if manager is not None and target is not None:
                 with contextlib.suppress(Exception):
@@ -1025,7 +1013,6 @@ class DataTransformDialog(_DataManipulationDialog):
             detached_provenance_spec = self._detached_provenance_spec(
                 parent_provenance,
                 source_spec,
-                new_name,
             )
 
             if self.launch_mode == "replace":
@@ -1036,7 +1023,6 @@ class DataTransformDialog(_DataManipulationDialog):
                 ):
                     self._rewrite_target_provenance(
                         target,
-                        new_name,
                         detached_provenance_spec,
                     )
                 else:
@@ -2001,9 +1987,7 @@ class KspaceConversionDialog(DataTransformDialog):
     def source_spec_for_data(
         self,
         data: xr.DataArray,
-        new_name: str | None = None,
     ) -> ToolProvenanceSpec:
-        del new_name
         return public_data(*self._operations_for_data(data))
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:

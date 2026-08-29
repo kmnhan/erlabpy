@@ -807,9 +807,8 @@ class _BatchTransformStub:
     def source_spec_for_data(
         self,
         data: xr.DataArray,
-        new_name: str | None = None,
     ) -> ToolProvenanceSpec:
-        del data, new_name
+        del data
         builder = public_data if self._public_source else full_data
         return builder(*self.source_operations())
 
@@ -817,18 +816,16 @@ class _BatchTransformStub:
         self,
         parent_provenance: ToolProvenanceSpec | None,
         source_spec: ToolProvenanceSpec,
-        new_name: str,
     ) -> ToolProvenanceSpec:
-        del parent_provenance, new_name
+        del parent_provenance
         return source_spec
 
     def _compose_transform_provenance(
         self,
         base_spec: ToolProvenanceSpec | None,
         source_spec: ToolProvenanceSpec,
-        new_name: str,
     ) -> ToolProvenanceSpec:
-        del base_spec, new_name
+        del base_spec
         return source_spec
 
     def _itool_kwargs(
@@ -1873,6 +1870,141 @@ def test_metadata_assignments_survive_watched_variable_updates(
         manager._data_watched_update("scan", "watched-uid", incompatible)
         assert messages
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+
+
+def test_watched_variable_uses_binding_name_and_preserves_manual_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("source_array")
+    original = source.copy(deep=True)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_watched_update("scan", "watched-uid", source)
+
+        xr.testing.assert_identical(source, original)
+        assert manager.name_of_imagetool(0) == "scan"
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            source.rename("scan"),
+        )
+
+        manager.rename_imagetool(0, "manual scan")
+        replacement = _batch_data("replacement_array", offset=100.0)
+        manager._data_watched_update("scan", "watched-uid", replacement)
+
+        expected = replacement.rename("manual scan")
+        assert replacement.name == "replacement_array"
+        assert manager.name_of_imagetool(0) == "manual scan"
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            expected,
+        )
+
+        node = manager._tool_graph.root_wrappers[0]
+        provenance = node.provenance_spec
+        assert provenance is not None
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"scan": replacement})
+        xr.testing.assert_identical(namespace["derived"], expected)
+
+        workspace_path = tmp_path / "watched-manual-name.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        restored = manager._tool_graph.root_wrappers[0]
+        assert restored.name == "manual scan"
+        reconnected = _batch_data("reconnected_array", offset=200.0)
+        manager._data_watched_update("scan", "watched-uid", reconnected)
+
+        assert restored.name == "manual scan"
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            reconnected.rename("manual scan"),
+        )
+
+
+def test_watched_variable_preserves_empty_manual_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("source_array")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_watched_update("scan", "watched-uid", source)
+        manager.rename_imagetool(0, "")
+
+        expected = source.rename(None)
+        node = manager._tool_graph.root_wrappers[0]
+        assert node.name == ""
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            expected,
+        )
+        provenance = node.provenance_spec
+        assert provenance is not None
+        assert provenance.operations == (RenameOperation(name=None),)
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"scan": source})
+        xr.testing.assert_identical(namespace["derived"], expected)
+
+        workspace_path = tmp_path / "watched-empty-name.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        restored = manager._tool_graph.root_wrappers[0]
+        assert restored.name == ""
+        restored_data = manager.get_imagetool(0).slicer_area.data
+        xr.testing.assert_identical(restored_data, expected)
+        provenance = restored.provenance_spec
+        assert provenance is not None
+        assert provenance.operations == (RenameOperation(name=None),)
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"scan": source})
+        xr.testing.assert_identical(namespace["derived"], restored_data)
+
+        reconnected = _batch_data("reconnected_array", offset=100.0)
+        manager._data_watched_update("scan", "watched-uid", reconnected)
+
+        expected = reconnected.rename(None)
+        assert restored.name == ""
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            expected,
+        )
+        provenance = restored.provenance_spec
+        assert provenance is not None
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"scan": reconnected})
+        xr.testing.assert_identical(namespace["derived"], expected)
 
 
 def test_watched_metadata_assignments_retain_workspace_replay_source(
@@ -3710,10 +3842,9 @@ def test_batch_transform_memory_preflight_runs_before_processing(
         def source_spec_for_data(
             self,
             data: xr.DataArray,
-            new_name: str | None = None,
         ) -> ToolProvenanceSpec:
             self.source_spec_calls += 1
-            return super().source_spec_for_data(data, new_name)
+            return super().source_spec_for_data(data)
 
         def preflight_data(self, data: xr.DataArray) -> None:
             del data
