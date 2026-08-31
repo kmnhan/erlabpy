@@ -9,11 +9,13 @@ __all__ = [
     "symmetrize_nfold",
 ]
 
+import threading
 import typing
 import warnings
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 
+import numba
 import numpy as np
 import scipy
 import xarray as xr
@@ -23,6 +25,15 @@ import erlab
 if typing.TYPE_CHECKING:
     import scipy.ndimage
     import scipy.special  # noqa: TC004
+
+_NUMBA_AFFINE_DTYPES = frozenset(
+    {
+        np.dtype(np.float32),
+        np.dtype(np.float64),
+        np.dtype(np.complex64),
+        np.dtype(np.complex128),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +189,200 @@ def _aligned_affine_matrix(
     return translation @ base_matrix
 
 
+@numba.njit(nogil=True, inline="always", cache=True, fastmath={"contract"})
+def _map_affine_point(
+    matrix: np.ndarray, y_index: int, x_index: int
+) -> tuple[float, float]:
+    """Map one output point to input pixel coordinates."""
+    mapped_y = matrix[0, 2]
+    mapped_y += matrix[0, 0] * y_index
+    mapped_y += matrix[0, 1] * x_index
+    mapped_x = matrix[1, 2]
+    mapped_x += matrix[1, 0] * y_index
+    mapped_x += matrix[1, 1] * x_index
+    return mapped_y, mapped_x
+
+
+@numba.njit(nogil=True, cache=True, fastmath={"contract"})
+def _rotation_geometry_bounds(
+    matrices: np.ndarray,
+    input_shape: tuple[int, int],
+    output_shape: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Return the tight output bounds that sample the input plane."""
+    input_y, input_x = input_shape
+    output_y, output_x = output_shape
+    y_start = output_y
+    y_stop = 0
+    x_start = output_x
+    x_stop = 0
+
+    for y_index in range(output_y):
+        for x_index in range(output_x):
+            for matrix_index in range(matrices.shape[0]):
+                mapped_y, mapped_x = _map_affine_point(
+                    matrices[matrix_index], y_index, x_index
+                )
+                if 0.0 <= mapped_y <= input_y - 1 and 0.0 <= mapped_x <= input_x - 1:
+                    y_start = min(y_start, y_index)
+                    y_stop = max(y_stop, y_index + 1)
+                    x_start = min(x_start, x_index)
+                    x_stop = max(x_stop, x_index + 1)
+                    break
+
+    if y_stop == 0:
+        return 0, 0, 0, 0
+    return y_start, y_stop, x_start, x_stop
+
+
+@numba.njit(nogil=True, inline="always", cache=True, fastmath={"contract"})
+def _fill_affine_row(
+    arr: np.ndarray,
+    matrices: np.ndarray,
+    output_origin: tuple[int, int],
+    cval: complex,
+    out: np.ndarray,
+    batch_index: int,
+    y_index: int,
+) -> None:
+    """Fill one output row with one affine transform or their mean."""
+    matrix_count = matrices.shape[0]
+    _, input_y, input_x = arr.shape
+    output_y_index = y_index + output_origin[0]
+    for x_index in range(out.shape[2]):
+        output_x_index = x_index + output_origin[1]
+        count = 0
+        for matrix_index in range(matrix_count):
+            mapped_y, mapped_x = _map_affine_point(
+                matrices[matrix_index], output_y_index, output_x_index
+            )
+            if (
+                mapped_y < 0.0
+                or mapped_y > input_y - 1
+                or mapped_x < 0.0
+                or mapped_x > input_x - 1
+            ):
+                value = cval
+            else:
+                y0 = int(np.floor(mapped_y))
+                x0 = int(np.floor(mapped_x))
+                y_weight = mapped_y - y0
+                x_weight = mapped_x - x0
+                if y0 == input_y - 1:
+                    y0 -= 1
+                    y_weight = 1.0
+                if x0 == input_x - 1:
+                    x0 -= 1
+                    x_weight = 1.0
+                y1 = y0 + 1
+                x1 = x0 + 1
+                value00 = arr[batch_index, y0, x0]
+                value01 = arr[batch_index, y0, x1]
+                value10 = arr[batch_index, y1, x0]
+                value11 = arr[batch_index, y1, x1]
+                weight00 = (1.0 - y_weight) * (1.0 - x_weight)
+                weight01 = (1.0 - y_weight) * x_weight
+                weight10 = y_weight * (1.0 - x_weight)
+                weight11 = y_weight * x_weight
+                if isinstance(value00, (complex, np.complex64, np.complex128)):
+                    value = complex(
+                        weight00 * value00.real
+                        + weight01 * value01.real
+                        + weight10 * value10.real
+                        + weight11 * value11.real,
+                        weight00 * value00.imag
+                        + weight01 * value01.imag
+                        + weight10 * value10.imag
+                        + weight11 * value11.imag,
+                    )
+                elif (
+                    np.isnan(value00)
+                    or np.isnan(value01)
+                    or np.isnan(value10)
+                    or np.isnan(value11)
+                ):
+                    value = np.nan
+                else:
+                    value = (
+                        weight00 * value00
+                        + weight01 * value01
+                        + weight10 * value10
+                        + weight11 * value11
+                    )
+
+            if matrix_count == 1:
+                out[batch_index, y_index, x_index] = value
+            elif not np.isnan(value):
+                if count == 0:
+                    out[batch_index, y_index, x_index] = value
+                else:
+                    out[batch_index, y_index, x_index] += value
+                count += 1
+
+        if matrix_count != 1:
+            if count == 0:
+                out[batch_index, y_index, x_index] = np.nan
+            else:
+                out[batch_index, y_index, x_index] /= count
+
+
+@numba.njit(nogil=True, parallel=True, cache=True, fastmath={"contract"})
+def _apply_affine_linear_numba(
+    arr: np.ndarray,
+    matrices: np.ndarray,
+    output_origin: tuple[int, int],
+    cval: complex,
+    out: np.ndarray,
+) -> None:
+    """Apply one or average multiple affine transforms in parallel."""
+    for row_index in numba.prange(arr.shape[0] * out.shape[1]):
+        batch_index = row_index // out.shape[1]
+        y_index = row_index - batch_index * out.shape[1]
+        _fill_affine_row(arr, matrices, output_origin, cval, out, batch_index, y_index)
+
+
+@numba.njit(nogil=True, cache=True, fastmath={"contract"})
+def _apply_affine_linear_numba_serial(
+    arr: np.ndarray,
+    matrices: np.ndarray,
+    output_origin: tuple[int, int],
+    cval: complex,
+    out: np.ndarray,
+) -> None:
+    """Apply one or average multiple affine transforms serially."""
+    for row_index in range(arr.shape[0] * out.shape[1]):
+        batch_index = row_index // out.shape[1]
+        y_index = row_index - batch_index * out.shape[1]
+        _fill_affine_row(arr, matrices, output_origin, cval, out, batch_index, y_index)
+
+
+def _apply_affine_linear(
+    arr: np.ndarray,
+    matrices: np.ndarray,
+    output_shape: tuple[int, int],
+    cval: complex,
+    *,
+    serial: bool,
+    output_origin: tuple[int, int] = (0, 0),
+) -> np.ndarray:
+    """Apply affine transforms over arbitrary batch dimensions."""
+    input_shape = arr.shape
+    arr = np.ascontiguousarray(arr).reshape((-1, *arr.shape[-2:]))
+    out = np.empty((arr.shape[0], *output_shape), dtype=arr.dtype)
+    use_serial = serial or threading.current_thread() is not threading.main_thread()
+    kernel = (
+        _apply_affine_linear_numba_serial if use_serial else _apply_affine_linear_numba
+    )
+    kernel(
+        arr,
+        matrices,
+        output_origin,
+        np.asarray(cval, dtype=arr.dtype)[()],
+        out,
+    )
+    return out.reshape((*input_shape[:-2], *output_shape))
+
+
 def _rotated_plane_shape(
     base_matrix: np.ndarray, in_plane_shape: tuple[int, int]
 ) -> tuple[int, int]:
@@ -216,8 +421,9 @@ def rotate(
         along the dimensions specified in `axes`. If a dict, it must have keys that
         correspond to `axes`. Default is (0, 0).
     reshape
-        If `True`, the output shape is adapted so that the input array is contained
-        completely in the output. Default is `True`.
+        If `True`, the output shape is adapted to the full rotated bounding box. The
+        extent depends on the input coordinates, not on finite data values. Default is
+        `True`.
     order
         The order of the spline interpolation, default is 1. The order has to be in the
         range 0-5.
@@ -258,34 +464,49 @@ def rotate(
             plane.in_pixel_center[:2],
         )
 
-    # Apply the same 2D affine transform to each plane slice.
-    def _affine_2d(arr2d: np.ndarray) -> np.ndarray:
-        out = np.empty(tuple(out_plane_shape), dtype=arr2d.dtype)
-        scipy.ndimage.affine_transform(
-            arr2d,
-            matrix,
-            output_shape=tuple(out_plane_shape),
-            output=out,
-            order=order,
-            mode=mode,
-            cval=cval,
-            prefilter=prefilter,
-        )
-        return out
-
     rot_ydim, rot_xdim, output_core_dims, output_sizes = _rotation_output_signature(
         plane.ydim, plane.xdim, out_plane_shape, reshape=reshape
     )
 
+    if order == 1 and mode == "constant" and darr.dtype in _NUMBA_AFFINE_DTYPES:
+        apply_affine = _apply_affine_linear
+        apply_kwargs = {
+            "matrices": matrix[None, ...],
+            "output_shape": out_plane_shape,
+            "cval": cval,
+            "serial": darr.chunks is not None,
+        }
+        vectorize = False
+    else:
+
+        def _apply_affine_scipy(arr2d: np.ndarray) -> np.ndarray:
+            out = np.empty(out_plane_shape, dtype=arr2d.dtype)
+            scipy.ndimage.affine_transform(
+                arr2d,
+                matrix,
+                output_shape=out_plane_shape,
+                output=out,
+                order=order,
+                mode=mode,
+                cval=cval,
+                prefilter=prefilter,
+            )
+            return out
+
+        apply_affine = _apply_affine_scipy
+        apply_kwargs = {}
+        vectorize = True
+
     rotated: xr.DataArray = xr.apply_ufunc(
-        _affine_2d,
+        apply_affine,
         darr,
         input_core_dims=[[plane.ydim, plane.xdim]],
         output_core_dims=output_core_dims,
+        kwargs=apply_kwargs,
         dask="parallelized",
         output_dtypes=[darr.dtype],
         dask_gufunc_kwargs={"output_sizes": output_sizes},
-        vectorize=True,
+        vectorize=vectorize,
         keep_attrs="no_conflicts",
     )
 
@@ -316,9 +537,6 @@ def rotate(
                 plane.xdim: np.linspace(start_x, end_x, out_plane_shape[1]),
             }
         )
-
-        # Trim all-NaN edges
-        rotated = erlab.utils.array.trim_na(rotated, plane.axes_dims)
 
     return rotated.transpose(*darr.dims)
 
@@ -358,8 +576,9 @@ def symmetrize_nfold(
         correspond to `axes`. Default is (0, 0).
     reshape
         If `True`, the output shape is expanded to contain the full extent of all
-        rotated copies. If `False`, the symmetrized result is returned on the original
-        grid. Default is `True`.
+        rotated copies. The extent depends on the input coordinates, not on finite data
+        values. If `False`, the symmetrized result is returned on the original grid.
+        Default is `True`.
     order
         The order of the spline interpolation, default is 1. The order has to be in the
         range 0-5.
@@ -453,64 +672,95 @@ def symmetrize_nfold(
         out_center = plane.in_pixel_center[:2]
 
     # Precompute aligned affine matrices for each rotated copy.
-    matrices = [
-        _aligned_affine_matrix(
-            plane.base_matrix(360.0 * idx / fold),
-            plane.in_pixel_center[:2],
-            out_center,
+    matrices = np.stack(
+        [
+            _aligned_affine_matrix(
+                plane.base_matrix(360.0 * idx / fold),
+                plane.in_pixel_center[:2],
+                out_center,
+            )
+            for idx in range(fold)
+        ]
+    )
+
+    full_out_plane_shape = out_plane_shape
+    output_origin = (0, 0)
+    output_slices = (slice(None), slice(None))
+    if reshape and mode == "constant" and bool(np.isnan(cval)):
+        y_start, y_stop, x_start, x_stop = _rotation_geometry_bounds(
+            matrices, plane.in_plane_shape, out_plane_shape
         )
-        for idx in range(fold)
-    ]
+        y_slice = slice(y_start, y_stop)
+        x_slice = slice(x_start, x_stop)
+        out_ycoords = typing.cast("np.ndarray", out_ycoords)[y_slice]
+        out_xcoords = typing.cast("np.ndarray", out_xcoords)[x_slice]
+        out_plane_shape = (len(out_ycoords), len(out_xcoords))
+        output_origin = (y_start, x_start)
+        output_slices = (y_slice, x_slice)
 
     dtype = rotated_input.dtype
-    nan_value = np.array(np.nan, dtype=dtype)[()]
-
-    # Accumulate the mean directly to avoid concat/mean overhead.
-    def _average_rotations(arr2d: np.ndarray) -> np.ndarray:
-        total = np.zeros(out_plane_shape, dtype=dtype)
-        count = np.zeros(out_plane_shape, dtype=np.intp)
-        rotated = np.empty(out_plane_shape, dtype=dtype)
-
-        for matrix in matrices:
-            scipy.ndimage.affine_transform(
-                arr2d,
-                matrix,
-                output_shape=out_plane_shape,
-                output=rotated,
-                order=order,
-                mode=mode,
-                cval=cval,
-                prefilter=prefilter,
-            )
-
-            valid = ~np.isnan(rotated)
-            # Fast path when the full rotated plane is finite.
-            if bool(valid.all()):
-                total += rotated
-                count += 1
-            else:
-                np.copyto(rotated, 0, where=~valid)
-                total += rotated
-                count += valid
-
-        out = np.full(out_plane_shape, nan_value, dtype=dtype)
-        np.divide(total, count, out=out, where=count > 0)
-        return out
-
-    # Apply the precomputed symmetrization kernel slice by slice.
     rot_ydim, rot_xdim, output_core_dims, output_sizes = _rotation_output_signature(
         plane.ydim, plane.xdim, out_plane_shape, reshape=reshape
     )
 
+    if order == 1 and mode == "constant" and dtype in _NUMBA_AFFINE_DTYPES:
+        average_rotations = _apply_affine_linear
+        apply_kwargs = {
+            "matrices": matrices,
+            "output_shape": out_plane_shape,
+            "output_origin": output_origin,
+            "cval": cval,
+            "serial": rotated_input.chunks is not None,
+        }
+        vectorize = False
+    else:
+        nan_value = np.array(np.nan, dtype=dtype)[()]
+
+        # Accumulate the mean directly to avoid concat/mean overhead.
+        def _average_rotations_scipy(arr2d: np.ndarray) -> np.ndarray:
+            total = np.zeros(full_out_plane_shape, dtype=dtype)
+            count = np.zeros(full_out_plane_shape, dtype=np.intp)
+            rotated = np.empty(full_out_plane_shape, dtype=dtype)
+
+            for matrix in matrices:
+                scipy.ndimage.affine_transform(
+                    arr2d,
+                    matrix,
+                    output_shape=full_out_plane_shape,
+                    output=rotated,
+                    order=order,
+                    mode=mode,
+                    cval=cval,
+                    prefilter=prefilter,
+                )
+
+                valid = ~np.isnan(rotated)
+                if bool(valid.all()):
+                    total += rotated
+                    count += 1
+                else:
+                    np.copyto(rotated, 0, where=~valid)
+                    total += rotated
+                    count += valid
+
+            out = np.full(full_out_plane_shape, nan_value, dtype=dtype)
+            np.divide(total, count, out=out, where=count > 0)
+            return out[output_slices]
+
+        average_rotations = _average_rotations_scipy
+        apply_kwargs = {}
+        vectorize = True
+
     out = xr.apply_ufunc(
-        _average_rotations,
+        average_rotations,
         rotated_input,
         input_core_dims=[[plane.ydim, plane.xdim]],
         output_core_dims=output_core_dims,
+        kwargs=apply_kwargs,
         dask="parallelized",
         output_dtypes=[dtype],
         dask_gufunc_kwargs={"output_sizes": output_sizes},
-        vectorize=True,
+        vectorize=vectorize,
         keep_attrs="no_conflicts",
     )
 
@@ -522,10 +772,6 @@ def symmetrize_nfold(
 
     # Drop dependent coordinates tied to the rotated plane.
     out = _drop_rotated_axis_coords(out, plane.axes_dims)
-
-    if reshape:
-        # Remove empty margins introduced by the expanded bounding box.
-        out = erlab.utils.array.trim_na(out, plane.axes_dims)
 
     return out.assign_attrs(darr.attrs).transpose(*darr.dims)
 
