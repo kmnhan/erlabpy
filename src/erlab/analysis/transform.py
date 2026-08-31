@@ -98,6 +98,14 @@ def _resolve_rotation_plane(
     dy = float(ycoords[1] - ycoords[0])
     dx = float(xcoords[1] - xcoords[0])
     pixel_ratio = float(abs(dy / dx))
+    # Keep nominally square pixels exact across affine compiler implementations.
+    if np.isclose(
+        pixel_ratio,
+        1.0,
+        rtol=8 * np.finfo(float).eps,
+        atol=0.0,
+    ):
+        pixel_ratio = 1.0
 
     # Interpret the center in data coordinates.
     if isinstance(center, Mapping):

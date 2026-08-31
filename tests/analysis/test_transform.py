@@ -330,6 +330,10 @@ def test_rotate_linear_numba_scipy_boundary_rounding(
 
     np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
     xr.testing.assert_allclose(actual, expected)
+    if angle == 90.0:
+        expected_nan = np.zeros((9, 7), dtype=bool)
+        expected_nan[7:, 3:5] = True
+        np.testing.assert_array_equal(np.isnan(actual), expected_nan)
 
 
 def test_rotate_linear_numba_dask_matches_eager(monkeypatch) -> None:
