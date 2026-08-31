@@ -1,9 +1,50 @@
+import concurrent.futures
+
+import dask.callbacks
 import numpy as np
 import pytest
 import xarray as xr
 import xarray.testing
 
+import erlab.analysis.transform
 from erlab.analysis.transform import rotate, shift, symmetrize, symmetrize_nfold
+
+
+def _symmetrize_nfold_reference(
+    darr: xr.DataArray,
+    fold: int,
+    *,
+    order: int,
+    monkeypatch: pytest.MonkeyPatch,
+    center: tuple[float, float] = (0.0, 0.0),
+    mode: str = "constant",
+) -> xr.DataArray:
+    if not (
+        np.issubdtype(darr.dtype, np.floating)
+        or np.issubdtype(darr.dtype, np.complexfloating)
+    ):
+        darr = darr.astype(np.result_type(darr.dtype, float))
+    with monkeypatch.context() as scipy_path:
+        scipy_path.setattr(
+            erlab.analysis.transform, "_NUMBA_AFFINE_DTYPES", frozenset()
+        )
+        return xr.concat(
+            [
+                rotate(
+                    darr,
+                    360.0 * idx / fold,
+                    axes=("y", "x"),
+                    center=center,
+                    reshape=False,
+                    order=order,
+                    mode=mode,
+                    cval=np.nan,
+                    prefilter=order > 1,
+                )
+                for idx in range(fold)
+            ],
+            dim="rotation",
+        ).mean("rotation", skipna=True)
 
 
 @pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
@@ -125,6 +166,314 @@ def test_rotate(use_dask) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("dtype", "array_order", "read_only"),
+    [
+        pytest.param(np.float32, "C", False, id="float32-c-writeable"),
+        pytest.param(np.float64, "F", True, id="float64-f-read-only"),
+        pytest.param(np.complex64, "C", True, id="complex64-c-read-only"),
+        pytest.param(np.complex128, "F", False, id="complex128-f-writeable"),
+    ],
+)
+def test_rotate_linear_numba_dtype(dtype, array_order, read_only, monkeypatch) -> None:
+    values = np.array(np.arange(63).reshape(7, 9), dtype=dtype, order=array_order)
+    if np.issubdtype(dtype, np.complexfloating):
+        values *= 1.0 + 0.5j
+    values[2, 5] = np.nan
+    values.setflags(write=not read_only)
+    original = values.copy()
+    darr = xr.DataArray(
+        values,
+        dims=("y", "x"),
+        coords={"y": np.linspace(-1.2, 1.2, 7), "x": np.linspace(-2.0, 2.0, 9)},
+    )
+    kwargs = {
+        "angle": 33.0,
+        "axes": ("y", "x"),
+        "center": (0.15, -0.2),
+        "reshape": False,
+        "order": 1,
+        "mode": "constant",
+        "cval": 0.25,
+        "prefilter": False,
+    }
+
+    with monkeypatch.context() as scipy_path:
+        scipy_path.setattr(
+            erlab.analysis.transform, "_NUMBA_AFFINE_DTYPES", frozenset()
+        )
+        expected = rotate(darr, **kwargs)
+    actual = rotate(darr, **kwargs)
+
+    assert actual.dtype == np.dtype(dtype)
+    xr.testing.assert_allclose(actual, expected)
+    np.testing.assert_array_equal(values, original)
+    assert values.flags.writeable == (not read_only)
+
+
+@pytest.mark.parametrize(
+    "missing_value",
+    [
+        pytest.param(complex(np.nan, 7.0), id="real-nan"),
+        pytest.param(complex(7.0, np.nan), id="imaginary-nan"),
+    ],
+)
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+def test_rotate_linear_numba_complex_nan_components(
+    dtype, missing_value, monkeypatch
+) -> None:
+    values = np.arange(15, dtype=dtype).reshape(3, 5) + 1j * np.arange(
+        100, 115, dtype=dtype
+    ).reshape(3, 5)
+    values[1, 2] = missing_value
+    darr = xr.DataArray(
+        values,
+        dims=("y", "x"),
+        coords={"y": np.arange(-1.0, 2.0), "x": np.arange(-2.0, 3.0)},
+    )
+    kwargs = {
+        "angle": 0.0,
+        "axes": ("y", "x"),
+        "reshape": False,
+        "order": 1,
+        "mode": "constant",
+        "cval": np.nan,
+        "prefilter": False,
+    }
+
+    with monkeypatch.context() as scipy_path:
+        scipy_path.setattr(
+            erlab.analysis.transform, "_NUMBA_AFFINE_DTYPES", frozenset()
+        )
+        expected = rotate(darr, **kwargs)
+    actual = rotate(darr, **kwargs)
+
+    xr.testing.assert_allclose(actual.real, expected.real)
+    xr.testing.assert_allclose(actual.imag, expected.imag)
+
+
+@pytest.mark.parametrize(
+    ("order", "mode", "dtype"),
+    [
+        pytest.param(1, "constant", np.int16, id="integer"),
+        pytest.param(0, "constant", np.float64, id="nearest-order"),
+        pytest.param(3, "constant", np.float64, id="spline-order"),
+        pytest.param(1, "nearest", np.float64, id="boundary-mode"),
+    ],
+)
+def test_rotate_scipy_fallback(order, mode, dtype, monkeypatch) -> None:
+    def _fail_fast_path(*args, **kwargs) -> None:
+        raise AssertionError("Numba fast path was used")
+
+    monkeypatch.setattr(
+        erlab.analysis.transform, "_apply_affine_linear", _fail_fast_path
+    )
+    darr = xr.DataArray(
+        np.arange(63).reshape(7, 9).astype(dtype),
+        dims=("y", "x"),
+        coords={"y": np.linspace(-1.2, 1.2, 7), "x": np.linspace(-2.0, 2.0, 9)},
+    )
+
+    actual = rotate(
+        darr,
+        33.0,
+        axes=("y", "x"),
+        center=(0.15, -0.2),
+        reshape=False,
+        order=order,
+        mode=mode,
+        cval=0.0,
+        prefilter=order > 1,
+    )
+
+    assert actual.shape == darr.shape
+    assert actual.dtype == np.dtype(dtype)
+
+
+@pytest.mark.parametrize(
+    ("shape", "angle", "reshape", "nan_index"),
+    [
+        pytest.param((3, 5), 0.0, False, (2, 1), id="identity-stencil"),
+        pytest.param((7, 9), 90.0, True, (4, 1), id="right-angle-reshape"),
+    ],
+)
+def test_rotate_linear_numba_scipy_boundary_rounding(
+    shape, angle, reshape, nan_index, monkeypatch
+) -> None:
+    values = np.arange(np.prod(shape), dtype=float).reshape(shape)
+    values[nan_index] = np.nan
+    darr = xr.DataArray(
+        values,
+        dims=("y", "x"),
+        coords={
+            "y": (np.arange(shape[0]) - (shape[0] - 1) / 2) * 0.4,
+            "x": (np.arange(shape[1]) - (shape[1] - 1) / 2) * 0.4,
+        },
+    )
+    kwargs = {
+        "angle": angle,
+        "axes": ("y", "x"),
+        "center": (0.0, 0.0),
+        "reshape": reshape,
+        "order": 1,
+        "mode": "constant",
+        "cval": np.nan,
+        "prefilter": False,
+    }
+
+    with monkeypatch.context() as scipy_path:
+        scipy_path.setattr(
+            erlab.analysis.transform, "_NUMBA_AFFINE_DTYPES", frozenset()
+        )
+        expected = rotate(darr, **kwargs)
+    actual = rotate(darr, **kwargs)
+
+    np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
+    xr.testing.assert_allclose(actual, expected)
+    if angle == 90.0:
+        expected_nan = np.zeros((9, 7), dtype=bool)
+        expected_nan[7:, 3:5] = True
+        np.testing.assert_array_equal(np.isnan(actual), expected_nan)
+
+
+def test_rotate_linear_numba_dask_matches_eager(monkeypatch) -> None:
+    values = np.arange(126, dtype=float).reshape(2, 7, 9)
+    values[0, 2, 5] = np.nan
+    darr = xr.DataArray(
+        values,
+        dims=("eV", "y", "x"),
+        coords={
+            "eV": [-0.1, 0.0],
+            "y": np.linspace(-1.2, 1.2, 7),
+            "x": np.linspace(-2.0, 2.0, 9),
+        },
+    )
+    kwargs = {
+        "angle": 33.0,
+        "axes": ("y", "x"),
+        "center": (0.15, -0.2),
+        "reshape": False,
+        "order": 1,
+        "mode": "constant",
+        "cval": np.nan,
+        "prefilter": False,
+    }
+    expected = rotate(darr, **kwargs)
+
+    def _fail_parallel_kernel(*args, **kwargs) -> None:
+        raise AssertionError("Parallel Numba kernel was used inside a Dask task")
+
+    monkeypatch.setattr(
+        erlab.analysis.transform, "_apply_affine_linear_numba", _fail_parallel_kernel
+    )
+    construction_tasks = []
+
+    with dask.callbacks.Callback(
+        pretask=lambda key, *args: construction_tasks.append(key)
+    ):
+        actual = rotate(darr.chunk({"eV": 1, "y": -1, "x": -1}), **kwargs)
+
+    assert construction_tasks == []
+    assert actual.chunks is not None
+    compute_tasks = []
+    with dask.callbacks.Callback(pretask=lambda key, *args: compute_tasks.append(key)):
+        computed = actual.compute(scheduler="threads")
+    kernel_tasks = [
+        key
+        for key in compute_tasks
+        if "apply_affine_linear" in str(key[0] if isinstance(key, tuple) else key)
+    ]
+    assert len(kernel_tasks) == 2
+    xr.testing.assert_allclose(computed, expected)
+
+
+def test_affine_linear_numba_worker_threads_use_serial(monkeypatch) -> None:
+    darr = xr.DataArray(
+        np.arange(63, dtype=float).reshape(7, 9),
+        dims=("y", "x"),
+        coords={"y": np.linspace(-1.2, 1.2, 7), "x": np.linspace(-2.0, 2.0, 9)},
+    )
+    rotate_kwargs = {
+        "angle": 33.0,
+        "axes": ("y", "x"),
+        "center": (0.15, -0.2),
+        "reshape": False,
+    }
+    symmetrize_kwargs = {
+        "fold": 3,
+        "axes": ("y", "x"),
+        "center": (0.15, -0.2),
+        "reshape": False,
+    }
+    expected_rotate = rotate(darr, **rotate_kwargs)
+    expected_symmetrized = symmetrize_nfold(darr, **symmetrize_kwargs)
+
+    def _fail_parallel_kernel(*args, **kwargs) -> None:
+        raise AssertionError("Parallel Numba kernel was used inside a worker thread")
+
+    monkeypatch.setattr(
+        erlab.analysis.transform, "_apply_affine_linear_numba", _fail_parallel_kernel
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        rotate_future = executor.submit(rotate, darr, **rotate_kwargs)
+        symmetrize_future = executor.submit(symmetrize_nfold, darr, **symmetrize_kwargs)
+        actual_rotate = rotate_future.result()
+        actual_symmetrized = symmetrize_future.result()
+
+    xr.testing.assert_allclose(actual_rotate, expected_rotate)
+    xr.testing.assert_allclose(actual_symmetrized, expected_symmetrized)
+
+
+def test_rotate_reshape_dask_is_lazy_and_geometry_based() -> None:
+    values = np.full((2, 3, 5), np.nan)
+    darr = xr.DataArray(
+        values,
+        dims=("eV", "y", "x"),
+        coords={
+            "eV": [-0.1, 0.0],
+            "y": np.arange(-1.0, 2.0),
+            "x": np.arange(-2.0, 3.0),
+        },
+    )
+    lazy = darr.chunk({"eV": 1, "y": -1, "x": -1})
+    construction_tasks = []
+
+    with dask.callbacks.Callback(
+        pretask=lambda key, *args: construction_tasks.append(key)
+    ):
+        actual = rotate(
+            lazy,
+            30.0,
+            axes=("y", "x"),
+            center=(0.0, 0.0),
+            reshape=True,
+            order=1,
+            mode="constant",
+            cval=np.nan,
+            prefilter=False,
+        )
+
+    assert construction_tasks == []
+    assert actual.chunks is not None
+    assert actual.sizes == {"eV": 2, "y": 5, "x": 6}
+    np.testing.assert_allclose(actual.y, np.arange(-2.0, 3.0), atol=1e-14)
+    np.testing.assert_allclose(actual.x, np.arange(-2.5, 3.0), atol=1e-14)
+
+    expected = rotate(
+        darr,
+        30.0,
+        axes=("y", "x"),
+        center=(0.0, 0.0),
+        reshape=True,
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+    computed = actual.compute(scheduler="threads")
+    xr.testing.assert_allclose(computed, expected)
+
+
 @pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
 def test_shift(use_dask) -> None:
     # Create a test input DataArray
@@ -219,6 +568,240 @@ def test_symmetrize_nfold(use_dask) -> None:
 
     assert np.issubdtype(sym.dtype, np.floating)
     xr.testing.assert_allclose(sym, expected)
+
+
+@pytest.mark.parametrize(
+    "dtype", [np.int16, np.float32, np.float64, np.complex64, np.complex128]
+)
+@pytest.mark.parametrize("array_order", ["C", "F"], ids=["c_order", "f_order"])
+@pytest.mark.parametrize("read_only", [False, True], ids=["writeable", "read_only"])
+def test_symmetrize_nfold_linear_numba_dtype(
+    dtype, array_order, read_only, monkeypatch
+) -> None:
+    values = np.array(np.arange(63).reshape(7, 9), dtype=dtype, order=array_order)
+    if np.issubdtype(dtype, np.complexfloating):
+        values *= 1.0 + 0.5j
+    values[2, 5] = np.nan if not np.issubdtype(dtype, np.integer) else 0
+    values.setflags(write=not read_only)
+    original = values.copy()
+    darr = xr.DataArray(
+        values,
+        dims=("y", "x"),
+        coords={"y": np.linspace(-1.2, 1.2, 7), "x": np.linspace(-2.0, 2.0, 9)},
+    )
+    center = (0.15, -0.2)
+
+    expected = _symmetrize_nfold_reference(
+        darr, 3, order=1, monkeypatch=monkeypatch, center=center
+    )
+    actual = symmetrize_nfold(
+        darr,
+        3,
+        axes=("y", "x"),
+        center=center,
+        reshape=False,
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+
+    expected_dtype = (
+        np.dtype(np.float64) if np.issubdtype(dtype, np.integer) else np.dtype(dtype)
+    )
+    assert actual.dtype == expected_dtype
+    xr.testing.assert_allclose(actual, expected)
+    np.testing.assert_array_equal(values, original)
+    assert values.flags.writeable == (not read_only)
+
+
+@pytest.mark.parametrize(
+    ("order", "mode"),
+    [(0, "constant"), (1, "constant"), (3, "constant"), (1, "nearest")],
+)
+def test_symmetrize_nfold_interpolation_orders(order, mode, monkeypatch) -> None:
+    darr = xr.DataArray(
+        np.arange(63, dtype=float).reshape(7, 9),
+        dims=("y", "x"),
+        coords={"y": np.linspace(-1.2, 1.2, 7), "x": np.linspace(-2.0, 2.0, 9)},
+    )
+    center = (0.15, -0.2)
+
+    expected = _symmetrize_nfold_reference(
+        darr,
+        3,
+        order=order,
+        monkeypatch=monkeypatch,
+        center=center,
+        mode=mode,
+    )
+    actual = symmetrize_nfold(
+        darr,
+        3,
+        axes=("y", "x"),
+        center=center,
+        reshape=False,
+        order=order,
+        mode=mode,
+        cval=np.nan,
+        prefilter=order > 1,
+    )
+
+    xr.testing.assert_allclose(actual, expected)
+
+
+def test_symmetrize_nfold_linear_numba_nan_stencil(monkeypatch) -> None:
+    values = np.arange(15, dtype=float).reshape(3, 5)
+    values[1, 2] = np.nan
+    darr = xr.DataArray(
+        values,
+        dims=("y", "x"),
+        coords={"y": np.arange(-1.0, 2.0), "x": np.arange(-2.0, 3.0)},
+    )
+
+    expected = _symmetrize_nfold_reference(darr, 2, order=1, monkeypatch=monkeypatch)
+    actual = symmetrize_nfold(
+        darr,
+        2,
+        axes=("y", "x"),
+        center=(0.0, 0.0),
+        reshape=False,
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+
+    xr.testing.assert_allclose(actual, expected)
+
+
+def test_symmetrize_nfold_reshape_dask_is_lazy_and_geometry_based() -> None:
+    values = np.full((2, 3, 5), np.nan)
+    darr = xr.DataArray(
+        values,
+        dims=("eV", "y", "x"),
+        coords={
+            "eV": [-0.1, 0.0],
+            "y": np.arange(-1.0, 2.0),
+            "x": np.arange(-2.0, 3.0),
+        },
+    )
+    lazy = darr.chunk({"eV": 1, "y": -1, "x": -1})
+    executed_tasks = []
+
+    with dask.callbacks.Callback(pretask=lambda key, *args: executed_tasks.append(key)):
+        actual = symmetrize_nfold(
+            lazy,
+            4,
+            axes=("y", "x"),
+            center=(0.0, 0.0),
+            reshape=True,
+            order=1,
+            mode="constant",
+            cval=np.nan,
+            prefilter=False,
+        )
+
+    assert executed_tasks == []
+    assert actual.chunks is not None
+    assert actual.sizes == {"eV": 2, "y": 5, "x": 5}
+    expected = symmetrize_nfold(
+        darr,
+        4,
+        axes=("y", "x"),
+        center=(0.0, 0.0),
+        reshape=True,
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+    compute_tasks = []
+    with dask.callbacks.Callback(pretask=lambda key, *args: compute_tasks.append(key)):
+        computed = actual.compute(scheduler="threads")
+    kernel_tasks = [
+        key
+        for key in compute_tasks
+        if "apply_affine_linear" in str(key[0] if isinstance(key, tuple) else key)
+    ]
+    assert len(kernel_tasks) == 2
+    xr.testing.assert_allclose(computed, expected)
+
+
+def test_symmetrize_nfold_reshape_numba_matches_scipy(monkeypatch) -> None:
+    darr = xr.DataArray(
+        np.arange(15, dtype=float).reshape(3, 5),
+        dims=("y", "x"),
+        coords={
+            "y": (np.arange(3) - 1) * 0.4,
+            "x": (np.arange(5) - 2) * 0.4,
+        },
+    )
+    kwargs = {
+        "fold": 3,
+        "axes": ("y", "x"),
+        "center": (0.0, 0.0),
+        "reshape": True,
+        "order": 1,
+        "mode": "constant",
+        "cval": np.nan,
+        "prefilter": False,
+    }
+
+    with monkeypatch.context() as scipy_path:
+        scipy_path.setattr(
+            erlab.analysis.transform, "_NUMBA_AFFINE_DTYPES", frozenset()
+        )
+        expected = symmetrize_nfold(darr, **kwargs)
+    actual = symmetrize_nfold(darr, **kwargs)
+
+    np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
+    xr.testing.assert_allclose(actual, expected)
+
+
+def test_symmetrize_nfold_reshape_geometry_matches_scipy_support() -> None:
+    darr = xr.DataArray(
+        np.ones((11, 11)),
+        dims=("y", "x"),
+        coords={
+            "y": (np.arange(11) - 5) * -0.4,
+            "x": (np.arange(11) - 5) * 0.7,
+        },
+    )
+
+    actual = symmetrize_nfold(darr, 3, axes=("y", "x"), reshape=True)
+
+    assert actual.sizes == {"y": 21, "x": 11}
+    np.testing.assert_allclose(actual.y, np.linspace(4.0, -4.0, 21), atol=1e-14)
+    np.testing.assert_allclose(actual.x, np.linspace(-3.5, 3.5, 11), atol=1e-14)
+
+
+def test_rotation_geometry_bounds_no_intersection() -> None:
+    matrices = np.array([[[1.0, 0.0, 100.0], [0.0, 1.0, 100.0], [0.0, 0.0, 1.0]]])
+
+    bounds = erlab.analysis.transform._rotation_geometry_bounds(
+        matrices, (3, 3), (4, 5)
+    )
+
+    assert bounds == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("mode", "cval"),
+    [pytest.param("constant", 0.25, id="finite-cval"), pytest.param("nearest", np.nan)],
+)
+def test_symmetrize_nfold_reshape_keeps_finite_padding(mode, cval) -> None:
+    darr = xr.DataArray(
+        np.ones((3, 5)),
+        dims=("y", "x"),
+        coords={"y": np.arange(-1.0, 2.0), "x": np.arange(-2.0, 3.0)},
+    )
+
+    actual = symmetrize_nfold(
+        darr, 3, axes=("y", "x"), reshape=True, mode=mode, cval=cval
+    )
+
+    assert actual.sizes == {"y": 7, "x": 7}
 
 
 def test_symmetrize_nfold_broadcasts_over_remaining_dims() -> None:
