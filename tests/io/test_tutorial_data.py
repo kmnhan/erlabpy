@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import erlab.io.dataloader as dataloader
 from erlab.interactive.imagetool.manager._tutorial.data import (
     TutorialDataGenerationCancelled,
     generate_tutorial_data_files,
     tutorial_loader_registration,
 )
-from erlab.io.dataloader import LoaderNotFoundError, LoaderRegistry
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +50,7 @@ def test_tutorial_raw_files(tutorial_files) -> None:
 
 
 def test_tutorial_loader_and_registry_cleanup(tutorial_files) -> None:
-    registry = LoaderRegistry.instance()
+    registry = dataloader.LoaderRegistry.instance()
     previous_loaders = registry._loaders.copy()
     previous_aliases = registry._alias_mapping.copy()
 
@@ -77,12 +77,12 @@ def test_tutorial_loader_and_registry_cleanup(tutorial_files) -> None:
     assert registry._loaders == previous_loaders
     assert registry._alias_mapping == previous_aliases
     if "tutorial" not in previous_aliases:
-        with pytest.raises(LoaderNotFoundError):
+        with pytest.raises(dataloader.LoaderNotFoundError):
             registry.get("tutorial")
 
 
 def test_tutorial_loader_registry_cleanup_after_failure() -> None:
-    registry = LoaderRegistry.instance()
+    registry = dataloader.LoaderRegistry.instance()
     previous_loaders = registry._loaders.copy()
     previous_aliases = registry._alias_mapping.copy()
 

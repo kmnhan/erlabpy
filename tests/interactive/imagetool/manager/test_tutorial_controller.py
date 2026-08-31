@@ -223,6 +223,7 @@ def test_figure_composer_target_uses_the_tutorial_manager(monkeypatch, qtbot) ->
     unrelated.show()
 
     monkeypatch.setattr(manager, "_figure_uids", list, raising=False)
+    monkeypatch.setattr(manager, "_selected_figure_uids", list, raising=False)
     assert controller._figure_composer() is None
 
     owned = QtWidgets.QWidget()
@@ -232,8 +233,24 @@ def test_figure_composer_target_uses_the_tutorial_manager(monkeypatch, qtbot) ->
         tool_window = owned
 
     monkeypatch.setattr(manager, "_figure_uids", lambda: ["figure"], raising=False)
+    monkeypatch.setattr(manager, "_selected_figure_uids", list, raising=False)
     monkeypatch.setattr(
         manager, "_child_node", lambda _uid: _FigureNode(), raising=False
+    )
+    assert controller._figure_composer() is owned
+
+    monkeypatch.setattr(
+        manager,
+        "_figure_uids",
+        lambda: ["figure", "another-figure"],
+        raising=False,
+    )
+    monkeypatch.setattr(manager, "_selected_figure_uids", list, raising=False)
+    assert controller._figure_composer() is owned
+
+    controller._figure_composer_uid = None
+    monkeypatch.setattr(
+        manager, "_selected_figure_uids", lambda: ["figure"], raising=False
     )
     assert controller._figure_composer() is owned
 

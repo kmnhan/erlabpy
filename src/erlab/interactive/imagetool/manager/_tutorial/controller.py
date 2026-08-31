@@ -122,6 +122,7 @@ class _TutorialController(TourController):
         self._reveal_action: QtGui.QAction | None = None
         self._operations_copied = False
         self._debug_active_window: QtWidgets.QWidget | None = None
+        self._figure_composer_uid: str | None = None
 
         super().__init__(
             self._build_steps(),
@@ -2506,11 +2507,23 @@ class _TutorialController(TourController):
         return action if isinstance(action, QtGui.QAction) else None
 
     def _figure_composer(self) -> QtWidgets.QWidget | None:
-        figure_uids = self._manager._figure_uids()
-        if len(figure_uids) != 1:
-            return None
+        uid = self._figure_composer_uid
+        if uid is None:
+            figure_uids = self._manager._figure_uids()
+            selected_uids = [
+                candidate
+                for candidate in self._manager._selected_figure_uids()
+                if candidate in figure_uids
+            ]
+            if len(selected_uids) == 1:
+                uid = selected_uids[0]
+            elif len(figure_uids) == 1:
+                uid = figure_uids[0]
+            else:
+                return None
+            self._figure_composer_uid = uid
         try:
-            tool = self._manager._child_node(figure_uids[0]).tool_window
+            tool = self._manager._child_node(uid).tool_window
         except KeyError:
             return None
         return tool if isinstance(tool, QtWidgets.QWidget) else None
