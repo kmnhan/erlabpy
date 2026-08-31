@@ -1018,6 +1018,7 @@ class TourController(QtCore.QObject):
         self._debug_timer.timeout.connect(self._poll_debug_action)
         self._debug_step_index: int | None = None
         self._debug_deadline = 0.0
+        self._step_activation = 0
 
     @property
     def current_step(self) -> TourStep | None:
@@ -1185,6 +1186,8 @@ class TourController(QtCore.QObject):
         step = self.current_step
         if step is None:
             return
+        self._step_activation += 1
+        activation = self._step_activation
         self._retry_timer.stop()
         if self._debug_step_index != self._index:
             self._debug_timer.stop()
@@ -1208,15 +1211,25 @@ class TourController(QtCore.QObject):
                 continue
             self._connections.append((signal, slot))
         self.step_changed.emit(step)
+        if not self._running or activation != self._step_activation:
+            return
         if (
             step.mode == "action"
             and step.auto_advance
             and self._is_complete(step)
             and not self._step_text(step)[-1]
         ):
-            QtCore.QTimer.singleShot(0, self._advance)
+            erlab.interactive.utils.single_shot(
+                self,
+                0,
+                lambda: self._advance_if_active(activation),
+            )
             return
         self._refresh()
+
+    def _advance_if_active(self, activation: int) -> None:
+        if self._running and activation == self._step_activation:
+            self._advance()
 
     def _advance(self) -> None:
         if not self._running:

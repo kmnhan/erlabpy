@@ -706,6 +706,41 @@ def test_discrete_action_advances_on_observed_state(qtbot) -> None:
     controller.close()
 
 
+def test_queued_auto_advance_does_not_skip_next_step(qtbot) -> None:
+    window = _shown_window(qtbot)
+    steps = [
+        tutorial.TourStep(
+            "complete-action",
+            "Complete action",
+            "Body",
+            mode="action",
+            target_required=False,
+            completion=lambda: True,
+        ),
+        tutorial.TourStep(
+            "next-step",
+            "Next step",
+            "Body",
+            target_required=False,
+        ),
+        tutorial.TourStep(
+            "later-step",
+            "Later step",
+            "Body",
+            target_required=False,
+        ),
+    ]
+    controller = tutorial.TourController(steps, window)
+    controller.start()
+
+    controller.notify_state_changed()
+    assert controller.current_step is steps[1]
+    QtWidgets.QApplication.processEvents()
+
+    assert controller.current_step is steps[1]
+    controller.close()
+
+
 def test_input_gating_and_escape(qtbot) -> None:
     window = _shown_window(qtbot)
     target = QtWidgets.QPushButton(window)

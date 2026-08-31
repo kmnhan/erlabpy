@@ -409,6 +409,14 @@ def test_second_cursor_drag_stops_polling_until_release(monkeypatch, qtbot) -> N
     manager = _Manager()
     qtbot.addWidget(manager)
     controller, _loader_context = _controller(monkeypatch, manager)
+    refreshes: list[str | None] = []
+    monkeypatch.setattr(
+        controller,
+        "notify_state_changed",
+        lambda: refreshes.append(
+            None if controller.current_step is None else controller.current_step.id
+        ),
+    )
     controller._index = [step.id for step in controller.steps].index(
         "move-second-cursor"
     )
@@ -437,6 +445,15 @@ def test_second_cursor_drag_stops_polling_until_release(monkeypatch, qtbot) -> N
     )
     assert not controller.eventFilter(manager, release)
     assert controller._state_timer.isActive()
+    qtbot.waitUntil(lambda: refreshes == ["move-second-cursor"])
+
+    assert not controller.eventFilter(manager, release)
+    controller._index = [step.id for step in controller.steps].index(
+        "transpose-alpha-beta"
+    )
+    controller._step_activation += 1
+    qtbot.wait(50)
+    assert refreshes == ["move-second-cursor"]
 
     controller._state_timer.stop()
     controller._running = False

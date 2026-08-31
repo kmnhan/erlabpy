@@ -13,6 +13,7 @@ import typing
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.explorer._base_explorer import DataExplorerTabState
 from erlab.interactive.imagetool.manager._tutorial.data import (
     TutorialDataFiles,
@@ -358,8 +359,17 @@ class _TutorialController(TourController):
                 self._state_timer.stop()
             elif event.type() == QtCore.QEvent.Type.MouseButtonRelease:
                 self._state_timer.start()
-                QtCore.QTimer.singleShot(25, self.notify_state_changed)
+                activation = self._step_activation
+                erlab.interactive.utils.single_shot(
+                    self,
+                    25,
+                    lambda: self._notify_state_changed_if_active(activation),
+                )
         return filtered
+
+    def _notify_state_changed_if_active(self, activation: int) -> None:
+        if self.is_running and activation == self._step_activation:
+            self.notify_state_changed()
 
     def notify_state_changed(self) -> None:
         step = self.current_step
