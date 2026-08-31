@@ -447,7 +447,7 @@ class SqueezeOperation(ToolProvenanceOperation):
 
 class RenameOperation(ToolProvenanceOperation):
     op: typing.Literal["rename"] = "rename"
-    name: str
+    name: str | None
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:

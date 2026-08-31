@@ -48,6 +48,7 @@ from erlab.interactive.imagetool.manager._window_layout import (
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
+    _normalize_dataarray_name,
 )
 
 if typing.TYPE_CHECKING:
@@ -678,8 +679,7 @@ class _ActionsController:
                 node = self._manager._node_for_target(target)
                 slicer_area = self._manager.get_imagetool(target).slicer_area
                 input_name = slicer_area.data.name
-                new_name = "" if input_name is None else str(input_name)
-                source_spec = dialog.source_spec_for_data(slicer_area.data, new_name)
+                source_spec = dialog.source_spec_for_data(slicer_area.data)
                 self._validate_batch_operations(
                     dialog,
                     source_spec.operations,
@@ -703,7 +703,6 @@ class _ActionsController:
                         node,
                         slicer_area,
                         input_name,
-                        new_name,
                         source_spec,
                     )
                 )
@@ -721,7 +720,6 @@ class _ActionsController:
             node,
             slicer_area,
             input_name,
-            new_name,
             source_spec,
         ) in preflight_plan:
             try:
@@ -744,7 +742,6 @@ class _ActionsController:
                 detached_provenance = dialog._detached_provenance_spec(
                     parent_provenance,
                     source_spec,
-                    new_name,
                 )
 
                 replace_kind = ""
@@ -757,14 +754,12 @@ class _ActionsController:
                         replace_provenance = dialog._compose_transform_provenance(
                             displayed_source,
                             source_spec,
-                            new_name,
                         )
                     elif node.displayed_provenance_spec is not None:
                         replace_kind = "detached"
                         replace_provenance = dialog._compose_transform_provenance(
                             node.displayed_provenance_spec,
                             source_spec,
-                            new_name,
                         )
                     else:
                         replace_kind = "detached"
@@ -1367,6 +1362,7 @@ class _ActionsController:
         else:
             # Update data in the existing tool
             wrapper = self._manager._tool_graph.root_wrappers[idx]
+            current_name = wrapper.name
             wrapper.set_watched_binding(
                 varname,
                 uid,
@@ -1409,10 +1405,12 @@ class _ActionsController:
             if prepared_data is None:  # pragma: no cover - no dialog is shown here
                 return
             prepared = prepared_data[0]
+            replacement_name = _normalize_dataarray_name(current_name)
+            replacement_data = prepared.data.rename(replacement_name)
             try:
                 replacement = self._manager._metadata_editor.prepare_replacement(
                     idx,
-                    prepared.data,
+                    replacement_data,
                     source_input_dtype=prepared.source_dtype,
                 )
             except Exception as exc:
@@ -1434,7 +1432,7 @@ class _ActionsController:
                 # A notebook-side update replaces the watched variable itself, so
                 # prior ImageTool operations no longer describe the displayed array.
                 wrapper.replace_with_detached_data(
-                    prepared.data,
+                    replacement_data,
                     None,
                     replay_source_data=None,
                 )
@@ -1443,7 +1441,7 @@ class _ActionsController:
                 # metadata assignments that still apply to it.
                 processed, provenance = replacement
                 self._manager._metadata_editor.commit_replacement(
-                    idx, prepared.data, processed, provenance
+                    idx, replacement_data, processed, provenance
                 )
 
     def _data_unwatch(self, uid: str) -> None:

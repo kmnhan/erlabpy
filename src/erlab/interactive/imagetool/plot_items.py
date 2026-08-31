@@ -230,10 +230,7 @@ class ItoolDisplayObject:
     @property
     def sliced_data(self) -> xr.DataArray:
         with xr.set_options(keep_attrs=True):
-            sliced = self.array_slicer.xslice(self.cursor_index, self.display_axis)
-            if sliced.name is not None and sliced.name != "":
-                sliced = sliced.rename(f"{sliced.name} Sliced")
-            return sliced
+            return self.array_slicer.xslice(self.cursor_index, self.display_axis)
 
     def fetch_new_data(
         self,
@@ -2372,7 +2369,7 @@ class ItoolPlotItem(pg.PlotItem):
         data_to_save = self.current_data
 
         default_name = data_to_save.name
-        if default_name is not None and default_name != "":
+        if default_name is None or default_name == "":
             default_name = "data"
 
         dialog = QtWidgets.QFileDialog()
@@ -2386,11 +2383,15 @@ class ItoolPlotItem(pg.PlotItem):
         if not last_dir:
             last_dir = os.getcwd()
 
-        dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
+        dialog.setDirectory(last_dir)
+        dialog.selectFile(f"{default_name}.h5")
 
         if dialog.exec():
             filename = dialog.selectedFiles()[0]
-            data_to_save.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+            data_to_write = (
+                data_to_save.rename(None) if data_to_save.name == "" else data_to_save
+            )
+            data_to_write.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
             pg.PlotItem.lastFileDir = os.path.dirname(filename)
 
     @QtCore.Slot()

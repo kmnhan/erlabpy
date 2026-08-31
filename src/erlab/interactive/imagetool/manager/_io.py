@@ -270,6 +270,8 @@ class _DataIngressController:
                 else prepared.source_dtype
             )
             source_data = prepared.data
+            if watched_var is not None:
+                source_data = source_data.rename(watched_var[0])
             context_data = source_data
             context_operations: tuple[ToolProvenanceOperation, ...] = ()
             context_resolution = None
