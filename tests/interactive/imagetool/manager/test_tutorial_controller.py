@@ -712,6 +712,7 @@ def test_start_retains_only_tutorial_manager(monkeypatch, qtbot) -> None:
 def test_tutorial_real_workflow(
     monkeypatch, qtbot, accept_dialog, manager_context
 ) -> None:
+    monkeypatch.setattr(QtWidgets.QApplication, "quit", lambda _application: None)
     monkeypatch.setattr(
         QtWidgets.QMessageBox,
         "question",
@@ -1243,6 +1244,7 @@ def test_tutorial_real_workflow(
 def test_tutorial_debug_skip_completes_real_workflow(
     monkeypatch, qtbot, manager_context
 ) -> None:
+    monkeypatch.setattr(QtWidgets.QApplication, "quit", lambda _application: None)
     monkeypatch.setattr(
         QtWidgets.QMessageBox,
         "question",
@@ -1283,6 +1285,26 @@ def test_tutorial_debug_skip_completes_real_workflow(
         finally:
             driver.stop()
 
-        assert controller._fatal_error is None
+        figure_state = {
+            uid: {
+                "raw_tool_type": type(node._tool_window).__name__,
+                "raw_tool_valid": erlab.interactive.utils.qt_is_valid(
+                    node._tool_window
+                ),
+                "tool_available": node.tool_window is not None,
+            }
+            for uid in manager._figure_uids()
+            for node in (manager._child_node(uid),)
+        }
+        assert controller._fatal_error is None, {
+            "cached_uid": controller._figure_composer_uid,
+            "figure_uids": manager._figure_uids(),
+            "selected_figure_uids": manager._selected_figure_uids(),
+            "figure_state": figure_state,
+            "manager_is_global": (
+                erlab.interactive.imagetool.manager._manager_instance is manager
+            ),
+            "closing_document": manager._workspace_state.closing_document,
+        }
         assert "open-coordinate-editor" in visited
         assert "new-figure" in visited
