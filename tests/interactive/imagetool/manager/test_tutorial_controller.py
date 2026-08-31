@@ -213,6 +213,33 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     controller._finish_cleanup()
 
 
+def test_figure_composer_target_uses_the_tutorial_manager(monkeypatch, qtbot) -> None:
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    controller, _loader_context = _controller(monkeypatch, manager)
+
+    unrelated = type("FigureComposerTool", (QtWidgets.QWidget,), {})()
+    qtbot.addWidget(unrelated)
+    unrelated.show()
+
+    monkeypatch.setattr(manager, "_figure_uids", list, raising=False)
+    assert controller._figure_composer() is None
+
+    owned = QtWidgets.QWidget()
+    qtbot.addWidget(owned)
+
+    class _FigureNode:
+        tool_window = owned
+
+    monkeypatch.setattr(manager, "_figure_uids", lambda: ["figure"], raising=False)
+    monkeypatch.setattr(
+        manager, "_child_node", lambda _uid: _FigureNode(), raising=False
+    )
+    assert controller._figure_composer() is owned
+
+    controller._finish_cleanup()
+
+
 def test_ui_text_resolver_uses_visible_control_text(monkeypatch, qtbot) -> None:
     manager = _Manager()
     qtbot.addWidget(manager)

@@ -1230,6 +1230,7 @@ class _TutorialController(TourController):
                 "Figure Composer",
                 self._converted_cut_tool,
                 self._figure_composer,
+                self._show_figure_composer,
             ),
             TourStep(
                 "figure-composer-output",
@@ -2505,19 +2506,14 @@ class _TutorialController(TourController):
         return action if isinstance(action, QtGui.QAction) else None
 
     def _figure_composer(self) -> QtWidgets.QWidget | None:
-        application = typing.cast(
-            "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
-        )
-        if application is None:
+        figure_uids = self._manager._figure_uids()
+        if len(figure_uids) != 1:
             return None
-        return next(
-            (
-                widget
-                for widget in application.topLevelWidgets()
-                if type(widget).__name__ == "FigureComposerTool" and widget.isVisible()
-            ),
-            None,
-        )
+        try:
+            tool = self._manager._child_node(figure_uids[0]).tool_window
+        except KeyError:
+            return None
+        return tool if isinstance(tool, QtWidgets.QWidget) else None
 
     def _show_figure_composer(self) -> None:
         composer = self._figure_composer()
