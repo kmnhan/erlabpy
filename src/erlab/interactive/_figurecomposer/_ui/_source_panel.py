@@ -7,6 +7,7 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive._figurecomposer._model._sources import _public_source_data
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
@@ -220,7 +221,8 @@ class FigureSourcePanel(QtWidgets.QWidget):
         self.source_list.itemSelectionChanged.connect(self._selection_did_change)
         self.source_list.itemDoubleClicked.connect(self._item_double_clicked)
         self.rename_source_shortcut = QtGui.QShortcut(
-            QtGui.QKeySequence(QtCore.Qt.Key.Key_F2), self.source_list
+            QtGui.QKeySequence(_shortcut_sequences.FIGURE_COMPOSER_RENAME_SOURCE),
+            self.source_list,
         )
         self.rename_source_shortcut.setObjectName("figureComposerRenameSourceShortcut")
         self.rename_source_shortcut.activated.connect(self.focus_alias_editor)

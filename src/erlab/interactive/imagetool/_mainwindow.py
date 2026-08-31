@@ -26,7 +26,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive import _qt_state
+from erlab.interactive import _qt_state, _shortcut_sequences
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._controls_bar import _ControlsBar
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
@@ -459,22 +459,22 @@ class ImageTool(BaseImageTool):
 
     def initialize_actions(self) -> None:
         self.open_act = QtWidgets.QAction("&Open…", self)
-        self.open_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+        self.open_act.setShortcut(_shortcut_sequences.IMAGETOOL_OPEN)
         self.open_act.triggered.connect(self._open_file)
         self.open_act.setIcon(QtGui.QIcon.fromTheme("document-open"))
 
         self.save_act = QtWidgets.QAction("&Save As…", self)
-        self.save_act.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
+        self.save_act.setShortcut(_shortcut_sequences.IMAGETOOL_SAVE_AS)
         self.save_act.triggered.connect(self._export_file)
         self.save_act.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
 
         self.close_act = QtWidgets.QAction("&Close", self)
-        self.close_act.setShortcut("Ctrl+W")
+        self.close_act.setShortcut(_shortcut_sequences.IMAGETOOL_CLOSE)
         self.close_act.triggered.connect(self._hide_or_close)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
         self.remove_act = QtWidgets.QAction("Remove from Manager", self)
-        self.remove_act.setShortcut(QtGui.QKeySequence.StandardKey.Delete)
+        self.remove_act.setShortcut(_shortcut_sequences.IMAGETOOL_REMOVE)
         self.remove_act.setShortcutContext(
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
@@ -486,7 +486,9 @@ class ImageTool(BaseImageTool):
         )
         self.reveal_in_manager_act.setObjectName("itool_reveal_in_manager_action")
         self.reveal_in_manager_act.setIcon(QtGui.QIcon.fromTheme("go-jump"))
-        self.reveal_in_manager_act.setShortcut("Ctrl+Shift+M")
+        self.reveal_in_manager_act.setShortcut(
+            _shortcut_sequences.IMAGETOOL_REVEAL_MANAGER
+        )
         self.reveal_in_manager_act.setShortcutContext(
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
@@ -704,12 +706,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "moveToManagerAct": {
                         "text": "Move to Manager",
                         "triggered": self.image_tool.move_to_manager,
-                        "shortcut": "Ctrl+Shift+M",
+                        "shortcut": _shortcut_sequences.IMAGETOOL_REVEAL_MANAGER,
                     },
                     "SettingsAct": {
                         "text": "Settings",
                         "triggered": self._settings,
-                        "shortcut": QtGui.QKeySequence.StandardKey.Preferences,
+                        "shortcut": _shortcut_sequences.IMAGETOOL_SETTINGS,
                         "sep_after": True,
                     },
                 },
@@ -722,11 +724,11 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "historyMenu": {"menu": self.image_tool._history_menu},
                     "sep": {"separator": True},
                     "&Copy Cursor Values": {
-                        "shortcut": "Ctrl+Shift+C",
+                        "shortcut": _shortcut_sequences.IMAGETOOL_COPY_CURSOR_VALUES,
                         "triggered": self._copy_cursor_val,
                     },
                     "&Copy Cursor Indices": {
-                        "shortcut": "Ctrl+Alt+C",
+                        "shortcut": _shortcut_sequences.IMAGETOOL_COPY_CURSOR_INDICES,
                         "triggered": self._copy_cursor_idx,
                         "sep_after": True,
                     },
@@ -874,18 +876,19 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             "centerCursorAct"
         ] = self.slicer_area.center_act
         main_display_axis = self.slicer_area.main_image.display_axis
-        for i, ((t, s), axis, amount) in enumerate(
+        for i, (text, sequence, axis, amount) in enumerate(
             zip(
                 (
-                    ("Shift Current Cursor Up", "Shift+Up"),
-                    ("Shift Current Cursor Down", "Shift+Down"),
-                    ("Shift Current Cursor Right", "Shift+Right"),
-                    ("Shift Current Cursor Left", "Shift+Left"),
-                    ("Shift Current Cursor Up × 10", "Ctrl+Shift+Up"),
-                    ("Shift Current Cursor Down × 10", "Ctrl+Shift+Down"),
-                    ("Shift Current Cursor Right × 10", "Ctrl+Shift+Right"),
-                    ("Shift Current Cursor Left × 10", "Ctrl+Shift+Left"),
+                    "Shift Current Cursor Up",
+                    "Shift Current Cursor Down",
+                    "Shift Current Cursor Right",
+                    "Shift Current Cursor Left",
+                    "Shift Current Cursor Up × 10",
+                    "Shift Current Cursor Down × 10",
+                    "Shift Current Cursor Right × 10",
+                    "Shift Current Cursor Left × 10",
                 ),
+                _shortcut_sequences.IMAGETOOL_MOVE_CURSOR,
                 (1, 1, 0, 0) * 2,
                 (1, -1, 1, -1, 10, -10, 10, -10),
                 strict=True,
@@ -894,8 +897,8 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
                 f"ShiftCursorAct{i}"
             ] = {
-                "text": t,
-                "shortcut": s,
+                "text": text,
+                "shortcut": sequence,
                 "triggered": lambda *, ax=main_display_axis[axis], d=amount: (
                     self.slicer_area.step_index(ax, d)
                 ),
@@ -903,18 +906,19 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerAllCursorsAct"
         ] = self.slicer_area.center_all_act
-        for i, ((t, s), axis, amount) in enumerate(
+        for i, (text, sequence, axis, amount) in enumerate(
             zip(
                 (
-                    ("Shift Cursors Up", "Alt+Shift+Up"),
-                    ("Shift Cursors Down", "Alt+Shift+Down"),
-                    ("Shift Cursors Right", "Alt+Shift+Right"),
-                    ("Shift Cursors Left", "Alt+Shift+Left"),
-                    ("Shift Cursors Up × 10", "Ctrl+Alt+Shift+Up"),
-                    ("Shift Cursors Down × 10", "Ctrl+Alt+Shift+Down"),
-                    ("Shift Cursors Right × 10", "Ctrl+Alt+Shift+Right"),
-                    ("Shift Cursors Left × 10", "Ctrl+Alt+Shift+Left"),
+                    "Shift Cursors Up",
+                    "Shift Cursors Down",
+                    "Shift Cursors Right",
+                    "Shift Cursors Left",
+                    "Shift Cursors Up × 10",
+                    "Shift Cursors Down × 10",
+                    "Shift Cursors Right × 10",
+                    "Shift Cursors Left × 10",
                 ),
+                _shortcut_sequences.IMAGETOOL_MOVE_ALL_CURSORS,
                 (1, 1, 0, 0) * 2,
                 (1, -1, 1, -1, 10, -10, 10, -10),
                 strict=True,
@@ -923,8 +927,8 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
                 f"ShiftAllCursorAct{i}"
             ] = {
-                "text": t,
-                "shortcut": s,
+                "text": text,
+                "shortcut": sequence,
                 "triggered": lambda *, ax=main_display_axis[axis], d=amount: (
                     self.slicer_area.step_index_all(ax, d)
                 ),

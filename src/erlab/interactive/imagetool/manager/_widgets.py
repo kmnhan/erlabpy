@@ -24,6 +24,9 @@ import erlab.interactive.colors
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
+from erlab.interactive.imagetool.manager._keyboard_shortcuts import (
+    KeyboardShortcutsDialog,
+)
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 
@@ -1923,6 +1926,28 @@ class _WidgetsController:
             def cleanup(_obj: QtCore.QObject | None = None) -> None:
                 if self._manager._additional_windows.get("settings") is dialog:
                     self._manager._additional_windows.pop("settings", None)
+
+            dialog.destroyed.connect(cleanup)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def open_keyboard_shortcuts(self) -> KeyboardShortcutsDialog:
+        """Open the keyboard shortcut reference."""
+        dialog = self._manager._additional_windows.get("keyboard-shortcuts")
+        if not isinstance(
+            dialog, KeyboardShortcutsDialog
+        ) or not erlab.interactive.utils.qt_is_valid(dialog):
+            dialog = KeyboardShortcutsDialog(self._manager)
+            self._manager._additional_windows["keyboard-shortcuts"] = dialog
+
+            def cleanup(_obj: QtCore.QObject | None = None) -> None:
+                if (
+                    self._manager._additional_windows.get("keyboard-shortcuts")
+                    is dialog
+                ):
+                    self._manager._additional_windows.pop("keyboard-shortcuts", None)
 
             dialog.destroyed.connect(cleanup)
         dialog.show()

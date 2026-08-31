@@ -24,6 +24,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive.explorer._loaders import (
     BUILTIN_EXPLORER_LOADERS,
     _BuiltinExplorerLoader,
@@ -1270,7 +1271,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._to_manager_act = QtWidgets.QAction("&Open in Manager", self)
         self._to_manager_act.setObjectName("dataExplorerOpenInManagerAction")
         self._to_manager_act.triggered.connect(self.to_manager)
-        self._to_manager_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+        self._to_manager_act.setShortcut(_shortcut_sequences.EXPLORER_OPEN_IN_MANAGER)
         self._to_manager_act.setToolTip(
             "Open the selected file(s) in ImageToolManager.\n"
             "For scans across multiple files, selecting a single file will "
@@ -1304,7 +1305,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._close_act.triggered.connect(self.try_close)
-        self._close_act.setShortcut("Ctrl+W")
+        self._close_act.setShortcut(_shortcut_sequences.EXPLORER_CLOSE)
 
         fm_name = "Finder" if sys.platform == "darwin" else "File Explorer"
         self._finder_act = QtWidgets.QAction(f"Reveal in {fm_name}", self)
@@ -1314,20 +1315,22 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._open_dir_act = QtWidgets.QAction("&Open Folder…", self)
         self._open_dir_act.setObjectName("dataExplorerOpenFolderAction")
         self._open_dir_act.triggered.connect(self._choose_directory)
-        self._open_dir_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+O"))
+        self._open_dir_act.setShortcut(
+            QtGui.QKeySequence(_shortcut_sequences.EXPLORER_OPEN_FOLDER)
+        )
         self._open_dir_act.setToolTip("Choose a directory to browse")
 
         self._reload_act = QtWidgets.QAction("Reload Folder", self)
         self._reload_act.setObjectName("dataExplorerReloadFolderAction")
         self._reload_act.triggered.connect(self._fs_model.reload)
-        self._reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self._reload_act.setShortcut(_shortcut_sequences.EXPLORER_RELOAD_FOLDER)
         self._reload_act.setToolTip("Refresh the current directory contents")
 
         self._climb_up_act = QtWidgets.QAction("Go to Enclosing Folder", self)
         self._climb_up_act.setObjectName("dataExplorerEnclosingFolderAction")
         self._climb_up_act.triggered.connect(self._fs_model.climb_up)
         self._climb_up_act.setShortcut(
-            QtGui.QKeySequence("Ctrl+Up" if sys.platform == "darwin" else "Alt+Up")
+            QtGui.QKeySequence(_shortcut_sequences.explorer_enclosing_folder())
         )
         self._climb_up_act.setToolTip("Go up one directory level")
 

@@ -27,6 +27,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.extensions._api import _registered_script_capability_status
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
@@ -1985,7 +1986,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Initialize :class:`QtWidgets.QAction` instances."""
         self.reload_act = QtWidgets.QAction("&Reload Data", self)
         self.reload_act.setObjectName("itool_reload_data_action")
-        self.reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self.reload_act.setShortcut(_shortcut_sequences.IMAGETOOL_RELOAD)
         self.reload_act.triggered.connect(self.reload)
         self.reload_act.setToolTip(
             "Reload data from its saved files, parent, or inputs"
@@ -1993,34 +1994,34 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.reload_act.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
 
         self.view_all_act = QtWidgets.QAction("View &All", self)
-        self.view_all_act.setShortcut("Ctrl+A")
+        self.view_all_act.setShortcut(_shortcut_sequences.IMAGETOOL_VIEW_ALL)
         self.view_all_act.triggered.connect(self.view_all)
         self.view_all_act.setToolTip("Reset view limits for all axes")
         self.view_all_act.setIcon(QtGui.QIcon.fromTheme("zoom-fit-best"))
 
         self.transpose_act = QtWidgets.QAction("&Transpose Main Image", self)
         self.transpose_act.setObjectName("itoolTransposeMainImageAction")
-        self.transpose_act.setShortcut("T")
+        self.transpose_act.setShortcut(_shortcut_sequences.IMAGETOOL_TRANSPOSE)
         self.transpose_act.triggered.connect(self.transpose_main_image)
         self.transpose_act.setToolTip("Transpose the main image")
 
         self.add_cursor_act = QtWidgets.QAction("&Add Cursor", self)
         self.add_cursor_act.setObjectName("itoolAddCursorAction")
-        self.add_cursor_act.setShortcut("Shift+A")
+        self.add_cursor_act.setShortcut(_shortcut_sequences.IMAGETOOL_ADD_CURSOR)
         self.add_cursor_act.triggered.connect(self.add_cursor)
         self.add_cursor_act.setToolTip("Add a new cursor")
         self.add_cursor_act.setIcon(QtGui.QIcon.fromTheme("list-add"))
 
         self.rem_cursor_act = QtWidgets.QAction("&Remove Cursor", self)
         self.rem_cursor_act.setObjectName("itoolRemoveCursorAction")
-        self.rem_cursor_act.setShortcut("Shift+R")
+        self.rem_cursor_act.setShortcut(_shortcut_sequences.IMAGETOOL_REMOVE_CURSOR)
         self.rem_cursor_act.setDisabled(True)
         self.rem_cursor_act.triggered.connect(self.remove_current_cursor)
         self.rem_cursor_act.setToolTip("Remove the current cursor")
         self.rem_cursor_act.setIcon(QtGui.QIcon.fromTheme("list-remove"))
 
         self.toggle_cursor_act = QtWidgets.QAction("Cursor Visibility", self)
-        self.toggle_cursor_act.setShortcut("Shift+V")
+        self.toggle_cursor_act.setShortcut(_shortcut_sequences.IMAGETOOL_TOGGLE_CURSORS)
         self.toggle_cursor_act.setCheckable(True)
         self.toggle_cursor_act.setChecked(True)
         self.toggle_cursor_act.setToolTip("Toggle visibility of all cursors")
@@ -2040,31 +2041,33 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
         self.undo_act = QtWidgets.QAction("&Undo", self)
-        self.undo_act.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+        self.undo_act.setShortcut(_shortcut_sequences.IMAGETOOL_UNDO)
         self.undo_act.setDisabled(True)
         self.undo_act.triggered.connect(self.undo)
         self.undo_act.setToolTip("Undo the last action")
         self.undo_act.setIcon(QtGui.QIcon.fromTheme("edit-undo"))
 
         self.redo_act = QtWidgets.QAction("&Redo", self)
-        self.redo_act.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+        self.redo_act.setShortcut(_shortcut_sequences.IMAGETOOL_REDO)
         self.redo_act.setDisabled(True)
         self.redo_act.triggered.connect(self.redo)
         self.redo_act.setToolTip("Redo the last undone action")
         self.redo_act.setIcon(QtGui.QIcon.fromTheme("edit-redo"))
 
         self.center_act = QtWidgets.QAction("&Center Current Cursor", self)
-        self.center_act.setShortcut("Shift+C")
+        self.center_act.setShortcut(_shortcut_sequences.IMAGETOOL_CENTER_CURSOR)
         self.center_act.triggered.connect(self.center_cursor)
         self.center_act.setToolTip("Center the current cursor")
 
         self.center_all_act = QtWidgets.QAction("&Center All Cursors", self)
-        self.center_all_act.setShortcut("Alt+Shift+C")
+        self.center_all_act.setShortcut(
+            _shortcut_sequences.IMAGETOOL_CENTER_ALL_CURSORS
+        )
         self.center_all_act.triggered.connect(self.center_all_cursors)
         self.center_all_act.setToolTip("Center all cursors")
 
         self.reverse_act = QtWidgets.QAction("&Reverse Colormap", self)
-        self.reverse_act.setShortcut("R")
+        self.reverse_act.setShortcut(_shortcut_sequences.IMAGETOOL_REVERSE_COLORMAP)
         self.reverse_act.setCheckable(True)
         self.reverse_act.setToolTip("Reverse the colormap")
         self.reverse_act.toggled.connect(self.refresh_colormap)

@@ -43,7 +43,7 @@ import xarray as xr
 from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
-from erlab.interactive import _qt_state, _saved_tools
+from erlab.interactive import _qt_state, _saved_tools, _shortcut_sequences
 from erlab.interactive._code_trust import (
     approve_document_trust,
     commit_local_edit_trust,
@@ -490,7 +490,7 @@ def _install_close_shortcut(
     if isinstance(widget, QtWidgets.QMainWindow):
         widget.menuBar()
 
-    shortcut = QtWidgets.QShortcut("Ctrl+W", widget, callback)
+    shortcut = QtWidgets.QShortcut(_shortcut_sequences.WINDOW_CLOSE, widget, callback)
     shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
     application = QtWidgets.QApplication.instance()

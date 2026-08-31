@@ -17,6 +17,7 @@ from matplotlib.figure import Figure
 # isort: on
 
 import erlab.interactive.utils
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_draw_context,
@@ -203,11 +204,11 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
                 action.setToolTip(tooltip)
         if action := self._actions.get("back"):
             action.setText("Undo")
-            action.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+            action.setShortcut(_shortcut_sequences.FIGURE_COMPOSER_UNDO)
             action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
         if action := self._actions.get("forward"):
             action.setText("Redo")
-            action.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+            action.setShortcut(_shortcut_sequences.FIGURE_COMPOSER_REDO)
             action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
         self.set_history_buttons()
 

@@ -25,6 +25,7 @@ import erlab
 import erlab.interactive.imagetool.manager as manager_package
 import erlab.interactive.imagetool.manager.__main__ as manager_main
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
+import erlab.interactive.imagetool.manager._keyboard_shortcuts as manager_shortcuts
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._updater_core as manager_updater_core
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
@@ -2008,6 +2009,115 @@ def test_manager_tutorial_action_replaces_empty_untitled_manager(
         assert not manager.isVisible()
 
     assert calls == [["--tutorial"]]
+
+
+def test_manager_keyboard_shortcuts_action_reuses_dialog(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        action = action_map_by_object_name(manager.help_menu)[
+            "manager_keyboard_shortcuts_action"
+        ]
+        assert action is manager.keyboard_shortcuts_action
+        assert action.shortcut().isEmpty()
+
+        action.trigger()
+        dialog = manager._additional_windows["keyboard-shortcuts"]
+        assert isinstance(dialog, manager_shortcuts.KeyboardShortcutsDialog)
+        qtbot.wait_until(dialog.isVisible)
+        assert dialog.windowModality() == QtCore.Qt.WindowModality.NonModal
+        assert [
+            dialog.tab_widget.widget(index).property("shortcutContext")
+            for index in range(dialog.tab_widget.count())
+        ] == ["manager", "imagetool", "explorer", "figure-composer"]
+
+        assert manager.open_keyboard_shortcuts() is dialog
+
+        dialog.close()
+        qtbot.wait_until(lambda: not erlab.interactive.utils.qt_is_valid(dialog))
+        assert "keyboard-shortcuts" not in manager._additional_windows
+
+
+def test_manager_keyboard_shortcuts_match_manager_actions(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        dialog = manager.open_keyboard_shortcuts()
+        sequence_format = QtGui.QKeySequence.SequenceFormat.NativeText
+        actions = {
+            "manager-open-workspace": manager.load_action,
+            "manager-save-workspace": manager.save_action,
+            "manager-save-workspace-as": manager.save_as_action,
+            "manager-workspace-properties": manager.workspace_properties_action,
+            "manager-data-explorer": manager.explorer_action,
+            "manager-periodic-table": manager.ptable_action,
+            "manager-hide-windows": manager.hide_action,
+            "manager-remove-windows": manager.remove_action,
+            "manager-reload-data": manager.reload_action,
+            "manager-link-windows": manager.link_action,
+            "manager-unlink-windows": manager.unlink_action,
+            "manager-console": manager.console_action,
+            "manager-settings": manager.settings_action,
+        }
+        for shortcut_id, action in actions.items():
+            row = dialog.findChild(
+                QtWidgets.QWidget, f"keyboardShortcutRow_{shortcut_id}"
+            )
+            assert row is not None
+            sequence = row.findChild(QtWidgets.QWidget, "keyboardShortcutSequence")
+            assert sequence is not None
+            assert sequence.property("shortcutText") == action.shortcut().toString(
+                sequence_format
+            )
+
+
+def test_keyboard_shortcut_keycaps_use_uniform_ui_font(qtbot) -> None:
+    dialog = manager_shortcuts.KeyboardShortcutsDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    row = dialog.findChild(
+        QtWidgets.QWidget,
+        "keyboardShortcutRow_manager-save-workspace-as",
+    )
+    assert row is not None
+    sequence = row.findChild(QtWidgets.QWidget, "keyboardShortcutSequence")
+    assert sequence is not None
+    keycaps = sequence.findChildren(QtWidgets.QLabel, "keyboardShortcutKeycap")
+
+    assert len(keycaps) >= 3
+    assert all(keycap.property("shortcutToken") for keycap in keycaps)
+    assert {keycap.height() for keycap in keycaps} == {keycaps[0].height()}
+    assert all(keycap.font() == dialog.font() for keycap in keycaps)
+
+
+def test_keyboard_shortcuts_search_uses_stable_entry_ids(qtbot) -> None:
+    dialog = manager_shortcuts.KeyboardShortcutsDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    dialog.search_edit.setText("imagetool-copy-cursor-indices")
+
+    assert [
+        dialog.tab_widget.isTabVisible(index)
+        for index in range(dialog.tab_widget.count())
+    ] == [False, True, False, False]
+    row = dialog.findChild(
+        QtWidgets.QWidget,
+        "keyboardShortcutRow_imagetool-copy-cursor-indices",
+    )
+    assert row is not None
+    assert not row.isHidden()
+
+    dialog.search_edit.setText("missing-stable-shortcut-id")
+
+    assert dialog.tab_widget.isHidden()
+    assert not dialog.empty_label.isHidden()
 
 
 def test_manager_tutorial_action_preserves_nonempty_manager(

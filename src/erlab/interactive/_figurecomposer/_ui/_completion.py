@@ -6,6 +6,8 @@ import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from erlab.interactive import _shortcut_sequences
+
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -29,7 +31,9 @@ def _create_completion_shortcut(
     widget: QtWidgets.QWidget,
     callback: Callable[[], None],
 ) -> QtGui.QShortcut:
-    shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Space"), widget)
+    shortcut = QtGui.QShortcut(
+        QtGui.QKeySequence(_shortcut_sequences.FIGURE_COMPOSER_COMPLETION), widget
+    )
     shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
     shortcut.activated.connect(callback)
     return shortcut

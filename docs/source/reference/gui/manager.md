@@ -68,6 +68,12 @@ Select {menuselection}`Help --> Tutorial` to start the Manager tutorial. Follow 
 instructions in the application. See {doc}`Manager tutorial
 <../../tutorials/gui/manager-quick-start>` for the launch steps.
 
+## Keyboard shortcuts
+
+Select {menuselection}`Help --> Keyboard Shortcuts` to open the searchable shortcut
+reference. It includes shortcuts for Manager, ImageTool, Data Explorer, and Figure
+Composer. The dialog shows the keys for your operating system.
+
 (imagetool-manager-organize)=
 
 ## Data and tool tree
