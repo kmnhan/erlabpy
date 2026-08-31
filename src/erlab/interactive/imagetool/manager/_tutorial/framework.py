@@ -1658,8 +1658,9 @@ class TourController(QtCore.QObject):
         raise error
 
     def _handle_fatal_error(self, error: RuntimeError) -> None:
-        """Stop subclass-specific state updates after a fatal tutorial error."""
+        """Remove tutorial input gating after a fatal error."""
         del error
+        self.close()
 
     def _event_is_allowed(
         self,

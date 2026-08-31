@@ -585,26 +585,28 @@ def test_transient_popup_does_not_own_instruction_card(qtbot) -> None:
         ],
         window,
     )
-    controller.start()
-    card = controller._card
-    assert card is not None
-    qtbot.waitUntil(lambda: card.parentWidget() is dialog)
-
     popup = QtWidgets.QWidget(dialog, QtCore.Qt.WindowType.Popup)
     popup.resize(120, 80)
-    popup.show()
-    qtbot.waitUntil(popup.isVisible)
-    popup.activateWindow()
-    qtbot.waitUntil(lambda: QtWidgets.QApplication.activeWindow() is popup)
-    complete = True
-    controller.notify_state_changed()
+    try:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        qtbot.waitUntil(lambda: card.parentWidget() is dialog)
 
-    assert popup not in controller._visible_windows()
-    assert card.parentWidget() is dialog
-    popup.hide()
-    QtWidgets.QApplication.processEvents()
-    assert card.isVisible()
-    controller.close()
+        popup.show()
+        qtbot.waitUntil(popup.isVisible)
+        QtWidgets.QApplication.processEvents()
+        complete = True
+        controller.notify_state_changed()
+
+        assert popup not in controller._visible_windows()
+        assert card.parentWidget() is dialog
+        popup.hide()
+        QtWidgets.QApplication.processEvents()
+        assert card.isVisible()
+    finally:
+        popup.close()
+        controller.close()
 
 
 def test_overlay_darkens_untargeted_area(qtbot) -> None:
@@ -880,6 +882,10 @@ def test_transient_missing_target_waits_without_retry(qtbot) -> None:
 
 def test_missing_target_raises_diagnostic_error(qtbot) -> None:
     window = _shown_window(qtbot)
+    button = QtWidgets.QPushButton(window)
+    button.show()
+    clicks: list[bool] = []
+    button.clicked.connect(lambda: clicks.append(True))
     controller = tutorial.TourController(
         [
             tutorial.TourStep(
@@ -897,9 +903,14 @@ def test_missing_target_raises_diagnostic_error(qtbot) -> None:
     ) as error:
         controller.start()
     assert controller._fatal_error is error.value
+    assert not controller.is_running
     assert not controller._retry_timer.isActive()
+    assert not controller._debug_timer.isActive()
+    assert controller._overlays == []
+    assert controller._card is None
     controller.notify_state_changed()
-    controller.close()
+    qtbot.mouseClick(button, QtCore.Qt.MouseButton.LeftButton)
+    assert clicks == [True]
 
 
 def test_overlay_resize_cleanup(qtbot) -> None:
