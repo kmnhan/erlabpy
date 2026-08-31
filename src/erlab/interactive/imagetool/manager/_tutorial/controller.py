@@ -121,6 +121,7 @@ class _TutorialController(TourController):
         self._revealed_uid: str | None = None
         self._reveal_action: QtGui.QAction | None = None
         self._operations_copied = False
+        self._debug_active_window: QtWidgets.QWidget | None = None
 
         super().__init__(
             self._build_steps(),
@@ -1374,9 +1375,7 @@ class _TutorialController(TourController):
 
     def _debug_actions(self) -> dict[str, typing.Callable[[], None]]:
         return {
-            "open-data-explorer": lambda: self._debug_trigger(
-                getattr(self._manager, "explorer_action", None), "Data Explorer"
-            ),
+            "open-data-explorer": self._debug_open_explorer,
             "select-map": lambda: self._debug_select_explorer_path(self.data_files.map),
             "enable-map-preview": self._debug_enable_preview,
             "open-map-in-manager": lambda: self._debug_click(
@@ -1416,9 +1415,7 @@ class _TutorialController(TourController):
                 "Reveal in Manager",
             ),
             "select-manager-provenance": self._debug_select_provenance_tab,
-            "switch-to-explorer-cut": lambda: self._debug_trigger(
-                getattr(self._manager, "explorer_action", None), "Data Explorer"
-            ),
+            "switch-to-explorer-cut": self._debug_open_explorer,
             "select-cut": lambda: self._debug_select_explorer_path(self.data_files.cut),
             "open-cut-in-manager": lambda: self._debug_click(
                 self._explorer_open_button(), "Open in Manager"
@@ -1444,8 +1441,7 @@ class _TutorialController(TourController):
             "select-figure-composer-export": lambda: self._debug_select_figure_tab(3),
         }
 
-    @staticmethod
-    def _debug_activate_window(window: QtWidgets.QWidget | None) -> None:
+    def _debug_activate_window(self, window: QtWidgets.QWidget | None) -> None:
         if window is None:
             raise RuntimeError("The destination window is not available.")
         window.show()
@@ -1454,6 +1450,13 @@ class _TutorialController(TourController):
         handle = window.windowHandle()
         if handle is not None:
             handle.requestActivate()
+        self._debug_active_window = window
+
+    def _debug_open_explorer(self) -> None:
+        self._debug_trigger(
+            getattr(self._manager, "explorer_action", None), "Data Explorer"
+        )
+        self._debug_activate_window(self._explorer_window(include_hidden=True))
 
     @staticmethod
     def _debug_click(
@@ -1701,9 +1704,11 @@ class _TutorialController(TourController):
         window.show()
         window.setAttribute(attribute, previous)
 
-    @staticmethod
-    def _window_is_active(window: QtWidgets.QWidget | None) -> bool:
-        return window is not None and window.isActiveWindow()
+    def _window_is_active(self, window: QtWidgets.QWidget | None) -> bool:
+        return window is not None and (
+            window.isActiveWindow()
+            or (self._debug and window is self._debug_active_window)
+        )
 
     @staticmethod
     def _active_window_or(

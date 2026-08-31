@@ -1006,7 +1006,7 @@ def test_tutorial_real_workflow(
         select_tab(manager.inspector_tabs, provenance_index, "provenance-overview")
         continue_to("switch-to-explorer-cut")
         manager.explorer_action.trigger()
-        complete_action("select-cut")
+        complete_switch("switch-to-explorer-cut", explorer_window, "select-cut")
 
         cut_index = explorer._model_index_for_path(controller.data_files.cut)
         selection_model.select(
