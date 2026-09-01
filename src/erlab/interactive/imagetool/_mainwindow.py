@@ -797,6 +797,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                             },
                         }
                     },
+                    "shiftAct": {
+                        "text": "Shift…",
+                        "triggered": self._shift,
+                    },
                     "correctWithEdgeAct": {
                         "text": "Correct With Edge…",
                         "triggered": self._correct_with_edge,
@@ -1061,6 +1065,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _symmetrize_nfold(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.SymmetrizeNfoldDialog)
+
+    @QtCore.Slot()
+    def _shift(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.ShiftDialog)
 
     @QtCore.Slot()
     def _correct_with_edge(self) -> None:

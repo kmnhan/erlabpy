@@ -2394,6 +2394,8 @@ class ImageToolManager(_ImageToolManagerBase):
         start_label: str = "Run ImageTool manager action",
         detached_input_uid: str | None = None,
         data_role: ScriptInputDataRole = "displayed",
+        input_names: Sequence[str] | None = None,
+        uses_implicit_framework_imports: bool = False,
     ) -> ToolProvenanceSpec:
         return self._lineage_controller._multi_input_script_provenance(
             input_targets,
@@ -2403,6 +2405,8 @@ class ImageToolManager(_ImageToolManagerBase):
             start_label=start_label,
             detached_input_uid=detached_input_uid,
             data_role=data_role,
+            input_names=input_names,
+            uses_implicit_framework_imports=uses_implicit_framework_imports,
         )
 
     def _show_multi_input_script_result(

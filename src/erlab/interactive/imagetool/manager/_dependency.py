@@ -36,10 +36,14 @@ def _combine_source_states(states: Iterable[_SourceState]) -> _SourceState:
 
 def _effective_script_input_dependency_refs(
     script_inputs: Sequence[ScriptInput],
+    *,
+    owner_replay_source_available: bool = False,
 ) -> tuple[ScriptInputDependencyRef, ...]:
     """Return the live dependencies selected by named input resolution."""
     refs: list[ScriptInputDependencyRef] = []
     for script_input in script_inputs:
+        if owner_replay_source_available and script_input.uses_owner_replay_source:
+            continue
         if script_input.node_uid:
             refs.extend(script_inputs_dependency_refs((script_input,)))
             continue
@@ -59,6 +63,7 @@ class _ManagerDependencyTracker:
             tuple[
                 _ManagedWindowNode,
                 int,
+                bool,
                 tuple[
                     ScriptInputDependencyRef,
                     ...,
@@ -105,32 +110,45 @@ class _ManagerDependencyTracker:
             self._status_cache[uid] = None
             return ()
         cached = self._ref_cache.get(uid)
+        owner_replay_source_available = node.has_replay_source
         if (
             cached is not None
             and cached[0] is node
             and cached[1] == node.provenance_revision
+            and cached[2] == owner_replay_source_available
         ):
             self._unindexed_uids.pop(uid, None)
-            return cached[2]
+            return cached[3]
         refs = (
-            _effective_script_input_dependency_refs(script_inputs)
+            _effective_script_input_dependency_refs(
+                script_inputs,
+                owner_replay_source_available=owner_replay_source_available,
+            )
             if script_inputs
-            else script_input_dependency_refs(spec)
+            else script_input_dependency_refs(
+                spec,
+                owner_replay_source_available=owner_replay_source_available,
+            )
         )
         self._remove_reverse_refs(uid)
         source_uids = {ref.node_uid for ref in refs}
         self._source_uids_by_dependent[uid] = source_uids
         for source_uid in source_uids:
             self._dependents_by_source_uid.setdefault(source_uid, {})[uid] = None
-        self._ref_cache[uid] = (node, node.provenance_revision, refs)
+        self._ref_cache[uid] = (
+            node,
+            node.provenance_revision,
+            owner_replay_source_available,
+            refs,
+        )
         self._unindexed_uids.pop(uid, None)
         self._status_cache.pop(uid, None)
         return refs
 
     def status_for_uid(self, uid: str) -> _DependencyStatus | None:
+        refs = self.refs_for_uid(uid)
         if uid in self._status_cache:
             return self._status_cache[uid]
-        refs = self.refs_for_uid(uid)
         if not refs:
             self._status_cache[uid] = None
             return None
@@ -161,6 +179,49 @@ class _ManagerDependencyTracker:
         for dependent_uid in dependents:
             self._status_cache.pop(dependent_uid, None)
         return list(dependents)
+
+    def transitively_depends_on(self, dependent_uid: str, source_uid: str) -> bool:
+        """Return whether one node has a direct or indirect live dependency."""
+        pending = [dependent_uid]
+        seen: set[str] = set()
+        while pending:
+            uid = pending.pop()
+            if uid in seen:
+                continue
+            seen.add(uid)
+            node = self._graph.nodes.get(uid)
+            source_uids = {ref.node_uid for ref in self.refs_for_uid(uid)}
+            if (
+                node is not None
+                and node.is_imagetool
+                and node.parent_uid is not None
+                and node.has_source_binding
+            ):
+                source_uids.add(node.parent_uid)
+            for dependency_uid in source_uids:
+                if dependency_uid == source_uid:
+                    return True
+                if dependency_uid in self._graph.nodes:
+                    pending.append(dependency_uid)
+        return False
+
+    def would_create_script_input_cycle(
+        self,
+        dependent_uid: str,
+        script_inputs: Sequence[ScriptInput],
+        *,
+        owner_replay_source_available: bool,
+    ) -> bool:
+        """Return whether replacing a node would create an input cycle."""
+        for ref in _effective_script_input_dependency_refs(
+            script_inputs,
+            owner_replay_source_available=owner_replay_source_available,
+        ):
+            if ref.node_uid == dependent_uid or self.transitively_depends_on(
+                ref.node_uid, dependent_uid
+            ):
+                return True
+        return False
 
     def clear_uid(self, uid: str) -> None:
         self.invalidate_uid(uid)

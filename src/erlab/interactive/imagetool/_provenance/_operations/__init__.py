@@ -1,6 +1,7 @@
 """Concrete operations recorded by ImageTool provenance."""
 
 from erlab.interactive.imagetool._provenance._operations._analysis import (
+    SHIFT_MODES,
     AverageOperation,
     BoxcarFilterOperation,
     CoarsenOperation,
@@ -15,6 +16,8 @@ from erlab.interactive.imagetool._provenance._operations._analysis import (
     QSelAggregationOperation,
     RemoveMeshOperation,
     RotateOperation,
+    ShiftMode,
+    ShiftOperation,
     SymmetrizeNfoldOperation,
     SymmetrizeOperation,
     ThinOperation,
@@ -62,6 +65,7 @@ from erlab.interactive.imagetool._provenance._operations._selection import (
 )
 
 __all__ = (
+    "SHIFT_MODES",
     "AffineCoordOperation",
     "AssignAttrsOperation",
     "AssignCoord1DOperation",
@@ -98,6 +102,8 @@ __all__ = (
     "ScriptCodeOperation",
     "SelOperation",
     "SelectCoordOperation",
+    "ShiftMode",
+    "ShiftOperation",
     "SliceAlongPathOperation",
     "SortByOperation",
     "SortCoordOrderOperation",

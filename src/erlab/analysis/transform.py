@@ -794,6 +794,86 @@ def _ndimage_shift(arr, shift, order=3, mode="constant", cval=0.0, prefilter=Fal
     )
 
 
+def _validate_shift_inputs(
+    data: xr.DataArray,
+    shift: float | xr.DataArray,
+    along: str,
+    *,
+    assume_sorted: bool = False,
+) -> None:
+    """Validate the structure and coordinates of inputs for :func:`shift`."""
+    if along not in data.dims:
+        raise ValueError(f"Dimension {along} not found in input array")
+
+    along_coord = data[along]
+    if not np.issubdtype(along_coord.dtype, np.number):
+        raise ValueError(f"Coordinate {along} must have a numeric dtype")
+    if np.issubdtype(along_coord.dtype, np.complexfloating):
+        raise ValueError(f"Coordinate {along} must contain real values")
+
+    coord = np.asarray(along_coord.values)
+    if not assume_sorted:
+        coord = np.sort(coord)
+    if coord.size < 2:
+        raise ValueError(f"Dimension {along} must have at least 2 points")
+    if not np.all(np.isfinite(coord)):
+        raise ValueError(f"Coordinate {along} must contain only finite values")
+
+    steps = np.diff(coord)
+    along_step = float(steps[0])
+    if along_step == 0.0:
+        raise ValueError(f"Coordinate {along} must have a nonzero step")
+    if not np.allclose(steps, along_step):
+        raise ValueError(f"Coordinate {along} must be uniformly spaced")
+
+    shift_dtype = (
+        shift.dtype if isinstance(shift, xr.DataArray) else np.asarray(shift).dtype
+    )
+    if not np.issubdtype(shift_dtype, np.number):
+        raise ValueError("Shift values must have a numeric dtype")
+    if np.issubdtype(shift_dtype, np.complexfloating):
+        raise ValueError("Shift values must be real")
+    if not isinstance(shift, xr.DataArray):
+        return
+    if along in shift.dims:
+        raise ValueError("Dimension to shift along cannot be in shift DataArray")
+
+    for dim in shift.dims:
+        if dim not in data.dims:
+            raise ValueError(f"Dimension {dim} in shift array not found in input array")
+        if data.sizes[dim] != shift.sizes[dim]:
+            raise ValueError(
+                f"Dimension {dim} in shift array has different size than input array"
+            )
+
+        if dim in data.indexes and dim in shift.indexes:
+            input_index = data.indexes[dim]
+            shift_index = shift.indexes[dim]
+            if (
+                not input_index.is_unique
+                or not shift_index.is_unique
+                or not input_index.isin(shift_index).all()
+                or not shift_index.isin(input_index).all()
+            ):
+                raise ValueError(
+                    f"Indexes for dimension {dim} in shift and input arrays "
+                    "do not align exactly"
+                )
+
+
+def _align_shift_indexes(darr: xr.DataArray, shift: xr.DataArray) -> xr.DataArray:
+    """Align shift indexes to input indexes after structural validation."""
+    indexers: dict[Hashable, typing.Any] = {}
+    for dim in shift.dims:
+        if dim in darr.indexes and dim in shift.indexes:
+            indexers[dim] = darr.indexes[dim]
+        elif dim in darr.indexes:
+            shift = shift.assign_coords({dim: darr[dim]})
+        elif dim in shift.indexes:
+            shift = shift.drop_vars([dim])
+    return shift.sel(indexers) if indexers else shift
+
+
 def shift(
     darr: xr.DataArray,
     shift: float | xr.DataArray,
@@ -877,36 +957,22 @@ def shift(
     if shift_kwargs["mode"] == "constant":
         shift_kwargs.setdefault("cval", np.nan)
 
+    _validate_shift_inputs(darr, shift, along, assume_sorted=assume_sorted)
     if not isinstance(shift, xr.DataArray):
-        shift = xr.DataArray(float(shift))
-
-    # Check shift dims are valid
-    for dim in shift.dims:
-        if dim not in darr.dims:
-            raise ValueError(f"Dimension {dim} in shift array not found in input array")
-        if darr.sizes[dim] != shift.sizes[dim]:
-            raise ValueError(
-                f"Dimension {dim} in shift array has different size than input array"
-            )
-
-    if along in shift.dims:
-        raise ValueError("Dimension to shift along cannot be in shift DataArray")
+        shift = xr.DataArray(shift)
+    shift = _align_shift_indexes(darr, shift)
 
     # Sort along the target dimension
     out = darr if assume_sorted else darr.sortby(along)
 
-    # Get step along the dimension (must be evenly spaced, same as before)
-    coord = out[along].values
-    if coord.size < 2:
-        raise ValueError(f"Dimension {along} must have at least 2 points.")
-    along_step: float = float(coord[1] - coord[0])
+    along_step = float(out[along].values[1] - out[along].values[0])
 
     # Normalize shift values to "index units"
     shift = shift.copy() / along_step
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
-        rigid_shift: float = round(float(shift.mean()))
+        rigid_shift: float = round(float(shift.mean(skipna=True).fillna(0.0)))
 
         shift = (shift - rigid_shift).fillna(0.0)
 

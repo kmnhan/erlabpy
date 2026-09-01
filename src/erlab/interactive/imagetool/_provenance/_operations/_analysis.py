@@ -113,6 +113,109 @@ class RotateOperation(ToolProvenanceOperation):
         )
 
 
+ShiftMode = typing.Literal[
+    "reflect",
+    "grid-mirror",
+    "constant",
+    "grid-constant",
+    "nearest",
+    "mirror",
+    "grid-wrap",
+    "wrap",
+]
+SHIFT_MODES: tuple[ShiftMode, ...] = (
+    "reflect",
+    "grid-mirror",
+    "constant",
+    "grid-constant",
+    "nearest",
+    "mirror",
+    "grid-wrap",
+    "wrap",
+)
+
+
+class ShiftOperation(ToolProvenanceOperation):
+    """Shift data by one recorded scalar value along one dimension."""
+
+    op: typing.Literal["shift"] = "shift"
+    batch_available: typing.ClassVar[bool] = False
+    shift: float
+    negate: bool = False
+    along: ProvenanceHashable
+    shift_coords: bool = False
+    keep_dim_order: bool = True
+    assume_sorted: bool = False
+    order: int = pydantic.Field(default=1, ge=0, le=5)
+    mode: ShiftMode = "constant"
+    cval: float = np.nan
+    prefilter: bool = False
+
+    @property
+    def effective_shift(self) -> float:
+        return -self.shift if self.negate else self.shift
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "along": self.along,
+            "shift_coords": self.shift_coords,
+            "keep_dim_order": self.keep_dim_order,
+            "assume_sorted": self.assume_sorted,
+            "order": self.order,
+            "mode": self.mode,
+            "cval": self.cval,
+            "prefilter": self.prefilter,
+        }
+
+    @property
+    def code_kwargs(self) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = {"along": self.along}
+        defaults = {
+            "shift_coords": False,
+            "keep_dim_order": True,
+            "assume_sorted": False,
+            "order": 1,
+            "mode": "constant",
+            "prefilter": False,
+        }
+        for name, default in defaults.items():
+            value = getattr(self, name)
+            if value != default:
+                kwargs[name] = value
+        if self.mode == "constant":
+            if not np.isnan(self.cval):
+                kwargs["cval"] = f"|{_provenance_value_code(self.cval)}|"
+        elif self.mode == "grid-constant" and (np.isnan(self.cval) or self.cval != 0.0):
+            kwargs["cval"] = f"|{_provenance_value_code(self.cval)}|"
+        return kwargs
+
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.transform.shift(
+            data,
+            self.effective_shift,
+            **self.kwargs,
+        )
+
+    def derivation_label(self) -> str:
+        label_kwargs = {
+            "shift": self.shift,
+            "negate": self.negate,
+            **self.kwargs,
+        }
+        return f"Shift({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.transform.shift,
+            [f"|{input_name}|", self.effective_shift],
+            self.code_kwargs,
+            module="era.transform",
+        )
+
+
 def _format_qsel_dims_arg(dims: ProvenanceHashableTuple) -> str:
     return (
         erlab.interactive.utils._parse_single_arg(dims[0])

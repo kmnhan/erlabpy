@@ -98,6 +98,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     RotateOperation,
     ScriptCodeOperation,
     SelOperation,
+    ShiftOperation,
     SortByOperation,
     SqueezeOperation,
     SwapDimsOperation,
@@ -135,6 +136,7 @@ from erlab.interactive.imagetool.dialogs import (
     ROIPathDialog,
     RotationDialog,
     SelectionDialog,
+    ShiftDialog,
     SortByDialog,
     SqueezeDialog,
     SwapDimsDialog,
@@ -12972,6 +12974,75 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
                 gold, gold_fit_res, shift_coords=shift_coords
             ),
         )
+
+
+def test_itool_shift_dialog_scalar_and_restore(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="spectrum",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert "shiftAct" in win.mnb.action_dict
+    dialog = ShiftDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    modes = {
+        dialog.mode_combo.itemData(i, QtCore.Qt.ItemDataRole.UserRole)
+        for i in range(dialog.mode_combo.count())
+    }
+    assert modes == set(ShiftDialog._BOUNDARY_MODES)
+    assert dialog.negate_check.isChecked()
+    assert dialog.cval_spin.isEnabled()
+    dialog.mode_combo.setCurrentIndex(
+        dialog.mode_combo.findData("mirror", QtCore.Qt.ItemDataRole.UserRole)
+    )
+    assert not dialog.cval_spin.isEnabled()
+
+    operation = ShiftOperation(
+        shift=0.1,
+        negate=False,
+        along="eV",
+        shift_coords=True,
+        keep_dim_order=False,
+        assume_sorted=True,
+        order=3,
+        mode="grid-wrap",
+        cval=4.5,
+        prefilter=True,
+    )
+    dialog.restore_transform_operation(operation)
+    assert dialog.source_transform_operation() == operation
+    dialog.restore_transform_operation(
+        operation.model_copy(
+            update={
+                "negate": True,
+                "shift_coords": False,
+                "keep_dim_order": True,
+                "assume_sorted": False,
+                "order": 1,
+                "mode": "constant",
+                "cval": np.nan,
+                "prefilter": False,
+            }
+        )
+    )
+    dialog.launch_mode_combo.setCurrentIndex(
+        dialog.launch_mode_combo.findData("replace", QtCore.Qt.ItemDataRole.UserRole)
+    )
+    expected = erlab.analysis.transform.shift(data, -0.1, along="eV")
+    dialog.accept()
+
+    xr.testing.assert_identical(win.slicer_area._data, expected)
+    assert win.provenance_spec is not None
+    recorded = [
+        item
+        for item in win.provenance_spec.operations
+        if isinstance(item, ShiftOperation)
+    ]
+    assert recorded == [ShiftOperation(shift=0.1, negate=True, along="eV")]
 
 
 def normalize(data, norm_dims, option):

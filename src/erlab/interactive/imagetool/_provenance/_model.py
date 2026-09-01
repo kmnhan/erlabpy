@@ -2378,7 +2378,8 @@ class ScriptInput(pydantic.BaseModel):
     ``source_spec`` stores an optional immutable transform applied to raw live manager
     data or to a display-only external placeholder. ``provenance_spec`` stores a
     complete resolved-input fallback, so replay does not apply ``source_spec`` to it
-    again. When omitted, ``label`` defaults to ``name``.
+    again. A snapshot token without a node UID marks the input that uses its owning
+    ImageTool's stored replay source. When omitted, ``label`` defaults to ``name``.
     """
 
     name: str
@@ -2481,6 +2482,11 @@ class ScriptInput(pydantic.BaseModel):
     def parsed_source_spec(self) -> ToolProvenanceSpec | None:
         """Parse the relative transform applied to the live input value."""
         return require_live_source_spec(parse_tool_provenance_spec(self.source_spec))
+
+    @property
+    def uses_owner_replay_source(self) -> bool:
+        """Whether this input uses its owning ImageTool's stored replay source."""
+        return self.node_uid is None and self.node_snapshot_token is not None
 
     def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
         """Parse the current serialized snapshot.
@@ -3836,6 +3842,8 @@ def script_inputs_dependency_refs(
 
 def script_input_dependency_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    owner_replay_source_available: bool = False,
 ) -> tuple[ScriptInputDependencyRef, ...]:
     """Return all manager dependency references stored in a provenance spec."""
     spec = parse_tool_provenance_spec(value)
@@ -3844,6 +3852,8 @@ def script_input_dependency_refs(
 
     refs: list[ScriptInputDependencyRef] = []
     for script_input in spec.script_inputs:
+        if owner_replay_source_available and script_input.uses_owner_replay_source:
+            continue
         refs.extend(script_inputs_dependency_refs((script_input,)))
         nested = script_input.parsed_provenance_spec()
         if nested is not None:

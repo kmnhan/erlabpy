@@ -161,6 +161,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     SelectCoordOperation,
     SelOperation,
+    ShiftOperation,
     SliceAlongPathOperation,
     SortByOperation,
     SortCoordOrderOperation,
@@ -538,6 +539,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         RenameOperation(name="renamed"),
         RestoreNonuniformDimsOperation(),
         RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
+        ShiftOperation(shift=0.5, negate=True, along="x"),
         AverageOperation(dims=("x",)),
         QSelAggregationOperation(dims=("x",), func="sum"),
         InterpolationOperation(dim="x", values=[0.25, 0.75]),
@@ -3619,6 +3621,109 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     }
 
 
+def test_shift_operation_round_trip_apply_and_generated_code() -> None:
+    data = _base_data().astype(float)
+    operation = ShiftOperation(
+        shift=0.5,
+        negate=True,
+        along="y",
+        shift_coords=False,
+        keep_dim_order=False,
+        assume_sorted=True,
+        order=3,
+        mode="grid-constant",
+        cval=np.nan,
+        prefilter=True,
+    )
+
+    payload = operation.model_dump(mode="json")
+    assert parse_tool_provenance_operation(payload) == operation
+    assert operation.batch_available is False
+    assert operation.shift == 0.5
+    assert operation.negate is True
+
+    expected = erlab.analysis.transform.shift(
+        data,
+        -0.5,
+        along="y",
+        shift_coords=False,
+        keep_dim_order=False,
+        assume_sorted=True,
+        order=3,
+        mode="grid-constant",
+        cval=np.nan,
+        prefilter=True,
+    )
+    xr.testing.assert_identical(operation.apply(data), expected)
+
+    code = typing.cast("str", full_data(operation).derivation_code())
+    assert "era.transform.shift(" in code
+    assert "-0.5" in code
+    assert "negate" not in code
+    assert "shift_coords" not in code
+    assert "keep_dim_order=False" in code
+    assert "assume_sorted=True" in code
+    assert 'mode="grid-constant"' in code
+    assert "cval=np.nan" in code
+    namespace = _exec_generated_code(
+        code,
+        {"data": data.copy(deep=True), "era": erlab.analysis, "np": np},
+    )
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
+@pytest.mark.parametrize(
+    ("operation", "included", "omitted"),
+    [
+        (
+            ShiftOperation(shift=1.0, along="x"),
+            ('along="x"',),
+            (
+                "shift_coords",
+                "keep_dim_order",
+                "assume_sorted",
+                "order=",
+                "mode=",
+                "cval=",
+                "prefilter",
+            ),
+        ),
+        (
+            ShiftOperation(
+                shift=1.0,
+                along="x",
+                mode="constant",
+                cval=-2.0,
+            ),
+            ("cval=-2.0",),
+            (),
+        ),
+        (
+            ShiftOperation(
+                shift=1.0,
+                along="x",
+                mode="grid-constant",
+                cval=0.0,
+            ),
+            ('mode="grid-constant"',),
+            ("cval=",),
+        ),
+    ],
+)
+def test_shift_operation_generated_code_omits_runtime_defaults(
+    operation: ShiftOperation,
+    included: tuple[str, ...],
+    omitted: tuple[str, ...],
+) -> None:
+    code = operation.expression_code("data")
+
+    assert "era.transform.shift(data," in code
+    for expected in included:
+        assert expected in code
+    for unexpected in omitted:
+        assert unexpected not in code
+
+
 def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
     data = _base_data()
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
@@ -6535,8 +6640,18 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
     assert ScriptInput(name="data_0").data_role == "displayed"
     source_input = ScriptInput(name="data_0", data_role="source")
     assert source_input.model_dump(mode="json")["data_role"] == "source"
-
     node_marker = "snapshot"
+    assert not ScriptInput(name="data_0").uses_owner_replay_source
+    assert not ScriptInput(
+        name="data_0",
+        node_uid="node",
+        node_snapshot_token=node_marker,
+    ).uses_owner_replay_source
+    assert ScriptInput(
+        name="data_0",
+        node_snapshot_token=node_marker,
+    ).uses_owner_replay_source
+
     assert ScriptInputDependencyRef(
         "data_0", "ImageTool 0", "node", node_marker
     ) == ScriptInputDependencyRef(
