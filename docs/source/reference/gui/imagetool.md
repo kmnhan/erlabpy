@@ -270,8 +270,13 @@ top-level row, or replace the current row.
   count.
 - {menuselection}`Edit --> Crop` selects data between cursors.
   {menuselection}`Edit --> Crop to View` selects the visible coordinate range.
-- {menuselection}`Edit --> Correct With Edge…` loads a fitted edge with
-  {func}`xarray_lmfit.load_fit` and shifts data along `eV`.
+- {menuselection}`Edit --> Shift…` shifts data along one dimension with a scalar or a
+  compatible ImageTool in the same Manager. A managed ImageTool source is recorded as
+  a second input to the result. The operation uses
+  {func}`erlab.analysis.transform.shift`.
+- {menuselection}`Edit --> Correct With Edge…` loads a saved fit with
+  {func}`xarray_lmfit.load_fit` and applies
+  {func}`erlab.analysis.gold.correct_with_edge`.
 - {menuselection}`View --> Normalize` applies a reversible display filter with area,
   min-max, and baseline options.
 - {menuselection}`View --> Gaussian Filter` applies a reversible, coordinate-aware
@@ -280,6 +285,9 @@ top-level row, or replace the current row.
 {menuselection}`Edit --> Undo` and {menuselection}`Edit --> Redo` move through editing
 history. {menuselection}`View --> Reset` removes the active display filter. Opening the
 active filter dialog again starts from and replaces its current settings.
+
+See {ref}`how-to-gui-fermi-edge-correction` for the Manager workflow that applies a
+fitted reference edge to another measurement.
 
 (imagetool-color)=
 

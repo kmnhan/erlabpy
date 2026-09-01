@@ -808,7 +808,7 @@ def correct_with_edge(
         If `True`, the coordinates of the output data will be changed so that the output
         contains all the values of the original data. If `False`, the coordinates and
         shape of the original data will be retained, and only the data will be shifted.
-        Defaults to `False`.
+        Defaults to `True`.
     plot
         Whether to plot the original and corrected data arrays. Defaults to `False`.
     plot_kw

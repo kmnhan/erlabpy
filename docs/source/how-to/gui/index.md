@@ -10,6 +10,7 @@ loading-and-saving
 extensions
 inspection-and-selection
 plotting
+fermi-edge-correction
 curve-fitting
 python-integration
 derived-results-and-workspaces

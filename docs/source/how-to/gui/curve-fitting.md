@@ -4,6 +4,9 @@ Use these guides to fit curves and inspect saved fits in the GUI. ERLabPy uses
 [lmfit](https://lmfit.github.io/lmfit-py/) for models, parameters, and optimization.
 Use the lmfit documentation for general curve-fitting concepts.
 
+For measured-reference fitting and Fermi edge correction with goldtool, see
+{doc}`fermi-edge-correction`.
+
 (how-to-gui-fit-data)=
 
 ## Fitting one curve
@@ -45,34 +48,6 @@ Use {ref}`how-to-gui-fit-stack-with-ftool` for a stack of curves and
 The uncertainty coordinates must align with the data coordinates. Its dimensions must
 be a subset of the data dimensions so that xarray can broadcast it to the data shape.
 Uncertainty values must be finite and positive where the data is finite.
-
-(how-to-gui-fit-fermi-edge-separate-ranges)=
-
-## Fermi edge fitting with separate EDC ranges
-
-Use this procedure when the edge position changes substantially across a measured
-reference or when other spectral features make one fixed range unreliable.
-
-1. Open the two-dimensional reference data in goldtool.
-2. Draw the ROI around the detector-coordinate range to fit. Set its energy bounds to
-   one outer range that contains the edge and usable background for every EDC.
-3. Enter the measured temperature in {guilabel}`T (K)` and the energy-resolution
-   estimate in {guilabel}`Resolution`.
-4. Select {guilabel}`Adaptive`.
-5. Select {guilabel}`Step edge` when the temperature is missing or unreliable.
-6. Choose {guilabel}`Go`.
-7. Inspect the fitted edge centers, error bars, and the polynomial or spline before you
-   use the correction.
-
-Adaptive range selection detects a falling edge. If no valid edge is found in one EDC,
-that EDC uses the complete outer energy range. An outlying center, a large uncertainty,
-or unsupported structure in the polynomial or spline indicates that the fit needs
-inspection. Change the outer ROI only when the new bounds still contain the edge and
-suitable background for every EDC.
-
-Use {ref}`how-to-python-fit-fermi-edge-separate-ranges` to inspect the estimated range
-for one difficult EDC. See {ref}`guide-goldtool-edge-controls` for the control
-definitions.
 
 (how-to-gui-fit-stack-with-ftool)=
 

@@ -45,5 +45,18 @@ fit.
 - {guilabel}`# CPU` sets the number of parallel workers.
 - {guilabel}`Go` starts the fits.
 
-Use {ref}`how-to-gui-fit-fermi-edge-separate-ranges` when one fixed energy range is not
+The {guilabel}`Polynomial` and {guilabel}`Spline` tabs control the model fitted to the
+edge centers:
+
+- {guilabel}`Residuals` shows the difference between the fitted model and edge centers.
+- {guilabel}`Corrected` shows the corrected reference data.
+- {guilabel}`Shift coords` lets the corrected output change its energy coordinate and
+  length so that it retains the complete shifted range.
+- {guilabel}`Open corrected in ImageTool` opens the corrected reference data.
+- {guilabel}`Open edge in ImageTool` evaluates the selected model on the input detector
+  coordinates and opens the resulting edge positions. In Manager, this output can be
+  used as the shift source for another compatible ImageTool.
+
+Use {ref}`how-to-gui-fermi-edge-correction` for the complete correction workflow. Use
+{ref}`how-to-gui-fit-fermi-edge-separate-ranges` when one fixed energy range is not
 reliable for all EDCs.

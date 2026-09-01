@@ -8,6 +8,7 @@ Use these guides to learn how to perform specific analysis tasks with your own d
 loading-and-saving
 inspection-and-selection
 momentum-conversion
+fermi-edge-correction
 curve-fitting
 transformations-and-filtering
 equation-svg
