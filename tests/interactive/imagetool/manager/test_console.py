@@ -4234,6 +4234,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             name="no_replay_call",
             node_uid=None,
             label="No replay call",
+            uses_owner_replay_source=False,
             parsed_provenance_spec=lambda: file_spec.model_copy(
                 update={
                     "kind": "script",

@@ -120,6 +120,7 @@ def test_dependency_tracker_uses_tool_script_inputs() -> None:
 
     class _PassiveNode:
         is_imagetool = False
+        has_replay_source = False
         provenance_revision = 0
         tool_script_inputs = dependent.script_inputs
 
@@ -151,6 +152,7 @@ def test_dependency_tracker_uses_model_owned_provenance_inputs() -> None:
     )
     node = types.SimpleNamespace(
         is_imagetool=False,
+        has_replay_source=False,
         provenance_revision=0,
         tool_script_inputs=(),
         provenance_spec=dependent,
@@ -202,6 +204,7 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     )
     dependent_node = types.SimpleNamespace(
         is_imagetool=True,
+        has_replay_source=False,
         tool_window=None,
         tool_script_inputs=(),
         provenance_spec=dependent_spec,
@@ -298,6 +301,7 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
 
     node = types.SimpleNamespace(
         is_imagetool=True,
+        has_replay_source=False,
         tool_window=None,
         tool_script_inputs=(),
         provenance_spec=_dependent_spec("source-a"),
@@ -308,10 +312,13 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
     ref_scans = 0
     original_refs = manager_dependency.script_input_dependency_refs
 
-    def _record_refs(spec):
+    def _record_refs(spec, *, owner_replay_source_available: bool = False):
         nonlocal ref_scans
         ref_scans += 1
-        return original_refs(spec)
+        return original_refs(
+            spec,
+            owner_replay_source_available=owner_replay_source_available,
+        )
 
     monkeypatch.setattr(
         manager_dependency,
@@ -330,6 +337,7 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
 
     replacement = types.SimpleNamespace(
         is_imagetool=True,
+        has_replay_source=False,
         tool_window=None,
         tool_script_inputs=(),
         provenance_spec=_dependent_spec("source-c"),
@@ -367,6 +375,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
         {
             "source-uid": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=source_spec,
@@ -374,6 +383,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             ),
             "dependent-b": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=dependent_spec,
@@ -381,6 +391,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             ),
             "unrelated": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=None,
@@ -388,6 +399,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             ),
             "dependent-a": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=dependent_spec,
