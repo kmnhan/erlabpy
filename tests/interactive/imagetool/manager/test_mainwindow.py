@@ -8771,8 +8771,108 @@ def test_manager_shift_dialog_filters_and_revalidates_candidates(
         assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
 
 
+def test_manager_shift_dialog_reports_stale_and_failed_results(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    shift = xr.DataArray(
+        [0.0, 0.1, -0.1],
+        dims="x",
+        coords={"x": np.arange(3)},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data, shift], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        shift_uid = manager._node_for_target(1).uid
+
+        def new_dialog() -> imagetool_dialogs.ShiftDialog:
+            dialog = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
+            qtbot.addWidget(dialog)
+            dialog.shift_source_combo.setCurrentIndex(
+                dialog.shift_source_combo.findData(
+                    dialog._SOURCE_MANAGER,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                )
+            )
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    shift_uid,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                )
+            )
+            return dialog
+
+        dialog = new_dialog()
+        dialog.shift_tool_combo.setCurrentIndex(-1)
+        warnings: list[object] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                QtWidgets.QMessageBox,
+                "warning",
+                lambda *_args, **_kwargs: warnings.append(object()),
+            )
+            dialog.accept()
+        assert len(warnings) == 1
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+        with monkeypatch.context() as patch:
+            patch.setitem(
+                manager._tool_graph.nodes,
+                "not-an-imagetool",
+                types.SimpleNamespace(is_imagetool=False),
+            )
+            with pytest.raises(ValueError, match="not an ImageTool"):
+                dialog._candidate_data(manager, "not-an-imagetool", data)
+
+        creation_errors: list[object] = []
+        no_tool_dialog = new_dialog()
+        no_tool_dialog.launch_mode_combo.setCurrentIndex(
+            no_tool_dialog.launch_mode_combo.findData(
+                "detach", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(erlab.interactive, "itool", lambda **_kwargs: None)
+            patch.setattr(
+                erlab.interactive.utils.MessageDialog,
+                "critical",
+                lambda *_args, **_kwargs: creation_errors.append(object()),
+            )
+            no_tool_dialog.accept()
+        assert len(creation_errors) == 1
+        assert no_tool_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+        runtime_errors: list[object] = []
+        error_dialog = new_dialog()
+
+        def fail_candidate(*_args: object, **_kwargs: object) -> xr.DataArray:
+            raise RuntimeError("unexpected shift failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(error_dialog, "_candidate_data", fail_candidate)
+            patch.setattr(
+                erlab.interactive.utils.MessageDialog,
+                "critical",
+                lambda *_args, **_kwargs: runtime_errors.append(object()),
+            )
+            error_dialog.accept()
+        assert len(runtime_errors) == 1
+        assert error_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
 def test_manager_shift_dialog_result_placements_and_cycle_preflight(
     qtbot,
+    monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -8939,6 +9039,32 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         )
         assert replace_item is not None
         assert not replace_item.isEnabled()
+
+        replace_item.setEnabled(True)
+        cycle_dialog.launch_mode_combo.setCurrentIndex(
+            cycle_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        cycle_dialog._sync_replacement_availability()
+        assert cycle_dialog.launch_mode == "nest"
+
+        replace_item.setEnabled(True)
+        cycle_dialog.launch_mode_combo.setCurrentIndex(
+            cycle_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        warnings: list[object] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                QtWidgets.QMessageBox,
+                "warning",
+                lambda *_args, **_kwargs: warnings.append(object()),
+            )
+            cycle_dialog.accept()
+        assert len(warnings) == 1
+        assert cycle_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
 
 
 def test_manager_dtool_output_itool_nests_under_tool(

@@ -4625,11 +4625,7 @@ class ShiftDialog(DataTransformDialog):
     @QtCore.Slot(int)
     def _handle_shift_source_changed(self, *_args: object) -> None:
         if self.uses_manager_shift and hasattr(self, "launch_mode_combo"):
-            nest_index = self.launch_mode_combo.findData(
-                "nest", QtCore.Qt.ItemDataRole.UserRole
-            )
-            if nest_index >= 0:
-                self.launch_mode_combo.setCurrentIndex(nest_index)
+            _set_combo_data(self.launch_mode_combo, "nest")
         self._sync_shift_controls()
 
     @QtCore.Slot()
@@ -4711,11 +4707,10 @@ class ShiftDialog(DataTransformDialog):
         )
         available = self.shift_tool_combo.count() > 0
         if index >= 0:
-            item = typing.cast(
+            model = typing.cast(
                 "QtGui.QStandardItemModel", self.shift_source_combo.model()
-            ).item(index)
-            if item is not None:
-                item.setEnabled(available)
+            )
+            typing.cast("QtGui.QStandardItem", model.item(index)).setEnabled(available)
             if not available and self.uses_manager_shift:
                 _set_combo_data(self.shift_source_combo, self._SOURCE_SCALAR)
         self._sync_replacement_availability()
@@ -4744,13 +4739,10 @@ class ShiftDialog(DataTransformDialog):
         replace_index = self.launch_mode_combo.findData(
             "replace", QtCore.Qt.ItemDataRole.UserRole
         )
-        if replace_index < 0:
-            return
         model = typing.cast("QtGui.QStandardItemModel", self.launch_mode_combo.model())
-        item = model.item(replace_index)
+        item = typing.cast("QtGui.QStandardItem", model.item(replace_index))
         safe = self._replacement_is_safe()
-        if item is not None:
-            item.setEnabled(safe)
+        item.setEnabled(safe)
         if not safe and self.launch_mode == "replace":
             _set_combo_data(self.launch_mode_combo, "nest")
 

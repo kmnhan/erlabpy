@@ -128,6 +128,171 @@ class _ReloadCountingManagedSumTool(_ManagedSumTool):
         super().update_inputs(inputs)
 
 
+def test_multi_input_script_provenance_rejects_mismatched_input_names() -> None:
+    controller = manager_lineage._LineageController(types.SimpleNamespace())
+
+    with pytest.raises(ValueError, match="Input names must match"):
+        controller._multi_input_script_provenance(
+            (0, 1),
+            operation_label="Combine inputs",
+            operation_code="result = first + second",
+            input_names=("first",),
+        )
+
+
+def test_resolve_owner_replay_input_applies_source_spec() -> None:
+    data = xr.DataArray(np.arange(4), dims="x")
+    source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
+    snapshot_token = str(object())
+    script_input = ScriptInput(
+        name="data",
+        node_snapshot_token=snapshot_token,
+        source_spec=source_spec.model_dump(mode="json"),
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            execution=types.SimpleNamespace(run_operation=None)
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={}),
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    assert (
+        controller._resolve_live_script_input_for_reload(
+            script_input, target_node_uid="owner"
+        )
+        is None
+    )
+
+    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
+        resolved_replay_source_data=lambda: None
+    )
+    assert (
+        controller._resolve_live_script_input_for_reload(
+            script_input, target_node_uid="owner"
+        )
+        is None
+    )
+
+    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
+        resolved_replay_source_data=lambda: data
+    )
+    resolved = controller._resolve_live_script_input_for_reload(
+        script_input, target_node_uid="owner"
+    )
+
+    assert resolved is not None
+    resolved_data, resolved_input = resolved
+    xr.testing.assert_identical(resolved_data, source_spec.apply(data))
+    assert resolved_input is script_input
+
+
+def test_input_plan_rejects_invalid_owner_replay_inputs() -> None:
+    owner_input = ScriptInput(name="data", node_snapshot_token=str(object()))
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(
+            nodes={"owner": types.SimpleNamespace(has_replay_source=True)}
+        )
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    plan = controller._input_resolution_plan(
+        (owner_input, owner_input.model_copy(update={"name": "other"})),
+        target_node_uid="owner",
+    )
+    assert (
+        plan.unavailable_reason
+        == "A result can use only one stored replay-source input."
+    )
+
+    manager._tool_graph.nodes["owner"].has_replay_source = False
+    plan = controller._input_resolution_plan((owner_input,), target_node_uid="owner")
+    assert plan.unavailable_reason == "data has no recorded reload source."
+
+
+def test_open_script_input_plan_rejects_invalid_replay() -> None:
+    live_input = ScriptInput(name="data", node_uid="source")
+    spec = script(
+        ScriptCodeOperation(label="Invalid code", code="result = )"),
+        start_label="Build result",
+        active_name="result",
+        script_inputs=(live_input,),
+    )
+    node = types.SimpleNamespace(
+        uid="result",
+        is_imagetool=True,
+        tool_window=None,
+        imagetool=object(),
+        slicer_area=types.SimpleNamespace(
+            _direct_reloadable=lambda: False,
+            _provenance_reloadable=lambda: False,
+            _local_reload_unavailable_reason=lambda: "not reloadable",
+        ),
+        provenance_spec=spec,
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={"result": node}),
+    )
+    controller = manager_lineage._LineageController(manager)
+    controller._live_script_input_node = lambda *_args, **_kwargs: object()
+
+    plan = controller._input_resolution_plan((), reload_node=node)
+
+    assert (
+        plan.unavailable_reason == "This result contains code that cannot be replayed."
+    )
+
+
+def test_validate_detached_replacement_rejects_multiple_owner_replay_inputs() -> None:
+    controller = manager_lineage._LineageController(types.SimpleNamespace())
+    spec = script(
+        ScriptCodeOperation(label="Combine inputs", code="result = data + other"),
+        start_label="Combine inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="data", node_snapshot_token=str(object())),
+            ScriptInput(name="other", node_snapshot_token=str(object())),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="only one stored replay-source input"):
+        controller._validate_detached_replacement(
+            types.SimpleNamespace(uid="owner"), spec, xr.DataArray([1])
+        )
+
+
+def test_pending_reload_reports_unreplayable_script() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Invalid code", code="result = )"),
+        start_label="Build result",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data", node_uid="source"),),
+    )
+    node = types.SimpleNamespace(
+        uid="pending",
+        provenance_spec=spec,
+        has_replay_source=False,
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args, **_kwargs: None,
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={"pending": node}),
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    assert (
+        controller._pending_imagetool_reload_unavailable_reason(
+            node, resolved_live_uids=frozenset()
+        )
+        == "The recorded script steps cannot be reloaded."
+    )
+
+
 class _ManagedUnaryTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestState]):
     StateModel = _ManagedInputTestState
     tool_name = "managed-unary-test"

@@ -747,6 +747,9 @@ def test_goldtool_edge_output_uses_current_result_and_direct_provenance(
         gold, gold_fit_res, along=win._along_dim
     )
     xr.testing.assert_identical(win.edge, expected)
+    xr.testing.assert_identical(
+        win.output_imagetool_data(GoldTool.Output.EDGE), expected
+    )
 
     calls: list[tuple[xr.DataArray, str]] = []
     return_widget = QtWidgets.QWidget()
@@ -796,6 +799,20 @@ def test_goldtool_edge_output_uses_current_result_and_direct_provenance(
     exec(code, namespace, namespace)  # noqa: S102
     assert captured_kwargs["return_edge"] is True
     xr.testing.assert_identical(namespace["edge"], expected)
+
+
+def test_goldtool_open_edge_itool_does_not_store_none(
+    qtbot, gold, gold_fit_res, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    _seed_goldtool_poly_result(win, gold_fit_res)
+
+    monkeypatch.setattr(win, "_launch_output_imagetool", lambda *_args, **_kwargs: None)
+
+    assert not hasattr(win, "_edge_itool")
+    win.open_edge_itool()
+    assert not hasattr(win, "_edge_itool")
 
 
 def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:

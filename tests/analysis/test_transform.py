@@ -554,6 +554,42 @@ def test_shift_accepts_positional_dimensions(shift_coords) -> None:
     xarray.testing.assert_identical(actual, expected)
 
 
+@pytest.mark.parametrize(
+    ("data_x", "shift_x"),
+    [(["a", "b", "c"], None), (None, ["a", "b", "c"])],
+    ids=["data-index-only", "shift-index-only"],
+)
+def test_shift_reconciles_one_sided_dimension_indexes(data_x, shift_x) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4),
+        dims=("x", "y"),
+        coords={
+            name: values
+            for name, values in (("x", data_x), ("y", [0.0, 1.0, 2.0, 3.0]))
+            if values is not None
+        },
+    )
+    shifts = xr.DataArray(
+        [0.0, 1.0, -1.0],
+        dims="x",
+        coords={} if shift_x is None else {"x": shift_x},
+    )
+
+    actual = shift(data, shifts, along="y")
+
+    expected = xr.DataArray(
+        [[0.0, 1.0, 2.0, 3.0], [np.nan, 4.0, 5.0, 6.0], [9.0, 10.0, 11.0, np.nan]],
+        dims=("x", "y"),
+        coords={
+            name: values
+            for name, values in (("x", data_x), ("y", [0.0, 1.0, 2.0, 3.0]))
+            if values is not None
+        },
+    )
+
+    xarray.testing.assert_identical(actual, expected)
+
+
 @pytest.mark.parametrize("shift_coords", [False, True])
 def test_shift_accepts_scalar_nan(shift_coords) -> None:
     data = xr.DataArray(

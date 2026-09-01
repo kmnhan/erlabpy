@@ -166,6 +166,29 @@ def test_dependency_tracker_uses_model_owned_provenance_inputs() -> None:
     assert refs[0].node_uid == "source-uid"
 
 
+def test_dependency_tracker_handles_cycles_and_missing_nodes() -> None:
+    def node(*inputs: ScriptInput):
+        return types.SimpleNamespace(
+            is_imagetool=False,
+            has_replay_source=False,
+            provenance_revision=0,
+            tool_script_inputs=inputs,
+        )
+
+    graph = types.SimpleNamespace(
+        nodes={
+            "first": node(
+                ScriptInput(name="second", node_uid="second"),
+                ScriptInput(name="missing", node_uid="missing"),
+            ),
+            "second": node(ScriptInput(name="first", node_uid="first")),
+        }
+    )
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+
+    assert not tracker.transitively_depends_on("first", "absent")
+
+
 def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     initial_snapshot = "snapshot-1"
     source_spec = script(
