@@ -2267,8 +2267,6 @@ class _ProvenanceEditController:
             if replacement is None:
                 return None
             return (replacement,)
-        if isinstance(operation, ShiftFromInputOperation):
-            raise TypeError("Bound shift editing supports one ImageTool row at a time")
         if isinstance(operation, ExtensionRoutineOperation):
             replacement = self._edited_extension_routine_operation(operation)
             if replacement is None:
@@ -2479,10 +2477,12 @@ class _ProvenanceEditController:
             QtCore.Qt.ItemDataRole.UserRole,
         )
         scalar_item = typing.cast(
-            "QtGui.QStandardItemModel", dialog.shift_source_combo.model()
-        ).item(scalar_index)
-        if scalar_item is not None:
-            scalar_item.setEnabled(False)
+            "QtGui.QStandardItem",
+            typing.cast(
+                "QtGui.QStandardItemModel", dialog.shift_source_combo.model()
+            ).item(scalar_index),
+        )
+        scalar_item.setEnabled(False)
         select(dialog.shift_source_combo, dialog._SOURCE_MANAGER)
         select(dialog.along_combo, operation.along)
         dialog.negate_check.setChecked(operation.negate)

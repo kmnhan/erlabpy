@@ -1440,6 +1440,20 @@ def test_operation_code_base_edges() -> None:
             output_name="derived",
         )
     with pytest.raises(NotImplementedError):
+        ToolProvenanceOperation().apply_with_inputs(data, {})
+    with pytest.raises(NotImplementedError):
+        ToolProvenanceOperation().statement_code_with_inputs(
+            "data",
+            {"other": "other"},
+            output_name="derived",
+        )
+    with pytest.raises(NotImplementedError):
+        ToolProvenanceOperation().statement_code_with_inputs(
+            "data",
+            {},
+            output_name="derived",
+        )
+    with pytest.raises(NotImplementedError):
         KspaceWorkFunctionOperation(work_function=4.2).replay_code(
             "data",
             output_name=None,
@@ -8877,6 +8891,10 @@ def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> Non
         fit_data,
         {"uncertainty": uncertainty},
     )
+    with pytest.raises(ValueError, match="require a bound uncertainty input"):
+        operation.apply(fit_data)
+    with pytest.raises(NotImplementedError):
+        operation.expression_code("fit_data")
     assert operation.input_slots() == ("uncertainty",)
     assert expected.name == "c1_values"
     assert np.isfinite(expected.values).all()
@@ -9038,6 +9056,11 @@ def test_model_fit_parameter_spec_rejects_invalid_state(
             {"model_kwargs": {1: 1}},
             TypeError,
             "constructor kwargs must use string keys",
+        ),
+        (
+            {"uncertainty_sel": {"x": slice(-0.5, 0.5)}},
+            ValueError,
+            "Unweighted model fits cannot define uncertainty selections",
         ),
     ],
 )

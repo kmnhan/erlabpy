@@ -3679,6 +3679,9 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
     assert "import lmfit" in fallback_code
     assert "imagetool" not in fallback_code
 
+    win._set_direct_weights(xr.ones_like(data))
+    assert win._parameter_model_fit_operation(center_name, stderr=False) is None
+
     win.param_plot_combo.clear()
     assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
     assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_STDERR) is None

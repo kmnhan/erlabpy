@@ -609,14 +609,6 @@ class ModelFitOperation(ToolProvenanceOperation):
         reserved_names: Collection[str] = (),
     ) -> str:
         del source_name
-        if self.output != "value_valid_stderr":
-            return super()._statement_replay_code_with_inputs(
-                input_name,
-                inputs,
-                output_name=output_name,
-                reserved_names=reserved_names,
-            )
-
         unavailable = {input_name, output_name, *inputs.values(), *reserved_names}
 
         def available_name(base: str) -> str:

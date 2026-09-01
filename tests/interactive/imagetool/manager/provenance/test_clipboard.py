@@ -157,6 +157,12 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
         [],
         {**valid_payload, "type": "other"},
         {**valid_payload, "version": -1},
+        {
+            "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+            "version": 1,
+            "operations": {},
+        },
+        {**valid_payload, "steps": []},
         {**valid_payload, "steps": {}},
         {**valid_payload, "steps": [{"operation": {"op": "unknown"}}]},
         {**valid_payload, "script_inputs": {}},
@@ -236,6 +242,31 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         DerivationEntry("non-live", None),
         replay_ref=operation_ref,
     )
+    bound_row_a = _ProvenanceDisplayRow(
+        DerivationEntry("bound a", None),
+        replay_ref=operation_ref,
+    )
+    bound_row_b = _ProvenanceDisplayRow(
+        DerivationEntry("bound b", None),
+        replay_ref=operation_ref,
+    )
+    bound_step = ReplayStep(
+        operation=ShiftFromInputOperation(along="x"),
+        input_bindings={"shift": "shift"},
+    )
+
+    def bound_spec(shift_uid: str) -> ToolProvenanceSpec:
+        return script(
+            start_label="Shift data",
+            active_name="shifted",
+            steps=(bound_step,),
+            script_inputs=(
+                ScriptInput(name="data"),
+                ScriptInput(name="shift", node_uid=shift_uid),
+            ),
+            primary_input="data",
+        )
+
     row_to_spec = {
         script_row_a: script(
             ScriptCodeOperation(label="script a", code="a = data"),
@@ -259,6 +290,8 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         non_live_row: types.SimpleNamespace(
             kind="full", _operation_for_ref=lambda _ref: _NonLiveOperation()
         ),
+        bound_row_a: bound_spec("shift-a"),
+        bound_row_b: bound_spec("shift-b"),
     }
     edit_controller = types.SimpleNamespace(
         _display_spec_for_row=lambda _node, row: row_to_spec.get(row)
@@ -305,6 +338,9 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
     assert controller._selected_derivation_step_payload() is None
 
     selected_items = [item(script_row_a), item(script_row_b)]
+    assert controller._selected_derivation_step_payload() is None
+
+    selected_items = [item(bound_row_a), item(bound_row_b)]
     assert controller._selected_derivation_step_payload() is None
 
 

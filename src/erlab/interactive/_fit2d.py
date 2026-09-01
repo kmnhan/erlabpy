@@ -3628,18 +3628,17 @@ class Fit2DTool(Fit1DTool):
                     active_name=assign,
                     script_inputs=self.script_inputs,
                 )
-            if any(item.name == input_name for item in self.script_inputs):
-                return recipe(
-                    *(ReplayStep(operation=operation) for operation in operations[:-1]),
-                    ReplayStep(
-                        operation=model_fit,
-                        input_bindings={"uncertainty": self._uncertainty_name},
-                    ),
-                    start_label="Start from current fit-tool input data",
-                    active_name=assign,
-                    script_inputs=self.script_inputs,
-                    primary_input=input_name,
-                )
+            return recipe(
+                *(ReplayStep(operation=operation) for operation in operations[:-1]),
+                ReplayStep(
+                    operation=model_fit,
+                    input_bindings={"uncertainty": self._uncertainty_name},
+                ),
+                start_label="Start from current fit-tool input data",
+                active_name=assign,
+                script_inputs=self.script_inputs,
+                primary_input=input_name,
+            )
 
         fallback = self._parameter_output_script_operation(
             param_name,

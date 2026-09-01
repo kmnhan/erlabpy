@@ -63,6 +63,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ReplayStage,
     ReplayStep,
     ScriptInput,
+    ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceStepRef,
     compose_full_provenance,
@@ -186,10 +187,20 @@ def test_concrete_bound_input_operation_replays_without_stored_code() -> None:
         graph = compile_replay_graph(source_only, external_inputs={"data": data})
         xr.testing.assert_identical(execute_replay_graph(graph), data)
 
+    replaced = reparsed._replace_operation_ref(
+        _ProvenanceStepRef("operation", operation_index=0),
+        (AverageOperation(dims=("y",)),),
+    )
+    assert tuple(item.name for item in replaced.script_inputs) == ("data",)
+
 
 def test_bound_input_step_validates_its_slots_and_primary_input() -> None:
     operation = ShiftFromInputOperation(along="x")
     step = ReplayStep(operation=operation, input_bindings={"shift": "shift"})
+
+    class _DuplicateSlotsOperation(ShiftFromInputOperation):
+        def input_slots(self) -> tuple[str, ...]:
+            return ("shift", "shift")
 
     with pytest.raises(ValueError, match="must match the operation input slots"):
         ReplayStep(operation=operation)
@@ -199,6 +210,25 @@ def test_bound_input_step_validates_its_slots_and_primary_input() -> None:
         step.model_copy(update={"input_bindings": {}})
     with pytest.raises(ValueError, match="must match the operation input slots"):
         step.model_copy(update={"operation": AverageOperation(dims=("x",))})
+    with pytest.raises(ValueError, match="must match the operation input slots"):
+        ReplayStep.model_validate({"operation": operation, "input_bindings": None})
+    with pytest.raises(TypeError, match="must be a mapping"):
+        ReplayStep.model_validate({"operation": operation, "input_bindings": []})
+    with pytest.raises(ValueError, match="must not use None"):
+        ReplayStep.model_validate(
+            {"operation": operation, "input_bindings": {"shift": None}}
+        )
+    with pytest.raises(ValueError, match="distinct Python identifiers"):
+        ReplayStep(
+            operation=_DuplicateSlotsOperation(along="x"),
+            input_bindings={"shift": "shift"},
+        )
+    with pytest.raises(ValueError, match="cannot define source input policies"):
+        ReplayStep(
+            operation=operation,
+            input_bindings={"shift": "shift"},
+            input_policy="current",
+        )
     with pytest.raises(ValueError, match="primary input"):
         script(
             start_label="Shift",
@@ -233,6 +263,23 @@ def test_bound_input_step_validates_its_slots_and_primary_input() -> None:
     )
     with pytest.raises(ValueError, match="cannot also define seed code"):
         spec.model_copy(update={"seed_code": "shifted = data"})
+    assert spec.model_copy(update={"primary_input": "data"}) == spec
+    with pytest.raises(ValueError, match="distinct script input names"):
+        script(
+            start_label="Duplicate inputs",
+            active_name="derived",
+            script_inputs=(ScriptInput(name="data"), ScriptInput(name="data")),
+            primary_input="data",
+        )
+    with pytest.raises(ValueError, match="primary_input must name a script input"):
+        script(
+            start_label="Unknown primary input",
+            active_name="derived",
+            script_inputs=(ScriptInput(name="data"),),
+            primary_input="missing",
+        )
+    with pytest.raises(ValueError, match="cannot define primary_input"):
+        _file_spec("source.nc").model_copy(update={"primary_input": "data"})
 
 
 def test_recipe_is_a_code_free_concrete_authoring_boundary() -> None:
@@ -269,6 +316,53 @@ def test_recipe_is_a_code_free_concrete_authoring_boundary() -> None:
             script_inputs=(ScriptInput(name="data"),),
             primary_input="data",
         )
+    with pytest.raises(ValueError, match="require direct replay steps"):
+        recipe(
+            ReplayStep(
+                operation=AverageOperation(dims=("x",)),
+                input_policy="current",
+            ),
+            start_label="Context-backed operation",
+            active_name="result",
+            script_inputs=(ScriptInput(name="data"),),
+            primary_input="data",
+        )
+
+
+def test_replay_graph_rejects_unavailable_bound_and_nonlive_inputs() -> None:
+    class _NonLiveOperation(ToolProvenanceOperation):
+        live_applicable: typing.ClassVar[bool] = False
+
+    bound = recipe(
+        ReplayStep(
+            operation=ShiftFromInputOperation(along="x"),
+            input_bindings={"shift": "shift"},
+        ),
+        start_label="Shift",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+    )
+    unavailable_bound = types.SimpleNamespace(
+        kind="script",
+        active_name=bound.active_name,
+        primary_input=bound.primary_input,
+        seed_code=None,
+        script_inputs=(ScriptInput(name="data"),),
+        script_context_bindings=(),
+        steps=bound.steps,
+    )
+    with pytest.raises(ReplayGraphError, match="input binding is unavailable"):
+        _validate_script_provenance(unavailable_bound)
+
+    nonlive = script(
+        start_label="Non-live operation",
+        seed_code="derived = data",
+        active_name="derived",
+        steps=(ReplayStep(operation=_NonLiveOperation()),),
+    )
+    with pytest.raises(ReplayGraphError, match="non-replayable operation"):
+        _validate_script_provenance(nonlive, external_input_names={"data"})
 
 
 def test_compose_parent_into_concrete_recipe_primary_input(
