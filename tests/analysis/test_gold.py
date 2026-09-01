@@ -644,7 +644,7 @@ def test_poly_return_edge_uses_complete_coordinate_and_preserves_dims(
         plot=False,
     )
 
-    expected = xr.broadcast(data.beta, data.hv, data.theta)[2].rename("edge")
+    expected = xr.broadcast(data.beta, data.hv, data.theta)[2].rename(None)
     xr.testing.assert_identical(actual, expected)
     assert actual.dims == ("beta", "hv", "theta")
     xr.testing.assert_identical(actual.theta, data.theta)
@@ -714,7 +714,54 @@ def test_spline_return_edge_preserves_complete_descending_coordinate(
         plot=False,
     )
 
-    xr.testing.assert_identical(actual, (2.0 * data.theta).rename("edge"))
+    xr.testing.assert_identical(actual, (2.0 * data.theta).rename(None))
+
+
+def test_evaluate_edge_model_preserves_dataarray_name() -> None:
+    data = xr.DataArray(
+        np.ones((3, 4)),
+        dims=("alpha", "eV"),
+        coords={"alpha": np.arange(3.0), "eV": np.arange(4.0)},
+    )
+    evaluated = xr.DataArray(
+        [0.0, 0.1, 0.2],
+        dims="alpha",
+        coords={"alpha": data.alpha},
+        name="calibration",
+    )
+
+    actual = gold_mod._evaluate_edge_model(data, evaluated)
+
+    xr.testing.assert_identical(actual, evaluated)
+
+
+@pytest.mark.parametrize(
+    "constant",
+    [0.1, np.array(0.1)],
+    ids=("python-scalar", "zero-dimensional-array"),
+)
+def test_correct_with_edge_accepts_scalar_callable(
+    constant: float | np.ndarray,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("alpha", "eV"),
+        coords={"alpha": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+
+    actual = correct_with_edge(
+        data,
+        lambda _angles: constant,
+        shift_coords=False,
+    )
+    expected = erlab.analysis.transform.shift(
+        data,
+        -0.1,
+        along="eV",
+        shift_coords=False,
+    )
+
+    xr.testing.assert_identical(actual, expected)
 
 
 @pytest.mark.parametrize("wrapper", [poly, spline])

@@ -763,10 +763,13 @@ def _evaluate_edge_model(
             "numpy.ndarray, callable, or tuple of float."
         )
 
-    if isinstance(edge_quad, np.ndarray):
+    if np.isscalar(edge_quad) or (
+        isinstance(edge_quad, np.ndarray) and edge_quad.ndim == 0
+    ):
+        edge_quad = xr.DataArray(edge_quad).broadcast_like(darr[along])
+    elif isinstance(edge_quad, np.ndarray):
         edge_quad = xr.DataArray(edge_quad, coords={along: darr[along]}, dims=[along])
 
-    edge_quad = edge_quad.rename("edge")
     dimension_order = [
         dim for dim in darr.dims if dim in edge_quad.dims and dim != "eV"
     ]

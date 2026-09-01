@@ -4699,7 +4699,11 @@ class ShiftDialog(DataTransformDialog):
         manager, target = self._manager_target()
         if manager is not None and target is not None:
             current_node = manager._node_for_target(target)
-            source_data = current_node.data_for_role("source", owner_node=current_node)
+            source_data = (
+                erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
+                if self.is_provenance_edit_mode
+                else current_node.data_for_role("source", owner_node=current_node)
+            )
             for node in tuple(manager._tool_graph.nodes.values()):
                 if node.uid == current_node.uid or not node.is_imagetool:
                     continue

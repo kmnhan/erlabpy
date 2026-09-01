@@ -197,6 +197,14 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
 
         spec = source_node.provenance_spec
         assert spec is not None
+        crop = IselOperation(kwargs={"x": slice(0, 2)})
+        source_node.replace_with_detached_data(
+            crop.apply(fetch(0)),
+            spec.append_operations(crop),
+            replay_source_data=data,
+        )
+        spec = source_node.provenance_spec
+        assert spec is not None
         row = next(
             row
             for row in spec.display_rows()
@@ -218,11 +226,12 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
         xr.testing.assert_identical(fetch(0), original_data)
 
         def accept_second_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
-            dialog.shift_tool_combo.setCurrentIndex(
-                dialog.shift_tool_combo.findData(
-                    second_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
-                )
+            assert dialog.slicer_area.data.sizes["x"] == 3
+            candidate_index = dialog.shift_tool_combo.findData(
+                second_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
             )
+            assert candidate_index >= 0
+            dialog.shift_tool_combo.setCurrentIndex(candidate_index)
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
         monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", accept_second_shift)
@@ -230,7 +239,11 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
 
         rebound_spec = source_node.provenance_spec
         assert rebound_spec is not None
-        rebound_operation = rebound_spec.operations[-1]
+        rebound_operation = next(
+            operation
+            for operation in rebound_spec.operations
+            if isinstance(operation, ShiftFromInputOperation)
+        )
         assert isinstance(rebound_operation, ShiftFromInputOperation)
         assert not any(
             isinstance(operation, ScriptCodeOperation)
@@ -238,7 +251,10 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
         )
         assert rebound_spec.script_inputs[-1].node_uid == second_shift_node.uid
         xr.testing.assert_identical(
-            fetch(0), erlab.analysis.transform.shift(data, -second_shift, along="eV")
+            fetch(0),
+            erlab.analysis.transform.shift(data, -second_shift, along="eV").isel(
+                x=slice(0, 2)
+            ),
         )
         generated = _exec_generated_code(
             rebound_spec.display_code(),
@@ -308,7 +324,10 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
         assert repaired_spec is not None
         assert repaired_spec.script_inputs[-1].node_uid == first_shift_node.uid
         xr.testing.assert_identical(
-            fetch(0), erlab.analysis.transform.shift(data, -first_shift, along="eV")
+            fetch(0),
+            erlab.analysis.transform.shift(data, -first_shift, along="eV").isel(
+                x=slice(0, 2)
+            ),
         )
 
 
