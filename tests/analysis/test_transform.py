@@ -7,7 +7,13 @@ import xarray as xr
 import xarray.testing
 
 import erlab.analysis.transform
-from erlab.analysis.transform import rotate, shift, symmetrize, symmetrize_nfold
+from erlab.analysis.transform import (
+    _validate_shift_inputs,
+    rotate,
+    shift,
+    symmetrize,
+    symmetrize_nfold,
+)
 
 
 def _symmetrize_nfold_reference(
@@ -510,6 +516,149 @@ def test_shift_coords_ignores_nan_shifts_for_rigid_coordinate_shift() -> None:
     shifted = shift(data, shifts, along="y", shift_coords=True)
 
     np.testing.assert_allclose(shifted.y, [12.0, 13.0, 14.0])
+
+
+@pytest.mark.parametrize("shift_coords", [False, True])
+def test_shift_aligns_reversed_shift_index(shift_coords) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": ["a", "b", "c"], "y": [0.0, 1.0, 2.0, 3.0]},
+    )
+    ordered = xr.DataArray([0.0, 1.0, -1.0], dims="x", coords={"x": data.x})
+    reversed_order = ordered.isel(x=slice(None, None, -1))
+
+    expected = shift(data, ordered, along="y", shift_coords=shift_coords)
+    actual = shift(data, reversed_order, along="y", shift_coords=shift_coords)
+
+    xarray.testing.assert_identical(actual, expected)
+
+
+@pytest.mark.parametrize("shift_coords", [False, True])
+def test_shift_accepts_positional_dimensions(shift_coords) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"y": [0.0, 1.0, 2.0, 3.0]},
+    )
+    shifts = xr.DataArray([0.0, 1.0, -1.0], dims="x")
+
+    actual = shift(data, shifts, along="y", shift_coords=shift_coords)
+    expected = shift(
+        data.assign_coords(x=[0, 1, 2]),
+        shifts.assign_coords(x=[0, 1, 2]),
+        along="y",
+        shift_coords=shift_coords,
+    ).drop_vars("x")
+
+    xarray.testing.assert_identical(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("data_x", "shift_x"),
+    [(["a", "b", "c"], None), (None, ["a", "b", "c"])],
+    ids=["data-index-only", "shift-index-only"],
+)
+def test_shift_reconciles_one_sided_dimension_indexes(data_x, shift_x) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4),
+        dims=("x", "y"),
+        coords={
+            name: values
+            for name, values in (("x", data_x), ("y", [0.0, 1.0, 2.0, 3.0]))
+            if values is not None
+        },
+    )
+    shifts = xr.DataArray(
+        [0.0, 1.0, -1.0],
+        dims="x",
+        coords={} if shift_x is None else {"x": shift_x},
+    )
+
+    actual = shift(data, shifts, along="y")
+
+    expected = xr.DataArray(
+        [[0.0, 1.0, 2.0, 3.0], [np.nan, 4.0, 5.0, 6.0], [9.0, 10.0, 11.0, np.nan]],
+        dims=("x", "y"),
+        coords={
+            name: values
+            for name, values in (("x", data_x), ("y", [0.0, 1.0, 2.0, 3.0]))
+            if values is not None
+        },
+    )
+
+    xarray.testing.assert_identical(actual, expected)
+
+
+@pytest.mark.parametrize("shift_coords", [False, True])
+def test_shift_accepts_scalar_nan(shift_coords) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"y": [0.0, 1.0, 2.0]},
+    )
+
+    actual = shift(data, np.nan, along="y", shift_coords=shift_coords)
+
+    xarray.testing.assert_identical(actual, data)
+
+
+@pytest.mark.parametrize(
+    ("coord", "message"),
+    [
+        ([0.0], "at least 2 points"),
+        ([0.0, 0.0], "nonzero step"),
+        ([0.0, 1.0, 3.0], "uniformly spaced"),
+        ([0.0, np.nan, 2.0], "only finite values"),
+        (["a", "b"], "numeric dtype"),
+        ([0.0 + 0.0j, 1.0 + 0.0j], "real values"),
+    ],
+)
+def test_validate_shift_inputs_rejects_invalid_along_coordinate(coord, message) -> None:
+    data = xr.DataArray(np.zeros(len(coord)), dims="y", coords={"y": coord})
+
+    with pytest.raises(ValueError, match=message):
+        _validate_shift_inputs(data, 0.0, "y")
+
+
+@pytest.mark.parametrize(
+    ("shifts", "message"),
+    [
+        (xr.DataArray([0.0, 1.0], dims="z"), "not found"),
+        (xr.DataArray([0.0, 1.0], dims="y"), "cannot be in"),
+        (xr.DataArray([0.0, 1.0], dims="x"), "different size"),
+        (xr.DataArray(["a", "b", "c"], dims="x"), "numeric dtype"),
+        (xr.DataArray([0.0j, 1.0j, 2.0j], dims="x"), "must be real"),
+    ],
+)
+def test_validate_shift_inputs_rejects_invalid_shift(shifts, message) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x", "y"),
+        coords={"y": [0.0, 1.0, 2.0, 3.0]},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _validate_shift_inputs(data, shifts, "y")
+
+
+def test_validate_shift_inputs_rejects_mismatched_index() -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x", "y"),
+        coords={"x": ["a", "b", "c"], "y": [0.0, 1.0, 2.0, 3.0]},
+    )
+    shifts = xr.DataArray([0.0, 1.0, 2.0], dims="x", coords={"x": ["a", "b", "d"]})
+
+    with pytest.raises(ValueError, match="do not align exactly"):
+        _validate_shift_inputs(data, shifts, "y")
+
+
+def test_validate_shift_inputs_rejects_missing_along_dimension() -> None:
+    data = xr.DataArray(np.zeros(3), dims="x")
+
+    with pytest.raises(ValueError, match="Dimension y not found"):
+        _validate_shift_inputs(data, 0.0, "y")
 
 
 def test_shift_order1_optimized() -> None:

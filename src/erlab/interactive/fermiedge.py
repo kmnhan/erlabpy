@@ -330,6 +330,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     class Output(enum.StrEnum):
         CORRECTED = "goldtool.corrected"
+        EDGE = "goldtool.edge"
 
     IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
         Output.CORRECTED: erlab.interactive.utils.ToolImageOutputDefinition(
@@ -341,7 +342,16 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 expression_method="_current_mode_corrected_expression",
                 assign="corrected",
             ),
-        )
+        ),
+        Output.EDGE: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_edge_output",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current goldtool input data",
+                label_method="_current_mode_edge_label",
+                expression_method="_current_mode_edge_expression",
+                assign="edge",
+            ),
+        ),
     }
 
     class StateModel(_GoldToolState):
@@ -480,6 +490,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "text": "Open corrected in ImageTool",
                     "clicked": self.open_itool,
                 },
+                "edge_itool": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Open edge in ImageTool",
+                    "clicked": self.open_edge_itool,
+                },
                 "copy": {
                     "qwtype": "pushbtn",
                     "notrack": True,
@@ -516,6 +533,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "showlabel": False,
                     "text": "Open corrected in ImageTool",
                     "clicked": self.open_itool,
+                },
+                "edge_itool": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Open edge in ImageTool",
+                    "clicked": self.open_edge_itool,
                 },
                 "copy": {
                     "qwtype": "pushbtn",
@@ -1367,6 +1391,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             shift_coords=self.edge_params["Shift coords"],
         )
 
+    @property
+    def edge(self) -> xr.DataArray:
+        self._flush_restore_work(key=self._PERSISTED_FIT_SNAPSHOT_KEY)
+        return erlab.analysis.gold._evaluate_edge_model(
+            self.data, self.result, along=self._along_dim
+        )
+
     @QtCore.Slot()
     def _save_poly_fit(self) -> None:
         """Save the polynomial fit to a file."""
@@ -1384,6 +1415,15 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if tool is not None:
             self._itool = tool
 
+    @QtCore.Slot()
+    def open_edge_itool(self) -> None:
+        tool = self._launch_output_imagetool(
+            self.edge,
+            output_id=self.Output.EDGE,
+        )
+        if tool is not None:
+            self._edge_itool = tool
+
     def _current_fit_mode(self) -> typing.Literal["poly", "spl"]:
         return "poly" if self.params_tab.currentIndex() == 0 else "spl"
 
@@ -1392,6 +1432,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         mode: typing.Literal["poly", "spl"] | None = None,
         *,
         input_name: str | None = None,
+        return_edge: bool = False,
     ) -> str:
         if mode is None:
             mode = self._current_fit_mode()
@@ -1431,6 +1472,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
+        if return_edge:
+            arg_dict["return_edge"] = True
 
         source_name = input_name or str(self._argnames["data"])
         return erlab.interactive.utils.generate_code(
@@ -1510,6 +1553,16 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         del primary_input, data
         return self._copy_label(self._current_fit_mode(), include_corrected=True)
 
+    def _current_mode_edge_label(
+        self,
+        *,
+        primary_input: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        del primary_input, data
+        model_name = "polynomial" if self._current_fit_mode() == "poly" else "spline"
+        return f"Evaluate the current {model_name} edge model"
+
     def _current_mode_copy_expression(
         self,
         *,
@@ -1565,8 +1618,24 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             input_name=primary_input,
         )
 
+    def _current_mode_edge_expression(
+        self,
+        *,
+        primary_input: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        del data
+        return self._fit_expression(
+            self._current_fit_mode(),
+            input_name=primary_input,
+            return_edge=True,
+        )
+
     def _corrected_output(self) -> xr.DataArray:
         return self.corrected
+
+    def _edge_output(self) -> xr.DataArray:
+        return self.edge
 
     def to_dataset(self) -> xr.Dataset:
         self._ensure_serializable_state()

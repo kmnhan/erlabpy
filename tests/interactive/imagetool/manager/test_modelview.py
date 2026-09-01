@@ -120,6 +120,7 @@ def test_dependency_tracker_uses_tool_script_inputs() -> None:
 
     class _PassiveNode:
         is_imagetool = False
+        has_replay_source = False
         provenance_revision = 0
         tool_script_inputs = dependent.script_inputs
 
@@ -151,6 +152,7 @@ def test_dependency_tracker_uses_model_owned_provenance_inputs() -> None:
     )
     node = types.SimpleNamespace(
         is_imagetool=False,
+        has_replay_source=False,
         provenance_revision=0,
         tool_script_inputs=(),
         provenance_spec=dependent,
@@ -162,6 +164,29 @@ def test_dependency_tracker_uses_model_owned_provenance_inputs() -> None:
 
     assert len(refs) == 1
     assert refs[0].node_uid == "source-uid"
+
+
+def test_dependency_tracker_handles_cycles_and_missing_nodes() -> None:
+    def node(*inputs: ScriptInput):
+        return types.SimpleNamespace(
+            is_imagetool=False,
+            has_replay_source=False,
+            provenance_revision=0,
+            tool_script_inputs=inputs,
+        )
+
+    graph = types.SimpleNamespace(
+        nodes={
+            "first": node(
+                ScriptInput(name="second", node_uid="second"),
+                ScriptInput(name="missing", node_uid="missing"),
+            ),
+            "second": node(ScriptInput(name="first", node_uid="first")),
+        }
+    )
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+
+    assert not tracker.transitively_depends_on("first", "absent")
 
 
 def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
@@ -202,6 +227,7 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     )
     dependent_node = types.SimpleNamespace(
         is_imagetool=True,
+        has_replay_source=False,
         tool_window=None,
         tool_script_inputs=(),
         provenance_spec=dependent_spec,
@@ -298,6 +324,7 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
 
     node = types.SimpleNamespace(
         is_imagetool=True,
+        has_replay_source=False,
         tool_window=None,
         tool_script_inputs=(),
         provenance_spec=_dependent_spec("source-a"),
@@ -308,10 +335,13 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
     ref_scans = 0
     original_refs = manager_dependency.script_input_dependency_refs
 
-    def _record_refs(spec):
+    def _record_refs(spec, *, owner_replay_source_available: bool = False):
         nonlocal ref_scans
         ref_scans += 1
-        return original_refs(spec)
+        return original_refs(
+            spec,
+            owner_replay_source_available=owner_replay_source_available,
+        )
 
     monkeypatch.setattr(
         manager_dependency,
@@ -330,6 +360,7 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
 
     replacement = types.SimpleNamespace(
         is_imagetool=True,
+        has_replay_source=False,
         tool_window=None,
         tool_script_inputs=(),
         provenance_spec=_dependent_spec("source-c"),
@@ -367,6 +398,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
         {
             "source-uid": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=source_spec,
@@ -374,6 +406,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             ),
             "dependent-b": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=dependent_spec,
@@ -381,6 +414,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             ),
             "unrelated": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=None,
@@ -388,6 +422,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             ),
             "dependent-a": types.SimpleNamespace(
                 is_imagetool=True,
+                has_replay_source=False,
                 tool_window=None,
                 tool_script_inputs=(),
                 provenance_spec=dependent_spec,

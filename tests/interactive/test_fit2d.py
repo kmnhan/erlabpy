@@ -3478,19 +3478,134 @@ def test_fit2d_parameter_output_provenance_preserves_managed_uncertainty(
         Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT: expected_weighted_values,
         Fit2DTool.Output.PARAMETER_STDERR: expected_stderr,
     }
+    expected_operation_outputs = {
+        Fit2DTool.Output.PARAMETER_VALUES: "value",
+        Fit2DTool.Output.PARAMETER_VALUES_FOR_WEIGHTED_FIT: "value_valid_stderr",
+        Fit2DTool.Output.PARAMETER_STDERR: "stderr",
+    }
     for output, expected in expected_outputs.items():
         output_id = win._parameter_output_id(output, "c1")
         output_data = win.output_imagetool_data(output_id)
         assert output_data is not None
         spec = win.output_imagetool_provenance(output_id, output_data)
         assert spec is not None
-        assert isinstance(spec.operations[-1], ScriptCodeOperation)
+        operation = spec.operations[-1]
+        assert isinstance(operation, ModelFitOperation)
+        assert operation.weighting == "uncertainty"
+        assert operation.output == expected_operation_outputs[output]
+        assert spec.primary_input == "data"
+        assert spec.steps[-1].input_bindings == {"uncertainty": "uncertainty"}
         replayed = replay_script_provenance(
             spec,
             {"data": data, "uncertainty": uncertainty},
-            authorize=_authorize_execution,
         )
         xr.testing.assert_allclose(replayed, expected)
+        code = spec.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(
+            code,
+            data=data,
+            uncertainty=uncertainty,
+            era=erlab.analysis,
+        )
+        output_name = (
+            "parameter_stderr"
+            if output == win.Output.PARAMETER_STDERR
+            else "parameter_values"
+        )
+        xr.testing.assert_allclose(namespace[output_name], expected)
+
+
+def test_fit2d_managed_uncertainty_parameter_output_preserves_fit_selection(
+    qtbot,
+) -> None:
+    x = np.linspace(-1.0, 1.0, 9)
+    y = np.array([0.0, 1.0, 2.0])
+    data = xr.DataArray(
+        np.stack(tuple(offset + 2.0 * x for offset in (1.0, 2.0, 3.0))),
+        dims=("y", "x"),
+        coords={"y": y, "x": x},
+        name="data",
+    )
+    uncertainty = xr.DataArray(
+        np.linspace(0.1, 0.5, x.size),
+        dims="x",
+        coords={"x": x},
+        name="uncertainty",
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    params = model.make_params(c0=0.0, c1=0.0)
+    win = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=params,
+        uncertainty=uncertainty,
+        data_name="source_data",
+        uncertainty_name="source_sigma",
+        scale_covar=False,
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    win.set_script_inputs(
+        (ScriptInput(name="source_data"), ScriptInput(name="source_sigma")),
+        primary_input="source_data",
+    )
+    win.y_min_spin.setValue(1)
+    win.domain_min_spin.setValue(-0.5)
+    win.domain_max_spin.setValue(0.5)
+    win.normalize_check.setChecked(True)
+    _seed_fit2d_param_results(win, [params.copy() for _ in y])
+    win._result_ds_full = [
+        win._fit_result_with_range(result, (-0.5, 0.5)) if result is not None else None
+        for result in win._result_ds_full
+    ]
+    win.param_plot_combo.setCurrentText("c1")
+
+    output_id = win._parameter_output_id(win.Output.PARAMETER_VALUES, "c1")
+    output_data = win.output_imagetool_data(output_id)
+    assert output_data is not None
+    spec = win.output_imagetool_provenance(output_id, output_data)
+    assert spec is not None
+    operation = spec.operations[-1]
+    assert isinstance(operation, ModelFitOperation)
+    assert operation.normalize
+    assert not operation.scale_covar
+    assert operation.uncertainty_sel == {"x": slice(-0.5, 0.5)}
+    assert operation.uncertainty_isel == {}
+    assert spec.primary_input == "source_data"
+    assert spec.steps[-1].input_bindings == {"uncertainty": "source_sigma"}
+
+    fit_data = data.sel(x=slice(-0.5, 0.5)).isel(y=slice(1, 3))
+    fit_uncertainty = uncertainty.sel(x=slice(-0.5, 0.5)).broadcast_like(fit_data)
+    fit_mean = fit_data.mean("x")
+    expected = (
+        (fit_data / fit_mean)
+        .xlm.modelfit(
+            "x",
+            model=model,
+            params=params,
+            weights=1.0 / (fit_uncertainty / abs(fit_mean)),
+            method=win.method_combo.currentText(),
+            scale_covar=False,
+        )
+        .modelfit_coefficients.sel(param="c1", drop=True)
+        .rename("c1_values")
+    )
+    replayed = replay_script_provenance(
+        spec,
+        {"source_data": data, "source_sigma": uncertainty},
+    )
+    xr.testing.assert_allclose(replayed, expected)
+    code = spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(
+        code,
+        source_data=data,
+        source_sigma=uncertainty,
+        era=erlab.analysis,
+    )
+    xr.testing.assert_allclose(namespace["parameter_values"], expected)
 
 
 def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
@@ -3563,6 +3678,9 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
     assert fallback_code is not None
     assert "import lmfit" in fallback_code
     assert "imagetool" not in fallback_code
+
+    win._set_direct_weights(xr.ones_like(data))
+    assert win._parameter_model_fit_operation(center_name, stderr=False) is None
 
     win.param_plot_combo.clear()
     assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None

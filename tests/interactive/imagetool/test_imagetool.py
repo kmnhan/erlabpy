@@ -98,6 +98,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     RotateOperation,
     ScriptCodeOperation,
     SelOperation,
+    ShiftOperation,
     SortByOperation,
     SqueezeOperation,
     SwapDimsOperation,
@@ -135,6 +136,7 @@ from erlab.interactive.imagetool.dialogs import (
     ROIPathDialog,
     RotationDialog,
     SelectionDialog,
+    ShiftDialog,
     SortByDialog,
     SqueezeDialog,
     SwapDimsDialog,
@@ -12971,6 +12973,150 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
             erlab.analysis.gold.correct_with_edge(
                 gold, gold_fit_res, shift_coords=shift_coords
             ),
+        )
+
+
+def test_itool_shift_dialog_scalar_and_restore(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="spectrum",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert "shiftAct" in win.mnb.action_dict
+    dialog_classes: list[type[ShiftDialog]] = []
+    monkeypatch.setattr(win.mnb, "execute_dialog", dialog_classes.append)
+    win.mnb._shift()
+    assert dialog_classes == [ShiftDialog]
+
+    dialog = ShiftDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog._handle_shift_source_changed()
+    assert dialog.shift_value_spin.isEnabled()
+    modes = {
+        dialog.mode_combo.itemData(i, QtCore.Qt.ItemDataRole.UserRole)
+        for i in range(dialog.mode_combo.count())
+    }
+    assert modes == set(ShiftDialog._BOUNDARY_MODES)
+    assert dialog.negate_check.isChecked()
+    assert dialog.cval_spin.isEnabled()
+    dialog.mode_combo.setCurrentIndex(
+        dialog.mode_combo.findData("mirror", QtCore.Qt.ItemDataRole.UserRole)
+    )
+    assert not dialog.cval_spin.isEnabled()
+
+    operation = ShiftOperation(
+        shift=0.1,
+        negate=False,
+        along="eV",
+        shift_coords=True,
+        keep_dim_order=False,
+        assume_sorted=True,
+        order=3,
+        mode="grid-wrap",
+        cval=4.5,
+        prefilter=True,
+    )
+    dialog.restore_transform_operation(operation)
+    assert dialog.source_transform_operation() == operation
+    dialog.restore_transform_operation(
+        operation.model_copy(
+            update={
+                "negate": True,
+                "shift_coords": False,
+                "keep_dim_order": True,
+                "assume_sorted": False,
+                "order": 1,
+                "mode": "constant",
+                "cval": np.nan,
+                "prefilter": False,
+            }
+        )
+    )
+    dialog.launch_mode_combo.setCurrentIndex(
+        dialog.launch_mode_combo.findData("replace", QtCore.Qt.ItemDataRole.UserRole)
+    )
+    expected = erlab.analysis.transform.shift(data, -0.1, along="eV")
+    namespace = {"era": erlab.analysis, "data": data}
+    exec(f"shifted = {dialog.make_code()}", namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["shifted"], expected)
+    dialog.accept()
+
+    xr.testing.assert_identical(win.slicer_area._data, expected)
+    assert win.provenance_spec is not None
+    recorded = [
+        item
+        for item in win.provenance_spec.operations
+        if isinstance(item, ShiftOperation)
+    ]
+    assert recorded == [ShiftOperation(shift=0.1, negate=True, along="eV")]
+
+
+def test_shift_dialog_fallback_and_stale_manager_context(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0.0, 1.0, 2.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = ShiftDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog.along == "y"
+    operation = dialog.source_transform_operation()
+    dialog.restore_transform_operation(AssignAttrsOperation(attrs={"key": "value"}))
+    assert dialog.source_transform_operation() == operation
+
+    with pytest.raises(RuntimeError, match="manager-backed"):
+        dialog._current_manager_context()
+
+    dialog.shift_tool_combo.addItem("Missing ImageTool", userData="missing")
+    dialog.shift_source_combo.addItem(
+        "Existing ImageTool", userData=dialog._SOURCE_MANAGER
+    )
+    dialog.shift_source_combo.setCurrentIndex(
+        dialog.shift_source_combo.findData(
+            dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+        )
+    )
+    assert dialog.uses_manager_shift
+    assert not dialog._replacement_is_safe()
+
+    dialog.reject()
+    xr.testing.assert_identical(win.slicer_area._data, data)
+
+
+def test_transform_dialog_copy_code_rejects_ambiguous_fallback(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="eV", coords={"eV": np.arange(3.0)})
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = ShiftDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    def expression_unavailable(*_args: object, **_kwargs: object) -> str:
+        raise NotImplementedError
+
+    monkeypatch.setattr(
+        imagetool_dialogs,
+        "operations_expression_code",
+        expression_unavailable,
+    )
+    operations = (
+        ShiftOperation(shift=0.1, along="eV"),
+        ShiftOperation(shift=0.2, along="eV"),
+    )
+
+    with pytest.raises(NotImplementedError):
+        imagetool_dialogs.DataTransformDialog._copy_code_for_operations(
+            dialog,
+            operations,
+            "data",
         )
 
 

@@ -2108,8 +2108,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _restore_replay_source_data(self, data: xr.DataArray | None) -> None:
         """Restore the deferred replay seed without changing node revision state."""
+        source_was_available = self.has_replay_source
         self._replay_source_data = None if data is None else data.copy(deep=False)
         self._replay_source_pending = False
+        if source_was_available != self.has_replay_source:
+            self._invalidate_provenance_caches(invalidate_derivation=False)
 
     def _advance_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
@@ -2547,6 +2550,7 @@ class _ManagedWindowNode(QtCore.QObject):
         propagate_descendants: bool,
         replay_source_data: xr.DataArray | None,
         preserve_filter: bool = False,
+        detach_source_binding: bool = False,
     ) -> None:
         accepted_filter_operation = None
         filtered = None
@@ -2570,6 +2574,11 @@ class _ManagedWindowNode(QtCore.QObject):
                     operation=accepted_filter_operation,
                     accept=True,
                 )
+        if detach_source_binding:
+            self._source_spec = None
+            self._source_binding = None
+            self._source_auto_update = False
+            self._output_id = None
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
         self._replay_source_data = (
             None if replay_source_data is None else replay_source_data.copy(deep=False)
@@ -2598,9 +2607,11 @@ class _ManagedWindowNode(QtCore.QObject):
         replay_source_data: xr.DataArray | None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
-        self._source_spec = None
-        self._source_auto_update = False
-        self._output_id = None
+        self.manager._lineage_controller._validate_detached_replacement(
+            self,
+            provenance_spec,
+            replay_source_data,
+        )
         self._replace_imagetool_data(
             data,
             provenance_spec,
@@ -2608,6 +2619,7 @@ class _ManagedWindowNode(QtCore.QObject):
             propagate_descendants=propagate_descendants,
             preserve_filter=preserve_filter,
             replay_source_data=replay_source_data,
+            detach_source_binding=True,
         )
 
     def _handle_tool_data_changed(self) -> None:

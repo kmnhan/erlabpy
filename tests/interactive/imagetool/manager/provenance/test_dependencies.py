@@ -128,6 +128,171 @@ class _ReloadCountingManagedSumTool(_ManagedSumTool):
         super().update_inputs(inputs)
 
 
+def test_multi_input_script_provenance_rejects_mismatched_input_names() -> None:
+    controller = manager_lineage._LineageController(types.SimpleNamespace())
+
+    with pytest.raises(ValueError, match="Input names must match"):
+        controller._multi_input_script_provenance(
+            (0, 1),
+            operation_label="Combine inputs",
+            operation_code="result = first + second",
+            input_names=("first",),
+        )
+
+
+def test_resolve_owner_replay_input_applies_source_spec() -> None:
+    data = xr.DataArray(np.arange(4), dims="x")
+    source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
+    snapshot_token = str(object())
+    script_input = ScriptInput(
+        name="data",
+        node_snapshot_token=snapshot_token,
+        source_spec=source_spec.model_dump(mode="json"),
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            execution=types.SimpleNamespace(run_operation=None)
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={}),
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    assert (
+        controller._resolve_live_script_input_for_reload(
+            script_input, target_node_uid="owner"
+        )
+        is None
+    )
+
+    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
+        resolved_replay_source_data=lambda: None
+    )
+    assert (
+        controller._resolve_live_script_input_for_reload(
+            script_input, target_node_uid="owner"
+        )
+        is None
+    )
+
+    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
+        resolved_replay_source_data=lambda: data
+    )
+    resolved = controller._resolve_live_script_input_for_reload(
+        script_input, target_node_uid="owner"
+    )
+
+    assert resolved is not None
+    resolved_data, resolved_input = resolved
+    xr.testing.assert_identical(resolved_data, source_spec.apply(data))
+    assert resolved_input is script_input
+
+
+def test_input_plan_rejects_invalid_owner_replay_inputs() -> None:
+    owner_input = ScriptInput(name="data", node_snapshot_token=str(object()))
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(
+            nodes={"owner": types.SimpleNamespace(has_replay_source=True)}
+        )
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    plan = controller._input_resolution_plan(
+        (owner_input, owner_input.model_copy(update={"name": "other"})),
+        target_node_uid="owner",
+    )
+    assert (
+        plan.unavailable_reason
+        == "A result can use only one stored replay-source input."
+    )
+
+    manager._tool_graph.nodes["owner"].has_replay_source = False
+    plan = controller._input_resolution_plan((owner_input,), target_node_uid="owner")
+    assert plan.unavailable_reason == "data has no recorded reload source."
+
+
+def test_open_script_input_plan_rejects_invalid_replay() -> None:
+    live_input = ScriptInput(name="data", node_uid="source")
+    spec = script(
+        ScriptCodeOperation(label="Invalid code", code="result = )"),
+        start_label="Build result",
+        active_name="result",
+        script_inputs=(live_input,),
+    )
+    node = types.SimpleNamespace(
+        uid="result",
+        is_imagetool=True,
+        tool_window=None,
+        imagetool=object(),
+        slicer_area=types.SimpleNamespace(
+            _direct_reloadable=lambda: False,
+            _provenance_reloadable=lambda: False,
+            _local_reload_unavailable_reason=lambda: "not reloadable",
+        ),
+        provenance_spec=spec,
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={"result": node}),
+    )
+    controller = manager_lineage._LineageController(manager)
+    controller._live_script_input_node = lambda *_args, **_kwargs: object()
+
+    plan = controller._input_resolution_plan((), reload_node=node)
+
+    assert (
+        plan.unavailable_reason == "This result contains code that cannot be replayed."
+    )
+
+
+def test_validate_detached_replacement_rejects_multiple_owner_replay_inputs() -> None:
+    controller = manager_lineage._LineageController(types.SimpleNamespace())
+    spec = script(
+        ScriptCodeOperation(label="Combine inputs", code="result = data + other"),
+        start_label="Combine inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="data", node_snapshot_token=str(object())),
+            ScriptInput(name="other", node_snapshot_token=str(object())),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="only one stored replay-source input"):
+        controller._validate_detached_replacement(
+            types.SimpleNamespace(uid="owner"), spec, xr.DataArray([1])
+        )
+
+
+def test_pending_reload_reports_unreplayable_script() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Invalid code", code="result = )"),
+        start_label="Build result",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data", node_uid="source"),),
+    )
+    node = types.SimpleNamespace(
+        uid="pending",
+        provenance_spec=spec,
+        has_replay_source=False,
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args, **_kwargs: None,
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={"pending": node}),
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    assert (
+        controller._pending_imagetool_reload_unavailable_reason(
+            node, resolved_live_uids=frozenset()
+        )
+        == "The recorded script steps cannot be reloaded."
+    )
+
+
 class _ManagedUnaryTool(erlab.interactive.utils.ToolWindow[_ManagedInputTestState]):
     StateModel = _ManagedInputTestState
     tool_name = "managed-unary-test"
@@ -1391,6 +1556,76 @@ def test_pending_script_reload_rejects_missing_recorded_input() -> None:
         pending_workspace_memory_payload=object(),
         provenance_spec=spec,
     )
+
+    reason = controller._node_reload_unavailable_reason(node)
+
+    assert reason is not None
+    assert "no recorded reload source" in reason
+
+
+def test_pending_script_reload_accepts_owner_replay_source() -> None:
+    spec = script(
+        start_label="Copy stored input",
+        seed_code="result = data",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data", node_snapshot_token=str(object())),),
+    )
+    node = types.SimpleNamespace(
+        uid="pending",
+        is_imagetool=True,
+        tool_window=None,
+        imagetool=None,
+        pending_workspace_memory_payload=object(),
+        provenance_spec=spec,
+        has_replay_source=True,
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args, **_kwargs: None,
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={node.uid: node}),
+    )
+    controller = manager_lineage._LineageController(manager)
+
+    assert controller._node_reload_unavailable_reason(node) is None
+
+
+def test_owner_replay_source_does_not_resolve_nested_fallback_input() -> None:
+    nested = script(
+        start_label="Copy nested input",
+        seed_code="nested = inner",
+        active_name="nested",
+        script_inputs=(ScriptInput(name="inner", node_snapshot_token=str(object())),),
+    )
+    spec = script(
+        start_label="Copy recorded input",
+        seed_code="result = data",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+    )
+    node = types.SimpleNamespace(
+        uid="pending",
+        is_imagetool=True,
+        tool_window=None,
+        imagetool=None,
+        pending_workspace_memory_payload=object(),
+        provenance_spec=spec,
+        has_replay_source=True,
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            capability_status=lambda *_args, **_kwargs: None,
+        ),
+        _tool_graph=types.SimpleNamespace(nodes={node.uid: node}),
+    )
+    controller = manager_lineage._LineageController(manager)
 
     reason = controller._node_reload_unavailable_reason(node)
 
@@ -2668,6 +2903,331 @@ def test_live_managed_input_fallback_includes_source_transform(
         )
         rebuilt, _refreshed = rebuild_script_inputs((recorded_input,))
         xr.testing.assert_identical(rebuilt["data"], expected)
+
+
+def test_detached_managed_input_reloads_from_owner_snapshot(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    shift = xr.DataArray([10.0, 20.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data, shift], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        data_node = manager._node_for_target(0)
+        shift_node = manager._node_for_target(1)
+        data_input = manager._lineage_controller._script_input_for_node(
+            data_node,
+            name="data",
+            detached_input_uid=data_node.uid,
+            data_role="source",
+        )
+        assert data_input.node_uid is None
+        assert data_input.node_snapshot_token == data_node.snapshot_token_for_role(
+            "source"
+        )
+        spec = script(
+            ScriptCodeOperation(label="Add inputs", code="result = data + shift"),
+            start_label="Add inputs",
+            active_name="result",
+            script_inputs=(
+                data_input,
+                manager._lineage_controller._script_input_for_node(
+                    shift_node,
+                    name="shift",
+                    data_role="source",
+                ),
+            ),
+        )
+        data_node.replace_with_detached_data(
+            data + shift,
+            spec,
+            replay_source_data=data,
+        )
+        assert {
+            ref.node_uid
+            for ref in manager._lineage_controller._dependency_refs_for_uid(
+                data_node.uid
+            )
+        } == {shift_node.uid}
+
+        updated_shift = shift + 100.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, updated_shift)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(data_node.uid) == "changed",
+            timeout=5000,
+        )
+
+        assert data_node.reload_source_data()
+        xr.testing.assert_equal(
+            data_node.current_public_data().rename(None),
+            (data + updated_shift).rename(None),
+        )
+        refreshed_data_input = {
+            item.name: item for item in data_node.provenance_spec.script_inputs
+        }["data"]
+        assert refreshed_data_input.node_uid is None
+        assert (
+            refreshed_data_input.node_snapshot_token == data_input.node_snapshot_token
+        )
+
+
+def test_detached_derived_input_ignores_frozen_fallback_dependencies(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    shift = xr.DataArray([10.0, 20.0], dims="x")
+    derived = source + 1.0
+
+    with manager_context() as manager:
+        manager.show()
+        itool([source, shift], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        derived_index = manager._lineage_controller._show_multi_input_script_result(
+            derived,
+            (0,),
+            operation_label="Increment data",
+            operation_code="derived = data_0 + 1",
+            data_role="source",
+        )
+        assert derived_index == 2
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        source_node = manager._node_for_target(0)
+        shift_node = manager._node_for_target(1)
+        derived_node = manager._node_for_target(derived_index)
+        replacement_spec = manager._multi_input_script_provenance(
+            (derived_index, 1),
+            operation_label="Add inputs",
+            operation_code="result = data + shift",
+            active_name="result",
+            detached_input_uid=derived_node.uid,
+            data_role="source",
+            input_names=("data", "shift"),
+        )
+        derived_node.replace_with_detached_data(
+            derived + shift,
+            replacement_spec,
+            replay_source_data=derived,
+        )
+
+        assert {
+            ref.node_uid
+            for ref in manager._lineage_controller._dependency_refs_for_uid(
+                derived_node.uid
+            )
+        } == {shift_node.uid}
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, source + 100.0)
+        assert manager.dependency_status_for_uid(derived_node.uid) == "current"
+        assert not manager._dependency_tracker.transitively_depends_on(
+            derived_node.uid, source_node.uid
+        )
+
+        derived_node._restore_replay_source_data(None)
+        assert derived_node.uid in manager._dependency_tracker.dependent_uids(
+            source_node.uid
+        )
+        assert {
+            ref.node_uid
+            for ref in manager._lineage_controller._dependency_refs_for_uid(
+                derived_node.uid
+            )
+        } == {source_node.uid, shift_node.uid}
+        assert manager.dependency_status_for_uid(derived_node.uid) == "changed"
+        derived_node._restore_replay_source_data(derived)
+        assert derived_node.uid not in manager._dependency_tracker.dependent_uids(
+            source_node.uid
+        )
+        assert {
+            ref.node_uid
+            for ref in manager._lineage_controller._dependency_refs_for_uid(
+                derived_node.uid
+            )
+        } == {shift_node.uid}
+        assert manager.dependency_status_for_uid(derived_node.uid) == "current"
+
+        updated_shift = shift + 100.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, updated_shift)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_node.uid) == "changed",
+            timeout=5000,
+        )
+        assert derived_node.reload_source_data()
+        xr.testing.assert_equal(
+            derived_node.current_public_data().rename(None),
+            (derived + updated_shift).rename(None),
+        )
+        assert manager.dependency_status_for_uid(derived_node.uid) == "current"
+
+
+def test_detached_replacement_validates_owner_snapshot_before_mutation(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        node = manager._node_for_target(0)
+        detached = manager._lineage_controller._script_input_for_node(
+            node,
+            name="data",
+            detached_input_uid=node.uid,
+            data_role="source",
+        )
+        spec = script(
+            ScriptCodeOperation(label="Increment data", code="result = data + 1"),
+            start_label="Increment data",
+            active_name="result",
+            script_inputs=(detached,),
+        )
+
+        with pytest.raises(ValueError, match="no recorded reload source"):
+            node.replace_with_detached_data(
+                data + 1,
+                spec,
+                replay_source_data=None,
+            )
+
+        xr.testing.assert_identical(node.current_public_data().rename(None), data)
+        assert node.provenance_spec is None
+
+
+def test_detached_replacement_rejects_indirect_input_cycle(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        dependent_index = manager._lineage_controller._show_multi_input_script_result(
+            data + 1.0,
+            (0,),
+            operation_label="Increment data",
+            operation_code="derived = data_0 + 1",
+            data_role="source",
+        )
+        assert dependent_index == 1
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        node = manager._node_for_target(0)
+        dependent_node = manager._node_for_target(dependent_index)
+        assert manager._dependency_tracker.transitively_depends_on(
+            dependent_node.uid, node.uid
+        )
+        replacement_spec = manager._multi_input_script_provenance(
+            (0, dependent_index),
+            operation_label="Add inputs",
+            operation_code="result = data + other",
+            active_name="result",
+            detached_input_uid=node.uid,
+            data_role="source",
+            input_names=("data", "other"),
+        )
+
+        with pytest.raises(ValueError, match="dependency cycle"):
+            node.replace_with_detached_data(
+                data + dependent_node.current_public_data(),
+                replacement_spec,
+                replay_source_data=data,
+            )
+
+        xr.testing.assert_identical(node.current_public_data().rename(None), data)
+        assert node.provenance_spec is None
+        assert node.replay_source_data is None
+
+
+def test_failed_detached_replacement_preserves_source_binding(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("y", "x"))
+    source_spec = full_data(AssignAttrsOperation(attrs={"source": "child"}))
+    child_data = source_spec.apply(data)
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        child = itool(child_data, manager=False, execute=False)
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_spec=source_spec,
+            source_auto_update=True,
+        )
+        node = manager._child_node(child_uid)
+        detached = manager._lineage_controller._script_input_for_node(
+            node,
+            name="data",
+            detached_input_uid=node.uid,
+            data_role="source",
+        )
+        replacement_spec = script(
+            ScriptCodeOperation(label="Increment data", code="result = data + 1"),
+            start_label="Increment data",
+            active_name="result",
+            script_inputs=(detached,),
+        )
+        provenance_before = node.provenance_spec
+        snapshot_before = node.snapshot_token
+        dependency_refs_before = manager._lineage_controller._dependency_refs_for_uid(
+            node.uid
+        )
+
+        def fail_replacement(_data: xr.DataArray) -> None:
+            raise RuntimeError("replacement failed")
+
+        monkeypatch.setattr(
+            node.slicer_area,
+            "replace_source_data",
+            fail_replacement,
+        )
+
+        with pytest.raises(RuntimeError, match="replacement failed"):
+            node.replace_with_detached_data(
+                child_data + 1,
+                replacement_spec,
+                replay_source_data=child_data,
+            )
+
+        xr.testing.assert_identical(node.current_public_data(), child_data)
+        assert node.source_spec == source_spec
+        assert node.has_source_binding
+        assert node.source_auto_update
+        assert node.output_id is None
+        assert node.provenance_spec == provenance_before
+        assert node.replay_source_data is None
+        assert node.snapshot_token == snapshot_before
+        assert (
+            manager._lineage_controller._dependency_refs_for_uid(node.uid)
+            == dependency_refs_before
+        )
 
 
 def test_managed_input_auto_refresh_uses_fresh_live_script_source(

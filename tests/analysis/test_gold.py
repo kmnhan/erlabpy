@@ -611,6 +611,214 @@ def test_edge_model_wrapper_forwards_options(
     assert received["use_step_edge"] is True
 
 
+def test_poly_return_edge_uses_complete_coordinate_and_preserves_dims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = xr.DataArray(
+        np.ones((2, 3, 4, 5)),
+        dims=("beta", "hv", "eV", "theta"),
+        coords={
+            "beta": [-1.0, 1.0],
+            "hv": [20.0, 21.0, 22.0],
+            "eV": np.linspace(-0.2, 0.2, 4),
+            "theta": np.linspace(-2.0, 2.0, 5),
+        },
+    )
+    center = data.isel(eV=0, drop=True)
+    coefficients = xr.DataArray(
+        np.stack([np.zeros((2, 3)), np.ones((2, 3))], axis=-1),
+        dims=("beta", "hv", "param"),
+        coords={"beta": data.beta, "hv": data.hv, "param": ["c0", "c1"]},
+    )
+    result = xr.Dataset({"modelfit_coefficients": coefficients})
+
+    monkeypatch.setattr(gold_mod, "edge", lambda *_args, **_kwargs: (center, center))
+    monkeypatch.setattr(gold_mod, "poly_from_edge", lambda *_args, **_kwargs: result)
+
+    actual = poly(
+        data,
+        along="theta",
+        angle_range=(-1.0, 1.0),
+        eV_range=(-0.1, 0.1),
+        return_edge=True,
+        plot=False,
+    )
+
+    expected = xr.broadcast(data.beta, data.hv, data.theta)[2].rename(None)
+    xr.testing.assert_identical(actual, expected)
+    assert actual.dims == ("beta", "hv", "theta")
+    xr.testing.assert_identical(actual.theta, data.theta)
+
+
+def test_poly_return_edge_preserves_singleton_noncore_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    theta = np.linspace(-2.0, 2.0, 5)
+    data = xr.DataArray(
+        np.ones((1, 4, theta.size)),
+        dims=("beta", "eV", "theta"),
+        coords={
+            "beta": [7.0],
+            "eV": np.linspace(-0.2, 0.2, 4),
+            "theta": theta,
+        },
+    )
+    center = xr.DataArray(
+        0.03 + 0.1 * theta[np.newaxis, :],
+        dims=("beta", "theta"),
+        coords={"beta": data.beta, "theta": data.theta},
+    )
+
+    monkeypatch.setattr(
+        gold_mod,
+        "edge",
+        lambda *_args, **_kwargs: (center, xr.ones_like(center)),
+    )
+
+    actual = poly(
+        data,
+        along="theta",
+        angle_range=(-1.0, 1.0),
+        eV_range=(-0.1, 0.1),
+        degree=1,
+        return_edge=True,
+        plot=False,
+    )
+
+    xr.testing.assert_allclose(actual, center.rename("edge"))
+    assert actual.dims == ("beta", "theta")
+
+
+def test_spline_return_edge_preserves_complete_descending_coordinate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    theta = np.linspace(-2.0, 2.0, 5)[::-1]
+    data = xr.DataArray(
+        np.ones((4, 5)),
+        dims=("eV", "theta"),
+        coords={"eV": np.linspace(-0.2, 0.2, 4), "theta": theta},
+    )
+    center = data.isel(eV=0, drop=True)
+
+    monkeypatch.setattr(gold_mod, "edge", lambda *_args, **_kwargs: (center, center))
+    monkeypatch.setattr(
+        gold_mod, "spline_from_edge", lambda *_args, **_kwargs: lambda x: 2.0 * x
+    )
+
+    actual = spline(
+        data,
+        along="theta",
+        angle_range=(-1.0, 1.0),
+        eV_range=(-0.1, 0.1),
+        return_edge=True,
+        plot=False,
+    )
+
+    xr.testing.assert_identical(actual, (2.0 * data.theta).rename(None))
+
+
+def test_evaluate_edge_model_preserves_dataarray_name() -> None:
+    data = xr.DataArray(
+        np.ones((3, 4)),
+        dims=("alpha", "eV"),
+        coords={"alpha": np.arange(3.0), "eV": np.arange(4.0)},
+    )
+    evaluated = xr.DataArray(
+        [0.0, 0.1, 0.2],
+        dims="alpha",
+        coords={"alpha": data.alpha},
+        name="calibration",
+    )
+
+    actual = gold_mod._evaluate_edge_model(data, evaluated)
+
+    xr.testing.assert_identical(actual, evaluated)
+
+
+@pytest.mark.parametrize(
+    "constant",
+    [0.1, np.array(0.1)],
+    ids=("python-scalar", "zero-dimensional-array"),
+)
+def test_correct_with_edge_accepts_scalar_callable(
+    constant: float | np.ndarray,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("alpha", "eV"),
+        coords={"alpha": np.arange(3.0), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+
+    actual = correct_with_edge(
+        data,
+        lambda _angles: constant,
+        shift_coords=False,
+    )
+    expected = erlab.analysis.transform.shift(
+        data,
+        -0.1,
+        along="eV",
+        shift_coords=False,
+    )
+
+    xr.testing.assert_identical(actual, expected)
+
+
+@pytest.mark.parametrize("wrapper", [poly, spline])
+def test_edge_model_wrapper_rejects_return_edge_with_correct(wrapper) -> None:
+    data = xr.DataArray(np.ones((2, 2)), dims=("eV", "alpha"), coords={"eV": [0, 1]})
+
+    with pytest.raises(ValueError, match="cannot both be True"):
+        wrapper(
+            data,
+            angle_range=(0.0, 1.0),
+            eV_range=(0.0, 1.0),
+            correct=True,
+            return_edge=True,
+            plot=False,
+        )
+
+
+@pytest.mark.parametrize("wrapper", [poly, spline])
+def test_edge_model_wrapper_forwards_along_when_correcting(
+    monkeypatch: pytest.MonkeyPatch, wrapper
+) -> None:
+    data = xr.DataArray(
+        np.ones((2, 3)),
+        dims=("eV", "theta"),
+        coords={"eV": [0.0, 1.0], "theta": [-1.0, 0.0, 1.0]},
+    )
+    center = data.isel(eV=0, drop=True)
+    result = xr.Dataset()
+    received: dict[str, typing.Any] = {}
+
+    monkeypatch.setattr(gold_mod, "edge", lambda *_args, **_kwargs: (center, center))
+    monkeypatch.setattr(gold_mod, "poly_from_edge", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        gold_mod, "spline_from_edge", lambda *_args, **_kwargs: lambda x: x
+    )
+
+    def capture_correct(
+        darr: xr.DataArray, _result: typing.Any, **kwargs: typing.Any
+    ) -> xr.DataArray:
+        received.update(kwargs)
+        return darr
+
+    monkeypatch.setattr(gold_mod, "correct_with_edge", capture_correct)
+
+    _, corrected = wrapper(
+        data,
+        along="theta",
+        angle_range=(-1.0, 1.0),
+        eV_range=(0.0, 1.0),
+        correct=True,
+        plot=False,
+    )
+
+    assert received["along"] == "theta"
+    xr.testing.assert_identical(corrected, data)
+
+
 @pytest.mark.parametrize(
     "parallel_kw", [None, {"return_as": "list"}], ids=["generator", "list"]
 )

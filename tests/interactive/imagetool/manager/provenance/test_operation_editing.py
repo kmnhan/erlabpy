@@ -18,9 +18,10 @@ from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import _kspace_conversion
+from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -28,6 +29,7 @@ from erlab.interactive.imagetool._provenance._model import (
     _ProvenanceStepRef,
     compose_display_provenance,
     full_data,
+    recipe,
     script,
     selection,
     stamp_operation_group,
@@ -51,12 +53,14 @@ from erlab.interactive.imagetool._provenance._operations import (
     RemoveMeshOperation,
     ScriptCodeOperation,
     SelOperation,
+    ShiftFromInputOperation,
     SortByOperation,
     TransposeOperation,
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
+from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
@@ -64,6 +68,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
     _editors as provenance_editors,
 )
 from erlab.interactive.kspace import KspaceTool
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
 from ._common import (
     _fake_edit_controller,
@@ -138,6 +143,482 @@ def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
 
     assert warnings_shown
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_edit_bound_shift_rebinds_without_script_code(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: typing.Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="data",
+    )
+    first_shift = xr.DataArray(
+        [0.0, 0.1, -0.1], dims="x", coords={"x": np.arange(3)}, name="first"
+    )
+    second_shift = xr.DataArray(
+        [0.1, 0.0, -0.1], dims="x", coords={"x": np.arange(3)}, name="second"
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(data, link=False, manager=True)
+        itool(first_shift, link=False, manager=True)
+        itool(second_shift, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        source_node = manager._node_for_target(0)
+        first_shift_node = manager._node_for_target(1)
+        second_shift_node = manager._node_for_target(2)
+        create_dialog = imagetool_dialogs.ShiftDialog(
+            manager.get_imagetool(0).slicer_area
+        )
+        qtbot.addWidget(create_dialog)
+        provenance_edit_controller._ProvenanceEditController._restore_bound_shift_dialog(
+            create_dialog,
+            ShiftFromInputOperation(negate=True, along="eV"),
+            None,
+        )
+        create_dialog.shift_source_combo.setCurrentIndex(
+            create_dialog.shift_source_combo.findData(
+                create_dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        create_dialog.shift_tool_combo.setCurrentIndex(
+            create_dialog.shift_tool_combo.findData(
+                first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        create_dialog.launch_mode_combo.setCurrentIndex(
+            create_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        create_dialog.accept()
+
+        spec = source_node.provenance_spec
+        assert spec is not None
+        crop = IselOperation(kwargs={"x": slice(0, 2)})
+        source_node.replace_with_detached_data(
+            crop.apply(fetch(0)),
+            spec.append_operations(crop),
+            replay_source_data=data,
+        )
+        spec = source_node.provenance_spec
+        assert spec is not None
+        row = next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref is not None
+            and isinstance(
+                spec._operation_for_ref(row.edit_ref), ShiftFromInputOperation
+            )
+        )
+        controller = manager._provenance_edit_controller
+        original_data = fetch(0)
+        original_spec = source_node.provenance_spec
+
+        def reject_edit(_dialog: QtWidgets.QDialog) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+        monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", reject_edit)
+        controller._edit_operation_row(source_node, row)
+        assert source_node.provenance_spec is original_spec
+        xr.testing.assert_identical(fetch(0), original_data)
+
+        def accept_second_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
+            assert dialog.slicer_area.data.sizes["x"] == 3
+            candidate_index = dialog.shift_tool_combo.findData(
+                second_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+            assert candidate_index >= 0
+            dialog.shift_tool_combo.setCurrentIndex(candidate_index)
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", accept_second_shift)
+        controller._edit_operation_row(source_node, row)
+
+        rebound_spec = source_node.provenance_spec
+        assert rebound_spec is not None
+        rebound_operation = next(
+            operation
+            for operation in rebound_spec.operations
+            if isinstance(operation, ShiftFromInputOperation)
+        )
+        assert isinstance(rebound_operation, ShiftFromInputOperation)
+        assert not any(
+            isinstance(operation, ScriptCodeOperation)
+            for operation in rebound_spec.operations
+        )
+        assert rebound_spec.script_inputs[-1].node_uid == second_shift_node.uid
+        xr.testing.assert_identical(
+            fetch(0),
+            erlab.analysis.transform.shift(data, -second_shift, along="eV").isel(
+                x=slice(0, 2)
+            ),
+        )
+        generated = _exec_generated_code(
+            rebound_spec.display_code(),
+            {"data": data, "shift": second_shift},
+        )
+        xr.testing.assert_identical(generated[rebound_spec.active_name], fetch(0))
+
+        stale_spec = source_node.provenance_spec
+        stale_data = fetch(0)
+        after_accept = False
+        original_candidate_data = imagetool_dialogs.ShiftDialog._candidate_data
+
+        def select_stale_candidate(dialog: imagetool_dialogs.ShiftDialog) -> int:
+            nonlocal after_accept
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+                )
+            )
+            after_accept = True
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def reject_stale_candidate(
+            dialog: imagetool_dialogs.ShiftDialog,
+            manager: typing.Any,
+            uid: str,
+            source: xr.DataArray,
+        ) -> xr.DataArray:
+            if after_accept and uid == first_shift_node.uid:
+                raise ValueError("The selected shift ImageTool is not current.")
+            return original_candidate_data(dialog, manager, uid, source)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog, "exec", select_stale_candidate
+        )
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog,
+            "_candidate_data",
+            reject_stale_candidate,
+        )
+        with pytest.raises(ValueError, match="not current"):
+            controller._edit_operation_row(source_node, row)
+        assert source_node.provenance_spec is stale_spec
+        xr.testing.assert_identical(fetch(0), stale_data)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog,
+            "_candidate_data",
+            original_candidate_data,
+        )
+        manager.remove_imagetool(2)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        def replace_missing_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+                )
+            )
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog, "exec", replace_missing_shift
+        )
+        controller._edit_operation_row(source_node, row)
+        repaired_spec = source_node.provenance_spec
+        assert repaired_spec is not None
+        assert repaired_spec.script_inputs[-1].node_uid == first_shift_node.uid
+        xr.testing.assert_identical(
+            fetch(0),
+            erlab.analysis.transform.shift(data, -first_shift, along="eV").isel(
+                x=slice(0, 2)
+            ),
+        )
+
+
+def test_manager_bound_step_paste_builds_the_required_provenance_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BoundScriptCodeOperation(ScriptCodeOperation):
+        def input_slots(self) -> tuple[str, ...]:
+            return ("shift",)
+
+    node = _fake_edit_node(full_data())
+    controller = _fake_edit_controller(node)
+    controller._manager._manager_record = types.SimpleNamespace(internal_id="manager")
+    controller._manager._lineage_controller._script_input_for_node = (
+        lambda _node, *, name, **_kwargs: ScriptInput(name=name)
+    )
+    pasted: list[ToolProvenanceSpec] = []
+    monkeypatch.setattr(
+        controller,
+        "_paste_detached_steps",
+        lambda _node, spec, **_kwargs: pasted.append(spec),
+    )
+    bound_shift = ReplayStep(
+        operation=ShiftFromInputOperation(along="x"),
+        input_bindings={"shift": "shift"},
+    )
+
+    with pytest.raises(ValueError, match="need a primary input"):
+        controller._paste_steps_into_node(
+            node,
+            (bound_shift,),
+            active_name="shifted",
+        )
+
+    bound_script = ReplayStep(
+        operation=_BoundScriptCodeOperation(
+            label="Use bound shift",
+            code="shifted = data + shift",
+        ),
+        input_bindings={"shift": "shift"},
+    )
+    controller._paste_steps_into_node(
+        node,
+        (bound_script,),
+        active_name="shifted",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="shift"),),
+        source_manager_id="manager",
+    )
+    assert isinstance(pasted[-1].steps[0].operation, ScriptCodeOperation)
+
+    controller._paste_steps_into_node(
+        node,
+        (ScriptCodeOperation(label="Use auxiliary", code="derived = auxiliary"),),
+        active_name="derived",
+        script_inputs=(ScriptInput(name="auxiliary"),),
+    )
+    assert pasted[-1].primary_input == "data"
+    assert tuple(item.name for item in pasted[-1].script_inputs) == (
+        "data",
+        "auxiliary",
+    )
+
+
+def test_manager_bound_shift_editability_rejects_invalid_and_multiple_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ShiftFromInputOperation(along="x")
+    live_spec = full_data(operation)
+    live_node = _fake_edit_node(live_spec)
+    live_controller = _fake_edit_controller(live_node)
+    live_row = live_spec.display_rows()[1]
+    assert live_controller._can_edit_row(live_node, live_row) == (
+        False,
+        "This bound shift step is not editable.",
+    )
+
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    invalid_spec = types.SimpleNamespace(
+        kind="script",
+        steps=(types.SimpleNamespace(input_bindings={}),),
+        _operation_for_ref=lambda _ref: operation,
+    )
+    invalid_node = _fake_edit_node(typing.cast("typing.Any", invalid_spec))
+    invalid_controller = _fake_edit_controller(invalid_node)
+    invalid_row = _ProvenanceDisplayRow(
+        DerivationEntry("Shift", None),
+        edit_ref=ref,
+    )
+    assert invalid_controller._can_edit_row(invalid_node, invalid_row) == (
+        False,
+        "This bound shift step has no shift input.",
+    )
+
+    step = ReplayStep(operation=operation, input_bindings={"shift": "shift"})
+    spec = recipe(
+        step,
+        start_label="Shift data",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+    )
+    first = _fake_edit_node(spec, uid="first")
+    second = _fake_edit_node(spec, uid="second")
+    controller = _fake_edit_controller(nodes={"first": first, "second": second})
+    monkeypatch.setattr(
+        controller,
+        "_can_edit_row",
+        lambda *_args, **_kwargs: (True, ""),
+    )
+    row = next(
+        row
+        for row in spec.display_rows()
+        if row.edit_ref is not None
+        and isinstance(spec._operation_for_ref(row.edit_ref), ShiftFromInputOperation)
+    )
+    assert controller.can_edit_rows((("first", row), ("second", row))) == (
+        False,
+        "Edit one bound shift step at a time.",
+    )
+
+
+def test_manager_bound_shift_edit_rejects_stale_model_state() -> None:
+    operation = ShiftFromInputOperation(along="x")
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    valid_step = ReplayStep(
+        operation=operation,
+        input_bindings={"shift": "shift"},
+    )
+    valid_spec = recipe(
+        valid_step,
+        start_label="Shift data",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+    )
+    controller = _fake_edit_controller()
+    row = _ProvenanceDisplayRow(DerivationEntry("Shift", None), edit_ref=ref)
+
+    unavailable_node = _fake_edit_node(valid_spec)
+    unavailable_node.imagetool = None
+    with pytest.raises(RuntimeError, match="target is not available"):
+        controller._edit_bound_shift_operation_row(
+            unavailable_node,
+            row,
+            valid_spec,
+            ref,
+            operation,
+        )
+
+    missing_binding_spec = types.SimpleNamespace(
+        steps=(types.SimpleNamespace(input_bindings={}),),
+        script_inputs=(),
+    )
+    node = _fake_edit_node(typing.cast("typing.Any", missing_binding_spec))
+    with pytest.raises(RuntimeError, match="has no shift input"):
+        controller._edit_bound_shift_operation_row(
+            node,
+            row,
+            typing.cast("typing.Any", missing_binding_spec),
+            ref,
+            operation,
+        )
+
+    missing_input_spec = types.SimpleNamespace(
+        steps=(valid_step,),
+        script_inputs=(),
+    )
+    with pytest.raises(RuntimeError, match="input is not available"):
+        controller._edit_bound_shift_operation_row(
+            node,
+            row,
+            typing.cast("typing.Any", missing_input_spec),
+            ref,
+            operation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("uses_manager_shift", "selected_uid", "cycle", "dialog_error", "message"),
+    [
+        (False, "shift", False, False, "requires an ImageTool input"),
+        (True, None, False, False, "Select a compatible shift ImageTool"),
+        (True, "shift", True, False, "would create a dependency cycle"),
+        (True, "shift", False, True, "dialog failed"),
+    ],
+)
+def test_manager_bound_shift_edit_rejects_invalid_dialog_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    uses_manager_shift: bool,
+    selected_uid: str | None,
+    cycle: bool,
+    dialog_error: bool,
+    message: str,
+) -> None:
+    operation = ShiftFromInputOperation(along="x")
+    step = ReplayStep(operation=operation, input_bindings={"shift": "shift"})
+    spec = recipe(
+        step,
+        start_label="Shift data",
+        active_name="shifted",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(name="shift", node_uid="old-shift"),
+        ),
+        primary_input="data",
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    controller._manager._dependency_tracker = types.SimpleNamespace(
+        transitively_depends_on=lambda *_args: cycle
+    )
+    prefix_data = xr.DataArray(np.arange(3.0), dims="x")
+    monkeypatch.setattr(
+        controller,
+        "_replay_candidate_result",
+        lambda *_args: (prefix_data, spec),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_restore_bound_shift_dialog",
+        lambda *_args: None,
+    )
+
+    class _TemporaryTool:
+        slicer_area = object()
+
+        def hide(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def deleteLater(self) -> None:
+            pass
+
+    class _Dialog:
+        shift_tool_combo = types.SimpleNamespace(
+            currentData=lambda *_args: selected_uid
+        )
+
+        @property
+        def uses_manager_shift(self) -> bool:
+            return uses_manager_shift
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def _candidate_data(self, *_args) -> xr.DataArray:
+            return xr.DataArray(0.0)
+
+        def close(self) -> None:
+            pass
+
+        def deleteLater(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        provenance_edit_controller.erlab.interactive.imagetool,
+        "ImageTool",
+        lambda _data: _TemporaryTool(),
+    )
+
+    def dialog_factory(*_args, **_kwargs) -> _Dialog:
+        if dialog_error:
+            raise RuntimeError("dialog failed")
+        return _Dialog()
+
+    monkeypatch.setattr(
+        provenance_edit_controller.dialogs,
+        "ShiftDialog",
+        dialog_factory,
+    )
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    row = _ProvenanceDisplayRow(DerivationEntry("Shift", None), edit_ref=ref)
+
+    with pytest.raises((TypeError, RuntimeError), match=message):
+        controller._edit_bound_shift_operation_row(
+            node,
+            row,
+            spec,
+            ref,
+            operation,
+        )
 
 
 def test_manager_multi_provenance_grouped_edit_revert_and_delete(

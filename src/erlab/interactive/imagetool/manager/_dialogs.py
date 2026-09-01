@@ -547,7 +547,9 @@ class _ConcatDialog(QtWidgets.QDialog):
                         ),
                         propagate_descendants=True,
                         preserve_filter=False,
-                        replay_source_data=None,
+                        replay_source_data=to_concat[
+                            selected.index(replacement_target)
+                        ],
                     )
                     manager.tree_view.refresh(replacement_node.uid)
                     manager._sigDataReplaced.emit()

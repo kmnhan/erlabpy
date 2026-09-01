@@ -2,6 +2,7 @@ import json
 import pathlib
 import types
 import typing
+import uuid
 from collections.abc import Callable, Sequence
 
 import numpy as np
@@ -18,8 +19,10 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_file_provenance,
     replay_script_provenance,
 )
+from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -44,6 +47,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceSetNormalOperation,
     KspaceWorkFunctionOperation,
     ScriptCodeOperation,
+    ShiftFromInputOperation,
     SortByOperation,
     SwapDimsOperation,
     TransposeOperation,
@@ -65,6 +69,7 @@ from tests.interactive.imagetool.manager.helpers import (
 from ._common import (
     _add_file_replay_tool,
     _authorize_execution,
+    _authorize_local_edit,
     _fake_edit_controller,
     _fake_edit_node,
     _manager_replay_file_spec,
@@ -78,7 +83,11 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
     valid_payload = {
         "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
         "version": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
-        "operations": [operation_payload],
+        "active_name": "derived",
+        "primary_input": None,
+        "steps": [{"operation": operation_payload, "input_bindings": {}}],
+        "script_inputs": [],
+        "source_manager_id": None,
     }
 
     mime_data = QtCore.QMimeData()
@@ -88,15 +97,35 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
     )
     payload = manager_details_panel._provenance_step_clipboard_payload(mime_data)
     assert payload is not None
-    assert payload[0] == (AverageOperation(dims=("z",)),)
-    assert payload[1] == "derived"
-    assert not payload[2]
+    assert payload.steps == (ReplayStep(operation=AverageOperation(dims=("z",))),)
+    assert payload.active_name == "derived"
+    assert payload.primary_input is None
+    assert payload.script_inputs == ()
+    assert payload.source_manager_id is None
+
+    v1_mime_data = QtCore.QMimeData()
+    v1_mime_data.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        json.dumps(
+            {
+                "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+                "version": 1,
+                "operations": [operation_payload],
+            }
+        ).encode("utf-8"),
+    )
+    v1_payload = manager_details_panel._provenance_step_clipboard_payload(v1_mime_data)
+    assert v1_payload is not None
+    assert v1_payload.steps == (ReplayStep(operation=AverageOperation(dims=("z",))),)
+    assert v1_payload.primary_input is None
+    assert v1_payload.script_inputs == ()
+    assert v1_payload.source_manager_id is None
 
     text_mime_data = QtCore.QMimeData()
     text_mime_data.setText(json.dumps({**valid_payload, "active_name": "result"}))
     payload = manager_details_panel._provenance_step_clipboard_payload(text_mime_data)
     assert payload is not None
-    assert payload[1] == "result"
+    assert payload.active_name == "result"
 
     plain_text_mime_data = QtCore.QMimeData()
     plain_text_mime_data.setText("derived = data")
@@ -119,12 +148,43 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
         is None
     )
 
+    bound_step = ReplayStep(
+        operation=ShiftFromInputOperation(along="x"),
+        input_bindings={"shift": "shift"},
+    ).model_dump(mode="json")
+    shift_input = ScriptInput(name="shift").model_dump(mode="json")
     for malformed_payload in (
         [],
         {**valid_payload, "type": "other"},
         {**valid_payload, "version": -1},
-        {**valid_payload, "operations": {}},
-        {**valid_payload, "operations": [{"op": "unknown"}]},
+        {
+            "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+            "version": 1,
+            "operations": {},
+        },
+        {**valid_payload, "steps": []},
+        {**valid_payload, "steps": {}},
+        {**valid_payload, "steps": [{"operation": {"op": "unknown"}}]},
+        {**valid_payload, "script_inputs": {}},
+        {**valid_payload, "primary_input": 1},
+        {**valid_payload, "source_manager_id": 1},
+        {
+            **valid_payload,
+            "primary_input": "data",
+            "steps": [bound_step],
+        },
+        {
+            **valid_payload,
+            "primary_input": "shift",
+            "steps": [bound_step],
+            "script_inputs": [shift_input],
+        },
+        {
+            **valid_payload,
+            "primary_input": "data",
+            "steps": [bound_step],
+            "script_inputs": [shift_input, shift_input],
+        },
     ):
         malformed_mime_data = QtCore.QMimeData()
         malformed_mime_data.setData(
@@ -182,6 +242,31 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         DerivationEntry("non-live", None),
         replay_ref=operation_ref,
     )
+    bound_row_a = _ProvenanceDisplayRow(
+        DerivationEntry("bound a", None),
+        replay_ref=operation_ref,
+    )
+    bound_row_b = _ProvenanceDisplayRow(
+        DerivationEntry("bound b", None),
+        replay_ref=operation_ref,
+    )
+    bound_step = ReplayStep(
+        operation=ShiftFromInputOperation(along="x"),
+        input_bindings={"shift": "shift"},
+    )
+
+    def bound_spec(shift_uid: str) -> ToolProvenanceSpec:
+        return script(
+            start_label="Shift data",
+            active_name="shifted",
+            steps=(bound_step,),
+            script_inputs=(
+                ScriptInput(name="data"),
+                ScriptInput(name="shift", node_uid=shift_uid),
+            ),
+            primary_input="data",
+        )
+
     row_to_spec = {
         script_row_a: script(
             ScriptCodeOperation(label="script a", code="a = data"),
@@ -195,15 +280,18 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         ),
         missing_operation_row: full_data(AverageOperation(dims=("x",))),
         non_copyable_script_row: types.SimpleNamespace(
+            kind="full",
             _operation_for_ref=lambda _ref: ScriptCodeOperation(
                 label="hidden script",
                 code="derived = data",
                 copyable=False,
-            )
+            ),
         ),
         non_live_row: types.SimpleNamespace(
-            _operation_for_ref=lambda _ref: _NonLiveOperation()
+            kind="full", _operation_for_ref=lambda _ref: _NonLiveOperation()
         ),
+        bound_row_a: bound_spec("shift-a"),
+        bound_row_b: bound_spec("shift-b"),
     }
     edit_controller = types.SimpleNamespace(
         _display_spec_for_row=lambda _node, row: row_to_spec.get(row)
@@ -250,6 +338,9 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
     assert controller._selected_derivation_step_payload() is None
 
     selected_items = [item(script_row_a), item(script_row_b)]
+    assert controller._selected_derivation_step_payload() is None
+
+    selected_items = [item(bound_row_a), item(bound_row_b)]
     assert controller._selected_derivation_step_payload() is None
 
 
@@ -814,7 +905,10 @@ def test_manager_copy_selected_derivation_code_fallbacks(
     monkeypatch.setattr(
         controller,
         "_selected_derivation_step_payload",
-        lambda: ((AverageOperation(dims=("x",)),), "derived", False),
+        lambda: manager_details_panel._ProvenanceStepsClipboardPayload(
+            steps=(ReplayStep(operation=AverageOperation(dims=("x",))),),
+            active_name="derived",
+        ),
     )
     monkeypatch.setattr(QtWidgets.QApplication, "clipboard", lambda: None)
     controller._copy_selected_derivation_code()
@@ -897,9 +991,8 @@ def test_manager_paste_steps_validation_error_branches(
     unavailable: list[str] = []
     monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
     controller.paste_steps(
-        (AverageOperation(dims=("x",)),),
+        (ReplayStep(operation=AverageOperation(dims=("x",))),),
         active_name="derived",
-        contains_script=False,
     )
     assert unavailable
 
@@ -1356,9 +1449,8 @@ def test_manager_copy_paste_structured_provenance_steps(
             clipboard.mimeData()
         )
         assert payload is not None
-        payload_operations, _active_name, contains_script = payload
-        assert payload_operations == source_operations
-        assert not contains_script
+        assert payload.operations == source_operations
+        assert not payload.contains_script
         assert clipboard.mimeData().hasFormat(
             manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME
         )
@@ -1415,6 +1507,233 @@ def test_manager_copy_paste_structured_provenance_steps(
         manager._paste_provenance_steps_from_clipboard()
         assert failures
         xr.testing.assert_identical(dest_tool.slicer_area._data, before)
+
+
+def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source_data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="source",
+    )
+    shift_data = xr.DataArray(
+        [0.0, 0.1, -0.1],
+        dims="x",
+        coords={"x": np.arange(3)},
+        name="shift",
+    )
+    target_data = source_data + 100.0
+    operation = ShiftFromInputOperation(negate=True, along="eV")
+
+    with manager_context() as manager:
+        source_tool = itool(source_data, manager=False, execute=False)
+        shift_tool = itool(shift_data, manager=False, execute=False)
+        assert isinstance(source_tool, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(shift_tool, erlab.interactive.imagetool.ImageTool)
+        source_index = manager.add_imagetool(source_tool, show=False)
+        shift_index = manager.add_imagetool(shift_tool, show=False)
+        shift_node = manager._node_for_target(shift_index)
+        bound_spec = manager._multi_input_operation_provenance(
+            (source_index, shift_index),
+            operation=operation,
+            active_name="shifted",
+            start_label="Shift ImageTool data",
+            data_role="source",
+            input_names=("data", "shift"),
+            primary_input="data",
+            input_bindings={"shift": "shift"},
+        )
+        source_expected = erlab.analysis.transform.shift(
+            source_data, -shift_data, along="eV"
+        )
+        source_child = itool(source_expected, manager=False, execute=False)
+        assert isinstance(source_child, erlab.interactive.imagetool.ImageTool)
+        source_child_uid = manager.add_imagetool_child(
+            source_child,
+            source_index,
+            show=False,
+            provenance_spec=bound_spec,
+            source_state="fresh",
+        )
+        target_tool = itool(target_data, manager=False, execute=False)
+        assert isinstance(target_tool, erlab.interactive.imagetool.ImageTool)
+        target_index = manager.add_imagetool(target_tool, show=False)
+        target_node = manager._node_for_target(target_index)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, source_child_uid)
+        manager._update_info(uid=source_child_uid)
+        operation_rows = [
+            index
+            for index in range(manager.metadata_derivation_list.conceptual_count())
+            if (
+                (item := manager.metadata_derivation_list.conceptual_item(index))
+                is not None
+                and isinstance(
+                    row := item.data(
+                        manager_details_panel._METADATA_DERIVATION_ROW_ROLE
+                    ),
+                    _ProvenanceDisplayRow,
+                )
+                and row.replay_ref is not None
+                and row.replay_ref.operation_index == 0
+            )
+        ]
+        assert len(operation_rows) == 1
+        select_metadata_rows(manager, operation_rows)
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            QtWidgets.QApplication.clipboard().mimeData()
+        )
+        assert payload is not None
+        assert len(payload.steps) == 1
+        assert isinstance(payload.steps[0].operation, ShiftFromInputOperation)
+        assert payload.steps[0].operation.negate is True
+        assert payload.steps[0].operation.along == "eV"
+        assert payload.steps[0].input_bindings == {"shift": "shift"}
+        assert payload.primary_input == "data"
+        assert [item.name for item in payload.script_inputs] == ["shift"]
+        assert payload.source_manager_id == manager._manager_record.internal_id
+        assert not payload.contains_script
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in payload.operations
+        )
+
+        copied = _exec_generated_code(
+            QtWidgets.QApplication.clipboard().text(),
+            {
+                "derived": target_data.copy(deep=True),
+                "shift": shift_data.copy(deep=True),
+            },
+        )
+        target_expected = erlab.analysis.transform.shift(
+            target_data, -shift_data, along="eV"
+        )
+        xr.testing.assert_identical(copied["derived"], target_expected)
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [target_index])
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+        xr.testing.assert_identical(target_tool.slicer_area._data, target_expected)
+        target_spec = target_node.displayed_provenance_spec
+        assert target_spec is not None
+        assert target_spec.primary_input == "data"
+        assert len(target_spec.steps) == 1
+        assert isinstance(target_spec.steps[0].operation, ShiftFromInputOperation)
+        assert target_spec.steps[0].operation.negate is True
+        assert target_spec.steps[0].operation.along == "eV"
+        assert target_spec.steps[0].input_bindings == {"shift": "shift"}
+        assert [item.node_uid for item in target_spec.script_inputs] == [
+            None,
+            shift_node.uid,
+        ]
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in target_spec.operations
+        )
+        assert manager.dependency_status_for_uid(target_node.uid) == "current"
+
+        updated_shift = shift_data + 0.05
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(shift_index, updated_shift)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(target_node.uid) == "changed",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(target_tool.slicer_area._data, target_expected)
+        assert target_node.reload_source_data()
+        xr.testing.assert_identical(
+            target_tool.slicer_area._data,
+            erlab.analysis.transform.shift(target_data, -updated_shift, along="eV"),
+        )
+        assert manager.dependency_status_for_uid(target_node.uid) == "current"
+
+
+def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    shift_data = xr.DataArray([0.0, 0.1, -0.1], dims="x", coords={"x": np.arange(3)})
+    shift_path = tmp_path / "shift.nc"
+    shift_data.to_netcdf(shift_path, engine="h5netcdf")
+    step = ReplayStep(
+        operation=ShiftFromInputOperation(negate=True, along="eV"),
+        input_bindings={"shift": "shift"},
+    )
+    portable_shift = ScriptInput(
+        name="shift",
+        label="Shift ImageTool",
+        node_uid="foreign-shift",
+        node_snapshot_token=uuid.uuid4().hex,
+        provenance_spec=_manager_replay_file_spec(shift_path),
+    )
+
+    with manager_context() as manager:
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(tool, show=False)
+        node = manager._node_for_target(index)
+
+        manager._provenance_edit_controller._paste_steps_into_node(
+            node,
+            (step,),
+            active_name="shifted",
+            primary_input="data",
+            script_inputs=(portable_shift,),
+            source_manager_id="another-manager",
+        )
+
+        expected = erlab.analysis.transform.shift(data, -shift_data, along="eV")
+        xr.testing.assert_identical(tool.slicer_area._data, expected)
+        spec = node.provenance_spec
+        assert spec is not None
+        assert isinstance(spec.steps[0].operation, ShiftFromInputOperation)
+        assert not any(
+            isinstance(operation, ScriptCodeOperation) for operation in spec.operations
+        )
+        shift_input = next(item for item in spec.script_inputs if item.name == "shift")
+        assert shift_input.node_uid is None
+        assert shift_input.node_snapshot_token is None
+        assert shift_input.parsed_provenance_spec() == _manager_replay_file_spec(
+            shift_path
+        )
+
+        before_data = tool.slicer_area._data.copy(deep=True)
+        before_spec = node.provenance_spec
+        with pytest.raises(ReplayGraphError, match="no portable recorded provenance"):
+            manager._provenance_edit_controller._paste_steps_into_node(
+                node,
+                (step,),
+                active_name="shifted",
+                primary_input="data",
+                script_inputs=(
+                    ScriptInput(
+                        name="shift",
+                        label="Unavailable shift",
+                        node_uid="foreign-shift",
+                    ),
+                ),
+                source_manager_id="another-manager",
+            )
+        assert node.provenance_spec is before_spec
+        xr.testing.assert_identical(tool.slicer_area._data, before_data)
 
 
 def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
@@ -1609,7 +1928,6 @@ def test_manager_paste_steps_starts_from_public_target_data(
         name="scan",
     )
     operations: tuple[ToolProvenanceOperation, ...]
-    contains_script = False
     displayed_expected: xr.DataArray
     if case == "nonuniform_attr":
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
@@ -1625,7 +1943,6 @@ def test_manager_paste_steps_starts_from_public_target_data(
         operations = (
             ScriptCodeOperation(label="Offset data", code="derived = derived + 1.0"),
         )
-        contains_script = True
         expected = data + 1.0
     elif case == "promoted_1d":
         data = data.isel(eV=0, drop=True)
@@ -1649,9 +1966,8 @@ def test_manager_paste_steps_starts_from_public_target_data(
 
         manager._provenance_edit_controller._paste_steps_into_node(
             node,
-            operations,
+            tuple(ReplayStep(operation=operation) for operation in operations),
             active_name="derived",
-            contains_script=contains_script,
         )
 
         xr.testing.assert_identical(tool.slicer_area._data, expected)
@@ -1867,13 +2183,13 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
             clipboard.mimeData()
         )
         assert partial_payload is not None
-        partial_operations, _active_name, contains_script = partial_payload
+        partial_operations = partial_payload.operations
         assert [operation.op for operation in partial_operations] == [
             "kspace_work_function",
             "kspace_set_normal",
         ]
         assert all(operation.group is None for operation in partial_operations)
-        assert not contains_script
+        assert not partial_payload.contains_script
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, partial_child_uid)
@@ -1908,9 +2224,8 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
             clipboard.mimeData()
         )
         assert payload is not None
-        payload_operations, _active_name, contains_script = payload
-        assert payload_operations == source_operations
-        assert not contains_script
+        assert payload.operations == source_operations
+        assert not payload.contains_script
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
@@ -2071,9 +2386,8 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
             QtWidgets.QApplication.clipboard().mimeData()
         )
         assert payload is not None
-        payload_operations, _active_name, contains_script = payload
-        assert payload_operations == script_operations
-        assert contains_script
+        assert payload.operations == script_operations
+        assert payload.contains_script
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)

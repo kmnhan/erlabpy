@@ -67,6 +67,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     RenameOperation,
     RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
+    ShiftFromInputOperation,
     TransposeOperation,
 )
 from erlab.interactive.imagetool.manager import fetch, replace_data
@@ -8521,11 +8522,16 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         configure_goldtool_child(child, fitted=True, spline=False)
 
         child.open_itool()
+        child.open_edge_itool()
 
         child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 2, timeout=5000)
 
-        output_uid = child_node._childtool_indices[0]
+        outputs = {
+            manager._child_node(uid).output_id: uid
+            for uid in child_node._childtool_indices
+        }
+        output_uid = outputs["goldtool.corrected"]
         output_node = manager._child_node(output_uid)
         assert manager.ntools == 1
         assert output_node.is_imagetool
@@ -8540,6 +8546,554 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
         assert "era.gold.poly(" in copied
         assert "corrected = era.gold.correct_with_edge(" in copied
+
+        edge_uid = outputs["goldtool.edge"]
+        edge_node = manager._child_node(edge_uid)
+        assert edge_node.parent_uid == child_uid
+        assert edge_node.source_spec is None
+        assert edge_node.provenance_spec is not None
+        xr.testing.assert_identical(fetch(edge_uid), child.edge)
+        edge_code = copy_full_code_for_uid(monkeypatch, manager, edge_uid)
+        assert "edge = era.gold.poly(" in edge_code
+        assert "return_edge=True" in edge_code
+        assert "correct_with_edge" not in edge_code
+
+
+def test_manager_shift_dialog_child_and_manual_reload(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="data",
+    )
+    shift = xr.DataArray(
+        [0.0, 0.1, -0.1],
+        dims="x",
+        coords={"x": np.arange(3)},
+        name="edge",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(data, link=False, manager=True)
+        itool(shift, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        source_node = manager._node_for_target(0)
+        shift_node = manager._node_for_target(1)
+        dialog = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
+        qtbot.addWidget(dialog)
+        dialog.shift_source_combo.setCurrentIndex(
+            dialog.shift_source_combo.findData(
+                dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        assert (
+            dialog.shift_tool_combo.findData(
+                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+            >= 0
+        )
+        dialog.shift_tool_combo.setCurrentIndex(
+            dialog.shift_tool_combo.findData(
+                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        assert dialog.launch_mode == "nest"
+
+        expected = erlab.analysis.transform.shift(data, -shift, along="eV")
+        code = dialog.make_code()
+        namespace = _exec_generated_code(code, {"data": data, "shift": shift})
+        xr.testing.assert_identical(namespace["shifted"], expected)
+        dialog.accept()
+
+        qtbot.wait_until(
+            lambda: len(source_node._childtool_indices) == 1,
+            timeout=5000,
+        )
+        child_uid = source_node._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        spec = child_node.provenance_spec
+        assert spec is not None
+        assert spec.kind == "script"
+        assert spec.active_name == "shifted"
+        assert spec.primary_input == "data"
+        assert len(spec.steps) == 1
+        assert spec.steps[0].input_bindings == {"shift": "shift"}
+        assert isinstance(spec.steps[0].operation, ShiftFromInputOperation)
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in spec.operations
+        )
+        assert [item.name for item in spec.script_inputs] == ["data", "shift"]
+        assert [item.node_uid for item in spec.script_inputs] == [
+            source_node.uid,
+            shift_node.uid,
+        ]
+        assert [item.data_role for item in spec.script_inputs] == ["source", "source"]
+        xr.testing.assert_identical(fetch(child_uid), expected)
+        assert manager.dependency_status_for_uid(child_uid) == "current"
+        copied = spec.derivation_code()
+        assert copied is not None
+        copied_namespace = _exec_generated_code(
+            copied,
+            {"data": data, "shift": shift},
+        )
+        xr.testing.assert_identical(copied_namespace["shifted"], expected)
+
+        updated_shift = shift + 0.1
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, updated_shift)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(child_uid) == "changed",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(fetch(child_uid), expected)
+
+        assert child_node.reload_source_data()
+        xr.testing.assert_identical(
+            fetch(child_uid),
+            erlab.analysis.transform.shift(data, -updated_shift, along="eV"),
+        )
+        assert manager.dependency_status_for_uid(child_uid) == "current"
+
+        tree = manager._workspace_controller.saving._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for workspace_node in tree.values():
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", workspace_node)
+            )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        restored = manager._child_node(child_uid)
+        restored_spec = restored.provenance_spec
+        assert restored_spec is not None
+        assert restored_spec.primary_input == "data"
+        assert isinstance(restored_spec.operations[-1], ShiftFromInputOperation)
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in restored_spec.operations
+        )
+        assert [item.name for item in restored_spec.script_inputs] == [
+            "data",
+            "shift",
+        ]
+        assert [item.node_uid for item in restored_spec.script_inputs] == [
+            source_node.uid,
+            shift_node.uid,
+        ]
+        assert manager.dependency_status_for_uid(child_uid) == "current"
+        xr.testing.assert_identical(
+            fetch(child_uid),
+            erlab.analysis.transform.shift(data, -updated_shift, along="eV"),
+        )
+
+
+def test_manager_shift_dialog_filters_and_revalidates_candidates(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": [0, 1, 2], "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    compatible = xr.DataArray([0.0, 0.1, -0.1], dims="x", coords={"x": [0, 1, 2]})
+    mismatched = compatible.assign_coords(x=[0, 1, 3])
+    extra_dim = xr.DataArray([0.0, 0.1, -0.1], dims="z")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for array in (data, compatible, mismatched, extra_dim):
+            itool(array, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+
+        compatible_node = manager._node_for_target(1)
+
+        def unavailable_data(*_args: object, **_kwargs: object) -> xr.DataArray:
+            raise OSError("workspace data is unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                compatible_node,
+                "data_for_role",
+                unavailable_data,
+            )
+            unavailable_dialog = imagetool_dialogs.ShiftDialog(
+                manager.get_imagetool(0).slicer_area
+            )
+            qtbot.addWidget(unavailable_dialog)
+            assert unavailable_dialog.shift_tool_combo.count() == 0
+
+        dialog = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
+        qtbot.addWidget(dialog)
+        candidate_uids = {
+            dialog.shift_tool_combo.itemData(i, QtCore.Qt.ItemDataRole.UserRole)
+            for i in range(dialog.shift_tool_combo.count())
+        }
+        assert candidate_uids == {compatible_node.uid}
+
+        dialog.along_combo.setCurrentIndex(
+            dialog.along_combo.findData("x", QtCore.Qt.ItemDataRole.UserRole)
+        )
+        assert dialog.shift_tool_combo.count() == 0
+        dialog.along_combo.setCurrentIndex(
+            dialog.along_combo.findData("eV", QtCore.Qt.ItemDataRole.UserRole)
+        )
+        assert (
+            dialog.shift_tool_combo.findData(
+                compatible_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+            >= 0
+        )
+
+        dialog.shift_source_combo.setCurrentIndex(
+            dialog.shift_source_combo.findData(
+                dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        compatible_node._set_source_state("stale")
+        dialog._populate_shift_candidates()
+        assert dialog.shift_tool_combo.count() == 0
+        assert not dialog.uses_manager_shift
+
+        compatible_node._set_source_state("fresh")
+        dialog._populate_shift_candidates()
+        dialog.shift_source_combo.setCurrentIndex(
+            dialog.shift_source_combo.findData(
+                dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        selected_uid = dialog.shift_tool_combo.currentData(
+            QtCore.Qt.ItemDataRole.UserRole
+        )
+        assert selected_uid == compatible_node.uid
+        manager.remove_imagetool(1)
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda _parent, _title, text: warnings.append(text),
+        )
+
+        dialog.accept()
+
+        assert len(warnings) == 1
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_manager_shift_dialog_reports_stale_and_failed_results(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    shift = xr.DataArray(
+        [0.0, 0.1, -0.1],
+        dims="x",
+        coords={"x": np.arange(3)},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data, shift], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        shift_uid = manager._node_for_target(1).uid
+
+        def new_dialog() -> imagetool_dialogs.ShiftDialog:
+            dialog = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
+            qtbot.addWidget(dialog)
+            dialog.shift_source_combo.setCurrentIndex(
+                dialog.shift_source_combo.findData(
+                    dialog._SOURCE_MANAGER,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                )
+            )
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    shift_uid,
+                    QtCore.Qt.ItemDataRole.UserRole,
+                )
+            )
+            return dialog
+
+        dialog = new_dialog()
+        dialog.shift_tool_combo.setCurrentIndex(-1)
+        warnings: list[object] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                QtWidgets.QMessageBox,
+                "warning",
+                lambda *_args, **_kwargs: warnings.append(object()),
+            )
+            dialog.accept()
+        assert len(warnings) == 1
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+        with monkeypatch.context() as patch:
+            patch.setitem(
+                manager._tool_graph.nodes,
+                "not-an-imagetool",
+                types.SimpleNamespace(is_imagetool=False),
+            )
+            with pytest.raises(ValueError, match="not an ImageTool"):
+                dialog._candidate_data(manager, "not-an-imagetool", data)
+
+        creation_errors: list[object] = []
+        no_tool_dialog = new_dialog()
+        no_tool_dialog.launch_mode_combo.setCurrentIndex(
+            no_tool_dialog.launch_mode_combo.findData(
+                "detach", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(erlab.interactive, "itool", lambda **_kwargs: None)
+            patch.setattr(
+                erlab.interactive.utils.MessageDialog,
+                "critical",
+                lambda *_args, **_kwargs: creation_errors.append(object()),
+            )
+            no_tool_dialog.accept()
+        assert len(creation_errors) == 1
+        assert no_tool_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+        runtime_errors: list[object] = []
+        error_dialog = new_dialog()
+
+        def fail_candidate(*_args: object, **_kwargs: object) -> xr.DataArray:
+            raise RuntimeError("unexpected shift failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(error_dialog, "_candidate_data", fail_candidate)
+            patch.setattr(
+                erlab.interactive.utils.MessageDialog,
+                "critical",
+                lambda *_args, **_kwargs: runtime_errors.append(object()),
+            )
+            error_dialog.accept()
+        assert len(runtime_errors) == 1
+        assert error_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_manager_shift_dialog_result_placements_and_cycle_preflight(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="data",
+    )
+    shift = xr.DataArray(
+        [0.0, 0.1, -0.1],
+        dims="x",
+        coords={"x": np.arange(3)},
+        name="edge",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(data, link=False, manager=True)
+        itool(shift, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        source_node = manager._node_for_target(0)
+        shift_node = manager._node_for_target(1)
+        detached_token = source_node.source_snapshot_token
+
+        top_level = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
+        qtbot.addWidget(top_level)
+        top_level.shift_source_combo.setCurrentIndex(
+            top_level.shift_source_combo.findData(
+                top_level._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        top_level.shift_tool_combo.setCurrentIndex(
+            top_level.shift_tool_combo.findData(
+                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        top_level.launch_mode_combo.setCurrentIndex(
+            top_level.launch_mode_combo.findData(
+                "detach", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        top_level.accept()
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        top_node = manager._node_for_target(2)
+        assert top_node.parent_uid is None
+        assert top_node.provenance_spec.primary_input == "data"
+        assert isinstance(
+            top_node.provenance_spec.operations[-1], ShiftFromInputOperation
+        )
+        assert [item.node_uid for item in top_node.provenance_spec.script_inputs] == [
+            source_node.uid,
+            shift_node.uid,
+        ]
+
+        replacement = imagetool_dialogs.ShiftDialog(
+            manager.get_imagetool(0).slicer_area
+        )
+        qtbot.addWidget(replacement)
+        replacement.shift_source_combo.setCurrentIndex(
+            replacement.shift_source_combo.findData(
+                replacement._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        replacement.shift_tool_combo.setCurrentIndex(
+            replacement.shift_tool_combo.findData(
+                shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        replace_index = replacement.launch_mode_combo.findData(
+            "replace", QtCore.Qt.ItemDataRole.UserRole
+        )
+        replacement.launch_mode_combo.setCurrentIndex(replace_index)
+        replacement.accept()
+
+        replaced_spec = source_node.provenance_spec
+        assert replaced_spec is not None
+        assert replaced_spec.primary_input == "data"
+        assert isinstance(replaced_spec.operations[-1], ShiftFromInputOperation)
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in replaced_spec.operations
+        )
+        assert [item.name for item in replaced_spec.script_inputs] == ["data", "shift"]
+        assert replaced_spec.script_inputs[0].node_uid is None
+        assert replaced_spec.script_inputs[0].node_snapshot_token == detached_token
+        assert replaced_spec.script_inputs[1].node_uid == shift_node.uid
+        assert source_node.replay_source_data is not None
+        xr.testing.assert_identical(source_node.replay_source_data, data)
+        xr.testing.assert_identical(
+            fetch(0), erlab.analysis.transform.shift(data, -shift, along="eV")
+        )
+
+        updated_shift = shift + 0.05
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, updated_shift)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(source_node.uid) == "changed",
+            timeout=5000,
+        )
+        assert source_node.reload_source_data()
+        xr.testing.assert_identical(
+            fetch(0),
+            erlab.analysis.transform.shift(data, -updated_shift, along="eV"),
+        )
+        assert manager.dependency_status_for_uid(source_node.uid) == "current"
+
+        tree = manager._workspace_controller.saving._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for workspace_node in tree.values():
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", workspace_node)
+            )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        source_node = manager._node_for_target(0)
+        shift_node = manager._node_for_target(1)
+        restored_spec = source_node.provenance_spec
+        assert restored_spec is not None
+        assert restored_spec.script_inputs[0].node_uid is None
+        assert restored_spec.script_inputs[0].node_snapshot_token == detached_token
+        assert restored_spec.script_inputs[1].node_uid == shift_node.uid
+        assert source_node.replay_source_data is not None
+        xr.testing.assert_identical(source_node.replay_source_data, data)
+
+        restored_shift = updated_shift + 0.05
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(1, restored_shift)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(source_node.uid) == "changed",
+            timeout=5000,
+        )
+        assert source_node.reload_source_data()
+        xr.testing.assert_identical(
+            fetch(0),
+            erlab.analysis.transform.shift(data, -restored_shift, along="eV"),
+        )
+
+        dependent_shift = fetch(0).isel(eV=0, drop=True).rename("dependent_edge")
+        dependent_tool = itool(dependent_shift, manager=False, execute=False)
+        assert isinstance(dependent_tool, erlab.interactive.imagetool.ImageTool)
+        qtbot.addWidget(dependent_tool)
+        dependent_uid = manager.add_imagetool_child(
+            dependent_tool,
+            0,
+            show=False,
+            source_spec=full_data(IselOperation(kwargs={"eV": 0})),
+        )
+
+        cycle_dialog = imagetool_dialogs.ShiftDialog(
+            manager.get_imagetool(0).slicer_area
+        )
+        qtbot.addWidget(cycle_dialog)
+        cycle_dialog.shift_source_combo.setCurrentIndex(
+            cycle_dialog.shift_source_combo.findData(
+                cycle_dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        cycle_dialog.shift_tool_combo.setCurrentIndex(
+            cycle_dialog.shift_tool_combo.findData(
+                dependent_uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        assert not cycle_dialog._replacement_is_safe()
+        replace_item = typing.cast(
+            "QtGui.QStandardItemModel", cycle_dialog.launch_mode_combo.model()
+        ).item(
+            cycle_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        assert replace_item is not None
+        assert not replace_item.isEnabled()
+
+        replace_item.setEnabled(True)
+        cycle_dialog.launch_mode_combo.setCurrentIndex(
+            cycle_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        cycle_dialog._sync_replacement_availability()
+        assert cycle_dialog.launch_mode == "nest"
+
+        replace_item.setEnabled(True)
+        cycle_dialog.launch_mode_combo.setCurrentIndex(
+            cycle_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        warnings: list[object] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                QtWidgets.QMessageBox,
+                "warning",
+                lambda *_args, **_kwargs: warnings.append(object()),
+            )
+            cycle_dialog.accept()
+        assert len(warnings) == 1
+        assert cycle_dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
 
 
 def test_manager_dtool_output_itool_nests_under_tool(

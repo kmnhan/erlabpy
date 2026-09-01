@@ -696,6 +696,87 @@ def guess_edge_fit_range(
     )
 
 
+def _evaluate_edge_model(
+    darr: xr.DataArray,
+    modelresult: lmfit.model.ModelResult
+    | xr.Dataset
+    | npt.NDArray[np.floating]
+    | Callable
+    | tuple[float, ...],
+    *,
+    along: str = "alpha",
+) -> xr.DataArray:
+    if isinstance(modelresult, xr.Dataset):
+        if "modelfit_results" in modelresult:
+            results = modelresult.modelfit_results
+            modelresult = xr.apply_ufunc(
+                _eval_edge,
+                results,
+                output_core_dims=[[along]],
+                output_dtypes=[float],
+                dask="parallelized",
+                dask_gufunc_kwargs={"output_sizes": {along: darr.sizes[along]}},
+                vectorize=True,
+                kwargs={"evalute_at": darr[along].values},
+            ).assign_coords({along: darr[along]})
+
+        elif "modelfit_coefficients" in modelresult:
+            # Only coefficients are provided
+            coeffs = modelresult.modelfit_coefficients
+            if all(p.startswith("c") for p in coeffs.param.values):
+                coeffs = coeffs.assign_coords(
+                    param=[int(d.removeprefix("c")) for d in coeffs.param.values]
+                ).rename(param="degree")
+                modelresult = xr.polyval(darr[along], coeffs)
+            else:
+                raise ValueError(
+                    "Fit result dataset does not seem to contain valid polynomial "
+                    "coefficients."
+                )
+        else:
+            raise ValueError(
+                "Fit result dataset does not seem to contain valid fit results."
+            )
+    if isinstance(modelresult, lmfit.model.ModelResult):
+        modelresult = _eval_edge(modelresult, evalute_at=darr[along].values)
+
+    if callable(modelresult):
+        edge_quad = modelresult(darr[along].values)
+
+    elif isinstance(modelresult, tuple):
+        edge_quad = np.polynomial.polynomial.polyval(darr[along], modelresult)
+
+    elif isinstance(modelresult, np.ndarray):
+        if len(darr[along]) != len(modelresult):
+            raise ValueError(
+                "Length of modelresult array does not match length of data along "
+                f"dimension '{along}'."
+            )
+        edge_quad = modelresult
+
+    elif isinstance(modelresult, xr.DataArray):
+        edge_quad = modelresult
+
+    else:
+        raise TypeError(
+            "modelresult must be one of lmfit.model.ModelResult, xarray.Dataset, "
+            "numpy.ndarray, callable, or tuple of float."
+        )
+
+    if np.isscalar(edge_quad) or (
+        isinstance(edge_quad, np.ndarray) and edge_quad.ndim == 0
+    ):
+        edge_quad = xr.DataArray(edge_quad).broadcast_like(darr[along])
+    elif isinstance(edge_quad, np.ndarray):
+        edge_quad = xr.DataArray(edge_quad, coords={along: darr[along]}, dims=[along])
+
+    dimension_order = [
+        dim for dim in darr.dims if dim in edge_quad.dims and dim != "eV"
+    ]
+    dimension_order.extend(dim for dim in edge_quad.dims if dim not in dimension_order)
+    return edge_quad.transpose(*dimension_order)
+
+
 def correct_with_edge(
     darr: xr.DataArray,
     modelresult: lmfit.model.ModelResult
@@ -745,69 +826,7 @@ def correct_with_edge(
     if plot_kw is None:  # pragma: no branch
         plot_kw = {}
 
-    if isinstance(modelresult, xr.Dataset):
-        if "modelfit_results" in modelresult:
-            results = modelresult.modelfit_results
-
-            if results.size == 1:
-                modelresult = results.values.item()
-            else:
-                modelresult = xr.apply_ufunc(
-                    _eval_edge,
-                    results,
-                    output_core_dims=[[along]],
-                    output_dtypes=[float],
-                    dask="parallelized",
-                    dask_gufunc_kwargs={"output_sizes": {along: darr.sizes[along]}},
-                    vectorize=True,
-                    kwargs={"evalute_at": darr[along].values},
-                ).assign_coords({along: darr[along]})
-
-        elif "modelfit_coefficients" in modelresult:
-            # Only coefficients are provided
-            coeffs = modelresult.modelfit_coefficients
-            if all(p.startswith("c") for p in coeffs.param.values):
-                coeffs = coeffs.assign_coords(
-                    param=[int(d.removeprefix("c")) for d in coeffs.param.values]
-                ).rename(param="degree")
-                modelresult = xr.polyval(darr[along], coeffs)
-            else:
-                raise ValueError(
-                    "Fit result dataset does not seem to contain valid polynomial "
-                    "coefficients."
-                )
-        else:
-            raise ValueError(
-                "Fit result dataset does not seem to contain valid fit results."
-            )
-    if isinstance(modelresult, lmfit.model.ModelResult):
-        modelresult = _eval_edge(modelresult, evalute_at=darr[along].values)
-
-    if callable(modelresult):
-        edge_quad = modelresult(darr[along].values)
-
-    elif isinstance(modelresult, tuple):
-        edge_quad = np.polynomial.polynomial.polyval(darr[along], modelresult)
-
-    elif isinstance(modelresult, np.ndarray):
-        if len(darr[along]) != len(modelresult):
-            raise ValueError(
-                "Length of modelresult array does not match length of data along "
-                f"dimension '{along}'."
-            )
-        edge_quad = modelresult
-
-    elif isinstance(modelresult, xr.DataArray):
-        edge_quad = modelresult
-
-    else:
-        raise TypeError(
-            "modelresult must be one of lmfit.model.ModelResult, xarray.Dataset, "
-            "numpy.ndarray, callable, or tuple of float."
-        )
-
-    if isinstance(edge_quad, np.ndarray):
-        edge_quad = xr.DataArray(edge_quad, coords={along: darr[along]}, dims=[along])
+    edge_quad = _evaluate_edge_model(darr, modelresult, along=along)
 
     corrected = erlab.analysis.transform.shift(
         darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs
@@ -1291,6 +1310,7 @@ def poly(
     normalize: bool = True,
     degree: int = 4,
     correct: bool = False,
+    return_edge: bool = False,
     crop_correct: bool = False,
     parallel_kw: dict | None = None,
     plot: bool = True,
@@ -1298,9 +1318,11 @@ def poly(
     scale_covar: bool = True,
     scale_covar_edge: bool = True,
     **kwargs,
-) -> xr.Dataset | tuple[xr.Dataset, xr.DataArray]:
+) -> xr.Dataset | xr.DataArray | tuple[xr.Dataset, xr.DataArray]:
     use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
     _raise_unexpected_kwargs("poly", kwargs)
+    if correct and return_edge:
+        raise ValueError("`correct` and `return_edge` cannot both be True.")
 
     center_arr, center_stderr = typing.cast(
         "tuple[xr.DataArray, xr.DataArray]",
@@ -1336,6 +1358,8 @@ def poly(
         _plot_gold_fit(
             fig, gold, along, angle_range, eV_range, center_arr, center_stderr, results
         )
+    if return_edge:
+        return _evaluate_edge_model(gold, results, along=along)
     if correct:
         if crop_correct:
             gold = gold.sel(
@@ -1344,7 +1368,7 @@ def poly(
                     "eV": _range_slice_for_coord(gold["eV"], eV_range),
                 }
             )
-        corr = correct_with_edge(gold, results, plot=False)
+        corr = correct_with_edge(gold, results, along=along, plot=False)
         return results, corr
     return results
 
@@ -1365,15 +1389,22 @@ def spline(
     method: str = "least_squares",
     lam: float | None = None,
     correct: bool = False,
+    return_edge: bool = False,
     crop_correct: bool = False,
     parallel_kw: dict | None = None,
     plot: bool = True,
     fig: matplotlib.figure.Figure | None = None,
     scale_covar_edge: bool = True,
     **kwargs,
-) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
+) -> (
+    scipy.interpolate.BSpline
+    | xr.DataArray
+    | tuple[scipy.interpolate.BSpline, xr.DataArray]
+):
     use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
     _raise_unexpected_kwargs("spline", kwargs)
+    if correct and return_edge:
+        raise ValueError("`correct` and `return_edge` cannot both be True.")
 
     center_arr, center_stderr = typing.cast(
         "tuple[xr.DataArray, xr.DataArray]",
@@ -1401,6 +1432,8 @@ def spline(
         _plot_gold_fit(
             fig, gold, along, angle_range, eV_range, center_arr, center_stderr, spl
         )
+    if return_edge:
+        return _evaluate_edge_model(gold, spl, along=along)
     if correct:
         if crop_correct:
             gold = gold.sel(
@@ -1409,7 +1442,7 @@ def spline(
                     "eV": _range_slice_for_coord(gold["eV"], eV_range),
                 }
             )
-        corr = correct_with_edge(gold, spl, plot=False)
+        corr = correct_with_edge(gold, spl, along=along, plot=False)
         return spl, corr
     return spl
 

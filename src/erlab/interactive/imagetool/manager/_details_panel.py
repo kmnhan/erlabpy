@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import html
 import json
 import logging
@@ -22,6 +23,7 @@ from erlab.interactive.imagetool._provenance._graph import (
 )
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
@@ -62,7 +64,7 @@ logger = logging.getLogger(__name__)
 _TOOL_PREVIEW_UPDATE_DELAY_MS = 250
 _PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-steps+json"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
-_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 2
 _MAXIMUM_WRAPPED_METADATA_LINES = 4
 _MAXIMUM_DERIVATION_TOOLTIP_WIDTH = 720
 _MULTI_PROVENANCE_DIFFERENCE_LABEL = "Steps differ across selected ImageTools"
@@ -71,16 +73,28 @@ _MULTI_PROVENANCE_DIFFERENCE_ROW = _ProvenanceDisplayRow(
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class _ProvenanceStepsClipboardPayload:
+    steps: tuple[ReplayStep, ...]
+    active_name: str
+    primary_input: str | None = None
+    script_inputs: tuple[ScriptInput, ...] = ()
+    source_manager_id: str | None = None
+
+    @property
+    def operations(self) -> tuple[ToolProvenanceOperation, ...]:
+        return tuple(step.operation for step in self.steps)
+
+    @property
+    def contains_script(self) -> bool:
+        return any(
+            isinstance(operation, ScriptCodeOperation) for operation in self.operations
+        )
+
+
 def _provenance_step_clipboard_payload(
     mime_data: QtCore.QMimeData | None,
-) -> (
-    tuple[
-        tuple[ToolProvenanceOperation, ...],
-        str,
-        bool,
-    ]
-    | None
-):
+) -> _ProvenanceStepsClipboardPayload | None:
     if mime_data is None:
         return None
     payload_text: str | None = None
@@ -103,16 +117,50 @@ def _provenance_step_clipboard_payload(
             return None
         if payload.get("type") != _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE:
             return None
-        if payload.get("version") != _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION:
+        version = payload.get("version")
+        if version not in {1, _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION}:
             return None
-        operations_payload = payload.get("operations")
-        if not isinstance(operations_payload, list):
-            return None
-        operations = tuple(
-            parse_tool_provenance_operation(operation)
-            for operation in operations_payload
-        )
-        operations = strip_partial_operation_groups(operations)
+        if version == 1:
+            operations_payload = payload.get("operations")
+            if not isinstance(operations_payload, list):
+                return None
+            operations = strip_partial_operation_groups(
+                tuple(
+                    parse_tool_provenance_operation(operation)
+                    for operation in operations_payload
+                )
+            )
+            steps = tuple(ReplayStep(operation=operation) for operation in operations)
+            primary_input = None
+            script_inputs = ()
+            source_manager_id = None
+        else:
+            raw_steps = payload.get("steps")
+            raw_inputs = payload.get("script_inputs", [])
+            if not isinstance(raw_steps, list) or not isinstance(raw_inputs, list):
+                return None
+            steps = tuple(ReplayStep.model_validate(step) for step in raw_steps)
+            primary_input = payload.get("primary_input")
+            if primary_input is not None and not isinstance(primary_input, str):
+                return None
+            if primary_input is not None:
+                ScriptInput(name=primary_input)
+            script_inputs = tuple(
+                ScriptInput.model_validate(item) for item in raw_inputs
+            )
+            names = {item.name for item in script_inputs}
+            if len(names) != len(script_inputs) or primary_input in names:
+                return None
+            available_names = names | ({primary_input} if primary_input else set())
+            if any(
+                name not in available_names
+                for step in steps
+                for name in step.input_bindings.values()
+            ):
+                return None
+            source_manager_id = payload.get("source_manager_id")
+            if source_manager_id is not None and not isinstance(source_manager_id, str):
+                return None
     except (
         TypeError,
         ValueError,
@@ -122,10 +170,14 @@ def _provenance_step_clipboard_payload(
     active_name = payload.get("active_name")
     if not isinstance(active_name, str) or not active_name:
         active_name = "derived"
-    return (
-        operations,
+    if not steps:
+        return None
+    return _ProvenanceStepsClipboardPayload(
+        steps,
         active_name,
-        any(not operation.live_applicable for operation in operations),
+        primary_input,
+        script_inputs,
+        source_manager_id,
     )
 
 
@@ -1175,24 +1227,15 @@ class _DetailsPanelController:
 
     def _selected_derivation_step_payload(
         self,
-    ) -> (
-        tuple[
-            tuple[
-                ToolProvenanceOperation,
-                ...,
-            ],
-            str,
-            bool,
-        ]
-        | None
-    ):
+    ) -> _ProvenanceStepsClipboardPayload | None:
         if self._manager._metadata_node_uid is None:
             return None
         node = self._manager._tool_graph.nodes.get(self._manager._metadata_node_uid)
         if node is None:
             return None
 
-        operations: list[ToolProvenanceOperation] = []
+        steps: list[ReplayStep] = []
+        step_specs: list[ToolProvenanceSpec] = []
         script_active_names: list[str] = []
         for item in self._manager._selected_derivation_items():
             row = item.data(_METADATA_DERIVATION_ROW_ROLE)
@@ -1217,18 +1260,22 @@ class _DetailsPanelController:
             operation = spec._operation_for_ref(ref)
             if operation is None:
                 continue
-            if isinstance(
-                operation,
-                ScriptCodeOperation,
-            ):
-                if operation.copyable and operation.code:
-                    operations.append(operation)
-                    script_active_names.append(spec.active_name or "derived")
+            step = (
+                spec.steps[ref.operation_index]
+                if spec.kind == "script" and ref.operation_index is not None
+                else ReplayStep(operation=operation)
+            )
+            if isinstance(operation, ScriptCodeOperation):
+                if not operation.copyable or not operation.code:
+                    continue
+            elif not operation.live_applicable and not step.input_bindings:
                 continue
-            if operation.live_applicable:
-                operations.append(operation)
+            steps.append(step)
+            step_specs.append(spec)
+            if spec.kind == "script":
+                script_active_names.append(spec.active_name or "derived")
 
-        if not operations:
+        if not steps:
             return None
         script_active_name = (
             script_active_names[0] if script_active_names else "derived"
@@ -1237,11 +1284,36 @@ class _DetailsPanelController:
             active_name != script_active_name for active_name in script_active_names
         ):
             return None
-        operations = list(strip_partial_operation_groups(operations))
-        return (
-            tuple(operations),
+        retained_operations = strip_partial_operation_groups(
+            tuple(step.operation for step in steps)
+        )
+        retained_steps = tuple(
+            step.model_copy(update={"operation": operation})
+            for step, operation in zip(steps, retained_operations, strict=True)
+        )
+        input_names = {
+            name for step in retained_steps for name in step.input_bindings.values()
+        }
+        bound_specs = tuple(
+            spec
+            for step, spec in zip(retained_steps, step_specs, strict=True)
+            if step.input_bindings
+        )
+        if bound_specs and any(spec != bound_specs[0] for spec in bound_specs[1:]):
+            return None
+        bound_spec = bound_specs[0] if bound_specs else None
+        primary_input = None if bound_spec is None else bound_spec.primary_input
+        script_inputs = tuple(
+            item
+            for item in (() if bound_spec is None else bound_spec.script_inputs)
+            if item.name in input_names and item.name != primary_input
+        )
+        return _ProvenanceStepsClipboardPayload(
+            retained_steps,
             script_active_name,
-            any(not operation.live_applicable for operation in operations),
+            primary_input,
+            script_inputs,
+            self._manager._manager_record.internal_id,
         )
 
     def _selected_derivation_row(
@@ -1330,7 +1402,7 @@ class _DetailsPanelController:
         )
         paste_enabled, paste_reason = (
             self._manager._provenance_edit_controller.can_paste_steps(
-                None if paste_payload is None else paste_payload[0]
+                None if paste_payload is None else paste_payload.steps
             )
         )
         self._manager._metadata_paste_steps_action.setEnabled(paste_enabled)
@@ -1363,15 +1435,17 @@ class _DetailsPanelController:
         if payload is None:
             erlab.interactive.utils.copy_to_clipboard(code)
             return
-        operations, active_name, _contains_script = payload
         payload_text = json.dumps(
             {
                 "type": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
                 "version": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
-                "active_name": active_name,
-                "operations": [
-                    operation.model_dump(mode="json") for operation in operations
+                "active_name": payload.active_name,
+                "primary_input": payload.primary_input,
+                "steps": [step.model_dump(mode="json") for step in payload.steps],
+                "script_inputs": [
+                    item.model_dump(mode="json") for item in payload.script_inputs
                 ],
+                "source_manager_id": payload.source_manager_id,
             },
             separators=(",", ":"),
         )
@@ -1395,11 +1469,12 @@ class _DetailsPanelController:
                 "The clipboard does not contain copied ImageTool provenance steps."
             )
             return
-        operations, active_name, contains_script = payload
         self._manager._provenance_edit_controller.paste_steps(
-            operations,
-            active_name=active_name,
-            contains_script=contains_script,
+            payload.steps,
+            active_name=payload.active_name,
+            primary_input=payload.primary_input,
+            script_inputs=payload.script_inputs,
+            source_manager_id=payload.source_manager_id,
         )
 
     def _unavailable_replay_code_details(

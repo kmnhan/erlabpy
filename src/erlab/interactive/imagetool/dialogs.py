@@ -35,6 +35,7 @@ from erlab.interactive.imagetool._provenance._model import (
     require_live_source_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    SHIFT_MODES,
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignCoord1DOperation,
@@ -64,6 +65,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     RestoreNonuniformDimsOperation,
     RotateOperation,
     SelOperation,
+    ShiftFromInputOperation,
+    ShiftMode,
+    ShiftOperation,
     SliceAlongPathOperation,
     SortByOperation,
     SqueezeOperation,
@@ -95,6 +99,7 @@ __all__ = [
     "RenameDimsCoordsDialog",
     "RotationDialog",
     "SelectionDialog",
+    "ShiftDialog",
     "SortByDialog",
     "SqueezeDialog",
     "SwapDimsDialog",
@@ -602,8 +607,7 @@ class DataTransformDialog(_DataManipulationDialog):
         (
             "detach",
             "Open Top-Level Window",
-            "Create a separate top-level ImageTool that is detached from refresh "
-            "propagation.",
+            "Create a separate top-level ImageTool.",
         ),
         (
             "nest",
@@ -638,7 +642,11 @@ class DataTransformDialog(_DataManipulationDialog):
         batch_manager: ImageToolManager | None = None,
         provenance_edit_mode: bool = False,
         dialog_parent: QtWidgets.QWidget | None = None,
+        provenance_edit_manager_target: (
+            tuple[ImageToolManager, int | str] | None
+        ) = None,
     ) -> None:
+        self._provenance_edit_manager_target = provenance_edit_manager_target
         super().__init__(
             slicer_area,
             batch_manager=batch_manager,
@@ -868,48 +876,56 @@ class DataTransformDialog(_DataManipulationDialog):
         del exc
         return False
 
+    def _copy_code_for_operations(
+        self,
+        operations: Sequence[ToolProvenanceOperation],
+        input_name: str,
+    ) -> str:
+        if not any(operation.statement_mutates_input for operation in operations):
+            try:
+                return operations_expression_code(
+                    operations,
+                    input_name,
+                )
+            except NotImplementedError:
+                if len(operations) != 1:
+                    raise
+                operation = operations[0]
+                output_name = (
+                    operation.preferred_replay_output_name()
+                    or f"{input_name}{self.copy_output_suffix}"
+                )
+                return operation.replay_code(
+                    input_name,
+                    output_name=output_name,
+                )
+
+        if not erlab.utils.misc._is_valid_identifier(input_name):
+            input_name = "data"
+        output_name = f"{input_name}{self.copy_output_suffix}"
+        current_name = input_name
+        lines: list[str] = []
+        for operation in operations:
+            if operation.statement_mutates_input:
+                lines.append(
+                    operation.replay_code(current_name, output_name=current_name)
+                )
+                continue
+            lines.append(
+                operation.replay_code(
+                    current_name,
+                    output_name=output_name,
+                )
+            )
+            current_name = output_name
+        return "\n".join(lines)
+
     def make_code(self) -> str:
         try:
-            operations = self.source_operations()
-            input_name = self._copy_data_name()
-            if not any(operation.statement_mutates_input for operation in operations):
-                try:
-                    return operations_expression_code(
-                        operations,
-                        input_name,
-                    )
-                except NotImplementedError:
-                    if len(operations) != 1:
-                        raise
-                    operation = operations[0]
-                    output_name = (
-                        operation.preferred_replay_output_name()
-                        or f"{input_name}{self.copy_output_suffix}"
-                    )
-                    return operation.replay_code(
-                        input_name,
-                        output_name=output_name,
-                    )
-
-            if not erlab.utils.misc._is_valid_identifier(input_name):
-                input_name = "data"
-            output_name = f"{input_name}{self.copy_output_suffix}"
-            current_name = input_name
-            lines: list[str] = []
-            for operation in operations:
-                if operation.statement_mutates_input:
-                    lines.append(
-                        operation.replay_code(current_name, output_name=current_name)
-                    )
-                    continue
-                lines.append(
-                    operation.replay_code(
-                        current_name,
-                        output_name=output_name,
-                    )
-                )
-                current_name = output_name
-            return "\n".join(lines)
+            return self._copy_code_for_operations(
+                self.source_operations(),
+                self._copy_data_name(),
+            )
         except Exception:
             return ""
 
@@ -945,6 +961,8 @@ class DataTransformDialog(_DataManipulationDialog):
         erlab.interactive.imagetool.manager.ImageToolManager | None,
         int | str | None,
     ]:
+        if self._provenance_edit_manager_target is not None:
+            return self._provenance_edit_manager_target
         manager = self.slicer_area._manager_instance
         if manager is None:
             return None, None
@@ -4432,6 +4450,446 @@ class EdgeCorrectionDialog(DataTransformDialog):
             # User canceled the fit dialog
             return QtWidgets.QDialog.DialogCode.Rejected
         return super()._validate()
+
+
+class ShiftDialog(DataTransformDialog):
+    """Shift data by a scalar or a compatible managed ImageTool."""
+
+    title = "Shift"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+    operation_types = (ShiftOperation,)
+
+    _SOURCE_SCALAR = "scalar"
+    _SOURCE_MANAGER = "manager"
+    _CONSTANT_MODES = frozenset(("constant", "grid-constant"))
+    _BOUNDARY_MODES = SHIFT_MODES
+
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea | None,
+        *,
+        batch_manager: ImageToolManager | None = None,
+        provenance_edit_mode: bool = False,
+        dialog_parent: QtWidgets.QWidget | None = None,
+        provenance_edit_manager_target: (
+            tuple[ImageToolManager, int | str] | None
+        ) = None,
+    ) -> None:
+        super().__init__(
+            slicer_area,
+            batch_manager=batch_manager,
+            provenance_edit_mode=provenance_edit_mode,
+            dialog_parent=dialog_parent,
+            provenance_edit_manager_target=provenance_edit_manager_target,
+        )
+        self._sync_shift_controls()
+
+    def setup_widgets(self) -> None:
+        source_data = erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
+
+        self.along_combo = QtWidgets.QComboBox()
+        self.along_combo.setObjectName("shift_along_combo")
+        for dim in source_data.dims:
+            self.along_combo.addItem(str(dim), userData=dim)
+        preferred_along = self.along_combo.findData(
+            "eV", QtCore.Qt.ItemDataRole.UserRole
+        )
+        if preferred_along < 0:
+            preferred_along = self.along_combo.count() - 1
+        self.along_combo.setCurrentIndex(preferred_along)
+        self.layout_.addRow("Dimension", self.along_combo)
+
+        self.shift_source_combo = QtWidgets.QComboBox()
+        self.shift_source_combo.setObjectName("shift_source_combo")
+        self.shift_source_combo.addItem("Scalar", userData=self._SOURCE_SCALAR)
+        manager, target = self._manager_target()
+        if manager is not None and target is not None:
+            self.shift_source_combo.addItem(
+                "Existing ImageTool", userData=self._SOURCE_MANAGER
+            )
+        self.layout_.addRow("Shift Source", self.shift_source_combo)
+
+        self.shift_value_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+            value=0.0,
+        )
+        self.shift_value_spin.setObjectName("shift_scalar_value")
+        self.layout_.addRow("Shift Value", self.shift_value_spin)
+
+        self.shift_tool_combo = QtWidgets.QComboBox()
+        self.shift_tool_combo.setObjectName("shift_imagetool_combo")
+        self.layout_.addRow("Shift ImageTool", self.shift_tool_combo)
+
+        self.negate_check = QtWidgets.QCheckBox("Negate shift")
+        self.negate_check.setObjectName("shift_negate_check")
+        self.negate_check.setChecked(True)
+        self.layout_.addRow(self.negate_check)
+
+        self.shift_coords_check = QtWidgets.QCheckBox("Shift coordinates")
+        self.shift_coords_check.setObjectName("shift_coords_check")
+        self.shift_coords_check.setChecked(False)
+        self.layout_.addRow(self.shift_coords_check)
+
+        self.keep_dim_order_check = QtWidgets.QCheckBox("Keep dimension order")
+        self.keep_dim_order_check.setObjectName("shift_keep_dim_order_check")
+        self.keep_dim_order_check.setChecked(True)
+        self.layout_.addRow(self.keep_dim_order_check)
+
+        self.assume_sorted_check = QtWidgets.QCheckBox("Assume sorted")
+        self.assume_sorted_check.setObjectName("shift_assume_sorted_check")
+        self.assume_sorted_check.setChecked(False)
+        self.layout_.addRow(self.assume_sorted_check)
+
+        self.order_spin = QtWidgets.QSpinBox()
+        self.order_spin.setObjectName("shift_order_spin")
+        self.order_spin.setRange(0, 5)
+        self.order_spin.setValue(1)
+        self.layout_.addRow("Spline Order", self.order_spin)
+
+        self.mode_combo = QtWidgets.QComboBox()
+        self.mode_combo.setObjectName("shift_mode_combo")
+        for mode in self._BOUNDARY_MODES:
+            self.mode_combo.addItem(mode, userData=mode)
+        _set_combo_data(self.mode_combo, "constant")
+        self.layout_.addRow("Boundary Mode", self.mode_combo)
+
+        self.cval_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            exact_float=True,
+            value=np.nan,
+        )
+        self.cval_spin.setObjectName("shift_cval_spin")
+        self.layout_.addRow("Constant Value", self.cval_spin)
+
+        self.prefilter_check = QtWidgets.QCheckBox("Prefilter")
+        self.prefilter_check.setObjectName("shift_prefilter_check")
+        self.prefilter_check.setChecked(False)
+        self.layout_.addRow(self.prefilter_check)
+
+        self.shift_source_combo.currentIndexChanged.connect(
+            self._handle_shift_source_changed
+        )
+        self.shift_tool_combo.currentIndexChanged.connect(
+            self._sync_replacement_availability
+        )
+        self.along_combo.currentIndexChanged.connect(self._populate_shift_candidates)
+        self.assume_sorted_check.toggled.connect(self._populate_shift_candidates)
+        self.mode_combo.currentIndexChanged.connect(self._sync_shift_controls)
+        self._populate_shift_candidates()
+
+    @property
+    def along(self) -> Hashable:
+        return typing.cast(
+            "Hashable",
+            self.along_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def boundary_mode(self) -> ShiftMode:
+        return typing.cast(
+            "ShiftMode",
+            self.mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def uses_manager_shift(self) -> bool:
+        return (
+            self.shift_source_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+            == self._SOURCE_MANAGER
+        )
+
+    def source_transform_operation(self) -> ShiftOperation:
+        return ShiftOperation(
+            shift=float(self.shift_value_spin.value()),
+            negate=self.negate_check.isChecked(),
+            along=self.along,
+            shift_coords=self.shift_coords_check.isChecked(),
+            keep_dim_order=self.keep_dim_order_check.isChecked(),
+            assume_sorted=self.assume_sorted_check.isChecked(),
+            order=self.order_spin.value(),
+            mode=self.boundary_mode,
+            cval=float(self.cval_spin.value()),
+            prefilter=self.prefilter_check.isChecked(),
+        )
+
+    def restore_transform_operation(
+        self,
+        operation: ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(operation, ShiftOperation):
+            return
+        _set_combo_data(self.shift_source_combo, self._SOURCE_SCALAR)
+        _set_combo_data(self.along_combo, operation.along)
+        self.shift_value_spin.setValue(operation.shift)
+        self.negate_check.setChecked(operation.negate)
+        self.shift_coords_check.setChecked(operation.shift_coords)
+        self.keep_dim_order_check.setChecked(operation.keep_dim_order)
+        self.assume_sorted_check.setChecked(operation.assume_sorted)
+        self.order_spin.setValue(operation.order)
+        _set_combo_data(self.mode_combo, operation.mode)
+        self.cval_spin.setValue(operation.cval)
+        self.prefilter_check.setChecked(operation.prefilter)
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _handle_shift_source_changed(self, *_args: object) -> None:
+        if self.uses_manager_shift and hasattr(self, "launch_mode_combo"):
+            _set_combo_data(self.launch_mode_combo, "nest")
+        self._sync_shift_controls()
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _sync_shift_controls(self, *_args: object) -> None:
+        manager_shift = self.uses_manager_shift
+        self.shift_value_spin.setEnabled(not manager_shift)
+        self.shift_tool_combo.setEnabled(manager_shift)
+        self.cval_spin.setEnabled(self.boundary_mode in self._CONSTANT_MODES)
+        self._sync_replacement_availability()
+
+    def _current_manager_context(
+        self,
+    ) -> tuple[ImageToolManager, int | str, typing.Any]:
+        manager, target = self._manager_target()
+        if manager is None or target is None:
+            raise RuntimeError(
+                "An existing ImageTool shift requires a manager-backed ImageTool."
+            )
+        return manager, target, manager._node_for_target(target)
+
+    def _candidate_data(
+        self,
+        manager: ImageToolManager,
+        uid: str,
+        source_data: xr.DataArray,
+    ) -> xr.DataArray:
+        node = manager._tool_graph.nodes.get(uid)
+        if node is None:
+            raise ValueError("The selected shift ImageTool is no longer available.")
+        if not node.is_imagetool:
+            raise ValueError("The selected shift source is not an ImageTool.")
+        if node.source_state != "fresh" or manager.dependency_status_for_uid(uid) in {
+            "changed",
+            "missing",
+        }:
+            raise ValueError("The selected shift ImageTool is not current.")
+        try:
+            shift_data = node.data_for_role("source", owner_node=node)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(
+                "The selected shift ImageTool data is unavailable."
+            ) from exc
+        erlab.analysis.transform._validate_shift_inputs(
+            source_data,
+            shift_data,
+            typing.cast("str", self.along),
+            assume_sorted=self.assume_sorted_check.isChecked(),
+        )
+        return shift_data
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    @QtCore.Slot(bool)
+    def _populate_shift_candidates(self, *_args: object) -> None:
+        previous_uid = self.shift_tool_combo.currentData(
+            QtCore.Qt.ItemDataRole.UserRole
+        )
+        self.shift_tool_combo.clear()
+        manager, target = self._manager_target()
+        if manager is not None and target is not None:
+            current_node = manager._node_for_target(target)
+            source_data = (
+                erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
+                if self.is_provenance_edit_mode
+                else current_node.data_for_role("source", owner_node=current_node)
+            )
+            for node in tuple(manager._tool_graph.nodes.values()):
+                if node.uid == current_node.uid or not node.is_imagetool:
+                    continue
+                try:
+                    self._candidate_data(manager, node.uid, source_data)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                self.shift_tool_combo.addItem(
+                    node.label_text or f"ImageTool ({node.uid})",
+                    userData=node.uid,
+                )
+        if previous_uid is not None:
+            _set_combo_data(self.shift_tool_combo, previous_uid)
+        index = self.shift_source_combo.findData(
+            self._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+        )
+        available = self.shift_tool_combo.count() > 0
+        if index >= 0:
+            model = typing.cast(
+                "QtGui.QStandardItemModel", self.shift_source_combo.model()
+            )
+            typing.cast("QtGui.QStandardItem", model.item(index)).setEnabled(available)
+            if not available and self.uses_manager_shift:
+                _set_combo_data(self.shift_source_combo, self._SOURCE_SCALAR)
+        self._sync_replacement_availability()
+
+    def _replacement_is_safe(self) -> bool:
+        if not self.uses_manager_shift:
+            return True
+        selected_uid = self.shift_tool_combo.currentData(
+            QtCore.Qt.ItemDataRole.UserRole
+        )
+        if not isinstance(selected_uid, str):
+            return False
+        try:
+            manager, _target, current_node = self._current_manager_context()
+        except RuntimeError:
+            return False
+        return not manager._dependency_tracker.transitively_depends_on(
+            selected_uid, current_node.uid
+        )
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _sync_replacement_availability(self, *_args: object) -> None:
+        if not hasattr(self, "launch_mode_combo"):
+            return
+        replace_index = self.launch_mode_combo.findData(
+            "replace", QtCore.Qt.ItemDataRole.UserRole
+        )
+        model = typing.cast("QtGui.QStandardItemModel", self.launch_mode_combo.model())
+        item = typing.cast("QtGui.QStandardItem", model.item(replace_index))
+        safe = self._replacement_is_safe()
+        item.setEnabled(safe)
+        if not safe and self.launch_mode == "replace":
+            _set_combo_data(self.launch_mode_combo, "nest")
+
+    def _copy_code_for_operations(
+        self,
+        operations: Sequence[ToolProvenanceOperation],
+        input_name: str,
+    ) -> str:
+        if not self.uses_manager_shift:
+            return super()._copy_code_for_operations(operations, input_name)
+        operation = self.source_transform_operation()
+        shift_arg = "|-shift|" if operation.negate else "|shift|"
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.transform.shift,
+            ["|data|", shift_arg],
+            operation.code_kwargs,
+            module="era.transform",
+            assign="shifted",
+            remove_defaults=False,
+        )
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if (
+            self.is_provenance_edit_mode
+            or self.is_batch_mode
+            or not self.uses_manager_shift
+        ):
+            super().accept()
+            return
+        try:
+            manager, target, current_node = self._current_manager_context()
+            selected_uid = self.shift_tool_combo.currentData(
+                QtCore.Qt.ItemDataRole.UserRole
+            )
+            if not isinstance(selected_uid, str):
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Cannot Shift",
+                    "Select a compatible shift ImageTool.",
+                )
+                return
+            data = current_node.data_for_role("source", owner_node=current_node)
+            shift_data = self._candidate_data(manager, selected_uid, data)
+            if self.launch_mode == "replace" and not self._replacement_is_safe():
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Cannot Replace",
+                    "Replacement would create a dependency cycle. Select a child or "
+                    "top-level result.",
+                )
+                return
+            operation = self.source_transform_operation()
+            effective_shift = -shift_data if operation.negate else shift_data
+            processed = erlab.analysis.transform.shift(
+                data,
+                effective_shift,
+                **operation.kwargs,
+            ).rename(data.name)
+            provenance_spec = manager._multi_input_operation_provenance(
+                (target, selected_uid),
+                operation=ShiftFromInputOperation(
+                    negate=operation.negate,
+                    along=operation.along,
+                    shift_coords=operation.shift_coords,
+                    keep_dim_order=operation.keep_dim_order,
+                    assume_sorted=operation.assume_sorted,
+                    order=operation.order,
+                    mode=operation.mode,
+                    cval=operation.cval,
+                    prefilter=operation.prefilter,
+                ),
+                active_name="shifted",
+                start_label="Shift ImageTool data",
+                detached_input_uid=(
+                    current_node.uid if self.launch_mode == "replace" else None
+                ),
+                data_role="source",
+                input_names=("data", "shift"),
+                primary_input="data",
+                input_bindings={"shift": "shift"},
+            )
+            if self.launch_mode == "replace":
+                current_node.replace_with_detached_data(
+                    processed,
+                    provenance_spec,
+                    propagate_descendants=True,
+                    preserve_filter=False,
+                    replay_source_data=data,
+                )
+                manager.tree_view.refresh(current_node.uid)
+                manager._sigDataReplaced.emit()
+            else:
+                tool = typing.cast(
+                    "erlab.interactive.imagetool.ImageTool | None",
+                    erlab.interactive.itool(
+                        manager=False,
+                        **self._itool_kwargs(processed),
+                    ),
+                )
+                if tool is None:
+                    erlab.interactive.utils.MessageDialog.critical(
+                        self,
+                        "Error",
+                        "Could not create the shifted ImageTool.",
+                    )
+                    return
+                if self.launch_mode == "nest":
+                    manager.add_imagetool_child(
+                        tool,
+                        target,
+                        activate=True,
+                        provenance_spec=provenance_spec,
+                        source_state="fresh",
+                    )
+                else:
+                    manager.add_imagetool(
+                        tool,
+                        activate=True,
+                        provenance_spec=provenance_spec,
+                    )
+        except (KeyError, TypeError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Cannot Shift", str(exc))
+            return
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                "An error occurred while shifting data.",
+            )
+            return
+        QtWidgets.QDialog.accept(self)
 
 
 class _BaseCropDialog(DataTransformDialog):

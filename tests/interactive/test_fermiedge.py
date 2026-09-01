@@ -736,6 +736,85 @@ def test_goldtool_copy_code_includes_separate_data_corr(qtbot, gold) -> None:
     assert "modelresult" not in code
 
 
+def test_goldtool_edge_output_uses_current_result_and_direct_provenance(
+    qtbot, gold, gold_fit_res, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_data")
+    qtbot.addWidget(win)
+    _seed_goldtool_poly_result(win, gold_fit_res)
+
+    expected = erlab.analysis.gold._evaluate_edge_model(
+        gold, gold_fit_res, along=win._along_dim
+    )
+    xr.testing.assert_identical(win.edge, expected)
+    xr.testing.assert_identical(
+        win.output_imagetool_data(GoldTool.Output.EDGE), expected
+    )
+
+    calls: list[tuple[xr.DataArray, str]] = []
+    return_widget = QtWidgets.QWidget()
+    qtbot.addWidget(return_widget)
+
+    def launch_stub(data: xr.DataArray, *, output_id: str) -> QtWidgets.QWidget:
+        calls.append((data, output_id))
+        return return_widget
+
+    monkeypatch.setattr(win, "_launch_output_imagetool", launch_stub)
+    monkeypatch.setattr(
+        win,
+        "perform_fit",
+        lambda: pytest.fail("Opening the edge output must not refit the data"),
+    )
+
+    win.params_poly.widgets["edge_itool"].click()
+    with QtCore.QSignalBlocker(win.params_tab):
+        win.params_tab.setCurrentIndex(1)
+    win.params_spl.widgets["edge_itool"].click()
+
+    assert [output_id for _, output_id in calls] == [
+        GoldTool.Output.EDGE.value,
+        GoldTool.Output.EDGE.value,
+    ]
+    xr.testing.assert_identical(calls[0][0], expected)
+    assert win._edge_itool is return_widget
+
+    with QtCore.QSignalBlocker(win.params_tab):
+        win.params_tab.setCurrentIndex(0)
+    spec = win.output_imagetool_provenance(GoldTool.Output.EDGE, win.edge)
+    assert spec is not None
+    code = spec.display_code()
+    assert "edge = era.gold.poly(" in code
+    assert "return_edge=True" in code
+    assert "model_result" not in code
+    assert "correct_with_edge" not in code
+
+    captured_kwargs: dict[str, typing.Any] = {}
+
+    def capture_poly(*_args: typing.Any, **kwargs: typing.Any) -> xr.DataArray:
+        captured_kwargs.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(erlab.analysis.gold, "poly", capture_poly)
+    namespace = {"era": erlab.analysis, "gold_data": gold}
+    exec(code, namespace, namespace)  # noqa: S102
+    assert captured_kwargs["return_edge"] is True
+    xr.testing.assert_identical(namespace["edge"], expected)
+
+
+def test_goldtool_open_edge_itool_does_not_store_none(
+    qtbot, gold, gold_fit_res, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    _seed_goldtool_poly_result(win, gold_fit_res)
+
+    monkeypatch.setattr(win, "_launch_output_imagetool", lambda *_args, **_kwargs: None)
+
+    assert not hasattr(win, "_edge_itool")
+    win.open_edge_itool()
+    assert not hasattr(win, "_edge_itool")
+
+
 def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:
     gold_desc = gold.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
     win: GoldTool = goldtool(gold_desc, execute=False)

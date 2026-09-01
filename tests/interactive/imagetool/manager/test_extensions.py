@@ -6056,7 +6056,11 @@ from erlab.extensions import loader, routine
 @loader(name="Slow Loader", extensions=("txt",))
 def slow_loader(path: pathlib.Path) -> xr.DataArray:
     path.write_text("started")
-    time.sleep(0.25)
+    deadline = time.monotonic() + 5.0
+    while path.read_text() != "release":
+        if time.monotonic() >= deadline:
+            raise TimeoutError("loader release was not received")
+        time.sleep(0.01)
     return xr.DataArray([1.0])
 
 @routine(name="Must Not Run")
@@ -6116,6 +6120,7 @@ def must_not_run(data: xr.DataArray) -> xr.DataArray:
             enabled=False,
         )
         manager._extensions.catalog.refresh()
+        marker.write_text("release")
 
         qtbot.wait_until(lambda: not loader_thread.is_alive(), timeout=5000)
         loader_thread.join()
