@@ -18,7 +18,7 @@ from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import _kspace_conversion
+from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     ScriptInput,
@@ -51,12 +51,14 @@ from erlab.interactive.imagetool._provenance._operations import (
     RemoveMeshOperation,
     ScriptCodeOperation,
     SelOperation,
+    ShiftFromInputOperation,
     SortByOperation,
     TransposeOperation,
     UniformInterpolationOperation,
     _ModelFitParameterSpec,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
+from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
@@ -64,6 +66,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
     _editors as provenance_editors,
 )
 from erlab.interactive.kspace import KspaceTool
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
 from ._common import (
     _fake_edit_controller,
@@ -138,6 +141,175 @@ def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
 
     assert warnings_shown
     assert dialog.result() != int(QtWidgets.QDialog.DialogCode.Accepted)
+
+
+def test_manager_edit_bound_shift_rebinds_without_script_code(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: typing.Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="data",
+    )
+    first_shift = xr.DataArray(
+        [0.0, 0.1, -0.1], dims="x", coords={"x": np.arange(3)}, name="first"
+    )
+    second_shift = xr.DataArray(
+        [0.1, 0.0, -0.1], dims="x", coords={"x": np.arange(3)}, name="second"
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(data, link=False, manager=True)
+        itool(first_shift, link=False, manager=True)
+        itool(second_shift, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        source_node = manager._node_for_target(0)
+        first_shift_node = manager._node_for_target(1)
+        second_shift_node = manager._node_for_target(2)
+        create_dialog = imagetool_dialogs.ShiftDialog(
+            manager.get_imagetool(0).slicer_area
+        )
+        qtbot.addWidget(create_dialog)
+        create_dialog.shift_source_combo.setCurrentIndex(
+            create_dialog.shift_source_combo.findData(
+                create_dialog._SOURCE_MANAGER, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        create_dialog.shift_tool_combo.setCurrentIndex(
+            create_dialog.shift_tool_combo.findData(
+                first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        create_dialog.launch_mode_combo.setCurrentIndex(
+            create_dialog.launch_mode_combo.findData(
+                "replace", QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
+        create_dialog.accept()
+
+        spec = source_node.provenance_spec
+        assert spec is not None
+        row = next(
+            row
+            for row in spec.display_rows()
+            if row.edit_ref is not None
+            and isinstance(
+                spec._operation_for_ref(row.edit_ref), ShiftFromInputOperation
+            )
+        )
+        controller = manager._provenance_edit_controller
+        original_data = fetch(0)
+        original_spec = source_node.provenance_spec
+
+        def reject_edit(_dialog: QtWidgets.QDialog) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+        monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", reject_edit)
+        controller._edit_operation_row(source_node, row)
+        assert source_node.provenance_spec is original_spec
+        xr.testing.assert_identical(fetch(0), original_data)
+
+        def accept_second_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    second_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+                )
+            )
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(imagetool_dialogs.ShiftDialog, "exec", accept_second_shift)
+        controller._edit_operation_row(source_node, row)
+
+        rebound_spec = source_node.provenance_spec
+        assert rebound_spec is not None
+        rebound_operation = rebound_spec.operations[-1]
+        assert isinstance(rebound_operation, ShiftFromInputOperation)
+        assert not any(
+            isinstance(operation, ScriptCodeOperation)
+            for operation in rebound_spec.operations
+        )
+        assert rebound_spec.script_inputs[-1].node_uid == second_shift_node.uid
+        xr.testing.assert_identical(
+            fetch(0), erlab.analysis.transform.shift(data, -second_shift, along="eV")
+        )
+        generated = _exec_generated_code(
+            rebound_spec.display_code(),
+            {"data": data, "shift": second_shift},
+        )
+        xr.testing.assert_identical(generated[rebound_spec.active_name], fetch(0))
+
+        stale_spec = source_node.provenance_spec
+        stale_data = fetch(0)
+        after_accept = False
+        original_candidate_data = imagetool_dialogs.ShiftDialog._candidate_data
+
+        def select_stale_candidate(dialog: imagetool_dialogs.ShiftDialog) -> int:
+            nonlocal after_accept
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+                )
+            )
+            after_accept = True
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def reject_stale_candidate(
+            dialog: imagetool_dialogs.ShiftDialog,
+            manager: typing.Any,
+            uid: str,
+            source: xr.DataArray,
+        ) -> xr.DataArray:
+            if after_accept and uid == first_shift_node.uid:
+                raise ValueError("The selected shift ImageTool is not current.")
+            return original_candidate_data(dialog, manager, uid, source)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog, "exec", select_stale_candidate
+        )
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog,
+            "_candidate_data",
+            reject_stale_candidate,
+        )
+        with pytest.raises(ValueError, match="not current"):
+            controller._edit_operation_row(source_node, row)
+        assert source_node.provenance_spec is stale_spec
+        xr.testing.assert_identical(fetch(0), stale_data)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog,
+            "_candidate_data",
+            original_candidate_data,
+        )
+        manager.remove_imagetool(2)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        def replace_missing_shift(dialog: imagetool_dialogs.ShiftDialog) -> int:
+            dialog.shift_tool_combo.setCurrentIndex(
+                dialog.shift_tool_combo.findData(
+                    first_shift_node.uid, QtCore.Qt.ItemDataRole.UserRole
+                )
+            )
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(
+            imagetool_dialogs.ShiftDialog, "exec", replace_missing_shift
+        )
+        controller._edit_operation_row(source_node, row)
+        repaired_spec = source_node.provenance_spec
+        assert repaired_spec is not None
+        assert repaired_spec.script_inputs[-1].node_uid == first_shift_node.uid
+        xr.testing.assert_identical(
+            fetch(0), erlab.analysis.transform.shift(data, -first_shift, along="eV")
+        )
 
 
 def test_manager_multi_provenance_grouped_edit_revert_and_delete(

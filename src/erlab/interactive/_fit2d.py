@@ -37,8 +37,10 @@ from erlab.interactive._fit1d import (
     _validate_weights_input,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
+    recipe,
     script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
@@ -3457,11 +3459,20 @@ class Fit2DTool(Fit1DTool):
         )
 
     def _parameter_model_fit_operation(
-        self, param_name: str, *, stderr: bool
+        self,
+        param_name: str,
+        *,
+        stderr: bool,
+        for_weighted_fit: bool = False,
     ) -> ModelFitOperation | None:
-        if self._uncertainty_full is not None:
+        if self._direct_weights_full is not None:
             return None
-        if not self.scale_covar_check.isChecked():
+        weighting: typing.Literal["none", "uncertainty"] = "none"
+        if self._uncertainty_full is not None:
+            if not self._uncertainty_is_script_input():
+                return None
+            weighting = "uncertainty"
+        elif for_weighted_fit:
             return None
         model_choice = self._infer_model_choice(self._model)
         if model_choice not in ModelFitOperation.supported_models:
@@ -3476,6 +3487,26 @@ class Fit2DTool(Fit1DTool):
         model_kwargs = (
             registry[model_choice]["kwargs"]() if model_choice in registry else {}
         )
+        fit_range = self._recorded_common_fit_range()
+        uncertainty_dims = (
+            self._uncertainty_full.dims
+            if weighting == "uncertainty" and self._uncertainty_full is not None
+            else ()
+        )
+        uncertainty_sel: dict[Hashable, typing.Any] = {}
+        if (
+            self._coord_name in uncertainty_dims
+            and fit_range is not None
+            and not self._fit_range_is_full(fit_range)
+        ):
+            uncertainty_sel[self._coord_name] = self._fit_range_slice(fit_range)
+        output: typing.Literal["value", "stderr", "value_valid_stderr"] = (
+            "value_valid_stderr"
+            if for_weighted_fit
+            else "stderr"
+            if stderr
+            else "value"
+        )
         return ModelFitOperation(
             fit_dim=self._coord_name,
             model=model_choice,
@@ -3483,9 +3514,17 @@ class Fit2DTool(Fit1DTool):
             parameters=parameters,
             method=self.method_combo.currentText(),
             parameter=param_name,
-            output="stderr" if stderr else "value",
+            output=output,
             broadcast_dim=self._y_dim_name,
             normalize=self.normalize_check.isChecked(),
+            weighting=weighting,
+            scale_covar=self.scale_covar_check.isChecked(),
+            uncertainty_sel=uncertainty_sel,
+            uncertainty_isel=(
+                {self._y_dim_name: self._y_range_slice()}
+                if self._y_dim_name in uncertainty_dims
+                else {}
+            ),
         )
 
     def _parameter_output_script_operation(
@@ -3560,10 +3599,10 @@ class Fit2DTool(Fit1DTool):
         del data
         input_name = self.primary_input or self._data_name_full
         seed_code = f"derived = {input_name}"
-        model_fit = (
-            None
-            if for_weighted_fit
-            else self._parameter_model_fit_operation(param_name, stderr=stderr)
+        model_fit = self._parameter_model_fit_operation(
+            param_name,
+            stderr=stderr,
+            for_weighted_fit=for_weighted_fit,
         )
         assign = "parameter_stderr" if stderr else "parameter_values"
         if model_fit is not None:
@@ -3581,13 +3620,26 @@ class Fit2DTool(Fit1DTool):
                     model_fit,
                 )
             )
-            return script(
-                *operations,
-                start_label="Start from current fit-tool input data",
-                seed_code=seed_code,
-                active_name=assign,
-                script_inputs=self.script_inputs,
-            )
+            if model_fit.weighting == "none":
+                return script(
+                    *operations,
+                    start_label="Start from current fit-tool input data",
+                    seed_code=seed_code,
+                    active_name=assign,
+                    script_inputs=self.script_inputs,
+                )
+            if any(item.name == input_name for item in self.script_inputs):
+                return recipe(
+                    *(ReplayStep(operation=operation) for operation in operations[:-1]),
+                    ReplayStep(
+                        operation=model_fit,
+                        input_bindings={"uncertainty": self._uncertainty_name},
+                    ),
+                    start_label="Start from current fit-tool input data",
+                    active_name=assign,
+                    script_inputs=self.script_inputs,
+                    primary_input=input_name,
+                )
 
         fallback = self._parameter_output_script_operation(
             param_name,

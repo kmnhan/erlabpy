@@ -65,6 +65,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     RestoreNonuniformDimsOperation,
     RotateOperation,
     SelOperation,
+    ShiftFromInputOperation,
     ShiftMode,
     ShiftOperation,
     SliceAlongPathOperation,
@@ -641,7 +642,11 @@ class DataTransformDialog(_DataManipulationDialog):
         batch_manager: ImageToolManager | None = None,
         provenance_edit_mode: bool = False,
         dialog_parent: QtWidgets.QWidget | None = None,
+        provenance_edit_manager_target: (
+            tuple[ImageToolManager, int | str] | None
+        ) = None,
     ) -> None:
+        self._provenance_edit_manager_target = provenance_edit_manager_target
         super().__init__(
             slicer_area,
             batch_manager=batch_manager,
@@ -956,6 +961,8 @@ class DataTransformDialog(_DataManipulationDialog):
         erlab.interactive.imagetool.manager.ImageToolManager | None,
         int | str | None,
     ]:
+        if self._provenance_edit_manager_target is not None:
+            return self._provenance_edit_manager_target
         manager = self.slicer_area._manager_instance
         if manager is None:
             return None, None
@@ -4465,12 +4472,16 @@ class ShiftDialog(DataTransformDialog):
         batch_manager: ImageToolManager | None = None,
         provenance_edit_mode: bool = False,
         dialog_parent: QtWidgets.QWidget | None = None,
+        provenance_edit_manager_target: (
+            tuple[ImageToolManager, int | str] | None
+        ) = None,
     ) -> None:
         super().__init__(
             slicer_area,
             batch_manager=batch_manager,
             provenance_edit_mode=provenance_edit_mode,
             dialog_parent=dialog_parent,
+            provenance_edit_manager_target=provenance_edit_manager_target,
         )
         self._sync_shift_controls()
 
@@ -4802,10 +4813,19 @@ class ShiftDialog(DataTransformDialog):
                 effective_shift,
                 **operation.kwargs,
             ).rename(data.name)
-            provenance_spec = manager._multi_input_script_provenance(
+            provenance_spec = manager._multi_input_operation_provenance(
                 (target, selected_uid),
-                operation_label="Shift with ImageTool",
-                operation_code=self.make_code(),
+                operation=ShiftFromInputOperation(
+                    negate=operation.negate,
+                    along=operation.along,
+                    shift_coords=operation.shift_coords,
+                    keep_dim_order=operation.keep_dim_order,
+                    assume_sorted=operation.assume_sorted,
+                    order=operation.order,
+                    mode=operation.mode,
+                    cval=operation.cval,
+                    prefilter=operation.prefilter,
+                ),
                 active_name="shifted",
                 start_label="Shift ImageTool data",
                 detached_input_uid=(
@@ -4813,7 +4833,8 @@ class ShiftDialog(DataTransformDialog):
                 ),
                 data_role="source",
                 input_names=("data", "shift"),
-                uses_implicit_framework_imports=True,
+                primary_input="data",
+                input_bindings={"shift": "shift"},
             )
             if self.launch_mode == "replace":
                 current_node.replace_with_detached_data(

@@ -105,6 +105,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._provenance._model import (
         ScriptInput,
         ScriptInputDataRole,
+        ToolProvenanceOperation,
         ToolProvenanceSpec,
         _ProvenanceDisplayRow,
     )
@@ -2407,6 +2408,31 @@ class ImageToolManager(_ImageToolManagerBase):
             data_role=data_role,
             input_names=input_names,
             uses_implicit_framework_imports=uses_implicit_framework_imports,
+        )
+
+    def _multi_input_operation_provenance(
+        self,
+        input_targets: Iterable[int | str],
+        *,
+        operation: ToolProvenanceOperation,
+        active_name: str,
+        start_label: str,
+        detached_input_uid: str | None = None,
+        data_role: ScriptInputDataRole = "displayed",
+        input_names: Sequence[str] | None = None,
+        primary_input: str,
+        input_bindings: Mapping[str, str] | None = None,
+    ) -> ToolProvenanceSpec:
+        return self._lineage_controller._multi_input_operation_provenance(
+            input_targets,
+            operation=operation,
+            active_name=active_name,
+            start_label=start_label,
+            detached_input_uid=detached_input_uid,
+            data_role=data_role,
+            input_names=input_names,
+            primary_input=primary_input,
+            input_bindings=input_bindings,
         )
 
     def _show_multi_input_script_result(

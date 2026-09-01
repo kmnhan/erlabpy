@@ -9,7 +9,10 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import _provenance_value_code
+from erlab.interactive.imagetool._provenance._code import (
+    _format_selection_expr,
+    _provenance_value_code,
+)
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     NullableProvenanceHashable,
@@ -19,7 +22,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping
+    from collections.abc import Collection, Hashable, Mapping
 
 
 class ScriptCodeOperation(ToolProvenanceOperation):
@@ -270,9 +273,13 @@ class ModelFitOperation(ToolProvenanceOperation):
     parameters: dict[str, _ModelFitParameterSpec]
     method: str
     parameter: str
-    output: typing.Literal["value", "stderr"] = "value"
+    output: typing.Literal["value", "stderr", "value_valid_stderr"] = "value"
     broadcast_dim: NullableProvenanceHashable = None
     normalize: bool = False
+    weighting: typing.Literal["none", "uncertainty"] = "none"
+    scale_covar: bool = True
+    uncertainty_sel: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    uncertainty_isel: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
     @pydantic.model_validator(mode="after")
     def _validate_model_fit(self) -> typing.Self:
@@ -299,7 +306,14 @@ class ModelFitOperation(ToolProvenanceOperation):
             raise ValueError(
                 "array-valued model-fit parameters require a broadcast dimension"
             )
+        if self.weighting == "none" and (self.uncertainty_sel or self.uncertainty_isel):
+            raise ValueError(
+                "Unweighted model fits cannot define uncertainty selections"
+            )
         return self
+
+    def input_slots(self) -> tuple[str, ...]:
+        return ("uncertainty",) if self.weighting == "uncertainty" else ()
 
     def _model(self):
         model_type = getattr(erlab.analysis.fit.models, self.model)
@@ -354,18 +368,30 @@ class ModelFitOperation(ToolProvenanceOperation):
     def preferred_replay_input_name(self) -> str:
         return "fit_data"
 
-    def apply(
+    def _fit_result(
         self,
         data: xr.DataArray,
         *,
+        uncertainty: xr.DataArray | None,
         authorization: object | None = None,
-    ) -> xr.DataArray:
+    ) -> xr.Dataset:
         if self.fit_dim not in data.dims:
             raise ValueError(
                 f"Model-fit dimension {self.fit_dim!r} was not found in data"
             )
         mean_dim = self.fit_dim if isinstance(self.fit_dim, str) else (self.fit_dim,)
-        fit_data = data / data.mean(mean_dim) if self.normalize else data
+        mean = data.mean(mean_dim)
+        fit_data = data / mean if self.normalize else data
+        weights: xr.DataArray | None = None
+        if uncertainty is not None:
+            if self.uncertainty_sel:
+                uncertainty = uncertainty.sel(self.uncertainty_sel)
+            if self.uncertainty_isel:
+                uncertainty = uncertainty.isel(self.uncertainty_isel)
+            uncertainty = uncertainty.broadcast_like(data)
+            if self.normalize:
+                uncertainty = uncertainty / abs(mean)
+            weights = 1 / uncertainty
         from erlab.interactive._code_trust import execution_capability_allows
         from erlab.interactive.imagetool._provenance._trust import (
             provenance_operation_code_trust_entries,
@@ -377,26 +403,99 @@ class ModelFitOperation(ToolProvenanceOperation):
         )
         if not execution_capability_allows(authorization, entries):
             raise PermissionError("Model-fit parameter expressions are not authorized")
-        fit_result = fit_data.xlm.modelfit(
+        return fit_data.xlm.modelfit(
             self.fit_dim,
             model=self._model(),
             params=self._runtime_parameters(data),
             method=self.method,
+            weights=weights,
+            scale_covar=self.scale_covar,
         )
-        result_variable = (
-            "modelfit_stderr" if self.output == "stderr" else "modelfit_coefficients"
+
+    def _output_from_fit(self, fit_result: xr.Dataset) -> xr.DataArray:
+        values = fit_result.modelfit_coefficients.sel(
+            param=self.parameter,
+            drop=True,
         )
-        output = fit_result[result_variable].sel(param=self.parameter, drop=True)
+        stderr = fit_result.modelfit_stderr.sel(
+            param=self.parameter,
+            drop=True,
+        )
         if self.output == "stderr":
-            output = output.where(np.isfinite(output) & (output > 0))
+            output = stderr.where(np.isfinite(stderr) & (stderr > 0))
+        elif self.output == "value_valid_stderr":
+            output = values.where(
+                np.isfinite(values) & np.isfinite(stderr) & (stderr > 0)
+            )
+        else:
+            output = values
         return output.rename(self.output_name)
 
+    def apply(
+        self,
+        data: xr.DataArray,
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        if self.weighting != "none":
+            raise ValueError("Weighted model fits require a bound uncertainty input")
+        return self._output_from_fit(
+            self._fit_result(data, uncertainty=None, authorization=authorization)
+        )
+
+    def apply_with_inputs(
+        self,
+        data: xr.DataArray,
+        inputs: Mapping[str, xr.DataArray],
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        return self._output_from_fit(
+            self._fit_result(
+                data,
+                uncertainty=inputs["uncertainty"],
+                authorization=authorization,
+            )
+        )
+
     def derivation_label(self) -> str:
-        output = "standard errors" if self.output == "stderr" else "values"
+        if self.output == "stderr":
+            output = "standard errors"
+        elif self.output == "value_valid_stderr":
+            output = "values with valid standard errors"
+        else:
+            output = "values"
         return f"Fit {self.model} and extract {self.parameter!r} parameter {output}"
 
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
+    def _uncertainty_expression_code(
+        self,
+        input_name: str,
+        uncertainty_name: str,
+    ) -> str:
+        expression = uncertainty_name
+        if self.uncertainty_sel:
+            expression = _format_selection_expr(
+                expression,
+                "sel",
+                self.uncertainty_sel,
+            )
+        if self.uncertainty_isel:
+            expression = _format_selection_expr(
+                expression,
+                "isel",
+                self.uncertainty_isel,
+            )
+        expression += f".broadcast_like({input_name})"
+        if self.normalize:
+            fit_dim = _provenance_value_code(self.fit_dim)
+            expression = f"({expression} / abs({input_name}.mean({fit_dim})))"
+        return expression
+
+    def _fit_expression_code(
+        self,
+        input_name: str,
+        *,
+        uncertainty_name: str | None,
     ) -> str:
         model_kwargs_values = typing.cast(
             "dict[typing.Hashable, typing.Any]", dict(self.model_kwargs)
@@ -434,7 +533,30 @@ class ModelFitOperation(ToolProvenanceOperation):
         lines.append(f"    params={parameter_lines[0]}")
         lines.extend(f"    {line}" for line in parameter_lines[1:-1])
         lines.append(f"    {parameter_lines[-1]},")
-        lines.extend((f"    method={self.method!r},", ")"))
+        lines.append(f"    method={self.method!r},")
+        if uncertainty_name is not None:
+            uncertainty_expression = self._uncertainty_expression_code(
+                input_name,
+                uncertainty_name,
+            )
+            lines.append(f"    weights=1 / ({uncertainty_expression}),")
+        if not self.scale_covar or uncertainty_name is not None:
+            lines.append(f"    scale_covar={self.scale_covar!r},")
+        lines.append(")")
+        return "\n".join(lines)
+
+    def _parameter_expression_code(
+        self,
+        input_name: str,
+        *,
+        uncertainty_name: str | None,
+    ) -> str:
+        if self.output == "value_valid_stderr":
+            raise NotImplementedError
+        lines = self._fit_expression_code(
+            input_name,
+            uncertainty_name=uncertainty_name,
+        ).splitlines()
         result_variable = (
             "modelfit_stderr" if self.output == "stderr" else "modelfit_coefficients"
         )
@@ -452,3 +574,87 @@ class ModelFitOperation(ToolProvenanceOperation):
             )
         lines[-1] += f".rename({self.output_name!r})"
         return "\n".join(lines)
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        del source_name
+        if self.weighting != "none":
+            raise NotImplementedError
+        return self._parameter_expression_code(input_name, uncertainty_name=None)
+
+    def expression_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        source_name: str | None = None,
+    ) -> str:
+        del source_name
+        uncertainty_name = (
+            inputs["uncertainty"] if self.weighting == "uncertainty" else None
+        )
+        return self._parameter_expression_code(
+            input_name,
+            uncertainty_name=uncertainty_name,
+        )
+
+    def _statement_replay_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        output_name: str,
+        source_name: str | None = None,
+        reserved_names: Collection[str] = (),
+    ) -> str:
+        del source_name
+        if self.output != "value_valid_stderr":
+            return super()._statement_replay_code_with_inputs(
+                input_name,
+                inputs,
+                output_name=output_name,
+                reserved_names=reserved_names,
+            )
+
+        unavailable = {input_name, output_name, *inputs.values(), *reserved_names}
+
+        def available_name(base: str) -> str:
+            name = base
+            suffix = 2
+            while name in unavailable:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            unavailable.add(name)
+            return name
+
+        fit_name = available_name("parameter_fit")
+        values_name = available_name("fit_parameter_values")
+        stderr_name = available_name("fit_parameter_stderr")
+        uncertainty_name = (
+            inputs["uncertainty"] if self.weighting == "uncertainty" else None
+        )
+        fit_expression = self._fit_expression_code(
+            input_name,
+            uncertainty_name=uncertainty_name,
+        )
+        return "\n".join(
+            (
+                f"{fit_name} = {fit_expression}",
+                f"{values_name} = {fit_name}.modelfit_coefficients.sel(",
+                f"    param={self.parameter!r},",
+                "    drop=True,",
+                ")",
+                f"{stderr_name} = {fit_name}.modelfit_stderr.sel(",
+                f"    param={self.parameter!r},",
+                "    drop=True,",
+                ")",
+                f"{output_name} = {values_name}.where(",
+                f"    {values_name}.notnull()",
+                f'    & (abs({values_name}) < float("inf"))',
+                f"    & {stderr_name}.notnull()",
+                f"    & ({stderr_name} > 0)",
+                f'    & ({stderr_name} < float("inf"))',
+                f").rename({self.output_name!r})",
+            )
+        )

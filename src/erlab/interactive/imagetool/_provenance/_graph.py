@@ -620,7 +620,9 @@ def _validate_script_provenance(
     seed_caller_names: set[str] = set()
     has_replay_step = False
     active_available = spec.active_name in available_names
-    current_name: str | None = spec.active_name if active_available else None
+    current_name: str | None = spec.primary_input
+    if current_name is None and active_available:
+        current_name = spec.active_name
 
     if spec.seed_code:
         has_replay_step = True
@@ -658,7 +660,8 @@ def _validate_script_provenance(
         context_bindings_by_index.setdefault(binding.operation_index, []).extend(
             binding.names
         )
-    for index, operation in enumerate(spec.operations):
+    for index, step in enumerate(spec.steps):
+        operation = step.operation
         if context_names := context_bindings_by_index.get(index):
             if current_name is None:
                 raise ReplayGraphError("Script provenance has no replay code")
@@ -716,7 +719,13 @@ def _validate_script_provenance(
             continue
         if current_name is None:
             raise ReplayGraphError("Script provenance has no replay code")
-        if not operation.live_applicable:
+        if step.input_bindings:
+            missing_names = set(step.input_bindings.values()) - available_names
+            if missing_names:
+                raise ReplayGraphError(
+                    f"Replay step input binding is unavailable: {min(missing_names)!r}"
+                )
+        elif not operation.live_applicable:
             raise ReplayGraphError(
                 "Script provenance contains non-replayable operation"
             )
@@ -732,7 +741,7 @@ def _validate_script_provenance(
             active_available = True
         else:
             active_available = active_available or current_name == spec.active_name
-    if not has_replay_step:
+    if not has_replay_step and spec.primary_input is None:
         raise ReplayGraphError("Script provenance has no replay code")
     if not active_available and current_name != spec.active_name:
         raise ReplayGraphError("Script provenance has no replay code")
@@ -1061,16 +1070,19 @@ def _operation_replay_code(
     active_name: str,
     context_name: str,
     parent_name: str | None = None,
+    bound_inputs: Mapping[str, str] | None = None,
     reserved_names: Collection[str] = (),
 ) -> str:
     input_name = active_name if parent_name is None else parent_name
+    kwargs: dict[str, typing.Any] = {
+        "output_name": active_name,
+        "source_name": context_name,
+        "reserved_names": reserved_names,
+    }
+    if bound_inputs:
+        kwargs["bound_inputs"] = bound_inputs
     try:
-        code = operation.replay_code(
-            input_name,
-            output_name=active_name,
-            source_name=context_name,
-            reserved_names=reserved_names,
-        )
+        code = operation.replay_code(input_name, **kwargs)
     except (AttributeError, NotImplementedError, TypeError, ValueError) as exc:
         raise ReplayGraphError("Operation does not provide replay code") from exc
     if code is None:
@@ -1403,6 +1415,13 @@ def _compile_spec(
             )
             current_name = active_name
             current_bindings = bind_name(active_name, script_current_key)
+        elif parsed.primary_input is not None:
+            primary_key = binding_key(parsed.primary_input)
+            if primary_key is None:  # pragma: no cover - model validation guard.
+                raise ReplayGraphError("Primary replay input is unavailable")
+            script_current_key = relay_key(primary_key)
+            current_name = active_name
+            current_bindings = bind_name(current_name, script_current_key)
         elif parsed.seed_code:
             seed_code = parsed.seed_code
             seed_file_load_parts = None
@@ -1465,7 +1484,22 @@ def _compile_spec(
                 previous_input_policy = None
                 continue
 
-            if step.input_policy is not None or step.legacy_context is not None:
+            bound_input_keys: tuple[tuple[str, str], ...] = ()
+            if step.input_bindings:
+                flush_script()
+                ensure_script_current_key()
+                bound_keys: list[tuple[str, str]] = []
+                for slot in operation.input_slots():
+                    input_name = step.input_bindings[slot]
+                    input_key = binding_key(input_name)
+                    if input_key is None:  # pragma: no cover - validation guard.
+                        raise ReplayGraphError(
+                            f"Bound replay input {input_name!r} is unavailable"
+                        )
+                    bound_keys.append((slot, input_key))
+                bound_input_keys = tuple(bound_keys)
+                context_key = typing.cast("str", script_current_key)
+            elif step.input_policy is not None or step.legacy_context is not None:
                 flush_script()
                 ensure_script_current_key()
                 current_key = typing.cast("str", script_current_key)
@@ -1570,10 +1604,16 @@ def _compile_spec(
                 operation_name = active_name
             else:
                 operation_name = current_name or active_name
+            operation_parents = (
+                current_key,
+                context_key,
+                *(key for _slot, key in bound_input_keys),
+            )
             script_current_key = graph.add_node(
                 _canonical_key(
                     "operation",
                     {
+                        "input_bindings": bound_input_keys,
                         "context": context_key,
                         "legacy_parent_context": step.legacy_context is not None,
                         "operation": operation.model_dump(mode="json"),
@@ -1581,8 +1621,9 @@ def _compile_spec(
                     },
                 ),
                 "operation",
-                parents=(current_key, context_key),
+                parents=operation_parents,
                 payload={
+                    "input_bindings": bound_input_keys,
                     "operation": operation,
                     "legacy_parent_context": step.legacy_context is not None,
                 },
@@ -3669,6 +3710,10 @@ def emit_replay_code(
                     allowed_accesses=(parent_name,),
                 )
             else:
+                bound_input_names = {
+                    slot: names[input_key]
+                    for slot, input_key in node.payload.get("input_bindings", ())
+                }
                 consume(node.parents)
                 append_code(
                     _operation_replay_code(
@@ -3676,13 +3721,18 @@ def emit_replay_code(
                         active_name=name,
                         context_name=context_name,
                         parent_name=parent_name,
+                        bound_inputs=bound_input_names,
                         reserved_names=(
                             graph.reserved_names
                             | reserved_binding_names
                             | set(names.values())
                         ),
                     ),
-                    allowed_accesses=(parent_name, context_name),
+                    allowed_accesses=(
+                        parent_name,
+                        context_name,
+                        *bound_input_names.values(),
+                    ),
                 )
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))

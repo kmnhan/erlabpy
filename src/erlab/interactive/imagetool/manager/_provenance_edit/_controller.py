@@ -10,7 +10,7 @@ import typing
 import warnings
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
@@ -22,8 +22,11 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_script_provenance,
     script_provenance_replayable,
 )
+from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ReplayStep,
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
@@ -34,6 +37,7 @@ from erlab.interactive.imagetool._provenance._model import (
     compose_full_provenance,
     full_data,
     iter_operation_refs,
+    recipe,
     require_live_source_spec,
     restamp_operation_groups,
     script,
@@ -46,6 +50,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     GaussianFilterOperation,
     NormalizeOperation,
     ScriptCodeOperation,
+    ShiftFromInputOperation,
     SortByOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import (
@@ -484,7 +489,7 @@ class _ProvenanceEditController:
 
     def can_paste_steps(
         self,
-        operations: Sequence[ToolProvenanceOperation] | None,
+        operations: Sequence[ToolProvenanceOperation | ReplayStep] | None,
     ) -> tuple[bool, str]:
         if not operations:
             return False, "The clipboard does not contain copied ImageTool steps."
@@ -494,10 +499,12 @@ class _ProvenanceEditController:
 
     def paste_steps(
         self,
-        operations: Sequence[ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation | ReplayStep],
         *,
         active_name: str,
-        contains_script: bool,
+        primary_input: str | None = None,
+        script_inputs: Sequence[ScriptInput] = (),
+        source_manager_id: str | None = None,
     ) -> None:
         paste_enabled, paste_reason = self.can_paste_steps(operations)
         if not paste_enabled:
@@ -507,13 +514,25 @@ class _ProvenanceEditController:
         failures: list[tuple[_ImageToolWrapper | _ManagedWindowNode, Exception]] = []
         pasted_count = 0
         for node in targets:
-            steps = restamp_operation_groups(operations)
+            original_steps = tuple(
+                item if isinstance(item, ReplayStep) else ReplayStep(operation=item)
+                for item in operations
+            )
+            restamped = restamp_operation_groups(
+                tuple(step.operation for step in original_steps)
+            )
+            steps = tuple(
+                step.model_copy(update={"operation": operation})
+                for step, operation in zip(original_steps, restamped, strict=True)
+            )
             try:
                 self._paste_steps_into_node(
                     node,
                     steps,
                     active_name=active_name,
-                    contains_script=contains_script,
+                    primary_input=primary_input,
+                    script_inputs=script_inputs,
+                    source_manager_id=source_manager_id,
                 )
             except _TrustedProvenanceReplayCancelled:
                 return
@@ -543,23 +562,110 @@ class _ProvenanceEditController:
     def _paste_steps_into_node(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        steps: tuple[ToolProvenanceOperation, ...],
+        steps: Sequence[ToolProvenanceOperation | ReplayStep],
         *,
         active_name: str,
-        contains_script: bool,
+        primary_input: str | None = None,
+        script_inputs: Sequence[ScriptInput] = (),
+        source_manager_id: str | None = None,
     ) -> None:
-        if contains_script or any(not operation.live_applicable for operation in steps):
+        replay_steps: tuple[ReplayStep, ...] = tuple(
+            item if isinstance(item, ReplayStep) else ReplayStep(operation=item)
+            for item in steps
+        )
+        operations = tuple(step.operation for step in replay_steps)
+        has_bound_inputs = any(step.input_bindings for step in replay_steps)
+        if has_bound_inputs:
+            if primary_input is None:
+                raise ValueError("Bound provenance steps need a primary input")
+            if source_manager_id != self._manager._manager_record.internal_id:
+                portable_inputs: list[ScriptInput] = []
+                for item in script_inputs:
+                    fallback = item.parsed_provenance_spec()
+                    if fallback is None or fallback.kind not in {"file", "script"}:
+                        raise ReplayGraphError(
+                            f"{item.label} has no portable recorded provenance"
+                        )
+                    portable_inputs.append(
+                        item.model_copy(
+                            update={"node_uid": None, "node_snapshot_token": None}
+                        )
+                    )
+                script_inputs = tuple(portable_inputs)
+            primary_name = primary_input
+            local_inputs = (
+                self._manager._lineage_controller._script_input_for_node(
+                    node,
+                    name=primary_name,
+                    detached_input_uid=node.uid,
+                    data_role="source",
+                ),
+                *(item for item in script_inputs if item.name != primary_name),
+            )
+            if any(
+                isinstance(operation, ScriptCodeOperation) for operation in operations
+            ):
+                local = script(
+                    start_label="Start from current ImageTool data",
+                    active_name=active_name or "derived",
+                    steps=replay_steps,
+                    script_inputs=local_inputs,
+                    primary_input=primary_name,
+                )
+            else:
+                local = recipe(
+                    *replay_steps,
+                    start_label="Start from current ImageTool data",
+                    active_name=active_name or "derived",
+                    script_inputs=local_inputs,
+                    primary_input=primary_name,
+                )
+            self._paste_detached_steps(
+                node,
+                local,
+                where="validating the pasted bound provenance steps",
+            )
+            return
+        if script_inputs or any(
+            not operation.live_applicable for operation in operations
+        ):
+            if not script_inputs and primary_input is None:
+                self._paste_detached_steps(
+                    node,
+                    script(
+                        *operations,
+                        start_label="Start from current ImageTool data",
+                        active_name=active_name or "derived",
+                    ),
+                    where="validating the pasted script provenance steps",
+                )
+                return
+            primary_name = primary_input or "data"
+            auxiliary_inputs = tuple(
+                item for item in script_inputs if item.name != primary_name
+            )
+            local_inputs = (
+                self._manager._lineage_controller._script_input_for_node(
+                    node,
+                    name=primary_name,
+                    detached_input_uid=node.uid,
+                    data_role="source",
+                ),
+                *auxiliary_inputs,
+            )
             self._paste_detached_steps(
                 node,
                 script(
-                    *steps,
                     start_label="Start from current ImageTool data",
                     active_name=active_name or "derived",
+                    steps=replay_steps,
+                    script_inputs=local_inputs,
+                    primary_input=primary_name,
                 ),
                 where="validating the pasted script provenance steps",
             )
             return
-        self._paste_structured_steps(node, steps)
+        self._paste_structured_steps(node, restamp_operation_groups(operations))
 
     def _paste_structured_steps(
         self,
@@ -611,7 +717,9 @@ class _ProvenanceEditController:
             current_output_names = (
                 (current_output_name,) if isinstance(current_output_name, str) else ()
             )
-            if local.kind == "script":
+            if local.kind == "script" and local.primary_input is not None:
+                spec = local
+            elif local.kind == "script":
                 spec = compose_full_provenance(
                     node.displayed_provenance_spec,
                     local,
@@ -650,7 +758,16 @@ class _ProvenanceEditController:
                 if entries and authorization is None:
                     raise _TrustedProvenanceReplayCancelled
                 try:
-                    if local.kind == "script":
+                    if local.kind == "script" and local.primary_input is not None:
+                        lineage = self._manager._lineage_controller
+                        rebuilt = lineage._rebuild_script_provenance(
+                            local,
+                            target_node_uid=node.uid,
+                            authorization=authorization,
+                        )
+                        data = rebuilt.data
+                        spec = rebuilt.provenance_spec
+                    elif local.kind == "script":
                         input_names = tuple(
                             dict.fromkeys(
                                 (
@@ -815,6 +932,12 @@ class _ProvenanceEditController:
         operation = spec._operation_for_ref(row.edit_ref)
         if operation is None:
             return False, "This operation is not available."
+        bound_shift = isinstance(operation, ShiftFromInputOperation)
+        if bound_shift:
+            if spec.kind != "script" or row.edit_ref.operation_index is None:
+                return False, "This bound shift step is not editable."
+            if "shift" not in spec.steps[row.edit_ref.operation_index].input_bindings:
+                return False, "This bound shift step has no shift input."
         script_operation = (
             operation
             if isinstance(
@@ -863,6 +986,8 @@ class _ProvenanceEditController:
                 )
             descriptor, reason = self._extension_routine_edit_descriptor(operation)
             return descriptor is not None, reason
+        if bound_shift:
+            return True, ""
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
             reason = _uneditable_operation_reason(operation)
@@ -1104,6 +1229,17 @@ class _ProvenanceEditController:
                 )
             if not available:
                 return False, reason
+            if action == "edit" and len(targets) > 1:
+                ref = row.edit_ref
+                spec = self._display_spec_for_row(node, row, passive=True)
+                if (
+                    ref is not None
+                    and spec is not None
+                    and isinstance(
+                        spec._operation_for_ref(ref), ShiftFromInputOperation
+                    )
+                ):
+                    return False, "Edit one bound shift step at a time."
         if len(targets) > 1 and not self._matching_operation_rows(
             targets,
             action=action,
@@ -2131,6 +2267,8 @@ class _ProvenanceEditController:
             if replacement is None:
                 return None
             return (replacement,)
+        if isinstance(operation, ShiftFromInputOperation):
+            raise TypeError("Bound shift editing supports one ImageTool row at a time")
         if isinstance(operation, ExtensionRoutineOperation):
             replacement = self._edited_extension_routine_operation(operation)
             if replacement is None:
@@ -2170,6 +2308,9 @@ class _ProvenanceEditController:
             ScriptCodeOperation,
         ):
             self._edit_script_code_operation_row(node, row, spec, ref, operation)
+            return
+        if isinstance(operation, ShiftFromInputOperation):
+            self._edit_bound_shift_operation_row(node, row, spec, ref, operation)
             return
         if isinstance(operation, ExtensionRoutineOperation):
             self._edit_extension_routine_operation_row(
@@ -2229,6 +2370,132 @@ class _ProvenanceEditController:
             root_candidate,
             where="validating the edited Python code",
         )
+
+    def _edit_bound_shift_operation_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        operation: ShiftFromInputOperation,
+    ) -> None:
+        if ref.operation_index is None or node.imagetool is None:
+            raise RuntimeError("The bound shift target is not available")
+        step = spec.steps[ref.operation_index]
+        shift_name = step.input_bindings.get("shift")
+        if shift_name is None:
+            raise RuntimeError("The bound shift step has no shift input")
+        current_input = next(
+            (item for item in spec.script_inputs if item.name == shift_name), None
+        )
+        if current_input is None:
+            raise RuntimeError("The bound shift input is not available")
+        prefix_data, _prefix = self._replay_candidate_result(
+            node,
+            row.scope,
+            spec._prefix_before_ref(ref),
+        )
+        temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
+        temp_tool.hide()
+        dialog: dialogs.ShiftDialog | None = None
+        try:
+            dialog = dialogs.ShiftDialog(
+                temp_tool.slicer_area,
+                provenance_edit_mode=True,
+                dialog_parent=self._manager,
+                provenance_edit_manager_target=(self._manager, node.uid),
+            )
+            self._restore_bound_shift_dialog(dialog, operation, current_input.node_uid)
+            if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+                return
+            if not dialog.uses_manager_shift:
+                raise TypeError("A bound shift step requires an ImageTool input")
+            selected_uid = dialog.shift_tool_combo.currentData(
+                QtCore.Qt.ItemDataRole.UserRole
+            )
+            if not isinstance(selected_uid, str):
+                raise TypeError("Select a compatible shift ImageTool")
+            dialog._candidate_data(self._manager, selected_uid, prefix_data)
+            if self._manager._dependency_tracker.transitively_depends_on(
+                selected_uid, node.uid
+            ):
+                raise RuntimeError(
+                    "The selected shift ImageTool would create a dependency cycle"
+                )
+            scalar_operation = dialog.source_transform_operation()
+            replacement = ShiftFromInputOperation(
+                negate=scalar_operation.negate,
+                along=scalar_operation.along,
+                shift_coords=scalar_operation.shift_coords,
+                keep_dim_order=scalar_operation.keep_dim_order,
+                assume_sorted=scalar_operation.assume_sorted,
+                order=scalar_operation.order,
+                mode=scalar_operation.mode,
+                cval=scalar_operation.cval,
+                prefilter=scalar_operation.prefilter,
+            )
+        finally:
+            if dialog is not None:
+                dialog.close()
+                dialog.deleteLater()
+            temp_tool.close()
+            temp_tool.deleteLater()
+        inputs = tuple(
+            self._manager._lineage_controller._script_input_for_node(
+                self._manager._tool_graph.nodes[selected_uid],
+                name=shift_name,
+                data_role=current_input.data_role,
+            )
+            if item.name == shift_name
+            else item
+            for item in spec.script_inputs
+        )
+        steps = list(spec.steps)
+        steps[ref.operation_index] = step.model_copy(update={"operation": replacement})
+        candidate = spec.model_copy(
+            update={"steps": tuple(steps), "script_inputs": inputs}
+        )
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            root_candidate,
+            where="validating the edited bound shift",
+        )
+
+    @staticmethod
+    def _restore_bound_shift_dialog(
+        dialog: dialogs.ShiftDialog,
+        operation: ShiftFromInputOperation,
+        shift_uid: str | None,
+    ) -> None:
+        def select(combo: QtWidgets.QComboBox, value: object) -> None:
+            index = combo.findData(value, QtCore.Qt.ItemDataRole.UserRole)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+
+        scalar_index = dialog.shift_source_combo.findData(
+            dialog._SOURCE_SCALAR,
+            QtCore.Qt.ItemDataRole.UserRole,
+        )
+        scalar_item = typing.cast(
+            "QtGui.QStandardItemModel", dialog.shift_source_combo.model()
+        ).item(scalar_index)
+        if scalar_item is not None:
+            scalar_item.setEnabled(False)
+        select(dialog.shift_source_combo, dialog._SOURCE_MANAGER)
+        select(dialog.along_combo, operation.along)
+        dialog.negate_check.setChecked(operation.negate)
+        dialog.shift_coords_check.setChecked(operation.shift_coords)
+        dialog.keep_dim_order_check.setChecked(operation.keep_dim_order)
+        dialog.assume_sorted_check.setChecked(operation.assume_sorted)
+        dialog.order_spin.setValue(operation.order)
+        select(dialog.mode_combo, operation.mode)
+        dialog.cval_spin.setValue(operation.cval)
+        dialog.prefilter_check.setChecked(operation.prefilter)
+        dialog._populate_shift_candidates()
+        if shift_uid is not None:
+            select(dialog.shift_tool_combo, shift_uid)
 
     def _edited_script_code_operation(
         self,

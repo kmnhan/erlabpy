@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._load_source import _register_local_callable_lo
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
+    ReplayStep,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     file_load,
@@ -184,9 +185,13 @@ def _set_provenance_steps_clipboard(
                 manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION
             ),
             "active_name": active_name,
-            "operations": [
-                operation.model_dump(mode="json") for operation in operations
+            "steps": [
+                ReplayStep(operation=operation).model_dump(mode="json")
+                for operation in operations
             ],
+            "script_inputs": [],
+            "primary_input": None,
+            "source_manager_id": None,
         },
         separators=(",", ":"),
     )

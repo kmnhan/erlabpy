@@ -27,14 +27,17 @@ from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
 )
 from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
     ScriptInput,
     ScriptInputDataRole,
     ScriptInputDependencyRef,
+    ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_full_provenance,
     has_file_load_source,
     rebase_script_input_node_uids,
     rebase_script_inputs_node_uids,
+    recipe,
     script,
     to_replay_provenance_spec,
 )
@@ -531,6 +534,30 @@ class _LineageController:
         input_names: Sequence[str] | None = None,
         uses_implicit_framework_imports: bool = False,
     ) -> ToolProvenanceSpec:
+        return script(
+            ScriptCodeOperation(
+                label=operation_label,
+                code=operation_code,
+                uses_implicit_framework_imports=uses_implicit_framework_imports,
+            ),
+            active_name=active_name,
+            start_label=start_label,
+            script_inputs=self._multi_input_script_inputs(
+                input_targets,
+                detached_input_uid=detached_input_uid,
+                data_role=data_role,
+                input_names=input_names,
+            ),
+        )
+
+    def _multi_input_script_inputs(
+        self,
+        input_targets: Iterable[int | str],
+        *,
+        detached_input_uid: str | None,
+        data_role: ScriptInputDataRole,
+        input_names: Sequence[str] | None,
+    ) -> tuple[ScriptInput, ...]:
         input_targets = tuple(input_targets)
         if input_names is None:
             names: tuple[str | None, ...] = (None,) * len(input_targets)
@@ -538,23 +565,43 @@ class _LineageController:
             names = tuple(input_names)
             if len(names) != len(input_targets):
                 raise ValueError("Input names must match the number of input targets")
-        return script(
-            ScriptCodeOperation(
-                label=operation_label,
-                code=operation_code,
-                uses_implicit_framework_imports=uses_implicit_framework_imports,
+        return tuple(
+            self._script_input_for_node(
+                self._manager._node_for_target(target),
+                name=name,
+                detached_input_uid=detached_input_uid,
+                data_role=data_role,
+            )
+            for target, name in zip(input_targets, names, strict=True)
+        )
+
+    def _multi_input_operation_provenance(
+        self,
+        input_targets: Iterable[int | str],
+        *,
+        operation: ToolProvenanceOperation,
+        active_name: str,
+        start_label: str,
+        detached_input_uid: str | None = None,
+        data_role: ScriptInputDataRole = "displayed",
+        input_names: Sequence[str] | None = None,
+        primary_input: str,
+        input_bindings: Mapping[str, str] | None = None,
+    ) -> ToolProvenanceSpec:
+        return recipe(
+            ReplayStep(
+                operation=operation,
+                input_bindings=dict(input_bindings or {}),
             ),
             start_label=start_label,
             active_name=active_name,
-            script_inputs=tuple(
-                self._script_input_for_node(
-                    self._manager._node_for_target(target),
-                    name=name,
-                    detached_input_uid=detached_input_uid,
-                    data_role=data_role,
-                )
-                for target, name in zip(input_targets, names, strict=True)
+            script_inputs=self._multi_input_script_inputs(
+                input_targets,
+                detached_input_uid=detached_input_uid,
+                data_role=data_role,
+                input_names=input_names,
             ),
+            primary_input=primary_input,
         )
 
     def _show_multi_input_script_result(

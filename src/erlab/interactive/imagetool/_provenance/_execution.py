@@ -363,7 +363,14 @@ def _execute_replay_graph(
                         "Recorded provenance contains Python content that is not "
                         "trusted"
                     )
-                if node.payload.get("legacy_parent_context", False):
+                input_bindings = node.payload.get("input_bindings", ())
+                if input_bindings:
+                    data = operation.apply_with_inputs(
+                        values[node.parents[0]],
+                        {slot: values[input_key] for slot, input_key in input_bindings},
+                        authorization=authorization,
+                    )
+                elif node.payload.get("legacy_parent_context", False):
                     data = operation._apply_schema_v2(
                         values[node.parents[0]],
                         parent_data=values[node.parents[1]],

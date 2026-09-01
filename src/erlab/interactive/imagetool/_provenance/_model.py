@@ -20,12 +20,13 @@ set of source forms:
    - Use :func:`file_load` for data that can be reloaded from a recorded file source
      and replayed through an ordered sequence of :class:`ReplayStep` objects.
 
-   - Use :func:`script` for console-derived and other multi-input results. Script
+   - Use :func:`script` for console-derived and other durable replay results. Script
      specs may reference any number of :class:`ScriptInput` records. Each input stores
      an immutable replay name, a historical display label, optional live manager node
      identity and role-specific ``node_snapshot_token``, whether it represents source
      or displayed data, an optional live-source transform, and an optional complete
-     resolved-input provenance fallback.
+     resolved-input provenance fallback. Concrete operations can bind semantic input
+     slots to these records without storing Python code.
 
 Each transformation is represented by a frozen
 :class:`ToolProvenanceOperation` model whose serialized fields are safe to persist in
@@ -63,13 +64,16 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    convenience properties for runtime use.
 
 4. Implement :meth:`ToolProvenanceOperation.apply` so it transforms a derived array
-   using only its recorded parameters.
+   using only its recorded parameters. If the operation also needs named inputs,
+   implement :meth:`ToolProvenanceOperation.apply_with_inputs` and declare their
+   semantic slots with :meth:`ToolProvenanceOperation.input_slots`.
 
 5. Implement :meth:`ToolProvenanceOperation.expression_code` and
    :meth:`ToolProvenanceOperation.derivation_label` so copied code and manager
    derivation entries come from the same operation metadata. Override
    :meth:`ToolProvenanceOperation.derivation_entry` only when the operation is not a
-   structured transform, such as free-form script code.
+   structured transform, such as free-form script code. Operations with named inputs
+   should also implement :meth:`ToolProvenanceOperation.expression_code_with_inputs`.
 
 6. If the public API for the operation is mutating and cannot be represented as a
    single expression, implement :meth:`ToolProvenanceOperation.statement_code` and set
@@ -1234,6 +1238,28 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         raise NotImplementedError
 
+    def input_slots(self) -> tuple[str, ...]:
+        """Return semantic named-input slots required by this operation.
+
+        The current derived array is implicit and is not included. Each returned name
+        is bound to a durable :class:`ScriptInput` by :class:`ReplayStep`.
+        """
+        return ()
+
+    def apply_with_inputs(
+        self,
+        data: xr.DataArray,
+        inputs: Mapping[str, xr.DataArray],
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        """Apply this operation with its bound named inputs.
+
+        Subclasses with non-empty :meth:`input_slots` must reimplement this method.
+        """
+        del data, inputs, authorization
+        raise NotImplementedError
+
     def _apply_schema_v2(
         self,
         data: xr.DataArray,
@@ -1288,7 +1314,12 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         return DerivationEntry(
             self.derivation_label(),
-            self.replay_code("derived", output_name="derived", source_name="data"),
+            self.replay_code(
+                "derived",
+                output_name="derived",
+                source_name="data",
+                bound_inputs={slot: slot for slot in self.input_slots()},
+            ),
             True,
         )
 
@@ -1336,6 +1367,18 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         raise NotImplementedError
 
+    def expression_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        source_name: str | None = None,
+    ) -> str:
+        """Return an expression that uses the current and bound input names."""
+        if inputs:
+            raise NotImplementedError
+        return self.expression_code(input_name, source_name=source_name)
+
     def statement_code(
         self,
         input_name: str,
@@ -1352,6 +1395,23 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         raise NotImplementedError
 
+    def statement_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        output_name: str,
+        source_name: str | None = None,
+    ) -> str:
+        """Return statements that use the current and bound input names."""
+        if inputs:
+            raise NotImplementedError
+        return self.statement_code(
+            input_name,
+            output_name=output_name,
+            source_name=source_name,
+        )
+
     def _statement_replay_code(
         self,
         input_name: str,
@@ -1367,12 +1427,31 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             source_name=source_name,
         )
 
+    def _statement_replay_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        output_name: str,
+        source_name: str | None = None,
+        reserved_names: Collection[str] = (),
+    ) -> str:
+        """Call bound-input statement replay with graph-emission context."""
+        del reserved_names
+        return self.statement_code_with_inputs(
+            input_name,
+            inputs,
+            output_name=output_name,
+            source_name=source_name,
+        )
+
     def replay_code(
         self,
         input_name: str,
         *,
         output_name: str | None = None,
         source_name: str | None = None,
+        bound_inputs: Mapping[str, str] | None = None,
         reserved_names: Collection[str] = (),
     ) -> str:
         """Return replay code for this operation with caller-selected names.
@@ -1392,6 +1471,8 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         source_name
             Python expression or identifier for the original public input array for
             the enclosing replay sequence. Passed through to :meth:`expression_code`.
+        bound_inputs
+            Generated Python names for the operation's semantic named-input slots.
         reserved_names
             Names already used by the enclosing replay sequence. Statement-based
             operations use these to choose collision-free auxiliary targets.
@@ -1402,13 +1483,19 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             Either an assignment statement when ``output_name`` is provided, or a bare
             expression when it is ``None``.
         """
+        inputs = {} if bound_inputs is None else dict(bound_inputs)
         try:
-            expression = self.expression_code(input_name, source_name=source_name)
+            expression = self.expression_code_with_inputs(
+                input_name,
+                inputs,
+                source_name=source_name,
+            )
         except NotImplementedError:
             if output_name is None:
                 raise
-            return self._statement_replay_code(
+            return self._statement_replay_code_with_inputs(
                 input_name,
+                inputs,
                 output_name=output_name,
                 source_name=source_name,
                 reserved_names=reserved_names,
@@ -2187,6 +2274,10 @@ class ReplayStep(pydantic.BaseModel):
     """One operation in the canonical ordered durable replay pipeline."""
 
     operation: pydantic.SerializeAsAny[ToolProvenanceOperation]
+    input_bindings: dict[str, str] = pydantic.Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
     input_policy: _ReplayInputPolicy | None = None
     context_names: tuple[str, ...] = pydantic.Field(
         default=(),
@@ -2208,6 +2299,22 @@ class ReplayStep(pydantic.BaseModel):
     def _validate_operation(cls, value: typing.Any) -> ToolProvenanceOperation:
         return parse_tool_provenance_operation(value)
 
+    @pydantic.field_validator("input_bindings", mode="before")
+    @classmethod
+    def _validate_input_bindings(cls, value: typing.Any) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise TypeError("Replay step input bindings must be a mapping")
+        bindings: dict[str, str] = {}
+        for raw_slot, raw_name in value.items():
+            slot = _validate_active_name(raw_slot)
+            name = _validate_active_name(raw_name)
+            if slot is None or name is None:
+                raise ValueError("Replay step input bindings must not use None")
+            bindings[slot] = name
+        return bindings
+
     @pydantic.field_validator("context_names", mode="before")
     @classmethod
     def _validate_context_names(cls, value: typing.Any) -> tuple[str, ...]:
@@ -2226,6 +2333,25 @@ class ReplayStep(pydantic.BaseModel):
 
     def _check_step_fields(self) -> None:
         """Check invariants that depend on several replay-step fields."""
+        input_slots = self.operation.input_slots()
+        if len(set(input_slots)) != len(input_slots) or any(
+            _validate_active_name(slot) is None for slot in input_slots
+        ):
+            raise ValueError(
+                "Operation input slots must be distinct Python identifiers"
+            )
+        expected_slots = set(input_slots)
+        actual_slots = set(self.input_bindings)
+        if actual_slots != expected_slots:
+            raise ValueError(
+                "Replay step input bindings must match the operation input slots"
+            )
+        if self.input_bindings and (
+            self.input_policy is not None or self.legacy_context is not None
+        ):
+            raise ValueError(
+                "Bound-input replay steps cannot define source input policies"
+            )
         if self.input_policy is not None and self.legacy_context is not None:
             raise ValueError(
                 "Replay steps cannot define both current and legacy input policies"
@@ -2237,6 +2363,24 @@ class ReplayStep(pydantic.BaseModel):
     def _validate_step(self) -> typing.Self:
         self._check_step_fields()
         return self
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, typing.Any] | None = None,
+        deep: bool = False,
+    ) -> typing.Self:
+        """Copy a step and recheck operation-to-binding invariants."""
+        normalized = dict(update or {})
+        if "operation" in normalized:
+            normalized["operation"] = self._validate_operation(normalized["operation"])
+        if "input_bindings" in normalized:
+            normalized["input_bindings"] = self._validate_input_bindings(
+                normalized["input_bindings"]
+            )
+        copied = super().model_copy(update=normalized, deep=deep)
+        copied._check_step_fields()
+        return copied
 
     @classmethod
     def from_source_spec(cls, source: ToolProvenanceSpec) -> tuple[ReplayStep, ...]:
@@ -2596,6 +2740,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     steps: tuple[ReplayStep, ...] = ()
     file_load_source: FileLoadSource | None = None
     script_inputs: tuple[ScriptInput, ...] = ()
+    primary_input: str | None = pydantic.Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -2728,6 +2876,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     def _validate_active_name_field(cls, value: typing.Any) -> str | None:
         return _validate_active_name(value)
 
+    @pydantic.field_validator("primary_input", mode="before")
+    @classmethod
+    def _validate_primary_input(cls, value: typing.Any) -> str | None:
+        return _validate_active_name(value)
+
     @pydantic.field_validator("seed_code", mode="before")
     @classmethod
     def _migrate_seed_code(cls, value: typing.Any) -> typing.Any:
@@ -2785,6 +2938,28 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raise ValueError("script provenance specs must define `start_label`")
             if self.source_operations:
                 raise ValueError("script provenance specs must define replay steps")
+            input_names = tuple(item.name for item in self.script_inputs)
+            if self.primary_input is not None:
+                if len(set(input_names)) != len(input_names):
+                    raise ValueError(
+                        "Bound-input provenance requires distinct script input names"
+                    )
+                if self.primary_input not in input_names:
+                    raise ValueError("primary_input must name a script input")
+                if self.seed_code is not None:
+                    raise ValueError(
+                        "Bound-input provenance cannot also define seed code"
+                    )
+            bound_input_names = {
+                name for step in self.steps for name in step.input_bindings.values()
+            }
+            if unknown_names := bound_input_names - set(input_names):
+                raise ValueError(
+                    "Replay step input bindings reference unknown script input "
+                    f"{min(unknown_names)!r}"
+                )
+            if bound_input_names and self.primary_input is None:
+                raise ValueError("Bound-input provenance must define its primary input")
             return
         if self.kind == "file":
             if self.start_label is None:
@@ -2802,6 +2977,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raise ValueError("file provenance specs must define `seed_code`")
             if self.source_operations:
                 raise ValueError("file provenance specs must define replay steps")
+            if self.primary_input is not None:
+                raise ValueError("file provenance specs cannot define primary_input")
             if any(step.context_names for step in self.steps):
                 raise ValueError("file provenance steps cannot define script context")
             if any(not step.operation.live_applicable for step in self.steps):
@@ -2816,11 +2993,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             or self.file_load_source is not None
             or self.steps
             or self.script_inputs
+            or self.primary_input is not None
         ):
             raise ValueError(
                 "Only script or file provenance specs may define `start_label`, "
                 "`seed_code`, `active_name`, `file_load_source`, `steps`, or "
-                "`script_inputs`"
+                "`script_inputs` or `primary_input`"
             )
 
     @pydantic.model_validator(mode="after")
@@ -2849,7 +3027,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     @property
     def is_live_source(self) -> bool:
         return self.kind in {"full_data", "public_data", "selection"} and all(
-            operation.live_applicable for operation in self.operations
+            operation.live_applicable and not operation.input_slots()
+            for operation in self.operations
         )
 
     def model_copy(
@@ -2914,9 +3093,26 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             normalized["source_operations"] = self._validate_operations(
                 normalized["source_operations"]
             )
-        validate_operations = bool({"source_operations", "steps"} & normalized.keys())
+        if "script_inputs" in normalized:
+            normalized["script_inputs"] = self._validate_script_inputs(
+                normalized["script_inputs"]
+            )
+        if "primary_input" in normalized:
+            normalized["primary_input"] = self._validate_primary_input(
+                normalized["primary_input"]
+            )
+        validate_fields = bool(
+            {
+                "source_operations",
+                "steps",
+                "seed_code",
+                "script_inputs",
+                "primary_input",
+            }
+            & normalized.keys()
+        )
         copied = super().model_copy(update=normalized, deep=deep)
-        if validate_operations:
+        if validate_fields:
             copied._check_kind_fields()
         return copied
 
@@ -3046,6 +3242,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         replacement_steps = tuple(
             ReplayStep(
                 operation=operation,
+                input_bindings=(
+                    first_step.input_bindings
+                    if index == 0
+                    and set(first_step.input_bindings) == set(operation.input_slots())
+                    else {}
+                ),
                 input_policy=common_input_policy,
                 context_names=first_step.context_names if index == 0 else (),
                 legacy_context=common_legacy_context,
@@ -3054,7 +3256,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
         steps = list(self.steps)
         steps[start:stop] = replacement_steps
-        return self.model_copy(update={"steps": tuple(steps)})
+        updates: dict[str, typing.Any] = {"steps": tuple(steps)}
+        if (
+            self.kind == "script"
+            and self.primary_input is not None
+            and not any(_operation_is(step.operation, "script_code") for step in steps)
+        ):
+            input_names = {
+                self.primary_input,
+                *(name for step in steps for name in step.input_bindings.values()),
+            }
+            updates["script_inputs"] = tuple(
+                item for item in self.script_inputs if item.name in input_names
+            )
+            if not steps:
+                updates["active_name"] = self.primary_input
+        return self.model_copy(update=updates)
 
     @staticmethod
     def _operation_is_reorderable(operation: ToolProvenanceOperation) -> bool:
@@ -3288,6 +3505,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """Return a spec replaying through the referenced displayed row."""
         if ref.kind in {"start", "file_load"}:
             if self.kind in {"file", "script"}:
+                if self.kind == "script" and self.primary_input is not None:
+                    return self._prefix_with_steps(())
                 updates: dict[str, typing.Any] = {"steps": ()}
                 if output_name := self._script_seed_output_name():
                     updates["active_name"] = output_name
@@ -3317,11 +3536,23 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     def _prefix_with_steps(self, steps: Sequence[ReplayStep]) -> ToolProvenanceSpec:
         """Return a replay prefix with the name produced by its final step."""
         updates: dict[str, typing.Any] = {"steps": tuple(steps)}
+        if (
+            self.kind == "script"
+            and self.primary_input is not None
+            and not any(_operation_is(step.operation, "script_code") for step in steps)
+        ):
+            input_names = {
+                self.primary_input,
+                *(name for step in steps for name in step.input_bindings.values()),
+            }
+            updates["script_inputs"] = tuple(
+                item for item in self.script_inputs if item.name in input_names
+            )
         if len(steps) == len(self.steps):
             return self.model_copy(update=updates)
         if self.kind == "script":
             current_name = (
-                self.active_name
+                self.primary_input or self.active_name
                 if self.seed_code is None
                 else self._script_seed_output_name()
             )
@@ -4134,16 +4365,41 @@ def compose_full_provenance(
         return parent_value.to_replay_spec()
 
     parent_replay = parent_value.to_replay_spec()
+    local_replay = local_value.to_replay_spec()
+    if local_replay.kind == "script" and local_replay.primary_input is not None:
+        primary_index = next(
+            index
+            for index, script_input in enumerate(local_replay.script_inputs)
+            if script_input.name == local_replay.primary_input
+        )
+        primary = local_replay.script_inputs[primary_index]
+        primary_provenance = compose_full_provenance(
+            parent_replay,
+            primary.parsed_source_spec(),
+        )
+        inputs = list(local_replay.script_inputs)
+        inputs[primary_index] = primary.model_copy(
+            update={
+                "provenance_spec": (
+                    None
+                    if primary_provenance is None
+                    else primary_provenance.model_dump(mode="json")
+                )
+            }
+        )
+        return local_replay.model_copy(update={"script_inputs": tuple(inputs)})
+
     with contextlib.suppress(TypeError):
         local_live = require_live_source_spec(local_value)
         if local_live is not None:
             if local_live.kind == "full_data" and not local_live.operations:
                 return parent_replay
             prefix_steps: tuple[ReplayStep, ...] = ()
-            if parent_replay.kind == "script" and parent_replay.active_name not in {
-                None,
-                "derived",
-            }:
+            if (
+                parent_replay.kind == "script"
+                and parent_replay.primary_input is None
+                and parent_replay.active_name not in {None, "derived"}
+            ):
                 prefix_steps = (
                     ReplayStep(
                         operation=_operation_instance(
@@ -4166,7 +4422,7 @@ def compose_full_provenance(
             )
 
     parent_spec = _as_script_replay_spec(parent_replay)
-    local_spec = _as_script_replay_spec(local_value.to_replay_spec())
+    local_spec = _as_script_replay_spec(local_replay)
 
     normalized_context_names: list[str] = []
     for item in script_context_names:
@@ -4257,6 +4513,7 @@ def compose_full_provenance(
         active_name=local_spec.active_name or parent_spec.active_name,
         file_load_source=parent_spec.file_load_source or local_spec.file_load_source,
         script_inputs=(*parent_spec.script_inputs, *local_spec.script_inputs),
+        primary_input=parent_spec.primary_input or local_spec.primary_input,
         steps=(*parent_spec.steps, *local_steps),
     )
 
@@ -4305,8 +4562,9 @@ def script(
     steps: Sequence[ReplayStep] = (),
     replay_stages: Sequence[ReplayStage] = (),
     script_inputs: Sequence[ScriptInput] = (),
+    primary_input: str | None = None,
 ) -> ToolProvenanceSpec:
-    """Build script provenance from code, structured steps, and named inputs."""
+    """Build durable provenance from code, structured steps, and named inputs."""
     if steps and replay_stages:
         raise ValueError("Use replay steps or legacy replay stages, not both")
     payload: dict[str, typing.Any] = {
@@ -4317,6 +4575,7 @@ def script(
         "file_load_source": file_load_source,
         "steps": tuple(steps),
         "script_inputs": tuple(script_inputs),
+        "primary_input": primary_input,
     }
     if replay_stages:
         # Constructor-level schema-v2 compatibility. Runtime authoring should pass
@@ -4325,6 +4584,40 @@ def script(
         payload["replay_stages"] = tuple(replay_stages)
         payload.pop("steps")
     return ToolProvenanceSpec.model_validate(payload).append_operations(*operations)
+
+
+def recipe(
+    *steps: ReplayStep,
+    start_label: str,
+    active_name: str,
+    script_inputs: Sequence[ScriptInput],
+    primary_input: str,
+) -> ToolProvenanceSpec:
+    """Build a code-free durable recipe with explicit named inputs.
+
+    The serialized container remains the schema-v3 ``script`` kind for workspace
+    compatibility. This constructor is the authoring boundary for concrete operations:
+    it accepts only explicit replay steps and cannot store seed or operation code.
+    """
+    if not steps:
+        raise ValueError("Concrete provenance recipes must define replay steps")
+    if any(_operation_is(step.operation, "script_code") for step in steps):
+        raise TypeError("Concrete provenance recipes cannot contain script operations")
+    if any(
+        step.context_names
+        or step.input_policy is not None
+        or step.legacy_context is not None
+        for step in steps
+    ):
+        raise ValueError("Concrete provenance recipes require direct replay steps")
+    return ToolProvenanceSpec(
+        kind="script",
+        start_label=start_label,
+        active_name=active_name,
+        steps=steps,
+        script_inputs=tuple(script_inputs),
+        primary_input=primary_input,
+    )
 
 
 def file_load(

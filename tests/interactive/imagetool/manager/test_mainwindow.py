@@ -67,6 +67,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     RenameOperation,
     RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
+    ShiftFromInputOperation,
     TransposeOperation,
 )
 from erlab.interactive.imagetool.manager import fetch, replace_data
@@ -8622,6 +8623,13 @@ def test_manager_shift_dialog_child_and_manual_reload(
         assert spec is not None
         assert spec.kind == "script"
         assert spec.active_name == "shifted"
+        assert spec.primary_input == "data"
+        assert len(spec.steps) == 1
+        assert spec.steps[0].input_bindings == {"shift": "shift"}
+        assert isinstance(spec.steps[0].operation, ShiftFromInputOperation)
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in spec.operations
+        )
         assert [item.name for item in spec.script_inputs] == ["data", "shift"]
         assert [item.node_uid for item in spec.script_inputs] == [
             source_node.uid,
@@ -8630,6 +8638,13 @@ def test_manager_shift_dialog_child_and_manual_reload(
         assert [item.data_role for item in spec.script_inputs] == ["source", "source"]
         xr.testing.assert_identical(fetch(child_uid), expected)
         assert manager.dependency_status_for_uid(child_uid) == "current"
+        copied = spec.derivation_code()
+        assert copied is not None
+        copied_namespace = _exec_generated_code(
+            copied,
+            {"data": data, "shift": shift},
+        )
+        xr.testing.assert_identical(copied_namespace["shifted"], expected)
 
         updated_shift = shift + 0.1
         with qtbot.wait_signal(manager._sigDataReplaced):
@@ -8659,6 +8674,11 @@ def test_manager_shift_dialog_child_and_manual_reload(
         restored = manager._child_node(child_uid)
         restored_spec = restored.provenance_spec
         assert restored_spec is not None
+        assert restored_spec.primary_input == "data"
+        assert isinstance(restored_spec.operations[-1], ShiftFromInputOperation)
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in restored_spec.operations
+        )
         assert [item.name for item in restored_spec.script_inputs] == [
             "data",
             "shift",
@@ -8921,6 +8941,10 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         top_node = manager._node_for_target(2)
         assert top_node.parent_uid is None
+        assert top_node.provenance_spec.primary_input == "data"
+        assert isinstance(
+            top_node.provenance_spec.operations[-1], ShiftFromInputOperation
+        )
         assert [item.node_uid for item in top_node.provenance_spec.script_inputs] == [
             source_node.uid,
             shift_node.uid,
@@ -8948,6 +8972,11 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
 
         replaced_spec = source_node.provenance_spec
         assert replaced_spec is not None
+        assert replaced_spec.primary_input == "data"
+        assert isinstance(replaced_spec.operations[-1], ShiftFromInputOperation)
+        assert not any(
+            isinstance(item, ScriptCodeOperation) for item in replaced_spec.operations
+        )
         assert [item.name for item in replaced_spec.script_inputs] == ["data", "shift"]
         assert replaced_spec.script_inputs[0].node_uid is None
         assert replaced_spec.script_inputs[0].node_snapshot_token == detached_token

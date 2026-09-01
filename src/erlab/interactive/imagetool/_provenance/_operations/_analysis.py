@@ -135,12 +135,10 @@ SHIFT_MODES: tuple[ShiftMode, ...] = (
 )
 
 
-class ShiftOperation(ToolProvenanceOperation):
-    """Shift data by one recorded scalar value along one dimension."""
+class _BaseShiftOperation(ToolProvenanceOperation):
+    """Common interpolation options for scalar and bound-input shifts."""
 
-    op: typing.Literal["shift"] = "shift"
     batch_available: typing.ClassVar[bool] = False
-    shift: float
     negate: bool = False
     along: ProvenanceHashable
     shift_coords: bool = False
@@ -150,10 +148,6 @@ class ShiftOperation(ToolProvenanceOperation):
     mode: ShiftMode = "constant"
     cval: float = np.nan
     prefilter: bool = False
-
-    @property
-    def effective_shift(self) -> float:
-        return -self.shift if self.negate else self.shift
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -190,6 +184,17 @@ class ShiftOperation(ToolProvenanceOperation):
             kwargs["cval"] = f"|{_provenance_value_code(self.cval)}|"
         return kwargs
 
+
+class ShiftOperation(_BaseShiftOperation):
+    """Shift data by one recorded scalar value along one dimension."""
+
+    op: typing.Literal["shift"] = "shift"
+    shift: float
+
+    @property
+    def effective_shift(self) -> float:
+        return -self.shift if self.negate else self.shift
+
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.shift(
             data,
@@ -211,6 +216,52 @@ class ShiftOperation(ToolProvenanceOperation):
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.shift,
             [f"|{input_name}|", self.effective_shift],
+            self.code_kwargs,
+            module="era.transform",
+        )
+
+
+class ShiftFromInputOperation(_BaseShiftOperation):
+    """Shift data by a separately recorded provenance input."""
+
+    op: typing.Literal["shift_from_input"] = "shift_from_input"
+    live_applicable: typing.ClassVar[bool] = False
+
+    def input_slots(self) -> tuple[str, ...]:
+        return ("shift",)
+
+    def apply_with_inputs(
+        self,
+        data: xr.DataArray,
+        inputs: Mapping[str, xr.DataArray],
+        *,
+        authorization: object | None = None,
+    ) -> xr.DataArray:
+        del authorization
+        shift = inputs["shift"]
+        return erlab.analysis.transform.shift(
+            data,
+            -shift if self.negate else shift,
+            **self.kwargs,
+        )
+
+    def derivation_label(self) -> str:
+        label_kwargs = {"shift": "input", "negate": self.negate, **self.kwargs}
+        return f"Shift({_format_derivation_value(label_kwargs)})"
+
+    def expression_code_with_inputs(
+        self,
+        input_name: str,
+        inputs: Mapping[str, str],
+        *,
+        source_name: str | None = None,
+    ) -> str:
+        del source_name
+        shift_name = inputs["shift"]
+        shift_expression = f"-{shift_name}" if self.negate else shift_name
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.transform.shift,
+            [f"|{input_name}|", f"|{shift_expression}|"],
             self.code_kwargs,
             module="era.transform",
         )

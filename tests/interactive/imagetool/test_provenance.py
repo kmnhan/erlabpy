@@ -1263,6 +1263,10 @@ def test_registered_provenance_define_operation_code_api() -> None:
         if (
             operation_type.expression_code is ToolProvenanceOperation.expression_code
             and operation_type.statement_code is ToolProvenanceOperation.statement_code
+            and operation_type.expression_code_with_inputs
+            is ToolProvenanceOperation.expression_code_with_inputs
+            and operation_type.statement_code_with_inputs
+            is ToolProvenanceOperation.statement_code_with_inputs
         )
     ] == []
     assert "_bound_script_statement_code" in ExtensionRoutineOperation.__dict__
@@ -4151,6 +4155,7 @@ def test_current_structured_operations_round_trip_without_script_fallback() -> N
     operations = _representative_structured_operations()
     assert {operation.op for operation in operations} == set(_OPERATION_TYPES) - {
         "script_code",
+        "shift_from_input",
         "source_view",
     }
     assert (
@@ -8739,6 +8744,74 @@ def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     assert stderr.name == "c1_stderr"
     assert isinstance(stderr, xr.DataArray)
     assert np.isfinite(stderr.values).all()
+
+
+def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    y = np.arange(3)
+    data = xr.DataArray(
+        np.stack(
+            tuple(
+                1.0 + index + (2.0 + index) * x + 0.01 * np.sin(4 * x + index)
+                for index in y
+            )
+        ),
+        dims=("y", "x"),
+        coords={"y": y, "x": x},
+    )
+    uncertainty = xr.DataArray(
+        0.1 + 0.01 * np.arange(data.size).reshape(data.shape),
+        dims=data.dims,
+        coords=data.coords,
+    )
+    x_slice = slice(-0.8, 0.8)
+    y_slice = slice(0, 2)
+    fit_data = data.sel(x=x_slice).isel(y=y_slice)
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=(0.5, 1.5)),
+            "c1": _ModelFitParameterSpec(value=(1.5, 2.5)),
+        },
+        method="leastsq",
+        parameter="c1",
+        output="value_valid_stderr",
+        broadcast_dim="y",
+        weighting="uncertainty",
+        scale_covar=False,
+        uncertainty_sel={"x": x_slice},
+        uncertainty_isel={"y": y_slice},
+    )
+
+    expected = operation.apply_with_inputs(
+        fit_data,
+        {"uncertainty": uncertainty},
+    )
+    assert operation.input_slots() == ("uncertainty",)
+    assert expected.name == "c1_values"
+    assert np.isfinite(expected.values).all()
+
+    payload = operation.model_dump(mode="json")
+    reparsed = parse_tool_provenance_operation(payload)
+    assert reparsed == operation
+
+    code = operation.replay_code(
+        "fit_data",
+        output_name="parameter_values",
+        bound_inputs={"uncertainty": "uncertainty"},
+    )
+    namespace = _exec_generated_code(
+        code,
+        {
+            "fit_data": fit_data,
+            "uncertainty": uncertainty,
+            "era": erlab.analysis,
+            "xr": xr,
+        },
+    )
+    xr.testing.assert_identical(namespace["parameter_values"], expected)
 
 
 def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:

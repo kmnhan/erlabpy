@@ -61,14 +61,17 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ReplayStage,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
+    _ProvenanceStepRef,
     compose_full_provenance,
     file_load,
     full_data,
     parse_script_inputs,
     public_data,
     rebase_script_inputs_node_uids,
+    recipe,
     script,
     selection,
 )
@@ -88,6 +91,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     RotateOperation,
     ScriptCodeOperation,
     SelOperation,
+    ShiftFromInputOperation,
     SortCoordOrderOperation,
     SqueezeOperation,
     TransposeOperation,
@@ -111,6 +115,298 @@ def _exec_generated_code(
     namespace = dict(namespace_items or {})
     exec(code, namespace, namespace)  # noqa: S102
     return namespace
+
+
+def test_concrete_bound_input_operation_replays_without_stored_code() -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+    shift_data = xr.DataArray([0.0, 1.0], dims="y", coords={"y": [0, 1]})
+    operation = ShiftFromInputOperation(along="x", negate=True)
+    spec = script(
+        start_label="Shift ImageTool data",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+        steps=(
+            ReplayStep(
+                operation=operation,
+                input_bindings={"shift": "shift"},
+            ),
+        ),
+    )
+
+    reparsed = ToolProvenanceSpec.model_validate(spec.model_dump(mode="json"))
+    assert reparsed == spec
+    assert reparsed.primary_input == "data"
+    assert reparsed.steps[0].input_bindings == {"shift": "shift"}
+    assert provenance_requires_code_trust(reparsed) is False
+
+    graph = compile_replay_graph(
+        reparsed,
+        external_inputs={"data": data, "shift": shift_data},
+    )
+    operation_node = next(node for node in graph.nodes if node.kind == "operation")
+    assert operation_node.payload["input_bindings"] == (
+        ("shift", operation_node.parents[2]),
+    )
+    expected = erlab.analysis.transform.shift(data, -shift_data, along="x")
+    xr.testing.assert_identical(execute_replay_graph(graph), expected)
+
+    display_graph = compile_replay_graph(reparsed, display=True)
+    code = emit_replay_code(display_graph, output_name="shifted")
+    namespace = _exec_generated_code(
+        code,
+        {"data": data, "shift": shift_data, "era": erlab.analysis},
+    )
+    xr.testing.assert_identical(namespace["shifted"], expected)
+
+    prefix = reparsed._prefix_before_ref(
+        _ProvenanceStepRef("operation", operation_index=0)
+    )
+    assert prefix.active_name == "data"
+    assert tuple(item.name for item in prefix.script_inputs) == ("data",)
+    prefix_graph = compile_replay_graph(
+        prefix,
+        external_inputs={"data": data},
+    )
+    xr.testing.assert_identical(execute_replay_graph(prefix_graph), data)
+
+    start = reparsed._prefix_through_ref(_ProvenanceStepRef("start"))
+    deleted = reparsed._replace_operation_ref(
+        _ProvenanceStepRef("operation", operation_index=0),
+        (),
+    )
+    for source_only in (start, deleted):
+        assert source_only.active_name == "data"
+        assert tuple(item.name for item in source_only.script_inputs) == ("data",)
+        graph = compile_replay_graph(source_only, external_inputs={"data": data})
+        xr.testing.assert_identical(execute_replay_graph(graph), data)
+
+
+def test_bound_input_step_validates_its_slots_and_primary_input() -> None:
+    operation = ShiftFromInputOperation(along="x")
+    step = ReplayStep(operation=operation, input_bindings={"shift": "shift"})
+
+    with pytest.raises(ValueError, match="must match the operation input slots"):
+        ReplayStep(operation=operation)
+    with pytest.raises(ValueError, match="must match the operation input slots"):
+        ReplayStep(operation=operation, input_bindings={"weights": "shift"})
+    with pytest.raises(ValueError, match="must match the operation input slots"):
+        step.model_copy(update={"input_bindings": {}})
+    with pytest.raises(ValueError, match="must match the operation input slots"):
+        step.model_copy(update={"operation": AverageOperation(dims=("x",))})
+    with pytest.raises(ValueError, match="primary input"):
+        script(
+            start_label="Shift",
+            active_name="shifted",
+            script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+            steps=(
+                ReplayStep(
+                    operation=operation,
+                    input_bindings={"shift": "shift"},
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="unknown script input"):
+        script(
+            start_label="Shift",
+            active_name="shifted",
+            script_inputs=(ScriptInput(name="data"),),
+            primary_input="data",
+            steps=(
+                ReplayStep(
+                    operation=operation,
+                    input_bindings={"shift": "missing"},
+                ),
+            ),
+        )
+    spec = recipe(
+        step,
+        start_label="Shift",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+    )
+    with pytest.raises(ValueError, match="cannot also define seed code"):
+        spec.model_copy(update={"seed_code": "shifted = data"})
+
+
+def test_recipe_is_a_code_free_concrete_authoring_boundary() -> None:
+    operation = ShiftFromInputOperation(along="x")
+    shift_step = ReplayStep(
+        operation=operation,
+        input_bindings={"shift": "shift"},
+    )
+    spec = recipe(
+        shift_step,
+        start_label="Shift",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+    )
+
+    assert spec.kind == "script"
+    assert spec.seed_code is None
+    assert spec.steps == (shift_step,)
+    with pytest.raises(ValueError, match="must define replay steps"):
+        recipe(
+            start_label="Empty",
+            active_name="result",
+            script_inputs=(ScriptInput(name="data"),),
+            primary_input="data",
+        )
+    with pytest.raises(TypeError, match="cannot contain script operations"):
+        recipe(
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Code", code="result = data")
+            ),
+            start_label="Code",
+            active_name="result",
+            script_inputs=(ScriptInput(name="data"),),
+            primary_input="data",
+        )
+
+
+def test_compose_parent_into_concrete_recipe_primary_input(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": np.arange(5.0)},
+    )
+    shift_data = xr.DataArray(
+        [0.0, 0.2, -0.1],
+        dims="y",
+        coords={"y": np.arange(3)},
+    )
+    data_path = tmp_path / "data.nc"
+    shift_path = tmp_path / "shift.nc"
+    data.to_netcdf(data_path)
+    shift_data.to_netcdf(shift_path)
+    local = recipe(
+        ReplayStep(
+            operation=ShiftFromInputOperation(along="x"),
+            input_bindings={"shift": "shift"},
+        ),
+        start_label="Shift",
+        active_name="shifted",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(name="shift", provenance_spec=_file_spec(shift_path)),
+        ),
+        primary_input="data",
+    )
+
+    composed = compose_full_provenance(_file_spec(data_path), local)
+
+    assert composed is not None
+    assert composed.primary_input == "data"
+    assert composed.seed_code is None
+    assert not any(
+        isinstance(operation, ScriptCodeOperation) for operation in composed.operations
+    )
+    primary = next(
+        item for item in composed.script_inputs if item.name == composed.primary_input
+    )
+    assert primary.parsed_provenance_spec() == _file_spec(data_path)
+    expected = erlab.analysis.transform.shift(data, shift_data, along="x")
+    rebuilt, _ = rebuild_script_provenance(composed)
+    xr.testing.assert_identical(rebuilt, expected)
+    code = composed.derivation_code()
+    assert code is not None
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["shifted"], expected)
+
+
+def test_compose_concrete_recipe_with_concrete_descendants() -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": np.arange(5.0)},
+    )
+    first_shift = xr.DataArray([0.0, 0.2, -0.1], dims="y", coords={"y": np.arange(3)})
+    second_shift = xr.DataArray([0.1, 0.0, -0.2], dims="y", coords={"y": np.arange(3)})
+    parent = recipe(
+        ReplayStep(
+            operation=ShiftFromInputOperation(along="x"),
+            input_bindings={"shift": "first_shift"},
+        ),
+        start_label="First shift",
+        active_name="first",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(name="first_shift"),
+        ),
+        primary_input="data",
+    )
+    local = recipe(
+        ReplayStep(
+            operation=ShiftFromInputOperation(along="x"),
+            input_bindings={"shift": "second_shift"},
+        ),
+        start_label="Second shift",
+        active_name="second",
+        script_inputs=(
+            ScriptInput(name="first"),
+            ScriptInput(name="second_shift"),
+        ),
+        primary_input="first",
+    )
+
+    processed = compose_full_provenance(
+        parent,
+        full_data(GaussianFilterOperation(sigma={"x": 0.5})),
+    )
+    nested = compose_full_provenance(parent, local)
+
+    assert processed is not None
+    assert nested is not None
+    assert [operation.op for operation in processed.operations] == [
+        "shift_from_input",
+        "gaussian_filter",
+    ]
+    assert not any(
+        isinstance(operation, ScriptCodeOperation)
+        for operation in (*processed.operations, *nested.operations)
+    )
+    nested_primary = next(
+        item for item in nested.script_inputs if item.name == nested.primary_input
+    )
+    assert nested_primary.parsed_provenance_spec() == parent
+
+    first = erlab.analysis.transform.shift(data, first_shift, along="x")
+    expected_processed = erlab.analysis.image.gaussian_filter(first, sigma={"x": 0.5})
+    processed_result = replay_script_provenance(
+        processed,
+        {"data": data, "first_shift": first_shift},
+    )
+    xr.testing.assert_identical(processed_result, expected_processed)
+    processed_code = processed.derivation_code()
+    assert processed_code is not None
+    processed_namespace = _exec_generated_code(
+        processed_code,
+        {"data": data, "first_shift": first_shift, "era": erlab.analysis},
+    )
+    xr.testing.assert_identical(processed_namespace["derived"], expected_processed)
+
+    expected_nested = erlab.analysis.transform.shift(first, second_shift, along="x")
+    nested_code = nested.derivation_code()
+    assert nested_code is not None
+    nested_namespace = _exec_generated_code(
+        nested_code,
+        {
+            "data": data,
+            "first_shift": first_shift,
+            "second_shift": second_shift,
+            "era": erlab.analysis,
+        },
+    )
+    xr.testing.assert_identical(nested_namespace["second"], expected_nested)
 
 
 def _extension_routine_operation() -> ExtensionRoutineOperation:
