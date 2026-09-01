@@ -162,6 +162,14 @@ recipes, saved lmfit models or results, and parameter expressions. Manager resto
 data, window state, and other non-executable content before it allows stored code to
 run.
 
+When stored code is paused:
+
+| Stored content | Effect |
+| --- | --- |
+| Recorded Python operations | Operations that require Python do not replay. |
+| Figure Composer Python and custom transforms | The preview can be incomplete, and export is unavailable for that incomplete figure. |
+| Saved fitting code and parameter expressions | The related restoration, replay, or fitting operation does not run. |
+
 The {guilabel}`Stored code` field has these values:
 
 | Value | Meaning |
@@ -183,8 +191,9 @@ workspace in Manager to review and replay it.
 
 Use {ref}`how-to-gui-review-workspace-code` for the review procedure. See
 {doc}`workspaces and provenance <../../explanation/workspaces-and-provenance>` for the
-effect of paused code. The {ref}`Security settings <options-trusted-workspace-folders>`
-describe trusted folders and saved approvals.
+difference between data, session state, provenance, and generated code. The
+{ref}`Security settings <options-trusted-workspace-folders>` describe trusted folders
+and saved approvals.
 
 ## Data Explorer and Console
 

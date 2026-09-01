@@ -2,9 +2,8 @@
 
 # Plotting gallery
 
-Select an example to open its Python and Figure Composer instructions. The Python code
-is the standard implementation for each output. For figure creation, export, and recipe
-reuse, see {doc}`../gui/plotting`.
+Select a figure to view its Python code and the corresponding Figure Composer steps.
+For figure creation, export, and recipe reuse, see {doc}`../gui/plotting`.
 
 ```{toctree}
 :hidden:
@@ -203,31 +202,17 @@ figure-styles
 :::::{grid} 1 1 2 2
 :gutter: 2
 
-::::{grid-item-card} First Brillouin zone
-:link: how-to-plotting-first-brillouin-zone
+::::{grid-item-card} Brillouin zone overlay
+:link: how-to-plotting-brillouin-zone-overlay
 :link-type: ref
 :class-card: plotting-gallery-card
 
 ```{eval-rst}
-.. plot:: how_to/plotting.py draw_two_dimensional_brillouin_zone
+.. plot:: how_to/plotting.py draw_brillouin_zone_overlay
    :include-source: false
    :show-source-link: false
    :class: plotting-gallery-preview
-   :alt: Hexagonal first Brillouin zone
-```
-::::
-
-::::{grid-item-card} Brillouin-zone overlays
-:link: how-to-python-overlay-brillouin-zone
-:link-type: ref
-:class-card: plotting-gallery-card
-
-```{eval-rst}
-.. plot:: how_to/plotting.py overlay_brillouin_zone
-   :include-source: false
-   :show-source-link: false
-   :class: plotting-gallery-preview
-   :alt: Constant energy map with a Brillouin zone boundary
+   :alt: Hexagonal Brillouin zone boundary
 ```
 ::::
 
@@ -245,7 +230,7 @@ figure-styles
 ```
 ::::
 
-::::{grid-item-card} Out-of-plane Brillouin-zone sections
+::::{grid-item-card} Out-of-plane sections
 :link: how-to-plotting-out-of-plane-brillouin-zones
 :link-type: ref
 :class-card: plotting-gallery-card

@@ -10,8 +10,7 @@ coordinates to a measured cut, and convert $h\nu$–dependent scans.
 
 Use this procedure when one endstation can acquire data in more than one of the four
 physical configurations in {ref}`nomenclature`, and the file does not uniquely identify
-the configuration used for one measurement. Do not select a configuration from the
-appearance of the measured intensity.
+the configuration used for one measurement.
 
 Two common cases are an analyzer with a slit that rotates about the lens axis and a
 deflector-equipped analyzer that can acquire a map either with the deflector or by

@@ -1,7 +1,8 @@
 # How-to Guides
 
-Use these guides when you know what you want to achieve. Each guide assumes basic
-ERLabPy competence and focuses on one practical result.
+A curated list of code examples for common tasks.
+
+For the complete catalog of Python APIs and GUI applications, see {doc}`../reference`.
 
 ```{toctree}
 :maxdepth: 2

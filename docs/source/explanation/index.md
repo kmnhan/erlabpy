@@ -10,7 +10,6 @@ complete a specific task. Use {doc}`../reference` for interfaces and parameters.
 data-conventions
 loader-architecture
 momentum-conversion
-fitting
 python-and-gui-workflows
 workspaces-and-provenance
 ```

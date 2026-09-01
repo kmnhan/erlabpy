@@ -108,7 +108,7 @@ The combined lightness-and-hue plot does not have an editable recipe step.
 
 1. Add `data_a` and `data_b` in {guilabel}`Sources`.
 2. Add a {guilabel}`Python` step to a $1 \times 1$ figure.
-3. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
+3. Review this code, then enter it in {guilabel}`Code`:
 
 ```python
 data_a, data_b = xr.align(data_a, data_b, join="exact")

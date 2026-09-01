@@ -14,6 +14,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive.explorer._base_explorer import DataExplorerTabState
 from erlab.interactive.imagetool.manager._tutorial.data import (
     TutorialDataFiles,
@@ -64,7 +65,7 @@ _TUTORIAL_OPTION_OVERRIDES: dict[str, object] = {
     "ktool/bz/default_beta": 90.0,
     "ktool/bz/default_gamma": 120.0,
     "ktool/bz/default_centering": "P",
-    "ktool/bz/default_rot": 0.0,
+    "ktool/bz/default_rot": 30.0,
 }
 
 
@@ -157,6 +158,7 @@ class _TutorialController(TourController):
         self._copied_reusable_operations: tuple[ToolProvenanceOperation, ...] | None = (
             None
         )
+        self._converted_cut_open_requested = False
         self._debug_active_window: QtWidgets.QWidget | None = None
         self._figure_composer_uid: str | None = None
 
@@ -950,6 +952,7 @@ class _TutorialController(TourController):
                 mode="action",
                 target=self._main_image_target,
                 allowed_inputs=actions,
+                allowed_objects=(self._cursor_visibility_action,),
                 event_predicate=_cursor_drag_event_predicate,
                 completion=lambda: (
                     self._normal_emission_is_set()
@@ -957,7 +960,11 @@ class _TutorialController(TourController):
                 ),
                 reveal=self._show_map_tool,
                 hint=(
-                    f"Keep {_CURSOR_MODIFIER_LABEL} pressed while you drag the cursor."
+                    f"Keep {_CURSOR_MODIFIER_LABEL} pressed while you drag the "
+                    "cursor.\n"
+                    "Tip: Press "
+                    f"{_shortcut_sequences.IMAGETOOL_TOGGLE_CURSORS} to show or hide "
+                    "the cursor lines."
                 ),
                 auto_advance=False,
             ),
@@ -1135,7 +1142,9 @@ class _TutorialController(TourController):
                 allowed_inputs=actions,
                 allowed_objects=(self._manager_inspector_tab_bar,),
                 subscriptions=(self._manager_inspector_tab_signal,),
-                completion=self._manager_provenance_is_selected,
+                completion=lambda: self._manager_provenance_is_visible_for(
+                    self._converted_map_uid()
+                ),
                 reveal=self._show_converted_map_provenance,
                 card_position="top",
                 auto_advance=False,
@@ -1277,6 +1286,22 @@ class _TutorialController(TourController):
                 auto_advance=False,
             ),
             TourStep(
+                "select-raw-cut-provenance",
+                "Provenance",
+                "Select the [[ui:managerProvenancePage]] tab.",
+                mode="action",
+                target=self._manager_provenance_tab_target,
+                allowed_inputs=actions,
+                allowed_objects=(self._manager_inspector_tab_bar,),
+                subscriptions=(self._manager_inspector_tab_signal,),
+                completion=lambda: self._manager_provenance_is_visible_for(
+                    self._raw_cut_uid()
+                ),
+                reveal=self._show_raw_cut_in_tree,
+                card_position="top",
+                auto_advance=False,
+            ),
+            TourStep(
                 "paste-reusable-operations",
                 "Paste the selected steps",
                 "Right-click inside the [[ui:managerProvenancePage]] tab, then "
@@ -1311,8 +1336,10 @@ class _TutorialController(TourController):
                 mode="action",
                 target=lambda: self._manager_row_target(self._converted_cut_uid()),
                 allowed_inputs=actions,
-                completion=lambda: self._uid_tool_visible(self._converted_cut_uid()),
-                reveal=self._select_converted_cut,
+                event_predicate=self._open_converted_cut_event_predicate,
+                subscriptions=(self._manager_tree_double_clicked_signal,),
+                completion=self._converted_cut_was_opened,
+                reveal=self._prepare_open_converted_cut,
             ),
             switch_window(
                 "switch-to-converted-cut",
@@ -1355,6 +1382,7 @@ class _TutorialController(TourController):
                 subscriptions=(self._figure_composer_tab_signal,),
                 completion=lambda: self._figure_composer_tab_is_selected(0),
                 reveal=self._show_figure_composer,
+                card_position="bottom",
                 auto_advance=False,
             ),
             TourStep(
@@ -1364,6 +1392,7 @@ class _TutorialController(TourController):
                 target=lambda: self._figure_composer_panel("source_panel"),
                 allowed_inputs=information,
                 reveal=self._show_figure_composer,
+                card_position="bottom",
             ),
             TourStep(
                 "select-figure-composer-layout",
@@ -1376,6 +1405,7 @@ class _TutorialController(TourController):
                 subscriptions=(self._figure_composer_tab_signal,),
                 completion=lambda: self._figure_composer_tab_is_selected(1),
                 reveal=self._show_figure_composer,
+                card_position="bottom",
                 auto_advance=False,
             ),
             TourStep(
@@ -1387,6 +1417,7 @@ class _TutorialController(TourController):
                 target=lambda: self._figure_composer_panel("layout_panel"),
                 allowed_inputs=information,
                 reveal=self._show_figure_composer,
+                card_position="bottom",
             ),
             TourStep(
                 "select-figure-composer-recipe",
@@ -1399,6 +1430,7 @@ class _TutorialController(TourController):
                 subscriptions=(self._figure_composer_tab_signal,),
                 completion=lambda: self._figure_composer_tab_is_selected(2),
                 reveal=self._show_figure_composer,
+                card_position="bottom",
                 auto_advance=False,
             ),
             TourStep(
@@ -1411,6 +1443,7 @@ class _TutorialController(TourController):
                 target=lambda: self._figure_composer_panel("operation_panel"),
                 allowed_inputs=information,
                 reveal=self._show_figure_composer,
+                card_position="bottom",
             ),
             TourStep(
                 "reveal-figure-in-manager",
@@ -1439,11 +1472,13 @@ class _TutorialController(TourController):
             TourStep(
                 "tutorial-complete",
                 "Tutorial complete",
-                "Congratulations! You loaded and inspected ARPES data; used "
-                "cursors, transposition, and binning in ImageTool; corrected the "
-                "energy coordinate; set the experimental geometry and converted "
-                "the data with ktool; reused Provenance steps; and created a "
-                "figure. You can start this tutorial again from "
+                "Congratulations! You completed these tasks:\n\n"
+                "• Loaded and inspected ARPES data\n"
+                "• Used cursors, transposition, and binning in ImageTool\n"
+                "• Edited the energy coordinate\n"
+                "• Converted data to momentum space\n"
+                "• Created a figure\n\n"
+                "You can start this tutorial again from "
                 "[[menu:manager_help_menu|manager_tutorial_action]]. Select Finish "
                 "to close the tutorial.",
                 target=lambda: self._manager,
@@ -1534,8 +1569,9 @@ class _TutorialController(TourController):
                 "Copy selected steps",
             ),
             "select-raw-cut": lambda: self._select_uid(self._raw_cut_uid()),
+            "select-raw-cut-provenance": self._debug_select_provenance_tab,
             "paste-reusable-operations": self._debug_paste_reusable_operations,
-            "open-converted-cut": lambda: self._manager.show_selected(),
+            "open-converted-cut": self._debug_open_converted_cut,
             "new-figure": self._debug_open_figure_composer,
             "select-figure-composer-sources": lambda: self._debug_select_figure_tab(0),
             "select-figure-composer-layout": lambda: self._debug_select_figure_tab(1),
@@ -1813,6 +1849,10 @@ class _TutorialController(TourController):
         action = self._manager._metadata_paste_steps_action
         self._debug_trigger(action, "Paste selected steps")
 
+    def _debug_open_converted_cut(self) -> None:
+        self._converted_cut_open_requested = True
+        self._manager.show_selected()
+
     def _restart_reusable_operations(self) -> None:
         self._revisit_step("select-converted-map")
 
@@ -2074,6 +2114,10 @@ class _TutorialController(TourController):
         if tool is None:
             return None
         return GraphicsItemTarget(tool.slicer_area.main_image)
+
+    def _cursor_visibility_action(self) -> QtGui.QAction | None:
+        tool = self._map_tool()
+        return None if tool is None else tool.slicer_area.toggle_cursor_act
 
     def _capture_cursor_start(self) -> None:
         self._show_map_tool()
@@ -2603,6 +2647,14 @@ class _TutorialController(TourController):
             is self._manager.metadata_provenance_page
         )
 
+    def _manager_provenance_is_visible_for(self, uid: str | None) -> bool:
+        return (
+            uid is not None
+            and self._manager._metadata_node_uid == uid
+            and self._manager_provenance_is_selected()
+            and self._manager.metadata_derivation_list.isVisible()
+        )
+
     def _show_converted_map_provenance(self) -> None:
         self._show_manager()
         self._select_uid(self._converted_map_uid())
@@ -2691,6 +2743,40 @@ class _TutorialController(TourController):
 
     def _select_converted_cut(self) -> None:
         self._select_uid(self._converted_cut_uid())
+
+    def _prepare_open_converted_cut(self) -> None:
+        self._converted_cut_open_requested = False
+        self._select_converted_cut()
+
+    def _manager_tree_double_clicked_signal(self) -> typing.Any:
+        return self._manager.tree_view.doubleClicked
+
+    def _open_converted_cut_event_predicate(
+        self, watched: QtCore.QObject | None, event: QtCore.QEvent
+    ) -> bool:
+        tree = self._manager.tree_view
+        viewport = tree.viewport()
+        if (
+            watched is not viewport
+            or not isinstance(event, QtGui.QMouseEvent)
+            or event.type() != QtCore.QEvent.Type.MouseButtonDblClick
+            or event.button() != QtCore.Qt.MouseButton.LeftButton
+        ):
+            return False
+        uid = self._converted_cut_uid()
+        if uid is None:
+            return False
+        expected = tree._model._row_index(uid)
+        clicked = tree.indexAt(event.position().toPoint())
+        if not expected.isValid() or clicked != expected:
+            return False
+        self._converted_cut_open_requested = True
+        return True
+
+    def _converted_cut_was_opened(self) -> bool:
+        return self._converted_cut_open_requested and self._uid_tool_visible(
+            self._converted_cut_uid()
+        )
 
     def _converted_cut_is_valid(self) -> bool:
         tool = self._tool_for_uid(self._converted_cut_uid())

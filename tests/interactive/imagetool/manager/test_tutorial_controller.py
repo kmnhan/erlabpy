@@ -120,6 +120,12 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     assert energy_step.allowed_inputs == frozenset({"mouse"})
     assert energy_step.allowed_objects
     assert energy_step.event_predicate is tutorial._cursor_modifier_key_event_predicate
+    geometry_step = next(
+        step
+        for step in controller.steps
+        if step.id == "set-normal-emission-and-azimuth"
+    )
+    assert geometry_step.allowed_objects == (controller._cursor_visibility_action,)
     assert ids.index("open-map-in-manager") < ids.index("imagetool-plots")
     assert ids.index("imagetool-plots") < ids.index("ctrl-drag-cursor")
     assert ids.index("ctrl-drag-cursor") < ids.index("imagetool-cursor-controls")
@@ -150,6 +156,10 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     assert ids.index("top-level-cut") < ids.index("select-converted-map")
     assert ids.index("select-converted-map") < ids.index("expand-input-history")
     assert ids.index("expand-input-history") < ids.index("select-reusable-operations")
+    assert ids.index("select-raw-cut") < ids.index("select-raw-cut-provenance")
+    assert ids.index("select-raw-cut-provenance") < ids.index(
+        "paste-reusable-operations"
+    )
     assert ids.index("paste-reusable-operations") < ids.index("new-figure")
     assert "open-figure-context-menu" not in ids
     assert "switch-to-figure-composer" not in ids
@@ -179,6 +189,19 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         step.card_position == "center" and step.auto_advance
         for step in controller.steps
         if step.id.startswith("switch-to-")
+    )
+    assert all(
+        step.card_position == "bottom"
+        for step in controller.steps
+        if step.id
+        in {
+            "select-figure-composer-sources",
+            "figure-composer-sources",
+            "select-figure-composer-layout",
+            "figure-composer-layout",
+            "select-figure-composer-recipe",
+            "figure-composer-recipe",
+        }
     )
     assert {
         step.id
@@ -211,6 +234,7 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         "select-reusable-operations",
         "copy-reusable-operations",
         "select-raw-cut",
+        "select-raw-cut-provenance",
         "paste-reusable-operations",
         "select-figure-composer-sources",
         "select-figure-composer-layout",
@@ -313,6 +337,53 @@ def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -
     assert controller._provenance_steps_on_clipboard()
     assert controller._paste_operations_event_predicate(menu, event)
     QtWidgets.QApplication.clipboard().clear()
+    controller._finish_cleanup()
+
+
+def test_provenance_completion_requires_the_visible_tab(monkeypatch, qtbot) -> None:
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    layout = QtWidgets.QVBoxLayout(manager)
+    manager.inspector_tabs = QtWidgets.QTabWidget(manager)
+    manager.metadata_details_page = QtWidgets.QWidget(manager.inspector_tabs)
+    manager.metadata_provenance_page = QtWidgets.QWidget(manager.inspector_tabs)
+    provenance_layout = QtWidgets.QVBoxLayout(manager.metadata_provenance_page)
+    manager.metadata_derivation_list = QtWidgets.QTreeWidget(
+        manager.metadata_provenance_page
+    )
+    provenance_layout.addWidget(manager.metadata_derivation_list)
+    manager.inspector_tabs.addTab(manager.metadata_details_page, "Details")
+    manager.inspector_tabs.addTab(manager.metadata_provenance_page, "Provenance")
+    layout.addWidget(manager.inspector_tabs)
+    manager.show()
+    manager._metadata_node_uid = "previous"
+
+    controller, _loader_context = _controller(monkeypatch, manager)
+    manager.inspector_tabs.setCurrentWidget(manager.metadata_details_page)
+    assert not controller._manager_provenance_is_visible_for("selected")
+
+    manager.inspector_tabs.setCurrentWidget(manager.metadata_provenance_page)
+    qtbot.waitUntil(manager.metadata_derivation_list.isVisible)
+    assert not controller._manager_provenance_is_visible_for("selected")
+
+    manager._metadata_node_uid = "selected"
+    assert controller._manager_provenance_is_visible_for("selected")
+
+    manager.metadata_derivation_list.hide()
+    assert not controller._manager_provenance_is_visible_for("selected")
+    controller._finish_cleanup()
+
+
+def test_visible_converted_cut_still_requires_open_action(monkeypatch, qtbot) -> None:
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    controller, _loader_context = _controller(monkeypatch, manager)
+    monkeypatch.setattr(controller, "_converted_cut_uid", lambda: "converted-cut")
+    monkeypatch.setattr(controller, "_uid_tool_visible", lambda _uid: True)
+
+    assert not controller._converted_cut_was_opened()
+    controller._converted_cut_open_requested = True
+    assert controller._converted_cut_was_opened()
     controller._finish_cleanup()
 
 
@@ -1349,12 +1420,20 @@ def test_tutorial_real_workflow(
 
         controller._select_uid(controller._raw_cut_uid())
         controller.notify_state_changed()
-        complete_action("paste-reusable-operations")
+        complete_action("select-raw-cut-provenance")
+        manager.inspector_tabs.setCurrentWidget(manager.metadata_details_page)
+        controller.notify_state_changed()
+        card = controller._card
+        assert card is not None
+        assert not card.continue_button.isEnabled()
+        select_tab(
+            manager.inspector_tabs,
+            provenance_index,
+            "paste-reusable-operations",
+        )
 
         clipboard = QtWidgets.QApplication.clipboard()
         clipboard.setText("unrelated clipboard text")
-        card = controller._card
-        assert card is not None
         qtbot.waitUntil(card.recovery_button.isVisible)
         assert card.recovery_button.text() == "Copy Again"
         assert card.recovery_button.hasFocus()
@@ -1377,7 +1456,12 @@ def test_tutorial_real_workflow(
         complete_action("select-raw-cut")
         controller._select_uid(controller._raw_cut_uid())
         controller.notify_state_changed()
-        complete_action("paste-reusable-operations")
+        complete_action("select-raw-cut-provenance")
+        select_tab(
+            manager.inspector_tabs,
+            provenance_index,
+            "paste-reusable-operations",
+        )
 
         manager._build_metadata_derivation_menu(include_row_actions=False)
         assert manager._metadata_paste_steps_action.isEnabled()
@@ -1385,7 +1469,20 @@ def test_tutorial_real_workflow(
         complete_action("validate-converted-cut", timeout=60_000)
         continue_to("open-converted-cut")
 
-        manager.show_selected()
+        assert controller.current_step is not None
+        assert controller.current_step.id == "open-converted-cut"
+        converted_cut_index = manager.tree_view._model._row_index(
+            controller._converted_cut_uid()
+        )
+        assert converted_cut_index.isValid()
+        qtbot.waitUntil(
+            lambda: not manager.tree_view.visualRect(converted_cut_index).isEmpty()
+        )
+        qtbot.mouseDClick(
+            manager.tree_view.viewport(),
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=manager.tree_view.visualRect(converted_cut_index).center(),
+        )
         converted_cut = controller._tool_for_uid(controller._converted_cut_uid())
         assert isinstance(converted_cut, erlab.interactive.imagetool.ImageTool)
         complete_switch(

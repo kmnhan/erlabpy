@@ -3,6 +3,10 @@
 Use these guides to correct a curved Fermi edge, fit overlapping peaks and EDC stacks,
 inspect and save fit results, and calculate parameter uncertainties.
 
+ERLabPy uses [lmfit](https://lmfit.github.io/lmfit-py/) for models, parameters, and
+optimization. It uses [xarray-lmfit](https://xarray-lmfit.readthedocs.io/stable/) to
+fit xarray objects. Use the lmfit documentation for general curve-fitting concepts.
+
 (fermi edge fitting)=
 
 (how-to-python-correct-fermi-edge)=
@@ -48,8 +52,6 @@ See {func}`erlab.analysis.gold.poly` and
 {func}`erlab.analysis.gold.correct_with_edge` for accepted inputs and fit output.
 
 (how-to-python-fit-fermi-edge-separate-ranges)=
-
-(explanation-fitting-per-edc-ranges)=
 
 ## Choosing a fit range for each EDC
 
@@ -164,8 +166,7 @@ before interpreting peak parameters. Do not accept optimizer success alone as ev
 for a physically valid fit.
 
 See {class}`erlab.analysis.fit.models.MultiPeakModel` for supported peak and background
-models. See {doc}`curve fitting <../../explanation/fitting>` for fit validation and the
-distinction between model components and measured intensity.
+models.
 
 (how-to-python-fit-spectra-across-coordinate)=
 
@@ -202,9 +203,8 @@ center_errors = fit_result.modelfit_stderr.sel(param="center")
    :alt: Fermi edge centers and uncertainties fitted across angle
 ```
 
-See {ref}`explanation-fitting-independent` for the distinction between independent and
-global fits. Use {ref}`how-to-python-inspect-fit-results` when many fitted spectra must
-be checked. See {meth}`xarray.DataArray.xlm.modelfit` for the returned variables.
+Use {ref}`how-to-python-inspect-fit-results` when many fitted spectra must be checked.
+See {meth}`xarray.DataArray.xlm.modelfit` for the returned variables.
 
 (how-to-python-inspect-fit-results)=
 
@@ -269,9 +269,17 @@ params["p1_sigma"].set(expr="p0_sigma")
 params["p1_gamma"].set(value=0.10, min=0.0, max=0.5)
 params["p1_amplitude"].set(expr="2 * p0_amplitude / 3")
 
-lmfit_result = model.fit(intensity, x=energy, params=params)
-components = lmfit_result.eval_components(x=energy)
-residual = intensity - lmfit_result.best_fit
+fit_result = core_spectrum.xlm.modelfit(
+    "eV",
+    model=model,
+    params=params,
+    guess=False,
+)
+lmfit_result = fit_result.modelfit_results.item()
+fit_data = fit_result.modelfit_data
+best_fit = fit_result.modelfit_best_fit
+components = lmfit_result.eval_components(x=fit_data.eV.values)
+residual = fit_data - best_fit
 
 fig, axes = plt.subplots(
     2, 1,
@@ -280,12 +288,12 @@ fig, axes = plt.subplots(
     sharex=True,
     height_ratios=(3, 1),
 )
-axes[0].plot(energy, intensity, "o", markersize=2, label="Measured data")
-axes[0].plot(energy, lmfit_result.best_fit, color="black", label="Best fit")
-axes[0].plot(energy, components["2Peak_p0"], label=r"Bi 5d$_{5/2}$")
-axes[0].plot(energy, components["2Peak_p1"], label=r"Bi 5d$_{3/2}$")
+axes[0].plot(fit_data.eV, fit_data, "o", markersize=2, label="Measured data")
+axes[0].plot(best_fit.eV, best_fit, color="black", label="Best fit")
+axes[0].plot(fit_data.eV, components["2Peak_p0"], label=r"Bi 5d$_{5/2}$")
+axes[0].plot(fit_data.eV, components["2Peak_p1"], label=r"Bi 5d$_{3/2}$")
 axes[0].plot(
-    energy,
+    fit_data.eV,
     components["2Peak_baseline"] + components["2Peak_shirley"],
     "--",
     color="0.45",
@@ -295,7 +303,7 @@ axes[0].set_ylabel("Intensity (arb. units)")
 axes[0].legend(ncols=2)
 
 axes[1].axhline(0.0, color="0.5", linewidth=1)
-axes[1].plot(energy, residual, ".", color="0.25", markersize=2)
+axes[1].plot(residual.eV, residual, ".", color="0.25", markersize=2)
 axes[1].set(xlabel=r"$E-E_F$ (eV)", ylabel="Residual")
 eplt.clean_labels(axes)
 ```
@@ -305,6 +313,11 @@ eplt.clean_labels(axes)
    :include-source: false
    :alt: Bi 5d spectrum with a Voigt doublet, Shirley background, best fit, and residual
 ```
+
+{meth}`xarray.DataArray.xlm.modelfit` retains the energy coordinate in
+`modelfit_data` and `modelfit_best_fit`. The `modelfit_results` entry contains the
+underlying lmfit result. This example uses it only to evaluate the named model
+components.
 
 {meth}`~erlab.analysis.fit.models.MultiPeakModel.guess` initializes the constant
 background from the low-binding-energy end of the fit range. It initializes the
@@ -317,7 +330,6 @@ independent in this example. Replace the center, splitting, and width bounds wit
 that apply to the selected core level and instrument. Structured residuals show
 behavior that the model does not describe.
 
-See {ref}`explanation-fitting-independent` for the meaning of independent fit results.
 See {meth}`xarray.Dataset.qshow.fit` and {meth}`xarray.Dataset.qshow.params` for the
 accepted result layouts.
 
@@ -394,9 +406,7 @@ Adjust the `alpha` chunk size for the available memory and the cost of one fit.
 Use the actual independent dimension name when it is not `alpha`. Keep `eV` in one
 chunk so each fit receives a complete EDC.
 
-See {ref}`explanation-fitting-dask-execution` for the distinction between Dask chunks
-and execution. See {meth}`xarray.DataArray.xlm.modelfit` for Dask requirements and output
-variables.
+See {meth}`xarray.DataArray.xlm.modelfit` for Dask requirements and output variables.
 
 (how-to-python-save-fit-results)=
 
@@ -466,9 +476,7 @@ Do not change the minimizer only to obtain finite errors. Missing or unstable er
 indicate active bounds, strong parameter correlations, or a model that does not identify
 the parameters. Check those conditions before you report the covariance estimate.
 
-See {meth}`lmfit.model.Model.fit` for `method` and `calc_covar`. See
-{doc}`curve fitting <../../explanation/fitting>` for the limits of local covariance and
-standard errors.
+See {meth}`lmfit.model.Model.fit` for `method` and `calc_covar`.
 
 (how-to-python-fit-with-iminuit)=
 
@@ -546,6 +554,4 @@ Inspect the fitted curve, parameter limits, and covariance after minimization. R
 the interactive view when the optimizer reaches an unsuitable minimum. Do not use the
 widget to select a model only because it can follow the measured noise.
 
-See {meth}`iminuit.Minuit.interactive` for widget options. See
-{doc}`curve fitting <../../explanation/fitting>` for the role of initial values and fit
-validation.
+See {meth}`iminuit.Minuit.interactive` for widget options.

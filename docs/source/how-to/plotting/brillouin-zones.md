@@ -1,17 +1,17 @@
 (how-to-plotting-two-dimensional-bz)=
 
-(how-to-python-draw-two-dimensional-bz)=
+(how-to-python-draw-brillouin-zone-overlay)=
 
 # Brillouin zones
 
-(how-to-plotting-first-brillouin-zone)=
+(how-to-plotting-brillouin-zone-overlay)=
 
-## First Brillouin zone
+## Brillouin zone overlay
 
 ### Python
 
-Construct the real-space lattice vectors for the crystal. Pass them to
-{func}`erlab.plotting.plot_bz`:
+Plot the constant-energy map. Then construct the real-space lattice vectors and pass
+them to {func}`erlab.plotting.plot_bz`:
 
 ```python
 import matplotlib.pyplot as plt
@@ -19,23 +19,37 @@ import matplotlib.pyplot as plt
 import erlab
 import erlab.plotting as eplt
 
-avec = erlab.lattice.abc2avec(3.0, 3.0, 5.0, 90.0, 90.0, 120.0)
+lattice_constant = 6.97
+avec = erlab.lattice.abc2avec(
+    lattice_constant,
+    lattice_constant,
+    1.0,
+    90.0,
+    90.0,
+    120.0,
+)
 
-fig, ax = plt.subplots(figsize=(2.5, 2.5), layout="compressed")
-eplt.plot_bz(avec, ax=ax)
-ax.set(
-    xlabel=r"$k_x$ (Å$^{-1}$)",
-    ylabel=r"$k_y$ (Å$^{-1}$)",
-    xlim=(-1.5, 1.5),
-    ylim=(-1.5, 1.5),
+fig, ax = plt.subplots(figsize=(3.4, 3.0), layout="compressed")
+eplt.plot_array(
+    constant_energy_map,
+    ax=ax,
+    cmap="Greys",
+    gamma=0.5,
     aspect="equal",
+)
+eplt.plot_bz(
+    avec,
+    ax=ax,
+    edgecolor="tab:purple",
+    linestyle="--",
+    linewidth=1.2,
 )
 ```
 
 ```{eval-rst}
-.. plot:: how_to/plotting.py draw_two_dimensional_brillouin_zone
+.. plot:: how_to/plotting.py draw_brillouin_zone_overlay
    :include-source: false
-   :alt: Hexagonal first Brillouin-zone polygon on equal reciprocal-momentum axes
+   :alt: Constant energy map with a hexagonal Brillouin zone boundary
 ```
 
 ### Figure Composer
@@ -46,21 +60,28 @@ single first-zone polygon in this guide.
 ```{include} ../../_includes/figure-composer-planned-step.md
 ```
 
-1. In ImageTool Manager, choose
-   {menuselection}`File --> New Empty Figure`.
-2. Set {guilabel}`Layout` to a $1 \times 1$ grid.
-3. Add a {guilabel}`Python` step.
-4. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
+1. Set {guilabel}`Layout` to a $1 \times 1$ grid.
+2. Add `constant_energy_map` in {guilabel}`Sources`.
+3. Add an {guilabel}`Image Plot` step and set {guilabel}`Aspect` to `equal`.
+4. Add a {guilabel}`Python` step after the image.
+5. Review this code, then enter it in {guilabel}`Code`:
 
 ```python
 import erlab
 
-avec = erlab.lattice.abc2avec(3.0, 3.0, 5.0, 90.0, 90.0, 120.0)
-eplt.plot_bz(avec, ax=ax)
-ax.set(
-    xlabel=r"$k_x$ (Å$^{-1}$)",
-    ylabel=r"$k_y$ (Å$^{-1}$)",
-    aspect="equal",
+lattice_constant = 6.97
+avec = erlab.lattice.abc2avec(
+    lattice_constant,
+    lattice_constant,
+    1.0,
+    90.0,
+    90.0,
+    120.0,
+)
+eplt.plot_bz(
+    avec,
+    ax=ax,
+    fill=False,
 )
 ```
 
@@ -214,73 +235,3 @@ intensity on the same axes before the boundary. Confirm the fixed momentum, azim
 direction, and coordinate orientation first.
 
 See {func}`erlab.plotting.plot_out_of_plane_bz` for the supported slice parameters.
-
-(how-to-plotting-brillouin-zone-overlays)=
-
-(how-to-python-overlay-brillouin-zone)=
-
-## Brillouin-zone overlays
-
-### Python
-
-For a hexagonal material, use its measured in-plane lattice constant to draw the
-boundary over a constant energy surface:
-
-```python
-import matplotlib.pyplot as plt
-
-import erlab.plotting as eplt
-
-lattice_constant = 6.97
-
-fig, ax = plt.subplots(figsize=(3.4, 3.0), layout="compressed")
-eplt.plot_array(
-    constant_energy_map,
-    ax=ax,
-    cmap="Greys",
-    gamma=0.5,
-    aspect="equal",
-)
-eplt.plot_hex_bz(
-    a=lattice_constant,
-    ax=ax,
-    fill=False,
-    edgecolor="tab:purple",
-    linestyle="--",
-    linewidth=1.2,
-)
-```
-
-```{eval-rst}
-.. plot:: how_to/plotting.py overlay_brillouin_zone
-   :include-source: false
-   :alt: Constant energy surface with an in-plane Brillouin zone boundary
-```
-
-### Figure Composer
-
-1. Set {guilabel}`Layout` to a $1 \times 1$ grid.
-2. Add `constant_energy_map` in {guilabel}`Sources`.
-3. Add an {guilabel}`Image Plot` step and set {guilabel}`Aspect` to `equal`.
-
-The current {guilabel}`BZ Overlay` step draws an in-plane section. It does not draw the
-single hexagonal boundary used here.
-
-```{include} ../../_includes/figure-composer-planned-step.md
-```
-
-4. Add a {guilabel}`Python` step after the image.
-5. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
-
-```python
-eplt.plot_hex_bz(
-    a=6.97,
-    ax=ax,
-    fill=False,
-)
-```
-
-Replace `a` with the in-plane lattice constant of the measured material. The boundary
-must use the correct lattice parameters and orientation. Do not use the appearance of
-the intensity to select or resize the boundary. See
-{func}`erlab.plotting.plot_hex_bz` for rotation and offset arguments.

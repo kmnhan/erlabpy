@@ -1,40 +1,27 @@
 # Workspaces and provenance
 
-ImageTool Manager keeps data, operation history, and window state. Each item has a
-different purpose. A saved workspace can contain them together, but it does not make
-them equivalent.
-
-## Data, history, workspaces, and code
-
-| Item | Contents | Main purpose |
-| --- | --- | --- |
-| `DataArray` | Values, dimensions, coordinates, and metadata | Analysis and display |
-| Provenance | Source inputs and operation history for a derived row | Inspection and supported reload |
-| Workspace file | Manager rows, data, tools, figures, and window settings | Reopening a Manager session |
-| Extension source | Script name, capability ID, source hash, and an optional source copy | Replaying a lab-specific routine or loader |
-| Generated code | Python statements for selected operations | Continuing the analysis in a script or notebook |
+ImageTool Manager records GUI operations and can save the GUI session as a workspace.
 
 ## Provenance
 
-A derived row appears below its source in the Manager tree. The
-{guilabel}`Provenance` tab lists the steps used to create the selected row.
+When a supported GUI operation creates new data, Manager groups the result below its
+source and records the operation. The {guilabel}`Provenance` tab shows the recorded
+inputs and steps.
 
-A source change can make a dependent tool or result stale. Manager can repeat a
-supported operation when its source remains available and compatible. A missing or
-incompatible source prevents that update.
+The record supports updates and reuse only while the required inputs and operation
+remain available and compatible. Provenance describes how the result was created. The
+values, coordinates, and metadata remain part of the `DataArray`.
 
-Provenance records how a derived row was made. The values, coordinates, and metadata
-remain part of the `DataArray`.
+Use {ref}`how-to-gui-update-derived-results` to repeat an operation after an input
+changes. Use {ref}`how-to-gui-reuse-manager-operations` to apply recorded operations to
+other data.
 
-## Workspace limits
+## Workspace limitations
 
-A workspace file stores supported Manager data, parent-child rows, tools, figures, and
-window settings. Opening the file restores the saved GUI session, subject to the
-limits below.
+A workspace restores supported Manager session state. It does not restore the complete
+analysis environment.
 
-A watched notebook variable remains an external source. Manager can reconnect it by
-variable name when the notebook connection is available. Reconnection also depends on
-the notebook input data and environment.
+A watched notebook variable remains an external source and reopens disconnected.
 
 A workspace is not a substitute for:
 
@@ -43,61 +30,24 @@ A workspace is not a substitute for:
 - Metadata that was not recorded.
 - Other variables and Python objects in the notebook kernel.
 
+Use {ref}`how-to-gui-save-manager-workspace` to save or reopen a Manager session.
+
 ## Stored executable content
 
-Some workspace state contains Python that can reproduce an analysis. Manager separates
-restoring the session from running this code. An unverified workspace opens with its
-non-executable state available and its stored executable content paused.
-
-| Stored content | Effect while paused |
-| --- | --- |
-| Recorded Python operations | Operations that require Python do not replay. |
-| Figure Composer Python and custom transforms | The preview can be incomplete, and export is unavailable for that incomplete figure. |
-| Saved fitting code and parameter expressions | The related restoration, replay, or fitting operation does not run. |
-
-Workspace approval applies to the complete current executable content. When ERLab opens
-a workspace whose executable content no longer matches its saved approval, it requires
-review again. When you add or change code through an explicit ERLab editing action,
-ERLab treats only that edit as local work. Unchanged code from the opened workspace
-remains paused until you approve it.
-
-After a successful save, an unchanged approved workspace normally opens without another
-review on the same computer. A trusted folder skips review for every `.itws` file in
-that folder and its subfolders.
-
-A standalone ImageTool does not run stored Python from provenance. Manager supplies the
-workspace review and replay workflow.
+Some workspaces contain Python used by recorded operations, Figure Composer, or fitting
+tools. Manager keeps unverified code paused while it restores the data and other
+non-executable session state. Review stored code only when you trust its source.
 
 Use {ref}`how-to-gui-review-workspace-code` when code is paused.
-{ref}`options-trusted-workspace-folders` describes trusted folders and saved approvals.
+See {ref}`imagetool-manager-code-trust` for the exact paused-code behavior and status
+values.
 
-## Extension scripts
+## Workspaces and Python code
 
-An extension operation records the script name, capability ID, and source hash. The
-capability ID identifies the routine or loader. The source hash identifies the exact
-script contents that produced the result.
+A workspace reopens the GUI session. Generated Python code carries supported analysis
+operations into a script or notebook. You can review and edit that code independently
+of the workspace.
 
-Manager runs an extension operation only when a registered local script is enabled,
-approved, and matches the recorded source hash. A source edit therefore requires new
-approval. This rule prevents an old provenance record from silently running changed
-code.
-
-By default, a workspace embeds the exact source for each extension that its recorded
-operations use. The embedded copy is recovery data. Manager does not run it directly.
-You must review, save, and register the source before Manager can use it.
-
-Use {ref}`how-to-gui-recover-extension` when the registered script is unavailable.
-{ref}`imagetool-manager-extensions` describes script identity and embedding policies.
-
-## Generated code
-
-Select one or more steps in the {guilabel}`Provenance` tab and choose
-{guilabel}`Copy` to copy code for those steps. {guilabel}`Copy Full Code` also includes
-supported inputs and preceding steps. The copied code can be reviewed, edited, and run
-outside Manager.
-
-Review generated code before you run it. A workspace reopens the GUI session.
-Generated code reproduces supported analysis steps in a script or notebook.
-
-Use {ref}`how-to-gui-save-manager-workspace` to save or restore a session.
-{ref}`imagetool-manager-replay-code` describes operation history and code generation.
+Use {ref}`how-to-gui-reuse-manager-operations` to copy recorded steps or full analysis
+code. {ref}`imagetool-manager-replay-code` describes the available code-generation
+controls.

@@ -170,29 +170,6 @@ def mark_core_levels() -> None:
     )
 
 
-def overlay_brillouin_zone() -> None:
-    lattice_constant = 6.97
-    data = generate_data(a=lattice_constant, seed=1).T
-    constant_energy_surface = data.qsel(eV=-0.2)
-
-    _, ax = plt.subplots(figsize=(3.4, 3.0), layout="compressed")
-    eplt.plot_array(
-        constant_energy_surface,
-        ax=ax,
-        cmap="Greys",
-        gamma=0.5,
-        aspect="equal",
-    )
-    eplt.plot_hex_bz(
-        a=lattice_constant,
-        ax=ax,
-        fill=False,
-        edgecolor="tab:purple",
-        linestyle="--",
-        linewidth=1.2,
-    )
-
-
 def draw_in_plane_brillouin_zone() -> None:
     avec = erlab.lattice.abc2avec(6.0, 10.0, 25.0, 90.0, 90.0, 90.0)
     avec_primitive = erlab.lattice.to_primitive(avec, centering_type="F")
@@ -239,17 +216,33 @@ def draw_out_of_plane_brillouin_zone() -> None:
     )
 
 
-def draw_two_dimensional_brillouin_zone() -> None:
-    avec = erlab.lattice.abc2avec(3.0, 3.0, 5.0, 90.0, 90.0, 120.0)
+def draw_brillouin_zone_overlay() -> None:
+    lattice_constant = 6.97
+    data = generate_data(a=lattice_constant, seed=1).T
+    constant_energy_map = data.qsel(eV=-0.2)
+    avec = erlab.lattice.abc2avec(
+        lattice_constant,
+        lattice_constant,
+        1.0,
+        90.0,
+        90.0,
+        120.0,
+    )
 
-    _, ax = plt.subplots(figsize=(2.5, 2.5), layout="compressed")
-    eplt.plot_bz(avec, ax=ax)
-    ax.set(
-        xlabel=r"$k_x$ (Å$^{-1}$)",
-        ylabel=r"$k_y$ (Å$^{-1}$)",
-        xlim=(-1.5, 1.5),
-        ylim=(-1.5, 1.5),
+    _, ax = plt.subplots(figsize=(3.4, 3.0), layout="compressed")
+    eplt.plot_array(
+        constant_energy_map,
+        ax=ax,
+        cmap="Greys",
+        gamma=0.5,
         aspect="equal",
+    )
+    eplt.plot_bz(
+        avec,
+        ax=ax,
+        edgecolor="tab:purple",
+        linestyle="--",
+        linewidth=1.2,
     )
 
 

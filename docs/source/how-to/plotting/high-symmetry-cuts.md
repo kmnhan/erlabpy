@@ -134,7 +134,7 @@ an editable Figure Composer step.
 ```
 
 1. Add a {guilabel}`Python` step after the left image.
-2. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
+2. Review this code, then enter it in {guilabel}`Code`:
 
 ```python
 lattice_constant = 6.97

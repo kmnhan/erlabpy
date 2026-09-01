@@ -682,6 +682,7 @@ latex_elements = {
 # -- Rediraffe settings ------------------------------------------------------
 # https://sphinxext-rediraffe.readthedocs.io/en/latest/
 rediraffe_redirects = {
+    "contributing/build-manager.md": "how-to/gui/manager-installation.md",
     "how-to/python/plotting.md": "how-to/plotting/index.md",
     "how-to/python/plotting/index.md": "how-to/plotting/index.md",
     "how-to/python/plotting/annotations.md": "how-to/plotting/annotations.md",

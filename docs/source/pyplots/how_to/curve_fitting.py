@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import xarray as xr
 
 import erlab.analysis as era
 import erlab.plotting as eplt
@@ -102,6 +103,12 @@ def inspect_fit_components_and_residuals() -> None:
     count_scale = 5000.0 / expected.max()
     counts = np.random.default_rng(1).poisson(count_scale * expected)
     intensity = counts / count_scale
+    core_spectrum = xr.DataArray(
+        intensity,
+        coords={"eV": energy},
+        dims="eV",
+        name="photoelectron_intensity",
+    )
 
     model = era.fit.models.MultiPeakModel(
         npeaks=2,
@@ -118,10 +125,17 @@ def inspect_fit_components_and_residuals() -> None:
     params["p1_sigma"].set(expr="p0_sigma")
     params["p1_gamma"].set(value=0.10, min=0.0, max=0.5)
     params["p1_amplitude"].set(expr="2 * p0_amplitude / 3")
-    fit_result = model.fit(intensity, x=energy, params=params)
-
-    components = fit_result.eval_components(x=energy)
-    residual = intensity - fit_result.best_fit
+    fit_result = core_spectrum.xlm.modelfit(
+        "eV",
+        model=model,
+        params=params,
+        guess=False,
+    )
+    lmfit_result = fit_result.modelfit_results.item()
+    fit_data = fit_result.modelfit_data
+    best_fit = fit_result.modelfit_best_fit
+    components = lmfit_result.eval_components(x=fit_data.eV.values)
+    residual = fit_data - best_fit
     _, axes = plt.subplots(
         2,
         1,
@@ -131,8 +145,8 @@ def inspect_fit_components_and_residuals() -> None:
         height_ratios=(3, 1),
     )
     axes[0].plot(
-        energy,
-        intensity,
+        fit_data.eV,
+        fit_data,
         "o",
         markersize=2,
         markerfacecolor="none",
@@ -140,11 +154,11 @@ def inspect_fit_components_and_residuals() -> None:
         markeredgewidth=0.5,
         label="Measured data",
     )
-    axes[0].plot(energy, fit_result.best_fit, color="black", label="Best fit")
-    axes[0].plot(energy, components["2Peak_p0"], label=r"Bi 5d$_{5/2}$")
-    axes[0].plot(energy, components["2Peak_p1"], label=r"Bi 5d$_{3/2}$")
+    axes[0].plot(best_fit.eV, best_fit, color="black", label="Best fit")
+    axes[0].plot(fit_data.eV, components["2Peak_p0"], label=r"Bi 5d$_{5/2}$")
+    axes[0].plot(fit_data.eV, components["2Peak_p1"], label=r"Bi 5d$_{3/2}$")
     axes[0].plot(
-        energy,
+        fit_data.eV,
         components["2Peak_baseline"] + components["2Peak_shirley"],
         "--",
         color="0.45",
@@ -155,7 +169,7 @@ def inspect_fit_components_and_residuals() -> None:
 
     axes[1].axhline(0.0, color="0.5", linewidth=1)
     axes[1].plot(
-        energy,
+        residual.eV,
         residual,
         ".",
         color="0.25",

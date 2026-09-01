@@ -13,7 +13,7 @@ and operation for supported GUI results and can generate Python code.
 | --- | --- | --- |
 | Python script or notebook | Explicit and reusable analysis code | Complete analyses, automation, and repeated processing |
 | ImageTool and specialized tools | Immediate visual feedback | Data inspection and parameter selection |
-| ImageTool Manager | Parent and child rows, operation history, and saved workspaces | GUI analysis sessions and tracking derived results |
+| ImageTool Manager | Source and result relationships, operation history, and saved workspaces | GUI analysis sessions and tracking derived results |
 | Figure Composer | Editable Matplotlib recipes | Figure layout, reuse, and code generation |
 
 The Python API provides all analysis features. GUI applications expose a smaller set
@@ -29,15 +29,16 @@ flowchart TB
     watched["Watched variable<br/><small>%watch analysis_map</small>"]
     open["Open in Manager<br/><small>%itool -m · show_in_manager()</small>"]
     manager["ImageTool Manager<br/><small>ImageTools · managed tools · figures</small>"]
-    result["Derived child row<br/><small>Provenance</small>"]
-    code["Python code<br/><small>Copy Full Code</small>"]
+    result["Processed data<br/><small>Analysis steps recorded by Manager</small>"]
+    code["Copied Python code"]
     tool["Standalone interactive tool<br/><small>dtool · ktool · goldtool · ftool<br/>Current notebook cell waits</small>"]
     continue["Continue notebook analysis"]
 
     notebook --> watched
     watched <-->|"Data updates"| manager
     notebook --> open --> manager
-    manager --> result --> code --> continue
+    manager -->|"Analyze data in the GUI"| result
+    result -->|"Copy Full Code"| code --> continue
     notebook -->|"One-off analysis"| tool
     tool -->|"Close window"| continue
 
@@ -49,8 +50,10 @@ flowchart TB
 Use `%watch` when a notebook variable and a Manager row must stay synchronized. Use
 `%itool -m` or {func}`show_in_manager
 <erlab.interactive.imagetool.manager.show_in_manager>` when Manager only needs the
-current data. The Manager records provenance for supported derived rows. Its
-{guilabel}`Copy Full Code` action provides Python code for continued notebook analysis.
+current data. When a supported GUI operation creates new data, Manager shows the result
+below its source and records the operation in the {guilabel}`Provenance` tab. Use
+{guilabel}`Copy Full Code` to copy the corresponding Python statements and continue the
+analysis in the notebook.
 
 Standalone tools such as {func}`erlab.interactive.dtool`,
 {func}`erlab.interactive.ktool`, {func}`erlab.interactive.goldtool`, and
@@ -63,7 +66,7 @@ for one-off analysis that does not need Manager state.
 | Direction | Data or code |
 | --- | --- |
 | Notebook or script to ImageTool Manager | A shown or watched xarray object |
-| GUI operation to Manager | A derived `DataArray` shown as a child row below its source |
+| GUI operation to Manager | A result `DataArray` grouped below the source that produced it |
 | GUI operation to Python | Generated code that uses public Python APIs |
 | Figure Composer to Python | Generated Matplotlib code |
 

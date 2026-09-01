@@ -1,7 +1,6 @@
 # Reference
 
-Use this section while you work. It describes the Python API, GUI applications,
-dependencies, and product interfaces.
+Complete catalog of Python APIs and GUI features.
 
 ```{toctree}
 :caption: Reference

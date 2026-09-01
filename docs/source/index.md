@@ -74,7 +74,8 @@ Technical reference for ERLabPy, including Python APIs and GUI applications.
 :::{grid-item-card} 🤝 Contributing guide
 :link: contributing
 :link-type: doc
-Contributing guide for developers and users who want to implement their own features or fix bugs in ERLabPy.
+Development setup and guides for contributing code, documentation, data loaders, and
+interactive tools.
 :::
 ::::
 :::::

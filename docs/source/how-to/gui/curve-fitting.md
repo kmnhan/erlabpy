@@ -1,7 +1,8 @@
 # Curve fitting
 
-Use these guides to fit curves and inspect saved fits in the GUI. Read
-{doc}`../../explanation/fitting` before you select a model or interpret fit diagnostics.
+Use these guides to fit curves and inspect saved fits in the GUI. ERLabPy uses
+[lmfit](https://lmfit.github.io/lmfit-py/) for models, parameters, and optimization.
+Use the lmfit documentation for general curve-fitting concepts.
 
 (how-to-gui-fit-data)=
 

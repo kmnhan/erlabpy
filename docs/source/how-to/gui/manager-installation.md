@@ -33,6 +33,36 @@ Official standalone release bundles are currently only provided for Windows and 
 Linux users can build from source (see {ref}`build-from-source`), and the resulting app
 can be launched directly from the build folder.
 
+(build-from-source)=
+
+## Building from source
+
+Build a standalone application when you need a Linux bundle or platform-specific build.
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/kmnhan/erlabpy.git
+   cd erlabpy
+   ```
+
+2. Install the dependencies. This requires `uv`:
+
+   ```bash
+   uv sync --all-extras --group pyinstaller --group pyqt6
+   ```
+
+3. Build the application:
+
+   ```bash
+   uv run pyinstaller manager.spec
+   ```
+
+4. Find the application in `dist/ImageTool Manager`.
+
+For Windows, you can install [Inno Setup](https://jrsoftware.org/isinfo.php), add it to
+the system PATH, and run `iscc manager.iss` to create an installer.
+
 (update-manager)=
 
 ## Updating an existing installation
