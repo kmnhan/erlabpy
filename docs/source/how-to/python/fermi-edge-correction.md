@@ -102,8 +102,7 @@ estimated_range = era.gold.guess_edge_fit_range(
     resolution=energy_resolution,
 )
 estimated_edc = selected_edc.where(
-    (selected_edc.eV >= estimated_range[0])
-    & (selected_edc.eV <= estimated_range[1]),
+    (selected_edc.eV >= estimated_range[0]) & (selected_edc.eV <= estimated_range[1]),
     drop=True,
 )
 estimated_edc.plot()

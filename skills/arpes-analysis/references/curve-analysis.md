@@ -173,9 +173,7 @@ dispersion_fit = dispersion_region.xlm.modelfit(
 peak_centers = dispersion_fit.modelfit_coefficients.sel(
     param=["p0_center", "p1_center"]
 )
-peak_stderr = dispersion_fit.modelfit_stderr.sel(
-    param=["p0_center", "p1_center"]
-)
+peak_stderr = dispersion_fit.modelfit_stderr.sel(param=["p0_center", "p1_center"])
 ```
 
 Reverse the slice endpoints when `eV` is descending, or sort the coordinate explicitly

@@ -43,9 +43,7 @@ before treating zero as a calibration:
 
 ```python
 offsets = dict(data.kspace.offsets)
-stored_offset_keys = {
-    key for key in offsets if f"{key}_offset" in data.attrs
-}
+stored_offset_keys = {key for key in offsets if f"{key}_offset" in data.attrs}
 ```
 
 An empty `stored_offset_keys` set means that the displayed zeros are defaults.

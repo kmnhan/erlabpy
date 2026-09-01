@@ -174,7 +174,8 @@ components = lmfit_result.eval_components(x=fit_data.eV.values)
 residual = fit_data - best_fit
 
 fig, axes = plt.subplots(
-    2, 1,
+    2,
+    1,
     figsize=(4.8, 3.6),
     layout="compressed",
     sharex=True,

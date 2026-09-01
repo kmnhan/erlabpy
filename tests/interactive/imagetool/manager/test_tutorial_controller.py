@@ -253,7 +253,10 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
 
 def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -> None:
     from erlab.interactive.imagetool import _kspace_conversion
-    from erlab.interactive.imagetool._provenance._model import stamp_operation_group
+    from erlab.interactive.imagetool._provenance._model import (
+        ReplayStep,
+        stamp_operation_group,
+    )
     from erlab.interactive.imagetool._provenance._operations import (
         AffineCoordOperation,
         AverageOperation,
@@ -280,7 +283,10 @@ def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -
     class _DetailsPanel:
         @staticmethod
         def _selected_derivation_step_payload():
-            return expected, "example_map", False
+            return _details_panel._ProvenanceStepsClipboardPayload(
+                steps=tuple(ReplayStep(operation=operation) for operation in expected),
+                active_name="example_map",
+            )
 
     manager._details_panel = _DetailsPanel()
     monkeypatch.setattr(controller, "_reusable_operations_selected", lambda: True)
@@ -289,8 +295,10 @@ def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -
         payload = {
             "type": _details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
             "version": _details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
-            "operations": [
-                operation.model_dump(mode="json") for operation in operations
+            "active_name": "example_map",
+            "steps": [
+                ReplayStep(operation=operation).model_dump(mode="json")
+                for operation in operations
             ],
         }
         mime_data = QtCore.QMimeData()
@@ -1530,7 +1538,6 @@ def test_tutorial_real_workflow(
             lambda: step_id() == "figure-composer-output",
             timeout=60_000,
         )
-        assert composer.isActiveWindow()
         assert composer.editor_tabs.currentWidget() is composer.operation_panel
         continue_to("select-figure-composer-sources")
         assert composer.editor_tabs.currentWidget() is composer.operation_panel

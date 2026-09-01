@@ -1593,7 +1593,7 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
                 is not None
                 and isinstance(
                     row := item.data(
-                        manager_details_panel._METADATA_DERIVATION_ROW_ROLE
+                        0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE
                     ),
                     _ProvenanceDisplayRow,
                 )

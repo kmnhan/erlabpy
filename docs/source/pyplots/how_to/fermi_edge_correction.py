@@ -16,6 +16,7 @@ def correct_curved_fermi_edge() -> None:
         bkg_slope=False,
         degree=2,
         plot=True,
+        parallel_kw={"n_jobs": 1},
     )
     corrected = era.gold.correct_with_edge(gold_reference, edge_fit)
 

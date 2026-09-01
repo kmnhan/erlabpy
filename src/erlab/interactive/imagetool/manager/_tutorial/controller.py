@@ -65,7 +65,7 @@ _TUTORIAL_OPTION_OVERRIDES: dict[str, object] = {
     "ktool/bz/default_beta": 90.0,
     "ktool/bz/default_gamma": 120.0,
     "ktool/bz/default_centering": "P",
-    "ktool/bz/default_rot": 30.0,
+    "ktool/bz/default_rot": 0.0,
 }
 
 
@@ -2677,7 +2677,7 @@ class _TutorialController(TourController):
             operations is not None
             and payload is not None
             and self._reusable_operations_selected()
-            and operations == payload[0]
+            and operations == payload.operations
         )
         self._copied_reusable_operations = (
             operations if self._operations_copied else None
@@ -2704,7 +2704,7 @@ class _TutorialController(TourController):
         payload = _details_panel._provenance_step_clipboard_payload(
             None if clipboard is None else clipboard.mimeData()
         )
-        return None if payload is None else payload[0]
+        return None if payload is None else payload.operations
 
     @staticmethod
     def _clipboard_data_changed_signal() -> typing.Any:
