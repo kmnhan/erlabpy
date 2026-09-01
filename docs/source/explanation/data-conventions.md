@@ -2,14 +2,13 @@
 
 # ARPES data conventions
 
-ERLabPy loaders translate endstation-specific files and metadata into labeled xarray
-objects. ERLabPy's ARPES-specific tools use a common set of coordinate and attribute
-names.
+ERLabPy's ARPES-specific tools use the coordinate and attribute names below. Supported
+data loader plugins map source-specific names and metadata to these conventions.
+Source-specific information can remain as additional coordinates or attributes.
 
-These names are used by some analysis routines, including Momentum conversion, Fermi
-edge fitting, and ARPES-aware plotting in order to find physical coordinates and
-experimental metadata without endstation-specific code. Other analysis routines work
-regardless of the coordinate names.
+These conventions let momentum conversion, Fermi edge fitting, and ARPES-aware plotting
+find the required physical quantities. General xarray operations do not depend on these
+names.
 
 ## Coordinates and metadata
 
@@ -85,6 +84,9 @@ analyzers, can be treated as hemispherical analyzers with a deflector.
 
 - Use {doc}`../how-to/python/loading-and-saving` to load supported data and inspect
   coordinates and metadata that use the ERLabPy names.
+- Use {doc}`../how-to/gui/loading-and-saving` to load data and edit acquisition metadata
+  in ImageTool Manager.
+- Use {doc}`../reference/data-formats` to find loader and file-format interfaces.
 - Use {doc}`../how-to/python/momentum-conversion` to select a variable experimental
   configuration, set normal emission, and convert data.
 - Read {doc}`momentum-conversion` for the distinction between the momentum conversion

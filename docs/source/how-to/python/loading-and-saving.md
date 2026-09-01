@@ -53,10 +53,10 @@ with erlab.io.loader_context("merlin", data_dir="/path/to/data"):
 ```
 
 If ERLabPy cannot find the scan, confirm the selected loader, the accepted identifier
-form, and the data directory. If the endstation is not listed, follow the
-procedure in {doc}`../../contributing/loaders` instead of forcing the file through a
-different loader. See {doc}`../../explanation/loader-architecture` for how loaders
-standardize endstation data.
+form, and the data directory. If the endstation is not listed, follow the procedure in
+{doc}`../../contributing/loaders` instead of forcing the file through a different
+loader. See {ref}`ARPES data conventions <data-conventions>` for the coordinate and
+metadata names required by ARPES-specific tools.
 
 (how-to-python-load-several-experiments)=
 
@@ -255,28 +255,6 @@ Inspect the loaded coordinates before analysis. The metadata key must exist in t
 files handled by the active loader.
 
 See {func}`erlab.io.extend_loader` for the extension fields and their accepted values.
-
-(io-summarizing-data)=
-
-(how-to-python-summarize-data-directory)=
-
-## Summarizing available scans in Python
-
-Select the loader, then request a table for the data directory:
-
-```python
-import erlab
-
-with erlab.io.loader_context("merlin", data_dir="/path/to/data"):
-    summary = erlab.io.summarize()
-```
-
-Filter the returned {class}`DataFrame <pandas.DataFrame>` to find scans that match the
-required acquisition conditions. If no path is supplied, ERLabPy uses the current data
-directory.
-
-Use the {ref}`Data Explorer <imagetool-manager-data-explorer>` instead when the goal is
-interactive browsing, metadata preview, and opening selected files in Manager.
 
 (how-to-python-save-data)=
 

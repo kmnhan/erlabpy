@@ -69,12 +69,11 @@ the system PATH, and run `iscc manager.iss` to create an installer.
 
 1. Select {guilabel}`Check for Updates` from {guilabel}`Help` on Windows. On macOS,
    select it from {guilabel}`ImageTool Manager` next to {fab}`apple`.
-2. Follow the prompts to install the update.
-3. Close all Manager windows after the installation finishes.
-4. Restart ImageTool Manager.
-5. Open {guilabel}`About` and confirm that it shows the expected ERLabPy version.
+2. Follow the prompts to install the update. The application will restart after the
+   update completes.
 
-If the update fails, close ImageTool Manager. Download the current bundle from the
-[project releases page](https://github.com/kmnhan/erlabpy/releases). Install it with the
-platform steps in {ref}`imagetool-manager-standalone`. Restart the application and check
-the version again.
+If the update fails for any reason, you can manually reinstall the latest release from
+the [project releases page](https://github.com/kmnhan/erlabpy/releases) with the
+platform steps in {ref}`imagetool-manager-standalone`. The currently installed version
+can be checked from {guilabel}`About` in the {guilabel}`Help` menu on Windows or next to
+{fab}`apple` on macOS.

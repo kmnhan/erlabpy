@@ -9,8 +9,7 @@ python/index
 
 ## First notebook
 
-You begin with photoelectron intensity measured as a function of emission angle and
-energy. You will learn how to inspect and select the data and convert the angular
+In this tutorial, you will learn how to inspect and select the data and convert the angular
 coordinates to crystal momentum. You will also learn how to extract dispersions along
 high-symmetry directions in the Brillouin zone.
 
@@ -19,7 +18,7 @@ review, use the [Scientific Python Lectures](https://lectures.scientific-python.
 [Python tutorial](https://docs.python.org/3/tutorial/). For additional background, see
 the [xarray tutorial](https://tutorial.xarray.dev/) and [xarray user guide](https://docs.xarray.dev/en/stable/).
 
-{doc}`Start the first notebook <python/index>`.
+Get started: {doc}`First notebook <python/index>`
 
 (manager-tutorial)=
 

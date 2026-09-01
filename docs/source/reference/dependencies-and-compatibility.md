@@ -1,3 +1,5 @@
+(dependencies-and-compatibility)=
+
 # Dependencies and compatibility
 
 ERLabPy supports Python 3.11 and later. Qt5 bindings are not supported. Interactive

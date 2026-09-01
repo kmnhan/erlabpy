@@ -1,21 +1,29 @@
 (interactive-misc-tools)=
 
-# Other interactive tools
+# Interactive tools
 
-In addition to ImageTool and the ImageTool manager, there are interactive tools for
-specific tasks. Most of these tools can be opened from within ImageTool, and are also
-integrated into the ImageTool manager, allowing you to manage them alongside your
-ImageTool windows.
+These applications provide specialized analysis, plotting, and data-browsing
+interfaces. Most can be opened from ImageTool or from Python.
 
-When a tool is launched from an ImageTool that is open in the manager, the manager can
-show the tool as a child row under that ImageTool. ImageTool windows opened from the
-tool can also appear as child rows under the tool instead of as unrelated top-level
-windows. This keeps the data in the ImageTool that opened the tool, the tool settings,
-update status, and code for repeating the steps together; see
-{ref}`imagetool-manager-nested-results`, {ref}`imagetool-manager-refresh`, and
-{ref}`imagetool-manager-replay-code`.
+| Tool | Purpose |
+| --- | --- |
+| {doc}`ktool` | Configure, preview, and apply momentum conversion to ARPES data |
+| {doc}`dtool` | Visualize dispersive data with derivative-based methods |
+| {doc}`goldtool` | Fit Fermi edges in reference spectra and create energy and angle corrections |
+| {doc}`ftool` | Fit one- and two-dimensional data interactively with lmfit models |
+| {doc}`restool` | Fit a resolution-broadened Fermi–Dirac EDC to estimate energy resolution |
+| {doc}`meshtool` | Detect and remove grid-like mesh artifacts from fixed-mode ARPES data |
+| {doc}`data-explorer` | Browse files, preview data and metadata, and open supported datasets |
+| {doc}`periodic-table` | Inspect element data, absorption edges, masses, and photoionization cross sections |
+| {doc}`bzplotter` | Create and export three-dimensional Brillouin-zone plots |
+| {doc}`notebook-shortcuts` | Launch interactive tools with IPython and Jupyter line magics |
+
+When a tool is opened from a managed ImageTool, ImageTool Manager can record the source
+relationship and place its results below the tool. See
+{ref}`imagetool-manager-nested-results` and {ref}`imagetool-manager-refresh`.
 
 ```{toctree}
+:hidden: true
 :maxdepth: 1
 
 ktool

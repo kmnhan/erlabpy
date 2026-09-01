@@ -87,10 +87,10 @@ conversion.
 
 ## Coordinates and interpolation
 
-| Operation | Sampling and dimensions | Suitable use |
-| --- | --- | --- |
-| {meth}`~erlab.accessors.kspace.MomentumAccessor.convert_coords` | Keeps measured dimensions and intensity values; adds momentum coordinates that can depend on several dimensions | Cuts on the measured angular sampling and coordinate overlays |
-| {meth}`~erlab.accessors.kspace.MomentumAccessor.convert` | Creates momentum dimensions and interpolates intensity onto a regular grid | Regular momentum grids and pointwise comparisons |
+| Operation | Sampling and dimensions |
+| --- | --- |
+| {meth}`~erlab.accessors.kspace.MomentumAccessor.convert_coords` | Keeps measured dimensions and intensity values; adds momentum coordinates that can depend on several dimensions |
+| {meth}`~erlab.accessors.kspace.MomentumAccessor.convert` | Creates momentum dimensions and interpolates intensity onto a regular grid |
 
 | Grid input | Effect |
 | --- | --- |
@@ -99,14 +99,7 @@ conversion.
 | Explicit `kx`, `ky`, or `kz` arrays | Supplies the exact target coordinates and overrides `bounds` and `resolution` for that axis |
 | `angle_resolution` | Supplies the angular term in the automatic in-plane target-step estimate when no target step or coordinate array is given; the estimate also uses the minimum kinetic energy, the largest absolute scaled angle, and the applicable angle-scale factor |
 
-The target-grid step is a numerical sampling choice. It is not the experimental
-momentum resolution. A finer grid does not add information. A rectangular grid can
-also extend outside the transformed measurement coverage. Those points contain
-missing values.
-
-Use {ref}`how-to-python-convert-common-grid` for pointwise comparison. Use
-{ref}`how-to-python-convert-coordinates-only` when interpolation would hide the original
-sampling.
+See also {ref}`how-to-python-convert-common-grid` and {ref}`how-to-python-convert-coordinates-only`.
 
 ## hν–dependent scans
 

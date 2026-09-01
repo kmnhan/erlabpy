@@ -31,7 +31,7 @@ available locally.
 ## Optional GUI guides
 
 - [Python and GUI workflows](https://erlabpy.readthedocs.io/en/stable/explanation/python-and-gui-workflows.html)
-- [Workspaces and provenance](https://erlabpy.readthedocs.io/en/stable/explanation/workspaces-and-provenance.html)
+- [Derived results and workspaces](https://erlabpy.readthedocs.io/en/stable/how-to/gui/derived-results-and-workspaces.html)
 - [ImageTool](https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html)
 - [Manager extensions](https://erlabpy.readthedocs.io/en/stable/how-to/gui/extensions.html)
 - [Manager extension reference](https://erlabpy.readthedocs.io/en/stable/reference/gui/extensions.html)

@@ -1,8 +1,8 @@
 # Data loading and saving
 
-Use these guides to load data, correct its metadata, and save data from ImageTool.
-Read {doc}`data loaders and endstation formats <../../explanation/loader-architecture>`
-to understand how a loader interprets a measurement.
+Use these guides to load data, correct its metadata, and save data from ImageTool. See
+{ref}`ARPES data conventions <data-conventions>` for the coordinate and metadata names
+required by ARPES-specific tools.
 
 (how-to-gui-manager-open)=
 

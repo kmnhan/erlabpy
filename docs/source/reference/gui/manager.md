@@ -189,11 +189,9 @@ treats only that explicit edit as local work.
 A standalone ImageTool does not replay stored Python from provenance. Open the original
 workspace in Manager to review and replay it.
 
-Use {ref}`how-to-gui-review-workspace-code` for the review procedure. See
-{doc}`workspaces and provenance <../../explanation/workspaces-and-provenance>` for the
-difference between data, session state, provenance, and generated code. The
-{ref}`Security settings <options-trusted-workspace-folders>` describe trusted folders
-and saved approvals.
+Use {ref}`how-to-gui-review-workspace-code` for the review procedure. The {ref}`Security
+settings <options-trusted-workspace-folders>` describe trusted folders and saved
+approvals.
 
 ## Data Explorer and Console
 
@@ -204,10 +202,7 @@ and saved approvals.
 Open the explorer from {menuselection}`File --> Data Explorer` or {kbd}`Ctrl+E`.
 
 Use it when you want to browse folders, preview metadata, queue batch loads, and then
-open selected files into the manager without writing code. For most day-to-day browsing
-it is faster than the interactive summary table in the I/O guide. Use
-{func}`erlab.io.summarize` instead when you want the overview as a DataFrame in Python
-or when you are developing loaders.
+open selected files into the manager without writing code.
 
 The explorer can also be launched standalone from Python or the command line for browsing
 and previewing. Opening selected files into ImageTool analysis still requires a running

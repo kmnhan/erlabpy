@@ -229,8 +229,8 @@ If a workspace contains an embedded copy of an unavailable extension:
 Manager registers the saved file and updates the workspace requirement. It never runs
 the embedded source directly.
 
-See {doc}`workspaces and provenance
-<../../explanation/workspaces-and-provenance>` for the source-trust and replay model.
+See {ref}`imagetool-manager-code-trust` for stored-code behavior and
+{ref}`how-to-gui-review-workspace-code` for the review procedure.
 
 ## Sharing an extension
 

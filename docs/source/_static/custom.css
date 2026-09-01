@@ -108,6 +108,20 @@ pre.mermaid marker path {
   stroke: var(--color-foreground-muted) !important;
 }
 
+#analysis-workflows pre.mermaid .cluster rect {
+  fill: transparent !important;
+  stroke: var(--color-foreground-border) !important;
+  stroke-width: 1px !important;
+  rx: 10px;
+  ry: 10px;
+}
+
+#analysis-workflows pre.mermaid .cluster-label {
+  color: var(--color-foreground-primary) !important;
+  font-size: 15px;
+  font-weight: 600;
+}
+
 /* Keep generated plotting previews aligned in the How-to gallery. */
 .plotting-gallery-card .sd-card-body {
   display: flex;

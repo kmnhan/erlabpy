@@ -61,7 +61,7 @@ extensions = [
     "sphinxext.rediraffe",
     "sphinx_llm.txt",
 ]
-llms_txt_build_parallel = False
+llms_txt_build_parallel = True
 myst_enable_extensions = ["colon_fence", "dollarmath", "substitution"]
 
 mermaid_light_theme = "neutral"
@@ -683,6 +683,7 @@ latex_elements = {
 # https://sphinxext-rediraffe.readthedocs.io/en/latest/
 rediraffe_redirects = {
     "contributing/build-manager.md": "how-to/gui/manager-installation.md",
+    "reference/installation.md": "reference/dependencies-and-compatibility.md",
     "how-to/python/plotting.md": "how-to/plotting/index.md",
     "how-to/python/plotting/index.md": "how-to/plotting/index.md",
     "how-to/python/plotting/annotations.md": "how-to/plotting/annotations.md",

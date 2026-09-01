@@ -108,7 +108,7 @@ other interactive tools. The commands above install PyQt6. Replace `pyqt6` with
 :::
 
 For optional dependency groups, compatibility details, and platform notes, see
-{doc}`reference/installation`. To install a development checkout, see
+{doc}`reference/dependencies-and-compatibility`. To install a development checkout, see
 {ref}`creating-a-development-environment`.
 
 (verify-installation)=

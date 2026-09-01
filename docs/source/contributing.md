@@ -1,4 +1,4 @@
-# Contributing to ERLabPy
+# Contributing
 
 Contributions can include bug reports, feature requests, code, tests, documentation,
 data loaders, and interactive tools. Ask general questions in

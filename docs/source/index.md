@@ -99,7 +99,7 @@ interactive tools.
 ```{toctree}
 :caption: Contents
 :hidden: true
-:maxdepth: 3
+:maxdepth: 4
 
 getting-started
 tutorials/index

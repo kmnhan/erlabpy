@@ -2,9 +2,6 @@
 
 Use these guides to preserve source data, update derived results, reuse operations, and
 manage workspaces.
-Read {doc}`workspaces, provenance, and generated code
-<../../explanation/workspaces-and-provenance>` before you decide which state to save or
-reuse.
 
 (how-to-gui-keep-source-after-transform)=
 
@@ -103,6 +100,12 @@ The workspace stores managed windows, their state, row notes, derived relationsh
 and Figure Composer recipes. Row notes remain workspace metadata and do not modify the
 underlying {class}`DataArray <xarray.DataArray>` attributes.
 
+:::{important}
+Keep the original measurement files and record the software environment separately. A
+workspace restores the Manager session. It does not reproduce a notebook kernel or
+install the packages used by the analysis.
+:::
+
 To reopen the session, choose {menuselection}`File --> Open Workspace…`, press
 {kbd}`Ctrl+O`, or drag the `.itws` file into Manager. Inspect the restored windows and
 derived rows before continuing work.
@@ -140,10 +143,9 @@ After a successful save, an unchanged approved workspace normally opens without 
 review on the same computer. If its executable content no longer matches the stored
 approval, review the workspace again.
 
-See {doc}`workspaces and provenance
-<../../explanation/workspaces-and-provenance>` for the content that ERLab pauses. Use
-the {ref}`Security settings <options-trusted-workspace-folders>` only for a controlled
-analysis folder.
+{ref}`Stored code <imagetool-manager-code-trust>` lists the content that Manager can
+keep paused. Use the {ref}`Security settings <options-trusted-workspace-folders>` only
+for a controlled analysis folder.
 
 (how-to-gui-reduce-manager-memory)=
 
