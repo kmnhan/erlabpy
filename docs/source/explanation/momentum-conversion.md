@@ -2,12 +2,12 @@
 
 ERLabPy can calculate momentum coordinates without changing the measured sampling. It
 can also interpolate the intensity onto a regular momentum grid. Both operations use
-the same momentum conversion functions.
+the same momentum conversion functions. The mapping functions use the complete
+trigonometric geometry without a small-angle approximation.
 
 ## Conversion inputs
 
-The {ref}`ERLabPy ARPES data conventions <data-conventions>` define the expected names,
-units, and storage locations.
+{ref}`data-conventions` defines the expected names, units, and storage locations.
 
 | Input | Role in the mapping functions |
 | --- | --- |
@@ -20,6 +20,29 @@ units, and storage locations.
 
 `angle_resolution` is not an input to the mapping functions. It is used only to select
 an automatic interpolation grid, as described below.
+
+## Variable experimental configurations
+
+An experimental configuration describes the physical relation between the analyzer
+slit, deflector, and sample rotation axes during acquisition. It is not a display
+orientation or a generic correction for loader output.
+
+Most endstations have one fixed configuration, which the loader assigns. Some
+endstations can rotate the analyzer slit or switch between deflector mapping and a
+physical sample rotation. One loader can then serve measurements acquired in different
+configurations.
+
+{meth}`xarray.DataArray.kspace.as_configuration` performs a semantic translation for
+these variable-geometry setups.
+
+| Changes | Does not change |
+| --- | --- |
+| The `configuration` attribute | Measured intensity values or sampling |
+| Standard angle-coordinate names, translated by physical role | The physical geometry used during acquisition |
+| A copy of the input object | Arbitrary or endstation-specific names from an incorrect loader |
+
+Use {ref}`how-to-python-change-configuration` for the concrete ALS BL7 case and the
+coordinate-name translation.
 
 ## Normal emission and angular offsets
 
@@ -34,6 +57,19 @@ along the sample surface normal.
 - Matrix-element asymmetry can move an intensity maximum away from the correct symmetry
   position.
 
+The angular offsets are reference angles in the mapping functions. They are relative
+to the stored angle coordinates, not an absolute position of the sample normal.
+
+- {meth}`xarray.DataArray.kspace.set_normal` solves the offsets that map a known
+  normal-emission position to zero in-plane momentum.
+- Changing an angle coordinate while keeping its offset fixed changes the represented
+  orientation.
+- When a sample angle varies with `hv`, momentum conversion evaluates the varying
+  coordinate together with its fixed reference offset. Replacing the varying
+  coordinate with one constant angle changes the momentum trajectory.
+- {attr}`xarray.DataArray.kspace.offsets` permits direct offset assignment when the
+  sign conventions and physical reference angles are already known.
+
 The three panels use the same simulated intensity and the same display limits. The
 middle panel omits a known $\xi=3^\circ$ offset. The final panel uses that offset in the
 mapping functions. The dashed lines mark $k_x=k_y=0$.
@@ -44,10 +80,10 @@ mapping functions. The dashed lines mark $k_x=k_y=0$.
    :alt: Constant energy surfaces in angle coordinates calculated without and with the known xi offset
 ```
 
-Use the {ref}`configuration-correction guide <how-to-python-change-configuration>` when
-the loader assigned the wrong geometry. Use the
-{ref}`momentum-conversion guide <how-to-python-convert-angle-data>` to set normal emission
-and perform the conversion.
+Use {ref}`how-to-python-change-configuration` when a variable-geometry measurement uses
+a different configuration from the loader default. Use
+{ref}`how-to-python-convert-angle-data` to set normal emission and perform the
+conversion.
 
 ## Coordinates and interpolation
 
@@ -68,9 +104,9 @@ momentum resolution. A finer grid does not add information. A rectangular grid c
 also extend outside the transformed measurement coverage. Those points contain
 missing values.
 
-Use the {ref}`common-grid guide <how-to-python-convert-common-grid>` for pointwise
-comparison. Use the {ref}`measured-cut guide <how-to-python-convert-coordinates-only>`
-when interpolation would hide the original sampling.
+Use {ref}`how-to-python-convert-common-grid` for pointwise comparison. Use
+{ref}`how-to-python-convert-coordinates-only` when interpolation would hide the original
+sampling.
 
 ## hν–dependent scans
 
@@ -85,7 +121,6 @@ scans:
 - {meth}`~erlab.accessors.kspace.MomentumAccessor.hv_to_kz` returns calculated
   coordinates. It does not add measurements at new photon energies.
 
-Use the {ref}`hν-dependent scan conversion guide
-<how-to-python-convert-photon-energy-scan>` for conversion. Use the
-{ref}`photon-energy annotation guide <how-to-plotting-photon-energy-annotations>` for
-calculated paths on converted momentum-space intensity.
+Use {ref}`how-to-python-convert-photon-energy-scan` for conversion. Use
+{ref}`how-to-plotting-photon-energy-annotations` for calculated paths on converted
+momentum-space intensity.

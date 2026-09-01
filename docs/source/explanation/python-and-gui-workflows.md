@@ -76,8 +76,7 @@ supports review, repeated analysis, and automation. Review generated code before
 adding it to a script or notebook.
 
 The table in {ref}`workflow-bridge-operations` lists GUI actions and their corresponding
-Python operations. Use the
-{doc}`GUI Python integration guides <../how-to/gui/python-integration>` when you move
-data or code between Python and the GUI. The {doc}`GUI application reference
-<../reference/gui/index>` describes the applications and controls. {doc}`Workspaces and provenance
-<workspaces-and-provenance>` explains saved GUI state and recorded operations.
+Python operations. Use {doc}`../how-to/gui/python-integration` when you move data or
+code between Python and the GUI. {doc}`../reference/gui/index` describes the
+applications and controls. {doc}`workspaces-and-provenance` explains saved GUI state
+and recorded operations.

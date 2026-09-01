@@ -145,14 +145,12 @@ def apply_symmetry() -> None:
         cut,
         dim="kx",
         center=0.0,
-        average=True,
     )
     antisymmetrized = era.transform.symmetrize(
         cut,
         dim="kx",
         center=0.0,
         subtract=True,
-        average=True,
     )
 
     _, axes = eplt.plot_slices(
@@ -164,7 +162,6 @@ def apply_symmetry() -> None:
         norm=[None, None, eplt.CenteredInversePowerNorm(1.0)],
         gamma=0.5,
     )
-    eplt.unify_clim(axes[:2])
     eplt.set_titles(axes, ["Original", "Symmetrized", "Antisymmetrized"])
     eplt.clean_labels(axes)
 

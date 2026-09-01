@@ -106,9 +106,36 @@ def test_generate_data_angles_geometry_defaults_are_compatible() -> None:
         assign_attributes=True,
         normal_emission=(0.0, 0.0),
         delta_offset=0.0,
+        band_rotation=0.0,
     )
 
     xr.testing.assert_identical(default, explicit)
+
+
+def test_generate_data_angles_rotates_band_structure(monkeypatch) -> None:
+    original = erlab.io.exampledata._band
+    band_points: list[np.ndarray] = []
+
+    def record_band_points(kvec, *args):
+        band_points.append(kvec.copy())
+        return original(kvec, *args)
+
+    monkeypatch.setattr(erlab.io.exampledata, "_band", record_band_points)
+    kwargs = {
+        "shape": (4, 3, 2),
+        "noise": False,
+        "extended": False,
+        "normal_emission": (2.0, -1.5),
+        "delta_offset": -4.0,
+    }
+    generate_data_angles(**kwargs)
+    generate_data_angles(**kwargs, band_rotation=-30.0)
+
+    theta = np.deg2rad(30.0)
+    rotation = np.array(
+        [[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]]
+    )
+    np.testing.assert_allclose(band_points[1], band_points[0] @ rotation)
 
 
 @pytest.mark.parametrize(("extended", "expected_calls"), [(False, 1), (True, 2)])
@@ -160,6 +187,8 @@ def test_generate_data_angles_geometry_reaches_each_mapping_path(
         ({"normal_emission": iter((0.0, 0.0))}, "finite 2-tuple"),
         ({"delta_offset": [0.0]}, "finite scalar"),
         ({"delta_offset": np.nan}, "finite scalar"),
+        ({"band_rotation": [0.0]}, "finite scalar"),
+        ({"band_rotation": np.nan}, "finite scalar"),
     ],
 )
 def test_generate_data_angles_invalid_geometry(kwargs, message) -> None:

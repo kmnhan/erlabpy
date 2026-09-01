@@ -104,14 +104,12 @@ symmetrized = era.transform.symmetrize(
     data,
     dim="kx",
     center=0.0,
-    average=True,
 )
 antisymmetrized = era.transform.symmetrize(
     data,
     dim="kx",
     center=0.0,
     subtract=True,
-    average=True,
 )
 ```
 
@@ -124,6 +122,10 @@ antisymmetrized = era.transform.symmetrize(
 Use a symmetry center established independently from the transformation. Do not use
 symmetrized intensity to determine normal emission or to justify a reflection symmetry
 that is not known for the measured system.
+
+By default, the outputs contain the sum or difference of the original and reflected
+values. Set `average=True` to divide the result by two where both coordinate ranges
+overlap.
 
 See {func}`erlab.analysis.transform.symmetrize` for coordinate and output-range
 arguments.
@@ -201,6 +203,5 @@ method. Compare the processed result with the source intensity in the same windo
 After you select the parameters, copy the generated calculation code or open the
 result in ImageTool from the plot context menu.
 
-See {func}`erlab.interactive.dtool` for the Python entry point. See the
-{ref}`dtool reference <guide-dtool>` for its methods, controls, and ImageTool
-integration.
+See {func}`erlab.interactive.dtool` for the Python entry point. See {ref}`guide-dtool`
+for its methods, controls, and ImageTool integration.

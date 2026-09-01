@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import pathlib
 import threading
 
@@ -28,6 +29,16 @@ class _Manager(QtWidgets.QWidget):
         self._metadata_copy_selected_action = QtGui.QAction(self)
         self.close_calls = 0
         self.reject_close = False
+        self._option_overrides: dict[str, object] = {}
+
+    def workspace_option_overrides(self) -> dict[str, object]:
+        return dict(self._option_overrides)
+
+    def _set_workspace_option_overrides(
+        self, overrides, *, mark_dirty: bool = True
+    ) -> None:
+        del mark_dirty
+        self._option_overrides = dict(overrides)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self.close_calls += 1
@@ -88,7 +99,7 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
 
     ids = [step.id for step in controller.steps]
     assert ids[0] == "welcome"
-    assert ids[-1] == "workspace-save-as"
+    assert ids[-1] == "tutorial-complete"
     assert len(ids) == len(set(ids))
     assert ids.index("manager-introduction") < ids.index("open-data-explorer")
     assert ids.index("open-data-explorer") < ids.index("data-explorer-introduction")
@@ -114,7 +125,8 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     assert ids.index("ctrl-drag-cursor") < ids.index("imagetool-cursor-controls")
     assert ids.index("ctrl-drag-cursor") < ids.index("transpose-alpha-beta")
     assert ids.index("add-second-cursor") < ids.index("move-second-cursor")
-    assert ids.index("move-second-cursor") < ids.index("set-second-cursor-bin")
+    assert ids.index("move-second-cursor") < ids.index("move-all-cursors")
+    assert ids.index("move-all-cursors") < ids.index("set-second-cursor-bin")
     assert ids.index("set-second-cursor-bin") < ids.index("select-first-cursor")
     assert "reveal-map-in-manager" not in ids
     assert "open-map-imagetool" not in ids
@@ -128,17 +140,20 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     assert ids.index("apply-energy-correction") < ids.index("open-ktool")
     assert ids.index("ktool-grid") < ids.index("select-ktool-visualization")
     assert ids.index("select-ktool-visualization") < ids.index("ktool-brillouin-zone")
-    assert ids.index("ktool-brillouin-zone") < ids.index("select-ktool-parameters")
+    assert ids.index("ktool-brillouin-zone") < ids.index("ktool-energy-preview")
+    assert ids.index("ktool-energy-preview") < ids.index("select-ktool-parameters")
     assert ids.index("select-ktool-parameters") < ids.index("open-converted-map")
     assert ids.index("switch-to-manager-provenance") < ids.index("manager-overview")
     assert ids.index("manager-overview") < ids.index("select-manager-provenance")
     assert ids.index("select-manager-provenance") < ids.index("provenance-overview")
-    assert ids.index("switch-to-manager-operations") < ids.index("select-converted-map")
+    assert ids.index("switch-to-manager-operations") < ids.index("top-level-cut")
+    assert ids.index("top-level-cut") < ids.index("select-converted-map")
     assert ids.index("select-converted-map") < ids.index("expand-input-history")
     assert ids.index("expand-input-history") < ids.index("select-reusable-operations")
     assert ids.index("paste-reusable-operations") < ids.index("new-figure")
     assert "open-figure-context-menu" not in ids
-    assert ids.index("new-figure") < ids.index("switch-to-figure-composer")
+    assert "switch-to-figure-composer" not in ids
+    assert ids.index("new-figure") < ids.index("figure-composer-output")
     assert ids.index("figure-composer-output") < ids.index(
         "select-figure-composer-sources"
     )
@@ -157,13 +172,9 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
     assert ids.index("select-figure-composer-recipe") < ids.index(
         "figure-composer-recipe"
     )
-    assert ids.index("figure-composer-recipe") < ids.index(
-        "select-figure-composer-export"
-    )
-    assert ids.index("select-figure-composer-export") < ids.index(
-        "figure-composer-export"
-    )
-    assert ids.index("switch-to-manager-finish") < ids.index("workspace-save-as")
+    assert ids.index("figure-composer-recipe") < ids.index("reveal-figure-in-manager")
+    assert ids.index("reveal-figure-in-manager") < ids.index("manager-figures")
+    assert ids.index("manager-figures") < ids.index("tutorial-complete")
     assert all(
         step.card_position == "center" and step.auto_advance
         for step in controller.steps
@@ -181,6 +192,7 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         "set-energy-bin",
         "add-second-cursor",
         "move-second-cursor",
+        "move-all-cursors",
         "set-second-cursor-bin",
         "select-first-cursor",
         "select-energy-coordinate",
@@ -189,6 +201,8 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         "select-c6-guideline",
         "set-normal-emission-and-azimuth",
         "select-ktool-visualization",
+        "ktool-brillouin-zone",
+        "ktool-energy-preview",
         "select-ktool-parameters",
         "select-manager-provenance",
         "select-cut",
@@ -201,7 +215,6 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         "select-figure-composer-sources",
         "select-figure-composer-layout",
         "select-figure-composer-recipe",
-        "select-figure-composer-export",
     }
     assert controller.steps[-1].continue_label == "Finish"
     assert all(
@@ -209,7 +222,97 @@ def test_tutorial_sequence_has_stable_forward_only_ids(monkeypatch, qtbot) -> No
         for step in controller.steps
         if step.mode == "action"
     )
+    assert manager._option_overrides == tutorial._TUTORIAL_OPTION_OVERRIDES
 
+    controller._finish_cleanup()
+
+
+def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -> None:
+    from erlab.interactive.imagetool import _kspace_conversion
+    from erlab.interactive.imagetool._provenance._model import stamp_operation_group
+    from erlab.interactive.imagetool._provenance._operations import (
+        AffineCoordOperation,
+        AverageOperation,
+        KspaceConvertOperation,
+        KspaceSetNormalOperation,
+    )
+    from erlab.interactive.imagetool.manager import _details_panel
+
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    controller, _loader_context = _controller(monkeypatch, manager)
+    grouped = stamp_operation_group(
+        (
+            KspaceSetNormalOperation(alpha=2.0, beta=-1.5, delta=-4.0),
+            KspaceConvertOperation(),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    expected = (
+        AffineCoordOperation(coord_name="eV", scale=1.0, offset=-45.5),
+        *grouped,
+    )
+
+    class _DetailsPanel:
+        @staticmethod
+        def _selected_derivation_step_payload():
+            return expected, "example_map", False
+
+    manager._details_panel = _DetailsPanel()
+    monkeypatch.setattr(controller, "_reusable_operations_selected", lambda: True)
+
+    def set_operations(operations) -> None:
+        payload = {
+            "type": _details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+            "version": _details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
+            "operations": [
+                operation.model_dump(mode="json") for operation in operations
+            ],
+        }
+        mime_data = QtCore.QMimeData()
+        mime_data.setData(
+            _details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+            json.dumps(payload).encode("utf-8"),
+        )
+        QtWidgets.QApplication.clipboard().setMimeData(mime_data)
+
+    set_operations(expected)
+    controller._operations_copy_triggered()
+    assert controller._provenance_steps_on_clipboard()
+
+    QtWidgets.QApplication.clipboard().setText("unrelated clipboard text")
+    assert not controller._provenance_steps_on_clipboard()
+
+    set_operations((AverageOperation(dims=("eV",)),))
+    assert not controller._provenance_steps_on_clipboard()
+    menu = QtWidgets.QMenu(manager)
+    event = QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress)
+    assert not controller._paste_operations_event_predicate(menu, event)
+
+    set_operations(
+        (
+            AffineCoordOperation(coord_name="eV", scale=1.0, offset=-1.0),
+            *grouped,
+        )
+    )
+    controller._operations_copy_triggered()
+    assert not controller._provenance_steps_on_clipboard()
+
+    set_operations(
+        (
+            expected[0],
+            expected[1],
+            expected[2].model_copy(update={"method": "nearest"}),
+        )
+    )
+    controller._operations_copy_triggered()
+    assert not controller._provenance_steps_on_clipboard()
+
+    set_operations(expected)
+    controller._operations_copy_triggered()
+    assert controller._provenance_steps_on_clipboard()
+    assert controller._paste_operations_event_predicate(menu, event)
+    QtWidgets.QApplication.clipboard().clear()
     controller._finish_cleanup()
 
 
@@ -254,6 +357,24 @@ def test_figure_composer_target_uses_the_tutorial_manager(monkeypatch, qtbot) ->
     )
     assert controller._figure_composer() is owned
 
+    controller._finish_cleanup()
+
+
+def test_show_figure_composer_raises_and_activates(monkeypatch, qtbot) -> None:
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    controller, _loader_context = _controller(monkeypatch, manager)
+    composer = QtWidgets.QWidget()
+    qtbot.addWidget(composer)
+    calls: list[str] = []
+    monkeypatch.setattr(controller, "_figure_composer", lambda: composer)
+    monkeypatch.setattr(composer, "show", lambda: calls.append("show"))
+    monkeypatch.setattr(composer, "raise_", lambda: calls.append("raise"))
+    monkeypatch.setattr(composer, "activateWindow", lambda: calls.append("activate"))
+
+    controller._show_figure_composer()
+
+    assert calls == ["show", "raise", "activate"]
     controller._finish_cleanup()
 
 
@@ -356,11 +477,31 @@ def test_cursor_drag_predicate_requires_primary_modifier(qapp) -> None:
         QtCore.Qt.Key.Key_A,
         QtCore.Qt.KeyboardModifier.ControlModifier,
     )
+    controlled_and_alt = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseMove,
+        position,
+        position,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.ControlModifier
+        | QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+    alt_key = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_Alt,
+        QtCore.Qt.KeyboardModifier.AltModifier,
+    )
 
     assert not tutorial._cursor_drag_event_predicate(None, plain)
     assert tutorial._cursor_drag_event_predicate(None, controlled)
     assert tutorial._cursor_drag_event_predicate(None, control_key)
     assert not tutorial._cursor_drag_event_predicate(None, other_key)
+    assert not tutorial._multi_cursor_drag_event_predicate(None, plain)
+    assert not tutorial._multi_cursor_drag_event_predicate(None, controlled)
+    assert tutorial._multi_cursor_drag_event_predicate(None, controlled_and_alt)
+    assert tutorial._multi_cursor_drag_event_predicate(None, control_key)
+    assert tutorial._multi_cursor_drag_event_predicate(None, alt_key)
+    assert not tutorial._multi_cursor_drag_event_predicate(None, other_key)
 
 
 def test_cursor_drag_suspends_tutorial_refresh_until_release(
@@ -823,7 +964,11 @@ def test_tutorial_real_workflow(
         complete_action(expected)
 
     def assert_tab_step(
-        window: QtWidgets.QWidget, tabs: QtWidgets.QTabWidget, index: int
+        window: QtWidgets.QWidget,
+        tabs: QtWidgets.QTabWidget,
+        index: int,
+        *,
+        unobscured: bool = False,
     ) -> None:
         controller.notify_state_changed()
         card = controller._card
@@ -842,6 +987,8 @@ def test_tutorial_real_workflow(
         )
         assert overlay._spotlight is not None
         assert overlay._spotlight.contains(tab_center)
+        if unobscured:
+            assert not card.geometry().intersects(overlay._spotlight)
 
     with manager_context() as manager:
         manager.show()
@@ -903,7 +1050,7 @@ def test_tutorial_real_workflow(
         continue_to("transpose-alpha-beta")
         tool.cursor_controls.btn_transpose[0].click()
         assert controller._main_dims() == ("beta", "alpha")
-        complete_action("imagetool-display-controls")
+        complete_action("imagetool-color-controls")
         continue_to("set-energy-bin")
 
         energy_axis = tool.slicer_area.data.get_axis_num("eV")
@@ -912,6 +1059,9 @@ def test_tutorial_real_workflow(
         tool.cursor_controls.btn_add.click()
         complete_action("move-second-cursor")
         tool.slicer_area.set_index(axis, 15, cursor=1)
+        complete_action("move-all-cursors")
+        tool.slicer_area.set_index(axis, 20, cursor=0)
+        tool.slicer_area.set_index(axis, 20, cursor=1)
         complete_action("set-second-cursor-bin")
         tool.binning_controls.spins[energy_axis].setValue(3)
         complete_action("select-first-cursor")
@@ -1015,7 +1165,21 @@ def test_tutorial_real_workflow(
         assert ktool.tabWidget.currentIndex() == 0
         assert_tab_step(ktool, ktool.tabWidget, 1)
         select_tab(ktool.tabWidget, 1, "ktool-brillouin-zone")
-        continue_to("select-ktool-parameters")
+        assert ktool.a_spin.value() == pytest.approx(6.97)
+        assert ktool.b_spin.value() == pytest.approx(6.97)
+        assert ktool.alpha_spin.value() == pytest.approx(90.0)
+        assert ktool.beta_spin.value() == pytest.approx(90.0)
+        assert ktool.gamma_spin.value() == pytest.approx(120.0)
+        assert ktool.centering_combo.currentText() == "P"
+        assert ktool.rot_spin.value() == pytest.approx(0.0)
+        assert not ktool.bz_group.isChecked()
+        ktool.bz_group.setChecked(True)
+        complete_action("ktool-energy-preview")
+        assert ktool.center_spin.isEnabled()
+        assert ktool.width_spin.isEnabled()
+        ktool.center_spin.setValue(-0.2)
+        ktool.width_spin.setValue(5)
+        complete_action("select-ktool-parameters")
         assert_tab_step(ktool, ktool.tabWidget, 0)
         select_tab(ktool.tabWidget, 0, "open-converted-map")
 
@@ -1064,7 +1228,12 @@ def test_tutorial_real_workflow(
         provenance_index = manager.inspector_tabs.indexOf(
             manager.metadata_provenance_page
         )
-        assert_tab_step(manager, manager.inspector_tabs, provenance_index)
+        assert_tab_step(
+            manager,
+            manager.inspector_tabs,
+            provenance_index,
+            unobscured=True,
+        )
         select_tab(manager.inspector_tabs, provenance_index, "provenance-overview")
         continue_to("switch-to-explorer-cut")
         manager.explorer_action.trigger()
@@ -1089,7 +1258,7 @@ def test_tutorial_real_workflow(
         raw_cut = controller._tool_for_uid(controller._raw_cut_uid())
         assert isinstance(raw_cut, erlab.interactive.imagetool.ImageTool)
         raw_cut.reveal_in_manager_act.trigger()
-        complete_action("select-converted-map")
+        continue_to("select-converted-map")
 
         converted_index = manager.tree_view._model._row_index(
             controller._converted_map_uid()
@@ -1181,6 +1350,35 @@ def test_tutorial_real_workflow(
         controller._select_uid(controller._raw_cut_uid())
         controller.notify_state_changed()
         complete_action("paste-reusable-operations")
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText("unrelated clipboard text")
+        card = controller._card
+        assert card is not None
+        qtbot.waitUntil(card.recovery_button.isVisible)
+        assert card.recovery_button.text() == "Copy Again"
+        assert card.recovery_button.hasFocus()
+        assert not card.continue_button.isEnabled()
+        assert "clipboard no longer contains" in card.hint.text()
+        card.recovery_button.click()
+        wait_step("select-converted-map")
+
+        controller._select_uid(controller._converted_map_uid())
+        controller.notify_state_changed()
+        complete_action("expand-input-history")
+        input_item = controller._reusable_input_item()
+        assert input_item is not None
+        input_item.setExpanded(True)
+        complete_action("select-reusable-operations")
+        select_reusable_operation_items()
+        controller.notify_state_changed()
+        complete_action("copy-reusable-operations")
+        manager._metadata_copy_selected_action.trigger()
+        complete_action("select-raw-cut")
+        controller._select_uid(controller._raw_cut_uid())
+        controller.notify_state_changed()
+        complete_action("paste-reusable-operations")
+
         manager._build_metadata_derivation_menu(include_row_actions=False)
         assert manager._metadata_paste_steps_action.isEnabled()
         manager._metadata_paste_steps_action.trigger()
@@ -1231,12 +1429,11 @@ def test_tutorial_real_workflow(
         )
         composer = controller._figure_composer()
         assert composer is not None
-        complete_switch(
-            "switch-to-figure-composer",
-            composer,
-            "figure-composer-output",
+        qtbot.waitUntil(
+            lambda: step_id() == "figure-composer-output",
             timeout=60_000,
         )
+        assert composer.isActiveWindow()
         assert composer.editor_tabs.currentWidget() is composer.operation_panel
         continue_to("select-figure-composer-sources")
         assert composer.editor_tabs.currentWidget() is composer.operation_panel
@@ -1248,11 +1445,21 @@ def test_tutorial_real_workflow(
         continue_to("select-figure-composer-recipe")
         assert_tab_step(composer, composer.editor_tabs, 2)
         select_tab(composer.editor_tabs, 2, "figure-composer-recipe")
-        continue_to("select-figure-composer-export")
-        assert_tab_step(composer, composer.editor_tabs, 3)
-        select_tab(composer.editor_tabs, 3, "figure-composer-export")
-        continue_to("switch-to-manager-finish")
-        complete_switch("switch-to-manager-finish", manager, "workspace-save-as")
+        continue_to("reveal-figure-in-manager")
+        composer.reveal_in_manager_action.trigger()
+        complete_action("manager-figures")
+
+        figure_pane = manager._figure_collection.pane
+        assert figure_pane is not None
+        assert manager.left_tabs.currentWidget() is figure_pane
+        figure_uid = controller._figure_composer_uid
+        assert figure_uid is not None
+        selected_figure_uids = {
+            manager._figure_collection.uid_from_item(item)
+            for item in figure_pane.list_widget.selectedItems()
+        }
+        assert selected_figure_uids == {figure_uid}
+        continue_to("tutorial-complete")
 
         controller.continue_step()
         qtbot.waitUntil(lambda: controller.is_cleaned, timeout=20_000)
@@ -1278,11 +1485,28 @@ def test_tutorial_debug_skip_completes_real_workflow(
         assert card.skip_button.isVisible()
 
         visited: list[str] = []
+        clipboard_wiped = False
+        clipboard_recovered = False
         driver = QtCore.QTimer()
         driver.setInterval(25)
 
         def skip_current_step() -> None:
+            nonlocal clipboard_recovered, clipboard_wiped
             step = controller.current_step
+            if step is not None and step.id == "paste-reusable-operations":
+                if not clipboard_wiped:
+                    QtWidgets.QApplication.clipboard().setText(
+                        "unrelated clipboard text"
+                    )
+                    clipboard_wiped = True
+                    return
+                if (
+                    card.recovery_button.isVisible()
+                    and card.recovery_button.isEnabled()
+                ):
+                    clipboard_recovered = True
+                    card.recovery_button.click()
+                    return
             if (
                 step is None
                 or (visited and visited[-1] == step.id)
@@ -1323,5 +1547,7 @@ def test_tutorial_debug_skip_completes_real_workflow(
             ),
             "closing_document": manager._workspace_state.closing_document,
         }
+        assert clipboard_wiped
+        assert clipboard_recovered
         assert "open-coordinate-editor" in visited
         assert "new-figure" in visited

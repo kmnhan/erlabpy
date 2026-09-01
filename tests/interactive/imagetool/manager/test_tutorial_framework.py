@@ -159,10 +159,12 @@ def test_information_step_readiness_and_transition(qtbot) -> None:
     controller.update_current(title="Ready", body="Ready body")
     controller.notify_state_changed()
     assert card.continue_button.isEnabled()
-    qtbot.mouseClick(card.continue_button, QtCore.Qt.MouseButton.LeftButton)
+    assert window.focusWidget() is card.continue_button
+    qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
     assert controller.current_step is steps[1]
+    assert window.focusWidget() is card.continue_button
     with qtbot.waitSignal(controller.finished):
-        qtbot.mouseClick(card.continue_button, QtCore.Qt.MouseButton.LeftButton)
+        qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Enter)
     assert not controller.is_running
 
 
@@ -194,9 +196,11 @@ def test_debug_skip_advances_information_and_action_steps(qtbot) -> None:
     assert card is not None
     assert card.skip_button.isVisible()
 
-    qtbot.mouseClick(card.skip_button, QtCore.Qt.MouseButton.LeftButton)
+    assert window.focusWidget() is card.continue_button
+    qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
     assert controller.current_step is steps[1]
-    qtbot.mouseClick(card.skip_button, QtCore.Qt.MouseButton.LeftButton)
+    assert window.focusWidget() is card.skip_button
+    qtbot.keyClick(card.skip_button, QtCore.Qt.Key.Key_Return)
     qtbot.waitUntil(lambda: controller.current_step is steps[2])
     assert action_complete
     controller.close()
@@ -464,6 +468,32 @@ def test_instruction_card_can_be_centered(qtbot) -> None:
     controller.close()
 
 
+def test_instruction_card_can_be_placed_above_target(qtbot) -> None:
+    window = _shown_window(qtbot)
+    target = QtWidgets.QPushButton(window)
+    target.setGeometry(240, 400, 160, 30)
+    target.show()
+    controller = tutorial.TourController(
+        [
+            tutorial.TourStep(
+                "tab",
+                "Select a tab",
+                "Body",
+                target=target,
+                card_position="top",
+            )
+        ],
+        window,
+    )
+    controller.start()
+    qtbot.waitUntil(lambda: bool(controller._overlays))
+
+    card = controller._card
+    assert card is not None
+    assert card.geometry().bottom() < target.geometry().top()
+    controller.close()
+
+
 def test_instruction_card_recalculates_height_for_narrow_window(qtbot) -> None:
     window = _shown_window(qtbot)
     window.resize(260, 420)
@@ -680,6 +710,75 @@ def test_action_step_requires_continue_after_observed_state(qtbot) -> None:
     controller.close()
     emitter.changed.emit()
     assert controller.current_step is None
+
+
+def test_recovery_button_revisits_an_earlier_step(qtbot) -> None:
+    window = _shown_window(qtbot)
+    controller: tutorial.TourController
+
+    def revisit_copy_step() -> None:
+        controller._revisit_step("copy")
+
+    steps = [
+        tutorial.TourStep("copy", "Copy", "Copy the values.", target_required=False),
+        tutorial.TourStep(
+            "paste",
+            "Paste",
+            "Paste the values.",
+            mode="action",
+            target_required=False,
+            completion=lambda: False,
+            debug_action=lambda: None,
+            recovery_label="Copy Again",
+            recovery_hint="The clipboard contents changed.",
+            recovery_action=revisit_copy_step,
+            recovery_available=lambda: True,
+            auto_advance=False,
+        ),
+    ]
+    controller = tutorial.TourController(steps, window, debug=True)
+    controller.start()
+    card = controller._card
+    assert card is not None
+    assert not card.recovery_button.isVisible()
+
+    qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
+    assert controller.current_step is steps[1]
+    assert card.recovery_button.objectName() == "tutorialRecoveryButton"
+    assert card.recovery_button.isVisible()
+    assert card.recovery_button.text() == "Copy Again"
+    assert card.hint.text() == "The clipboard contents changed."
+    assert window.focusWidget() is card.recovery_button
+    assert not card.skip_button.isEnabled()
+
+    qtbot.keyClick(card.recovery_button, QtCore.Qt.Key.Key_Return)
+    assert controller.current_step is steps[0]
+    assert not card.recovery_button.isVisible()
+    controller.close()
+
+
+def test_recovery_options_require_a_label_and_action() -> None:
+    with pytest.raises(ValueError, match="label and action"):
+        tutorial.TourStep(
+            "missing-action",
+            "Missing action",
+            "Body",
+            recovery_label="Recover",
+        )
+    with pytest.raises(ValueError, match="label and action"):
+        tutorial.TourStep(
+            "missing-label",
+            "Missing label",
+            "Body",
+            recovery_action=lambda: None,
+        )
+    with pytest.raises(ValueError, match="require a recovery action"):
+        tutorial.TourStep(
+            "orphan-predicate",
+            "Orphan predicate",
+            "Body",
+            recovery_available=lambda: True,
+        )
 
 
 def test_discrete_action_advances_on_observed_state(qtbot) -> None:

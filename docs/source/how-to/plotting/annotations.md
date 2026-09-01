@@ -31,9 +31,8 @@ eplt.label_subplots(ax, prefix="(", suffix=")")
 
 Replace the positions and labels with the measured path in the plotted coordinate
 system. See {func}`erlab.plotting.mark_points`, {func}`erlab.plotting.fermiline`, and
-{func}`erlab.plotting.label_subplots` for placement and formatting arguments. See the
-{doc}`Python workflow tutorial <../../tutorials/python/index>` for the basic plotting
-sequence.
+{func}`erlab.plotting.label_subplots` for placement and formatting arguments. See
+{doc}`../../tutorials/python/index` for the basic plotting sequence.
 
 ## Figure Composer
 

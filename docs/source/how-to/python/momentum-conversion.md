@@ -8,8 +8,35 @@ coordinates to a measured cut, and convert $h\nu$–dependent scans.
 
 ## Changing the assigned configuration
 
-Compare the experimental geometry with the four configurations in {ref}`nomenclature`.
-Do not select a configuration from the appearance of the measured intensity.
+Use this procedure when one endstation can acquire data in more than one of the four
+physical configurations in {ref}`nomenclature`, and the file does not uniquely identify
+the configuration used for one measurement. Do not select a configuration from the
+appearance of the measured intensity.
+
+Two common cases are an analyzer with a slit that rotates about the lens axis and a
+deflector-equipped analyzer that can acquire a map either with the deflector or by
+moving a physical sample angle. For example, the analyzer at ALS BL7 can change its
+slit orientation. A horizontal-slit tilt map from that endstation uses configuration 2,
+whereas the MAESTRO loader uses configuration 3, a vertical-slit deflector map, as its
+default.
+
+Do not use {meth}`xarray.DataArray.kspace.as_configuration` to repair arbitrary names
+from an incorrect loader implementation. Data from a fixed-geometry endstation must
+already have the correct configuration and coordinate names after loading. Correct the
+loader when it does not.
+
+A loader normally assigns the configuration. When you construct an angle-resolved
+{class}`DataArray <xarray.DataArray>` directly and it has no `configuration` attribute,
+assign the known configuration once:
+
+```python
+import erlab
+
+data.kspace.configuration = erlab.constants.AxesConfiguration.Type1DA
+```
+
+Use {meth}`xarray.DataArray.kspace.as_configuration` only when the data already has a
+configuration and the measurement used another supported physical configuration.
 
 Inspect the configuration assigned by the loader:
 
@@ -17,25 +44,30 @@ Inspect the configuration assigned by the loader:
 data.kspace.configuration
 ```
 
-Create a {class}`DataArray <xarray.DataArray>` with the configuration used by the
-measurement:
+For the ALS BL7 case above, create a {class}`DataArray <xarray.DataArray>` for the
+horizontal-slit configuration:
 
 ```python
-import erlab
-
 configured = data.kspace.as_configuration(
     erlab.constants.AxesConfiguration.Type2,
 )
 ```
 
-The method returns a copy and renames the angle coordinates for the selected
-configuration. Use `configured` for the remaining analysis. The original
-{class}`DataArray <xarray.DataArray>` is unchanged. The method assumes a typical ARPES
-setup with a vertical cryostat. For other geometries, set the configuration attribute
-manually and rename the angle coordinates.
-See {attr}`xarray.DataArray.kspace.configuration` and
-{meth}`xarray.DataArray.kspace.as_configuration` for the angle coordinate names used by
-each configuration.
+The method translates the standard coordinate names by their physical roles. In a
+change from configuration 3 to configuration 2, `chi` becomes `xi`, `xi` becomes
+`beta`, and `beta` becomes `beta_deflector`. Only coordinates present in the data are
+renamed.
+
+The method also changes the `configuration` attribute. It does not rotate, interpolate,
+or otherwise transform the intensity. It returns a copy, and the original
+{class}`DataArray <xarray.DataArray>` is unchanged. Use `configured` for the remaining
+analysis.
+
+This translation assumes the standard vertical-cryostat geometries in
+{ref}`nomenclature`. For a different geometry, rename the physical angle coordinates
+and set the `configuration` attribute explicitly. See
+{attr}`xarray.DataArray.kspace.configuration` and
+{meth}`xarray.DataArray.kspace.as_configuration` for the complete interface.
 
 (how-to-python-convert-angle-data)=
 
@@ -59,8 +91,9 @@ converted = conversion_input.kspace.convert()
 ```
 
 `alpha_normal` and `beta_normal` are the data coordinates that correspond to normal
-emission. Use {ref}`how-to-python-change-configuration` first if the loader assigned the
-wrong experimental configuration.
+emission. Use {ref}`how-to-python-change-configuration` first when a variable-geometry
+endstation acquired the measurement in a different configuration from the loader
+default.
 
 To control the output grid, supply momentum bounds and a target step through the
 `resolution` argument:
@@ -82,10 +115,12 @@ the target values must be exact.
    :alt: Constant energy map in angle coordinates, on the automatic momentum grid, and on a specified momentum grid
 ```
 
-Use the {doc}`Python workflow tutorial <../../tutorials/python/index>` for the basic
+Use {doc}`../../tutorials/python/index` for the basic
 generated-data conversion. See {doc}`momentum conversion
 <../../explanation/momentum-conversion>` before selecting geometry, offsets, or output
 sampling. See {meth}`xarray.DataArray.kspace.convert` for all conversion arguments.
+Use {ref}`guide-ktool` to adjust these parameters interactively and copy the resulting
+configuration, offsets, and conversion call to Python.
 
 (how-to-python-convert-common-grid)=
 
@@ -124,8 +159,8 @@ Points outside the measured coverage contain missing values. Select a common val
 region before you compare intensity between measurements.
 
 See {meth}`xarray.DataArray.kspace.convert` for the accepted target coordinates. See
-{doc}`momentum conversion <../../explanation/momentum-conversion>` for the distinction
-between interpolation spacing and experimental momentum resolution.
+{doc}`../../explanation/momentum-conversion` for the distinction between interpolation
+spacing and experimental momentum resolution.
 
 (how-to-python-convert-coordinates-only)=
 
@@ -149,8 +184,8 @@ constant_energy_map = converted_map.qsel(eV=-0.3)
 ```
 
 The figure below shows the calculated cut trajectory on the converted constant energy
-surface. See {doc}`cut trajectories <../plotting/cut-trajectories>` for the Python
-plotting code and Figure Composer steps.
+surface. See {doc}`../plotting/cut-trajectories` for the Python plotting code and Figure
+Composer steps.
 
 ```{eval-rst}
 .. plot:: how_to/momentum_conversion.py overlay_cut_path
@@ -205,8 +240,8 @@ kz_values = converted.kspace.hv_to_kz([30, 45, 60]).qsel(eV=-0.3)
 Check the converted coordinate ranges against the expected reciprocal-lattice period.
 See {meth}`xarray.DataArray.kspace.convert` and
 {meth}`xarray.DataArray.kspace.hv_to_kz` for accepted arguments. See
-{doc}`momentum conversion <../../explanation/momentum-conversion>` for the conventions
-for geometry, energy, and inner potential.
+{doc}`../../explanation/momentum-conversion` for the conventions for geometry, energy,
+and inner potential.
 
 (how-to-python-mark-photon-energies)=
 
@@ -224,8 +259,8 @@ kz_values = converted.kspace.hv_to_kz(photon_energies).qsel(
 ```
 
 The figure below shows these coordinates as constant-photon-energy curves. See
-{doc}`photon-energy annotations <../plotting/photon-energy-annotations>` for the Python
-plotting code and Figure Composer steps.
+{doc}`../plotting/photon-energy-annotations` for the Python plotting code and Figure
+Composer steps.
 
 ```{eval-rst}
 .. plot:: how_to/momentum_conversion.py annotate_photon_energies
@@ -237,5 +272,5 @@ The lines use the stored geometry, work function, and inner potential. They are
 calculated coordinates. They do not show measured intensity at a new photon energy.
 
 See {meth}`xarray.DataArray.kspace.hv_to_kz` for accepted photon energies. See
-{doc}`momentum conversion <../../explanation/momentum-conversion>` for the role of the
-inner potential in the calculated $k_z$ coordinate.
+{doc}`../../explanation/momentum-conversion` for the role of the inner potential in the
+calculated $k_z$ coordinate.

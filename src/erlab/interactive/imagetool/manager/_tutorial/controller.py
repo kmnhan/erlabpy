@@ -34,14 +34,20 @@ from erlab.interactive.imagetool.manager._tutorial.framework import (
 
 if typing.TYPE_CHECKING:
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
-_PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-steps+json"
 _NATIVE_MENU_BAR = sys.platform == "darwin"
 _CURSOR_MODIFIER_LABEL = "Command" if sys.platform == "darwin" else "Ctrl"
+_ALT_MODIFIER_LABEL = "Option" if sys.platform == "darwin" else "Alt"
 _CURSOR_DRAG_STEP_IDS = frozenset(
-    {"ctrl-drag-cursor", "move-second-cursor", "set-normal-emission-and-azimuth"}
+    {
+        "ctrl-drag-cursor",
+        "move-second-cursor",
+        "move-all-cursors",
+        "set-normal-emission-and-azimuth",
+    }
 )
 _COORDINATE_DIALOG_STEP_IDS = frozenset(
     {
@@ -51,6 +57,15 @@ _COORDINATE_DIALOG_STEP_IDS = frozenset(
         "apply-energy-correction",
     }
 )
+_TUTORIAL_OPTION_OVERRIDES: dict[str, object] = {
+    "ktool/bz/default_a": 6.97,
+    "ktool/bz/default_b": 6.97,
+    "ktool/bz/default_alpha": 90.0,
+    "ktool/bz/default_beta": 90.0,
+    "ktool/bz/default_gamma": 120.0,
+    "ktool/bz/default_centering": "P",
+    "ktool/bz/default_rot": 0.0,
+}
 
 
 def _menu_instruction(path: str) -> str:
@@ -91,11 +106,27 @@ def _cursor_modifier_key_event_predicate(
     )
 
 
+def _multi_cursor_drag_event_predicate(
+    watched: QtCore.QObject | None, event: QtCore.QEvent
+) -> bool:
+    """Permit the modifier keys and mouse input for moving all cursors."""
+    del watched
+    if isinstance(event, QtGui.QKeyEvent):
+        return event.key() in {QtCore.Qt.Key.Key_Control, QtCore.Qt.Key.Key_Alt}
+    return isinstance(event, QtGui.QMouseEvent) and bool(
+        event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        and event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier
+    )
+
+
 class _TutorialController(TourController):
     """Run the disposable, forward-only Manager tutorial."""
 
     def __init__(self, manager: ImageToolManager, *, debug: bool = False) -> None:
         self._manager = manager
+        option_overrides = manager.workspace_option_overrides()
+        option_overrides.update(_TUTORIAL_OPTION_OVERRIDES)
+        manager._set_workspace_option_overrides(option_overrides, mark_dirty=False)
         self._temporary_directory = tempfile.TemporaryDirectory(
             prefix="erlab-manager-tutorial-"
         )
@@ -117,11 +148,15 @@ class _TutorialController(TourController):
         self._allow_manager_close = False
         self._explorer_configured = False
         self._cursor_start: tuple[int, ...] | None = None
+        self._all_cursors_start: tuple[tuple[int, ...], ...] | None = None
         self._node_uids_before_conversion: set[str] = set()
         self._expected_reveal_uid: str | None = None
         self._revealed_uid: str | None = None
         self._reveal_action: QtGui.QAction | None = None
         self._operations_copied = False
+        self._copied_reusable_operations: tuple[ToolProvenanceOperation, ...] | None = (
+            None
+        )
         self._debug_active_window: QtWidgets.QWidget | None = None
         self._figure_composer_uid: str | None = None
 
@@ -582,7 +617,7 @@ class _TutorialController(TourController):
             ),
             TourStep(
                 "select-map",
-                "Select the map",
+                "Select data",
                 "Select tutorial_map.h5 in the file list.",
                 mode="action",
                 target=lambda: self._widget("dataExplorerFileTree"),
@@ -626,15 +661,16 @@ class _TutorialController(TourController):
                 "explorer-loader",
                 "Loader",
                 "[[ui:dataExplorerLoaderLabel]] determines how Data Explorer reads "
-                "the files. This folder uses the ERLab tutorial data loader.",
+                "the files. Typically, different endstations have a dedicated loader "
+                "entry. Here, we are using one designed for this tutorial.",
                 target=lambda: self._widget("dataExplorerLoaderSelector"),
                 allowed_inputs=information,
                 reveal=self._reveal_explorer,
             ),
             TourStep(
                 "open-map-in-manager",
-                "Open the data",
-                "Select the highlighted button to open the selected data.",
+                "Open the selected data",
+                "Select the highlighted button to open the selected data in ImageTool.",
                 mode="action",
                 target=self._explorer_open_button,
                 allowed_inputs=actions,
@@ -644,9 +680,8 @@ class _TutorialController(TourController):
             TourStep(
                 "imagetool-plots",
                 "ImageTool",
-                "This is an ImageTool window. The main image shows two dimensions. "
-                "The profiles show slices along the other dimensions at the active "
-                "cursor.",
+                "This is an ImageTool window. We're currently looking at different "
+                "slices of a three-dimensional array.",
                 target=lambda: self._map_tool_widget("slicer_area"),
                 allowed_inputs=information,
                 reveal=self._show_map_tool,
@@ -654,8 +689,9 @@ class _TutorialController(TourController):
             TourStep(
                 "ctrl-drag-cursor",
                 "Move the cursor",
-                f"Hold {_CURSOR_MODIFIER_LABEL} and drag in the main image. The "
-                "profiles and coordinate values follow the cursor.",
+                f"Hold {_CURSOR_MODIFIER_LABEL} and drag in the main image to move "
+                "the cursor. The location of the cursor determines where to slice "
+                "the data.",
                 mode="action",
                 target=self._main_image_target,
                 allowed_inputs=frozenset(),
@@ -668,8 +704,9 @@ class _TutorialController(TourController):
             TourStep(
                 "imagetool-cursor-controls",
                 "Cursor controls",
-                "These controls show the coordinates of the cursor that you moved. "
-                "They also select the active cursor.",
+                "These are the controls related to the cursor. It also shows the "
+                "coordinates and indices of the currently active cursor, and the value "
+                "of the data at the current cursor position.",
                 target=lambda: self._map_tool_widget("cursor_controls"),
                 allowed_inputs=information,
                 reveal=self._show_map_tool,
@@ -688,26 +725,34 @@ class _TutorialController(TourController):
                 auto_advance=False,
             ),
             TourStep(
-                "imagetool-display-controls",
-                "Display and binning controls",
-                "Color controls change the display. Binning controls average adjacent "
-                "points in the displayed slices.",
-                target=self._map_display_controls_target,
+                "imagetool-color-controls",
+                "Color controls",
+                "Color controls change how intensity is mapped to different colors.",
+                target=lambda: self._map_tool_widget("colormap_controls"),
+                allowed_inputs=information,
+                reveal=self._show_map_tool,
+            ),
+            TourStep(
+                "imagetool-binning-controls",
+                "Binning controls",
+                "Binning controls can be used to average around the cursor in the "
+                "displayed slices.",
+                target=lambda: self._map_tool_widget("binning_controls"),
                 allowed_inputs=information,
                 reveal=self._show_map_tool,
             ),
             TourStep(
                 "set-energy-bin",
                 "Bin the energy axis",
-                "Set the eV bin width to 5 points. The first binning operation "
-                "after installation can take a moment while ImageTool prepares and "
-                "caches its optimized binning code.",
+                "Set the eV bin width to 5 points.",
                 mode="action",
                 target=self._energy_bin_spin,
                 allowed_inputs=actions,
                 completion=lambda: self._energy_bin() == 5,
                 reveal=self._show_map_tool,
                 auto_advance=False,
+                hint="The first binning operation after installation can take a moment "
+                "while ImageTool prepares and caches its optimized binning code.",
             ),
             TourStep(
                 "add-second-cursor",
@@ -723,10 +768,9 @@ class _TutorialController(TourController):
             ),
             TourStep(
                 "move-second-cursor",
-                "Second cursor position",
+                "Move the second cursor",
                 f"Cursor 1 is active. Hold {_CURSOR_MODIFIER_LABEL} and drag it to "
-                "a different point. The profiles for cursor 0 stay at their original "
-                "coordinates.",
+                "a different point.",
                 mode="action",
                 target=self._main_image_target,
                 allowed_inputs=actions,
@@ -737,8 +781,23 @@ class _TutorialController(TourController):
                 auto_advance=False,
             ),
             TourStep(
+                "move-all-cursors",
+                "Move both cursors",
+                f"Hold {_CURSOR_MODIFIER_LABEL} and {_ALT_MODIFIER_LABEL}, then drag "
+                "in the main image to move both cursors at the same time.",
+                mode="action",
+                target=self._main_image_target,
+                allowed_inputs=actions,
+                completion=self._all_cursors_moved,
+                event_predicate=_multi_cursor_drag_event_predicate,
+                reveal=self._capture_all_cursors_start,
+                hint=f"Keep {_CURSOR_MODIFIER_LABEL} and {_ALT_MODIFIER_LABEL} "
+                "pressed while you drag.",
+                auto_advance=False,
+            ),
+            TourStep(
                 "set-second-cursor-bin",
-                "Second cursor binning",
+                "Multiple cursor binning",
                 "Set the eV bin width to 3 points. The new width applies only to "
                 "cursor 1.",
                 mode="action",
@@ -754,7 +813,7 @@ class _TutorialController(TourController):
                 "select-first-cursor",
                 "Cursor comparison",
                 "Select cursor 0. Its coordinates, profiles, and eV bin width become "
-                "active again. Cursor 1 stays in the ImageTool.",
+                "active again.",
                 mode="action",
                 target=lambda: self._widget("itoolCursorSelector"),
                 allowed_inputs=actions,
@@ -970,12 +1029,35 @@ class _TutorialController(TourController):
             ),
             TourStep(
                 "ktool-brillouin-zone",
-                "Brillouin-zone controls",
-                "These controls add reciprocal-space guides to the preview. They do "
-                "not change the converted data.",
+                "Brillouin-zone overlay",
+                "The parameters match the hexagonal model used for the tutorial data. "
+                "Select [[ui:bz_group]] to show the Brillouin-zone boundary on the "
+                "momentum-space preview. The overlay does not change the converted "
+                "data.",
+                mode="action",
                 target=lambda: self._ktool_child("bz_group"),
-                allowed_inputs=information,
+                allowed_inputs=actions,
+                subscriptions=(self._ktool_bz_signal,),
+                completion=self._ktool_bz_is_enabled,
                 reveal=self._show_ktool,
+                auto_advance=False,
+            ),
+            TourStep(
+                "ktool-energy-preview",
+                "Binding-energy preview",
+                "Set [[ui:ktoolEnergyCenterLabel]] to -0.20 eV and "
+                "[[ui:ktoolEnergyBinsLabel]] to 5. The preview averages five energy "
+                "points around that binding energy.",
+                mode="action",
+                target=lambda: self._ktool_child("energy_group"),
+                allowed_inputs=actions,
+                subscriptions=(
+                    self._ktool_energy_center_signal,
+                    self._ktool_energy_bins_signal,
+                ),
+                completion=self._ktool_energy_preview_is_set,
+                reveal=self._show_ktool,
+                auto_advance=False,
             ),
             TourStep(
                 "select-ktool-parameters",
@@ -1037,9 +1119,7 @@ class _TutorialController(TourController):
                 "manager-overview",
                 "Workspace tree",
                 "The ktool row is a child of example_map because you opened ktool "
-                "from that map. The converted data is a child of ktool. The "
-                "[[ui:managerDetailsPage]] and [[ui:managerProvenancePage]] tabs "
-                "describe the selected row.",
+                "from that map. The converted data is a child of ktool.",
                 target=lambda: CompositeTarget(
                     self._manager.tree_view, self._manager.inspector_tabs
                 ),
@@ -1057,15 +1137,14 @@ class _TutorialController(TourController):
                 subscriptions=(self._manager_inspector_tab_signal,),
                 completion=self._manager_provenance_is_selected,
                 reveal=self._show_converted_map_provenance,
+                card_position="top",
                 auto_advance=False,
             ),
             TourStep(
                 "provenance-overview",
                 "Provenance",
-                "The selected converted data appears below ktool because ktool "
-                "created it from example_map. The [[ui:managerProvenancePage]] tab "
-                "shows Scale/Offset Coordinate, Set normal emission, and Convert "
-                "to momentum.",
+                "The [[ui:managerProvenancePage]] tab shows all operations that led "
+                "to this data.",
                 target=lambda: self._manager.metadata_derivation_list,
                 allowed_inputs=information,
                 reveal=self._show_converted_map_provenance,
@@ -1084,8 +1163,8 @@ class _TutorialController(TourController):
             ),
             TourStep(
                 "select-cut",
-                "Select the dispersion cut",
-                "Select tutorial_cut.h5. The Preview pane updates to show the cut.",
+                "Select data",
+                "Select tutorial_cut.h5.",
                 mode="action",
                 target=lambda: self._widget("dataExplorerFileTree"),
                 allowed_inputs=actions,
@@ -1096,7 +1175,7 @@ class _TutorialController(TourController):
             ),
             TourStep(
                 "open-cut-in-manager",
-                "Open the dispersion cut",
+                "Open the selected data",
                 "Select the highlighted button.",
                 mode="action",
                 target=self._explorer_open_button,
@@ -1106,7 +1185,7 @@ class _TutorialController(TourController):
             ),
             TourStep(
                 "switch-to-manager-operations",
-                "Reveal the dispersion cut in ImageTool Manager",
+                "Reveal this data in ImageTool Manager",
                 _menu_instruction(
                     "[[menu:itoolWindowMenu|itool_reveal_in_manager_action]]"
                 ),
@@ -1123,9 +1202,21 @@ class _TutorialController(TourController):
                 card_position="center",
             ),
             TourStep(
+                "top-level-cut",
+                "Top-level data",
+                "example_cut is a new top-level item in the workspace tree. It was "
+                "acquired with the same experimental geometry as example_map, so "
+                "you can apply the same coordinate correction and momentum "
+                "conversion.",
+                target=lambda: self._manager_row_target(self._raw_cut_uid()),
+                allowed_inputs=information,
+                reveal=self._show_raw_cut_in_tree,
+            ),
+            TourStep(
                 "select-converted-map",
-                "Momentum-converted data",
-                "Select the momentum-converted data below ktool in the workspace tree.",
+                "Converted map",
+                "Select the converted map below ktool in the workspace tree. Its "
+                "provenance contains the steps that you will reuse.",
                 mode="action",
                 target=lambda: self._manager_row_target(self._converted_map_uid()),
                 allowed_inputs=actions,
@@ -1149,7 +1240,7 @@ class _TutorialController(TourController):
             TourStep(
                 "select-reusable-operations",
                 "Steps to reuse",
-                "In the [[ui:managerProvenancePage]] tab, select these three rows: "
+                "Select these three rows: "
                 "Scale/Offset Coordinate, Set normal emission, and Convert "
                 "to momentum.",
                 mode="action",
@@ -1169,14 +1260,15 @@ class _TutorialController(TourController):
                 target=lambda: self._manager.metadata_derivation_list,
                 allowed_inputs=actions,
                 event_predicate=self._context_menu_event_predicate,
+                subscriptions=(self._clipboard_data_changed_signal,),
                 completion=self._provenance_steps_on_clipboard,
                 reveal=self._prepare_operations_copy,
                 auto_advance=False,
             ),
             TourStep(
                 "select-raw-cut",
-                "Dispersion cut",
-                "Select dispersion_cut in ImageTool Manager.",
+                "Back to the cut",
+                "Select example_cut in ImageTool Manager.",
                 mode="action",
                 target=lambda: self._manager_row_target(self._raw_cut_uid()),
                 allowed_inputs=actions,
@@ -1192,15 +1284,21 @@ class _TutorialController(TourController):
                 mode="action",
                 target=lambda: self._manager.metadata_derivation_list,
                 allowed_inputs=actions,
-                event_predicate=self._context_menu_event_predicate,
-                completion=lambda: self._converted_cut_uid() is not None,
+                event_predicate=self._paste_operations_event_predicate,
+                subscriptions=(self._clipboard_data_changed_signal,),
+                completion=self._converted_cut_is_valid,
                 reveal=self._show_raw_cut_provenance,
+                recovery_label="Copy Again",
+                recovery_hint="The clipboard no longer contains the selected steps. "
+                "Select Copy Again to return to the copy sequence.",
+                recovery_action=self._restart_reusable_operations,
+                recovery_available=lambda: not self._provenance_steps_on_clipboard(),
                 auto_advance=False,
             ),
             TourStep(
                 "validate-converted-cut",
                 "Reused corrections",
-                "The same procedure is now applied to dispersion_cut.",
+                "The same steps are now applied to example_cut.",
                 target=lambda: self._manager_row_target(self._converted_cut_uid()),
                 allowed_inputs=information,
                 ready=self._converted_cut_is_valid,
@@ -1225,23 +1323,15 @@ class _TutorialController(TourController):
             TourStep(
                 "new-figure",
                 "Open Figure Composer",
-                "Right-click the image to open its menu. This menu provides data "
-                "export, selection code, new windows, and interactive analysis "
-                "tools for the displayed data. Select "
-                "[[ui:itool_plot_with_matplotlib_action]] to open Figure Composer.",
+                "Right-click the image to open its menu. This menu provides various "
+                "useful entries. Select [[ui:itool_plot_with_matplotlib_action]] to "
+                "open Figure Composer.",
                 mode="action",
                 target=self._converted_cut_image_target,
                 allowed_inputs=actions,
                 allowed_objects=(self._new_figure_action,),
                 event_predicate=self._context_menu_event_predicate,
                 completion=lambda: self._figure_composer() is not None,
-            ),
-            switch_window(
-                "switch-to-figure-composer",
-                "Figure Composer",
-                self._converted_cut_tool,
-                self._figure_composer,
-                self._show_figure_composer,
             ),
             TourStep(
                 "figure-composer-output",
@@ -1291,7 +1381,9 @@ class _TutorialController(TourController):
             TourStep(
                 "figure-composer-layout",
                 "Layout",
-                "Layout sets the axes grid and shared-axis relationships.",
+                "The Layout panel controls the global figure structure. It sets the "
+                "figure size, DPI, and axes arrangement. Use Subplots for a regular "
+                "grid or GridSpec for a more complex arrangement.",
                 target=lambda: self._figure_composer_panel("layout_panel"),
                 allowed_inputs=information,
                 reveal=self._show_figure_composer,
@@ -1312,58 +1404,53 @@ class _TutorialController(TourController):
             TourStep(
                 "figure-composer-recipe",
                 "Recipe",
-                "The Recipe panel lists the plotting steps and their settings.",
+                "The Recipe panel contains an ordered list of steps that generate "
+                "the figure content. Each step applies a plotting or styling call "
+                "to the figure or selected axes. Later steps can use the figure "
+                "state created by earlier steps.",
                 target=lambda: self._figure_composer_panel("operation_panel"),
                 allowed_inputs=information,
                 reveal=self._show_figure_composer,
             ),
             TourStep(
-                "select-figure-composer-export",
-                "Export",
-                "Select the [[ui:figureComposerExportPage]] tab.",
+                "reveal-figure-in-manager",
+                "Reveal the figure in ImageTool Manager",
+                _menu_instruction(
+                    "[[menu:tool_window_menu|tool_reveal_in_manager_action]]"
+                ),
                 mode="action",
-                target=lambda: self._figure_composer_tab_target(3),
+                target=self._figure_reveal_action_target,
                 allowed_inputs=actions,
-                allowed_objects=(self._figure_composer_tab_bar,),
-                subscriptions=(self._figure_composer_tab_signal,),
-                completion=lambda: self._figure_composer_tab_is_selected(3),
-                reveal=self._show_figure_composer,
-                auto_advance=False,
+                allowed_objects=(self._figure_reveal_action,),
+                completion=self._figure_was_revealed,
+                reveal=self._prepare_figure_reveal,
             ),
             TourStep(
-                "figure-composer-export",
-                "Export and Python code",
-                "Export controls file output. "
-                "[[ui:figureComposerCopyPythonButton]] copies a standalone script "
-                "for the current recipe.",
-                target=self._figure_export_target,
+                "manager-figures",
+                "Figures tab",
+                "The [[ui:manager_figures_tab]] tab contains the Figure Composer "
+                "figures in this workspace. Double-click a figure to show its "
+                "Figure Composer window. Right-click a figure for more actions.",
+                target=self._manager_figures_pane,
                 allowed_inputs=information,
-                reveal=self._show_figure_composer,
-            ),
-            switch_window(
-                "switch-to-manager-finish",
-                "ImageTool Manager",
-                self._figure_composer,
-                lambda: self._manager,
-                self._show_manager,
+                reveal=self._show_manager_figures,
+                card_position="right",
             ),
             TourStep(
-                "workspace-save-as",
-                "Workspace files",
-                (
-                    "In the macOS menu bar, "
-                    "[[menu:manager_file_menu|manager_save_workspace_as_action]] "
-                    "stores this "
-                    if _NATIVE_MENU_BAR
-                    else "The [[menu:manager_file_menu|"
-                    "manager_save_workspace_as_action]] command stores this "
-                )
-                + "Manager tree, Provenance history, ImageTool state, and the Figure "
-                "Composer recipe. Select Finish to end the tutorial.",
-                target=self._save_as_target,
+                "tutorial-complete",
+                "Tutorial complete",
+                "Congratulations! You loaded and inspected ARPES data; used "
+                "cursors, transposition, and binning in ImageTool; corrected the "
+                "energy coordinate; set the experimental geometry and converted "
+                "the data with ktool; reused Provenance steps; and created a "
+                "figure. You can start this tutorial again from "
+                "[[menu:manager_help_menu|manager_tutorial_action]]. Select Finish "
+                "to close the tutorial.",
+                target=lambda: self._manager,
                 allowed_inputs=information,
                 continue_label="Finish",
-                reveal=self._reveal_save_as,
+                reveal=self._show_manager,
+                card_position="center",
             ),
         ]
         debug_actions = self._debug_actions()
@@ -1398,6 +1485,7 @@ class _TutorialController(TourController):
             "set-energy-bin": lambda: self._debug_set_energy_bin(5),
             "add-second-cursor": self._debug_add_cursor,
             "move-second-cursor": lambda: self._debug_move_cursor(cursor=1),
+            "move-all-cursors": self._debug_move_all_cursors,
             "set-second-cursor-bin": lambda: self._debug_set_energy_bin(3),
             "select-first-cursor": lambda: self._debug_select_cursor(0),
             "open-coordinate-editor": lambda: self._debug_trigger(
@@ -1417,6 +1505,8 @@ class _TutorialController(TourController):
                 self._ktool_action(), "Open ktool"
             ),
             "select-ktool-visualization": lambda: self._debug_select_ktool_tab(1),
+            "ktool-brillouin-zone": self._debug_enable_ktool_bz,
+            "ktool-energy-preview": self._debug_set_ktool_energy_preview,
             "select-ktool-parameters": lambda: self._debug_select_ktool_tab(0),
             "open-converted-map": lambda: self._debug_click(
                 self._ktool_button("ktoolOpenInImageToolButton"),
@@ -1450,7 +1540,9 @@ class _TutorialController(TourController):
             "select-figure-composer-sources": lambda: self._debug_select_figure_tab(0),
             "select-figure-composer-layout": lambda: self._debug_select_figure_tab(1),
             "select-figure-composer-recipe": lambda: self._debug_select_figure_tab(2),
-            "select-figure-composer-export": lambda: self._debug_select_figure_tab(3),
+            "reveal-figure-in-manager": lambda: self._debug_trigger(
+                self._figure_reveal_action(), "Reveal in ImageTool Manager"
+            ),
         }
 
     def _debug_activate_window(self, window: QtWidgets.QWidget | None) -> None:
@@ -1522,6 +1614,20 @@ class _TutorialController(TourController):
         target = (current + max(1, size // 8)) % size
         tool.slicer_area.set_index(axis, target, cursor=cursor)
 
+    def _debug_move_all_cursors(self) -> None:
+        tool = self._map_tool()
+        if tool is None:
+            raise RuntimeError("The tutorial ImageTool is not available.")
+        axis = tool.slicer_area.data.get_axis_num("alpha")
+        indices = tool.slicer_area.array_slicer.get_indices
+        occupied = {
+            indices(cursor)[axis] for cursor in range(tool.slicer_area.n_cursors)
+        }
+        size = tool.slicer_area.data.sizes["alpha"]
+        target = next(index for index in range(size) if index not in occupied)
+        for cursor in range(tool.slicer_area.n_cursors):
+            tool.slicer_area.set_index(axis, target, cursor=cursor)
+
     def _debug_transpose_alpha_beta(self) -> None:
         tool = self._map_tool()
         if tool is None:
@@ -1583,6 +1689,20 @@ class _TutorialController(TourController):
         if tabs is None:
             raise RuntimeError("The ktool tabs are not available.")
         tabs.setCurrentIndex(index)
+
+    def _debug_enable_ktool_bz(self) -> None:
+        group = self._ktool_bz_group()
+        if group is None:
+            raise RuntimeError("The Brillouin-zone control is not available.")
+        group.setChecked(True)
+
+    def _debug_set_ktool_energy_preview(self) -> None:
+        center = self._ktool_energy_center_spin()
+        bins = self._ktool_energy_bins_spin()
+        if center is None or bins is None:
+            raise RuntimeError("The ktool energy controls are not available.")
+        center.setValue(-0.2)
+        bins.setValue(5)
 
     def _debug_select_provenance_tab(self) -> None:
         self._manager.inspector_tabs.setCurrentWidget(
@@ -1692,6 +1812,9 @@ class _TutorialController(TourController):
         self._manager._build_metadata_derivation_menu(include_row_actions=False)
         action = self._manager._metadata_paste_steps_action
         self._debug_trigger(action, "Paste selected steps")
+
+    def _restart_reusable_operations(self) -> None:
+        self._revisit_step("select-converted-map")
 
     def _debug_open_figure_composer(self) -> None:
         self._converted_cut_image_target()
@@ -1842,7 +1965,7 @@ class _TutorialController(TourController):
             (
                 uid
                 for uid, node in self._manager._tool_graph.nodes.items()
-                if node.name == "dispersion_cut" and node.parent_uid is None
+                if node.name == "example_cut" and node.parent_uid is None
             ),
             None,
         )
@@ -1931,13 +2054,6 @@ class _TutorialController(TourController):
         tool = self._map_tool()
         widget = None if tool is None else getattr(tool, name, None)
         return widget if isinstance(widget, QtWidgets.QWidget) else None
-
-    def _map_display_controls_target(self) -> CompositeTarget | None:
-        color = self._map_tool_widget("colormap_controls")
-        binning = self._map_tool_widget("binning_controls")
-        if color is None or binning is None:
-            return None
-        return CompositeTarget(color, binning)
 
     def _map_menus_target(self) -> QtWidgets.QWidget | None:
         tool = self._map_tool()
@@ -2047,6 +2163,34 @@ class _TutorialController(TourController):
         indices = tool.slicer_area.array_slicer.get_indices
         return tool.slicer_area.current_cursor == 1 and tuple(indices(1)) != tuple(
             indices(0)
+        )
+
+    def _capture_all_cursors_start(self) -> None:
+        self._show_map_tool()
+        tool = self._map_tool()
+        if tool is None:
+            self._all_cursors_start = None
+            return
+        indices = tool.slicer_area.array_slicer.get_indices
+        self._all_cursors_start = tuple(
+            tuple(indices(cursor)) for cursor in range(tool.slicer_area.n_cursors)
+        )
+
+    def _all_cursors_moved(self) -> bool:
+        tool = self._map_tool()
+        start = self._all_cursors_start
+        if tool is None or start is None or tool.slicer_area.n_cursors != len(start):
+            return False
+        indices = tool.slicer_area.array_slicer.get_indices
+        current = tuple(
+            tuple(indices(cursor)) for cursor in range(tool.slicer_area.n_cursors)
+        )
+        return (
+            len(current) > 1
+            and len(set(current)) == 1
+            and all(
+                value != initial for value, initial in zip(current, start, strict=True)
+            )
         )
 
     def _cursor_count(self) -> int:
@@ -2328,6 +2472,46 @@ class _TutorialController(TourController):
         tabs = self._ktool_tabs()
         return tabs is not None and tabs.currentIndex() == 0
 
+    def _ktool_bz_group(self) -> QtWidgets.QGroupBox | None:
+        group = self._ktool_child("bz_group")
+        return group if isinstance(group, QtWidgets.QGroupBox) else None
+
+    def _ktool_bz_signal(self) -> typing.Any:
+        group = self._ktool_bz_group()
+        return None if group is None else group.toggled
+
+    def _ktool_bz_is_enabled(self) -> bool:
+        group = self._ktool_bz_group()
+        return group is not None and group.isChecked()
+
+    def _ktool_energy_center_spin(self) -> QtWidgets.QDoubleSpinBox | None:
+        spin = self._ktool_child("center_spin")
+        return spin if isinstance(spin, QtWidgets.QDoubleSpinBox) else None
+
+    def _ktool_energy_bins_spin(self) -> QtWidgets.QSpinBox | None:
+        spin = self._ktool_child("width_spin")
+        return spin if isinstance(spin, QtWidgets.QSpinBox) else None
+
+    def _ktool_energy_center_signal(self) -> typing.Any:
+        spin = self._ktool_energy_center_spin()
+        return None if spin is None else spin.valueChanged
+
+    def _ktool_energy_bins_signal(self) -> typing.Any:
+        spin = self._ktool_energy_bins_spin()
+        return None if spin is None else spin.valueChanged
+
+    def _ktool_energy_preview_is_set(self) -> bool:
+        center = self._ktool_energy_center_spin()
+        bins = self._ktool_energy_bins_spin()
+        return bool(
+            center is not None
+            and bins is not None
+            and center.isEnabled()
+            and bins.isEnabled()
+            and np.isclose(center.value(), -0.2)
+            and bins.value() == 5
+        )
+
     def _ktool_composite(self, *names: str) -> CompositeTarget | None:
         widgets = tuple(self._ktool_child(name) for name in names)
         if any(widget is None for widget in widgets):
@@ -2366,22 +2550,27 @@ class _TutorialController(TourController):
         tool = self._tool_for_uid(uid)
         if tool is not None:
             action = tool.reveal_in_manager_act
-            if action is not self._reveal_action:
-                if self._reveal_action is not None:
-                    with contextlib.suppress(RuntimeError, TypeError):
-                        self._reveal_action.triggered.disconnect(
-                            self._manager_reveal_triggered
-                        )
-                self._reveal_action = action
-                if action is not None:
-                    action.triggered.connect(self._manager_reveal_triggered)
-            self._expected_reveal_uid = uid
-            self._revealed_uid = None
+            self._watch_reveal_action(action, uid)
             tool.show()
             if not _NATIVE_MENU_BAR:
                 tool.mnb.menu_dict["windowMenu"].popup(
                     tool.mapToGlobal(QtCore.QPoint(170, tool.menuBar().height()))
                 )
+
+    def _watch_reveal_action(
+        self, action: QtGui.QAction | None, uid: str | None
+    ) -> None:
+        if action is not self._reveal_action:
+            if self._reveal_action is not None:
+                with contextlib.suppress(RuntimeError, TypeError):
+                    self._reveal_action.triggered.disconnect(
+                        self._manager_reveal_triggered
+                    )
+            self._reveal_action = action
+            if action is not None:
+                action.triggered.connect(self._manager_reveal_triggered)
+        self._expected_reveal_uid = uid
+        self._revealed_uid = None
 
     def _uid_was_revealed(self, uid: str | None) -> bool:
         return (
@@ -2421,45 +2610,68 @@ class _TutorialController(TourController):
     def _show_converted_map_in_tree(self) -> None:
         self._show_uid(self._converted_map_uid())
 
+    def _show_raw_cut_in_tree(self) -> None:
+        self._show_uid(self._raw_cut_uid())
+
     def _prepare_operations_copy(self) -> None:
         self._operations_copied = False
+        self._copied_reusable_operations = None
         self._show_converted_map_provenance()
 
     def _operations_copy_triggered(self) -> None:
-        self._operations_copied = True
+        operations = self._clipboard_provenance_operations()
+        payload = self._manager._details_panel._selected_derivation_step_payload()
+        self._operations_copied = bool(
+            operations is not None
+            and payload is not None
+            and self._reusable_operations_selected()
+            and operations == payload[0]
+        )
+        self._copied_reusable_operations = (
+            operations if self._operations_copied else None
+        )
         self.notify_state_changed()
 
     def _reusable_operations_selected(self) -> bool:
-        from erlab.interactive.imagetool import _kspace_conversion
-        from erlab.interactive.imagetool._provenance._operations import (
-            AffineCoordOperation,
+        expected = self._reusable_operation_items()
+        if expected is None:
+            return False
+        selected = self._manager.metadata_derivation_list.selectedItems()
+        return len(selected) == len(expected) and all(
+            any(selected_item is expected_item for selected_item in selected)
+            for expected_item in expected
         )
 
-        payload = self._manager._details_panel._selected_derivation_step_payload()
-        if payload is None:
-            return False
-        operations = payload[0]
-        has_energy_edit = any(
-            isinstance(operation, AffineCoordOperation)
-            and operation.coord_name == "eV"
-            and np.isclose(operation.scale, 1.0)
-            and np.isclose(operation.offset, -45.5)
-            for operation in operations
+    @staticmethod
+    def _clipboard_provenance_operations() -> (
+        tuple[ToolProvenanceOperation, ...] | None
+    ):
+        from erlab.interactive.imagetool.manager import _details_panel
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        payload = _details_panel._provenance_step_clipboard_payload(
+            None if clipboard is None else clipboard.mimeData()
         )
-        has_momentum_group = any(
-            operation.group is not None
-            and operation.group.kind == _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
-            for operation in operations
-        )
-        return has_energy_edit and has_momentum_group
+        return None if payload is None else payload[0]
+
+    @staticmethod
+    def _clipboard_data_changed_signal() -> typing.Any:
+        clipboard = QtWidgets.QApplication.clipboard()
+        return None if clipboard is None else clipboard.dataChanged
 
     def _provenance_steps_on_clipboard(self) -> bool:
-        clipboard = QtWidgets.QApplication.clipboard()
-        mime_data = None if clipboard is None else clipboard.mimeData()
+        operations = self._clipboard_provenance_operations()
         return bool(
             self._operations_copied
-            and mime_data is not None
-            and mime_data.hasFormat(_PROVENANCE_STEPS_CLIPBOARD_MIME)
+            and operations is not None
+            and operations == self._copied_reusable_operations
+        )
+
+    def _paste_operations_event_predicate(
+        self, watched: QtCore.QObject | None, event: QtCore.QEvent
+    ) -> bool:
+        return self._provenance_steps_on_clipboard() and (
+            self._context_menu_event_predicate(watched, event)
         )
 
     @staticmethod
@@ -2542,6 +2754,8 @@ class _TutorialController(TourController):
         composer = self._figure_composer()
         if composer is not None:
             composer.show()
+            composer.raise_()
+            composer.activateWindow()
 
     def _figure_output_target(self) -> QtWidgets.QWidget | None:
         composer = self._figure_composer()
@@ -2577,32 +2791,58 @@ class _TutorialController(TourController):
         panel = None if composer is None else getattr(composer, name, None)
         return panel if isinstance(panel, QtWidgets.QWidget) else None
 
-    def _figure_export_target(self) -> CompositeTarget | None:
+    def _figure_reveal_action(self) -> QtGui.QAction | None:
         composer = self._figure_composer()
         if composer is None:
             return None
-        panel = self._figure_composer_panel("export_panel")
-        copy_button = composer.findChild(
-            QtWidgets.QWidget, "figureComposerCopyPythonButton"
-        )
-        if panel is None or copy_button is None:
+        return composer.findChild(QtGui.QAction, "tool_reveal_in_manager_action")
+
+    def _figure_reveal_action_target(
+        self,
+    ) -> ActionTarget | QtWidgets.QWidget | None:
+        composer = self._figure_composer()
+        action = self._figure_reveal_action()
+        if composer is None or action is None:
             return None
-        return CompositeTarget(panel, copy_button)
-
-    def _save_as_target(self) -> ActionTarget | QtWidgets.QWidget:
         if _NATIVE_MENU_BAR:
-            return self._manager
-        return ActionTarget(self._manager.save_as_action, self._manager.file_menu)
+            return composer
+        menu = composer.findChild(QtWidgets.QMenu, "tool_window_menu")
+        return ActionTarget(action, menu)
 
-    def _reveal_save_as(self) -> None:
-        self._show_manager()
-        if _NATIVE_MENU_BAR:
+    def _prepare_figure_reveal(self) -> None:
+        composer = self._figure_composer()
+        action = self._figure_reveal_action()
+        self._watch_reveal_action(action, self._figure_composer_uid)
+        if not isinstance(composer, QtWidgets.QMainWindow):
             return
-        menu_bar = self._manager.menuBar()
-        menu_height = 0 if menu_bar is None else menu_bar.height()
-        self._manager.file_menu.popup(
-            self._manager.mapToGlobal(QtCore.QPoint(8, menu_height))
+        composer.show()
+        if not _NATIVE_MENU_BAR:
+            menu = composer.findChild(QtWidgets.QMenu, "tool_window_menu")
+            if menu is not None:
+                menu_bar = composer.menuBar()
+                menu_height = 0 if menu_bar is None else menu_bar.height()
+                menu.popup(composer.mapToGlobal(QtCore.QPoint(170, menu_height)))
+
+    def _figure_was_revealed(self) -> bool:
+        uid = self._figure_composer_uid
+        pane = self._manager_figures_pane()
+        return bool(
+            uid is not None
+            and self._revealed_uid == uid
+            and self._manager._selected_figure_uids() == [uid]
+            and pane is not None
+            and self._manager.left_tabs.currentWidget() is pane
         )
+
+    def _manager_figures_pane(self) -> QtWidgets.QWidget | None:
+        pane = self._manager._figure_collection.pane
+        return pane if isinstance(pane, QtWidgets.QWidget) else None
+
+    def _show_manager_figures(self) -> None:
+        self._show_manager()
+        pane = self._manager_figures_pane()
+        if pane is not None:
+            self._manager.left_tabs.setCurrentWidget(pane)
 
 
 def start_tutorial(

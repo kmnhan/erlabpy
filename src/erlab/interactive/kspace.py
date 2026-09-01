@@ -199,6 +199,8 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.tab.setObjectName("ktoolParametersPage")
         self.tab_2.setObjectName("ktoolVisualizationPage")
         self.open_btn.setObjectName("ktoolOpenInImageToolButton")
+        self.label_5.setObjectName("ktoolEnergyCenterLabel")
+        self.label_6.setObjectName("ktoolEnergyBinsLabel")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
         self.images: tuple[

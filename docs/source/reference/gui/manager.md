@@ -65,8 +65,7 @@ extension procedures, see {ref}`how-to-gui-manager-extensions`.
 ## Tutorial
 
 Select {menuselection}`Help --> Tutorial` to start the Manager tutorial. Follow the
-instructions in the application. See {doc}`Manager tutorial
-<../../tutorials/gui/manager-quick-start>` for the launch steps.
+instructions in the application. See {ref}`manager-tutorial` for the launch steps.
 
 ## Keyboard shortcuts
 
@@ -277,6 +276,8 @@ Run standard Python, `%magic` commands, or inspect objects with `?` exactly as y
 in a notebook.
 
 For notebook integration procedures, see {ref}`working-with-notebooks`.
+
+(imagetool-manager-notebook-synchronization)=
 
 ### Notebook synchronization commands
 

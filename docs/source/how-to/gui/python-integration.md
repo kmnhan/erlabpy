@@ -97,7 +97,7 @@ ImageTool row, run:
 ```
 
 Use `%watch -x my_data` when the row must also close. See
-{ref}`the Manager command reference <imagetool-manager>` for all `%watch` forms.
+{ref}`imagetool-manager-notebook-synchronization` for all `%watch` forms.
 
 If the variable is deleted or replaced by an object that is not a
 {class}`DataArray <xarray.DataArray>`, the Manager breaks the watch and keeps a regular

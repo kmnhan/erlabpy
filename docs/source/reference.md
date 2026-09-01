@@ -17,8 +17,8 @@ reference/gui/index
 The Python API reference describes ERLabPy subpackages and modules by function.
 
 The {mod}`erlab.analysis.fit.models` API is the catalog of predefined fitting models.
-The {doc}`curve-fitting How-to guides <how-to/python/curve-fitting>` contain procedures
-for fitting measured spectra and inspecting the results.
+{doc}`how-to/python/curve-fitting` contains procedures for fitting measured spectra and
+inspecting the results.
 
 ### Data input and loaders
 
@@ -31,8 +31,7 @@ functions. The following module pages describe the available machinery:
 - {mod}`erlab.io.fitsutils` describes FITS helpers.
 - {mod}`erlab.io.nexusutils` describes NeXus helpers.
 
-For actions on experimental files, use the {doc}`data loading and saving How-to guides
-<how-to/python/loading-and-saving>`.
+For actions on experimental files, use {doc}`how-to/python/loading-and-saving`.
 
 ### Other file formats
 
@@ -49,7 +48,7 @@ Use the file-format library first when no endstation loader applies:
 
 The result must still follow the {ref}`ARPES data conventions <data-conventions>` before
 you use an ARPES-specific analysis routine. A new endstation format usually needs a
-{doc}`loader plugin <contributing/loaders>` so that loading and metadata normalization
+procedure from {doc}`contributing/loaders` so that loading and metadata normalization
 remain reproducible.
 
 ## Plotting
@@ -71,8 +70,8 @@ require that font on the system.
 | `erlab.stixsans-fallback` | STIX Sans as a fallback math font for missing glyphs. |
 
 Style sheets compose from left to right. A later style can replace settings from an
-earlier style. Use the {ref}`figure style task <how-to-plotting-figure-styles>` to apply
-them in Python or Figure Composer.
+earlier style. Use {ref}`how-to-plotting-figure-styles` to apply them in Python or Figure
+Composer.
 
 ### External colormap libraries
 

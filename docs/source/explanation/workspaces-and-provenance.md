@@ -68,9 +68,8 @@ that folder and its subfolders.
 A standalone ImageTool does not run stored Python from provenance. Manager supplies the
 workspace review and replay workflow.
 
-Use the {ref}`workspace review procedure <how-to-gui-review-workspace-code>` when code
-is paused. The {ref}`Security settings <options-trusted-workspace-folders>` describe
-trusted folders and saved approvals.
+Use {ref}`how-to-gui-review-workspace-code` when code is paused.
+{ref}`options-trusted-workspace-folders` describes trusted folders and saved approvals.
 
 ## Extension scripts
 
@@ -87,9 +86,8 @@ By default, a workspace embeds the exact source for each extension that its reco
 operations use. The embedded copy is recovery data. Manager does not run it directly.
 You must review, save, and register the source before Manager can use it.
 
-Use the {ref}`extension recovery procedure <how-to-gui-recover-extension>` when the
-registered script is unavailable. The {ref}`extension reference
-<imagetool-manager-extensions>` describes script identity and embedding policies.
+Use {ref}`how-to-gui-recover-extension` when the registered script is unavailable.
+{ref}`imagetool-manager-extensions` describes script identity and embedding policies.
 
 ## Generated code
 
@@ -101,6 +99,5 @@ outside Manager.
 Review generated code before you run it. A workspace reopens the GUI session.
 Generated code reproduces supported analysis steps in a script or notebook.
 
-Use the {ref}`workspace task guide <how-to-gui-save-manager-workspace>` to save or
-restore a session. The {ref}`Manager reference <imagetool-manager-replay-code>`
-describes operation history and code generation.
+Use {ref}`how-to-gui-save-manager-workspace` to save or restore a session.
+{ref}`imagetool-manager-replay-code` describes operation history and code generation.

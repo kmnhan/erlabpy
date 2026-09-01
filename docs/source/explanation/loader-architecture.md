@@ -51,7 +51,7 @@ to the scan and supplies their scan coordinates.
 | Loader extension | Renaming local metadata, adding logbook values, or turning attributes into coordinates | A new file reader or scan-grouping rule |
 | Loader plugin | New file formats, source identification, scan grouping, or post-processing | Small changes to an existing loader |
 
-Use the {doc}`Python loading guides <../how-to/python/loading-and-saving>` or
-{doc}`GUI loading guides <../how-to/gui/loading-and-saving>` for work with supported
-sources. Loader authors can use {doc}`../contributing/loaders`. The public loader
-interfaces are in {mod}`erlab.io.dataloader`.
+For work with supported sources, see {doc}`../how-to/python/loading-and-saving` or
+{doc}`../how-to/gui/loading-and-saving`. Loader authors can use
+{doc}`../contributing/loaders`. The public loader interfaces are in
+{mod}`erlab.io.dataloader`.

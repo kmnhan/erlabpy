@@ -113,8 +113,10 @@ def change_configuration(
     Returns a copy of the input data with the coordinates renamed to match the given
     configuration. The original data is not modified.
 
-    This function is useful for setups that are capable of changing the experimental
-    geometry.
+    This function is useful for setups that can acquire data in more than one physical
+    configuration. It translates the standard coordinate names by their physical
+    roles. It does not infer the acquisition geometry or repair arbitrary coordinate
+    names from an incorrect loader implementation.
 
     Parameters
     ----------

@@ -4,7 +4,7 @@
 
 Select an example to open its Python and Figure Composer instructions. The Python code
 is the standard implementation for each output. For figure creation, export, and recipe
-reuse, see {doc}`the Figure Composer guide <../gui/plotting>`.
+reuse, see {doc}`../gui/plotting`.
 
 ```{toctree}
 :hidden:

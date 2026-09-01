@@ -25,8 +25,8 @@ The loader list includes general xarray HDF5 (`.h5`), NetCDF (`.nc`, `.nc4`, and
 `.cdf`), Zarr (`.zarr`), and supported Igor (`.ibw` and `.pxt`) files.
 
 For most day-to-day browsing and loading, this is faster than the interactive summary
-table described in the {ref}`I/O guide <io-summarizing-data>`. Use the summary table when
-you want the overview as a DataFrame inside Python or when you are implementing loaders.
+table described in {ref}`io-summarizing-data`. Use the summary table when you want the
+overview as a DataFrame inside Python or when you are implementing loaders.
 
 You can open the explorer in several ways:
 

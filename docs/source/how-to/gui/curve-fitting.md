@@ -1,8 +1,7 @@
 # Curve fitting
 
 Use these guides to fit curves and inspect saved fits in the GUI. Read
-{doc}`the curve-fitting explanation <../../explanation/fitting>` before you select a
-model or interpret fit diagnostics.
+{doc}`../../explanation/fitting` before you select a model or interpret fit diagnostics.
 
 (how-to-gui-fit-data)=
 

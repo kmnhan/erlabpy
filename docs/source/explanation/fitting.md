@@ -43,6 +43,13 @@ fitted parameter values.
 A smooth trend is not imposed by independent fitting. A global fit imposes only the
 relationships in its model.
 
+The `coords` argument defines the dimensions fitted by one model evaluation. A single
+coordinate such as `"eV"` fits each EDC independently across the remaining dimensions.
+Multiple coordinates such as `["eV", "alpha"]` fit one multidimensional model across
+the complete selected region. {class}`erlab.analysis.fit.models.FermiEdge2dModel` is
+one model for the latter structure. It illustrates multidimensional fitting; it is not
+a standard replacement for independent EDC analysis.
+
 ## Weights and fit validation
 
 Weights of $1/\sigma$ express residuals in units of the expected standard uncertainty
@@ -77,7 +84,6 @@ The result remains lazy until computation starts. Scheduler selection, worker co
 and chunk layout affect cost. They do not change the mathematical independence of the
 fits.
 
-The {doc}`Python curve-fitting guides <../how-to/python/curve-fitting>` contain the
-fitting procedures. The {doc}`GUI curve-fitting guides
-<../how-to/gui/curve-fitting>` cover interactive tools. Available models and
-parameters are in {mod}`erlab.analysis.fit.models`.
+The fitting procedures are in {doc}`../how-to/python/curve-fitting` and
+{doc}`../how-to/gui/curve-fitting`. Available models and parameters are in
+{mod}`erlab.analysis.fit.models`.

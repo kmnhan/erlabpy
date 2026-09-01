@@ -51,6 +51,7 @@ _REPOSITION_EVENTS = {
     QtCore.QEvent.Type.StyleChange,
 }
 _ALL_INPUTS = frozenset(_INPUT_EVENTS.values())
+_CardDirection = typing.Literal["left", "right", "top", "bottom"]
 _UI_OBJECT_ID_PATTERN = r"[A-Za-z][A-Za-z0-9_.-]*"
 _TUTORIAL_TEXT_TOKEN_PATTERN = re.compile(
     rf"\[\[(ui):({_UI_OBJECT_ID_PATTERN})\]\]"
@@ -269,7 +270,13 @@ class TourStep:
     debug_action: Callable[[], None] | None = None
     continue_label: str = "Next"
     hint: str = ""
-    card_position: typing.Literal["target", "center"] = "target"
+    recovery_label: str = ""
+    recovery_hint: str = ""
+    recovery_action: Callable[[], None] | None = None
+    recovery_available: Callable[[], bool] | None = None
+    card_position: typing.Literal[
+        "target", "center", "left", "right", "top", "bottom"
+    ] = "target"
     auto_advance: bool = True
     timeout_ms: int = 2500
     retry_interval_ms: int = 150
@@ -281,8 +288,23 @@ class TourStep:
             raise ValueError("Tour step mode must be 'information' or 'action'.")
         if not self.allowed_inputs <= _ALL_INPUTS:
             raise ValueError("Tour step allowed_inputs contains an unknown input type.")
-        if self.card_position not in {"target", "center"}:
-            raise ValueError("Tour step card_position must be 'target' or 'center'.")
+        if self.card_position not in {
+            "target",
+            "center",
+            "left",
+            "right",
+            "top",
+            "bottom",
+        }:
+            raise ValueError("Tour step card position is not valid.")
+        if bool(self.recovery_label) != (self.recovery_action is not None):
+            raise ValueError(
+                "Tour step recovery label and action must be specified together."
+            )
+        if self.recovery_action is None and (
+            self.recovery_hint or self.recovery_available is not None
+        ):
+            raise ValueError("Tour step recovery options require a recovery action.")
         if self.timeout_ms < 0 or self.retry_interval_ms <= 0:
             raise ValueError("Tour step timeout and retry interval must be positive.")
 
@@ -753,9 +775,23 @@ class _TutorialExitButton(_CenteredIconToolButton):
         )
 
 
+class _TutorialAdvanceButton(QtWidgets.QPushButton):
+    def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
+        if event is not None and event.key() in {
+            QtCore.Qt.Key.Key_Enter,
+            QtCore.Qt.Key.Key_Return,
+        }:
+            event.accept()
+            if self.isEnabled():
+                self.click()
+            return
+        super().keyPressEvent(event)
+
+
 class _InstructionCard(QtWidgets.QFrame):
     continue_requested = QtCore.Signal()
     skip_requested = QtCore.Signal()
+    recovery_requested = QtCore.Signal()
     exit_requested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget, *, debug: bool = False) -> None:
@@ -815,13 +851,20 @@ class _InstructionCard(QtWidgets.QFrame):
         self.hint = _TutorialTextWidget(self, _MUTED_TEXT_ROLE)
         self.hint.setObjectName("tutorialHint")
         buttons = QtWidgets.QHBoxLayout()
+        self.recovery_button = _TutorialAdvanceButton("Back", self)
+        self.recovery_button.setObjectName("tutorialRecoveryButton")
+        self.recovery_button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self.recovery_button.hide()
+        buttons.addWidget(self.recovery_button)
         buttons.addStretch(1)
-        self.skip_button = QtWidgets.QPushButton("Skip", self)
+        self.skip_button = _TutorialAdvanceButton("Skip", self)
         self.skip_button.setObjectName("tutorialSkipButton")
+        self.skip_button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.skip_button.setVisible(debug)
         buttons.addWidget(self.skip_button)
-        self.continue_button = QtWidgets.QPushButton("Next", self)
+        self.continue_button = _TutorialAdvanceButton("Next", self)
         self.continue_button.setObjectName("tutorialContinueButton")
+        self.continue_button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         buttons.addWidget(self.continue_button)
         layout.addWidget(self.header)
         layout.addWidget(self.body)
@@ -829,6 +872,7 @@ class _InstructionCard(QtWidgets.QFrame):
         layout.addLayout(buttons)
         self.skip_button.clicked.connect(self.skip_requested)
         self.continue_button.clicked.connect(self.continue_requested)
+        self.recovery_button.clicked.connect(self.recovery_requested)
         self.exit_button.clicked.connect(self.exit_requested)
         self.header.drag_started.connect(self._start_drag)
         self.header.drag_moved.connect(self._move_drag)
@@ -870,7 +914,12 @@ class _InstructionCard(QtWidgets.QFrame):
         )
 
     def place(
-        self, target: QtCore.QRect, bounds: QtCore.QRect, *, centered: bool = False
+        self,
+        target: QtCore.QRect,
+        bounds: QtCore.QRect,
+        *,
+        centered: bool = False,
+        preferred_direction: _CardDirection | None = None,
     ) -> None:
         self.adjustSize()
         available = bounds.size() - QtCore.QSize(16, 16)
@@ -899,13 +948,17 @@ class _InstructionCard(QtWidgets.QFrame):
             )
             return
         gap = 12
-        spaces = {
+        spaces: dict[_CardDirection, int] = {
             "right": bounds.right() - target.right(),
             "left": target.left() - bounds.left(),
             "bottom": bounds.bottom() - target.bottom(),
             "top": target.top() - bounds.top(),
         }
-        direction = max(spaces, key=lambda name: spaces[name])
+        direction = (
+            preferred_direction
+            if preferred_direction is not None
+            else max(spaces, key=spaces.__getitem__)
+        )
         if direction == "left":
             point = QtCore.QPoint(
                 target.left() - size.width() - gap,
@@ -1019,6 +1072,7 @@ class TourController(QtCore.QObject):
         self._debug_step_index: int | None = None
         self._debug_deadline = 0.0
         self._step_activation = 0
+        self._focused_button_key: tuple[int, str] | None = None
 
     @property
     def current_step(self) -> TourStep | None:
@@ -1047,8 +1101,10 @@ class TourController(QtCore.QObject):
         self._card = _InstructionCard(owner, debug=self._debug)
         self._card.continue_requested.connect(self._card_continue)
         self._card.skip_requested.connect(self._card_skip)
+        self._card.recovery_requested.connect(self._card_recovery)
         self._card.exit_requested.connect(self.request_exit)
         self._fatal_error = None
+        self._focused_button_key = None
         self._running = True
         self._index = 0
         application.installEventFilter(self)
@@ -1076,6 +1132,8 @@ class TourController(QtCore.QObject):
                 card.continue_requested.disconnect(self._card_continue)
             with contextlib.suppress(RuntimeError, TypeError):
                 card.skip_requested.disconnect(self._card_skip)
+            with contextlib.suppress(RuntimeError, TypeError):
+                card.recovery_requested.disconnect(self._card_recovery)
             with contextlib.suppress(RuntimeError, TypeError):
                 card.exit_requested.disconnect(self.request_exit)
             card.hide()
@@ -1253,6 +1311,17 @@ class TourController(QtCore.QObject):
             return False
         with contextlib.suppress(RuntimeError):
             return bool(step.completion())
+        return False
+
+    def _recovery_is_available(self, step: TourStep) -> bool:
+        if step.recovery_action is None:
+            return False
+        if step.mode == "action" and self._is_complete(step):
+            return False
+        if step.recovery_available is None:
+            return True
+        with contextlib.suppress(RuntimeError):
+            return bool(step.recovery_available())
         return False
 
     def _on_observed(self, *_args: object) -> None:
@@ -1435,8 +1504,14 @@ class TourController(QtCore.QObject):
                 target,
                 primary.rect(),
                 centered=(step.card_position == "center" or display_geometry is None),
+                preferred_direction=(
+                    step.card_position
+                    if step.card_position in {"left", "right", "top", "bottom"}
+                    else None
+                ),
             )
             card.raise_()
+            self._focus_step_button(card, step)
 
     def _retry_target(self) -> None:
         if self._running and self._fatal_error is None:
@@ -1514,6 +1589,7 @@ class TourController(QtCore.QObject):
     ) -> None:
         card.progress.setText(f"{self._index + 1} / {len(self._steps)}")
         title, body, hint, continue_label, _ = self._step_content(step)
+        recovery_available = self._recovery_is_available(step)
         if text_missing:
             card.title.setText("Tutorial step unavailable")
             card.body.setText("A required interface label is not available.")
@@ -1524,7 +1600,10 @@ class TourController(QtCore.QObject):
             if text_missing:
                 card.title.setText("Preparing tutorial step")
                 card.body.setText("Wait a moment.")
-            card.hint.set_tutorial_text(hint)
+            if recovery_available:
+                card.hint.setText(step.recovery_hint)
+            else:
+                card.hint.set_tutorial_text(hint)
             card.continue_button.setText(
                 "Next" if text_missing else continue_label.plain_text
             )
@@ -1532,12 +1611,16 @@ class TourController(QtCore.QObject):
             card.continue_button.show()
             card.skip_button.setEnabled(
                 self._debug
+                and not recovery_available
                 and step.mode == "action"
                 and step.debug_action is not None
                 and self._debug_step_index is None
             )
         else:
-            card.hint.set_tutorial_text(hint)
+            if recovery_available:
+                card.hint.setText(step.recovery_hint)
+            else:
+                card.hint.set_tutorial_text(hint)
             card.continue_button.setText(continue_label.plain_text)
             can_continue = (
                 self._is_ready(step)
@@ -1548,14 +1631,62 @@ class TourController(QtCore.QObject):
             card.continue_button.show()
             card.skip_button.setEnabled(
                 self._debug
+                and not recovery_available
                 and self._debug_step_index is None
                 and (
                     (step.mode == "information" and can_continue)
                     or (step.mode == "action" and step.debug_action is not None)
                 )
             )
+        card.recovery_button.setText(step.recovery_label or "Back")
+        card.recovery_button.setVisible(recovery_available)
+        card.recovery_button.setEnabled(recovery_available)
         card.hint.setVisible(bool(card.hint.text()))
         card.adjustSize()
+
+    def _focus_step_button(self, card: _InstructionCard, step: TourStep) -> None:
+        button: QtWidgets.QPushButton | None = None
+        if card.recovery_button.isVisible() and card.recovery_button.isEnabled():
+            button = card.recovery_button
+        elif self._debug and step.mode == "action" and card.skip_button.isEnabled():
+            button = card.skip_button
+        elif card.continue_button.isEnabled():
+            button = card.continue_button
+        if button is None:
+            return
+        key = (self._index, button.objectName())
+        if self._focused_button_key == key:
+            return
+        button.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+        self._focused_button_key = key
+
+    def _card_recovery(self) -> None:
+        if self._fatal_error is not None:
+            return
+        step = self.current_step
+        if step is None or not self._recovery_is_available(step):
+            return
+        action = step.recovery_action
+        if action is None:  # pragma: no cover - validated by TourStep
+            return
+        index = self._index
+        action()
+        if self._running and self._index == index:
+            self.notify_state_changed()
+
+    def _revisit_step(self, step_id: str) -> None:
+        if not self._running:
+            return
+        try:
+            index = next(
+                index for index, step in enumerate(self._steps) if step.id == step_id
+            )
+        except StopIteration as exc:
+            raise ValueError(f"Unknown tutorial step {step_id!r}.") from exc
+        if index >= self._index:
+            raise ValueError("A recovery step must precede the current tutorial step.")
+        self._index = index
+        self._activate_step()
 
     def _card_skip(self) -> None:
         if not self._debug or self._fatal_error is not None:

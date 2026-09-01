@@ -4,12 +4,40 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import erlab.interactive.imagetool.manager._tutorial.data as tutorial_data
 import erlab.io.dataloader as dataloader
 from erlab.interactive.imagetool.manager._tutorial.data import (
     TutorialDataGenerationCancelled,
     generate_tutorial_data_files,
     tutorial_loader_registration,
 )
+
+
+def test_tutorial_datasets_use_the_same_geometry(monkeypatch) -> None:
+    calls = []
+
+    def generate(shape, **kwargs):
+        calls.append(kwargs)
+        return xr.DataArray(
+            np.zeros(shape),
+            dims=("alpha", "beta", "eV"),
+            coords={
+                "alpha": np.arange(shape[0]),
+                "beta": np.arange(shape[1]),
+                "eV": np.arange(shape[2]),
+                "hv": kwargs["hv"],
+                "xi": 0.0,
+                "delta": 0.0,
+            },
+        ).squeeze()
+
+    monkeypatch.setattr(tutorial_data, "generate_data_angles", generate)
+    tutorial_data._raw_tutorial_data(is_map=True)
+    tutorial_data._raw_tutorial_data(is_map=False)
+
+    assert [call["normal_emission"] for call in calls] == [(2.0, -1.5)] * 2
+    assert [call["delta_offset"] for call in calls] == [-4.0] * 2
+    assert [call["band_rotation"] for call in calls] == [-30.0] * 2
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +66,7 @@ def test_tutorial_raw_files(tutorial_files) -> None:
     assert float(raw_map.Tilt) == 0.0
     assert float(raw_map.Azimuth) == 0.0
 
-    assert raw_cut.name == "dispersion_cut"
+    assert raw_cut.name == "example_cut"
     assert raw_cut.dims == ("ThetaX", "KineticEnergy")
     assert raw_cut.shape == (160, 128)
     assert raw_cut.dtype == np.float32

@@ -742,6 +742,7 @@ rediraffe_redirects = {
     "tutorials/python/filtering.ipynb": (
         "how-to/python/transformations-and-filtering.md"
     ),
+    "tutorials/gui/manager-quick-start.md": "tutorials/index.md",
     "user-guide/workflow-bridge.md": "explanation/python-and-gui-workflows.md",
     "user-guide/interactive/index.md": "explanation/python-and-gui-workflows.md",
     "user-guide/interactive/imagetool.md": "reference/gui/imagetool.md",

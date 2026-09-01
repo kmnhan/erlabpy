@@ -103,6 +103,7 @@ def _raw_tutorial_data(*, is_map: bool) -> xr.DataArray:
         configuration=1,
         normal_emission=(2.0, -1.5),
         delta_offset=-4.0,
+        band_rotation=-30.0,
         seed=1,
         assign_attributes=False,
     ).astype(np.float32)
@@ -116,7 +117,7 @@ def _raw_tutorial_data(*, is_map: bool) -> xr.DataArray:
             "delta": "Azimuth",
         }
     )
-    return data.rename("example_map" if is_map else "dispersion_cut")
+    return data.rename("example_map" if is_map else "example_cut")
 
 
 def _write_atomic(

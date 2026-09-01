@@ -155,14 +155,13 @@ and the [ERLab extension](https://marketplace.visualstudio.com/items?itemName=kh
 
 ## Choosing a workflow
 
-The {doc}`Python tutorial <tutorials/python/index>` is the recommended learning path.
+{doc}`tutorials/python/index` is the recommended learning path.
 It uses one generated dataset to introduce inspection, coordinate selection, plotting,
 and momentum conversion. It also shows the optional Python call for opening the data in
 ImageTool without interrupting the notebook workflow with GUI instructions.
 
 To understand how GUI and Python work together, see {ref}`workflow-bridge`. To learn the
-current Manager workflow without a notebook, start the
-{doc}`Manager tutorial <tutorials/gui/manager-quick-start>`.
+current Manager workflow without a notebook, start the {ref}`manager-tutorial`.
 
 The two workflows can exchange data and reproducible code, but they are taught
 separately. See {ref}`workflow-bridge` for the relationship between them.

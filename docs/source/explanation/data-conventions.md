@@ -83,12 +83,12 @@ analyzers, can be treated as hemispherical analyzers with a deflector.
 
 ## Related procedures
 
-- Use the {doc}`loading and saving guides <../how-to/python/loading-and-saving>` to load
-  supported data and inspect coordinates and metadata that use the ERLabPy names.
-- Use the {doc}`momentum-conversion guides <../how-to/python/momentum-conversion>` to
-  correct a configuration, set normal emission, and convert data.
-- Read {doc}`momentum conversion <momentum-conversion>` for the distinction between the
-  momentum conversion functions and grid interpolation.
+- Use {doc}`../how-to/python/loading-and-saving` to load supported data and inspect
+  coordinates and metadata that use the ERLabPy names.
+- Use {doc}`../how-to/python/momentum-conversion` to select a variable experimental
+  configuration, set normal emission, and convert data.
+- Read {doc}`momentum-conversion` for the distinction between the momentum conversion
+  functions and grid interpolation.
 - Use {class}`erlab.constants.AxesConfiguration` and
   {class}`xarray.DataArray.kspace <erlab.accessors.kspace.MomentumAccessor>` for exact
   values and accessor behavior.

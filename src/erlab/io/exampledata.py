@@ -278,6 +278,7 @@ def generate_data_angles(
     inner_potential: float = 10.0,
     normal_emission: tuple[float, float] = (0.0, 0.0),
     delta_offset: float = 0.0,
+    band_rotation: float = 0.0,
 ) -> xr.DataArray:
     """Generate simulated data for a given shape in angle space.
 
@@ -338,6 +339,9 @@ def generate_data_angles(
         ``(0.0, 0.0)``.
     delta_offset
         Azimuthal offset in degrees, by default 0.0.
+    band_rotation
+        Counterclockwise rotation of the simulated band structure in degrees, by
+        default 0.0.
 
     Returns
     -------
@@ -359,6 +363,13 @@ def generate_data_angles(
     if delta_value.shape != () or not np.isfinite(delta_value):
         raise ValueError("`delta_offset` must be a finite scalar.")
     delta_offset = float(delta_value)
+    try:
+        rotation_value = np.asarray(band_rotation, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("`band_rotation` must be a finite scalar.") from exc
+    if rotation_value.shape != () or not np.isfinite(rotation_value):
+        raise ValueError("`band_rotation` must be a finite scalar.")
+    band_rotation = float(rotation_value)
 
     configuration = erlab.constants.AxesConfiguration(configuration)
     offset_params = erlab.analysis.kspace._offsets_from_normal_emission(
@@ -416,6 +427,12 @@ def generate_data_angles(
 
     # k-point grid
     point_iter = np.stack([kxv, kyv], axis=3)
+    if band_rotation != 0.0:
+        theta = np.deg2rad(-band_rotation)
+        rotation_matrix = np.array(
+            [[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]]
+        )
+        point_iter = point_iter @ rotation_matrix
 
     # Energy eigenvalues
     Eij = _band(point_iter, t, a)

@@ -5,8 +5,8 @@
 Use these procedures after you obtain or write a valid extension script. Review an
 extension as executable Python code before you approve it.
 
-For extension types, signature rules, and workspace states, see the
-{ref}`Manager extension reference <imagetool-manager-extensions>`.
+For extension types, signature rules, and workspace states, see
+{ref}`imagetool-manager-extensions`.
 
 (how-to-gui-register-extension)=
 
@@ -40,8 +40,8 @@ provenance.
 3. Select the file and enter any loader parameters.
 4. Open the file.
 
-Use the normal {ref}`Manager file-loading procedure <how-to-gui-manager-open>` for
-drag-and-drop, batch loading, and Data Explorer workflows.
+Use {ref}`how-to-gui-manager-open` for drag-and-drop, batch loading, and Data Explorer
+workflows.
 
 ## Approving a script update
 

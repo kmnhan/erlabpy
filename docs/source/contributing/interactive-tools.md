@@ -10,14 +10,12 @@ It focuses on ERLab-specific integration points: the
 {class}`ToolWindow <erlab.interactive.utils.ToolWindow>` class, manager support, updates
 when ImageTool data changes, public launch paths, and the test/docs work expected in a
 contribution. For general repository conventions, see the
-[contributing guide](../contributing.md).
+{doc}`../contributing`.
 
-For the user-facing workflow, start with the manager guide sections on
-{ref}`rows kept with the window that made them <imagetool-manager-nested-results>`,
-{ref}`result placement <imagetool-manager-result-placement>`,
-{ref}`updating rows marked Stale <imagetool-manager-refresh>`, and
-{ref}`code for repeating steps <imagetool-manager-replay-code>`. This page explains how
-tool authors make those features work.
+For the user-facing workflow, start with {ref}`imagetool-manager-nested-results`,
+{ref}`imagetool-manager-result-placement`, {ref}`imagetool-manager-refresh`, and
+{ref}`imagetool-manager-replay-code`. This page explains how tool authors make those
+features work.
 
 ## Start with the right shape
 
@@ -1265,4 +1263,4 @@ interactive ecosystem.
 ## Next steps
 
 Once you have a working tool, you may want to contribute it to the repository. See the
-[contributing guide](../contributing.md) for details on how to submit a pull request.
+{doc}`../contributing` for details on how to submit a pull request.

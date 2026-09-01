@@ -1606,8 +1606,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def as_configuration(self, configuration: AxesConfiguration | int) -> xr.DataArray:
         """Return a new DataArray with modified experimental configuration.
 
-        The coordinates of the new DataArray are renamed to match the given
-        configuration. The original data is not modified.
+        Use this method for an endstation that can acquire data in more than one
+        physical configuration. The coordinates of the new DataArray are renamed by
+        their physical roles to match the given configuration. The original data is
+        not modified.
+
+        This method does not infer the acquisition geometry or repair arbitrary
+        coordinate names from an incorrect loader implementation. The input must use
+        the standard coordinate names for its current configuration.
 
         Parameters
         ----------

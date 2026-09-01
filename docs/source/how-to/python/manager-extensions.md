@@ -6,8 +6,8 @@ Use these procedures to add a lab-specific analysis routine or file loader to
 ImageTool Manager. They assume that you can create a Python module and that you have
 your own test data.
 
-See the {ref}`Manager extension reference <imagetool-manager-extensions>` for all
-supported signatures and parameter annotations.
+See {ref}`imagetool-manager-extensions` for all supported signatures and parameter
+annotations.
 
 ## Writing an analysis routine
 
@@ -110,9 +110,8 @@ lab_loaders = load_script("lab_loaders.py")
 loaded = lab_loaders.load_lab_text(Path("scan.txt"), delimiter="\t")
 ```
 
-Use a full {doc}`loader plugin <../../contributing/loaders>` when the format needs scan
-identification, metadata normalization, multiple-file assembly, or reusable loader
-configuration.
+Use {doc}`../../contributing/loaders` when the format needs scan identification,
+metadata normalization, multiple-file assembly, or reusable loader configuration.
 
 ## Adding dependencies
 

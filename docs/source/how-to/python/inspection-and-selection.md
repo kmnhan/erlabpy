@@ -92,9 +92,9 @@ constant_energy_map = energy_window.qsel.mean("eV")
 ```
 
 Check the selected coordinate bounds and the number of averaged points before using the
-result. Use the {doc}`Python workflow tutorial <../../tutorials/python/index>` for the
-basic {meth}`qsel <xarray.DataArray.qsel>` sequence. A coordinate slice crops the data.
-A width averages the selected points. Interpolation estimates values on a new grid.
+result. Use {doc}`../../tutorials/python/index` for the basic
+{meth}`qsel <xarray.DataArray.qsel>` sequence. A coordinate slice crops the data. A width
+averages the selected points. Interpolation estimates values on a new grid.
 
 (how-to-python-extract-path)=
 

@@ -54,9 +54,9 @@ with erlab.io.loader_context("merlin", data_dir="/path/to/data"):
 
 If ERLabPy cannot find the scan, confirm the selected loader, the accepted identifier
 form, and the data directory. If the endstation is not listed, follow the
-{doc}`loader-plugin guide <../../contributing/loaders>` instead of forcing the file
-through a different loader. See {doc}`loader architecture
-<../../explanation/loader-architecture>` for how loaders standardize endstation data.
+procedure in {doc}`../../contributing/loaders` instead of forcing the file through a
+different loader. See {doc}`../../explanation/loader-architecture` for how loaders
+standardize endstation data.
 
 (how-to-python-load-several-experiments)=
 

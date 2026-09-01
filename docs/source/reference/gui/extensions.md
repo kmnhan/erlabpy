@@ -7,9 +7,9 @@ Manager. An extension is one Python script that contains one or more decorated
 functions. A decorated function remains a normal Python function that you can call
 from a notebook or script.
 
-Use the {doc}`Python task guide <../../how-to/python/manager-extensions>` to write and
-test an extension. Use the {doc}`GUI task guide <../../how-to/gui/extensions>` to
-register, run, update, and recover extension scripts.
+For procedures to write and test an extension, see
+{doc}`../../how-to/python/manager-extensions`. For procedures to register, run, update,
+and recover extension scripts, see {doc}`../../how-to/gui/extensions`.
 
 ## Capability types
 
