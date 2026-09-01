@@ -1376,6 +1376,8 @@ def test_external_input_bypasses_trust_required_recorded_fallback() -> None:
 
 
 def test_operation_code_base_edges() -> None:
+    replay_reserved_names: list[set[str]] = []
+
     class ExternalStatementOperation(ToolProvenanceOperation):
         def apply(self, data: xr.DataArray) -> xr.DataArray:
             return data + 1
@@ -1396,6 +1398,37 @@ def test_operation_code_base_edges() -> None:
             source_name: str | None = None,
         ) -> str:
             return f"{output_name} = {input_name} + 1"
+
+        def _statement_replay_code(
+            self,
+            input_name: str,
+            *,
+            output_name: str,
+            source_name: str | None = None,
+            reserved_names: collections.abc.Collection[str] = (),
+        ) -> str:
+            replay_reserved_names.append(set(reserved_names))
+            return super()._statement_replay_code(
+                input_name,
+                output_name=output_name,
+                source_name=source_name,
+                reserved_names=reserved_names,
+            )
+
+    class BoundStatementOperation(ExternalStatementOperation):
+        def input_slots(self) -> tuple[str, ...]:
+            return ("other",)
+
+        def statement_code_with_inputs(
+            self,
+            input_name: str,
+            inputs: collections.abc.Mapping[str, str],
+            *,
+            output_name: str,
+            source_name: str | None = None,
+        ) -> str:
+            del source_name
+            return f"{output_name} = {input_name} + {inputs['other']}"
 
     data = xr.DataArray(np.arange(4.0), dims=("x",))
 
@@ -1418,6 +1451,15 @@ def test_operation_code_base_edges() -> None:
             reserved_names={"external_helper"},
         )
         == "result = data + 1"
+    )
+    assert replay_reserved_names == [{"external_helper"}]
+    assert (
+        BoundStatementOperation().replay_code(
+            "data",
+            output_name="result",
+            bound_inputs={"other": "other"},
+        )
+        == "result = data + other"
     )
 
     assert (
@@ -8746,6 +8788,52 @@ def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     assert np.isfinite(stderr.values).all()
 
 
+def test_model_fit_operation_replays_unweighted_valid_values() -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        1.0 + 2.0 * x + 0.01 * np.sin(4 * x),
+        dims=("x",),
+        coords={"x": x},
+    )
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.5),
+            "c1": _ModelFitParameterSpec(value=1.5),
+        },
+        method="leastsq",
+        parameter="c1",
+        output="value_valid_stderr",
+    )
+    reserved_names = {
+        "parameter_fit",
+        "fit_parameter_values",
+        "fit_parameter_stderr",
+    }
+
+    expected = operation.apply(data)
+    code = operation.replay_code(
+        "fit_data",
+        output_name="parameter_values",
+        reserved_names=reserved_names,
+    )
+    sentinel = object()
+    namespace = _exec_generated_code(
+        code,
+        {
+            "fit_data": data,
+            "era": erlab.analysis,
+            "xr": xr,
+            **dict.fromkeys(reserved_names, sentinel),
+        },
+    )
+
+    xr.testing.assert_identical(namespace["parameter_values"], expected)
+    assert all(namespace[name] is sentinel for name in reserved_names)
+
+
 def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> None:
     x = np.linspace(-1.0, 1.0, 21)
     y = np.arange(3)
@@ -8797,11 +8885,18 @@ def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> Non
     reparsed = parse_tool_provenance_operation(payload)
     assert reparsed == operation
 
+    reserved_names = {
+        "parameter_fit",
+        "fit_parameter_values",
+        "fit_parameter_stderr",
+    }
     code = operation.replay_code(
         "fit_data",
         output_name="parameter_values",
         bound_inputs={"uncertainty": "uncertainty"},
+        reserved_names=reserved_names,
     )
+    sentinel = object()
     namespace = _exec_generated_code(
         code,
         {
@@ -8809,9 +8904,11 @@ def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> Non
             "uncertainty": uncertainty,
             "era": erlab.analysis,
             "xr": xr,
+            **dict.fromkeys(reserved_names, sentinel),
         },
     )
     xr.testing.assert_identical(namespace["parameter_values"], expected)
+    assert all(namespace[name] is sentinel for name in reserved_names)
 
 
 def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:

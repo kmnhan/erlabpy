@@ -1436,7 +1436,14 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         source_name: str | None = None,
         reserved_names: Collection[str] = (),
     ) -> str:
-        """Call bound-input statement replay with graph-emission context."""
+        """Dispatch statement replay without bypassing unary operation hooks."""
+        if not inputs:
+            return self._statement_replay_code(
+                input_name,
+                output_name=output_name,
+                source_name=source_name,
+                reserved_names=reserved_names,
+            )
         del reserved_names
         return self.statement_code_with_inputs(
             input_name,
