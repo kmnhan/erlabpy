@@ -4064,8 +4064,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def _on_fit_thread_finished(self) -> None:
-        thread = self.sender()
-        if isinstance(thread, _FitWorker):
+        thread = self._fit_thread
+        if thread is not None and thread.isFinished():
             self._finalize_fit_thread(thread)
 
     def _fit_worker_completion_action(self, thread: _FitWorker) -> Callable[[], None]:

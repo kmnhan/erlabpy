@@ -4696,6 +4696,43 @@ def test_fit_worker_completion_is_finalized_on_gui_thread(qtbot, monkeypatch) ->
     assert completion_threads == [QtWidgets.QApplication.instance().thread()]
 
 
+@pytest.mark.parametrize("finished", [False, True])
+def test_fit_worker_finished_slot_uses_current_worker(qtbot, finished) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    results: list[xr.Dataset] = []
+
+    class _DummyThread:
+        def __init__(self) -> None:
+            self._outcome = fit1d._FitWorkerOutcome("success", result=xr.Dataset())
+            self.deleted = False
+
+        def isFinished(self) -> bool:
+            return finished
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _DummyThread()
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_worker_callbacks[thread] = fit1d._FitWorkerCallbacks(
+        on_success=results.append,
+        on_timeout=lambda: None,
+        on_error=lambda _message: None,
+    )
+    fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
+    try:
+        win._on_fit_thread_finished()
+
+        assert len(results) == int(finished)
+        assert thread.deleted is finished
+        assert (win._fit_thread is None) is finished
+        assert (thread not in fit1d._running_fit_workers) is finished
+    finally:
+        fit1d._release_running_fit_worker(thread)  # type: ignore[arg-type]
+        win._fit_thread = None
+
+
 @pytest.mark.parametrize("outcome", ["success", "error", "cancelled", "timed_out"])
 def test_fit_worker_outcomes_dispatch_on_gui_thread(
     qtbot, monkeypatch, outcome
