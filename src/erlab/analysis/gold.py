@@ -788,7 +788,7 @@ def correct_with_edge(
     plot: bool = False,
     plot_kw: dict | None = None,
     **shift_kwargs,
-):
+) -> xr.DataArray:
     """Corrects the given data array `darr` with the given values or fit result.
 
     Parameters
@@ -802,8 +802,7 @@ def correct_with_edge(
         function that takes an array of angles and returns the corresponding energy
         value, or a tuple of coefficients for a polynomial (lowest order first).
     along
-        The angular dimension name in the data. If `None`, it is assumed to be
-        ``"alpha"``.
+        The angular dimension name in the data.
     shift_coords
         If `True`, the coordinates of the output data will be changed so that the output
         contains all the values of the original data. If `False`, the coordinates and
@@ -812,14 +811,20 @@ def correct_with_edge(
     plot
         Whether to plot the original and corrected data arrays. Defaults to `False`.
     plot_kw
-        Additional keyword arguments for the plot. Defaults to `None`.
+        Additional keyword arguments passed to :func:`erlab.plotting.plot_array` when
+        ``plot`` is `True`. Defaults to `None`.
     **shift_kwargs
-        Additional keyword arguments to :func:`erlab.analysis.transform.shift`.
+        Additional keyword arguments passed to :func:`erlab.analysis.transform.shift`.
 
     Returns
     -------
     corrected : xarray.DataArray
-        The edge corrected data.
+        A new array containing the edge-corrected data. The input dimension names are
+        retained. By default, the energy coordinate is sorted in ascending order. If
+        ``shift_coords`` is `True`, it is also shifted and can be extended, which can
+        increase the length of the ``eV`` dimension. If ``shift_coords`` is `False`, the
+        energy coordinate values and shape are retained. The data name and attributes
+        are preserved.
     """
     if plot_kw is None:  # pragma: no branch
         plot_kw = {}
@@ -900,15 +905,16 @@ def edge(
         If `gold` is chunked, this parameter is only used to specify the dimension along
         which to apply `angle_range`.
     angle_range
-        The range of values along the ``along`` dimension to consider.
+        Coordinate range to fit along ``along``, in the units of that coordinate.
     eV_range
-        The range of eV values to consider.
+        Energy range to fit, in eV.
     adaptive
         If `True`, estimate and use a separate energy range for each EDC within
         `eV_range`. If no valid falling edge is detected in one EDC, that EDC uses the
         complete `eV_range`. Defaults to `False`.
     bin_size
-        The bin size for coarsening the gold data, by default (1, 1).
+        Number of points to average along ``(along, "eV")`` before fitting. Data at an
+        incomplete final bin is discarded. Default is ``(1, 1)``.
     temp
         The temperature in Kelvins. If `None`, the temperature is inferred from the
         attributes, by default `None`
@@ -918,7 +924,7 @@ def edge(
         Whether to include a linear background above the Fermi level. If `False`, the
         background above the Fermi level is fit with a constant. Defaults to `True`.
     resolution
-        The initial resolution value to use for fitting, by default `0.02`.
+        Initial energy broadening FWHM in eV. Default is ``0.02``.
     use_step_edge
         Whether to use the Gaussian-broadened step function to fit the edge, by default
         `False`.
@@ -927,14 +933,13 @@ def edge(
     scale_covar
         Whether to scale the covariance matrix, by default `True`.
     fixed_center
-        The fixed center value. If provided, the Fermi level will be fixed at the given
-        value, by default `None`.
+        The center value in eV. If supplied, the center is fixed at this value.
     normalize
         Whether to normalize the energy coordinates, by default `True`.
     progress
         Whether to display the fitting progress, by default `True`.
     parallel_kw
-        Additional keyword arguments for parallel fitting, by default `None`.
+        Additional keyword arguments passed to :class:`joblib.Parallel`.
     parallel_obj
         The `joblib.Parallel` object to use for fitting, by default `None`. If provided,
         `parallel_kw` will be ignored.
@@ -946,16 +951,19 @@ def edge(
         because dropping NaNs requires computing all fit results. If ``return_full`` is
         `True`, this option is ignored.
     **kwargs
-        Additional keyword arguments passed to the fitting operation.
+        Additional keyword arguments passed to :meth:`xarray.DataArray.xlm.modelfit`.
 
     Returns
     -------
-    center_arr, center_stderr
-        The fitted center values and their standard errors, returned when `return_full`
-        is `False`.
-    fit_result
-        A dataset containing the full fit results, returned when `return_full` is
-        `True`.
+    center_arr, center_stderr : tuple of xarray.DataArray
+        Fitted Fermi-level positions and standard errors in eV when `return_full` is
+        `False`. The ``eV`` dimension is removed. Other dimensions and coordinates come
+        from the selected and optionally coarsened input. Both arrays have empty
+        attributes. If `drop_nans` is `True`, coordinate labels without valid fits are
+        removed.
+    fit_result : xarray.Dataset
+        Full result from :meth:`xarray.DataArray.xlm.modelfit` when `return_full` is
+        `True`. The input `gold` is not modified.
 
     """
     use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
@@ -1147,6 +1155,30 @@ def poly_from_edge(
     scale_covar=True,
     along: str = "alpha",
 ) -> xr.Dataset:
+    """Fit a polynomial to Fermi edge centers.
+
+    Parameters
+    ----------
+    center
+        Fermi level position as a function of `along` in eV.
+    weights
+        Fit weights broadcastable to ``center``. For inverse standard deviation
+        weighting, pass ``1 / center_stderr``.
+    degree
+        Polynomial degree.
+    method
+        Minimization method accepted by :mod:`lmfit`.
+    scale_covar
+        Whether lmfit scales the covariance matrix by the reduced chi-square.
+    along
+        Independent coordinate for the polynomial fit.
+
+    Returns
+    -------
+    xarray.Dataset
+        The standard result from :meth:`xarray.DataArray.xlm.modelfit`, including the
+        polynomial coefficients and fit result. The input `center` is not modified.
+    """
     model = erlab.analysis.fit.models.PolynomialModel(degree=degree)
     return center.xlm.modelfit(
         along,
@@ -1165,6 +1197,27 @@ def spline_from_edge(
     lam: float | None = None,
     along: str = "alpha",
 ) -> scipy.interpolate.BSpline:
+    """Fit a smoothing spline to Fermi edge centers.
+
+    Parameters
+    ----------
+    center
+        Fermi edge position as a function of ``along``.
+    weights
+        One-dimensional positive weights with the same length as ``center``.
+    lam
+        Nonnegative smoothing parameter passed to
+        :func:`scipy.interpolate.make_smoothing_spline`. If omitted, generalized
+        cross-validation selects it.
+    along
+        Independent coordinate for the spline.
+
+    Returns
+    -------
+    scipy.interpolate.BSpline
+        Spline that maps values of the `along` coordinate to fitted edge positions in
+        the same units as `center`.
+    """
     return scipy.interpolate.make_smoothing_spline(
         center[along].values, center.values, w=np.asarray(weights), lam=lam
     )
@@ -1312,6 +1365,77 @@ def poly(
     scale_covar_edge: bool = True,
     **kwargs,
 ) -> xr.Dataset | xr.DataArray | tuple[xr.Dataset, xr.DataArray]:
+    """Fit a polynomial Fermi edge and optionally correct the data.
+
+    This function fits each EDC with :func:`edge`, then fits a polynomial to the
+    accepted Fermi level positions with :func:`poly_from_edge`.
+
+    Parameters
+    ----------
+    gold
+        Fermi-edge data with ``"eV"`` and ``along`` dimensions.
+    along
+        Angular dimension along which the Fermi level varies.
+    angle_range
+        Coordinate range to fit along ``along``, in the units of that coordinate.
+    eV_range
+        Energy range to fit, in eV.
+    adaptive
+        Whether to estimate a separate energy range for each EDC.
+    bin_size
+        Number of points to average along `(along, "eV")` before fitting.
+    temp
+        Sample temperature in K. If omitted, read it from `gold`.
+    vary_temp
+        Whether each EDC fit can vary the temperature.
+    bkg_slope
+        Whether to fit a linear background above the Fermi level.
+    resolution
+        Initial Gaussian energy-resolution FWHM in eV.
+    use_step_edge
+        Whether to use a Gaussian-broadened step instead of a Fermi-Dirac edge.
+    method
+        Minimization method used for the EDC and polynomial fits.
+    normalize
+        Whether to normalize the energy coordinate internally before each EDC fit. The
+        returned edge positions and errors remain in eV.
+    degree
+        Degree of the polynomial edge.
+    correct
+        If `True`, also return data corrected with the fitted edge. This option cannot
+        be used with ``return_edge``.
+    return_edge
+        If `True`, return the fitted edge evaluated at the original ``along`` coordinate
+        instead of the polynomial fit result.
+    crop_correct
+        If `True` with ``correct=True``, restrict the corrected data to ``angle_range``
+        and ``eV_range`` before applying the correction.
+    parallel_kw
+        Additional keyword arguments passed to :class:`joblib.Parallel` for the EDC
+        fits.
+    plot
+        Whether to draw the edge-fit diagnostic.
+    fig
+        Figure that receives the diagnostic. If omitted, a new figure is created.
+    scale_covar
+        Whether lmfit scales the covariance matrix for the polynomial fit.
+    scale_covar_edge
+        Whether lmfit scales the covariance matrix for each EDC fit.
+    **kwargs
+        Reserved for compatibility. Do not pass additional keyword arguments.
+
+    Returns
+    -------
+    fit_result : xarray.Dataset
+        Polynomial fit result from :func:`poly_from_edge` by default.
+    edge : xarray.DataArray
+        Evaluated edge positions in eV along the original ``along`` coordinate when
+        ``return_edge`` is `True`.
+    fit_result, corrected : tuple of xarray.Dataset and xarray.DataArray
+        Polynomial fit result and corrected data when ``correct`` is `True`. The
+        corrected array follows the return contract of :func:`correct_with_edge`.
+
+    """
     use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
     _raise_unexpected_kwargs("poly", kwargs)
     if correct and return_edge:
@@ -1473,21 +1597,19 @@ def quick_fit(
     darr
         The input data to be fitted.
     eV_range
-        The energy range to consider for fitting. If `None`, the entire energy range is
-        used. Defaults to `None`.
+        Energy range to fit, in eV. If `None`, use the full energy coordinate.
     method
         The fitting method to use that is compatible with `lmfit`. Defaults to
         "leastsq".
     temp
-        The temperature value to use for fitting. If `None`, the temperature is inferred
-        from the data attributes.
+        Sample temperature in K. If `None`, infer it from the data attributes.
     resolution
-        The initial resolution value to use for fitting. If `None`, the resolution is
-        set to 0.02, or to the ``'TotalResolution'`` attribute if present.
+        Initial Gaussian energy-resolution FWHM in eV. If `None`, use the
+        ``"TotalResolution"`` attribute after conversion from meV to eV, or use `0.02`
+        eV when that attribute is absent.
     center
-        The initial center value to use for fitting. If `None`, the center is
-        automatically guessed if `fix_center` is `False`. Otherwise, the center is fixed
-        to 0.
+        Initial Fermi level position in eV. If `None`, guess it unless ``fix_center`` is
+        `True`, in which case it is fixed at zero.
     fix_temp
         Whether to fix the temperature value during fitting. Defaults to `True`.
     fix_center
@@ -1521,7 +1643,9 @@ def quick_fit(
     Returns
     -------
     result : xarray.Dataset
-        The result of the fit.
+        The standard result from :meth:`xarray.DataArray.xlm.modelfit`. Before fitting,
+        all input dimensions except `"eV"` are averaged and ``eV_range`` is selected.
+        The input is not modified.
 
     """
     with xr.set_options(keep_attrs=True):

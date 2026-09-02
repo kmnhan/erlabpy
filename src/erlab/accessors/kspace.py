@@ -1152,30 +1152,27 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         lims: tuple[float, float] | None = None,
         from_numpoints: bool = False,
     ) -> float:
-        """Estimate resolution for a given momentum axis.
+        """Estimate target grid spacing for a momentum axis.
+
+        The returned value controls interpolation sampling. It is not an estimate of the
+        instrumental momentum resolution.
 
         Parameters
         ----------
         axis
-            Axis to estimate the resolution for.
+            Momentum axis for which to estimate the spacing.
         lims
-            The limits of the axis used when `from_numpoints` is `True`. If not
-            provided, reasonable limits will be calculated by :meth:`estimate_bounds`,
-            by default `None`
+            Lower and upper axis bounds in Å⁻¹, used when `from_numpoints` is `True`. If
+            omitted, :meth:`estimate_bounds` supplies the bounds.
         from_numpoints
-            If `True`, estimate the resolution from the number of points in the relevant
-            axis. If `False`, estimate the resolution based on the data, by default
-            `False`
-
-            .. versionchanged:: 3.20.1
-                When ``from_numpoints=True``, the estimated step now uses adjacent-point
-                spacing over inclusive bounds: ``(max - min) / (N - 1)``. Datasets with
-                fewer than 2 points on the relevant axis return ``np.inf``.
+            If `True`, estimate the spacing from the number of points in the relevant
+            measured axis. If `False`, estimate it from the angular resolution or, for
+            ``kz``, the photoelectron inelastic mean free path. Default is `False`.
 
         Returns
         -------
         float
-            The estimated resolution.
+            Estimated target grid spacing in Å⁻¹.
 
         Raises
         ------
@@ -1337,13 +1334,16 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def convert_coords(self) -> xr.DataArray:
         """Convert coordinates to momentum space.
 
-        Assigns new exact momentum coordinates to the data. This is useful when you want
-        to work with momentum coordinates but don't want to interpolate the data.
+        Assign exact momentum coordinates without interpolating the intensity.
 
         Returns
         -------
         xarray.DataArray
-            The DataArray with transformed coordinates.
+            A new array with the same dimensions, coordinate sampling, intensity values,
+            name, and attributes as the input. The applicable ``kx`` and ``ky``
+            coordinates are added. For photon-energy-dependent data, ``kz`` is also
+            added. All units for momentum are in Å⁻¹. The momentum coordinates can
+            depend on more than one measured dimension. The input is not modified.
         """
         self._check_kinetic_energy(context="converting coordinates to momentum space")
         return self._obj.assign_coords(self._get_transformed_coords())
@@ -1382,20 +1382,17 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         Parameters
         ----------
         bounds
-            A dictionary specifying the bounds for each coordinate axis. The keys are
-            the names of the axes, and the values are tuples representing the lower and
-            upper bounds of the axis. If not provided, the bounds will be estimated
-            based on the data.
+            Lower and upper bounds for each target momentum axis, in Å⁻¹. Keys can be
+            ``"kx"``, ``"ky"``, or ``"kz"`` when that axis applies to the input. Any
+            omitted bound is estimated from the measured angular range.
         resolution
-            A dictionary specifying the resolution for each momentum axis. The keys are
-            the names of the axes, and the values are floats representing the desired
-            resolution of the axis. If not provided, the resolution will be estimated
-            based on the data. For in-plane momentum, the resolution is estimated from
-            the angle resolution and kinetic energy. For out-of-plane momentum, two
-            values are calculated. One is based on the number of photon energy points,
-            and the other is estimated as the inverse of the photoelectron inelastic
-            mean free path given by the universal curve. The resolution is estimated as
-            the smaller of the two values.
+            Target grid spacing for each momentum axis, in Å⁻¹. This is interpolation
+            sampling, not instrumental momentum resolution. The final spacing can differ
+            slightly because the requested bounds contain an integer number of
+            intervals. If omitted, the target spacing is estimated from the input. For
+            in-plane momentum, the estimate uses the angular resolution and kinetic
+            energy. For ``kz``, the smaller estimate from the photon-energy sampling and
+            the photoelectron inelastic mean free path is used.
         method
             The interpolation method to use, passed to
             :func:`erlab.analysis.interpolate.interpn`. Using methods other than
@@ -1403,16 +1400,27 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         silent
             If ``False``, print progress messages during the conversion.
         **coords
-            Array-like keyword arguments that specifies the coordinate array for each
-            momentum axis. If provided, the bounds and resolution will be ignored.
+            Explicit one-dimensional target coordinates, in Å⁻¹, supplied as ``kx``,
+            ``ky``, or ``kz``. An explicit coordinate overrides ``bounds`` and
+            ``resolution`` for that axis.
 
         Returns
         -------
         xarray.DataArray
-            The converted data.
+            A new array containing the intensity interpolated on the target momentum
+            grid. Automatically generated momentum coordinates are regularly spaced;
+            explicit coordinates supplied through `coords` are used as given. Unaffected
+            dimensions retain their names. For fixed-photon-energy cuts, ``alpha`` is
+            replaced by the momentum axis parallel to the analyzer slit. For angular
+            maps, ``alpha`` and ``beta`` are replaced by ``kx`` and ``ky``. For
+            photon-energy-dependent cuts, ``alpha`` and ``hv`` are replaced by the
+            slit-parallel momentum axis and ``kz``. The ``eV`` dimension is retained and
+            uses binding energy. The data name and attributes are preserved, and the
+            interpolated values use a floating dtype. Points outside the measured
+            angular coverage contain missing values. The input is not modified.
 
-        Note
-        ----
+        Notes
+        -----
         This method converts the data to a new coordinate system specified by the
         provided bounds and resolution. It uses interpolation to map the data from the
         original coordinate system to the new one.
@@ -1608,17 +1616,26 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         Use this method for an endstation that can acquire data in more than one
         physical configuration. The coordinates of the new DataArray are renamed by
-        their physical roles to match the given configuration. The original data is
-        not modified.
+        their physical roles to match the given configuration. The original data is not
+        modified.
 
         This method does not infer the acquisition geometry or repair arbitrary
-        coordinate names from an incorrect loader implementation. The input must use
-        the standard coordinate names for its current configuration.
+        coordinate names from an incorrect loader implementation. The input must use the
+        standard coordinate names for its current configuration.
 
         Parameters
         ----------
         configuration
             The new configuration to apply.
+
+        Returns
+        -------
+        xarray.DataArray
+            A new array with unchanged data values, shape, dimension order, name, and
+            dtype. Standard angle coordinates are renamed by their physical roles. A
+            dimension is also renamed when it uses one of those coordinates. Other
+            coordinates and attributes are retained, and the ``configuration`` attribute
+            is updated.
 
         Note
         ----
@@ -1686,8 +1703,16 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         hv
             Photon energy in eV.
 
-        Note
-        ----
+        Returns
+        -------
+        xarray.DataArray
+            Calculated ``kz`` values in Å⁻¹. A scalar photon energy returns values along
+            the applicable ``eV`` and slit-parallel momentum dimensions. An array of
+            photon energies adds an ``hv`` dimension with the supplied values. The
+            converted intensity data is not changed.
+
+        Notes
+        -----
         This method returns an overlay curve :math:`k_z(hν)` for converted momentum
         data. The returned values depend on the requested photon energies, binding
         energy, and in-plane momentum coordinates, but never on the converted data's

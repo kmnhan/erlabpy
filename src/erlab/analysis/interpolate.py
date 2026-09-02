@@ -358,12 +358,11 @@ def slice_along_path(
         DataArray. The keys of the dictionary should correspond to the dimensions of the
         DataArray along which to interpolate.
     step_size
-        The step size to use for the interpolation. This determines the number of points
-        along the path at which the data array will be interpolated. If None, the step
-        size is determined automatically as the smallest step size of the coordinates
-        along the dimensions of the vertices if all coordinates are evenly spaced. If
-        there exists a dimension where the coordinates are not evenly spaced,
-        `step_size` must be specified.
+        Approximate sampling interval along the path, in the same units as the selected
+        coordinates. This determines the number of interpolation points. If `None`, the
+        smallest coordinate step among uniformly spaced selected dimensions is used.
+        Each selected dimension must then contain at least two coordinate values. If
+        none of those coordinates is uniformly spaced, `step_size` is required.
     dim_name
         The name of the new dimension that corresponds to the distance along the
         interpolated path. Default is "path".
@@ -376,7 +375,11 @@ def slice_along_path(
     Returns
     -------
     interpolated : DataArray
-        The interpolated data along the path.
+        A new interpolated array. The dimensions named in `vertices` are replaced by
+        `dim_name`; other dimensions are retained. The new dimension coordinate starts
+        at zero and contains cumulative distance along the path. The original selected
+        coordinates become one-dimensional auxiliary coordinates along that dimension.
+        The data name and attributes are retained, and the input is not modified.
 
     Examples
     --------
@@ -493,17 +496,17 @@ def slice_along_vector(
         The direction vector given as a dictionary with the same keys as `center`. The
         direction is normalized before slicing.
     stretch
-        The length of the vector in both directions in data units. If a single value is
-        given, the vector is stretched in both directions by the same amount. If a tuple
-        is given, the vector is stretched by different amounts in the negative and
-        positive directions.
+        Distance from `center` in the coordinate units used by ``direction``. A single
+        value gives the same distance in both directions. A tuple gives separate
+        distances in the negative and positive directions.
     **kwargs
         Additional keyword arguments to be passed to `slice_along_path`.
 
     Returns
     -------
     interpolated : DataArray
-        The interpolated data along the vector.
+        A new interpolated array with the selected dimensions replaced by the path
+        dimension. See :func:`slice_along_path`.
 
     Examples
     --------

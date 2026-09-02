@@ -834,10 +834,10 @@ def nice_colorbar(
     pad: float = 3.0,
     minmax: bool = False,
     orientation: typing.Literal["vertical", "horizontal"] = "vertical",
-    floating=False,
+    floating: bool = False,
     ticklabels: Sequence[str] | None = None,
     **kwargs,
-):
+) -> matplotlib.colorbar.Colorbar:
     r"""Create a colorbar with fixed width and aspect to ensure uniformity of plots.
 
     Parameters
@@ -858,8 +858,14 @@ def nice_colorbar(
         be labeled.
     orientation
         Colorbar orientation.
+    floating
+        If `True`, draw the colorbar as an inset inside the target axes instead of
+        allocating additional figure-layout space. For an axes array, the inset is
+        attached to the top-right axes.
+    ticklabels
+        Labels to assign to the colorbar's current tick locations after it is created.
     **kwargs
-        Keyword arguments are passed to `proportional_colorbar`.
+        Additional keyword arguments passed to :func:`proportional_colorbar`.
 
     Returns
     -------

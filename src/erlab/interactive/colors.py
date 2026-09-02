@@ -42,6 +42,18 @@ _POWER_NORM_LUT_CACHE_SIZE = 64
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
+    """Colormap selector with lazy thumbnails and optional external colormaps.
+
+    The initial list contains Matplotlib colormaps and is populated when the widget is
+    first shown. The context menu can load colormaps from the optional libraries that
+    ERLabPy detects.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Arguments passed to :class:`qtpy.QtWidgets.QComboBox`.
+    """
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.blockSignals(True)
@@ -547,6 +559,32 @@ class _ColorBarEditWidget(QtWidgets.QWidget):
 
 
 class BetterColorBarItem(pg.PlotItem):
+    """Interactive colorbar for one or more :class:`BetterImageItem` objects.
+
+    Parameters
+    ----------
+    parent
+        Parent widget.
+    image
+        Image item or items whose colormap and intensity limits the colorbar controls.
+    autoLevels
+        Automatically update the color limits when image data changes.
+    limits
+        Fixed lower and upper bounds for the colorbar scale. If omitted, bounds are
+        estimated from the primary image.
+    pen, hoverPen, hoverBrush
+        pyqtgraph style values for the movable limit region.
+    show_colormap_edit_menu
+        Include colormap controls in the context menu.
+    **kargs
+        Additional keyword arguments passed to :class:`pyqtgraph.PlotItem`.
+
+    Notes
+    -----
+    The colorbar keeps weak references to its image items. Changing its region updates
+    the displayed intensity limits of all live associated images.
+    """
+
     sigColorChanged = QtCore.Signal()  #: :meta private:
     sigLevelsChangeFinished = QtCore.Signal()  #: :meta private:
 
@@ -1326,6 +1364,34 @@ def pg_colormap_powernorm(
     zero_centered: bool = False,
     N: int = 65536,
 ) -> pg.ColorMap:
+    """Apply a power-law intensity mapping to a pyqtgraph colormap.
+
+    Parameters
+    ----------
+    cmap
+        Colormap name or :class:`pyqtgraph.ColorMap`. A name is resolved with
+        :func:`pg_colormap_from_name` without using the pyqtgraph cache. A supplied
+        ColorMap is modified in place.
+    gamma
+        Dimensionless power-law exponent. With the default contrast mode, normalized
+        positions are mapped as ``x**gamma``.
+    reverse
+        Reverse the colormap before the power-law mapping.
+    high_contrast
+        Use ``1 - (1 - x)**(1 / gamma)`` instead of ``x**gamma``.
+    zero_centered
+        Apply the mapping separately below and above the midpoint so that ``0.5``
+        remains fixed.
+    N
+        Number of uniformly spaced colormap positions in the returned map.
+
+    Returns
+    -------
+    pyqtgraph.ColorMap
+        Colormap with remapped floating-point colors and positions. A supplied
+        ColorMap is the same object after modification. The result records `gamma`,
+        `reverse`, `high_contrast`, and `zero_centered` in ``_erlab_attrs``.
+    """
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=True)
 

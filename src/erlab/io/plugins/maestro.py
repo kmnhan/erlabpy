@@ -79,6 +79,8 @@ def cache_as_float32(
 
 
 class MAESTROMicroLoader(LoaderBase):
+    """Load micro-ARPES scans from the MAESTRO beamline at the Advanced Light Source."""
+
     name = "maestro"
     description = "ALS Beamline 7.0.2.1 MAESTRO"
     extensions: typing.ClassVar[set[str]] = {".h5"}

@@ -285,7 +285,7 @@ def generate_data_angles(
     Parameters
     ----------
     shape
-        The shape of the generated data, by default (250, 250, 300)
+        Number of points along ``(alpha, beta, eV)``. Default is `(500, 60, 500)`.
     angrange
         Angle range in degrees. Can be a single float, a tuple of floats representing
         the range, or a dictionary with ``alpha`` and ``beta`` keys mapping to tuples
@@ -346,7 +346,11 @@ def generate_data_angles(
     Returns
     -------
     xarray.DataArray
-        The generated data with coordinates for alpha, beta, and eV.
+        Simulated intensity with dimensions ``(alpha, beta, eV)`` and scalar ``xi``,
+        ``delta``, and ``hv`` coordinates. Deflector configurations also include scalar
+        ``chi``. A dimension whose requested size is one is removed. When
+        `assign_attributes` is `True`, the result includes the experimental
+        configuration, sample temperature, and work function.
 
     """
     try:

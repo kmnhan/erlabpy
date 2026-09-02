@@ -782,7 +782,8 @@ def watch(
     stop
         If ``True``, stop watching specified variables.
     remove
-        If ``True``, remove watched variables from manager while stopping.
+        If ``True``, stop watching the specified variables and also remove their rows
+        from ImageTool Manager.
     stop_all
         If ``True``, stop watching all variables in the namespace.
     restore

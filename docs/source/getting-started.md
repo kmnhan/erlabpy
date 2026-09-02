@@ -167,6 +167,10 @@ for the relationship between them.
 
 ## AI assistance
 
+- The [ARPES Analysis Assistant](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant)
+  provides ChatGPT-based help. It can give code examples, explain functions and
+  parameters, and give general guidance about installing and using ERLabPy.
+
 - The `arpes-analysis` agent skill helps coding agents answer questions about ERLabPy
   and perform basic analysis tasks. With the [GitHub CLI](https://cli.github.com/)
   installed, run:
@@ -175,9 +179,7 @@ for the relationship between them.
   gh skill install kmnhan/erlabpy arpes-analysis
   ```
 
-- The [ARPES Analysis Assistant](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant)
-  provides ChatGPT-based help. It can give code examples, explain functions and
-  parameters, and give general guidance about installing and using ERLabPy.
+  This skill is still a work in progress.
 
 :::{warning}
 

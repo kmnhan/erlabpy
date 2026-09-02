@@ -288,6 +288,41 @@ def do_convolve_2d(
     pad: int = 5,
     **kwargs,
 ) -> npt.NDArray[np.float64]:
+    """Convolve a two-dimensional model along its first coordinate.
+
+    Parameters
+    ----------
+    x
+        Uniformly spaced values of the convolution coordinate. Supply either a
+        one-dimensional coordinate or the flattened ``x`` output from a rectangular
+        mesh grid. At least two values are required.
+    y
+        Values of the second independent variable. Supply a scalar, a one-dimensional
+        coordinate, or the flattened ``y`` output that matches a flattened mesh grid
+        in `x`.
+    func
+        Model callable with the signature ``func(x, y, **kwargs)``. It must return one
+        value for each supplied ``x`` value.
+    resolution
+        FWHM of the Gaussian kernel in the units of `x`.
+    pad
+        Number of Gaussian standard deviations added to each end of `x` before the
+        model is evaluated.
+    **kwargs
+        Additional keyword arguments passed to `func`.
+
+    Returns
+    -------
+    numpy.ndarray
+        Convolved model values. Separate one-dimensional coordinates produce an array
+        with shape ``(x.size, y.size)``. Matching flattened mesh-grid coordinates
+        produce a flattened array in the same traversal order as the mesh grid.
+
+    Notes
+    -----
+    The convolution is applied only along `x`. The function evaluates and convolves
+    the model independently for each value of `y`.
+    """
     idx_x = None
 
     if not np.iterable(y):

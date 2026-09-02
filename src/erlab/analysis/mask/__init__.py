@@ -262,8 +262,13 @@ def mask_with_polygon(
 
     Returns
     -------
-    DataArray
-        The masked DataArray.
+    masked : DataArray
+        A new array with values outside the selected polygon replaced by missing values,
+        or values inside it when `invert` is `True`. Dimension names, coordinates,
+        name, and attributes are retained. If `drop` is `True`, the two mask dimensions
+        can become shorter because coordinate labels for fully masked rows and columns
+        are removed. Integer input is promoted to a dtype that can represent missing
+        values. The input is not modified.
 
     """
     if dims is None:

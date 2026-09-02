@@ -152,13 +152,14 @@ class MultiPeakFunction(DynamicFunction):
     peak_shapes
         The shape(s) of the peaks in the model. If a list of strings is provided, each
         string represents the shape of a peak. If a single string is provided, it will
-        be split by spaces to create a list of peak shapes. If not provided, the default
-        peak shape will be used for all peaks.
+        be split by spaces to create a list of peak shapes. Supported shapes are
+        ``"lorentzian"``, ``"gaussian"``, and ``"voigt"``, together with their
+        documented aliases. If omitted, all peaks are Lorentzian.
     fd
-        Flag indicating whether the model should be multiplied by the Fermi-Dirac
-        distribution. This adds three parameters to the model: ``efermi``, ``temp``, and
-        ``offset``, each corresponding to the Fermi level, temperature in K, and
-        constant background.
+        Whether to multiply the peaks and background by a Fermi-Dirac distribution.
+        This adds ``efermi`` in the units of `x`, ``temp`` in K, and ``offset`` in the
+        units of the dependent data. When this option is enabled, `x` and ``efermi``
+        must be in eV.
     background
         The type of background to include in the model. Possible values are:
 
@@ -182,16 +183,29 @@ class MultiPeakFunction(DynamicFunction):
         The degree of the polynomial background. Only used if `background` is
         ``'polynomial'``. Default is 2.
     convolve
-        Flag indicating whether the model should be convolved with a gaussian kernel. If
-        `True`, adds a ``resolution`` parameter to the model, corresponding to the FWHM
-        of the gaussian kernel.
+        Whether to convolve the complete model with a Gaussian kernel. If `True`, the
+        model includes ``resolution``, the Gaussian FWHM in the units of `x`.
     oversample
         Factor by which to oversample `x` during convolution to reduce numerical
         artifacts.
     segmented
-        Flag indicating whether to convolve the model in segments. If `True`, the model
-        will be convolved in segments of uniform spacing. This must be set to `True`
-        when fitting data with large gaps or discontinuities in the x-axis.
+        Whether to convolve the model in contiguous uniformly spaced segments. Use
+        `True` when `x` contains large gaps or discontinuities.
+
+    Notes
+    -----
+    Peak parameters use the prefix ``p{i}_``, where ``i`` starts at zero. All peak
+    positions and widths use the units of `x`.
+
+    - Gaussian and Lorentzian peaks use ``center``, ``width``, and ``height``.
+      ``width`` is the FWHM and ``height`` is the intensity at ``center``. The
+      corresponding ``sigma`` or ``gamma`` and ``amplitude`` parameters are derived.
+    - Voigt peaks use ``center``, ``sigma``, ``gamma``, and ``amplitude``. ``sigma`` is
+      the Gaussian standard deviation, ``gamma`` is the Lorentzian HWHM, and
+      ``amplitude`` is the integrated peak area. ``width`` and ``height`` are derived.
+
+    Background parameter units follow from the dependent data and `x`. For example,
+    ``const_bkg`` has intensity units and ``lin_bkg`` has intensity per unit of `x`.
     """
 
     PEAK_SHAPES: typing.ClassVar[dict[Callable, list[str]]] = {
@@ -454,6 +468,36 @@ class MultiPeakFunction(DynamicFunction):
 
 
 class FermiEdge2dFunction(DynamicFunction):
+    r"""Polynomial Fermi edge with a linear intensity background.
+
+    The edge position is
+
+    .. math::
+
+        E_F(\alpha) = \sum_{i=0}^{n} c_i \alpha^i,
+
+    where `degree` is :math:`n`. A Gaussian convolution is applied along ``eV``.
+
+    Parameters
+    ----------
+    degree
+        Degree of the polynomial that describes the edge position as a function of
+        ``alpha``.
+
+    Notes
+    -----
+    ``eV``, :math:`E_F`, and ``resolution`` are in eV. ``alpha`` is in degrees,
+    ``temp`` is in K, and ``resolution`` is the Gaussian FWHM. Coefficient ``c{i}``
+    has units of eV per degree raised to ``i``. ``const_bkg`` and ``offset`` have the
+    units of the returned intensity. ``lin_bkg`` has intensity per eV units.
+
+    Calling the function with separate NumPy coordinates returns a flattened array in
+    ``(eV, alpha)`` order. If both coordinates are
+    :class:`xarray.DataArray` objects, the result has their broadcast dimensions and
+    coordinates. If only one coordinate is a DataArray, the result is a NumPy array.
+    The Gaussian convolution delegates to :func:`do_convolve_2d`.
+    """
+
     def __init__(self, degree: int = 1) -> None:
         super().__init__()
         self.poly = PolynomialFunction(degree)

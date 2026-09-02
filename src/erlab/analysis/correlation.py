@@ -108,6 +108,46 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
 
 
 def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
+    """Calculate two-dimensional autocorrelation across a stack.
+
+    Parameters
+    ----------
+    arr
+        Input DataArray. For input with three or more dimensions, exactly two
+        dimensions must remain after `stack_dims` are excluded. Those two dimensions
+        require uniformly spaced coordinates with at least two values.
+    stack_dims
+        Dimensions that identify independent two-dimensional slices. Their order,
+        sizes, and dimension coordinates are retained. This argument is ignored for a
+        two-dimensional input.
+    mode
+        Output-size mode passed to :func:`scipy.signal.correlate`. ``"full"`` gives
+        each correlation dimension a length of ``2 * n - 1``. ``"same"`` retains the
+        input length.
+    method
+        Correlation method passed to :func:`scipy.signal.correlate`.
+
+    Returns
+    -------
+    xarray.DataArray
+        Autocorrelation values with the input dimension order. Stack dimensions retain
+        their coordinates. Each correlation coordinate contains signed lags in the
+        units of the corresponding input coordinate. Dimensions named ``kx`` and
+        ``ky`` are renamed to ``qx`` and ``qy`` when both are present. Input attributes
+        are retained. The result is backed by an in-memory NumPy array.
+
+        For input with three or more dimensions, ``mode="same"`` also retains other
+        compatible coordinates and the input name. A two-dimensional input and modes
+        that allocate a new array retain only the documented dimension coordinates and
+        do not retain the input name.
+
+    Notes
+    -----
+    Each slice is processed independently with joblib. NaN values are excluded through
+    a correlated validity mask. For a slice with a finite, nonzero zero-lag value, the
+    autocorrelation is normalized to one at zero lag. A two-dimensional input delegates
+    to :func:`acf2`.
+    """
     if arr.ndim == 2:
         return acf2(arr, mode, method)
     if arr.ndim >= 3:
@@ -167,7 +207,32 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
 
 
 def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
-    """Perform 1-dimensional correlation analysis on `xarray.DataArray` s."""
+    """Calculate the one-dimensional cross-correlation of two DataArrays.
+
+    Parameters
+    ----------
+    in1
+        Reference data. It must have one dimension with a uniformly spaced coordinate
+        that contains at least two values.
+    in2
+        Data to correlate with `in1`. It is first interpolated to the coordinates of
+        `in1`. Values outside its coordinate range and NaN values in either input are
+        treated as zero.
+    method
+        Correlation method passed to :func:`scipy.signal.correlate`.
+
+    Returns
+    -------
+    xarray.DataArray
+        Unnormalized cross-correlation with the same shape, dimension name, attributes,
+        name, and compatible auxiliary coordinates as `in1`. The dimension coordinate
+        is shifted so that the zero-lag sample has coordinate value zero. The result is
+        backed by an in-memory NumPy array, and the inputs are not modified.
+
+    Notes
+    -----
+    The correlation uses ``mode="same"``.
+    """
     in2 = in2.interp_like(in1)
     dim = in1.dims[0]
     if not erlab.utils.array.is_uniform_spaced(in1[dim].values):

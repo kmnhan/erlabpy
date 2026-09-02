@@ -57,7 +57,37 @@ figure_width_ref = {
 }
 
 
-def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=True):
+def figwh(
+    ratio: float | str = 0.6180339887498948,
+    wide: int = 0,
+    wscale: float = 1,
+    style: typing.Literal["aps", "aip", "nature"] = "aps",
+    fixed_height: bool = True,
+) -> tuple[float, float]:
+    """Shortcut for nice figure width and height in inches for matplotlib.
+
+    Parameters
+    ----------
+    ratio
+        Figure height divided by its unscaled journal width. A numeric value is used
+        directly. A string is interpreted as a multiplier of the inverse golden ratio;
+        for example, ``"2"`` gives two inverse-golden-ratio units.
+    wide
+        Journal width index. Use ``0`` for a single-column figure or ``1`` for the
+        wider figure size defined by `style`.
+    wscale
+        Factor applied to the selected figure width.
+    style
+        Journal width convention: ``"aps"``, ``"aip"``, or ``"nature"``.
+    fixed_height
+        If `True`, `wscale` changes only the width. If `False`, it changes both width
+        and height and preserves the aspect ratio.
+
+    Returns
+    -------
+    width, height : tuple of float
+        Figure width and height in inches, suitable for Matplotlib's ``figsize``.
+    """
     if isinstance(ratio, str):
         ratio = float(ratio) * 2 / (1 + np.sqrt(5))
     w = figure_width_ref[style][wide]
@@ -258,17 +288,28 @@ def plot_array(
     Parameters
     ----------
     arr
-        A two-dimensional :class:`xarray.DataArray` with evenly spaced coordinates.
+        A two-dimensional :class:`xarray.DataArray`. Evenly spaced coordinates use
+        :func:`matplotlib.pyplot.imshow`; nonuniform coordinates use
+        :class:`matplotlib.image.NonUniformImage`.
     ax
         The target :class:`matplotlib.axes.Axes`.
     colorbar
         Whether to plot a colorbar.
     colorbar_kw
         Keyword arguments passed onto :func:`erlab.plotting.colors.nice_colorbar`.
+    gamma
+        Exponent for the default :class:`matplotlib.colors.PowerNorm`. Ignored when
+        `norm` is supplied.
+    norm
+        Color normalization. If omitted, a power-law normalization with exponent
+        `gamma` is used.
     xlim, ylim
         If given a sequence of length 2, those values are set as the lower and upper
         limits of each axis. If given a single `float`, the limits are set as ``(-lim,
         lim)``.  If `None`, automatically determines the limits from the data.
+    crop
+        If `True`, select the data within `xlim` and `ylim` before plotting. The input
+        array is not modified.
     rad2deg
         If `True`, converts some known angle coordinates from radians to degrees. If an
         iterable of `str` is given, only the coordinates that correspond to the given
@@ -287,11 +328,15 @@ def plot_array(
     rasterized
         Force rasterized output.
     **improps
-        Keyword arguments passed onto :func:`matplotlib.pyplot.imshow`.
+        Image properties passed to :func:`matplotlib.pyplot.imshow` for uniform data or
+        to :class:`matplotlib.image.NonUniformImage` for nonuniform data.
 
     Returns
     -------
     matplotlib.image.AxesImage
+        The image artist. Nonuniform input returns a
+        :class:`matplotlib.image.NonUniformImage`, which is a subclass of
+        :class:`matplotlib.image.AxesImage`.
 
     Notes
     -----
@@ -893,15 +938,20 @@ def plot_slices(
         A nested sequence of :class:`matplotlib.axes.Axes`. If supplied, the returned
         :class:`matplotlib.figure.Figure` is inferred from the first axes.
     **values
-        Key-value pair of cut location and bin widths. See examples. Remaining
-        arguments are passed onto :meth:`matplotlib.axes.Axes.plot` for 1D slices and
-        :func:`plot_array` for 2D slices.
+        Selection values and plotting arguments. A key that matches an input dimension,
+        together with its optional ``*_width`` key, is passed to
+        :meth:`xarray.DataArray.qsel`. A collection of values creates one panel per
+        value, and only one dimension can supply such a collection. Remaining arguments
+        are passed to :meth:`matplotlib.axes.Axes.plot` for 1D output or
+        :func:`plot_array` for 2D output.
 
     Returns
     -------
     fig : matplotlib.figure.Figure
+        The new figure, or the figure that owns the supplied `axes`.
 
     axes : array-like of matplotlib.axes.Axes
+        A two-dimensional axes array with the panel arrangement selected by `order`.
 
     Examples
     --------

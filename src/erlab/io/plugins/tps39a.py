@@ -1,4 +1,4 @@
-"""Data loader for beamline 39A at NSLS-II."""
+"""Data loader for TPS Beamline 39A at NSRRC."""
 
 __all__ = ["TPS39ALoader"]
 
@@ -8,6 +8,8 @@ from erlab.io.plugins.da30 import DA30Loader
 
 
 class TPS39ALoader(DA30Loader):
+    """Load Scienta analyzer data from TPS Beamline 39A at NSRRC."""
+
     name = "tps39a"
     description = "NSRRC TPS Beamline 39A"
     coordinate_attrs = ("beta", "hv")

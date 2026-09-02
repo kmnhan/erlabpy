@@ -12,6 +12,12 @@ from erlab.io.dataloader import LoaderBase
 
 
 class HERSLoader(LoaderBase):
+    """Load FITS data from the HERS beamline at the Advanced Light Source.
+
+    By default, the loader converts detector pixels to analyzer angles and corrects
+    magnetic-field-induced image warping.
+    """
+
     name = "hers"
     description = "ALS Beamline 10.0.1 HERS"
     extensions: typing.ClassVar[set[str]] = {".fits"}

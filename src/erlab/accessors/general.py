@@ -48,10 +48,8 @@ class PlotAccessor(ERLabDataArrayAccessor):
 
         Plots two-dimensional data using :func:`plot_array
         <erlab.plotting.general.plot_array>`. For non-two-dimensional data, the method
-        falls back to :meth:`xarray.DataArray.plot`.
-
-        Also sets fancy labels using :func:`fancy_labels
-        <erlab.plotting.annotations.fancy_labels>`.
+        falls back to :meth:`xarray.DataArray.plot`. Positional and keyword arguments
+        are passed to the selected plotting function.
 
         Parameters
         ----------
@@ -59,6 +57,18 @@ class PlotAccessor(ERLabDataArrayAccessor):
             Positional arguments to be passed to the plotting function.
         **kwargs
             Keyword arguments to be passed to the plotting function.
+
+        Returns
+        -------
+        matplotlib artist or sequence of artists
+            For two-dimensional data, the image artist returned by
+            :func:`erlab.plotting.plot_array`. For other dimensionalities, the return
+            value from :meth:`xarray.DataArray.plot`.
+
+        Notes
+        -----
+        Axis labels are formatted with :func:`erlab.plotting.fancy_labels` after the
+        data is plotted.
 
         """
         import matplotlib.pyplot
@@ -83,8 +93,9 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
     def __call__(self, *args, **kwargs):
         """Visualize the data interactively.
 
-        Chooses the appropriate interactive visualization method based on the number of
-        dimensions in the data.
+        Data with two to four dimensions is opened with
+        :func:`erlab.interactive.imagetool.itool`. Other dimensionalities are passed to
+        ``DataArray.hvplot`` and require `hvplot <https://hvplot.holoviz.org/>`_.
 
         Parameters
         ----------
@@ -92,6 +103,12 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
             Positional arguments passed onto the interactive visualization function.
         **kwargs
             Keyword arguments passed onto the interactive visualization function.
+
+        Returns
+        -------
+        object
+            The return value from :func:`erlab.interactive.imagetool.itool` or
+            ``DataArray.hvplot``, depending on the number of dimensions.
         """
         if self._obj.ndim >= 2 and self._obj.ndim <= 4:
             return self.itool(*args, **kwargs)
@@ -144,8 +161,8 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
     def __call__(self, *args, **kwargs):
         """Visualize the data interactively.
 
-        Chooses the appropriate interactive visualization method based on the data
-        variables.
+        An xarray-lmfit result is passed to :meth:`fit`. Other datasets are passed to
+        :meth:`itool`.
 
         Parameters
         ----------
@@ -153,6 +170,12 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             Positional arguments passed onto the interactive visualization function.
         **kwargs
             Keyword arguments passed onto the interactive visualization function.
+
+        Returns
+        -------
+        object
+            The return value from :meth:`fit` or :meth:`itool`, depending on the data
+            variables in the dataset.
         """
         if self._is_fitresult:
             return self.fit(*args, **kwargs)
@@ -529,11 +552,11 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
     def __call__(
         self,
-        indexers: Mapping[Hashable, float | slice] | None = None,
+        indexers: Mapping[Hashable, float | Collection[float] | slice] | None = None,
         *,
         func: QSelReducer = "mean",
         **indexers_kwargs,
-    ):
+    ) -> xr.DataArray:
         """Select and aggregate data along specified dimensions.
 
         Parameters
@@ -554,8 +577,10 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             - As a value and width: ``alpha=5, alpha_width=0.5``
 
               The data is aggregated over a slice of width ``alpha_width``, centered at
-              ``alpha``. If ``alpha`` is a collection, the data is aggregated over
-              multiple slices and concatenated along the dimension.
+              ``alpha``. The center and width use the units of the selected coordinate.
+              Label-based slice endpoints are inclusive. If ``alpha`` is a collection,
+              the data is aggregated over multiple slices and concatenated along the
+              dimension.
 
             - As a slice: ``alpha=slice(-10, 10)``
 
@@ -575,7 +600,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Returns
         -------
         DataArray
-            The selected and aggregated data.
+            The selected or aggregated data. A scalar selection or one width-based
+            aggregation removes the selected dimension. If the dimension has a
+            coordinate, its selected or mean value is retained as a scalar coordinate. A
+            collection of centers preserves the dimension with one coordinate value for
+            each selection. Numeric coordinates that depend on an aggregated dimension
+            are reduced with their mean. The data name and attributes are retained.
 
         Note
         ----

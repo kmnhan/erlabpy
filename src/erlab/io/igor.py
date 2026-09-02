@@ -383,14 +383,18 @@ def load_wave(
 def save_wave(darr: xr.DataArray, filename: str | os.PathLike) -> None:
     """Save a wave to an Igor binary file.
 
-    This function saves a single DataArray to an Igor binary file. It is the inverse of
-    :func:`load_wave`. Only supports simple 1D, 2D, 3D, and 4D DataArrays without any
-    associated coordinates and non-dimensional coordinates.
+    This function saves one 1D, 2D, 3D, or 4D DataArray to an Igor binary wave. Uniform
+    dimension coordinates are stored as Igor dimension scales. A nonuniform dimension
+    coordinate is replaced in the file by an integer index scale, and the function emits
+    a warning. Coordinates that are not dimension coordinates are omitted with a
+    warning. The DataArray name and attributes are stored as the wave name and note.
+    These export conversions do not modify `darr`.
 
     Parameters
     ----------
     darr
-        The DataArray to save as a wave.
+        The DataArray to save as a wave. Each dimension must contain at least two
+        coordinate values.
     filename
         The path to the output file.
 

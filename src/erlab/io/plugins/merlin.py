@@ -47,6 +47,8 @@ def _determine_kind(data: xr.DataArray) -> str:
 
 
 class MERLINLoader(LoaderBase):
+    """Load ARPES data from the MERLIN endstation at ALS Beamline 4.0.3."""
+
     name = "merlin"
     description = "ALS Beamline 4.0.3 MERLIN"
     extensions: typing.ClassVar[set[str]] = {".pxt", ".ibw"}

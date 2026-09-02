@@ -11,6 +11,8 @@ from erlab.io.dataloader import LoaderBase
 
 
 class I05Loader(LoaderBase):
+    """Load NeXus data from beamline I05 at Diamond Light Source."""
+
     name = "i05"
     description = "Diamond Beamline I05"
     extensions: typing.ClassVar[set[str]] = {".nxs"}

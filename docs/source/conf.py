@@ -15,6 +15,8 @@ import pybtex.style.formatting
 import pybtex.style.formatting.unsrt
 import pybtex.style.template
 import sphinx_autosummary_accessors
+from docutils import nodes
+from sphinx_markdown_builder.translator import MarkdownTranslator
 
 # Build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -203,6 +205,33 @@ def fix_matplotlib_set_inheritance(app, config) -> None:
     erlab.plotting.plot3d.FancyArrow3D.set.__doc__ = ""
 
 
+class ERLabMarkdownTranslator(MarkdownTranslator):
+    """Preserve Sphinx signature and docstring nodes in the LLM export."""
+
+    def visit_abbreviation(self, node) -> None:
+        """Keep keyword-only markers in Python signatures."""
+
+    def depart_abbreviation(self, node) -> None:
+        """Finish an abbreviation without adding Markdown markup."""
+
+    def visit_admonition(self, node) -> None:
+        """Write generic admonitions such as NumPy Notes sections."""
+        title = (
+            node[0].astext() if node and isinstance(node[0], nodes.title) else "Note"
+        )
+        self._push_box(title.upper())
+
+    def depart_admonition(self, node) -> None:
+        """Finish a generic admonition after its children are written."""
+        self._pop_context()
+
+    def visit_title(self, node) -> None:
+        """Avoid writing an admonition title twice."""
+        if isinstance(node.parent, nodes.admonition):
+            raise nodes.SkipNode
+        super().visit_title(node)
+
+
 def write_trimmed_llms_export(app, exception) -> None:
     """Write llms-full-no-changelog.txt next to the sphinx-llm export."""
     if exception is not None:
@@ -237,6 +266,7 @@ def write_trimmed_llms_export(app, exception) -> None:
 
 
 def setup(app) -> None:
+    app.set_translator("markdown", ERLabMarkdownTranslator, override=True)
     app.connect("config-inited", make_accessor_docs)
     app.connect("config-inited", fix_matplotlib_set_inheritance)
     app.connect("build-finished", write_trimmed_llms_export)

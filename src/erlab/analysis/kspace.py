@@ -128,7 +128,11 @@ def change_configuration(
     Returns
     -------
     xarray.DataArray
-        The ARPES data with the new configuration.
+        A new array with unchanged data values, shape, dimension order, name, and dtype.
+        The standard coordinates for the polar, tilt, and deflector axes are renamed by
+        their physical roles. A dimension is also renamed when it uses one of those
+        coordinates. Other coordinates and attributes are retained, and the
+        ``configuration`` attribute is set to the new value.
 
     """
     current: AxesConfiguration = darr.kspace.configuration
@@ -235,10 +239,10 @@ def get_kconv_func(
     configuration
         Experimental configuration.
     angle_params
-        Dictionary of required angle parameters. If the configuration has a DA, the
-        parameters should be `delta`, `chi`, `chi0`, `xi`, and `xi0`. Otherwise, they
-        should be `delta`, `xi`, `xi0`, and `beta0`, following the notation in Ref.
-        :cite:p:`ishida2018kconv`.
+        Angle parameters to override. Each parameter is in degrees, and omitted values
+        default to zero. If the configuration has a deflector, the available parameters
+        are `delta`, `chi`, `chi0`, `xi`, and `xi0`. Otherwise, they are `delta`, `xi`,
+        `xi0`, and `beta0`, following the notation in Ref. :cite:p:`ishida2018kconv`.
 
     Returns
     -------
