@@ -770,6 +770,7 @@ class _WorkspaceSaver:
         *,
         document_access: _WorkspaceDocumentAccess | None = None,
         mark_clean: bool = True,
+        legacy_source_path: str | os.PathLike[str] | None = None,
     ) -> None:
         if document_access is None:
             _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
@@ -779,6 +780,7 @@ class _WorkspaceSaver:
                     access.path,
                     document_access=access,
                     mark_clean=mark_clean,
+                    legacy_source_path=legacy_source_path,
                 )
             return
 
@@ -792,6 +794,7 @@ class _WorkspaceSaver:
             snapshot = self._workspace_generation_save_snapshot(
                 self._manager._workspace_state.dirty_generation,
                 fname=fname,
+                legacy_source_path=legacy_source_path,
             )
             self._close_workspace_idle_readers(fname)
             target_store = workspace_store.WorkspaceStore.active(fname)
@@ -1094,17 +1097,28 @@ class _WorkspaceSaver:
         generation: int,
         *,
         fname: str | os.PathLike[str],
+        legacy_source_path: str | os.PathLike[str] | None = None,
     ) -> _WorkspaceSaveSnapshot:
         """Capture one immutable generation without copying unchanged payloads."""
         source_store = getattr(self._controller, "_workspace_store", None)
+        explicit_legacy_source_path = (
+            None
+            if legacy_source_path is None
+            else pathlib.Path(legacy_source_path).resolve()
+        )
         current_manifest: dict[str, typing.Any] | None = None
+        legacy_manifest: dict[str, typing.Any] | None = None
+        legacy_schema_version: int | None = None
         if source_store is not None and not source_store.closed:
             with contextlib.suppress(Exception):
                 current_manifest = source_store.current_generation().manifest
-        if current_manifest is None and self._manager._workspace_state.path is not None:
+        metadata_path = (
+            explicit_legacy_source_path or self._manager._workspace_state.path
+        )
+        if current_manifest is None and metadata_path is not None:
             with contextlib.suppress(Exception):
                 root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(
-                    self._manager._workspace_state.path
+                    metadata_path
                 )
                 schema_version, manifest = (
                     workspace_format._workspace_file_metadata_from_attrs(root_attrs)
@@ -1113,6 +1127,9 @@ class _WorkspaceSaver:
                     schema_version
                 ):
                     current_manifest = manifest
+                else:
+                    legacy_manifest = manifest
+                    legacy_schema_version = schema_version
 
         previous_entries: dict[str, Mapping[str, typing.Any]] = {}
         if current_manifest is not None:
@@ -1122,6 +1139,12 @@ class _WorkspaceSaver:
                 uid = entry.get("uid")
                 if isinstance(uid, str):
                     previous_entries[uid] = entry
+        legacy_payload_paths = {
+            uid: f"/{payload_path.strip('/')}"
+            for uid, _kind, payload_path in (
+                workspace_format._workspace_manifest_payload_entries(legacy_manifest)
+            )
+        }
 
         script_snapshot = self._workspace_script_snapshot()
         manifest = self._workspace_manifest(script_snapshot=script_snapshot)
@@ -1143,12 +1166,18 @@ class _WorkspaceSaver:
             | self._manager._workspace_state.dirty_added
             | stale_reference_uids
         )
+        legacy_link_blocked_uids = (
+            self._manager._workspace_state.dirty_data | stale_reference_uids
+        )
+        if explicit_legacy_source_path is None:
+            legacy_link_blocked_uids |= self._manager._workspace_state.dirty_added
         dirty_state = self._manager._workspace_state.dirty_state
         source_workspace_path = self._manager._workspace_state.path
 
         object_writes: dict[str, workspace_storage._WorkspaceObjectWrite] = {}
         final_entries: list[dict[str, typing.Any]] = []
         serialized_datasets: list[xr.Dataset] = []
+        legacy_payload_rewrite_uids: set[str] = set()
         extension_object_ids = set(
             workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
         )
@@ -1179,6 +1208,8 @@ class _WorkspaceSaver:
             has_saved_input_provenance = kind == "tool" and (
                 self._tool_payload_has_saved_input_provenance(node, previous)
             )
+            if has_saved_input_provenance:
+                legacy_payload_rewrite_uids.add(uid)
             can_reuse_object = (
                 isinstance(previous_object_id, str)
                 and bool(previous_object_id)
@@ -1346,28 +1377,73 @@ class _WorkspaceSaver:
         legacy_object_links: tuple[tuple[str, str], ...] = ()
         legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
         leased_legacy_group_paths: frozenset[str] = frozenset()
+        target_path = pathlib.Path(fname).resolve()
+        source_store_path = (
+            source_store.path
+            if source_store is not None and not source_store.closed
+            else None
+        )
+        target_is_source = (
+            source_store_path is not None and target_path == source_store_path
+        )
+        in_place_legacy_source: pathlib.Path | None = None
+        if target_is_source:
+            in_place_legacy_source = source_store_path
+        elif explicit_legacy_source_path == target_path:
+            in_place_legacy_source = explicit_legacy_source_path
+        legacy_link_candidates: list[tuple[str, str]] = []
         if source_store is not None and not source_store.closed:
             leased_legacy_group_paths = source_store.leased_legacy_group_paths
-            safe_rebindings: list[tuple[str, str]] = []
-            for entry in final_entries:
-                uid = entry.get("uid")
-                object_id = entry.get("payload_object_id")
+        safe_rebindings: list[tuple[str, str]] = []
+        for entry in final_entries:
+            uid = entry.get("uid")
+            object_id = entry.get("payload_object_id")
+            if not isinstance(uid, str) or not isinstance(object_id, str):
+                continue
+            legacy_path = legacy_payload_paths.get(uid)
+            if legacy_path is None:
+                node_path = entry.get("path")
+                kind = entry.get("kind")
                 if (
-                    not isinstance(uid, str)
-                    or uid in dirty_data
-                    or not isinstance(object_id, str)
+                    legacy_schema_version == 2
+                    and kind == "tool"
+                    and isinstance(node_path, str)
                 ):
-                    continue
-                legacy_path = f"/{self._workspace_payload_path(uid).strip('/')}"
-                if legacy_path in leased_legacy_group_paths:
-                    safe_rebindings.append((legacy_path, object_id))
-            legacy_reader_rebindings = tuple(sorted(safe_rebindings))
-            if pathlib.Path(fname).resolve() == source_store.path:
-                legacy_object_links = legacy_reader_rebindings
-        if (
-            source_store is not None
-            and pathlib.Path(fname).resolve() != source_store.path
-        ):
+                    legacy_path = f"/{node_path.strip('/')}"
+                else:
+                    legacy_path = f"/{self._workspace_payload_path(uid).strip('/')}"
+            if (
+                current_manifest is None
+                and in_place_legacy_source is not None
+                and object_id in object_writes
+                and uid not in legacy_link_blocked_uids
+                and uid not in legacy_payload_rewrite_uids
+            ):
+                legacy_link_candidates.append((legacy_path, object_id))
+            if uid not in dirty_data and legacy_path in leased_legacy_group_paths:
+                safe_rebindings.append((legacy_path, object_id))
+        legacy_reader_rebindings = tuple(sorted(safe_rebindings))
+        if legacy_link_candidates:
+            if target_is_source and source_store is not None:
+                legacy_object_links = tuple(
+                    sorted(
+                        (legacy_path, object_id)
+                        for legacy_path, object_id in legacy_link_candidates
+                        if legacy_path.strip("/") in source_store.h5_file
+                    )
+                )
+            elif in_place_legacy_source is not None:
+                with workspace_arrays._open_workspace_h5_file_for_read(
+                    in_place_legacy_source
+                ) as legacy_h5_file:
+                    legacy_object_links = tuple(
+                        sorted(
+                            (legacy_path, object_id)
+                            for legacy_path, object_id in legacy_link_candidates
+                            if legacy_path.strip("/") in legacy_h5_file
+                        )
+                    )
+        if source_store is not None and target_path != source_store.path:
             source_path = str(source_store.path)
             for object_id in source_store.leased_object_ids:
                 object_writes.setdefault(

@@ -16,6 +16,10 @@ from erlab.interactive._code_trust import (
 )
 from erlab.interactive._code_trust._payloads import CODE_PAYLOAD_ENTRIES_ATTR
 from erlab.interactive._saved_tools import resolve_saved_tool_class
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceSpec,
+    parse_tool_provenance_spec,
+)
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 if typing.TYPE_CHECKING:
@@ -139,6 +143,8 @@ def _node_code_trust_entries(
 ):
     """Return deduplicated provenance and relocated tool entries for one node."""
     entries = []
+    entry_identities: set[bytes] = set()
+    seen_specs: list[tuple[str, ToolProvenanceSpec]] = []
     located_specs = [
         *((f"{path}/provenance", spec) for spec in provenance_specs),
         *(
@@ -155,14 +161,22 @@ def _node_code_trust_entries(
         for attr, segment in saved_source_attrs
     )
     for location, provenance_spec in located_specs:
-        if provenance_spec is None:
+        parsed_spec = parse_tool_provenance_spec(provenance_spec)
+        if parsed_spec is None or any(
+            location == previous_location and parsed_spec == previous_spec
+            for previous_location, previous_spec in seen_specs
+        ):
             continue
+        seen_specs.append((location, parsed_spec))
         for entry in provenance_code_trust_entries(
-            provenance_spec,
+            parsed_spec,
             location_prefix=location,
         ):
-            if entry not in entries:
-                entries.append(entry)
+            identity = entry.document_identity()
+            if identity in entry_identities:
+                continue
+            entry_identities.add(identity)
+            entries.append(entry)
     if tool_manifest is not None:
         entries.extend(relocate_manifest_entries(tool_manifest, location_prefix=path))
     return entries

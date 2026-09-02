@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import hashlib
 import io
 import json
 import keyword
@@ -223,11 +224,13 @@ _FILE_LOAD_OUTPUT_SENTINEL = "_itool_file_load_output"
 
 
 def _canonical_key(kind: str, payload: Mapping[str, typing.Any]) -> str:
-    return json.dumps(
+    canonical_payload = json.dumps(
         {"kind": kind, **dict(payload)},
         sort_keys=True,
         separators=(",", ":"),
     )
+    digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+    return f"canonical-sha256:{digest}"
 
 
 def _is_semantic_replay_name(name: str) -> bool:

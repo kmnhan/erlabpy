@@ -1234,10 +1234,17 @@ class WorkspaceStore:
 
     def current_generation(self) -> _WorkspaceGeneration:
         """Return the newest valid committed generation."""
-        generations = self.generations()
-        if not generations:
-            raise ValueError("Workspace has no committed generation")
-        return generations[-1]
+        with self.read_session() as h5_file:
+            root = h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
+            if root is not None:
+                for name in sorted(root, reverse=True):
+                    if len(name) != _WORKSPACE_GENERATION_WIDTH or not name.isdigit():
+                        continue
+                    with contextlib.suppress(Exception):
+                        return _WorkspaceGeneration(
+                            int(name), self._read_manifest(root[name])
+                        )
+        raise ValueError("Workspace has no committed generation")
 
     def publish(self, manifest: Mapping[str, typing.Any]) -> _WorkspaceGeneration:
         """Publish one completed manifest as the newest generation."""

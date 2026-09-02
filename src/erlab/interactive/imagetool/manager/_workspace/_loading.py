@@ -1354,14 +1354,50 @@ class _WorkspaceLoader:
         if saved_uid is not None:
             loaded_targets_by_uid[saved_uid] = target
 
+    @staticmethod
+    def _workspace_manifest_indexes(
+        manifest: Mapping[str, typing.Any] | None,
+    ) -> tuple[
+        dict[str, Mapping[str, typing.Any]],
+        dict[str, tuple[str, ...]],
+    ]:
+        entries_by_path: dict[str, Mapping[str, typing.Any]] = {}
+        for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
+            path = entry.get("path")
+            if not isinstance(path, str) or entry.get("kind") not in {
+                "imagetool",
+                "tool",
+            }:
+                continue
+            if path in entries_by_path:
+                raise ValueError(
+                    f"Workspace manifest contains duplicate node path {path!r}"
+                )
+            entries_by_path[path] = entry
+        direct_children: dict[str, list[str]] = {}
+        for path in entries_by_path:
+            parent, separator, child = path.rpartition("/")
+            if separator and child:
+                direct_children.setdefault(parent, []).append(child)
+        return entries_by_path, {
+            parent: tuple(children) for parent, children in direct_children.items()
+        }
+
     @classmethod
     def _workspace_manifest_node_entry(
         cls,
         manifest: Mapping[str, typing.Any] | None,
         node_path: str | None,
         kind: typing.Literal["imagetool", "tool"],
+        *,
+        entries_by_path: Mapping[str, Mapping[str, typing.Any]] | None = None,
     ) -> Mapping[str, typing.Any] | None:
         if node_path is None:
+            return None
+        if entries_by_path is not None:
+            entry = entries_by_path.get(node_path)
+            if entry is not None and entry.get("kind") == kind:
+                return entry
             return None
         for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
             if entry.get("path") == node_path and entry.get("kind") == kind:
@@ -1370,8 +1406,14 @@ class _WorkspaceLoader:
 
     @classmethod
     def _workspace_manifest_direct_child_keys(
-        cls, manifest: Mapping[str, typing.Any] | None, prefix: str
+        cls,
+        manifest: Mapping[str, typing.Any] | None,
+        prefix: str,
+        *,
+        direct_children: Mapping[str, tuple[str, ...]] | None = None,
     ) -> list[str]:
+        if direct_children is not None:
+            return list(direct_children.get(prefix.rstrip("/"), ()))
         child_keys: list[str] = []
         for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
             path = entry.get("path")
@@ -1482,12 +1524,19 @@ class _WorkspaceLoader:
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         reserved_uids: Mapping[str, str] | None = None,
+        manifest_entries_by_path: (
+            Mapping[str, Mapping[str, typing.Any]] | None
+        ) = None,
+        manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = None
             pending_imagetool_payload: tuple[str | os.PathLike[str], str] | None = None
             entry = self._workspace_manifest_node_entry(
-                manifest, node_path, "imagetool"
+                manifest,
+                node_path,
+                "imagetool",
+                entries_by_path=manifest_entries_by_path,
             )
             if entry is not None and workspace_file_path is not None:
                 payload_path = f"{node_path}/imagetool"
@@ -1545,7 +1594,12 @@ class _WorkspaceLoader:
         elif "tool" in node_tree:
             ds = None
             pending_tool_payload: tuple[str | os.PathLike[str], str] | None = None
-            entry = self._workspace_manifest_node_entry(manifest, node_path, "tool")
+            entry = self._workspace_manifest_node_entry(
+                manifest,
+                node_path,
+                "tool",
+                entries_by_path=manifest_entries_by_path,
+            )
             if entry is not None and workspace_file_path is not None:
                 payload_path = f"{node_path}/tool"
                 if not _workspace_payload_window_visible_h5py(
@@ -1589,11 +1643,16 @@ class _WorkspaceLoader:
             child_keys: list[str] = []
             if manifest is not None and node_path is not None:
                 child_keys = self._workspace_manifest_direct_child_keys(
-                    manifest, f"{node_path}/childtools/"
+                    manifest,
+                    f"{node_path}/childtools/",
+                    direct_children=manifest_direct_children,
                 )
-            child_keys.extend(
-                str(key) for key in childtools if str(key) not in child_keys
-            )
+            child_key_set = set(child_keys)
+            for item in childtools:
+                child_key = str(item)
+                if child_key not in child_key_set:
+                    child_keys.append(child_key)
+                    child_key_set.add(child_key)
 
             for child_key in child_keys:
                 if child_key not in childtools:
@@ -1618,6 +1677,8 @@ class _WorkspaceLoader:
                     ),
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     reserved_uids=reserved_uids,
+                    manifest_entries_by_path=manifest_entries_by_path,
+                    manifest_direct_children=manifest_direct_children,
                 )
         return target
 
@@ -1632,6 +1693,10 @@ class _WorkspaceLoader:
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         reserved_uids: Mapping[str, str] | None = None,
+        manifest_entries_by_path: (
+            Mapping[str, Mapping[str, typing.Any]] | None
+        ) = None,
+        manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
     ) -> int | str | None:
         try:
             return self._load_workspace_node(
@@ -1643,6 +1708,8 @@ class _WorkspaceLoader:
                 workspace_file_path=workspace_file_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
                 reserved_uids=reserved_uids,
+                manifest_entries_by_path=manifest_entries_by_path,
+                manifest_direct_children=manifest_direct_children,
             )
         except Exception as exc:
             self._record_skipped_workspace_node(node_path, exc)
@@ -1658,6 +1725,10 @@ class _WorkspaceLoader:
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         reserved_uids: Mapping[str, str] | None = None,
+        manifest_entries_by_path: (
+            Mapping[str, Mapping[str, typing.Any]] | None
+        ) = None,
+        manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
     ) -> int:
         loaded_count = 0
         for key in root_keys:
@@ -1674,6 +1745,8 @@ class _WorkspaceLoader:
                     node_path=key,
                     loaded_targets_by_uid=loaded_targets_by_uid,
                     reserved_uids=reserved_uids,
+                    manifest_entries_by_path=manifest_entries_by_path,
+                    manifest_direct_children=manifest_direct_children,
                 )
                 if target is not None:
                     loaded_count += 1
@@ -1688,12 +1761,25 @@ class _WorkspaceLoader:
         workspace_file_path: str | os.PathLike[str] | None = None,
         loaded_targets_by_uid: dict[str, int | str] | None = None,
         reserved_uids: Mapping[str, str] | None = None,
+        manifest_entries_by_path: (
+            Mapping[str, Mapping[str, typing.Any]] | None
+        ) = None,
+        manifest_direct_children: Mapping[str, tuple[str, ...]] | None = None,
     ) -> int:
         if "figures" not in tree:
             return 0
         figures = typing.cast("xr.DataTree", tree["figures"])
-        figure_keys = self._workspace_manifest_direct_child_keys(manifest, "figures/")
-        figure_keys.extend(str(key) for key in figures if str(key) not in figure_keys)
+        figure_keys = self._workspace_manifest_direct_child_keys(
+            manifest,
+            "figures/",
+            direct_children=manifest_direct_children,
+        )
+        figure_key_set = set(figure_keys)
+        for item in figures:
+            figure_key = str(item)
+            if figure_key not in figure_key_set:
+                figure_keys.append(figure_key)
+                figure_key_set.add(figure_key)
 
         loaded_count = 0
         for figure_key in figure_keys:
@@ -1715,6 +1801,8 @@ class _WorkspaceLoader:
                 node_path=figure_path,
                 loaded_targets_by_uid=loaded_targets_by_uid,
                 reserved_uids=reserved_uids,
+                manifest_entries_by_path=manifest_entries_by_path,
+                manifest_direct_children=manifest_direct_children,
             )
             if target is not None:
                 loaded_count += 1
@@ -1738,25 +1826,27 @@ class _WorkspaceLoader:
         root_order = manifest.get("root_order", ())
         if not isinstance(nodes, list) or not isinstance(root_order, list):
             raise TypeError("Workspace manifest is missing node ordering")
-        entries_by_path: dict[str, Mapping[str, typing.Any]] = {}
-        for entry in workspace_format._iter_workspace_manifest_node_entries(manifest):
-            path = entry.get("path")
-            kind = entry.get("kind")
-            if not isinstance(path, str) or kind not in {"imagetool", "tool"}:
-                continue
-            entries_by_path[path] = entry
+        entries_by_path, _manifest_direct_children = self._workspace_manifest_indexes(
+            manifest
+        )
         if nodes and not entries_by_path:
             raise ValueError("Workspace manifest has no loadable nodes")
 
         root_paths: list[str] = []
+        root_path_set: set[str] = set()
         for root in root_order:
             path = str(root)
-            if path in entries_by_path and "/" not in path and path not in root_paths:
+            if (
+                path in entries_by_path
+                and "/" not in path
+                and path not in root_path_set
+            ):
                 root_paths.append(path)
+                root_path_set.add(path)
         root_paths.extend(
             path
             for path in entries_by_path
-            if "/" not in path and path not in root_paths
+            if "/" not in path and path not in root_path_set
         )
         figure_paths = [
             path
@@ -2130,6 +2220,9 @@ class _WorkspaceLoader:
                         f"Unsupported workspace schema version {schema_version}, "
                         "file may be from a newer version of erlab"
                     )
+            manifest_entries_by_path, manifest_direct_children = (
+                self._workspace_manifest_indexes(manifest)
+            )
             if replace:
                 manifest_workspace_link_id = (
                     None if manifest is None else manifest.get("workspace_link_id")
@@ -2193,6 +2286,8 @@ class _WorkspaceLoader:
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
                             reserved_uids=reserved_uids,
+                            manifest_entries_by_path=manifest_entries_by_path,
+                            manifest_direct_children=manifest_direct_children,
                         )
                         loaded_count += self._load_workspace_figures(
                             tree,
@@ -2201,6 +2296,8 @@ class _WorkspaceLoader:
                             workspace_file_path=workspace_file_path,
                             loaded_targets_by_uid=loaded_targets_by_uid,
                             reserved_uids=reserved_uids,
+                            manifest_entries_by_path=manifest_entries_by_path,
+                            manifest_direct_children=manifest_direct_children,
                         )
                     if loaded_count == 0 and self._skipped_workspace_nodes:
                         self._raise_no_workspace_windows_loaded()
@@ -2452,9 +2549,12 @@ class _WorkspaceLoader:
         uid: str,
         *,
         chunks: typing.Any,
+        payload_path: str | None = None,
     ) -> xr.DataArray:
         ds = workspace_arrays.open_workspace_dataset(
-            fname, self._workspace_payload_path_for_uid(fname, uid), chunks=chunks
+            fname,
+            payload_path or self._workspace_payload_path_for_uid(fname, uid),
+            chunks=chunks,
         )
         try:
             ds = workspace_format._restore_workspace_dataset_attrs(ds)
@@ -2469,11 +2569,10 @@ class _WorkspaceLoader:
         finally:
             ds.close()
 
-    def _workspace_payload_path_for_uid(
+    def _workspace_manifest_for_path(
         self,
         fname: str | os.PathLike[str],
-        uid: str,
-    ) -> str:
+    ) -> Mapping[str, typing.Any] | None:
         manifest = None
         store = getattr(self._controller, "_workspace_store", None)
         if (
@@ -2489,6 +2588,14 @@ class _WorkspaceLoader:
                 _schema, manifest = (
                     workspace_format._workspace_file_metadata_from_attrs(attrs)
                 )
+        return manifest
+
+    def _workspace_payload_path_for_uid(
+        self,
+        fname: str | os.PathLike[str],
+        uid: str,
+    ) -> str:
+        manifest = self._workspace_manifest_for_path(fname)
         payload_path = workspace_format._workspace_manifest_payload_path(manifest, uid)
         if payload_path is not None:
             return payload_path
@@ -2578,6 +2685,13 @@ class _WorkspaceLoader:
             )
         if not pending:
             return
+        manifest = self._workspace_manifest_for_path(fname)
+        payload_paths = {
+            uid: payload_path
+            for uid, _kind, payload_path in (
+                workspace_format._workspace_manifest_payload_entries(manifest)
+            )
+        }
         with self._controller._workspace_load_context():
             for node, state, name, chunks in pending:
                 tool = node.imagetool
@@ -2585,7 +2699,11 @@ class _WorkspaceLoader:
                     continue
                 slicer_area = tool.slicer_area
                 data = self._workspace_rebind_data_for_uid(
-                    fname, node.uid, chunks=chunks
+                    fname,
+                    node.uid,
+                    chunks=chunks,
+                    payload_path=payload_paths.get(node.uid)
+                    or self._controller.saving._workspace_payload_path(node.uid),
                 )
                 slicer_area.set_data(data, auto_compute=False)
                 slicer_area.state = state

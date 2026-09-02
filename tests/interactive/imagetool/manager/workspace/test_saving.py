@@ -3887,9 +3887,11 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
                 manager._workspace_controller.loading._workspace_rebind_data_for_uid
             )
 
-            def _record_rebind(fname, node_uid: str, *, chunks):
+            def _record_rebind(fname, node_uid: str, *, chunks, payload_path=None):
                 rebind_calls.append(node_uid)
-                return rebind_data(fname, node_uid, chunks=chunks)
+                return rebind_data(
+                    fname, node_uid, chunks=chunks, payload_path=payload_path
+                )
 
             monkeypatch.setattr(
                 manager._workspace_controller.loading,
@@ -4013,9 +4015,11 @@ def test_workspace_full_save_external_dask_rebind_rolls_back_on_later_failure(
             manager._workspace_controller.loading._workspace_rebind_data_for_uid
         )
 
-        def _record_rebind(fname, node_uid: str, *, chunks):
+        def _record_rebind(fname, node_uid: str, *, chunks, payload_path=None):
             rebind_calls.append(node_uid)
-            return rebind_data(fname, node_uid, chunks=chunks)
+            return rebind_data(
+                fname, node_uid, chunks=chunks, payload_path=payload_path
+            )
 
         monkeypatch.setattr(
             manager._workspace_controller.loading,
@@ -4532,14 +4536,16 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         assert generations[0].manifest == generations[1].manifest == current_manifest
 
 
+@pytest.mark.parametrize("schema_version", [3, 4])
 def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
     qtbot,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    schema_version: int,
 ) -> None:
-    path = tmp_path / "schema-4.itws"
+    path = tmp_path / f"schema-{schema_version}.itws"
     data = xr.DataArray(
         np.arange(400, dtype=np.float64).reshape((20, 20)),
         dims=("x", "y"),
@@ -4551,11 +4557,20 @@ def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
         if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
             raise TypeError("Expected an ImageTool")
         manager.add_imagetool(tool, show=False)
+        root_uid = manager._tool_graph.root_wrappers[0].uid
+        child = _AddedTimeChildTool((data + 1000).rename("child"))
+        child_uid = add_source_childtool(manager, child, 0, show=False)
+        child.hide()
+        dirty_tool = itool(data + 2000, manager=False, execute=False)
+        if not isinstance(dirty_tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(dirty_tool, show=False)
+        dirty_uid = manager._tool_graph.root_wrappers[1].uid
 
         tree = manager._workspace_controller.saving._to_datatree()
         manifest = manager._workspace_controller.saving._workspace_manifest()
-        manifest["schema_version"] = 4
-        tree.attrs["imagetool_workspace_schema_version"] = 4
+        manifest["schema_version"] = schema_version
+        tree.attrs["imagetool_workspace_schema_version"] = schema_version
         tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
         tree.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
         tree.close()
@@ -4568,25 +4583,147 @@ def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
             mark_dirty=False,
             select=False,
         )
+        store = manager._workspace_controller._workspace_store
+        if store is None:
+            raise RuntimeError("Expected an associated workspace store")
+        child_node = manager._child_node(child_uid)
+        if schema_version == 4:
+            assert child_node.pending_workspace_tool_payload is not None
+        else:
+            assert child_node.tool_window is not None
+        child_legacy_path = f"/0/childtools/{child_uid}/tool"
+        child_readers = [
+            reader
+            for reader in tuple(store._readers)
+            if reader.legacy_group_path == child_legacy_path
+        ]
+        assert bool(child_readers) == (schema_version == 4)
+        for reader in child_readers:
+            reader.close()
+            store.unregister_reader(reader)
+        assert store.leased_legacy_group_paths == frozenset(
+            {"/0/imagetool", "/1/imagetool"}
+        )
+        assert child_legacy_path not in store.leased_legacy_group_paths
+        replacement = data + 3000
+        manager.get_imagetool(1).slicer_area.replace_source_data(
+            replacement,
+            auto_compute=False,
+            emit_edited=True,
+        )
         assert _request_workspace_save_and_wait(qtbot, manager)
+
+        entries = {
+            str(entry["uid"]): entry
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
+                store.current_generation().manifest
+            )
+        }
+        assert set(entries) == {root_uid, child_uid, dirty_uid}
+        assert not store.leased_legacy_group_paths
+        for uid, legacy_path in (
+            (root_uid, "/0/imagetool"),
+            (child_uid, child_legacy_path),
+        ):
+            object_path = str(entries[uid]["payload_path"])
+            with store.read_session() as h5_file:
+                assert legacy_path in h5_file
+                assert (
+                    h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                    == h5py.h5o.get_info(h5_file[object_path].id).addr
+                )
+        dirty_object_path = str(entries[dirty_uid]["payload_path"])
+        with store.read_session() as h5_file:
+            assert (
+                h5py.h5o.get_info(h5_file["/1/imagetool"].id).addr
+                != h5py.h5o.get_info(h5_file[dirty_object_path].id).addr
+            )
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
+        np.testing.assert_array_equal(manager._get_imagetool_data(1), replacement)
+
+
+def test_manager_workspace_same_path_conversion_deduplicates_legacy_payload(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    schema_version = 2
+    path = tmp_path / "schema-2.itws"
+    data = xr.DataArray(np.arange(400).reshape((20, 20)), dims=("x", "y"))
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+        child = _AddedTimeChildTool((data + 1000).rename("child"))
+        child_uid = add_source_childtool(manager, child, 0, show=False)
+
+        current_tree = manager._workspace_controller.saving._to_datatree()
+        try:
+            tree = xr.DataTree.from_dict(
+                {
+                    "0/imagetool": typing.cast(
+                        "xr.DataTree", current_tree["0/imagetool"]
+                    ).to_dataset(inherit=False),
+                    f"0/childtools/{child_uid}": typing.cast(
+                        "xr.DataTree",
+                        current_tree[f"0/childtools/{child_uid}/tool"],
+                    ).to_dataset(inherit=False),
+                }
+            )
+            tree.attrs["imagetool_workspace_schema_version"] = schema_version
+            tree.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
+            tree.close()
+        finally:
+            current_tree.close()
+        manager.remove_all_tools()
+
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_show_legacy_workspace_upgrade_message",
+            lambda _fname: None,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: str(path),
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
 
         store = manager._workspace_controller._workspace_store
         if store is None:
             raise RuntimeError("Expected an associated workspace store")
-        entry = next(
-            workspace_format._iter_workspace_manifest_node_entries(
+        entries = {
+            str(entry["uid"]): entry
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
                 store.current_generation().manifest
             )
-        )
-        object_path = str(entry["payload_path"])
-        legacy_path = "/0/imagetool"
+        }
+        assert set(entries) == {uid, child_uid}
         assert not store.leased_legacy_group_paths
-        with store.read_session() as h5_file:
-            assert legacy_path in h5_file
-            assert (
-                h5py.h5o.get_info(h5_file[legacy_path].id).addr
-                == h5py.h5o.get_info(h5_file[object_path].id).addr
-            )
+        for node_uid, legacy_path in (
+            (uid, "/0/imagetool"),
+            (child_uid, f"/0/childtools/{child_uid}"),
+        ):
+            object_path = str(entries[node_uid]["payload_path"])
+            with store.read_session() as h5_file:
+                assert legacy_path in h5_file
+                assert (
+                    h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                    == h5py.h5o.get_info(h5_file[object_path].id).addr
+                )
         np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
 
 

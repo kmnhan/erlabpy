@@ -800,6 +800,107 @@ def test_failed_workspace_load_restores_trust_notification(
         assert len(notifications) == 2
 
 
+def test_workspace_load_binds_trust_manifest_once_after_node_batch(
+    manager_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = create_manifest(
+        workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN,
+        workspace_trust.WORKSPACE_CODE_TRUST_POLICY_VERSION,
+        (create_entry("test.code", "nodes/source", "run_code()"),),
+    )
+    manifest_calls: list[None] = []
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        monkeypatch.setattr(controller, "_mark_workspace_dirty", lambda **_: False)
+        monkeypatch.setattr(
+            workspace_trust,
+            "current_workspace_code_trust_manifest",
+            lambda _manager: manifest_calls.append(None) or manifest,
+        )
+
+        def load() -> bool:
+            for uid in ("first", "second", "third"):
+                controller._mark_node_added(uid)
+            assert not manifest_calls
+            return True
+
+        assert controller._load_with_code_trust(
+            untrusted_document_trust(), replace=True, load=load
+        )
+
+        assert manifest_calls == [None]
+        assert controller._code_trust_manifest_binding_depth == 0
+        assert not controller._code_trust_manifest_binding_pending
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_failed_workspace_load_discards_pending_manifest_binding(
+    manager_context, monkeypatch: pytest.MonkeyPatch, *, raises: bool
+) -> None:
+    manifest_calls: list[None] = []
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        previous = manager._workspace_state.code_trust
+        monkeypatch.setattr(
+            workspace_trust,
+            "current_workspace_code_trust_manifest",
+            lambda _manager: manifest_calls.append(None),
+        )
+
+        def load() -> bool:
+            controller._bind_current_workspace_manifest_if_review_needed()
+            if raises:
+                raise RuntimeError("load failed")
+            return False
+
+        if raises:
+            with pytest.raises(RuntimeError, match="load failed"):
+                controller._load_with_code_trust(
+                    untrusted_document_trust(), replace=True, load=load
+                )
+        else:
+            assert not controller._load_with_code_trust(
+                untrusted_document_trust(), replace=True, load=load
+            )
+
+        assert manager._workspace_state.code_trust == previous
+        assert not manifest_calls
+        assert controller._code_trust_manifest_binding_depth == 0
+        assert not controller._code_trust_manifest_binding_pending
+
+
+def test_workspace_load_restores_trust_if_deferred_manifest_binding_fails(
+    manager_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        previous = manager._workspace_state.code_trust
+
+        def fail_manifest(_manager):
+            raise RuntimeError("manifest failed")
+
+        monkeypatch.setattr(
+            workspace_trust,
+            "current_workspace_code_trust_manifest",
+            fail_manifest,
+        )
+
+        def load() -> bool:
+            controller._bind_current_workspace_manifest_if_review_needed()
+            return True
+
+        with pytest.raises(RuntimeError, match="manifest failed"):
+            controller._load_with_code_trust(
+                untrusted_document_trust(), replace=True, load=load
+            )
+
+        assert manager._workspace_state.code_trust == previous
+        assert controller._code_trust_manifest_binding_depth == 0
+        assert not controller._code_trust_manifest_binding_pending
+
+
 def test_selected_workspace_import_retains_complete_manifest_signature(
     external_workspace, manager_context
 ) -> None:
@@ -1031,9 +1132,22 @@ def test_workspace_code_trust_manifest_includes_live_python_provenance(
     assert manifest.entries[0].feature == "erlab.provenance.script-code"
 
 
-def test_workspace_manifest_deduplicates_saved_imagetool_provenance() -> None:
+def test_workspace_manifest_deduplicates_saved_imagetool_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provenance = _script_source()
     serialized = provenance.model_dump_json()
+    calls: list[None] = []
+
+    def counted_entries(spec, *, location_prefix):
+        calls.append(None)
+        return provenance_code_trust_entries(spec, location_prefix=location_prefix)
+
+    monkeypatch.setattr(
+        workspace_trust,
+        "provenance_code_trust_entries",
+        counted_entries,
+    )
     manifest = workspace_code_trust_manifest(
         _workspace_manifest_from_attrs(
             {
@@ -1044,6 +1158,7 @@ def test_workspace_manifest_deduplicates_saved_imagetool_provenance() -> None:
     )
 
     assert len(manifest.entries) == 1
+    assert calls == [None]
 
 
 def test_workspace_manifest_ignores_legacy_tool_manager_provenance() -> None:
