@@ -4508,7 +4508,8 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         assert current_entry["payload_object_id"] != initial_entry["payload_object_id"]
         store = manager._workspace_controller._workspace_store
         assert store is not None
-        assert len(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) >= 2
+        with store.read_session() as h5_file:
+            assert len(h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) >= 2
 
         monkeypatch.setattr(
             erlab.interactive.utils,
@@ -4519,11 +4520,13 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         assert manager.compact_workspace()
         assert manager._workspace_controller._workspace_store is store
         assert workspace_store.WorkspaceStore.active(fname) is store
-        assert store.h5_file.id.valid
+        with store.read_session() as h5_file:
+            assert h5_file.id.valid
         _assert_no_workspace_internal_groups(fname)
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
-            current_entry["payload_object_id"]
-        }
+        with store.read_session() as h5_file:
+            assert set(h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+                current_entry["payload_object_id"]
+            }
         generations = store.generations()
         assert len(generations) == 2
         assert generations[0].manifest == generations[1].manifest == current_manifest
@@ -4577,12 +4580,13 @@ def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
         )
         object_path = str(entry["payload_path"])
         legacy_path = "/0/imagetool"
-        assert legacy_path in store.h5_file
         assert not store.leased_legacy_group_paths
-        assert (
-            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
-            == h5py.h5o.get_info(store.h5_file[object_path].id).addr
-        )
+        with store.read_session() as h5_file:
+            assert legacy_path in h5_file
+            assert (
+                h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                == h5py.h5o.get_info(h5_file[object_path].id).addr
+            )
         np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
 
 
@@ -4638,21 +4642,23 @@ def test_manager_workspace_save_as_and_compact_deduplicates_legacy_payload(
         entry = next(workspace_format._iter_workspace_manifest_node_entries(manifest))
         object_path = str(entry["payload_path"])
         legacy_path = "/0/imagetool"
-        assert legacy_path in store.h5_file
         assert not store.leased_legacy_group_paths
-        assert (
-            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
-            == h5py.h5o.get_info(store.h5_file[object_path].id).addr
-        )
+        with store.read_session() as h5_file:
+            assert legacy_path in h5_file
+            assert (
+                h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                == h5py.h5o.get_info(h5_file[object_path].id).addr
+            )
         np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
 
         with store.write_session() as h5_file:
             del h5_file[legacy_path]
             h5_file.copy(object_path, legacy_path)
-        assert (
-            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
-            != h5py.h5o.get_info(store.h5_file[object_path].id).addr
-        )
+        with store.read_session() as h5_file:
+            assert (
+                h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                != h5py.h5o.get_info(h5_file[object_path].id).addr
+            )
         stale_legacy = workspace_arrays.open_workspace_dataset(
             new_path, legacy_path, chunks=None
         )
@@ -4672,7 +4678,8 @@ def test_manager_workspace_save_as_and_compact_deduplicates_legacy_payload(
             lambda *args, **kwargs: contextlib.nullcontext(),
         )
         assert manager.compact_workspace()
-        assert legacy_path not in store.h5_file
+        with store.read_session() as h5_file:
+            assert legacy_path not in h5_file
         np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
         np.testing.assert_array_equal(stale_legacy[_ITOOL_DATA_NAME], data)
         stale_legacy.close()
@@ -4743,10 +4750,11 @@ def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
         object_path = str(entry["payload_path"])
         legacy_path = "/0/imagetool"
         assert store.leased_legacy_group_paths == {legacy_path}
-        assert (
-            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
-            != h5py.h5o.get_info(store.h5_file[object_path].id).addr
-        )
+        with store.read_session() as h5_file:
+            assert (
+                h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                != h5py.h5o.get_info(h5_file[object_path].id).addr
+            )
         np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
 
         monkeypatch.setattr(
@@ -4755,7 +4763,8 @@ def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
             lambda *args, **kwargs: contextlib.nullcontext(),
         )
         assert manager.compact_workspace()
-        assert legacy_path in store.h5_file
+        with store.read_session() as h5_file:
+            assert legacy_path in h5_file
         np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
         np.testing.assert_array_equal(dirty_data, expected)
 
@@ -4922,11 +4931,10 @@ def test_manager_workspace_save_collects_old_generations_in_background(
         store = manager._workspace_controller._workspace_store
         assert store is not None
         assert len(store.generations()) == 2
-        assert (
-            first_object_id
-            not in store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        )
-        assert len(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == 2
+        with store.read_session() as h5_file:
+            object_group = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            assert first_object_id not in object_group
+            assert len(object_group) == 2
 
 
 def test_manager_workspace_save_snapshot_uses_compression_override(
