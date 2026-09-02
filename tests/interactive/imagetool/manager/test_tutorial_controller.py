@@ -897,6 +897,50 @@ def test_generation_failure_raises_diagnostic_error(monkeypatch, qtbot) -> None:
     controller._finish_cleanup()
 
 
+@pytest.mark.parametrize(
+    ("raise_error", "error_type"),
+    [
+        (
+            lambda controller, step: controller._raise_unavailable_step(
+                step, target_missing=True, text_missing=False
+            ),
+            tutorial_framework.TutorialStepUnavailableError,
+        ),
+        (
+            lambda controller, step: controller._raise_debug_error(
+                step, "test failure"
+            ),
+            tutorial_framework.TutorialDebugActionError,
+        ),
+    ],
+)
+def test_fatal_errors_use_tutorial_cleanup(
+    monkeypatch, qtbot, raise_error, error_type
+) -> None:
+    monkeypatch.setattr(tutorial, "generate_tutorial_data_files", _immediate_generation)
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    manager.show()
+    controller, loader_context = _controller(monkeypatch, manager)
+
+    controller.start()
+    step = controller.current_step
+    assert step is not None
+    with pytest.raises(error_type):
+        raise_error(controller, step)
+
+    assert controller._fatal_error is not None
+    assert controller._cleaning
+    assert not controller._state_timer.isActive()
+    qtbot.waitUntil(lambda: controller.is_cleaned)
+
+    assert not controller.is_running
+    assert loader_context.exited == 1
+    assert manager._workspace_controller.clean_calls == 1
+    assert manager.close_calls == 1
+    assert not controller.directory.exists()
+
+
 def test_cancelled_exit_keeps_tutorial_running(monkeypatch, qtbot) -> None:
     monkeypatch.setattr(tutorial, "generate_tutorial_data_files", _immediate_generation)
     monkeypatch.setattr(

@@ -6940,14 +6940,20 @@ def test_stale_routine_result_is_not_inserted(
     tmp_path: pathlib.Path,
 ) -> None:
     script_path = tmp_path / "slow.py"
+    release_path = tmp_path / "release"
     script_path.write_text(
-        """import time
+        """import pathlib
+import time
 import xarray as xr
 from erlab.extensions import routine
 
 @routine(name="Slow")
-def slow(data: xr.DataArray, delay: float = 0.1) -> xr.DataArray:
-    time.sleep(delay)
+def slow(data: xr.DataArray, release_path: str) -> xr.DataArray:
+    deadline = time.monotonic() + 10.0
+    while not pathlib.Path(release_path).exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("The test did not release the routine")
+        time.sleep(0.01)
     return data + 1.0
 """
     )
@@ -6972,14 +6978,17 @@ def slow(data: xr.DataArray, delay: float = 0.1) -> xr.DataArray:
             script_name="slow.py",
             source_hash=source_hash,
             routine_id="slow",
-            parameters={"delay": 0.15},
+            parameters={"release_path": str(release_path)},
             target=0,
         )
-        qtbot.wait_until(
-            lambda: manager._extensions.execution.active is not None,
-            timeout=2000,
-        )
-        manager._tool_graph.root_wrappers[0]._advance_snapshot_token()
+        try:
+            qtbot.wait_until(
+                lambda: manager._extensions.execution.active is not None,
+                timeout=5000,
+            )
+            manager._tool_graph.root_wrappers[0]._advance_snapshot_token()
+        finally:
+            release_path.touch()
 
         qtbot.wait_until(
             lambda: manager._extensions.execution.active is None,

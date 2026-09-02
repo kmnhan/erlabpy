@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import importlib
 import typing
+import warnings
 
 import pyperclip
 
@@ -44,6 +46,15 @@ class InMemoryClipboard(QtCore.QObject):
         super().__init__()
         self._mime_data = QtCore.QMimeData()
         self._pixmap: QtGui.QPixmap | None = None
+
+    def reset(self) -> None:
+        """Clear test state and connections without replacing this Qt object."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with contextlib.suppress(TypeError):
+                self.dataChanged.disconnect()
+        self._mime_data = QtCore.QMimeData()
+        self._pixmap = None
 
     def clear(self, mode: QtGui.QClipboard.Mode = Mode.Clipboard) -> None:
         if mode != self.Mode.Clipboard:
@@ -104,9 +115,7 @@ _ACTIVE_TEST_QT_CLIPBOARD = InMemoryClipboard()
 
 
 def reset_test_qt_clipboard() -> InMemoryClipboard:
-    global _ACTIVE_TEST_QT_CLIPBOARD
-
-    _ACTIVE_TEST_QT_CLIPBOARD = InMemoryClipboard()
+    _ACTIVE_TEST_QT_CLIPBOARD.reset()
     return _ACTIVE_TEST_QT_CLIPBOARD
 
 

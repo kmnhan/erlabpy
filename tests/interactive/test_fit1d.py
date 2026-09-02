@@ -3892,7 +3892,7 @@ def test_fit1d_start_worker_start_exception_resets_buttons(qtbot, monkeypatch) -
     )
 
     class _Signal:
-        def connect(self, _callback) -> None:
+        def connect(self, _callback, *_args) -> None:
             return None
 
     class _FailingWorker:
@@ -3925,6 +3925,7 @@ def test_fit1d_start_worker_start_exception_resets_buttons(qtbot, monkeypatch) -
 
     assert errors
     assert deleted == [True]
+    assert not fit1d._running_fit_workers
     assert win._fit_thread is None
     assert win._fit_cancel_requested is False
     assert win.fit_button.isEnabled()
@@ -3938,7 +3939,7 @@ def test_fit1d_workers_use_one_scale_covar_snapshot(qtbot, monkeypatch) -> None:
     captured: list[bool] = []
 
     class _Signal:
-        def connect(self, _callback) -> None:
+        def connect(self, _callback, *_args) -> None:
             return None
 
     class _Worker:
@@ -3979,6 +3980,7 @@ def test_fit1d_workers_use_one_scale_covar_snapshot(qtbot, monkeypatch) -> None:
     assert captured == [False, False]
     for worker in (first_worker, second_worker):
         if worker is not None:
+            fit1d._release_running_fit_worker(worker)
             worker.deleteLater()
     win._fit_thread = None
     win._fit_is_current = True
@@ -4302,14 +4304,61 @@ def test_fit1d_close_event_ignored_if_thread_does_not_stop(qtbot) -> None:
 
     stuck_thread = _StuckThread()
     win._fit_thread = stuck_thread  # type: ignore[assignment]
+    fit1d._register_running_fit_worker(stuck_thread, win)  # type: ignore[arg-type]
 
-    event = QtGui.QCloseEvent()
-    assert event.isAccepted()
-    win.closeEvent(event)
-    assert not event.isAccepted()
-    assert stuck_thread.cancel_called
-    stuck_thread.running = False
-    win.close()
+    try:
+        event = QtGui.QCloseEvent()
+        assert event.isAccepted()
+        win.closeEvent(event)
+        assert not event.isAccepted()
+        assert stuck_thread.cancel_called
+        assert fit1d._running_fit_workers.get(stuck_thread) is win
+    finally:
+        fit1d._release_running_fit_worker(stuck_thread)  # type: ignore[arg-type]
+        stuck_thread.running = False
+        win._fit_thread = None
+        win.close()
+
+
+def test_fit1d_app_quit_waits_for_worker_completion(qtbot) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+
+    class _Thread:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.interrupted = False
+            self.wait_args: tuple[object, ...] | None = None
+            self.deleted = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, *args) -> bool:
+            self.wait_args = args
+            return True
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _Thread()
+    win._fit_thread = thread  # type: ignore[assignment]
+    fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
+    try:
+        win._stop_fit_before_app_quit()
+
+        assert thread.cancelled
+        assert thread.interrupted
+        assert thread.wait_args == ()
+        assert thread.deleted
+        assert win._fit_thread is None
+        assert thread not in fit1d._running_fit_workers
+    finally:
+        fit1d._release_running_fit_worker(thread)  # type: ignore[arg-type]
+        win._fit_thread = None
 
 
 def test_fit1d_slider_drag_updates_value(qtbot) -> None:
@@ -4550,46 +4599,9 @@ def test_fit_worker_loads_result_before_emit(
     assert finished["result"] is dummy
 
 
-def test_fit_worker_suspends_gc_during_run(qtbot, exp_decay_model, monkeypatch) -> None:
-    t = np.linspace(0.0, 1.0, 11)
-    data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")
-    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
-
-    worker = fit1d._FitWorker(
-        data,
-        "t",
-        exp_decay_model,
-        params,
-        max_nfev=5,
-        method="least_squares",
-        timeout=1.0,
-    )
-
-    class _DummyResult:
-        def load(self):
-            return self
-
-    gc_enabled = gc.isenabled()
-    gc.enable()
-    gc_states: list[bool] = []
-
-    def _modelfit(*_args, **_kwargs):
-        gc_states.append(gc.isenabled())
-        return _DummyResult()
-
-    try:
-        monkeypatch.setattr(data.xlm, "modelfit", _modelfit)
-        worker.run()
-        assert gc_states == [False]
-        assert gc.isenabled()
-    finally:
-        if not gc_enabled:
-            gc.disable()
-
-
 @pytest.mark.parametrize("initially_enabled", [True, False])
-def test_fit_worker_gc_guard_nesting_restores_state(
-    exp_decay_model, initially_enabled
+def test_running_fit_worker_registry_restores_gc_after_all_workers_stop(
+    qtbot, exp_decay_model, initially_enabled, monkeypatch
 ) -> None:
     data = _make_1d_data()
     params = exp_decay_model.make_params(n0=1.0, tau=1.0)
@@ -4605,27 +4617,43 @@ def test_fit_worker_gc_guard_nesting_restores_state(
         )
         for _ in range(2)
     ]
+    owners = [QtWidgets.QWidget(), QtWidgets.QWidget()]
+    for owner in owners:
+        qtbot.addWidget(owner)
+
     original_state = gc.isenabled()
     if initially_enabled:
         gc.enable()
     else:
         gc.disable()
+    collection_threads: list[QtCore.QThread] = []
+    monkeypatch.setattr(
+        fit1d.gc,
+        "collect",
+        lambda: collection_threads.append(QtCore.QThread.currentThread()),
+    )
 
     try:
-        workers[0]._prepare_gc_guard()
-        workers[0]._prepare_gc_guard()
-        workers[1]._prepare_gc_guard()
+        assert not fit1d._running_fit_workers
+        fit1d._register_running_fit_worker(workers[0], owners[0])
+        fit1d._register_running_fit_worker(workers[0], owners[0])
+        fit1d._register_running_fit_worker(workers[1], owners[1])
+        assert fit1d._running_fit_workers == dict(zip(workers, owners, strict=True))
         assert not gc.isenabled()
 
-        workers[0]._release_gc_guard()
-        workers[0]._release_gc_guard()
+        fit1d._release_running_fit_worker(workers[0])
+        fit1d._release_running_fit_worker(workers[0])
         assert not gc.isenabled()
+        assert fit1d._running_fit_workers == {workers[1]: owners[1]}
 
-        workers[1]._release_gc_guard()
+        fit1d._release_running_fit_worker(workers[1])
         assert gc.isenabled() is initially_enabled
+        assert collection_threads == (
+            [QtWidgets.QApplication.instance().thread()] if initially_enabled else []
+        )
     finally:
         for worker in workers:
-            worker._release_gc_guard()
+            fit1d._release_running_fit_worker(worker)
             worker.deleteLater()
         if original_state:
             gc.enable()
@@ -4633,78 +4661,67 @@ def test_fit_worker_gc_guard_nesting_restores_state(
             gc.disable()
 
 
-def test_fit_worker_gc_guard_rejects_unbalanced_exit() -> None:
-    assert fit1d._fit_worker_gc_depth == 0
-    with pytest.raises(
-        RuntimeError, match="No fit-worker garbage collection guard is active"
-    ):
-        fit1d._exit_fit_worker_gc_guard()
+def test_fit_worker_is_registered_before_qthread_start(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    start_state: list[tuple[QtWidgets.QWidget | None, bool]] = []
+    monkeypatch.setattr(win, "_show_error", lambda *_args, **_kwargs: None)
 
-
-def test_fit_worker_gc_guard_is_active_before_qthread_start(
-    exp_decay_model, monkeypatch
-) -> None:
-    worker = fit1d._FitWorker(
-        _make_1d_data(),
-        "x",
-        exp_decay_model,
-        exp_decay_model.make_params(n0=1.0, tau=1.0),
-        max_nfev=5,
-        method="least_squares",
-        timeout=1.0,
-    )
-    gc_states: list[bool] = []
-
-    def _start(_worker, _priority) -> None:
-        gc_states.append(gc.isenabled())
+    def _start(
+        thread,
+        _priority=QtCore.QThread.Priority.InheritPriority,
+    ) -> None:
+        start_state.append((fit1d._running_fit_workers.get(thread), gc.isenabled()))
 
     monkeypatch.setattr(QtCore.QThread, "start", _start)
-    gc_enabled = gc.isenabled()
+    original_state = gc.isenabled()
     gc.enable()
     try:
-        worker.start()
-        assert gc_states == [False]
-        assert not gc.isenabled()
-        worker._release_gc_guard()
+        assert win._run_fit()
+        thread = win._fit_thread
+        assert thread is not None
+        assert start_state == [(win, False)]
+        assert fit1d._running_fit_workers == {thread: win}
+
+        win._fit_cancel_requested = True
+        win._finalize_fit_thread(thread)
+        assert not fit1d._running_fit_workers
         assert gc.isenabled()
     finally:
-        worker._release_gc_guard()
-        worker.deleteLater()
-        if not gc_enabled:
+        if win._fit_thread is not None:
+            fit1d._release_running_fit_worker(win._fit_thread)
+            win._fit_thread.deleteLater()
+            win._fit_thread = None
+        if not original_state:
             gc.disable()
 
 
-def test_fit_worker_start_failure_releases_gc_guard(
-    exp_decay_model, monkeypatch
-) -> None:
-    worker = fit1d._FitWorker(
-        _make_1d_data(),
-        "x",
-        exp_decay_model,
-        exp_decay_model.make_params(n0=1.0, tau=1.0),
-        max_nfev=5,
-        method="least_squares",
-        timeout=1.0,
+def test_fit_worker_completion_is_finalized_on_gui_thread(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    collection_threads: list[QtCore.QThread] = []
+    original_gc_state = gc.isenabled()
+    gc.enable()
+    monkeypatch.setattr(
+        fit1d.gc,
+        "collect",
+        lambda: collection_threads.append(QtCore.QThread.currentThread()),
     )
 
-    def _start(_worker, _priority) -> None:
-        raise RuntimeError("thread start failed")
-
-    monkeypatch.setattr(QtCore.QThread, "start", _start)
-    gc_enabled = gc.isenabled()
-    gc.enable()
     try:
-        with pytest.raises(RuntimeError, match="thread start failed"):
-            worker.start()
+        assert win._run_fit()
+        qtbot.waitUntil(lambda: win._fit_thread is None, timeout=5000)
+
+        assert collection_threads == [QtWidgets.QApplication.instance().thread()]
         assert gc.isenabled()
     finally:
-        worker._release_gc_guard()
-        worker.deleteLater()
-        if not gc_enabled:
+        if win._fit_thread is not None:
+            win._cancel_fit(wait=True, timeout_ms=None)
+        if not original_gc_state:
             gc.disable()
 
 
-def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot) -> None:
+def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot, monkeypatch) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -4723,13 +4740,69 @@ def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot) -> None:
     win._pending_fit_action = None
     win._fit_cancel_requested = True
     win._fit_cancelled = lambda: cancelled.__setitem__("value", True)  # type: ignore[method-assign]
+    collection_threads: list[QtCore.QThread] = []
+    original_gc_state = gc.isenabled()
+    gc.enable()
+    fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        fit1d.gc,
+        "collect",
+        lambda: collection_threads.append(QtCore.QThread.currentThread()),
+    )
 
-    win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+    try:
+        win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+    finally:
+        fit1d._release_running_fit_worker(thread)  # type: ignore[arg-type]
+        if not original_gc_state:
+            gc.disable()
 
     assert cancelled["value"]
     assert thread.deleted
     assert win._fit_thread is None
     assert not win._fit_cancel_requested
+    assert collection_threads == [QtWidgets.QApplication.instance().thread()]
+
+
+def test_fit1d_sequential_workers_keep_gc_suspended(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyThread:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    first = _DummyThread()
+    second = _DummyThread()
+    collections: list[None] = []
+    original_gc_state = gc.isenabled()
+    gc.enable()
+    fit1d._register_running_fit_worker(first, win)  # type: ignore[arg-type]
+    monkeypatch.setattr(fit1d.gc, "collect", lambda: collections.append(None))
+
+    def _start_second() -> None:
+        win._fit_thread = second  # type: ignore[assignment]
+        fit1d._register_running_fit_worker(second, win)  # type: ignore[arg-type]
+
+    win._fit_thread = first  # type: ignore[assignment]
+    win._pending_fit_action = _start_second
+    try:
+        win._finalize_fit_thread(first)  # type: ignore[arg-type]
+
+        assert first.deleted
+        assert win._fit_thread is second
+        assert fit1d._running_fit_workers == {second: win}
+        assert not gc.isenabled()
+        assert collections == []
+    finally:
+        fit1d._release_running_fit_worker(first)  # type: ignore[arg-type]
+        fit1d._release_running_fit_worker(second)  # type: ignore[arg-type]
+        win._fit_thread = None
+        if not original_gc_state:
+            gc.disable()
 
 
 def test_fit1d_finalize_fit_thread_action_error_restores_idle(

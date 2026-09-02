@@ -431,6 +431,7 @@ class _TutorialController(TourController):
     def _handle_fatal_error(self, error: RuntimeError) -> None:
         self._state_timer.stop()
         super()._handle_fatal_error(error)
+        self._begin_cleanup()
 
     def _start_generation(self) -> None:
         if self._generation_thread is not None and self._generation_thread.is_alive():

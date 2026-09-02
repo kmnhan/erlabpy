@@ -59,10 +59,6 @@ _LMFIT_CALLABLE_WARNING_RE = re.compile(
 )
 _PythonCodeEditor = erlab.interactive.utils.PythonCodeEditor
 
-_fit_worker_gc_lock = threading.Lock()
-_fit_worker_gc_depth = 0
-_fit_worker_gc_restore_enabled = False
-
 
 class _FitCodeEditRejected(Exception):
     """Abort one local fit-code edit without committing its trust transition."""
@@ -306,43 +302,6 @@ def _load_lmfit_for_ftool_restore(
     for warning_message in caught:
         _warn_again(warning_message, suppressed_names)
     return loaded
-
-
-def _enter_fit_worker_gc_guard() -> None:
-    """Enter one fit-worker guard that suspends cyclic garbage collection."""
-    global _fit_worker_gc_depth, _fit_worker_gc_restore_enabled
-
-    with _fit_worker_gc_lock:
-        if _fit_worker_gc_depth == 0:
-            _fit_worker_gc_restore_enabled = gc.isenabled()
-            if _fit_worker_gc_restore_enabled:
-                gc.disable()
-        _fit_worker_gc_depth += 1
-
-
-def _exit_fit_worker_gc_guard() -> None:
-    """Exit one fit-worker garbage collection guard."""
-    global _fit_worker_gc_depth, _fit_worker_gc_restore_enabled
-
-    with _fit_worker_gc_lock:
-        if _fit_worker_gc_depth == 0:
-            raise RuntimeError("No fit-worker garbage collection guard is active.")
-        _fit_worker_gc_depth -= 1
-        should_enable = _fit_worker_gc_depth == 0 and _fit_worker_gc_restore_enabled
-        if _fit_worker_gc_depth == 0:
-            _fit_worker_gc_restore_enabled = False
-        if should_enable:
-            gc.enable()
-
-
-@contextlib.contextmanager
-def _suspend_gc_in_fit_worker():
-    """Prevent cyclic GC from collecting Qt objects on fit worker threads."""
-    _enter_fit_worker_gc_guard()
-    try:
-        yield
-    finally:
-        _exit_fit_worker_gc_guard()
 
 
 class _ExpressionInitScriptDialog(QtWidgets.QDialog):
@@ -833,104 +792,95 @@ class _FitWorker(QtCore.QThread):
         self._timeout = timeout
         self._cancelled = False
         self._cancel = threading.Event()
-        self._gc_guard_prepared = False
-
-    def _prepare_gc_guard(self) -> None:
-        """Suspend cyclic collection before this worker starts."""
-        if self._gc_guard_prepared:
-            return
-        _enter_fit_worker_gc_guard()
-        self._gc_guard_prepared = True
-
-    def _release_gc_guard(self) -> None:
-        """Release this worker's prepared garbage collection guard."""
-        if not self._gc_guard_prepared:
-            return
-        self._gc_guard_prepared = False
-        _exit_fit_worker_gc_guard()
-
-    def start(
-        self,
-        priority: QtCore.QThread.Priority = QtCore.QThread.Priority.InheritPriority,
-    ) -> None:
-        """Start the worker with cyclic collection already suspended."""
-        self._prepare_gc_guard()
-        try:
-            super().start(priority)
-        except BaseException:
-            self._release_gc_guard()
-            raise
-
-    @contextlib.contextmanager
-    def _gc_guard(self):
-        if not self._gc_guard_prepared:
-            with _suspend_gc_in_fit_worker():
-                yield
-            return
-        try:
-            yield
-        finally:
-            self._release_gc_guard()
 
     def cancel(self) -> None:
         self._cancel.set()
 
     @QtCore.Slot()
     def run(self) -> None:
-        with self._gc_guard():
-            t0 = time.perf_counter()
-            timed_out = False
-            cancelled = False
-            self._cancel.clear()
+        t0 = time.perf_counter()
+        timed_out = False
+        cancelled = False
+        self._cancel.clear()
 
-            def _callback(*args, **kwargs) -> bool | None:
-                nonlocal timed_out, cancelled
+        def _callback(*args, **kwargs) -> bool | None:
+            nonlocal timed_out, cancelled
 
-                interruption_requested = False
-                try:
-                    interruption_requested = self.isInterruptionRequested()
-                except RuntimeError:
-                    # The worker can be deleted during shutdown; treat this as
-                    # cancellation.
-                    interruption_requested = True
-
-                if self._cancel.is_set() or interruption_requested:
-                    cancelled = True
-                    return True
-                if self._timeout > 0 and (time.perf_counter() - t0) >= self._timeout:
-                    timed_out = True
-                    return True
-                return None
-
+            interruption_requested = False
             try:
-                result_ds = self._fit_data.xlm.modelfit(
-                    self._coord_name,
-                    model=self._model,
-                    params=self._params,
-                    weights=self._weights,
-                    scale_covar=self._scale_covar,
-                    max_nfev=self._max_nfev if self._max_nfev > 0 else None,
-                    method=self._method,
-                    iter_cb=_callback,
-                )
-                # Resolve lazy fit outputs while the worker is alive so callbacks do not
-                # outlive the thread object.
-                result_ds = result_ds.load()
-            except Exception:
-                if timed_out:
-                    self.sigTimedOut.emit()
-                elif cancelled:
-                    self.sigCancelled.emit()
-                else:
-                    self.sigErrored.emit(traceback.format_exc())
-                return
+                interruption_requested = self.isInterruptionRequested()
+            except RuntimeError:
+                # The worker can be deleted during shutdown; treat this as
+                # cancellation.
+                interruption_requested = True
 
-            if cancelled:
-                self.sigCancelled.emit()
-            elif timed_out:
+            if self._cancel.is_set() or interruption_requested:
+                cancelled = True
+                return True
+            if self._timeout > 0 and (time.perf_counter() - t0) >= self._timeout:
+                timed_out = True
+                return True
+            return None
+
+        try:
+            result_ds = self._fit_data.xlm.modelfit(
+                self._coord_name,
+                model=self._model,
+                params=self._params,
+                weights=self._weights,
+                scale_covar=self._scale_covar,
+                max_nfev=self._max_nfev if self._max_nfev > 0 else None,
+                method=self._method,
+                iter_cb=_callback,
+            )
+            # Resolve lazy fit outputs while the worker is alive so callbacks do not
+            # outlive the thread object.
+            result_ds = result_ds.load()
+        except Exception:
+            if timed_out:
                 self.sigTimedOut.emit()
+            elif cancelled:
+                self.sigCancelled.emit()
             else:
-                self.sigFinished.emit(result_ds)
+                self.sigErrored.emit(traceback.format_exc())
+            return
+
+        if cancelled:
+            self.sigCancelled.emit()
+        elif timed_out:
+            self.sigTimedOut.emit()
+        else:
+            self.sigFinished.emit(result_ds)
+
+
+_running_fit_workers: dict[_FitWorker, QtWidgets.QWidget] = {}
+_restore_gc_after_fit_workers = False
+
+
+def _register_running_fit_worker(thread: _FitWorker, owner: QtWidgets.QWidget) -> None:
+    """Keep a fit and its owner alive while cyclic collection is suspended."""
+    global _restore_gc_after_fit_workers
+
+    if thread in _running_fit_workers:
+        return
+    if not _running_fit_workers:
+        _restore_gc_after_fit_workers = gc.isenabled()
+        if _restore_gc_after_fit_workers:
+            gc.disable()
+    _running_fit_workers[thread] = owner
+
+
+def _release_running_fit_worker(thread: _FitWorker) -> None:
+    """Release a stopped fit worker and restore collection on the GUI thread."""
+    global _restore_gc_after_fit_workers
+
+    if _running_fit_workers.pop(thread, None) is None or _running_fit_workers:
+        return
+    should_restore = _restore_gc_after_fit_workers
+    _restore_gc_after_fit_workers = False
+    if should_restore:
+        gc.collect()
+        gc.enable()
 
 
 def _rebuild_ui(
@@ -1191,6 +1141,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         scale_covar: bool | None = None,
     ) -> None:
         super().__init__()
+        app = typing.cast("QtWidgets.QApplication", QtWidgets.QApplication.instance())
+        app.aboutToQuit.connect(self._stop_fit_before_app_quit)
         for model_class in (
             *_library_lmfit_model_classes(),
             *self.MODEL_CHOICES.values(),
@@ -4078,8 +4030,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             )
             if hasattr(thread, "setServiceLevel"):
                 thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-            thread.finished.connect(
-                lambda thread=thread: self._finalize_fit_thread(thread)
+            thread.finished.connect(  # type: ignore[call-arg]  # Qt stub omits type.
+                self._on_fit_thread_finished,
+                QtCore.Qt.ConnectionType.QueuedConnection,
             )
         except Exception:
             self._fit_start_errored(multi=multi)
@@ -4120,8 +4073,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         self._fit_thread = thread
         try:
+            _register_running_fit_worker(thread, self)
             thread.start()
         except Exception:
+            _release_running_fit_worker(thread)
             self._fit_thread = None
             with contextlib.suppress(Exception):
                 thread.deleteLater()
@@ -4145,35 +4100,45 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._pending_fit_action = None
             action()
 
+    @QtCore.Slot()
+    def _on_fit_thread_finished(self) -> None:
+        thread = self.sender()
+        if isinstance(thread, _FitWorker):
+            self._finalize_fit_thread(thread)
+
     def _finalize_fit_thread(self, thread: _FitWorker) -> None:
-        if self._fit_thread is not thread:
-            return
-        action = self._pending_fit_action
-        self._pending_fit_action = None
-        self._fit_thread = None
-        if action is None and self._fit_cancel_requested:
-            self._fit_cancel_requested = False
-            self._fit_cancelled()
-            if thread is not None:
-                thread.deleteLater()
-            return
-        self._fit_cancel_requested = False
-        action_failed = False
         try:
-            if action is not None:
-                action()
-        except Exception:
-            action_failed = True
-            try:
-                self._fit_errored(
-                    erlab.interactive.utils._format_traceback(traceback.format_exc())
-                )
-            finally:
+            if self._fit_thread is not thread:
+                return
+            action = self._pending_fit_action
+            self._pending_fit_action = None
+            self._fit_thread = None
+            if action is None and self._fit_cancel_requested:
+                self._fit_cancel_requested = False
                 self._fit_cancelled()
+                thread.deleteLater()
+                return
+            self._fit_cancel_requested = False
+            action_failed = False
+            try:
+                if action is not None:
+                    action()
+            except Exception:
+                action_failed = True
+                try:
+                    self._fit_errored(
+                        erlab.interactive.utils._format_traceback(
+                            traceback.format_exc()
+                        )
+                    )
+                finally:
+                    self._fit_cancelled()
+            finally:
+                if action_failed:
+                    self._pending_fit_action = None
+                thread.deleteLater()
         finally:
-            if action_failed:
-                self._pending_fit_action = None
-            thread.deleteLater()
+            _release_running_fit_worker(thread)
 
     def _fit_cancelled(self) -> None:
         if self._fit_multi_total is not None:
@@ -5279,6 +5244,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 event.ignore()
             return
         super().closeEvent(event)
+
+    @QtCore.Slot()
+    def _stop_fit_before_app_quit(self) -> None:
+        if self._fit_thread is not None:
+            self._cancel_fit(wait=True, timeout_ms=None)
 
     def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
         thread = self._fit_thread

@@ -28,12 +28,16 @@ def test_qt_clipboard_is_process_local_and_resettable() -> None:
     first = _CONFTEST.QtWidgets.QApplication.clipboard()
     assert isinstance(first, _CONFTEST.InMemoryClipboard)
     first.setText("test-only clipboard value")
+    changes: list[None] = []
+    first.dataChanged.connect(lambda: changes.append(None))
 
     second = _CONFTEST.reset_test_qt_clipboard()
 
     assert second is _CONFTEST.QtWidgets.QApplication.clipboard()
-    assert second is not first
+    assert second is first
     assert second.text() == ""
+    second.setText("next test value")
+    assert changes == []
 
 
 def test_pyperclip_is_process_local_and_resettable() -> None:
