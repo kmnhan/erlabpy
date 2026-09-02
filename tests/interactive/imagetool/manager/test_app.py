@@ -54,6 +54,17 @@ from tests.interactive.imagetool.manager.helpers import (
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_manager_garbage_collect_respects_gc_state(monkeypatch, enabled) -> None:
+    calls: list[None] = []
+    monkeypatch.setattr(manager_mainwindow.gc, "isenabled", lambda: enabled)
+    monkeypatch.setattr(manager_mainwindow.gc, "collect", lambda: calls.append(None))
+
+    manager_mainwindow.ImageToolManager.garbage_collect(None)
+
+    assert calls == ([None] if enabled else [])
+
+
 def test_manager_settings_path_override(monkeypatch, tmp_path) -> None:
     settings_path = tmp_path / "manager-settings.ini"
     monkeypatch.setenv(

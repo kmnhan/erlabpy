@@ -531,7 +531,7 @@ class WorkspaceFileManager(CachingFileManager):
             )
         if self._store is not None:
             if needs_lock:
-                with self._store.read_session():
+                with self._store.read_session(allow_during_write=True):
                     return self._active_netcdf_file()
             return self._active_netcdf_file()
         netcdf_file = super().acquire(needs_lock)
@@ -547,7 +547,7 @@ class WorkspaceFileManager(CachingFileManager):
             )
         if self._store is not None:
             if needs_lock:
-                with self._store.read_session():
+                with self._store.read_session(allow_during_write=True):
                     yield self._active_netcdf_file()
             else:
                 yield self._active_netcdf_file()
@@ -701,7 +701,7 @@ class _WorkspaceBackendArray(BackendArray):
                     self.variable_name
                 ]
                 return array[key]
-        with store.read_session():
+        with store.read_session(allow_during_write=True):
             array = self.datastore._acquire(needs_lock=False).variables[
                 self.variable_name
             ]

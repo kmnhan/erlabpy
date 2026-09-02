@@ -1554,10 +1554,11 @@ def test_restool(qtbot) -> None:
 
     win._guess_center()
     win.res_spin.setValue(0.02)
-    win.live_check.setChecked(True)
     win.y0_spin.setValue(-12.0)
     win.x0_spin.setValue(-0.3)
     win.x1_spin.setValue(0.3)
+    win.live_check.setChecked(True)
+    assert win.do_fit()
 
     qtbot.wait_until(lambda: isinstance(win._result_ds, xr.Dataset), timeout=10000)
 

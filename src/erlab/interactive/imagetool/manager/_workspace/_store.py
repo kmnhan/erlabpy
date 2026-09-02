@@ -241,7 +241,10 @@ class WorkspaceStore:
         self._state: typing.Literal["open", "conflicted", "closed"] = "closed"
         self._handle_generation = 0
         self._h5_file: typing.Any = None
+        self._active_readers = 0
+        self._reader_depths: dict[int, int] = {}
         self._write_depth = 0
+        self._write_owner_thread: int | None = None
         self._write_pending = False
         self._write_opening = False
         self._write_target_path: pathlib.Path | None = None
@@ -362,9 +365,11 @@ class WorkspaceStore:
                 store._lock.acquire()
                 acquired.append(store)
             for store in stores:
+                store._block_readers()
                 store._release_handle()
         except Exception:
             for store in reversed(acquired):
+                store._unblock_readers()
                 store._lock.release()
                 store._write_lock.release()
             raise
@@ -373,6 +378,7 @@ class WorkspaceStore:
     @classmethod
     def _after_fork_parent(cls) -> None:
         for store in reversed(cls._fork_stores):
+            store._unblock_readers()
             store._lock.release()
             store._write_lock.release()
         cls._fork_stores = ()
@@ -385,6 +391,9 @@ class WorkspaceStore:
             store._lock = threading.RLock()
             store._access_condition = threading.Condition(store._lock)
             store._write_lock = threading.RLock()
+            store._active_readers = 0
+            store._reader_depths = {}
+            store._write_owner_thread = None
             store._write_pending = False
             store._write_opening = False
         cls._active = weakref.WeakValueDictionary()
@@ -562,6 +571,8 @@ class WorkspaceStore:
 
     def _release_handle(self) -> None:
         """Release the current HDF5 handle without closing the store."""
+        if self._active_readers:
+            raise RuntimeError("Cannot release an HDF5 handle with active readers")
         for reader in tuple(self._readers):
             with contextlib.suppress(Exception):
                 reader._close_store_wrapper()
@@ -571,6 +582,42 @@ class WorkspaceStore:
             with contextlib.suppress(Exception):
                 h5_file.close()
         self._handle_generation += 1
+
+    def _block_readers(self) -> None:
+        """Prevent new read sessions and wait for active sessions to finish.
+
+        The caller must hold :attr:`_access_condition`. It can then safely
+        invalidate the current HDF5 handle.
+        """
+        if threading.get_ident() in self._reader_depths:
+            raise RuntimeError(
+                "Cannot invalidate a workspace handle inside a read session"
+            )
+        self._write_pending = True
+        self._write_opening = True
+        while self._active_readers:
+            self._access_condition.wait()
+
+    def _unblock_readers(self) -> None:
+        """Allow read sessions after a handle-invalidating operation."""
+        self._write_pending = False
+        self._write_opening = False
+        self._access_condition.notify_all()
+
+    @contextlib.contextmanager
+    def _reader_block(self) -> typing.Iterator[None]:
+        """Block readers for one operation that invalidates the HDF5 handle."""
+        with self._access_condition:
+            if self._write_depth:
+                raise RuntimeError(
+                    "Cannot invalidate a workspace handle inside a write session"
+                )
+            self._block_readers()
+        try:
+            yield
+        finally:
+            with self._access_condition:
+                self._unblock_readers()
 
     def _prepare_copy_on_write(self) -> pathlib.Path:
         target = self._path.with_name(f".{self._path.name}.write-{uuid.uuid4().hex}")
@@ -600,14 +647,48 @@ class WorkspaceStore:
                     os.close(file_descriptor)
 
     @contextlib.contextmanager
-    def read_session(self) -> typing.Iterator[typing.Any]:
-        """Yield the shared handle when no writer is changing its open mode."""
+    def read_session(
+        self, *, allow_during_write: bool = False
+    ) -> typing.Iterator[typing.Any]:
+        """Yield a shared handle while it is stable for the requested read.
+
+        Array workers can read immutable payloads during an established write.
+        Metadata readers wait until the complete write is visible.
+        """
+        reader_thread = threading.get_ident()
+        reader_registered = False
         with self._access_condition:
-            while self._write_opening:
+            writer_owned = self._write_owner_thread == reader_thread
+            while (
+                not writer_owned
+                and (
+                    self._write_opening
+                    or (self._write_depth > 0 and not allow_during_write)
+                )
+                and reader_thread not in self._reader_depths
+            ):
                 self._access_condition.wait()
             if self.closed:
                 raise RuntimeError("Workspace store is closed")
-            yield self.read_h5_file
+            h5_file = self.read_h5_file
+            if not writer_owned:
+                self._active_readers += 1
+                self._reader_depths[reader_thread] = (
+                    self._reader_depths.get(reader_thread, 0) + 1
+                )
+                reader_registered = True
+        try:
+            yield h5_file
+        finally:
+            if reader_registered:
+                with self._access_condition:
+                    self._active_readers -= 1
+                    depth = self._reader_depths[reader_thread] - 1
+                    if depth:
+                        self._reader_depths[reader_thread] = depth
+                    else:
+                        del self._reader_depths[reader_thread]
+                    self._access_condition.notify_all()
 
     @contextlib.contextmanager
     def write_session(
@@ -624,11 +705,10 @@ class WorkspaceStore:
                 self.require_current_path()
                 outermost = self._write_depth == 0
                 if outermost:
-                    self._write_pending = True
+                    self._block_readers()
                     path_identity = self._path_identity
                     if not self._locking_supported and path_identity is None:
-                        self._write_pending = False
-                        self._access_condition.notify_all()
+                        self._unblock_readers()
                         raise RuntimeError("Workspace store has no path identity")
                 else:
                     self._write_depth += 1
@@ -637,8 +717,8 @@ class WorkspaceStore:
 
                 def _begin_open_attempt() -> None:
                     with self._access_condition:
+                        self._block_readers()
                         self._release_handle()
-                        self._write_opening = True
 
                 def _end_failed_open_attempt() -> None:
                     with self._access_condition:
@@ -677,9 +757,8 @@ class WorkspaceStore:
                 except BaseException:
                     with self._access_condition:
                         self._write_target_path = None
-                        self._write_pending = False
+                        self._unblock_readers()
                         self._write_opening = False
-                        self._access_condition.notify_all()
                     if copy_on_write_path is not None:
                         with contextlib.suppress(OSError):
                             copy_on_write_path.unlink()
@@ -689,6 +768,7 @@ class WorkspaceStore:
                     self._write_target_path = copy_on_write_path
                     self._handle_generation += 1
                     self._write_depth = 1
+                    self._write_owner_thread = threading.get_ident()
                     self._write_opening = False
                     self._access_condition.notify_all()
             try:
@@ -700,14 +780,18 @@ class WorkspaceStore:
                         self._write_depth -= 1
                 else:
                     try:
-                        with self._lock:
+                        with self._access_condition:
                             self._write_depth = 0
+                            self._write_opening = True
+                            while self._active_readers:
+                                self._access_condition.wait()
                             try:
                                 if succeeded and copy_on_write_path is not None:
                                     self.flush(durable=True)
                             finally:
                                 self._release_handle()
                                 self._write_target_path = None
+                                self._write_owner_thread = None
                         if (
                             succeeded
                             and copy_on_write_path is not None
@@ -729,9 +813,9 @@ class WorkspaceStore:
                                 raise
                     finally:
                         with self._access_condition:
-                            self._write_pending = False
+                            self._write_owner_thread = None
+                            self._unblock_readers()
                             self._write_opening = False
-                            self._access_condition.notify_all()
                         if copy_on_write_path is not None:
                             with contextlib.suppress(OSError):
                                 copy_on_write_path.unlink()
@@ -817,7 +901,7 @@ class WorkspaceStore:
 
     def close(self) -> None:
         """Close the document handle and remove this store from the registry."""
-        with self._write_lock, self._lock:
+        with self._write_lock, self._lock, self._reader_block():
             self._unregister()
             self._close_handle()
 
@@ -834,7 +918,7 @@ class WorkspaceStore:
                 raise
             locking_supported = False
             new_h5_file = h5py.File(new_path, "r", locking=False)
-        with self._write_lock, self._lock, new_h5_file:
+        with self._write_lock, self._lock, self._reader_block(), new_h5_file:
             new_stat = new_path.stat()
             new_identity = (new_stat.st_dev, new_stat.st_ino)
             workspace_id = self._workspace_id_from_file(new_h5_file)
@@ -859,7 +943,7 @@ class WorkspaceStore:
 
     def reopen(self) -> None:
         """Close and reopen the current file through the same store object."""
-        with self._write_lock, self._lock:
+        with self._write_lock, self._lock, self._reader_block():
             if self.conflicted:
                 raise WorkspaceStoreConflictError(
                     f"Workspace store no longer owns its path: {self._path}"
@@ -892,7 +976,7 @@ class WorkspaceStore:
         file after the replacement.
         """
         source = pathlib.Path(prepared_path).resolve()
-        with self._write_lock, self._lock:
+        with self._write_lock, self._lock, self._reader_block():
             if self.conflicted:
                 raise WorkspaceStoreConflictError(
                     f"Workspace store no longer owns its path: {self._path}"

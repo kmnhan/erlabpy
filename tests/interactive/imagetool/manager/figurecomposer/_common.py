@@ -50,7 +50,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
 )
 from erlab.io.exampledata import generate_hvdep_cuts
-from tests.interactive.imagetool.manager.helpers import InMemoryClipboard
+from tests._qt_helpers import InMemoryClipboard
 
 _COLLAPSED_LAYOUT_WARNING = (
     "constrained_layout not applied because axes sizes collapsed to zero.  "
@@ -296,7 +296,7 @@ def _operation_status_codes(tool: FigureComposerTool, row: int) -> tuple[str, ..
 
 
 def _clear_clipboard() -> InMemoryClipboard:
-    clipboard = QtWidgets.QApplication.clipboard()
+    clipboard = typing.cast("InMemoryClipboard", QtWidgets.QApplication.clipboard())
     clipboard.clear()
     return clipboard
 

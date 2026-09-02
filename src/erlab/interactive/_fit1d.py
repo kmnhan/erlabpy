@@ -308,9 +308,8 @@ def _load_lmfit_for_ftool_restore(
     return loaded
 
 
-@contextlib.contextmanager
-def _suspend_gc_in_fit_worker():
-    """Prevent cyclic GC from collecting Qt objects on fit worker threads."""
+def _enter_fit_worker_gc_guard() -> None:
+    """Enter one fit-worker guard that suspends cyclic garbage collection."""
     global _fit_worker_gc_depth, _fit_worker_gc_restore_enabled
 
     with _fit_worker_gc_lock:
@@ -320,16 +319,30 @@ def _suspend_gc_in_fit_worker():
                 gc.disable()
         _fit_worker_gc_depth += 1
 
+
+def _exit_fit_worker_gc_guard() -> None:
+    """Exit one fit-worker garbage collection guard."""
+    global _fit_worker_gc_depth, _fit_worker_gc_restore_enabled
+
+    with _fit_worker_gc_lock:
+        if _fit_worker_gc_depth == 0:
+            raise RuntimeError("No fit-worker garbage collection guard is active.")
+        _fit_worker_gc_depth -= 1
+        should_enable = _fit_worker_gc_depth == 0 and _fit_worker_gc_restore_enabled
+        if _fit_worker_gc_depth == 0:
+            _fit_worker_gc_restore_enabled = False
+        if should_enable:
+            gc.enable()
+
+
+@contextlib.contextmanager
+def _suspend_gc_in_fit_worker():
+    """Prevent cyclic GC from collecting Qt objects on fit worker threads."""
+    _enter_fit_worker_gc_guard()
     try:
         yield
     finally:
-        with _fit_worker_gc_lock:
-            _fit_worker_gc_depth -= 1
-            should_enable = _fit_worker_gc_depth == 0 and _fit_worker_gc_restore_enabled
-            if _fit_worker_gc_depth == 0:
-                _fit_worker_gc_restore_enabled = False
-            if should_enable:
-                gc.enable()
+        _exit_fit_worker_gc_guard()
 
 
 class _ExpressionInitScriptDialog(QtWidgets.QDialog):
@@ -820,13 +833,51 @@ class _FitWorker(QtCore.QThread):
         self._timeout = timeout
         self._cancelled = False
         self._cancel = threading.Event()
+        self._gc_guard_prepared = False
+
+    def _prepare_gc_guard(self) -> None:
+        """Suspend cyclic collection before this worker starts."""
+        if self._gc_guard_prepared:
+            return
+        _enter_fit_worker_gc_guard()
+        self._gc_guard_prepared = True
+
+    def _release_gc_guard(self) -> None:
+        """Release this worker's prepared garbage collection guard."""
+        if not self._gc_guard_prepared:
+            return
+        self._gc_guard_prepared = False
+        _exit_fit_worker_gc_guard()
+
+    def start(
+        self,
+        priority: QtCore.QThread.Priority = QtCore.QThread.Priority.InheritPriority,
+    ) -> None:
+        """Start the worker with cyclic collection already suspended."""
+        self._prepare_gc_guard()
+        try:
+            super().start(priority)
+        except BaseException:
+            self._release_gc_guard()
+            raise
+
+    @contextlib.contextmanager
+    def _gc_guard(self):
+        if not self._gc_guard_prepared:
+            with _suspend_gc_in_fit_worker():
+                yield
+            return
+        try:
+            yield
+        finally:
+            self._release_gc_guard()
 
     def cancel(self) -> None:
         self._cancel.set()
 
     @QtCore.Slot()
     def run(self) -> None:
-        with _suspend_gc_in_fit_worker():
+        with self._gc_guard():
             t0 = time.perf_counter()
             timed_out = False
             cancelled = False

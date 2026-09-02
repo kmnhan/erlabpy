@@ -37,6 +37,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
+from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._metadata import _ManagerDetailsRefreshQueue
 from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
@@ -3621,9 +3622,8 @@ def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:
     assert manager.removed_uids == [uid1]
 
 
-def test_remove_selected_calls_batch_remove(
+def test_remove_selected_confirms_asynchronously(
     qtbot,
-    monkeypatch,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -3666,15 +3666,82 @@ def test_remove_selected_calls_batch_remove(
 
         original_remove_imagetools = manager._remove_imagetools
         manager._remove_imagetools = _remove_imagetools_spy
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "exec",
-            lambda _: QtWidgets.QMessageBox.StandardButton.Yes,
-        )
 
         manager.remove_selected()
+        controller = manager._lineage_controller
+        dialog = controller._remove_confirmation_dialog
+        assert dialog is not None
+        assert dialog.objectName() == "managerRemoveSelectedConfirmationDialog"
+        assert dialog.parent() is manager
+        assert dialog.isModal()
+        assert dialog.icon() == QtWidgets.QMessageBox.Icon.Warning
+        assert dialog.standardButtons() == (
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        yes_button = dialog.button(QtWidgets.QMessageBox.StandardButton.Yes)
+        assert dialog.defaultButton() == yes_button
+
+        manager.remove_selected()
+        assert controller._remove_confirmation_dialog is dialog
+
+        calls_during_button_dispatch: list[
+            list[tuple[list[int], list[str] | None, bool]]
+        ] = []
+        yes_button.clicked.connect(
+            lambda: calls_during_button_dispatch.append(called.copy())
+        )
+        manager.tree_view.clearSelection()
+        yes_button.click()
+
+        assert calls_during_button_dispatch == [[]]
+        assert called == []
+        qtbot.wait_until(lambda: called == [([0], [uid], False)])
+        assert controller._remove_confirmation_dialog is None
+        assert controller._remove_confirmation_finished_callback is None
+        qtbot.wait_until(lambda: not erlab.interactive.utils.qt_is_valid(dialog))
+
+        select_tools(manager, [0])
+        manager.remove_selected()
+        cancel_dialog = controller._remove_confirmation_dialog
+        assert cancel_dialog is not None
+        cancel_dialog.button(QtWidgets.QMessageBox.StandardButton.Cancel).click()
+        qtbot.wait_until(lambda: controller._remove_confirmation_dialog is None)
         assert called == [([0], [uid], False)]
+        assert controller._remove_confirmation_finished_callback is None
         manager._remove_imagetools = original_remove_imagetools
+
+
+def test_remove_selected_ignores_stale_finished_callback(qtbot) -> None:
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    removed: list[tuple[list[int], list[str]]] = []
+    manager._selected_imagetool_targets = lambda: [0]
+    manager._selected_tool_uids = list
+    manager._node_for_target = lambda _index: types.SimpleNamespace(
+        _childtool_indices=[]
+    )
+    manager._remove_imagetools = lambda indices, *, child_uids: removed.append(
+        (indices, child_uids)
+    )
+    controller = _LineageController(typing.cast("ImageToolManager", manager))
+
+    controller.remove_selected()
+    dialog = controller._remove_confirmation_dialog
+    callback = controller._remove_confirmation_finished_callback
+    assert dialog is not None
+    assert callback is not None
+
+    dialog.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+    assert controller._remove_confirmation_dialog is None
+    assert controller._remove_confirmation_finished_callback is None
+    callback(QtWidgets.QMessageBox.StandardButton.Yes.value)
+
+    assert removed == []
+    assert not erlab.interactive.utils.qt_is_valid(dialog)
 
 
 def test_select_loader_options_cancel_keeps_recent_filter(

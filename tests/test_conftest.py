@@ -7,6 +7,7 @@ import tempfile
 import types
 import weakref
 
+import pyperclip
 import pytest
 
 
@@ -21,6 +22,27 @@ def _load_conftest_module() -> types.ModuleType:
 
 
 _CONFTEST = _load_conftest_module()
+
+
+def test_qt_clipboard_is_process_local_and_resettable() -> None:
+    first = _CONFTEST.QtWidgets.QApplication.clipboard()
+    assert isinstance(first, _CONFTEST.InMemoryClipboard)
+    first.setText("test-only clipboard value")
+
+    second = _CONFTEST.reset_test_qt_clipboard()
+
+    assert second is _CONFTEST.QtWidgets.QApplication.clipboard()
+    assert second is not first
+    assert second.text() == ""
+
+
+def test_pyperclip_is_process_local_and_resettable() -> None:
+    pyperclip.copy("test-only clipboard value")
+    assert pyperclip.paste() == "test-only clipboard value"
+
+    _CONFTEST.reset_test_text_clipboard()
+
+    assert pyperclip.paste() == ""
 
 
 def test_extension_catalog_uses_a_test_temporary_directory() -> None:
