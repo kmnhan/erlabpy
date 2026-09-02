@@ -24,6 +24,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive.explorer._loaders import (
     BUILTIN_EXPLORER_LOADERS,
     _BuiltinExplorerLoader,
@@ -1268,8 +1269,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     def _setup_actions(self) -> None:
         self._to_manager_act = QtWidgets.QAction("&Open in Manager", self)
+        self._to_manager_act.setObjectName("dataExplorerOpenInManagerAction")
         self._to_manager_act.triggered.connect(self.to_manager)
-        self._to_manager_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+        self._to_manager_act.setShortcut(_shortcut_sequences.EXPLORER_OPEN_IN_MANAGER)
         self._to_manager_act.setToolTip(
             "Open the selected file(s) in ImageToolManager.\n"
             "For scans across multiple files, selecting a single file will "
@@ -1279,6 +1281,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._to_manager_single_act = QtWidgets.QAction(
             "Open in Manager as Single File", self
         )
+        self._to_manager_single_act.setObjectName(
+            "dataExplorerOpenInManagerSingleAction"
+        )
         self._to_manager_single_act.triggered.connect(self.to_manager_single)
         self._to_manager_single_act.setToolTip(
             "Open the selected file(s) in ImageToolManager.\n"
@@ -1286,6 +1291,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._loader_options_act = QtWidgets.QAction("Loader Options…", self)
+        self._loader_options_act.setObjectName("dataExplorerLoaderOptionsAction")
         self._loader_options_act.triggered.connect(self._open_loader_options)
         self._loader_options_act.setToolTip(
             "Configure loader arguments used when opening files in the manager"
@@ -1299,7 +1305,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._close_act.triggered.connect(self.try_close)
-        self._close_act.setShortcut("Ctrl+W")
+        self._close_act.setShortcut(_shortcut_sequences.EXPLORER_CLOSE)
 
         fm_name = "Finder" if sys.platform == "darwin" else "File Explorer"
         self._finder_act = QtWidgets.QAction(f"Reveal in {fm_name}", self)
@@ -1307,19 +1313,24 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._finder_act.triggered.connect(self._open_in_file_manager)
 
         self._open_dir_act = QtWidgets.QAction("&Open Folder…", self)
+        self._open_dir_act.setObjectName("dataExplorerOpenFolderAction")
         self._open_dir_act.triggered.connect(self._choose_directory)
-        self._open_dir_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+O"))
+        self._open_dir_act.setShortcut(
+            QtGui.QKeySequence(_shortcut_sequences.EXPLORER_OPEN_FOLDER)
+        )
         self._open_dir_act.setToolTip("Choose a directory to browse")
 
         self._reload_act = QtWidgets.QAction("Reload Folder", self)
+        self._reload_act.setObjectName("dataExplorerReloadFolderAction")
         self._reload_act.triggered.connect(self._fs_model.reload)
-        self._reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self._reload_act.setShortcut(_shortcut_sequences.EXPLORER_RELOAD_FOLDER)
         self._reload_act.setToolTip("Refresh the current directory contents")
 
         self._climb_up_act = QtWidgets.QAction("Go to Enclosing Folder", self)
+        self._climb_up_act.setObjectName("dataExplorerEnclosingFolderAction")
         self._climb_up_act.triggered.connect(self._fs_model.climb_up)
         self._climb_up_act.setShortcut(
-            QtGui.QKeySequence("Ctrl+Up" if sys.platform == "darwin" else "Alt+Up")
+            QtGui.QKeySequence(_shortcut_sequences.explorer_enclosing_folder())
         )
         self._climb_up_act.setToolTip("Go up one directory level")
 
@@ -1367,6 +1378,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         left_header.setLayout(left_header_layout)
         left_layout.addWidget(left_header)
         self._current_dir_line = QtWidgets.QLineEdit()
+        self._current_dir_line.setObjectName("dataExplorerDirectoryField")
         self._current_dir_line.setReadOnly(True)
         self._current_dir_line.setText(str(self.current_directory))
         left_header_layout.addWidget(self._current_dir_line)
@@ -1381,11 +1393,11 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 self._climb_up_act, "mdi6.arrow-up"
             )
         )
-        left_header_layout.addWidget(
-            erlab.interactive.utils.IconActionButton(
-                self._to_manager_act, "mdi6.chart-tree"
-            )
+        open_in_manager_button = erlab.interactive.utils.IconActionButton(
+            self._to_manager_act, "mdi6.chart-tree"
         )
+        open_in_manager_button.setObjectName("dataExplorerOpenInManagerButton")
+        left_header_layout.addWidget(open_in_manager_button)
         left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._finder_act, "mdi6.apple-finder"
@@ -1393,6 +1405,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._tree_view = _DataExplorerTreeView(self)
+        self._tree_view.setObjectName("dataExplorerFileTree")
         self._tree_view.setModel(self._fs_model)
         self._tree_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
@@ -1411,6 +1424,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._main_splitter.addWidget(right_widget)
 
         self._preview_splitter = QtWidgets.QSplitter()
+        self._preview_splitter.setObjectName("dataExplorerPreviewSplitter")
         self._preview_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
         right_layout.addWidget(self._preview_splitter)
 
@@ -1420,8 +1434,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
         right_footer.setLayout(right_footer_layout)
         right_layout.addWidget(right_footer)
 
-        right_footer_layout.addWidget(QtWidgets.QLabel("Loader"))
+        loader_label = QtWidgets.QLabel("Loader")
+        loader_label.setObjectName("dataExplorerLoaderLabel")
+        right_footer_layout.addWidget(loader_label)
         self._loader_combo = _LoaderWidget(self)
+        self._loader_combo.setObjectName("dataExplorerLoaderSelector")
+        loader_label.setBuddy(self._loader_combo)
         self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
         self._loader_combo.currentIndexChanged.connect(self._loader_changed)
         self._loader_combo.currentIndexChanged.connect(
@@ -1436,6 +1454,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         right_footer_layout.addStretch()
 
         self._preview_check = QtWidgets.QCheckBox("Preview")
+        self._preview_check.setObjectName("dataExplorerPreviewCheck")
         self._preview_check.setToolTip(
             "Show a preview of the selected file.\n"
             "This may significantly slow down the browsing for large files."
@@ -1446,6 +1465,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         right_footer_layout.addWidget(self._preview_check)
 
         self._text_edit = QtWidgets.QTextEdit()
+        self._text_edit.setObjectName("dataExplorerMetadataView")
         self._text_edit.setText(self.TEXT_NONE_SELECTED)
         self._text_edit.setReadOnly(True)
         scroll_bar = self._text_edit.verticalScrollBar()
@@ -1455,6 +1475,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._preview_splitter.addWidget(self._text_edit)
 
         self._preview = _DataPreviewWidget()
+        self._preview.setObjectName("dataExplorerDataPreview")
         self._preview.setVisible(False)
         self._preview_splitter.addWidget(self._preview)
 

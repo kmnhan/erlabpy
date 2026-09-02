@@ -107,12 +107,10 @@ def gaussian_filter(
     darr : DataArray
         The input DataArray.
     sigma : float or Sequence of floats or dict
-        The standard deviation(s) of the Gaussian filter in data dimensions. If a float,
-        the same value is used for all dimensions, each scaled by the data step. If a
-        dict, the value can be specified for each dimension using dimension names as
-        keys. The filter is only applied to the dimensions specified in the dict. If a
-        sequence, the values are used in the same order as the dimensions of the
-        DataArray.
+        Gaussian standard deviation in the coordinate units of each filtered dimension,
+        not in pixels. If a float, the same value is used for all dimensions. If a
+        mapping, its keys select the dimensions to filter. If a sequence, its values
+        follow the dimension order of the DataArray.
     order : int or Sequence of ints or dict
         The order of the filter along each dimension. If an int, the same order is used
         for all dimensions. See Notes below for other options. Defaults to 0.
@@ -124,19 +122,22 @@ def gaussian_filter(
     truncate
         The truncation value used for the Gaussian filter. Defaults to 4.0.
     radius : float or Sequence of floats or dict, optional
-        The radius of the Gaussian filter in data units. See Notes below. If specified,
-        the size of the kernel along each axis will be ``2*radius + 1``, and `truncate`
-        is ignored.
+        Kernel radius in the coordinate units of each filtered dimension. The value is
+        divided by the coordinate step and rounded to the nearest integer number of
+        samples. The resulting kernel size along each axis will be ``2*radius + 1``.
+        When supplied, ``truncate`` is ignored.
 
     Returns
     -------
     gaussian_filter : xarray.DataArray
-        The filtered array with the same shape as the input DataArray.
+        A new filtered array with the same dimensions, shape, coordinates, name,
+        attributes, and dtype as `darr`. Dask-backed input remains lazy. The input is
+        not modified.
 
     Note
     ----
-    - The `sigma` and `radius` values should be in data coordinates, not pixels.
-    - The input array is assumed to be regularly spaced.
+    - Each coordinate to be filtered along must be uniformly spaced and contain at least
+      two values.
     - `order`, `mode`, and `radius` can be specified for each dimension using a dict or
       a sequence. If a dict, the value can be specified for each dimension using
       dimension names as keys. If a sequence and `sigma` is given as a dictionary, the

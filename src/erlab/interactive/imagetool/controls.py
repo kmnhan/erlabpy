@@ -325,11 +325,13 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.btn_add = erlab.interactive.utils.IconButton(
             _ICON_ALIASES["plus"], toolTip="Add cursor"
         )
+        self.btn_add.setObjectName("itoolAddCursorButton")
         self.btn_add.clicked.connect(self.slicer_area.add_cursor)
 
         self.btn_rem = erlab.interactive.utils.IconButton(
             _ICON_ALIASES["minus"], toolTip="Remove cursor"
         )
+        self.btn_rem.setObjectName("itoolRemoveCursorButton")
         self.btn_rem.clicked.connect(
             lambda: self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         )
@@ -342,6 +344,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
         # multicursor combobox
         self.cb_cursors = QtWidgets.QComboBox()
+        self.cb_cursors.setObjectName("itoolCursorSelector")
         self.cb_cursors.textActivated.connect(self.setActiveCursor)
         self.cb_cursors.setMaximumHeight(
             QtGui.QFontMetrics(self.cb_cursors.font()).height() + 3
@@ -440,6 +443,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.btn_transpose = tuple(
             erlab.interactive.utils.IconButton(on=icon) for icon in icons
         )
+        for i, button in enumerate(self.btn_transpose):
+            button.setObjectName(f"itoolTransposeAxis{i}Button")
 
         # add and connect info widgets
         for i in range(self.data.ndim):
@@ -942,11 +947,14 @@ class ItoolBinningControls(ItoolControlsBase):
             for i in range(self.data.ndim)
         )
         for i, spin in enumerate(self.spins):
+            spin.setObjectName(f"itoolBinAxis{i}Spin")
+        for i, spin in enumerate(self.spins):
             spin.valueChanged.connect(lambda n, axis=i: self._update_bin(axis, n))
 
         self.reset_btn = erlab.interactive.utils.IconButton(
             _ICON_ALIASES["reset"], toolTip="Reset bins"
         )
+        self.reset_btn.setObjectName("itoolResetBinsButton")
         self.reset_btn.clicked.connect(self.reset)
 
         self.all_btn = erlab.interactive.utils.IconButton(
@@ -954,6 +962,7 @@ class ItoolBinningControls(ItoolControlsBase):
             checkable=True,
             toolTip="When checked, apply bins to all cursors upon change",
         )
+        self.all_btn.setObjectName("itoolApplyBinsToAllCursorsButton")
 
         height = QtGui.QFontMetrics(self.labels[0].font()).height() + 3
         alignment = (

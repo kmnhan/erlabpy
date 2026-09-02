@@ -101,11 +101,16 @@ def test_range_slice_for_coord_nonmonotonic_raises() -> None:
         gold_mod.resolution,
     ],
 )
-def test_gold_fit_api_exposes_use_step_edge(func: typing.Callable) -> None:
+def test_gold_fit_api_exposes_use_step_edge_without_documenting_fast(
+    func: typing.Callable,
+) -> None:
     parameters = inspect.signature(func).parameters
+    docstring = inspect.getdoc(func)
 
     assert "use_step_edge" in parameters
     assert "fast" not in parameters
+    if docstring is not None:
+        assert "fast" not in docstring
 
 
 @pytest.mark.parametrize("fast", [False, True])
@@ -119,6 +124,23 @@ def test_guess_edge_fit_range_warns_for_deprecated_fast(
     current_bounds = gold_mod.guess_edge_fit_range(edc, temp=100.0, use_step_edge=fast)
 
     assert legacy_bounds == current_bounds
+
+
+def test_guess_edge_fit_range_rejects_conflicting_deprecated_fast(
+    gold: xr.DataArray,
+) -> None:
+    edc = gold.sel(eV=slice(-0.2, 0.2)).sel(alpha=0.0)
+
+    with (
+        pytest.warns(FutureWarning, match="Use `use_step_edge` instead"),
+        pytest.raises(TypeError, match="conflicting values"),
+    ):
+        gold_mod.guess_edge_fit_range(
+            edc,
+            temp=100.0,
+            use_step_edge=True,
+            fast=False,
+        )
 
 
 @pytest.mark.parametrize(

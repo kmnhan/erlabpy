@@ -43,7 +43,7 @@ import xarray as xr
 from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
-from erlab.interactive import _qt_state, _saved_tools
+from erlab.interactive import _qt_state, _saved_tools, _shortcut_sequences
 from erlab.interactive._code_trust import (
     approve_document_trust,
     commit_local_edit_trust,
@@ -490,7 +490,7 @@ def _install_close_shortcut(
     if isinstance(widget, QtWidgets.QMainWindow):
         widget.menuBar()
 
-    shortcut = QtWidgets.QShortcut("Ctrl+W", widget, callback)
+    shortcut = QtWidgets.QShortcut(_shortcut_sequences.WINDOW_CLOSE, widget, callback)
     shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
     application = QtWidgets.QApplication.instance()
@@ -550,7 +550,27 @@ def load_ui(
         return typing.cast("QtWidgets.QWidget", uic.loadUi(uifile, baseinstance))
 
 
-def parse_data(data) -> xr.DataArray:
+def parse_data(data: xr.DataArray | np.ndarray) -> xr.DataArray:
+    """Prepare array data for an interactive tool.
+
+    Parameters
+    ----------
+    data
+        DataArray or NumPy array. A NumPy array is wrapped in a DataArray with default
+        dimension names and no coordinates, name, or attributes.
+
+    Returns
+    -------
+    xarray.DataArray
+        The original DataArray, or a DataArray that wraps the NumPy input. This function
+        does not define a copy contract for NumPy data.
+
+    Raises
+    ------
+    TypeError
+        If `data` is an :class:`xarray.Dataset`. Select one variable or use
+        :meth:`xarray.Dataset.to_array` before calling this function.
+    """
     if isinstance(data, xr.Dataset):
         raise TypeError(
             "input argument data must be a xarray.DataArray or a "
@@ -930,6 +950,7 @@ class MessageDialog(QtWidgets.QDialog):
 
         # "Show Details…" toggle button
         self._details_toggle = QtWidgets.QToolButton()
+        self._details_toggle.setObjectName("messageDialogDetailsToggle")
         self._details_toggle.setCheckable(True)
         self._details_toggle.setChecked(False)
         self._details_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
@@ -1803,7 +1824,7 @@ def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
     open_docs_action = QtWidgets.QAction("Documentation", parent)
     open_docs_action.triggered.connect(
         lambda _: webbrowser.open(
-            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
+            "https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html"
         )
     )
     report_issue_action = QtWidgets.QAction("Report an Issue", parent)
@@ -6472,6 +6493,31 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
 
 class AnalysisWindow(ToolWindow):
+    """Window that combines an analysis widget with a control panel.
+
+    Parameters
+    ----------
+    data
+        DataArray or NumPy array supplied to the analysis widget.
+    title
+        Window title. If omitted, use the DataArray name when one is available.
+    layout
+        ``"horizontal"`` places controls beside the analysis widget. ``"vertical"``
+        places controls above or below it.
+    data_is_input
+        Pass `data` to the analysis widget during construction.
+    analysisWidget
+        Existing analysis widget or widget class. If omitted, use
+        :class:`AnalysisWidgetBase`.
+    *args, **kwargs
+        Arguments used to construct the default analysis widget when `analysisWidget`
+        is omitted, or to construct `analysisWidget` when it is a class.
+
+    Notes
+    -----
+    The constructor creates a QApplication when one does not exist.
+    """
+
     def __init__(
         self,
         data,
@@ -6756,6 +6802,17 @@ class ComparisonWidget(AnalysisWidgetBase):
 
 
 class DictMenuBar(QtWidgets.QMenuBar):
+    """Menu bar constructed from nested menu and action mappings.
+
+    Parameters
+    ----------
+    parent
+        Parent widget.
+    **kwargs
+        Named menu specifications passed to :meth:`add_items`. Created menus and
+        actions are stored in `menu_dict` and `action_dict` under these names.
+    """
+
     def __init__(self, parent: QtWidgets.QWidget | None = None, **kwargs) -> None:
         super().__init__(parent)
 

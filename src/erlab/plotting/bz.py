@@ -127,17 +127,26 @@ def plot_bz(
     basis
         A 2D or 3D numpy array with shape ``(N, N)`` where ``N = 2`` or ``3``,
         containing the basis vectors of the lattice. If N is 3, only the upper left 2x2
-        submatrix is used.
+        submatrix is used. With the default `reciprocal=False`, these are real-space
+        lattice vectors and the plotted coordinates use the corresponding reciprocal
+        unit. For example, lattice vectors in Å give coordinates in Å⁻¹.
     reciprocal
-        If `True`, the basis vectors are interpreted as reciprocal lattice vectors.
+        If `True`, `basis` is interpreted as reciprocal lattice vectors in the same
+        units as the plotted axes.
     rotate
         Rotation angle in degrees to apply to the BZ.
     offset
-        Offset for the Brillouin zone center in the form of a tuple ``(x, y)``.
+        Offset for the Brillouin-zone center as ``(x, y)``, in the plotted coordinate
+        units.
     ax
         The axes to plot the BZ on. If `None`, the current axes are used.
     **kwargs
         Additional keyword arguments passed to :class:`matplotlib.patches.Polygon`.
+
+    Returns
+    -------
+    matplotlib.patches.Polygon
+        The polygon artist added to `ax`.
 
     """
     if ax is None:
@@ -169,24 +178,32 @@ def plot_hex_bz(
     offset: tuple[float, float] = (0.0, 0.0),
     ax: matplotlib.axes.Axes | None = None,
     **kwargs,
-):
+) -> matplotlib.patches.RegularPolygon | list[matplotlib.patches.RegularPolygon]:
     """Plot a 2D hexagonal BZ overlay on the specified axes.
 
     Parameters
     ----------
     a
-        Lattice constant of the hexagonal lattice.
+        Real-space lattice constant. The plotted coordinates use the corresponding
+        reciprocal unit. For example, `a` in Å gives coordinates in Å⁻¹.
     reciprocal
-        If `True`, ``a`` is interpreted as the periodicity of the reciprocal lattice.
+        If `True`, `a` is instead interpreted as the reciprocal lattice periodicity in
+        the plotted coordinate units.
     rotate
         Rotation angle in degrees to apply to the BZ.
     offset
-        Offset for the Brillouin zone center in the form of a tuple ``(x, y)``.
+        Offset for the Brillouin-zone center as ``(x, y)``, in the plotted coordinate
+        units.
     ax
         The axes to plot the BZ on. If `None`, the current axes are used.
     **kwargs
         Additional keyword arguments passed to
         :class:`matplotlib.patches.RegularPolygon`.
+
+    Returns
+    -------
+    matplotlib.patches.RegularPolygon or list of matplotlib.patches.RegularPolygon
+        The polygon artist, or one artist per axes when `ax` is an iterable.
 
     """
     kwargs.setdefault("zorder", 5)
@@ -197,7 +214,11 @@ def plot_hex_bz(
         ax = plt.gca()
     if np.iterable(ax):
         return [
-            plot_hex_bz(a=a, rotate=rotate, offset=offset, ax=x, **kwargs) for x in ax
+            typing.cast(
+                "matplotlib.patches.RegularPolygon",
+                plot_hex_bz(a=a, rotate=rotate, offset=offset, ax=x, **kwargs),
+            )
+            for x in ax
         ]
 
     kwargs["edgecolor"] = kwargs.pop("edgecolor", kwargs.pop("ec", axes_textcolor(ax)))
@@ -236,14 +257,15 @@ def plot_in_plane_bz(
     Parameters
     ----------
     bvec
-        Reciprocal lattice basis vectors.
+        Reciprocal lattice basis vectors. All momentum inputs use the same units as
+        these vectors, typically Å⁻¹ for ARPES data.
     kz
-        Out-of-plane momentum of the slice.
+        Out-of-plane momentum of the slice, in the same units as `bvec`.
     angle
         Rotation angle in degrees about the ``kz`` axis.
     bounds
-        ``(kx_min, kx_max, ky_min, ky_max)`` bounds. If `None`, bounds are inferred
-        from the current axes limits.
+        ``(kx_min, kx_max, ky_min, ky_max)`` bounds in the same units as `bvec`. If
+        `None`, bounds are inferred from the current axes limits.
     ax
         The axes to plot the BZ boundaries on. If `None`, the current axes are used.
     vertices
@@ -258,8 +280,9 @@ def plot_in_plane_bz(
 
     Returns
     -------
-    tuple
-        Line artists, vertex scatter artist, and midpoint scatter artist.
+    lines, vertex_artist, midpoint_artist : tuple
+        Line artists for the zone boundaries and optional scatter artists for the
+        vertices and edge midpoints.
 
     """
     if ax is None:
@@ -309,14 +332,15 @@ def plot_out_of_plane_bz(
     Parameters
     ----------
     bvec
-        Reciprocal lattice basis vectors.
+        Reciprocal lattice basis vectors. All momentum inputs use the same units as
+        these vectors, typically Å⁻¹ for ARPES data.
     k_parallel
-        Fixed in-plane momentum component along ``angle``.
+        Fixed in-plane momentum component along ``angle``, in the same units as `bvec`.
     angle
         Angle in degrees of the fixed in-plane momentum direction.
     bounds
-        ``(kp_min, kp_max, kz_min, kz_max)`` bounds. If `None`, bounds are inferred
-        from the current axes limits.
+        ``(kp_min, kp_max, kz_min, kz_max)`` bounds in the same units as `bvec`. If
+        `None`, bounds are inferred from the current axes limits.
     ax
         The axes to plot the BZ boundaries on. If `None`, the current axes are used.
     vertices
@@ -331,8 +355,9 @@ def plot_out_of_plane_bz(
 
     Returns
     -------
-    tuple
-        Line artists, vertex scatter artist, and midpoint scatter artist.
+    lines, vertex_artist, midpoint_artist : tuple
+        Line artists for the zone boundaries and optional scatter artists for the
+        vertices and edge midpoints.
 
     """
     if ax is None:

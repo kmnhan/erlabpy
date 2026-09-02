@@ -3691,7 +3691,7 @@ def ftool(
 
     The tool provides an interactive GUI for fitting 1D models to 1D or 2D data.
 
-    See the :ref:`user guide <guide-ftool>` for more information on using the tool.
+    See the :ref:`ftool reference <guide-ftool>` for more information about the tool.
 
     Parameters
     ----------

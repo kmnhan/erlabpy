@@ -12,6 +12,7 @@ import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive import _shortcut_sequences
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
@@ -393,7 +394,7 @@ class ArraySlicer(QtCore.QObject):
             else _display_value_abs_limit()
         )
         self.snap_act = QtWidgets.QAction("&Snap to Pixels", self)
-        self.snap_act.setShortcut("S")
+        self.snap_act.setShortcut(_shortcut_sequences.IMAGETOOL_SNAP_TO_PIXELS)
         self.snap_act.setCheckable(True)
         self.snap_act.setChecked(False)
         self.snap_act.setToolTip("Snap cursors to data points")

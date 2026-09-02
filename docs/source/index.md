@@ -41,28 +41,41 @@ data analysis.
 ::::{grid} 1 1 2 2
 :gutter: 1
 
-:::{grid-item-card} Getting started
+:::{grid-item-card} 🚀 Getting started
 :link: getting-started
 :link-type: doc
-The getting started guide covers installation, basic usage, and best practices for working with ERLabPy.
+Install and set up ERLabPy.
 :::
 
-:::{grid-item-card} User guide
-:link: user-guide/index
+:::{grid-item-card} 🎓 Tutorials
+:link: tutorials/index
 :link-type: doc
-The user guide provides tutorials and examples.
+Step-by-step tutorials that walk you through the basics of using ERLabPy for ARPES data analysis.
 :::
 
-:::{grid-item-card} API reference
+:::{grid-item-card} 💡 Explanation
+:link: explanation/index
+:link-type: doc
+Concepts and design choices to help you understand how ERLabPy works.
+:::
+
+:::{grid-item-card} 🛠️ How-to guides
+:link: how-to/index
+:link-type: doc
+Practical guides for performing specific tasks with ERLabPy.
+:::
+
+:::{grid-item-card} 📖 Reference
 :link: reference
 :link-type: doc
-The reference guide provides detailed information of the API, including descriptions of most available methods and parameters.
+Technical reference for ERLabPy, including Python APIs and GUI applications.
 :::
 
-:::{grid-item-card} Contributing guide
+:::{grid-item-card} 🤝 Contributing guide
 :link: contributing
 :link-type: doc
-The contributing guide contains information on how to contribute to the project.
+Development setup and guides for contributing code, documentation, data loaders, and
+interactive tools.
 :::
 ::::
 :::::
@@ -86,10 +99,12 @@ The contributing guide contains information on how to contribute to the project.
 ```{toctree}
 :caption: Contents
 :hidden: true
-:maxdepth: 3
+:maxdepth: 4
 
 getting-started
-user-guide/index
+tutorials/index
+explanation/index
+how-to/index
 reference
 contributing
 bibliography

@@ -12,7 +12,7 @@ import time
 import typing
 import uuid
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive._options.core
@@ -27,6 +27,7 @@ import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive._code_trust import (
     approve_document_trust,
     bind_document_trust_manifest,
@@ -2012,7 +2013,7 @@ class _WorkspaceController:
         for shortcut in widget.findChildren(QtWidgets.QShortcut):
             if shortcut.objectName() == _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME:
                 return
-        shortcut = QtWidgets.QShortcut(QtGui.QKeySequence.StandardKey.Save, widget)
+        shortcut = QtWidgets.QShortcut(_shortcut_sequences.WORKSPACE_SAVE, widget)
         shortcut.setObjectName(_WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME)
         shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(self._manager.save)

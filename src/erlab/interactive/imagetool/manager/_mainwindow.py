@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive._code_trust._ui import create_code_trust_banner
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
@@ -63,7 +64,6 @@ from erlab.interactive.imagetool.manager._widgets import (
     _ElidedValueLabel,
     _HeightForWidthFrame,
     _MetadataDerivationListWidget,
-    _MetadataDerivationTreeItem,
     _SingleImagePreview,
     _StandaloneAppSpec,
     _WarningEmitter,
@@ -334,7 +334,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 menu="file",
                 text="Data Explorer",
                 tooltip="Show the data explorer window",
-                shortcut="Ctrl+E",
+                shortcut=_shortcut_sequences.MANAGER_DATA_EXPLORER,
                 icon_name="drive-harddisk",
                 factory=self._create_explorer_window,
             ),
@@ -343,7 +343,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 menu="apps",
                 text="Periodic Table",
                 tooltip="Show the periodic table window",
-                shortcut="Ctrl+Shift+P",
+                shortcut=_shortcut_sequences.MANAGER_PERIODIC_TABLE,
                 icon_name="applications-science",
                 factory=self._create_ptable_window,
             ),
@@ -367,7 +367,7 @@ class ImageToolManager(_ImageToolManagerBase):
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
         self.settings_action.triggered.connect(self.open_settings)
-        self.settings_action.setShortcut(QtGui.QKeySequence.StandardKey.Preferences)
+        self.settings_action.setShortcut(_shortcut_sequences.MANAGER_SETTINGS)
         self.settings_action.setToolTip("Open settings")
         self.settings_action.setIcon(QtGui.QIcon.fromTheme("preferences-system"))
 
@@ -377,7 +377,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.hide_action = QtWidgets.QAction("Hide", self)
         self.hide_action.triggered.connect(self.hide_selected)
-        self.hide_action.setShortcut("Ctrl+W")
+        self.hide_action.setShortcut(_shortcut_sequences.MANAGER_HIDE_WINDOWS)
         self.hide_action.setToolTip("Hide selected windows")
 
         self.arrange_windows_action = QtWidgets.QAction(
@@ -410,14 +410,14 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.save_action = QtWidgets.QAction("&Save", self)
         self.save_action.setObjectName("manager_save_workspace_action")
-        self.save_action.setShortcut(QtGui.QKeySequence.StandardKey.Save)
+        self.save_action.setShortcut(_shortcut_sequences.MANAGER_SAVE_WORKSPACE)
         self.save_action.setToolTip("Save this workspace")
         self.save_action.setIcon(QtGui.QIcon.fromTheme("document-save"))
         self.save_action.triggered.connect(self.save)
 
         self.save_as_action = QtWidgets.QAction("Save Workspace &As…", self)
         self.save_as_action.setObjectName("manager_save_workspace_as_action")
-        self.save_as_action.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
+        self.save_as_action.setShortcut(_shortcut_sequences.MANAGER_SAVE_WORKSPACE_AS)
         self.save_as_action.setToolTip(
             "Save this workspace to a new file and use that file for future saves"
         )
@@ -438,7 +438,9 @@ class ImageToolManager(_ImageToolManagerBase):
             "manager_workspace_properties_action"
         )
         self.workspace_properties_action.setMenuRole(QtWidgets.QAction.MenuRole.NoRole)
-        self.workspace_properties_action.setShortcut(QtGui.QKeySequence("Alt+Return"))
+        self.workspace_properties_action.setShortcut(
+            QtGui.QKeySequence(_shortcut_sequences.MANAGER_WORKSPACE_PROPERTIES)
+        )
         self.workspace_properties_action.setToolTip(
             "Show properties for the current workspace"
         )
@@ -451,7 +453,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.load_action = QtWidgets.QAction("&Open Workspace…", self)
         self.load_action.setObjectName("manager_open_workspace_action")
-        self.load_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+        self.load_action.setShortcut(_shortcut_sequences.MANAGER_OPEN_WORKSPACE)
         self.load_action.setToolTip("Replace this workspace with a workspace file")
         self.load_action.setIcon(QtGui.QIcon.fromTheme("document-open"))
         self.load_action.triggered.connect(self.load)
@@ -484,7 +486,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.remove_action = QtWidgets.QAction("Remove", self)
         self.remove_action.triggered.connect(self.remove_selected)
-        self.remove_action.setShortcut(QtGui.QKeySequence.StandardKey.Delete)
+        self.remove_action.setShortcut(_shortcut_sequences.MANAGER_REMOVE_WINDOWS)
         self.remove_action.setToolTip("Remove selected windows")
 
         self.rename_action = QtWidgets.QAction("Rename", self)
@@ -509,12 +511,16 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self._link_selected_from_action)
-        self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
+        self.link_action.setShortcut(
+            QtGui.QKeySequence(_shortcut_sequences.MANAGER_LINK_WINDOWS)
+        )
         self.link_action.setToolTip("Link selected windows")
 
         self.unlink_action = QtWidgets.QAction("Unlink", self)
         self.unlink_action.triggered.connect(self._unlink_selected_from_action)
-        self.unlink_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
+        self.unlink_action.setShortcut(
+            QtGui.QKeySequence(_shortcut_sequences.MANAGER_UNLINK_WINDOWS)
+        )
         self.unlink_action.setToolTip("Unlink selected windows")
 
         self.offload_action = QtWidgets.QAction("Offload to Workspace", self)
@@ -526,7 +532,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self.console_action = QtWidgets.QAction("Console", self)
         self.console_action.triggered.connect(self.toggle_console)
-        self.console_action.setShortcut(QtGui.QKeySequence("Ctrl+J"))
+        self.console_action.setShortcut(
+            QtGui.QKeySequence(_shortcut_sequences.MANAGER_CONSOLE)
+        )
         self.console_action.setToolTip("Toggle console window")
         self.console_action.setIcon(QtGui.QIcon.fromTheme("utilities-terminal"))
 
@@ -596,7 +604,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.reload_action = QtWidgets.QAction("Reload Data", self)
         self.reload_action.setObjectName("manager_reload_data_action")
         self.reload_action.triggered.connect(self.reload_selected)
-        self.reload_action.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self.reload_action.setShortcut(_shortcut_sequences.MANAGER_RELOAD_DATA)
         self.reload_action.setShortcutContext(
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
@@ -641,6 +649,20 @@ class ImageToolManager(_ImageToolManagerBase):
         self.about_action = QtWidgets.QAction("About", self)
         self.about_action.setIcon(QtGui.QIcon.fromTheme("help-about"))
         self.about_action.triggered.connect(self.about)
+
+        self.tutorial_action = QtWidgets.QAction("Tutorial", self)
+        self.tutorial_action.setObjectName("manager_tutorial_action")
+        self.tutorial_action.triggered.connect(self.open_tutorial)
+
+        self.keyboard_shortcuts_action = QtWidgets.QAction("Keyboard Shortcuts", self)
+        self.keyboard_shortcuts_action.setObjectName(
+            "manager_keyboard_shortcuts_action"
+        )
+        self.keyboard_shortcuts_action.setToolTip(
+            "Show keyboard shortcuts and pointer gestures"
+        )
+        self.keyboard_shortcuts_action.setIcon(QtGui.QIcon.fromTheme("input-keyboard"))
+        self.keyboard_shortcuts_action.triggered.connect(self.open_keyboard_shortcuts)
 
         self.check_update_action = QtWidgets.QAction("Check for Updates", self)
         self.check_update_action.setMenuRole(
@@ -748,6 +770,9 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         self._help_menu_action = self.help_menu.menuAction()
         self.help_menu.setObjectName("manager_help_menu")
+        self.help_menu.addAction(self.tutorial_action)
+        self.help_menu.addAction(self.keyboard_shortcuts_action)
+        self.help_menu.addSeparator()
         self.help_menu.addAction(self.about_action)
         self.help_menu.addAction(self.check_update_action)
         self.help_menu.addAction(release_notes_action)
@@ -880,6 +905,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self.metadata_details_page = QtWidgets.QWidget(self.inspector_tabs)
+        self.metadata_details_page.setObjectName("managerDetailsPage")
         metadata_details_page_layout = QtWidgets.QVBoxLayout(self.metadata_details_page)
         metadata_details_page_layout.setContentsMargins(
             inspector_margin,
@@ -911,6 +937,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self.metadata_provenance_page = QtWidgets.QWidget(self.inspector_tabs)
+        self.metadata_provenance_page.setObjectName("managerProvenancePage")
         metadata_provenance_page_layout = QtWidgets.QVBoxLayout(
             self.metadata_provenance_page
         )
@@ -920,6 +947,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.metadata_derivation_list = _MetadataDerivationListWidget(
             self.metadata_provenance_page
         )
+        self.metadata_derivation_list.setObjectName("metadata_derivation_list")
         self.metadata_derivation_list.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -955,6 +983,7 @@ class ImageToolManager(_ImageToolManagerBase):
         metadata_provenance_page_layout.addWidget(self.metadata_derivation_list, 1)
 
         self.notes_page = QtWidgets.QWidget(self.inspector_tabs)
+        self.notes_page.setObjectName("managerNotesPage")
         notes_page_layout = QtWidgets.QVBoxLayout(self.notes_page)
         notes_page_layout.setContentsMargins(0, 0, 0, 0)
         notes_page_layout.setSpacing(4)
@@ -1369,14 +1398,10 @@ class ImageToolManager(_ImageToolManagerBase):
             shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(callback)
 
-        if sys.platform == "darwin":
-            add_shortcut("Return", self.rename_selected)
-            add_shortcut("Enter", self.rename_selected)
-            add_shortcut("Ctrl+Down", self.show_selected)
-        else:
-            add_shortcut("F2", self.rename_selected)
-            add_shortcut("Return", self.show_selected)
-            add_shortcut("Enter", self.show_selected)
+        for sequence in _shortcut_sequences.manager_rename_selection():
+            add_shortcut(sequence, self.rename_selected)
+        for sequence in _shortcut_sequences.manager_show_selection():
+            add_shortcut(sequence, self.show_selected)
 
     def _figure_ui_refresh_is_deferred(self) -> bool:
         return self._workspace_ui_refresh_defer_depth > 0
@@ -1753,7 +1778,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _update_metadata_pane(self) -> None:
         self._details_panel._update_metadata_pane()
 
-    def _selected_derivation_items(self) -> list[_MetadataDerivationTreeItem]:
+    def _selected_derivation_items(self) -> list[QtWidgets.QTreeWidgetItem]:
         return self._details_panel._selected_derivation_items()
 
     def _selected_derivation_code(self) -> str | None:
@@ -2069,8 +2094,14 @@ class ImageToolManager(_ImageToolManagerBase):
     def open_settings(self) -> erlab.interactive._options.OptionDialog:
         return self._widgets_controller.open_settings()
 
+    def open_keyboard_shortcuts(self) -> QtWidgets.QDialog:
+        return self._widgets_controller.open_keyboard_shortcuts()
+
     def open_new_manager_instance(self) -> None:
         self._widgets_controller.open_new_manager_instance()
+
+    def open_tutorial(self) -> None:
+        self._widgets_controller.open_tutorial()
 
     def check_for_updates(self) -> None:
         self._widgets_controller.check_for_updates()

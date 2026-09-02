@@ -7,7 +7,7 @@
 
 (refs)=
 
-# References
+# Bibliography
 
 ```{eval-rst}
 .. bibliography::

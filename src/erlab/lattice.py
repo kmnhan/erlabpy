@@ -1166,14 +1166,15 @@ def get_bz_slice(
     Parameters
     ----------
     bvec : (3, 3) array_like
-        Reciprocal lattice basis vectors. Columns are the basis used for grid @ bvec.
+        Reciprocal-lattice basis vectors. Rows are the basis used for ``grid @
+        bvec``. All momentum inputs and outputs use the same units as these vectors.
     plane_point : (3,) array_like
         A point on the slicing plane, in the same coordinate system as `bvec`.
     plane_normal : (3,) array_like
         Normal vector of the slicing plane.
     plane_bounds : tuple of float
         Bounds (xmin, xmax, ymin, ymax) of the rectangular window in the plane's local
-        (u, v) coordinates.
+        (u, v) coordinates, in the same momentum units as `bvec`.
     pad_cells : int, optional
         Extra integer padding on the reciprocal lattice translation grid to ensure
         coverage. Default is 1.

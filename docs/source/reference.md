@@ -1,45 +1,28 @@
-# API Reference
+# Reference
 
-ERLabPy is organized into multiple subpackages and submodules classified by their functionality. The following table lists the subpackages and submodules of ERLabPy.
+Find exact Python interfaces, supported inputs, GUI controls, settings, and
+compatibility details. Use {doc}`how-to/index` for task procedures and
+{doc}`explanation/index` for design choices and scientific workflows.
 
-## Subpackages
+## Reference sections
 
-| Subpackage               | Description                                                                                                                              |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| {mod}`erlab.analysis`    | Routines for analyzing ARPES data.                                                                                                       |
-| {mod}`erlab.extensions`  | Public APIs for ImageTool Manager analysis and loader extensions.                                                                        |
-| {mod}`erlab.io`          | Reading and writing data.                                                                                                                |
-| {mod}`erlab.plotting`    | Functions related to static plotting with matplotlib.                                                                                    |
-| {mod}`erlab.interactive` | Interactive tools and widgets based on Qt and pyqtgraph                                                                                  |
-| {mod}`erlab.accessors`   | [xarray accessors](https://docs.xarray.dev/en/stable/internals/extending-xarray.html). You will not need to import this module directly. |
-| {mod}`erlab.utils`       | Utility functions and classes, typically used internally.                                                                                |
-
-```{eval-rst}
-.. currentmodule:: erlab
-```
+| Information | Section |
+| --- | --- |
+| Python functions, classes, methods, and xarray accessors | {doc}`reference/python/index` |
+| ImageTool, ImageTool Manager, Figure Composer, settings, and interactive tools | {doc}`reference/gui/index` |
+| Supported file formats and data loader plugins | {doc}`reference/data-formats` |
+| Matplotlib styles and compatible colormap libraries | {doc}`reference/plotting` |
+| Corresponding Python and GUI operations | {doc}`reference/python-and-gui-map` |
+| Supported Python versions, Qt bindings, and dependencies | {doc}`reference/dependencies-and-compatibility` |
 
 ```{toctree}
 :hidden: true
+:maxdepth: 3
 
-erlab.analysis
-erlab.extensions
-erlab.io
-erlab.plotting
-erlab.interactive
-erlab.accessors
-erlab.utils
-```
-
-## Submodules
-
-| Submodule              | Description                                           |
-| ---------------------- | ----------------------------------------------------- |
-| {mod}`erlab.lattice`   | Tools for working with real and reciprocal lattices.  |
-| {mod}`erlab.constants` | Physical constants and functions for unit conversion. |
-
-```{toctree}
-:hidden: true
-
-erlab.lattice
-erlab.constants
+reference/python/index
+reference/gui/index
+reference/data-formats
+reference/plotting
+reference/python-and-gui-map
+reference/dependencies-and-compatibility
 ```

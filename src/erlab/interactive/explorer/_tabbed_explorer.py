@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pathlib
-import sys
 import typing
 import weakref
 
@@ -11,7 +10,7 @@ import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive import _qt_state
+from erlab.interactive import _qt_state, _shortcut_sequences
 from erlab.interactive.explorer._base_explorer import (
     DataExplorerTabState,
     _DataExplorer,
@@ -92,7 +91,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
         self._addtab_act = QtWidgets.QAction("New Tab", self)
         self._addtab_act.triggered.connect(self.add_tab)
-        self._addtab_act.setShortcut(QtGui.QKeySequence.StandardKey.AddTab)
+        self._addtab_act.setShortcut(_shortcut_sequences.EXPLORER_NEW_TAB)
         file_menu.addAction(self._addtab_act)
 
         self._next_act = QtWidgets.QAction("Next Tab", self)
@@ -102,7 +101,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             )
         )
         self._next_act.setShortcut(
-            QtGui.QKeySequence("Meta+Tab" if sys.platform == "darwin" else "Ctrl+Tab")
+            QtGui.QKeySequence(_shortcut_sequences.explorer_next_tab())
         )
         file_menu.addAction(self._next_act)
 
@@ -113,9 +112,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             )
         )
         self._prev_act.setShortcut(
-            QtGui.QKeySequence(
-                "Meta+Shift+Tab" if sys.platform == "darwin" else "Ctrl+Shift+Tab"
-            )
+            QtGui.QKeySequence(_shortcut_sequences.explorer_previous_tab())
         )
         file_menu.addAction(self._prev_act)
 

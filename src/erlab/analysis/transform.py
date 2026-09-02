@@ -418,7 +418,8 @@ def rotate(
     Parameters
     ----------
     darr
-        The array to rotate.
+        The array to rotate. The coordinates along both rotation axes must be evenly
+        spaced and contain at least two points.
     angle
         The rotation angle in degrees.
     axes : tuple of 2 ints or 2 strings, optional
@@ -426,8 +427,8 @@ def rotate(
         If strings are provided, they must be valid dimension names in the input array.
     center : tuple of 2 floats or dict, optional
         The center of rotation in data coordinates. If a tuple, it is given as values
-        along the dimensions specified in `axes`. If a dict, it must have keys that
-        correspond to `axes`. Default is (0, 0).
+        along the dimensions specified in ``axes``. If a dict, it must have keys that
+        correspond exactly to ``axes``. Default is (0, 0).
     reshape
         If `True`, the output shape is adapted to the full rotated bounding box. The
         extent depends on the input coordinates, not on finite data values. Default is
@@ -441,8 +442,14 @@ def rotate(
 
     Returns
     -------
-    darr : xarray.DataArray
-        The rotated array.
+    rotated : xarray.DataArray
+        A new array with the same dimension names and order as ``darr``. If ``reshape``
+        is `True`, the two rotation-axis coordinates and sizes are replaced by the full
+        rotated bounding box at the original coordinate spacing. If `False`, the
+        original grid is retained. Non-dimension coordinates that depend on either
+        rotation axis are dropped because they no longer describe the transformed data.
+        Other coordinates, the data name, attributes, dtype, and Dask-backed execution
+        are preserved.
 
     See Also
     --------
@@ -570,7 +577,8 @@ def symmetrize_nfold(
     Parameters
     ----------
     darr
-        The array to symmetrize.
+        The array to symmetrize. The coordinates along both rotation axes must be
+        evenly spaced and contain at least two points.
     fold
         The order of the rotational symmetry. Must be at least 2. For example,
         ``fold=4`` applies 4-fold symmetrization by averaging over the original array
@@ -581,7 +589,7 @@ def symmetrize_nfold(
     center : tuple of 2 floats or dict, optional
         The center of rotation in data coordinates. If a tuple, it is given as values
         along the dimensions specified in `axes`. If a dict, it must have keys that
-        correspond to `axes`. Default is (0, 0).
+        correspond exactly to `axes`. Default is (0, 0).
     reshape
         If `True`, the output shape is expanded to contain the full extent of all
         rotated copies. The extent depends on the input coordinates, not on finite data
@@ -596,8 +604,14 @@ def symmetrize_nfold(
 
     Returns
     -------
-    darr : xarray.DataArray
-        The rotationally symmetrized array on the original or expanded grid.
+    symmetrized : xarray.DataArray
+        A new rotationally averaged array with the same dimension names and order as
+        `darr`. If `reshape` is `True`, the two rotation-axis coordinates and sizes are
+        replaced by the union of the rotated extents at the original coordinate
+        spacing. If `False`, the original grid is retained. Non-dimension coordinates
+        that depend on either rotation axis are dropped. Other coordinates, the data
+        name, attributes, and Dask-backed execution are preserved. Integer input is
+        converted to a floating dtype so that rotations can be averaged.
 
     """
     if fold < 2:
@@ -894,7 +908,8 @@ def shift(
     darr
         The array to shift.
     shift
-        The amount of shift to be applied along the specified dimension. If
+        The shift in the coordinate units of `along`. Positive values move data toward
+        increasing coordinate values. If
         :code:`shift` is a DataArray, different shifts can be applied to different
         coordinates. The dimensions of :code:`shift` must be a subset of the dimensions
         of `darr`. For more information, see the note below. If :code:`shift` is a
@@ -923,8 +938,12 @@ def shift(
 
     Returns
     -------
-    xarray.DataArray
-        The shifted DataArray.
+    shifted : xarray.DataArray
+        A new shifted array. By default, the coordinate along `along` is sorted in
+        ascending order and the input dimension order, data name, and attributes are
+        retained. If `shift_coords` is `False`, the coordinate values and shape are
+        retained. If `True`, the coordinate is shifted and padded to contain the moved
+        data, so the size of `along` can increase.
 
     Note
     ----
@@ -1085,9 +1104,13 @@ def symmetrize(
 
     Returns
     -------
-    DataArray
-        A symmetrized DataArray containing the sum or difference of each value and its
-        reflected counterpart, optionally divided by 2 in the overlapping region.
+    symmetrized : xarray.DataArray
+        A new array containing the sum or difference of each value and its reflected
+        counterpart, optionally divided by 2 in the overlapping region. The dimension
+        names, data name, attributes, and original coordinate direction are retained.
+        The coordinate values and the size of `dim` depend on `mode` and `part`:
+        ``"valid"`` keeps only the overlap, ``"full"`` keeps the union, and
+        ``"below"`` or ``"above"`` returns only the selected side of `center`.
 
     Examples
     --------

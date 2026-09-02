@@ -148,6 +148,11 @@ class FermiEdgeModel(lmfit.Model):
     The model function is a Fermi-dirac function with linear background above and below
     the fermi level, convolved with a gaussian kernel.
 
+    Notes
+    -----
+    The independent variable ``x``, ``center``, and ``resolution`` are in eV.
+    ``resolution`` is the Gaussian FWHM, and ``temp`` is in K.
+
     See Also
     --------
     FermiDiracModel
@@ -225,6 +230,9 @@ class FermiDiracModel(lmfit.Model):
     rather the full width at half maximum (FWHM) of the Gaussian. The relationship is
     given by :math:`\text{FWHM} = 2\sqrt{2\ln(2)}\sigma`.
 
+    The independent variable ``x``, ``center``, and ``resolution`` are in eV.
+    ``temp`` is in K.
+
     See Also
     --------
     FermiEdgeModel
@@ -268,6 +276,17 @@ class FermiDiracModel(lmfit.Model):
 
 
 class StepEdgeModel(lmfit.Model):
+    """Model a Gaussian-broadened step between two linear backgrounds.
+
+    The lower-``x`` branch is ``dos0 + dos1 * x``. The higher-``x`` branch is
+    ``back0 + back1 * x``. A complementary error function joins the two branches.
+
+    Notes
+    -----
+    ``center`` and ``sigma`` have the same units as the independent variable ``x``.
+    ``sigma`` is the standard deviation of the Gaussian broadening, not its FWHM.
+    """
+
     @staticmethod
     def _step_linbkg_broad(
         x, center=0.0, sigma=0.02, back0=0.0, back1=0.0, dos0=1.0, dos1=0.0
@@ -280,6 +299,24 @@ class StepEdgeModel(lmfit.Model):
         self.set_param_hint("sigma", min=0.0)
 
     def guess(self, data, x, **kwargs):
+        """Estimate the step position and the two linear backgrounds.
+
+        Parameters
+        ----------
+        data
+            One-dimensional data to fit.
+        x
+            Independent-variable values. The values must have the same length as
+            `data`.
+        **kwargs
+            Parameter values that replace the estimates in the returned parameters.
+
+        Returns
+        -------
+        lmfit.Parameters
+            Estimated model parameters. The estimate uses linear fits to both ends of
+            the data and the minimum of a smoothed derivative for ``center``.
+        """
         pars = self.make_params()
 
         len_fit = max(round(len(x) * 0.05), 10)
@@ -297,11 +334,29 @@ class StepEdgeModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    __doc__ = lmfit.models.COMMON_INIT_DOC
-    guess.__doc__ = COMMON_GUESS_DOC
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
 
 
 class PolynomialModel(lmfit.Model):
+    r"""Model a polynomial with coefficients in ascending order.
+
+    The model is
+
+    .. math::
+
+        y(x) = \sum_{i=0}^{n} c_i x^i,
+
+    where ``degree`` is :math:`n`.
+
+    Parameters
+    ----------
+    degree
+        Highest power of ``x``. The model contains parameters ``c0`` through
+        ``c{degree}``.
+    **kwargs
+        Additional keyword arguments passed to :class:`lmfit.model.Model`.
+    """
+
     func: PolynomialFunction
 
     def __init__(self, degree=9, **kwargs) -> None:
@@ -309,6 +364,24 @@ class PolynomialModel(lmfit.Model):
         super().__init__(PolynomialFunction(degree), **kwargs)
 
     def guess(self, data, x=None, **kwargs):
+        """Estimate polynomial coefficients.
+
+        Parameters
+        ----------
+        data
+            One-dimensional data to fit.
+        x
+            Independent-variable values. If omitted, ``c0`` is the mean of `data` and
+            all higher coefficients are zero. If supplied, the estimate is a
+            least-squares polynomial fit.
+        **kwargs
+            Parameter values that replace the estimates in the returned parameters.
+
+        Returns
+        -------
+        lmfit.Parameters
+            Estimated parameters named ``c0`` through ``c{degree}``.
+        """
         pars = self.make_params()
         if x is None:
             pars["c0"].set(value=float(data.mean()))
@@ -320,8 +393,7 @@ class PolynomialModel(lmfit.Model):
                 pars[f"{self.prefix}c{i}"].set(value=coef)
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    __doc__ = lmfit.models.COMMON_INIT_DOC
-    guess.__doc__ = COMMON_GUESS_DOC
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
 
 
 class MultiPeakModel(lmfit.Model):
@@ -573,10 +645,12 @@ class MultiPeakModel(lmfit.Model):
 
         return out
 
-    __doc__ = (
-        str(MultiPeakFunction.__doc__)
-        + "**kwargs\n        Additional keyword arguments to be passed to the "
-        ":class:`lmfit.model.Model` constructor."
+    __doc__ = str(MultiPeakFunction.__doc__).replace(
+        "\nNotes\n-----",
+        "\n**kwargs\n"
+        "    Additional keyword arguments passed to the "
+        ":class:`lmfit.model.Model` constructor.\n\n"
+        "Notes\n-----",
     )
     guess.__doc__ = COMMON_GUESS_DOC
 
@@ -595,6 +669,22 @@ class FermiEdge2dModel(lmfit.Model):
     linear density of states described by :math:`a\omega+b` with a constant background
     :math:`c` convolved with a gaussian, where :math:`\omega` is the binding energy and
     :math:`\alpha` is the detector angle.
+
+    Parameters
+    ----------
+    degree
+        Degree of the polynomial that describes the Fermi-edge position as a function
+        of ``alpha``.
+    **kwargs
+        Additional keyword arguments passed to :class:`lmfit.model.Model`. The
+        independent variables default to ``["eV", "alpha"]``.
+
+    Notes
+    -----
+    ``eV``, the polynomial edge position, and ``resolution`` are in eV. ``alpha`` is in
+    degrees, ``temp`` is in K, and ``resolution`` is the Gaussian FWHM. Polynomial
+    coefficient ``c{i}`` has units of eV per degree raised to ``i``. ``const_bkg`` and
+    ``offset`` have intensity units, and ``lin_bkg`` has intensity per eV units.
 
     """
 
@@ -643,7 +733,24 @@ class FermiEdge2dModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    def fit(self, data, *args, **kwargs):
+    def fit(self, data, *args, **kwargs) -> lmfit.model.ModelResult:
+        """Fit the two-dimensional Fermi-edge model.
+
+        Parameters
+        ----------
+        data
+            Intensity to fit. A :class:`xarray.DataArray` must be two-dimensional with
+            exactly the dimensions ``eV`` and ``alpha``. It is transposed to that order
+            and flattened before fitting. Array-like input is flattened in its existing
+            order.
+        *args, **kwargs
+            Additional arguments passed to :meth:`lmfit.model.Model.fit`.
+
+        Returns
+        -------
+        lmfit.model.ModelResult
+            The fit result. The input array is not modified.
+        """
         if isinstance(data, xr.DataArray):
             data = data.transpose("eV", "alpha").values
         # Ensure flat fit

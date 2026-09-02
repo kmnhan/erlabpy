@@ -34,7 +34,7 @@ def itool(
 ):
     """Create and display ImageTool windows.
 
-    This tool can also conveniently accessed with :meth:`xarray.DataArray.qshow` and
+    This tool can also be conveniently accessed with :meth:`xarray.DataArray.qshow` and
     :meth:`xarray.Dataset.qshow`.
 
     Parameters
@@ -50,9 +50,10 @@ def itool(
 
         - A numpy array with 2 to 4 dimensions
 
-          The array will be converted to a DataArray and displayed in an ImageTool.
-          Arrays with more than 4 non-singleton dimensions can be reduced
-          interactively before opening.
+          The array is converted to a DataArray with dimensions named ``dim_0``,
+          ``dim_1``, and so on. No coordinate values, name, or attributes are added.
+          Arrays with more than 4 non-singleton dimensions can be reduced interactively
+          before opening.
 
         - A list of the above objects
 
@@ -116,8 +117,9 @@ def itool(
         This argument has no effect when the ImageTool window(s) are opened in the
         manager.
     **kwargs
-        Additional keyword arguments to be passed onto the underlying slicer area. For a
-        full list of supported arguments, see the
+        Additional keyword arguments passed to the underlying slicer area when a new
+        ImageTool window is created. These arguments are ignored when `replace` is
+        used. For the supported arguments, see the
         `erlab.interactive.imagetool.viewer.ImageSlicerArea` documentation.
 
     Returns

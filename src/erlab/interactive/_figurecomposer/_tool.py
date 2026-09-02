@@ -746,6 +746,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         figure_window.show_for_setup(
             self._document.recipe.setup, self._figure_window_title(), activate=activate
         )
+        figure_window._place_beside(self)
         self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
         self._redraw_plot(show_window=True)
@@ -807,7 +808,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._show_figure_window_pending = False
         if self._closing or not self.isVisible():
             return
+        restore_composer = not activate and self.isActiveWindow()
         self.show_figure_window(activate=activate)
+        active_window = QtWidgets.QApplication.activeWindow()
+        if (
+            restore_composer
+            and QtGui.QGuiApplication.applicationState()
+            == QtCore.Qt.ApplicationState.ApplicationActive
+            and (
+                active_window is None
+                or active_window is self
+                or active_window is self._figure_window
+            )
+        ):
+            self.raise_()
+            self.activateWindow()
 
     def _cancel_queued_show_figure_window(self) -> None:
         self._show_figure_window_generation += 1
@@ -1348,9 +1363,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.show_figure_button.clicked.connect(self._show_figure_window_requested)
         copy_button = QtWidgets.QPushButton("Copy Python", root)
+        copy_button.setObjectName("figureComposerCopyPythonButton")
         copy_button.setToolTip("Copy standalone Python code for this figure recipe.")
         copy_button.clicked.connect(self.copy_code)
         export_button = QtWidgets.QPushButton("Export", root)
+        export_button.setObjectName("figureComposerExportButton")
         export_button.setToolTip("Save the rendered Matplotlib figure to a file.")
         export_button.clicked.connect(self.export_figure)
 

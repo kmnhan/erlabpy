@@ -8,6 +8,8 @@ from erlab.io.plugins.da30 import DA30Loader
 
 
 class KRISSLoader(DA30Loader):
+    """Load data from the KRISS ARPES-MBE system."""
+
     name = "kriss"
     description = "KRISS ARPES-MBE"
     aliases = ("KRISS",)

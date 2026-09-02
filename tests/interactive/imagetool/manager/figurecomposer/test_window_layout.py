@@ -1342,6 +1342,132 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
+@pytest.mark.parametrize(
+    ("reference", "window_size", "screen", "expected"),
+    [
+        (
+            QtCore.QRect(100, 100, 300, 300),
+            QtCore.QSize(200, 150),
+            QtCore.QRect(0, 0, 1000, 800),
+            QtCore.QPoint(408, 100),
+        ),
+        (
+            QtCore.QRect(700, 100, 250, 300),
+            QtCore.QSize(300, 150),
+            QtCore.QRect(0, 0, 1000, 800),
+            QtCore.QPoint(392, 100),
+        ),
+        (
+            QtCore.QRect(100, 100, 600, 200),
+            QtCore.QSize(500, 200),
+            QtCore.QRect(0, 0, 800, 800),
+            QtCore.QPoint(100, 308),
+        ),
+        (
+            QtCore.QRect(100, 500, 600, 200),
+            QtCore.QSize(500, 200),
+            QtCore.QRect(0, 0, 800, 800),
+            QtCore.QPoint(100, 292),
+        ),
+        (
+            QtCore.QRect(0, 0, 800, 600),
+            QtCore.QSize(300, 200),
+            QtCore.QRect(0, 0, 800, 600),
+            QtCore.QPoint(500, 0),
+        ),
+        (
+            QtCore.QRect(0, 0, 800, 600),
+            QtCore.QSize(900, 700),
+            QtCore.QRect(0, 0, 800, 600),
+            QtCore.QPoint(0, 0),
+        ),
+    ],
+)
+def test_non_overlapping_figure_window_position(
+    reference: QtCore.QRect,
+    window_size: QtCore.QSize,
+    screen: QtCore.QRect,
+    expected: QtCore.QPoint,
+) -> None:
+    assert (
+        figure_window_ui._non_overlapping_window_position(
+            reference,
+            window_size,
+            screen,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference", "window_size", "screen"),
+    [
+        (QtCore.QRect(), QtCore.QSize(200, 150), QtCore.QRect(0, 0, 800, 600)),
+        (
+            QtCore.QRect(0, 0, 300, 300),
+            QtCore.QSize(),
+            QtCore.QRect(0, 0, 800, 600),
+        ),
+        (
+            QtCore.QRect(0, 0, 300, 300),
+            QtCore.QSize(200, 150),
+            QtCore.QRect(),
+        ),
+    ],
+)
+def test_non_overlapping_figure_window_position_requires_geometry(
+    reference: QtCore.QRect,
+    window_size: QtCore.QSize,
+    screen: QtCore.QRect,
+) -> None:
+    assert (
+        figure_window_ui._non_overlapping_window_position(
+            reference,
+            window_size,
+            screen,
+        )
+        is None
+    )
+
+
+def test_figure_display_window_is_placed_beside_composer_once(qtbot) -> None:
+    class _FakeScreen:
+        def availableGeometry(self) -> QtCore.QRect:
+            return QtCore.QRect(0, 0, 1000, 800)
+
+    class _Owner(QtWidgets.QWidget):
+        def frameGeometry(self) -> QtCore.QRect:
+            return QtCore.QRect(100, 100, 300, 300)
+
+        def screen(self) -> _FakeScreen:
+            return _FakeScreen()
+
+    class _MovedDisplayWindow(figure_window_ui._FigureComposerDisplayWindow):
+        def __init__(self) -> None:
+            super().__init__(FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0))
+            self._test_frame = QtCore.QRect(0, 0, 200, 150)
+            self.moved_to: list[QtCore.QPoint] = []
+
+        def frameGeometry(self) -> QtCore.QRect:
+            return QtCore.QRect(self._test_frame)
+
+        def move(self, point: QtCore.QPoint) -> None:
+            self.moved_to.append(QtCore.QPoint(point))
+            self._test_frame.moveTopLeft(point)
+
+    owner = _Owner()
+    qtbot.addWidget(owner)
+    window = _MovedDisplayWindow()
+
+    window._place_beside(owner)
+    window._place_beside(owner)
+
+    assert window.moved_to == [QtCore.QPoint(408, 100)]
+    assert window._initial_placement_done
+    window.close_from_owner()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+
 def test_figure_composer_managed_display_window_configures_save_shortcut(
     qtbot, monkeypatch
 ) -> None:
@@ -1647,16 +1773,77 @@ def test_figure_composer_show_defers_figure_window(qtbot, monkeypatch) -> None:
     )
     qtbot.addWidget(tool)
     calls: list[bool] = []
+    focus_calls: list[str] = []
 
     def record_show_figure_window(*, activate: bool = True) -> None:
         calls.append(activate)
 
     monkeypatch.setattr(tool, "show_figure_window", record_show_figure_window)
+    monkeypatch.setattr(tool, "isActiveWindow", lambda: True)
+    monkeypatch.setattr(QtWidgets.QApplication, "activeWindow", lambda: tool)
+    monkeypatch.setattr(
+        QtGui.QGuiApplication,
+        "applicationState",
+        lambda: QtCore.Qt.ApplicationState.ApplicationActive,
+    )
+    monkeypatch.setattr(tool, "raise_", lambda: focus_calls.append("raise"))
+    monkeypatch.setattr(tool, "activateWindow", lambda: focus_calls.append("activate"))
 
     tool.show()
 
     assert calls == []
-    qtbot.waitUntil(lambda: calls == [False], timeout=1000)
+    qtbot.waitUntil(
+        lambda: calls == [False] and focus_calls == ["raise", "activate"],
+        timeout=1000,
+    )
+
+
+def test_deferred_figure_window_does_not_steal_focus_from_another_app(
+    qtbot, monkeypatch
+) -> None:
+    tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
+    )
+    qtbot.addWidget(tool)
+    monkeypatch.setattr(tool, "_request_show_figure_window", lambda **_kwargs: None)
+    tool.show()
+    other_window = QtWidgets.QWidget()
+    qtbot.addWidget(other_window)
+    show_calls: list[bool] = []
+    focus_calls: list[str] = []
+    active_window: list[QtWidgets.QWidget | None] = [None]
+    application_state = [QtCore.Qt.ApplicationState.ApplicationInactive]
+    monkeypatch.setattr(
+        tool,
+        "show_figure_window",
+        lambda *, activate=True: show_calls.append(activate),
+    )
+    monkeypatch.setattr(tool, "isActiveWindow", lambda: True)
+    monkeypatch.setattr(
+        QtWidgets.QApplication, "activeWindow", lambda: active_window[0]
+    )
+    monkeypatch.setattr(
+        QtGui.QGuiApplication,
+        "applicationState",
+        lambda: application_state[0],
+    )
+    monkeypatch.setattr(tool, "raise_", lambda: focus_calls.append("raise"))
+    monkeypatch.setattr(tool, "activateWindow", lambda: focus_calls.append("activate"))
+
+    tool._run_requested_show_figure_window(
+        tool._show_figure_window_generation,
+        activate=False,
+    )
+
+    application_state[0] = QtCore.Qt.ApplicationState.ApplicationActive
+    active_window[0] = other_window
+    tool._run_requested_show_figure_window(
+        tool._show_figure_window_generation,
+        activate=False,
+    )
+
+    assert show_calls == [False, False]
+    assert focus_calls == []
 
 
 def test_figure_composer_hide_cancels_deferred_figure_window(

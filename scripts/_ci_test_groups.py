@@ -113,6 +113,8 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "cov-qt-manager-mainwindow": (
         "tests/interactive/imagetool/manager/test_mainwindow.py",
         "tests/interactive/imagetool/manager/test_modelview.py",
+        "tests/interactive/imagetool/manager/test_tutorial_controller.py",
+        "tests/interactive/imagetool/manager/test_tutorial_framework.py",
         "tests/interactive/imagetool/manager/test_wrapper.py",
         "tests/interactive/imagetool/manager/test_extensions.py",
     ),

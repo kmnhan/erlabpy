@@ -11,6 +11,8 @@ from erlab.io.dataloader import LoaderBase
 
 
 class System1Loader(LoaderBase):
+    """Load spin- and angle-resolved photoemission data from SNU System 1."""
+
     name = "snu1"
     description = "System 1 at Seoul National University"
     extensions: typing.ClassVar[set[str]] = {".itx"}

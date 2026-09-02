@@ -110,6 +110,48 @@ class Minuit(iminuit.Minuit):
         params=None,
         **kwargs,
     ) -> Minuit | tuple[LeastSq, Minuit]:
+        """Create an iminuit fit from an lmfit model.
+
+        Parameters
+        ----------
+        model
+            Lmfit model to evaluate. Parameter values, fixed states, and finite bounds
+            are transferred to the returned minimizer.
+        data
+            Dependent data values.
+        ivars
+            Independent-variable values in the order given by
+            ``model.independent_vars``. A single array is accepted when the model has
+            one independent variable.
+        yerr
+            Standard uncertainty of `data`, as a scalar or an array broadcastable to
+            it. If omitted, every uncertainty is one in the units of `data`.
+        return_cost
+            If `True`, return the constructed :class:`LeastSq` cost function together
+            with the minimizer.
+        params
+            Lmfit parameters to transfer. If omitted, call ``model.guess`` or, for a
+            model without a guess method, ``model.make_params``.
+        **kwargs
+            Initial parameter values or dictionaries of arguments for
+            :meth:`lmfit.Parameter.set`. These overrides are applied only when `params`
+            is omitted.
+
+        Returns
+        -------
+        minimizer : Minuit
+            Configured iminuit minimizer.
+        cost, minimizer : tuple of LeastSq and Minuit
+            Cost function and minimizer when `return_cost` is `True`.
+
+        Raises
+        ------
+        ValueError
+            If the number of independent-variable arrays does not match the model, or
+            if a parameter that varies is constrained by an lmfit expression. Fixed
+            expression-constrained parameters are omitted from the iminuit parameter
+            list.
+        """
         if len(model.independent_vars) == 1 and isinstance(
             ivars, np.ndarray | xarray.DataArray
         ):

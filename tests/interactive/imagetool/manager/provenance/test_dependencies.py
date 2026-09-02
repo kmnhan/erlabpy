@@ -4188,8 +4188,8 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         input_item = manager.metadata_derivation_list.conceptual_item(1)
         assert start_item is not None
         assert input_item is not None
-        start_row = start_item.data(manager_widgets._METADATA_DERIVATION_ROW_ROLE)
-        input_row = input_item.data(manager_widgets._METADATA_DERIVATION_ROW_ROLE)
+        start_row = start_item.data(0, manager_widgets._METADATA_DERIVATION_ROW_ROLE)
+        input_row = input_item.data(0, manager_widgets._METADATA_DERIVATION_ROW_ROLE)
         assert isinstance(start_row, _ProvenanceDisplayRow)
         assert isinstance(input_row, _ProvenanceDisplayRow)
         assert start_row.replay_ref is not None

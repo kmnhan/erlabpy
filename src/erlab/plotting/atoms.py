@@ -247,6 +247,13 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
 
 
 class CrystalProperty:
+    """Crystal positions and bond geometry for three-dimensional plotting.
+
+    Positions, lattice vectors, offsets, bounds, atomic radii, and bond lengths must
+    use one consistent length unit. The class does not assign or convert physical
+    units.
+    """
+
     def __init__(
         self,
         atom_pos: Mapping[
@@ -339,6 +346,26 @@ class CrystalProperty:
         *args,
         **kwargs,
     ):
+        """Create plotting properties from fractional atomic coordinates.
+
+        Parameters
+        ----------
+        frac_pos
+            Mapping from each species name to its fractional coordinates
+            ``(u, v, w)``.
+        avec
+            Direct-lattice vectors with shape ``(3, 3)``. Vectors are stored by row.
+            Their unit becomes the unit of the Cartesian atom positions.
+        *args, **kwargs
+            Additional arguments passed to the :class:`CrystalProperty` constructor.
+
+        Returns
+        -------
+        CrystalProperty
+            New instance whose Cartesian positions are
+            ``u * avec[0] + v * avec[1] + w * avec[2]``. The input mapping is not
+            modified.
+        """
         atom_pos: dict[str, list[npt.NDArray[np.float64]]] = {}
         for k, v in frac_pos.items():
             atom_pos[k] = [
@@ -351,6 +378,10 @@ class CrystalProperty:
 
     @property
     def bounds(self) -> list[tuple[float, float]]:
+        """Bounds for the x, y, and z coordinates, in that order.
+
+        An unspecified direction has bounds ``(-inf, inf)``.
+        """
         bound_list = []
         for dim in ("x", "y", "z"):
             try:
@@ -361,10 +392,17 @@ class CrystalProperty:
 
     @property
     def atoms(self) -> list[str]:
+        """Species names in the insertion order of the input position mapping."""
         return list(self.atom_pos_given.keys())
 
     @functools.cached_property
     def atom_pos(self) -> dict[str, npt.NDArray[np.float64]]:
+        """Repeated and filtered Cartesian positions for each species.
+
+        The calculation applies `repeat`, `offset`, `bounds`, and `mask`, and removes
+        duplicate positions after rounding to five decimal places. The result is cached
+        after its first use.
+        """
         atom_pos: dict[str, npt.NDArray[np.float64]] = {
             k: np.zeros((1, 3)) for k in self.atom_pos_given
         }
@@ -430,6 +468,7 @@ class CrystalProperty:
         return np.concatenate(list(self.atom_pos.values()))
 
     def clear_bonds(self) -> None:
+        """Remove all bond segments and their stored plot styles in place."""
         self.segments.clear()
         self._bond_lw.clear()
         self._bond_c.clear()
@@ -443,6 +482,27 @@ class CrystalProperty:
         linewidth: float = 0.25,
         color: str | tuple[float, ...] | None = None,
     ) -> None:
+        """Add bonds between two species.
+
+        Parameters
+        ----------
+        atom1, atom2
+            Species names in `atom_pos`.
+        min_length, max_length
+            Inclusive center-to-center distance range. Values use the same unit as the
+            atom positions.
+        linewidth
+            Stored bond width. With ``scale_bonds=True`` in :meth:`plot`, this value is
+            interpreted in position-coordinate units. Otherwise, Matplotlib interprets
+            it as a line width in points.
+        color
+            Matplotlib color for the new bonds. If omitted, use ``"#b2b2b2"``.
+
+        Notes
+        -----
+        This method appends to existing bonds. Each visible segment is shortened at
+        both ends by the corresponding atomic radius multiplied by `r_factor`.
+        """
         new_seg = self._generate_segments(atom1, atom2, min_length, max_length)
         self.segments += new_seg
         self._bond_lw += [linewidth] * len(new_seg)

@@ -265,6 +265,13 @@ def load_krax(
 
 
 class MBSLoader(LoaderBase):
+    """Load data acquired with MB Scientific analyzers.
+
+    The loader reads angle-resolved or angle-integrated data and constant-energy
+    deflector maps from ``.txt`` files. It also reads deflector maps from ``.krx``
+    files.
+    """
+
     name = "mbs"
     description = "MB Scientific .txt and .krx files"
 

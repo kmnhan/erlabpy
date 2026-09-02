@@ -8,6 +8,8 @@ from erlab.io.plugins.da30 import DA30Loader
 
 
 class ESMLoader(DA30Loader):
+    """Load data from the ESM beamline at NSLS-II."""
+
     name = "esm"
     description = "NSLS-II Beamline ID21 ESM"
 

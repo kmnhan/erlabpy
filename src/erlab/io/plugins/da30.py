@@ -36,6 +36,13 @@ class CasePreservingConfigParser(configparser.ConfigParser):
 
 
 class DA30Loader(LoaderBase):
+    """Load Scienta Omicron DA30 data acquired through SES.
+
+    This loader reads Igor Binary Wave (``.ibw``), packed Igor (``.pxt``), and DA30
+    ZIP or unpacked-directory data. A file with multiple regions returns an
+    :class:`xarray.DataTree`.
+    """
+
     name = "da30"
     description = "Scienta Omicron DA30 with SES"
 

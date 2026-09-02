@@ -138,6 +138,8 @@ class _StartupArgs:
     files: list[pathlib.Path]
     open_workspace_dialog: bool = False
     force_new_manager: bool = False
+    tutorial: bool = False
+    tutorial_debug: bool = False
 
 
 def watch_data(varname: str, uid: str, data, show: bool = False) -> None:
@@ -218,12 +220,23 @@ def _parse_startup_args(args: Iterable[str]) -> _StartupArgs:
     file_args: list[pathlib.Path] = []
     open_workspace_dialog = False
     force_new_manager = False
+    tutorial = False
+    tutorial_debug = False
 
     for arg in args:
         if arg == _desktop.OPEN_WORKSPACE_DIALOG_ARG:
             open_workspace_dialog = True
             continue
         if arg == _desktop.NEW_MANAGER_WINDOW_ARG:
+            force_new_manager = True
+            continue
+        if arg == "--tutorial":
+            tutorial = True
+            force_new_manager = True
+            continue
+        if arg == "--tutorial-debug":
+            tutorial = True
+            tutorial_debug = True
             force_new_manager = True
             continue
         if arg.startswith("-"):
@@ -236,6 +249,8 @@ def _parse_startup_args(args: Iterable[str]) -> _StartupArgs:
         files=file_args,
         open_workspace_dialog=open_workspace_dialog,
         force_new_manager=force_new_manager,
+        tutorial=tutorial,
+        tutorial_debug=tutorial_debug,
     )
 
 
@@ -433,6 +448,17 @@ def main(execute: bool = True) -> None:
     _manager_instance = ImageToolManager()
     _manager_instance.show()
     _manager_instance.activateWindow()
+
+    if startup_args.tutorial:
+        tutorial_manager = _manager_instance
+        tutorial_manager.tutorial_action.setEnabled(False)
+
+        def launch_tutorial() -> None:
+            from erlab.interactive.imagetool.manager._tutorial import start_tutorial
+
+            start_tutorial(tutorial_manager, debug=startup_args.tutorial_debug)
+
+        QtCore.QTimer.singleShot(0, launch_tutorial)
 
     if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
         _desktop.install_macos_dock_menu(_manager_instance)

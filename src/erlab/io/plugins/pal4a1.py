@@ -36,6 +36,8 @@ def _parse_pal_scalar(value: typing.Any) -> typing.Any:
 
 
 class PAL4A1Loader(LoaderBase):
+    """Load ARPES data from PAL Beamline 4A1."""
+
     name = "pal4a1"
     description = "PAL Beamline 4A1"
     extensions: typing.ClassVar[set[str]] = {".itx"}

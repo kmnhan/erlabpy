@@ -180,7 +180,8 @@ class KspaceInputCoordinatesDialog(QtWidgets.QDialog):
     """Small editor dialog for momentum-conversion input coordinates."""
 
     _ANGLE_CONVENTION_URL = (
-        "https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html#nomenclature"
+        "https://erlabpy.readthedocs.io/en/stable/"
+        "reference/data-conventions.html#nomenclature"
     )
 
     def __init__(
@@ -785,6 +786,7 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         container_layout.setContentsMargins(0, 0, 0, 0)
 
         self.edit_mode_tabs = QtWidgets.QTabWidget()
+        self.edit_mode_tabs.setObjectName("coordinateEditorEditModeTabs")
         self.edit_mode_tabs.currentChanged.connect(self._edit_mode_changed)
         container_layout.addWidget(self.edit_mode_tabs)
 
@@ -809,14 +811,17 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         self.scale_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False, exact_float=True, trim="0", value=1.0
         )
+        self.scale_spin.setObjectName("coordinateEditorScaleSpin")
         self.scale_spin.valueChanged.connect(self.update_affine_preview)
         affine_layout.addRow("Scale", self.scale_spin)
 
         self.offset_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False, exact_float=True, trim="0"
         )
+        self.offset_spin.setObjectName("coordinateEditorOffsetSpin")
         self.offset_spin.valueChanged.connect(self.update_affine_preview)
         affine_layout.addRow("Offset", self.offset_spin)
+        self.offset_label = affine_layout.labelForField(self.offset_spin)
 
         self.scalar_offset_widget = QtWidgets.QWidget()
         scalar_offset_layout = QtWidgets.QHBoxLayout(self.scalar_offset_widget)

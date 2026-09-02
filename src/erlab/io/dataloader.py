@@ -6,8 +6,7 @@ Data loaders are plugins used to load data from various file formats.
 Each data loader is a subclass of :class:`LoaderBase` that must implement several
 methods and attributes.
 
-A detailed guide on how to implement a data loader can be found in the :ref:`User Guide
-<implementing-plugins>`.
+For implementation instructions, see :ref:`implementing-plugins`.
 """
 
 from __future__ import annotations
@@ -207,7 +206,39 @@ def _combine_by_coords_general(
 
 
 class LoaderBase(metaclass=_Loader):
-    """Base class for loader plugins."""
+    """Base class for data loader plugins.
+
+    A subclass must define a unique `name` and implement :meth:`load_single`. Subclasses
+    are registered when the class is created unless `name` starts with an underscore.
+    Implement :meth:`identify` to support integer scan identifiers or scans stored in
+    multiple files. Override :meth:`infer_index` when a file name does not end with its
+    scan number. Do not override :meth:`load`.
+
+    :meth:`load` resolves the requested files and calls :meth:`load_single` for each
+    file. For a multi-file scan with ``combine=True``, it calls
+    :meth:`pre_combine_multiple` and combines homogeneous xarray objects with the
+    coordinates returned by :meth:`identify`. It then applies
+    :meth:`post_process_general`, optional spreadsheet metadata, and data validation.
+    With ``combine=False``, it returns the post-processed files as a list without
+    calling :meth:`pre_combine_multiple`.
+
+    :meth:`load_single` must return the smallest suitable :class:`xarray.DataArray`,
+    :class:`xarray.Dataset`, or :class:`xarray.DataTree`. Files in one multi-file scan
+    must return the same type and compatible structures. :meth:`identify` returns a file
+    list and a mapping whose coordinate sequences align one-to-one with that list.
+    Override :meth:`post_process` for DataArray-specific work and call ``super()`` so
+    the configured name and metadata mappings are applied.
+
+    For a complete implementation guide and examples, see :ref:`implementing-plugins`.
+
+    Notes
+    -----
+    Class attributes declare supported extensions, name and metadata mappings,
+    combination behavior, and validation policy. Use `loader_extensions` or
+    :func:`erlab.io.extend_loader` for temporary per-load configuration. Loader and
+    data-directory contexts apply to :func:`erlab.io.load`; direct calls to :meth:`load`
+    require their own `data_dir` when an integer identifies the scan.
+    """
 
     name: str
     """
@@ -606,7 +637,11 @@ class LoaderBase(metaclass=_Loader):
             When called as :func:`erlab.io.load`, this argument defaults to the value
             set by :func:`erlab.io.set_data_dir` or :func:`erlab.io.loader_context`.
         chunks
-            Chunking strategy for loading data with ``dask`` for supported loaders.
+            Chunking strategy for Dask-backed lazy loading. Supported values and chunk
+            interpretation depend on the selected loader and its underlying xarray
+            reader. Common values include an integer, a dimension-to-size mapping,
+            ``"auto"``, or a tuple of chunk sizes. A loader that does not accept
+            chunked loading emits a warning and ignores this argument.
         single
             This argument is only used when :attr:`always_single
             <erlab.io.dataloader.LoaderBase.always_single>` is `False`, and `identifier`
@@ -626,8 +661,10 @@ class LoaderBase(metaclass=_Loader):
 
             This argument is only used when `single` is `False`.
         parallel
-            Whether to load multiple files in parallel using `dask`. For possible
-            values, see :meth:`load_multiple_parallel
+            Whether to load separate files concurrently using `dask`. This option does
+            not by itself make each returned array Dask-backed; use `chunks` with a
+            loader that supports lazy loading for that behavior. For possible values,
+            see :meth:`load_multiple_parallel
             <erlab.io.dataloader.LoaderBase.load_multiple_parallel>`.
 
             This argument is only used when `single` is `False`.
@@ -679,8 +716,11 @@ class LoaderBase(metaclass=_Loader):
 
         Returns
         -------
-        `xarray.DataArray` or `xarray.Dataset` or `xarray.DataTree`
-            The loaded data.
+        `xarray.DataArray`, `xarray.Dataset`, `xarray.DataTree`, or list
+            The loaded data. When a scan resolves to multiple files and `combine` is
+            `False`, a list of loaded objects is returned. Otherwise, the loader returns
+            one object. When the selected loader supports `chunks`, that argument can
+            make the returned data Dask-backed.
 
         Notes
         -----

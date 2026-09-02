@@ -15,6 +15,8 @@ import pybtex.style.formatting
 import pybtex.style.formatting.unsrt
 import pybtex.style.template
 import sphinx_autosummary_accessors
+from docutils import nodes
+from sphinx_markdown_builder.translator import MarkdownTranslator
 
 # Build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -54,14 +56,50 @@ extensions = [
     "matplotlib.sphinxext.figmpl_directive",
     "matplotlib.sphinxext.roles",
     "sphinxcontrib.bibtex",
+    "sphinxcontrib.mermaid",
     "sphinx_qt_documentation",
     "myst_nb",
     "notfound.extension",
     "sphinxext.rediraffe",
     "sphinx_llm.txt",
 ]
-llms_txt_build_parallel = False
-myst_enable_extensions = ["colon_fence", "dollarmath"]
+llms_txt_build_parallel = not bool(os.getenv("READTHEDOCS"))
+myst_enable_extensions = ["colon_fence", "dollarmath", "substitution"]
+
+mermaid_light_theme = "neutral"
+mermaid_dark_theme = "dark"
+mermaid_height = "auto"
+mermaid_fullscreen = False
+mermaid_init_config = {
+    "startOnLoad": False,
+    "fontFamily": "Arial, Helvetica, sans-serif",
+    "htmlLabels": True,
+    "flowchart": {
+        "curve": "basis",
+        "nodeSpacing": 28,
+        "rankSpacing": 30,
+        "padding": 8,
+    },
+}
+
+
+def _available_loader_table() -> str:
+    import erlab
+
+    return "\n".join(
+        [
+            "| Loader | Description | Loader class |",
+            "| --- | --- | --- |",
+            *(
+                f"| `{name}` | {loader.description.replace('|', '&#124;')} | "
+                f"{{class}}`{type(loader).__module__}.{type(loader).__qualname__}` |"
+                for name, loader in erlab.io.loaders.items()
+            ),
+        ]
+    )
+
+
+myst_substitutions = {"available_loader_table": _available_loader_table()}
 suppress_warnings = [
     "mystnb.unknown_mime_type",  # holoviews rendering
 ]
@@ -84,7 +122,7 @@ if os.getenv("READTHEDOCS"):
     html_baseurl = "https://erlabpy.readthedocs.io/en/stable/"  # Canonical URL
 
 templates_path = ["_templates", sphinx_autosummary_accessors.templates_path]
-exclude_patterns = []
+exclude_patterns = ["_includes/**"]
 
 default_role = "obj"
 
@@ -167,6 +205,33 @@ def fix_matplotlib_set_inheritance(app, config) -> None:
     erlab.plotting.plot3d.FancyArrow3D.set.__doc__ = ""
 
 
+class ERLabMarkdownTranslator(MarkdownTranslator):
+    """Preserve Sphinx signature and docstring nodes in the LLM export."""
+
+    def visit_abbreviation(self, node) -> None:
+        """Keep keyword-only markers in Python signatures."""
+
+    def depart_abbreviation(self, node) -> None:
+        """Finish an abbreviation without adding Markdown markup."""
+
+    def visit_admonition(self, node) -> None:
+        """Write generic admonitions such as NumPy Notes sections."""
+        title = (
+            node[0].astext() if node and isinstance(node[0], nodes.title) else "Note"
+        )
+        self._push_box(title.upper())
+
+    def depart_admonition(self, node) -> None:
+        """Finish a generic admonition after its children are written."""
+        self._pop_context()
+
+    def visit_title(self, node) -> None:
+        """Avoid writing an admonition title twice."""
+        if isinstance(node.parent, nodes.admonition):
+            raise nodes.SkipNode
+        super().visit_title(node)
+
+
 def write_trimmed_llms_export(app, exception) -> None:
     """Write llms-full-no-changelog.txt next to the sphinx-llm export."""
     if exception is not None:
@@ -201,6 +266,7 @@ def write_trimmed_llms_export(app, exception) -> None:
 
 
 def setup(app) -> None:
+    app.set_translator("markdown", ERLabMarkdownTranslator, override=True)
     app.connect("config-inited", make_accessor_docs)
     app.connect("config-inited", fix_matplotlib_set_inheritance)
     app.connect("build-finished", write_trimmed_llms_export)
@@ -223,7 +289,9 @@ autodoc_default_options = {
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented"
 autodoc_typehints_format = "short"
-autodoc_preserve_defaults = True
+# Plot directives share this process. Preserved defaults replace live numeric
+# defaults with Sphinx wrappers, which breaks dynamic model construction.
+autodoc_preserve_defaults = False
 autodoc_inherit_docstrings = False
 
 # -- sphinx_autodoc_typehints settings ---------------------------------------
@@ -306,7 +374,7 @@ intersphinx_mapping = {
 
 # -- Plot configuration ------------------------------------------------------
 
-plot_formats = ["pdf"]
+plot_formats = ["svg", "pdf"]
 plot_basedir = "pyplots"
 plot_html_show_formats = False
 
@@ -644,5 +712,77 @@ latex_elements = {
 # -- Rediraffe settings ------------------------------------------------------
 # https://sphinxext-rediraffe.readthedocs.io/en/latest/
 rediraffe_redirects = {
-    "user-guide/imagetool.md": "user-guide/interactive/imagetool.md",
+    "contributing/build-manager.md": "how-to/gui/manager-installation.md",
+    "reference/installation.md": "reference/dependencies-and-compatibility.md",
+    "how-to/python/plotting.md": "how-to/plotting/index.md",
+    "how-to/python/plotting/index.md": "how-to/plotting/index.md",
+    "how-to/python/plotting/annotations.md": "how-to/plotting/annotations.md",
+    "how-to/python/plotting/axis-units.md": "how-to/plotting/axis-units.md",
+    "how-to/python/plotting/brillouin-zone-overlays.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/python/plotting/brillouin-zones.md": ("how-to/plotting/brillouin-zones.md"),
+    "how-to/python/plotting/colorbars.md": "how-to/plotting/colorbars.md",
+    "how-to/python/plotting/core-levels.md": "how-to/plotting/core-levels.md",
+    "how-to/python/plotting/equation-svg.md": "how-to/python/equation-svg.md",
+    "how-to/python/plotting/figure-styles.md": "how-to/plotting/figure-styles.md",
+    "how-to/python/plotting/maps-and-cuts.md": "how-to/plotting/maps-and-cuts.md",
+    "how-to/python/plotting/out-of-plane-brillouin-zones.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/python/plotting/titles-and-labels.md": (
+        "how-to/plotting/titles-and-labels.md"
+    ),
+    "how-to/python/plotting/two-dimensional-colormaps.md": (
+        "how-to/plotting/two-dimensional-colormaps.md"
+    ),
+    "how-to/plotting/brillouin-zone-overlays.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "how-to/plotting/out-of-plane-brillouin-zones.md": (
+        "how-to/plotting/brillouin-zones.md"
+    ),
+    "reference/data-conventions.md": "explanation/data-conventions.md",
+    "explanation/data-model.md": "explanation/data-conventions.md",
+    "explanation/coordinate-selection-and-interpolation.md": (
+        "tutorials/python/index.ipynb"
+    ),
+    "explanation/visualizing-multidimensional-arpes-data.md": (
+        "tutorials/python/index.ipynb"
+    ),
+    "explanation/effects-of-transformations-and-filtering.md": (
+        "how-to/python/transformations-and-filtering.md"
+    ),
+    "explanation/gui-workflow.md": "explanation/python-and-gui-workflows.md",
+    "user-guide/index.md": "getting-started.md",
+    "user-guide/io.ipynb": "how-to/python/loading-and-saving.md",
+    "user-guide/indexing.ipynb": "how-to/python/inspection-and-selection.md",
+    "user-guide/plotting.ipynb": "how-to/plotting/index.md",
+    "user-guide/kconv.ipynb": "how-to/python/momentum-conversion.md",
+    "user-guide/curve-fitting.ipynb": "how-to/python/curve-fitting.md",
+    "user-guide/transform.ipynb": "how-to/python/transformations-and-filtering.md",
+    "user-guide/filtering.ipynb": "how-to/python/transformations-and-filtering.md",
+    "tutorials/python/first-notebook.ipynb": "tutorials/python/index.ipynb",
+    "tutorials/python/io.ipynb": "how-to/python/loading-and-saving.md",
+    "tutorials/python/indexing.ipynb": "how-to/python/inspection-and-selection.md",
+    "tutorials/python/plotting.ipynb": "how-to/plotting/index.md",
+    "tutorials/python/kconv.ipynb": "how-to/python/momentum-conversion.md",
+    "tutorials/python/curve-fitting.ipynb": "how-to/python/curve-fitting.md",
+    "tutorials/python/transform.ipynb": (
+        "how-to/python/transformations-and-filtering.md"
+    ),
+    "tutorials/python/filtering.ipynb": (
+        "how-to/python/transformations-and-filtering.md"
+    ),
+    "tutorials/gui/manager-quick-start.md": "tutorials/index.md",
+    "user-guide/workflow-bridge.md": "explanation/python-and-gui-workflows.md",
+    "user-guide/interactive/index.md": "explanation/python-and-gui-workflows.md",
+    "user-guide/interactive/imagetool.md": "reference/gui/imagetool.md",
+    "user-guide/interactive/manager.md": "reference/gui/manager.md",
+    "user-guide/interactive/extensions.md": "reference/gui/extensions.md",
+    "user-guide/interactive/figure-composer.md": ("reference/gui/figure-composer.md"),
+    "user-guide/interactive/misc-tools.md": "reference/gui/tools/index.md",
+    "user-guide/interactive/options.md": "reference/gui/settings.md",
+    "user-guide/interactive/tool-authoring.md": ("contributing/interactive-tools.md"),
+    "user-guide/imagetool.md": "reference/gui/imagetool.md",
 }

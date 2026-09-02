@@ -17,6 +17,11 @@ def _get_data(group):
 
 
 class LOREALoader(LoaderBase):
+    """Load analyzer data from the LOREA beamline at ALBA.
+
+    The loader reads NeXus (``.nxs``) data and KRX (``.krx``) files.
+    """
+
     name = "lorea"
     description = "ALBA Beamline 20 LOREA"
     extensions: typing.ClassVar[set[str]] = {".nxs", ".krx"}

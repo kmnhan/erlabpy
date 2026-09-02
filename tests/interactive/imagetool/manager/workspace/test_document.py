@@ -3,7 +3,9 @@ import datetime
 import json
 import logging
 import pathlib
+import sys
 import tempfile
+import types
 import typing
 import warnings
 from collections.abc import Callable
@@ -1694,6 +1696,8 @@ def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
             manager_desktop.OPEN_WORKSPACE_DIALOG_ARG,
             str(workspace),
             manager_desktop.NEW_MANAGER_WINDOW_ARG,
+            "--tutorial",
+            "--tutorial-debug",
             "--ignored",
             str(tmp_path / "missing.itws"),
             str(data_file),
@@ -1702,7 +1706,72 @@ def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
 
     assert startup_args.open_workspace_dialog
     assert startup_args.force_new_manager
+    assert startup_args.tutorial
+    assert startup_args.tutorial_debug
     assert startup_args.files == [workspace, data_file]
+
+    normal_tutorial_args = manager_module._parse_startup_args(["--tutorial"])
+    assert normal_tutorial_args.tutorial
+    assert not normal_tutorial_args.tutorial_debug
+
+
+def test_manager_tutorial_start_is_deferred(monkeypatch, qapp) -> None:
+    callbacks: list[Callable[[], None]] = []
+    started: list[object] = []
+
+    class _FakeAction:
+        def __init__(self) -> None:
+            self.enabled = True
+
+        def setEnabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.tutorial_action = _FakeAction()
+
+        def show(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
+
+    fake_tutorial = types.ModuleType("erlab.interactive.imagetool.manager._tutorial")
+    fake_tutorial.start_tutorial = lambda manager, *, debug: started.append(
+        (manager, debug)
+    )
+    monkeypatch.setitem(sys.modules, fake_tutorial.__name__, fake_tutorial)
+    monkeypatch.setattr(
+        manager_module.sys,
+        "argv",
+        ["erlab-imagetool-manager", "--tutorial-debug"],
+    )
+    monkeypatch.setattr(manager_module, "ImageToolManager", _FakeManager)
+    monkeypatch.setattr(
+        manager_module.QtCore.QTimer,
+        "singleShot",
+        lambda _delay, callback: callbacks.append(callback),
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "_try_forward_startup_files",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("tutorial startup must not forward files")
+        ),
+    )
+
+    try:
+        manager_module.main(execute=False)
+        manager = manager_module._manager_instance
+        assert isinstance(manager, _FakeManager)
+        assert not manager.tutorial_action.enabled
+        assert started == []
+        assert len(callbacks) == 1
+
+        callbacks[0]()
+        assert started == [(manager, True)]
+    finally:
+        manager_module._manager_instance = None
 
 
 def test_manager_startup_ignores_argv_files_with_existing_qapplication(

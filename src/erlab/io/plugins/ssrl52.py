@@ -35,6 +35,8 @@ def _find_group_for_key(dt: xr.DataTree, name: str) -> xr.DataTree | None:
 
 
 class SSRL52Loader(LoaderBase):
+    """Load ARPES data from SSRL Beamline 5-2."""
+
     name = "ssrl52"
     description = "SSRL Beamline 5-2"
     extensions: typing.ClassVar[set[str]] = {".h5"}

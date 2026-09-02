@@ -1,0 +1,101 @@
+# Curve fitting
+
+Use these guides to fit curves and inspect saved fits in the GUI. ERLabPy uses
+[lmfit](https://lmfit.github.io/lmfit-py/) for models, parameters, and optimization.
+Use the lmfit documentation for general curve-fitting concepts.
+
+For measured-reference fitting and Fermi edge correction with goldtool, see
+{doc}`fermi-edge-correction`.
+
+(how-to-gui-fit-data)=
+
+## Fitting one curve
+
+1. Open the curve in ftool. See {ref}`guide-ftool` for the available entry points.
+2. Select the model and model options in {guilabel}`Setup`.
+3. Set the fit window with {guilabel}`X range` or the dashed bounds in the plot.
+4. Open {guilabel}`Fit` and choose {guilabel}`Guess` when the model provides suitable
+   initial estimates.
+5. Inspect and adjust parameter values, bounds, and expressions.
+6. Choose {guilabel}`Fit`.
+7. Inspect the data, best fit, components, residual behavior, parameter uncertainties,
+   and fit statistics.
+
+If the fit reaches {guilabel}`Max nfev`, increase the limit only after checking the
+model and initial parameters. Use {guilabel}`Fit ×20` when repeated optimization from
+the previous result is appropriate for the model. Do not treat convergence alone as a
+physically valid fit.
+
+Use {guilabel}`Copy code` to reproduce the fit in Python. Use {guilabel}`Save fit` to
+store the result with {func}`xarray_lmfit.save_fit`.
+
+Use {ref}`how-to-gui-fit-stack-with-ftool` for a stack of curves and
+{ref}`how-to-gui-reopen-saved-fit` to continue work from a saved result.
+
+(how-to-gui-weighted-fit)=
+
+## Fitting with standard uncertainties
+
+1. Open the measured values and their absolute standard uncertainties as two ImageTool
+   rows in Manager.
+2. Select both rows.
+3. Right-click either selected row and choose {guilabel}`Open in ftool…`.
+4. Confirm the {guilabel}`Data` and {guilabel}`Standard uncertainty` assignments. Use
+   {guilabel}`Swap` if they are reversed.
+5. Select {guilabel}`OK`.
+6. Continue with the fitting procedure in {ref}`how-to-gui-fit-data`.
+
+The uncertainty coordinates must align with the data coordinates. Its dimensions must
+be a subset of the data dimensions so that xarray can broadcast it to the data shape.
+Uncertainty values must be finite and positive where the data is finite.
+
+(how-to-gui-fit-stack-with-ftool)=
+
+## Fitting a stack of curves
+
+1. Open the two-dimensional data in ftool.
+2. Confirm that the fitted coordinate is horizontal. Choose {guilabel}`Transpose` if
+   the image has the wrong orientation.
+3. Set the curve fit window with {guilabel}`X range`.
+4. Set the sequence range with {guilabel}`Y range`.
+5. Select a representative curve with {guilabel}`Index` or the yellow cursor.
+6. Fit that curve and confirm that its model and parameters are suitable.
+7. Select a {guilabel}`Fill mode`:
+
+   - Use {guilabel}`Previous` to initialize from the last good fit.
+   - Use {guilabel}`Extrapolate` to project parameters from the previous two fits.
+   - Use {guilabel}`None` when each curve already has suitable initial values.
+
+8. Choose {guilabel}`Fit ⤒` or {guilabel}`Fit ⤓` for the required sequence direction.
+9. Inspect the parameter plot and fitted curve at each suspicious or failed index.
+10. Correct failed fits before choosing {guilabel}`Save fit` or {guilabel}`Copy code`.
+
+To fit selected parameter values with their standard errors, right-click the parameter
+plot and choose {guilabel}`Open parameter values in ftool`. This action omits points
+without a finite, positive standard error. If no valid points remain, `ftool` does not
+open.
+
+When ftool is managed, parameter maps opened in ImageTool appear below the ftool row.
+Use {guilabel}`Refit after update` only when compatible input changes should repeat the
+same fit sequence.
+
+(how-to-gui-reopen-saved-fit)=
+
+## Reopening a saved fit
+
+Load the saved fit dataset and pass it directly to ftool:
+
+```python
+import erlab.interactive as eri
+from xarray_lmfit import load_fit
+
+fit_result = load_fit("fit-result.h5")
+eri.ftool(fit_result)
+```
+
+Confirm that the saved model and fitted parameter values are present. For a
+two-dimensional fit, every saved curve must use the same model definition.
+
+The saved data is limited to the fit range stored in the result. Use a Manager workspace
+instead when the full source data, ftool state, fit result, and child ImageTools must be
+restored together.

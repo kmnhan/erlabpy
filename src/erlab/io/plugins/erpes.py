@@ -72,6 +72,13 @@ def get_cache_file(file_path: str | os.PathLike) -> pathlib.Path:
 
 
 class ERPESLoader(DA30Loader):
+    """Load data from the low-temperature ARPES system at the KAIST home laboratory.
+
+    The loader reads ``.pxt`` and ``.zip`` data. It can combine a multi-file
+    scan with motor coordinates from a companion CSV file. When the data directory is
+    writable, it caches slow ZIP loads as HDF5 files.
+    """
+
     name = "erpes"
     description = "KAIST home lab setup"
     extensions: typing.ClassVar[set[str]] = {".pxt", ".zip", ""}

@@ -17,6 +17,7 @@ from matplotlib.figure import Figure
 # isort: on
 
 import erlab.interactive.utils
+from erlab.interactive import _shortcut_sequences
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_draw_context,
@@ -88,6 +89,56 @@ def _false_toolbar_state() -> bool:
 
 def _false_mime_state(_mime: QtCore.QMimeData) -> bool:
     return False
+
+
+def _non_overlapping_window_position(
+    reference_frame: QtCore.QRect,
+    window_size: QtCore.QSize,
+    screen_geometry: QtCore.QRect,
+    *,
+    gap: int = 8,
+) -> QtCore.QPoint | None:
+    """Choose a same-screen position without overlap when space permits."""
+    screen = QtCore.QRect(screen_geometry)
+    if reference_frame.isEmpty() or window_size.isEmpty() or screen.isEmpty():
+        return None
+
+    width = window_size.width()
+    height = window_size.height()
+
+    def clamp(value: int, minimum: int, maximum: int) -> int:
+        return min(max(value, minimum), maximum)
+
+    if width <= screen.width() and height <= screen.height():
+        max_left = screen.right() - width + 1
+        max_top = screen.bottom() - height + 1
+        aligned_top = clamp(reference_frame.top(), screen.top(), max_top)
+        aligned_left = clamp(reference_frame.left(), screen.left(), max_left)
+        candidates = (
+            QtCore.QPoint(reference_frame.right() + gap + 1, aligned_top),
+            QtCore.QPoint(reference_frame.left() - gap - width, aligned_top),
+            QtCore.QPoint(aligned_left, reference_frame.bottom() + gap + 1),
+            QtCore.QPoint(aligned_left, reference_frame.top() - gap - height),
+        )
+        for position in candidates:
+            candidate = QtCore.QRect(position, window_size)
+            if screen.contains(candidate) and not reference_frame.intersects(candidate):
+                return position
+
+    if width > screen.width() or height > screen.height():
+        return screen.topLeft()
+    return QtCore.QPoint(
+        clamp(
+            reference_frame.right() + gap + 1,
+            screen.left(),
+            screen.right() - width + 1,
+        ),
+        clamp(
+            reference_frame.top(),
+            screen.top(),
+            screen.bottom() - height + 1,
+        ),
+    )
 
 
 def _axis_limit_pair(axis: object, getter_name: str) -> tuple[float, float] | None:
@@ -203,11 +254,11 @@ class _FigureComposerNavigationToolbar(NavigationToolbar):
                 action.setToolTip(tooltip)
         if action := self._actions.get("back"):
             action.setText("Undo")
-            action.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+            action.setShortcut(_shortcut_sequences.FIGURE_COMPOSER_UNDO)
             action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
         if action := self._actions.get("forward"):
             action.setText("Redo")
-            action.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+            action.setShortcut(_shortcut_sequences.FIGURE_COMPOSER_REDO)
             action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
         self.set_history_buttons()
 
@@ -417,6 +468,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         super().__init__(None)
         erlab.interactive.utils.patch_macos_matplotlib_qt_cursor()
         self._closing_from_owner = False
+        self._initial_placement_done = False
         self._suppress_resize_signal = False
         self._resize_signal_pending = False
         self._resize_signal_generation = 0
@@ -648,6 +700,32 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
                 target_geometry = screen_geometries[0]
         frame.moveCenter(target_geometry.center())
         self.move(frame.topLeft())
+
+    def _place_beside(self, owner: QtWidgets.QWidget) -> None:
+        if self._initial_placement_done:
+            return
+        owner_frame = owner.frameGeometry()
+        window_size = self.frameGeometry().size()
+        if owner_frame.isEmpty() or window_size.isEmpty():
+            return
+
+        target_screen = owner.screen()
+        if target_screen is None:
+            target_screen = QtGui.QGuiApplication.screenAt(owner_frame.center())
+        if target_screen is None:
+            target_screen = QtGui.QGuiApplication.primaryScreen()
+        if target_screen is None:
+            return
+
+        position = _non_overlapping_window_position(
+            owner_frame,
+            window_size,
+            target_screen.availableGeometry(),
+        )
+        if position is None:
+            return
+        self.move(position)
+        self._initial_placement_done = True
 
     def show_for_setup(
         self, setup: FigureSubplotsState, title: str, *, activate: bool

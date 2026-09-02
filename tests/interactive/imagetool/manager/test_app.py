@@ -25,6 +25,7 @@ import erlab
 import erlab.interactive.imagetool.manager as manager_package
 import erlab.interactive.imagetool.manager.__main__ as manager_main
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
+import erlab.interactive.imagetool.manager._keyboard_shortcuts as manager_shortcuts
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._updater_core as manager_updater_core
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
@@ -1134,7 +1135,7 @@ def test_manager_cloudpickle(
             "1.0.0",
             "1.1.0",
             "Open Documentation",
-            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html",
+            "https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html",
             "ImageTool Manager Updated",
             "ImageTool Manager has been successfully updated from version 1.0.0 to "
             "1.1.0.",
@@ -1851,6 +1852,32 @@ def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -
     ]
 
 
+def test_launch_new_manager_instance_appends_source_process_arguments(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(manager_widgets.sys, "platform", "linux")
+    monkeypatch.setattr(manager_widgets.sys, "executable", "/env/bin/python")
+    monkeypatch.setattr(
+        manager_widgets.subprocess,
+        "Popen",
+        lambda command, **_kwargs: calls.append(command),
+    )
+
+    manager_widgets._launch_new_manager_instance(extra_args=["--tutorial"])
+
+    assert calls == [
+        [
+            "/env/bin/python",
+            "-m",
+            "erlab.interactive.imagetool.manager",
+            "--tutorial",
+        ]
+    ]
+
+
 def test_launch_new_manager_instance_uses_macos_app_bundle(
     monkeypatch, tmp_path
 ) -> None:
@@ -1869,11 +1896,17 @@ def test_launch_new_manager_instance_uses_macos_app_bundle(
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_widgets._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance(extra_args=["--tutorial"])
 
     assert calls == [
         (
-            ["/usr/bin/open", "-n", str(app_bundle.resolve())],
+            [
+                "/usr/bin/open",
+                "-n",
+                str(app_bundle.resolve()),
+                "--args",
+                "--tutorial",
+            ],
             {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
@@ -1888,7 +1921,7 @@ def test_launch_new_manager_instance_uses_macos_app_bundle(
 def test_launch_new_manager_instance_uses_windows_detached_flags(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, typing.Any]]] = []
 
-    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
     monkeypatch.setattr(manager_widgets.sys, "platform", "win32")
     monkeypatch.setattr(manager_widgets.sys, "executable", r"C:\env\python.exe")
     monkeypatch.setattr(
@@ -1906,11 +1939,14 @@ def test_launch_new_manager_instance_uses_windows_detached_flags(monkeypatch) ->
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_widgets._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance(extra_args=["--tutorial"])
 
     assert calls == [
         (
-            [r"C:\env\python.exe", "-m", "erlab.interactive.imagetool.manager"],
+            [
+                r"C:\env\python.exe",
+                "--tutorial",
+            ],
             {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
@@ -1946,6 +1982,252 @@ def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
             "Could not open another ImageTool Manager window.",
         )
     ]
+
+
+def test_manager_tutorial_action_replaces_empty_untitled_manager(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+        action = action_map_by_object_name(manager.help_menu)["manager_tutorial_action"]
+        assert action is manager.tutorial_action
+
+        action.trigger()
+
+        assert close_results == [True]
+        assert not manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_keyboard_shortcuts_action_reuses_dialog(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        action = action_map_by_object_name(manager.help_menu)[
+            "manager_keyboard_shortcuts_action"
+        ]
+        assert action is manager.keyboard_shortcuts_action
+        assert action.shortcut().isEmpty()
+
+        action.trigger()
+        dialog = manager._additional_windows["keyboard-shortcuts"]
+        assert isinstance(dialog, manager_shortcuts.KeyboardShortcutsDialog)
+        qtbot.wait_until(dialog.isVisible)
+        assert dialog.windowModality() == QtCore.Qt.WindowModality.NonModal
+        assert [
+            dialog.tab_widget.widget(index).property("shortcutContext")
+            for index in range(dialog.tab_widget.count())
+        ] == ["manager", "imagetool", "explorer", "figure-composer"]
+
+        assert manager.open_keyboard_shortcuts() is dialog
+
+        dialog.close()
+        qtbot.wait_until(lambda: not erlab.interactive.utils.qt_is_valid(dialog))
+        assert "keyboard-shortcuts" not in manager._additional_windows
+
+
+def test_manager_keyboard_shortcuts_match_manager_actions(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        dialog = manager.open_keyboard_shortcuts()
+        sequence_format = QtGui.QKeySequence.SequenceFormat.NativeText
+        actions = {
+            "manager-open-workspace": manager.load_action,
+            "manager-save-workspace": manager.save_action,
+            "manager-save-workspace-as": manager.save_as_action,
+            "manager-workspace-properties": manager.workspace_properties_action,
+            "manager-data-explorer": manager.explorer_action,
+            "manager-periodic-table": manager.ptable_action,
+            "manager-hide-windows": manager.hide_action,
+            "manager-remove-windows": manager.remove_action,
+            "manager-reload-data": manager.reload_action,
+            "manager-link-windows": manager.link_action,
+            "manager-unlink-windows": manager.unlink_action,
+            "manager-console": manager.console_action,
+            "manager-settings": manager.settings_action,
+        }
+        for shortcut_id, action in actions.items():
+            row = dialog.findChild(
+                QtWidgets.QWidget, f"keyboardShortcutRow_{shortcut_id}"
+            )
+            assert row is not None
+            sequence = row.findChild(QtWidgets.QWidget, "keyboardShortcutSequence")
+            assert sequence is not None
+            assert sequence.property("shortcutText") == action.shortcut().toString(
+                sequence_format
+            )
+
+
+def test_keyboard_shortcut_keycaps_use_uniform_ui_font(qtbot) -> None:
+    dialog = manager_shortcuts.KeyboardShortcutsDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    row = dialog.findChild(
+        QtWidgets.QWidget,
+        "keyboardShortcutRow_manager-save-workspace-as",
+    )
+    assert row is not None
+    sequence = row.findChild(QtWidgets.QWidget, "keyboardShortcutSequence")
+    assert sequence is not None
+    keycaps = sequence.findChildren(QtWidgets.QLabel, "keyboardShortcutKeycap")
+
+    assert len(keycaps) >= 3
+    assert all(keycap.property("shortcutToken") for keycap in keycaps)
+    assert {keycap.height() for keycap in keycaps} == {keycaps[0].height()}
+    assert all(keycap.font() == dialog.font() for keycap in keycaps)
+
+
+def test_keyboard_shortcuts_search_uses_stable_entry_ids(qtbot) -> None:
+    dialog = manager_shortcuts.KeyboardShortcutsDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    dialog.search_edit.setText("imagetool-copy-cursor-indices")
+
+    assert [
+        dialog.tab_widget.isTabVisible(index)
+        for index in range(dialog.tab_widget.count())
+    ] == [False, True, False, False]
+    row = dialog.findChild(
+        QtWidgets.QWidget,
+        "keyboardShortcutRow_imagetool-copy-cursor-indices",
+    )
+    assert row is not None
+    assert not row.isHidden()
+
+    dialog.search_edit.setText("missing-stable-shortcut-id")
+
+    assert dialog.tab_widget.isHidden()
+    assert not dialog.empty_label.isHidden()
+
+
+def test_manager_tutorial_action_preserves_nonempty_manager(
+    qtbot,
+    test_data,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: bool(manager._tool_graph.nodes))
+
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_action_preserves_file_backed_empty_manager(
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        adopt_workspace_path(manager, tmp_path / "workspace.itws")
+
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_action_preserves_modified_empty_manager(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        lambda *, extra_args=(): calls.append(list(extra_args)),
+    )
+
+    with manager_context() as manager:
+        manager._workspace_state.context_modified = True
+        assert manager.is_workspace_modified
+
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+
+    assert calls == [["--tutorial"]]
+
+
+def test_manager_tutorial_launch_failure_preserves_empty_manager(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dialogs: list[tuple[object, str, str]] = []
+
+    def fail_launch(*, extra_args=()) -> None:
+        del extra_args
+        raise RuntimeError("launch failed")
+
+    monkeypatch.setattr(
+        manager_widgets,
+        "_launch_new_manager_instance",
+        fail_launch,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda parent, *, title, text: dialogs.append((parent, title, text)),
+    )
+
+    with manager_context() as manager:
+        manager.tutorial_action.trigger()
+
+        assert manager.isVisible()
+        assert dialogs == [
+            (
+                manager,
+                "Tutorial",
+                "Could not open the ImageTool Manager tutorial.",
+            )
+        ]
 
 
 def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
