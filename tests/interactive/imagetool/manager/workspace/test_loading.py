@@ -413,6 +413,49 @@ def test_workspace_uid_reservation_validates_manifest_and_requirement_uids() -> 
         )
 
 
+def test_workspace_manifest_indexes_avoid_per_node_rescans(monkeypatch) -> None:
+    root_count = 256
+    manifest = {
+        "nodes": [
+            *({"path": str(index), "kind": "imagetool"} for index in range(root_count)),
+            *(
+                {
+                    "path": f"{index}/childtools/child-{index}",
+                    "kind": "tool",
+                }
+                for index in range(root_count)
+            ),
+        ]
+    }
+    loader = workspace_loading._WorkspaceLoader
+    entries_by_path, direct_children = loader._workspace_manifest_indexes(manifest)
+
+    def _fail_manifest_scan(_manifest):
+        raise AssertionError("Indexed manifest lookups must not rescan all nodes")
+
+    monkeypatch.setattr(
+        workspace_format,
+        "_iter_workspace_manifest_node_entries",
+        _fail_manifest_scan,
+    )
+    for index in range(root_count):
+        root_path = str(index)
+        assert (
+            loader._workspace_manifest_node_entry(
+                manifest,
+                root_path,
+                "imagetool",
+                entries_by_path=entries_by_path,
+            )
+            is entries_by_path[root_path]
+        )
+        assert loader._workspace_manifest_direct_child_keys(
+            manifest,
+            f"{root_path}/childtools/",
+            direct_children=direct_children,
+        ) == [f"child-{index}"]
+
+
 @pytest.mark.parametrize(
     ("field", "entry"),
     [
@@ -3279,6 +3322,19 @@ def test_manager_from_h5py_workspace_manifest_validation(
                 replace=False,
                 mark_dirty=False,
             )
+        with pytest.raises(ValueError, match="duplicate node path '0'"):
+            manager._workspace_controller.loading._from_h5py_workspace_file(
+                fname,
+                {
+                    "root_order": ["0"],
+                    "nodes": [
+                        {"path": "0", "kind": "imagetool"},
+                        {"path": "0", "kind": "tool"},
+                    ],
+                },
+                replace=False,
+                mark_dirty=False,
+            )
         with pytest.raises(ValueError, match="no loadable root nodes"):
             manager._workspace_controller.loading._from_h5py_workspace_file(
                 fname,
@@ -3468,8 +3524,8 @@ def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
         uid = manager._tool_graph.root_wrappers[0].uid
         calls: list[typing.Any] = []
 
-        def _fake_rebind_data(_fname, _uid, *, chunks):
-            calls.append(chunks)
+        def _fake_rebind_data(_fname, _uid, *, chunks, payload_path=None):
+            calls.append((chunks, payload_path))
             return data
 
         monkeypatch.setattr(
@@ -3488,7 +3544,59 @@ def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
         )
 
         assert uid in manager._tool_graph.nodes
-        assert calls == [{}]
+        assert calls == [({}, "0/imagetool")]
+
+
+def test_manager_workspace_rebind_reads_manifest_once(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(16.0).reshape(4, 4), dims=("x", "y"))
+        for _ in range(2):
+            tool = itool(data, manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(tool, show=False)
+        uids = [wrapper.uid for wrapper in manager._tool_graph.root_wrappers.values()]
+        manifest_calls = 0
+        payload_paths: list[str | None] = []
+
+        def _manifest(_fname):
+            nonlocal manifest_calls
+            manifest_calls += 1
+            return {
+                "nodes": [
+                    {
+                        "uid": uid,
+                        "kind": "imagetool",
+                        "path": str(index),
+                        "payload_path": f"/objects/{uid}",
+                    }
+                    for index, uid in enumerate(uids)
+                ]
+            }
+
+        def _fake_rebind_data(
+            _fname, _uid, *, chunks, payload_path=None
+        ) -> xr.DataArray:
+            payload_paths.append(payload_path)
+            return data
+
+        loading = manager._workspace_controller.loading
+        monkeypatch.setattr(loading, "_workspace_manifest_for_path", _manifest)
+        monkeypatch.setattr(
+            loading, "_workspace_rebind_data_for_uid", _fake_rebind_data
+        )
+
+        loading._rebind_workspace_backed_imagetools(tmp_path / "workspace.itws")
+
+        assert manifest_calls == 1
+        assert payload_paths == [f"/objects/{uid}" for uid in uids]
 
 
 def test_manager_loaded_workspace_association_updates_file_path(

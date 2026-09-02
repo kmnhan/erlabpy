@@ -344,23 +344,28 @@ def _workspace_root_keys(
     tree: typing.Any, manifest: Mapping[str, typing.Any] | None
 ) -> list[str]:
     root_keys: list[str] = []
+    root_key_set: set[str] = set()
     if manifest is not None:
         raw_root_order = manifest.get("root_order", ())
         if isinstance(raw_root_order, list):
-            root_keys.extend(
-                str(item)
-                for item in raw_root_order
-                if str(item) not in root_keys
-                and str(item) != "figures"
-                and not _is_workspace_internal_group_name(item)
-            )
-    root_keys.extend(
-        str(key)
-        for key in tree
-        if str(key) not in root_keys
-        and str(key) != "figures"
-        and not _is_workspace_internal_group_name(key)
-    )
+            for item in raw_root_order:
+                key = str(item)
+                if (
+                    key not in root_key_set
+                    and key != "figures"
+                    and not _is_workspace_internal_group_name(item)
+                ):
+                    root_keys.append(key)
+                    root_key_set.add(key)
+    for item in tree:
+        key = str(item)
+        if (
+            key not in root_key_set
+            and key != "figures"
+            and not _is_workspace_internal_group_name(item)
+        ):
+            root_keys.append(key)
+            root_key_set.add(key)
     return root_keys
 
 

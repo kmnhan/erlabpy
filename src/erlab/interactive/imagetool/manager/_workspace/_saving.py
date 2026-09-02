@@ -1108,6 +1108,7 @@ class _WorkspaceSaver:
         )
         current_manifest: dict[str, typing.Any] | None = None
         legacy_manifest: dict[str, typing.Any] | None = None
+        legacy_schema_version: int | None = None
         if source_store is not None and not source_store.closed:
             with contextlib.suppress(Exception):
                 current_manifest = source_store.current_generation().manifest
@@ -1128,6 +1129,7 @@ class _WorkspaceSaver:
                     current_manifest = manifest
                 else:
                     legacy_manifest = manifest
+                    legacy_schema_version = schema_version
 
         previous_entries: dict[str, Mapping[str, typing.Any]] = {}
         if current_manifest is not None:
@@ -1398,9 +1400,18 @@ class _WorkspaceSaver:
             object_id = entry.get("payload_object_id")
             if not isinstance(uid, str) or not isinstance(object_id, str):
                 continue
-            legacy_path = legacy_payload_paths.get(
-                uid, f"/{self._workspace_payload_path(uid).strip('/')}"
-            )
+            legacy_path = legacy_payload_paths.get(uid)
+            if legacy_path is None:
+                node_path = entry.get("path")
+                kind = entry.get("kind")
+                if (
+                    legacy_schema_version == 2
+                    and kind == "tool"
+                    and isinstance(node_path, str)
+                ):
+                    legacy_path = f"/{node_path.strip('/')}"
+                else:
+                    legacy_path = f"/{self._workspace_payload_path(uid).strip('/')}"
             if (
                 current_manifest is None
                 and in_place_legacy_source is not None

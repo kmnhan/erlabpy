@@ -641,7 +641,9 @@ def test_workspace_store_rejects_invalid_gc_limit_and_clears_staging(
         assert len(store.h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
 
 
-def test_workspace_store_publishes_valid_generations(tmp_path: pathlib.Path) -> None:
+def test_workspace_store_publishes_valid_generations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
@@ -651,9 +653,24 @@ def test_workspace_store_publishes_valid_generations(tmp_path: pathlib.Path) -> 
         first = store.publish(_manifest("first"))
         second = store.publish(_manifest("second"))
 
+        read_names: list[str] = []
+        read_manifest = workspace_store.WorkspaceStore._read_manifest.__func__
+
+        def _record_read_manifest(cls, group):
+            read_names.append(group.name)
+            return read_manifest(cls, group)
+
+        monkeypatch.setattr(
+            workspace_store.WorkspaceStore,
+            "_read_manifest",
+            classmethod(_record_read_manifest),
+        )
         assert first.sequence == 1
         assert second.sequence == 2
         assert store.current_generation() == second
+        assert read_names == [
+            f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
+        ]
 
         with store.write_session() as h5_file:
             generation_group = h5_file[
@@ -663,7 +680,12 @@ def test_workspace_store_publishes_valid_generations(tmp_path: pathlib.Path) -> 
                 "sha256"
             ] = "invalid"
 
+        read_names.clear()
         assert store.current_generation() == first
+        assert read_names == [
+            f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}",
+            f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{first.sequence:020d}",
+        ]
 
 
 def test_workspace_store_rejects_generation_with_missing_object(

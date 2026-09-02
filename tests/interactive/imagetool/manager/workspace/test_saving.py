@@ -3887,9 +3887,11 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
                 manager._workspace_controller.loading._workspace_rebind_data_for_uid
             )
 
-            def _record_rebind(fname, node_uid: str, *, chunks):
+            def _record_rebind(fname, node_uid: str, *, chunks, payload_path=None):
                 rebind_calls.append(node_uid)
-                return rebind_data(fname, node_uid, chunks=chunks)
+                return rebind_data(
+                    fname, node_uid, chunks=chunks, payload_path=payload_path
+                )
 
             monkeypatch.setattr(
                 manager._workspace_controller.loading,
@@ -4013,9 +4015,11 @@ def test_workspace_full_save_external_dask_rebind_rolls_back_on_later_failure(
             manager._workspace_controller.loading._workspace_rebind_data_for_uid
         )
 
-        def _record_rebind(fname, node_uid: str, *, chunks):
+        def _record_rebind(fname, node_uid: str, *, chunks, payload_path=None):
             rebind_calls.append(node_uid)
-            return rebind_data(fname, node_uid, chunks=chunks)
+            return rebind_data(
+                fname, node_uid, chunks=chunks, payload_path=payload_path
+            )
 
         monkeypatch.setattr(
             manager._workspace_controller.loading,
@@ -4657,12 +4661,27 @@ def test_manager_workspace_same_path_conversion_deduplicates_legacy_payload(
             raise TypeError("Expected an ImageTool")
         manager.add_imagetool(tool, show=False)
         uid = manager._tool_graph.root_wrappers[0].uid
+        child = _AddedTimeChildTool((data + 1000).rename("child"))
+        child_uid = add_source_childtool(manager, child, 0, show=False)
 
-        tree = manager._workspace_controller.saving._to_datatree()
-        tree.attrs["imagetool_workspace_schema_version"] = schema_version
-        tree.attrs.pop(workspace_format._WORKSPACE_MANIFEST_ATTR, None)
-        tree.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
-        tree.close()
+        current_tree = manager._workspace_controller.saving._to_datatree()
+        try:
+            tree = xr.DataTree.from_dict(
+                {
+                    "0/imagetool": typing.cast(
+                        "xr.DataTree", current_tree["0/imagetool"]
+                    ).to_dataset(inherit=False),
+                    f"0/childtools/{child_uid}": typing.cast(
+                        "xr.DataTree",
+                        current_tree[f"0/childtools/{child_uid}/tool"],
+                    ).to_dataset(inherit=False),
+                }
+            )
+            tree.attrs["imagetool_workspace_schema_version"] = schema_version
+            tree.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
+            tree.close()
+        finally:
+            current_tree.close()
         manager.remove_all_tools()
 
         monkeypatch.setattr(
@@ -4686,22 +4705,25 @@ def test_manager_workspace_same_path_conversion_deduplicates_legacy_payload(
         store = manager._workspace_controller._workspace_store
         if store is None:
             raise RuntimeError("Expected an associated workspace store")
-        entry = next(
-            entry
+        entries = {
+            str(entry["uid"]): entry
             for entry in workspace_format._iter_workspace_manifest_node_entries(
                 store.current_generation().manifest
             )
-            if entry.get("uid") == uid
-        )
-        object_path = str(entry["payload_path"])
-        legacy_path = "/0/imagetool"
+        }
+        assert set(entries) == {uid, child_uid}
         assert not store.leased_legacy_group_paths
-        with store.read_session() as h5_file:
-            assert legacy_path in h5_file
-            assert (
-                h5py.h5o.get_info(h5_file[legacy_path].id).addr
-                == h5py.h5o.get_info(h5_file[object_path].id).addr
-            )
+        for node_uid, legacy_path in (
+            (uid, "/0/imagetool"),
+            (child_uid, f"/0/childtools/{child_uid}"),
+        ):
+            object_path = str(entries[node_uid]["payload_path"])
+            with store.read_session() as h5_file:
+                assert legacy_path in h5_file
+                assert (
+                    h5py.h5o.get_info(h5_file[legacy_path].id).addr
+                    == h5py.h5o.get_info(h5_file[object_path].id).addr
+                )
         np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
 
 
