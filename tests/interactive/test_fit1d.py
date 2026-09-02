@@ -4,7 +4,11 @@ import gc
 import json
 import pickle
 import threading
+import typing
 import weakref
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable
 
 import lmfit
 import numpy as np
@@ -2228,7 +2232,50 @@ def test_fit1d_update_inputs_keeps_fit_finished_receivers_constant(qtbot) -> Non
         )
 
 
-def test_fit1d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
+def test_fit1d_direct_update_discards_and_reaps_old_worker(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    fit_data = win._fit_data()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def _modelfit(*_args, **_kwargs) -> xr.Dataset:
+        worker_started.set()
+        release_worker.wait(timeout=5)
+        return xr.Dataset()
+
+    monkeypatch.setattr(fit_data.xlm, "modelfit", _modelfit)
+
+    assert win._start_fit_worker(
+        fit_data,
+        win._params,
+        multi=False,
+        on_success=lambda _result: pytest.fail("old result was delivered"),
+        on_timeout=lambda: pytest.fail("old timeout was delivered"),
+        on_error=lambda _message: pytest.fail("old error was delivered"),
+    )
+    old_thread = win._fit_thread
+    assert old_thread is not None
+    qtbot.waitUntil(worker_started.is_set, timeout=5000)
+    updated = data + 1.0
+
+    assert win.update_inputs({"data": updated})
+
+    assert win._fit_thread is None
+    assert old_thread not in win._fit_worker_callbacks
+    assert win._fit_worker_registry.workers[old_thread] is None
+    release_worker.set()
+    qtbot.waitUntil(
+        lambda: old_thread not in win._fit_worker_registry.workers,
+        timeout=5000,
+    )
+    assert old_thread._outcome.kind == "not_finished"
+    assert win._last_result_ds is None
+    xr.testing.assert_identical(win.tool_data, updated)
+
+
+def test_fit1d_apply_inputs_discards_finished_old_fit_before_auto_refit(
     qtbot, monkeypatch
 ) -> None:
     data = _make_1d_data()
@@ -2240,7 +2287,7 @@ def test_fit1d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
         def __init__(self) -> None:
             self.cancel_called = False
             self.join_timeout: float | None = None
-            self._outcome = fit1d._FitWorkerOutcome("cancelled")
+            self._outcome = fit1d._FitWorkerOutcome("success", result=xr.Dataset())
 
         def cancel(self) -> None:
             self.cancel_called = True
@@ -2251,12 +2298,16 @@ def test_fit1d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
         def is_alive(self) -> bool:
             return False
 
+        def release_payload(self) -> None:
+            pass
+
     old_thread = _FinishedThread()
     win._fit_thread = old_thread  # type: ignore[assignment]
     win._fit_worker_callbacks[old_thread] = fit1d._FitWorkerCallbacks(  # type: ignore[index]
-        on_success=lambda _result: None,
+        on_success=lambda _result: pytest.fail("old result was delivered"),
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     win._last_result_ds = xr.Dataset()
     win.refit_on_source_update_check.setChecked(True)
@@ -2335,14 +2386,18 @@ def test_fit1d_async_refit_terminal_commits_published_input(
     xr.testing.assert_identical(win.tool_data, updated)
 
 
-def test_fit1d_finalize_ignores_stale_thread(qtbot) -> None:
+def test_fit1d_finalize_stale_thread_keeps_current(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
     assert isinstance(win, Fit1DTool)
 
     class _ThreadPlaceholder:
-        pass
+        def __init__(self) -> None:
+            self.payload_released = False
+
+        def release_payload(self) -> None:
+            self.payload_released = True
 
     stale_thread = _ThreadPlaceholder()
     current_thread = _ThreadPlaceholder()
@@ -2351,6 +2406,8 @@ def test_fit1d_finalize_ignores_stale_thread(qtbot) -> None:
     win._finalize_fit_thread(stale_thread)  # type: ignore[arg-type]
 
     assert win._fit_thread is current_thread
+    assert stale_thread.payload_released
+    assert not current_thread.payload_released
     win._fit_thread = None
 
 
@@ -2703,6 +2760,56 @@ def test_fit1d_next_multi_step_is_deferred(qtbot, monkeypatch) -> None:
 
     assert started_steps == [1]
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
+
+
+def test_fit1d_stale_deferred_step_does_not_modify_new_sequence(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    phase = ["old"]
+    started_steps: list[tuple[str, int]] = []
+    deferred: list[Callable[[], None]] = []
+
+    monkeypatch.setattr(win, "_defer_next_fit_step", deferred.append)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append((phase[0], step))
+        win._fit_start_time = 0.0
+        if phase[0] == "old":
+            on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_multiple(2)
+    assert len(deferred) == 1
+    stale_callback = deferred.pop()
+    win._finish_multi_fit()
+
+    phase[0] = "new"
+    win._run_fit_multiple(2)
+    current_generation = win._fit_multi_generation
+    stale_callback()
+
+    assert started_steps == [("old", 1), ("new", 1)]
+    assert win._fit_multi_generation == current_generation
+    assert win._fit_multi_step == 1
+    assert win._fit_multi_total == 2
+    win._finish_multi_fit()
 
 
 def test_fit1d_multi_step_requests_paint_before_deferred_next_step(
@@ -3252,6 +3359,9 @@ def test_fit1d_completion_action_exception_recovers(qtbot, monkeypatch) -> None:
     class _Thread:
         _outcome = fit1d._FitWorkerOutcome("success", result=xr.Dataset())
 
+        def release_payload(self) -> None:
+            pass
+
     thread = _Thread()
     win._fit_thread = thread
     monkeypatch.setattr(win, "_fit_errored", lambda _message: events.append("error"))
@@ -3264,6 +3374,7 @@ def test_fit1d_completion_action_exception_recovers(qtbot, monkeypatch) -> None:
         on_success=fail,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     win._finalize_fit_thread(thread)
 
@@ -3877,6 +3988,12 @@ def test_fit1d_start_worker_start_exception_resets_buttons(qtbot, monkeypatch) -
         def start(self) -> None:
             raise RuntimeError("thread start failed")
 
+        def is_alive(self) -> bool:
+            return False
+
+        def release_payload(self) -> None:
+            pass
+
     monkeypatch.setattr(fit1d, "_FitWorker", _FailingWorker)
 
     assert not win._start_fit_worker(
@@ -3889,7 +4006,7 @@ def test_fit1d_start_worker_start_exception_resets_buttons(qtbot, monkeypatch) -
     )
 
     assert errors
-    assert not fit1d._running_fit_workers
+    assert not fit1d._fit_worker_registry().workers
     assert win._fit_thread is None
     assert win._fit_cancel_requested is False
     assert win.fit_button.isEnabled()
@@ -3911,6 +4028,9 @@ def test_fit1d_workers_use_one_scale_covar_snapshot(qtbot, monkeypatch) -> None:
 
         def is_alive(self) -> bool:
             return True
+
+        def cancel(self) -> None:
+            return None
 
     monkeypatch.setattr(fit1d, "_FitWorker", _Worker)
     callbacks = {
@@ -4199,12 +4319,16 @@ def test_fit1d_cancel_fit_waits_for_thread(qtbot) -> None:
         def is_alive(self) -> bool:
             return False
 
+        def release_payload(self) -> None:
+            pass
+
     dummy_thread = _DummyThread()
     win._fit_thread = dummy_thread  # type: ignore[assignment]
     win._fit_worker_callbacks[dummy_thread] = fit1d._FitWorkerCallbacks(  # type: ignore[index]
         on_success=completed.append,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
 
     assert win._cancel_fit(wait=True)
@@ -4235,12 +4359,16 @@ def test_fit1d_cancel_fit_waits_without_timeout(qtbot) -> None:
         def is_alive(self) -> bool:
             return False
 
+        def release_payload(self) -> None:
+            pass
+
     dummy_thread = _DummyThread()
     win._fit_thread = dummy_thread  # type: ignore[assignment]
     win._fit_worker_callbacks[dummy_thread] = fit1d._FitWorkerCallbacks(  # type: ignore[index]
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
 
     assert win._cancel_fit(wait=True, timeout_ms=None)
@@ -4273,6 +4401,7 @@ def test_fit1d_close_event_detaches_thread_that_does_not_stop(qtbot) -> None:
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     fit1d._register_running_fit_worker(stuck_thread, win)  # type: ignore[arg-type]
 
@@ -4284,7 +4413,7 @@ def test_fit1d_close_event_detaches_thread_that_does_not_stop(qtbot) -> None:
         assert stuck_thread.cancel_called
         assert win._fit_thread is None
         assert stuck_thread not in win._fit_worker_callbacks
-        assert stuck_thread not in fit1d._running_fit_workers
+        assert fit1d._fit_worker_registry().workers[stuck_thread] is None
     finally:
         fit1d._release_running_fit_worker(stuck_thread)  # type: ignore[arg-type]
         stuck_thread.running = False
@@ -4292,10 +4421,10 @@ def test_fit1d_close_event_detaches_thread_that_does_not_stop(qtbot) -> None:
         win.close()
 
 
-def test_fit1d_app_quit_cancels_and_detaches_worker(qtbot) -> None:
+def test_fit1d_app_quit_cancels_joins_and_releases_worker(qtbot) -> None:
     win = erlab.interactive.ftool(_make_1d_data(), execute=False)
     qtbot.addWidget(win)
-    win._stop_fit_before_app_quit()
+    events: list[str] = []
 
     class _Thread:
         def __init__(self) -> None:
@@ -4303,9 +4432,14 @@ def test_fit1d_app_quit_cancels_and_detaches_worker(qtbot) -> None:
 
         def cancel(self) -> None:
             self.cancelled = True
+            events.append("cancel")
 
         def join(self, timeout: float | None = None) -> None:
-            raise AssertionError("application quit must not wait for a fit worker")
+            assert timeout is None
+            events.append("join")
+
+        def release_payload(self) -> None:
+            events.append("release")
 
     thread = _Thread()
     win._fit_thread = thread  # type: ignore[assignment]
@@ -4313,15 +4447,17 @@ def test_fit1d_app_quit_cancels_and_detaches_worker(qtbot) -> None:
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
     try:
-        win._stop_fit_before_app_quit()
+        fit1d._fit_worker_registry().shutdown()
 
         assert thread.cancelled
         assert win._fit_thread is None
         assert thread not in win._fit_worker_callbacks
-        assert thread not in fit1d._running_fit_workers
+        assert thread not in fit1d._fit_worker_registry().workers
+        assert events == ["cancel", "join", "release"]
     finally:
         fit1d._release_running_fit_worker(thread)  # type: ignore[arg-type]
         win._fit_thread = None
@@ -4337,6 +4473,7 @@ def test_fit1d_detach_ignores_stale_worker(qtbot) -> None:
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     win._fit_thread = current  # type: ignore[assignment]
     win._fit_cancel_requested = True
@@ -4367,12 +4504,16 @@ def test_fit1d_state_change_discards_published_success(qtbot) -> None:
         def cancel(self) -> None:
             self.cancelled = True
 
+        def is_alive(self) -> bool:
+            return True
+
     thread = _Thread()
     win._fit_thread = thread  # type: ignore[assignment]
     win._fit_worker_callbacks[thread] = fit1d._FitWorkerCallbacks(  # type: ignore[index]
         on_success=completed.append,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
 
@@ -4383,7 +4524,7 @@ def test_fit1d_state_change_discards_published_success(qtbot) -> None:
         assert completed == []
         assert win._fit_thread is None
         assert thread not in win._fit_worker_callbacks
-        assert thread not in fit1d._running_fit_workers
+        assert fit1d._fit_worker_registry().workers[thread] is None
     finally:
         fit1d._release_running_fit_worker(thread)  # type: ignore[arg-type]
 
@@ -4570,9 +4711,135 @@ def test_fit_worker_records_loaded_result(qtbot, exp_decay_model, monkeypatch) -
 
     worker.run()
 
-    assert worker.daemon
+    assert not worker.daemon
     assert dummy.loaded
     assert worker._outcome.result is dummy
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "model",
+        "domain",
+        "parameter",
+        "normalize",
+        "scale-covar",
+        "method",
+        "max-nfev",
+        "timeout",
+        "uncertainty",
+    ],
+)
+def test_fit1d_fit_job_tracks_fit_configuration(qtbot, change) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    job = win._fit_job()
+
+    if change == "model":
+        win.set_model(lmfit.models.LinearModel())
+    elif change == "domain":
+        win.domain_min_spin.setValue(-0.5)
+    elif change == "parameter":
+        index = win.param_model.index(0, 1)
+        assert win.param_model.setData(index, 0.1)
+    elif change == "normalize":
+        win.normalize_check.toggle()
+    elif change == "scale-covar":
+        win.scale_covar_check.toggle()
+    elif change == "method":
+        win.method_combo.setCurrentText("leastsq")
+    elif change == "max-nfev":
+        win.nfev_spin.setValue(10)
+    elif change == "timeout":
+        win.timeout_spin.setValue(10.0)
+    elif change == "uncertainty":
+        win._set_uncertainty(xr.ones_like(win.tool_data))
+
+    assert not win._fit_job_is_current(job)
+
+
+def test_fit1d_published_outcome_is_rejected_after_configuration_change(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    completed: list[xr.Dataset] = []
+    fit_data = win._fit_data()
+    monkeypatch.setattr(
+        fit_data.xlm, "modelfit", lambda *_args, **_kwargs: xr.Dataset()
+    )
+
+    assert win._start_fit_worker(
+        fit_data,
+        win._params,
+        multi=False,
+        on_success=completed.append,
+        on_timeout=lambda: None,
+        on_error=lambda _message: None,
+    )
+    thread = win._fit_thread
+    assert thread is not None
+    win._fit_poll_timer.stop()
+    thread.join()
+    assert thread._outcome.kind == "success"
+
+    win.normalize_check.toggle()
+    win._poll_fit_worker()
+
+    assert completed == []
+    assert win._fit_thread is None
+    assert thread not in win._fit_worker_registry.workers
+
+
+def test_detached_fit_worker_payload_is_released_on_gui_thread(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    fit_data = win._fit_data()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    release_threads: list[QtCore.QThread] = []
+
+    def _modelfit(*_args, **_kwargs) -> xr.Dataset:
+        worker_started.set()
+        release_worker.wait(timeout=5)
+        return xr.Dataset()
+
+    monkeypatch.setattr(fit_data.xlm, "modelfit", _modelfit)
+    assert win._start_fit_worker(
+        fit_data,
+        win._params,
+        multi=False,
+        on_success=lambda _result: pytest.fail("detached result was delivered"),
+        on_timeout=lambda: pytest.fail("detached timeout was delivered"),
+        on_error=lambda _message: pytest.fail("detached error was delivered"),
+    )
+    thread = win._fit_thread
+    assert thread is not None
+    original_release_payload = thread.release_payload
+
+    def _release_payload() -> None:
+        release_threads.append(QtCore.QThread.currentThread())
+        original_release_payload()
+
+    monkeypatch.setattr(thread, "release_payload", _release_payload)
+    qtbot.waitUntil(worker_started.is_set, timeout=5000)
+    thread.cancel()
+    win._detach_fit_worker(thread)
+
+    assert win._fit_thread is None
+    assert win._fit_worker_registry.workers[thread] is None
+    release_worker.set()
+    qtbot.waitUntil(
+        lambda: thread not in win._fit_worker_registry.workers,
+        timeout=5000,
+    )
+
+    app = QtWidgets.QApplication.instance()
+    assert app is not None
+    assert release_threads == [app.thread()]
+    assert thread._outcome.kind == "not_finished"
 
 
 @pytest.mark.parametrize("load_raises", [False, True])
@@ -4644,7 +4911,7 @@ def test_fit_worker_records_each_terminal_outcome(
 
 
 def test_running_fit_worker_registry_tracks_concurrent_workers(
-    qtbot, exp_decay_model
+    qtbot, exp_decay_model, monkeypatch
 ) -> None:
     data = _make_1d_data()
     params = exp_decay_model.make_params(n0=1.0, tau=1.0)
@@ -4663,20 +4930,34 @@ def test_running_fit_worker_registry_tracks_concurrent_workers(
     owners = [QtWidgets.QWidget(), QtWidgets.QWidget()]
     for owner in owners:
         qtbot.addWidget(owner)
+    registry = fit1d._fit_worker_registry()
+    destroyed_calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        registry,
+        "_owner_destroyed",
+        lambda thread, owner, _destroyed=None: destroyed_calls.append((thread, owner)),
+    )
 
     try:
-        assert not fit1d._running_fit_workers
+        assert not registry.workers
         fit1d._register_running_fit_worker(workers[0], owners[0])
         fit1d._register_running_fit_worker(workers[0], owners[0])
         fit1d._register_running_fit_worker(workers[1], owners[1])
-        assert fit1d._running_fit_workers == dict(zip(workers, owners, strict=True))
+        owners[0].destroyed.emit()
+        assert destroyed_calls == [(workers[0], owners[0])]
+        destroyed_calls.clear()
+        assert registry.workers == dict(zip(workers, owners, strict=True))
 
         fit1d._release_running_fit_worker(workers[0])
         fit1d._release_running_fit_worker(workers[0])
-        assert fit1d._running_fit_workers == {workers[1]: owners[1]}
+        owners[0].destroyed.emit()
+        assert destroyed_calls == []
+        assert registry.workers == {workers[1]: owners[1]}
 
         fit1d._release_running_fit_worker(workers[1])
-        assert not fit1d._running_fit_workers
+        owners[1].destroyed.emit()
+        assert destroyed_calls == []
+        assert not registry.workers
     finally:
         for worker in workers:
             fit1d._release_running_fit_worker(worker)
@@ -4691,7 +4972,7 @@ def test_fit_worker_is_registered_before_python_thread_start(
     monkeypatch.setattr(win, "_show_error", lambda *_args, **_kwargs: None)
 
     def _start(thread) -> None:
-        start_state.append(fit1d._running_fit_workers.get(thread))
+        start_state.append(fit1d._fit_worker_registry().workers.get(thread))
 
     monkeypatch.setattr(threading.Thread, "start", _start)
     try:
@@ -4699,11 +4980,11 @@ def test_fit_worker_is_registered_before_python_thread_start(
         thread = win._fit_thread
         assert thread is not None
         assert start_state == [win]
-        assert fit1d._running_fit_workers == {thread: win}
+        assert fit1d._fit_worker_registry().workers == {thread: win}
 
         win._fit_cancel_requested = True
         win._finalize_fit_thread(thread)
-        assert not fit1d._running_fit_workers
+        assert not fit1d._fit_worker_registry().workers
     finally:
         win._fit_poll_timer.stop()
         if win._fit_thread is not None:
@@ -4747,12 +5028,16 @@ def test_fit_worker_poll_uses_current_worker(qtbot, alive) -> None:
         def join(self) -> None:
             self.joined = True
 
+        def release_payload(self) -> None:
+            pass
+
     thread = _DummyThread()
     win._fit_thread = thread  # type: ignore[assignment]
     win._fit_worker_callbacks[thread] = fit1d._FitWorkerCallbacks(
         on_success=results.append,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
     try:
@@ -4762,7 +5047,7 @@ def test_fit_worker_poll_uses_current_worker(qtbot, alive) -> None:
         assert len(results) == int(not alive)
         assert thread.joined is (not alive)
         assert (win._fit_thread is None) is (not alive)
-        assert (thread not in fit1d._running_fit_workers) is (not alive)
+        assert (thread not in fit1d._fit_worker_registry().workers) is (not alive)
         assert win._fit_poll_timer.isActive() is alive
     finally:
         win._fit_poll_timer.stop()
@@ -4843,6 +5128,7 @@ def test_fit_worker_completion_rejects_incomplete_outcome(
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
 
     with pytest.raises(RuntimeError, match=message):
@@ -4858,6 +5144,9 @@ def test_fit1d_finalize_fit_thread_cancelled_releases_thread(qtbot) -> None:
         def __init__(self) -> None:
             self._outcome = fit1d._FitWorkerOutcome("cancelled")
 
+        def release_payload(self) -> None:
+            pass
+
     thread = _DummyThread()
     cancelled = {"value": False}
 
@@ -4868,6 +5157,7 @@ def test_fit1d_finalize_fit_thread_cancelled_releases_thread(qtbot) -> None:
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     fit1d._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
 
@@ -4890,6 +5180,9 @@ def test_fit1d_sequential_workers_keep_owner_rooted(qtbot) -> None:
         def __init__(self) -> None:
             self._outcome = fit1d._FitWorkerOutcome("success", result=xr.Dataset())
 
+        def release_payload(self) -> None:
+            pass
+
     first = _DummyThread()
     second = _DummyThread()
     fit1d._register_running_fit_worker(first, win)  # type: ignore[arg-type]
@@ -4903,12 +5196,13 @@ def test_fit1d_sequential_workers_keep_owner_rooted(qtbot) -> None:
         on_success=_start_second,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     try:
         win._finalize_fit_thread(first)  # type: ignore[arg-type]
 
         assert win._fit_thread is second
-        assert fit1d._running_fit_workers == {second: win}
+        assert fit1d._fit_worker_registry().workers == {second: win}
     finally:
         fit1d._release_running_fit_worker(first)  # type: ignore[arg-type]
         fit1d._release_running_fit_worker(second)  # type: ignore[arg-type]
@@ -4958,14 +5252,15 @@ def test_fit_worker_survives_forced_collection_while_running(
         retained_thread = thread_ref()
         assert retained_owner is not None
         assert retained_thread is not None
-        assert fit1d._running_fit_workers == {retained_thread: retained_owner}
+        assert fit1d._fit_worker_registry().workers == {retained_thread: retained_owner}
         del retained_owner
         del retained_thread
 
         release_worker.set()
         qtbot.waitUntil(
             lambda: (
-                thread_ref() is None or thread_ref() not in fit1d._running_fit_workers
+                thread_ref() is None
+                or thread_ref() not in fit1d._fit_worker_registry().workers
             ),
             timeout=5000,
         )
@@ -4988,6 +5283,9 @@ def test_fit1d_finalize_stale_and_idle_threads(qtbot) -> None:
         def __init__(self) -> None:
             self._outcome = fit1d._FitWorkerOutcome("success", result=xr.Dataset())
 
+        def release_payload(self) -> None:
+            pass
+
     current = _DummyThread()
     stale = _DummyThread()
     win._fit_thread = current  # type: ignore[assignment]
@@ -4997,18 +5295,19 @@ def test_fit1d_finalize_stale_and_idle_threads(qtbot) -> None:
         win._finalize_fit_thread(stale)  # type: ignore[arg-type]
         assert win._fit_thread is current
         assert win._fit_cancel_requested
-        assert stale not in fit1d._running_fit_workers
+        assert stale not in fit1d._fit_worker_registry().workers
 
         fit1d._register_running_fit_worker(current, win)  # type: ignore[arg-type]
         win._fit_worker_callbacks[current] = fit1d._FitWorkerCallbacks(
             on_success=lambda _result: None,
             on_timeout=lambda: None,
             on_error=lambda _message: None,
+            job=win._fit_job(),
         )
         win._fit_cancel_requested = False
         win._finalize_fit_thread(current)  # type: ignore[arg-type]
         assert win._fit_thread is None
-        assert current not in fit1d._running_fit_workers
+        assert current not in fit1d._fit_worker_registry().workers
     finally:
         fit1d._release_running_fit_worker(stale)  # type: ignore[arg-type]
         fit1d._release_running_fit_worker(current)  # type: ignore[arg-type]
@@ -5025,6 +5324,9 @@ def test_fit1d_finalize_fit_thread_action_error_restores_idle(
     class _DummyThread:
         def __init__(self) -> None:
             self._outcome = fit1d._FitWorkerOutcome("success", result=xr.Dataset())
+
+        def release_payload(self) -> None:
+            pass
 
     errors: list[tuple[str, str, str | None]] = []
     monkeypatch.setattr(
@@ -5045,6 +5347,7 @@ def test_fit1d_finalize_fit_thread_action_error_restores_idle(
         on_success=_raise_action,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     win._fit_cancel_requested = False
 

@@ -2,8 +2,13 @@ import contextlib
 import json
 import os
 import re
+import threading
 import types
+import typing
 import warnings
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable
 
 import lmfit
 import numpy as np
@@ -1288,12 +1293,16 @@ def test_fit2d_transpose_discards_published_fit_success(qtbot) -> None:
         def cancel(self) -> None:
             self.cancelled = True
 
+        def is_alive(self) -> bool:
+            return True
+
     thread = _Thread()
     win._fit_thread = thread  # type: ignore[assignment]
     win._fit_worker_callbacks[thread] = fit1d_module._FitWorkerCallbacks(  # type: ignore[index]
         on_success=completed.append,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     fit1d_module._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
 
@@ -1304,10 +1313,48 @@ def test_fit2d_transpose_discards_published_fit_success(qtbot) -> None:
         assert completed == []
         assert win._fit_thread is None
         assert thread not in win._fit_worker_callbacks
-        assert thread not in fit1d_module._running_fit_workers
+        assert fit1d_module._fit_worker_registry().workers[thread] is None
         assert win.tool_data.dims == data.dims[::-1]
     finally:
         fit1d_module._release_running_fit_worker(thread)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("return_to_start", [False, True])
+def test_fit2d_active_fit_locks_inputs_and_rejects_slice_change(
+    qtbot, monkeypatch, *, return_to_start: bool
+) -> None:
+    win = erlab.interactive.ftool(_make_2d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
+    start_index = win._current_idx
+    target_index = 0 if start_index != 0 else 1
+
+    assert win._run_fit()
+    thread = win._fit_thread
+    assert thread is not None
+    assert not win._setup_tab.isEnabled()
+    assert not win.fit_options_group.isEnabled()
+    assert not win.parameters_group.isEnabled()
+    assert not win.current_param_group.isEnabled()
+    assert not win.index_group.isEnabled()
+
+    win.y_index_spin.setValue(target_index)
+    if return_to_start:
+        win.y_index_spin.setValue(start_index)
+    thread._outcome = fit1d_module._FitWorkerOutcome(
+        "success", result=_fit_result_dataset(win._params)
+    )
+    win._finalize_fit_thread(thread)
+
+    assert win._current_idx == (start_index if return_to_start else target_index)
+    assert all(result is None for result in win._result_ds_full)
+    assert win._last_result_ds is None
+    assert win._setup_tab.isEnabled()
+    assert win.fit_options_group.isEnabled()
+    assert win.parameters_group.isEnabled()
+    assert win.current_param_group.isEnabled()
+    assert win.index_group.isEnabled()
 
 
 def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
@@ -1333,12 +1380,16 @@ def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
         def is_alive(self) -> bool:
             return False
 
+        def release_payload(self) -> None:
+            pass
+
     old_thread = _FinishedThread()
     win._fit_thread = old_thread  # type: ignore[assignment]
     win._fit_worker_callbacks[old_thread] = fit1d_module._FitWorkerCallbacks(  # type: ignore[index]
         on_success=lambda _result: None,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     win._last_result_ds = xr.Dataset()
     win.refit_on_source_update_check.setChecked(True)
@@ -1401,6 +1452,58 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
 
     assert started_steps == [1]
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
+
+
+def test_fit2d_stale_deferred_step_does_not_modify_new_sequence(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_2d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    phase = ["old"]
+    started_steps: list[tuple[str, int]] = []
+    deferred: list[Callable[[], None]] = []
+
+    monkeypatch.setattr(win, "_defer_next_fit_step", deferred.append)
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append((phase[0], step))
+        win._fit_start_time = 0.0
+        if phase[0] == "old":
+            on_success(_fit_result_dataset(win._params))
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win._run_fit_2d("up")
+    assert len(deferred) == 1
+    stale_callback = deferred.pop()
+    win._finish_fit_2d_sequence()
+
+    phase[0] = "new"
+    win._run_fit_2d("up")
+    current_generation = win._fit_2d_generation
+    remaining_indices = list(win._fit_2d_indices)
+    stale_callback()
+
+    assert started_steps == [("old", 1), ("new", 1)]
+    assert win._fit_2d_generation == current_generation
+    assert win._fit_2d_indices == remaining_indices
+    win._finish_fit_2d_sequence()
 
 
 def test_fit2d_next_step_requests_paint_before_deferred_next_step(
@@ -1835,7 +1938,7 @@ def test_fit2d_late_cancel_keeps_completed_step_and_stops_sequence(
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    deferred: list[types.MethodType] = []
+    deferred: list[Callable[[], None]] = []
     result_ds = _fit_result_dataset(win._params)
     monkeypatch.setattr(
         win, "_defer_next_fit_step", lambda callback: deferred.append(callback)
@@ -1849,11 +1952,17 @@ def test_fit2d_late_cancel_keeps_completed_step_and_stops_sequence(
     class _Thread:
         _outcome = fit1d_module._FitWorkerOutcome("success", result=result_ds)
 
+        def release_payload(self) -> None:
+            pass
+
     thread = _Thread()
+    win._fit_sequence_generation += 1
+    generation = win._fit_sequence_generation
+    win._fit_2d_generation = generation
 
     def _on_success(completed: xr.Dataset) -> None:
         win._store_fit_2d_sequence_result(0, completed, 0.0)
-        win._defer_next_fit_step(win._start_next_fit_2d)
+        win._defer_next_fit_step(lambda: win._start_next_fit_2d(generation))
 
     win._fit_2d_total = 2
     win._fit_2d_indices = [1]
@@ -1864,6 +1973,7 @@ def test_fit2d_late_cancel_keeps_completed_step_and_stops_sequence(
         on_success=_on_success,
         on_timeout=lambda: None,
         on_error=lambda _message: None,
+        job=win._fit_job(),
     )
     win._fit_cancel_requested = True
     fit1d_module._register_running_fit_worker(thread, win)  # type: ignore[arg-type]

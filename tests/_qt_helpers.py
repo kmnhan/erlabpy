@@ -126,6 +126,7 @@ def _test_qt_clipboard() -> InMemoryClipboard:
 # Install this before test collection. Calls through the Python Qt API stay isolated
 # during collection, fixture setup, fixture teardown, and conftest reloads.
 QtWidgets.QApplication.clipboard = staticmethod(_test_qt_clipboard)
+QtGui.QGuiApplication.clipboard = staticmethod(_test_qt_clipboard)
 
 
 _ACTIVE_TEST_TEXT_CLIPBOARD = ""

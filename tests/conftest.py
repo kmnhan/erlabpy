@@ -47,6 +47,7 @@ from tests._qt_helpers import (
     QTCORE_EXIT_CLEANUP,
     InMemoryClipboard,
     QtCore,
+    QtGui as QtGui,
     QtWidgets,
     reset_test_qt_clipboard,
     reset_test_text_clipboard,

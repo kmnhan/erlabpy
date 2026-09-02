@@ -27,6 +27,7 @@ _CONFTEST = _load_conftest_module()
 def test_qt_clipboard_is_process_local_and_resettable() -> None:
     first = _CONFTEST.QtWidgets.QApplication.clipboard()
     assert isinstance(first, _CONFTEST.InMemoryClipboard)
+    assert first is _CONFTEST.QtGui.QGuiApplication.clipboard()
     first.setText("test-only clipboard value")
     changes: list[None] = []
     first.dataChanged.connect(lambda: changes.append(None))
@@ -34,6 +35,7 @@ def test_qt_clipboard_is_process_local_and_resettable() -> None:
     second = _CONFTEST.reset_test_qt_clipboard()
 
     assert second is _CONFTEST.QtWidgets.QApplication.clipboard()
+    assert second is _CONFTEST.QtGui.QGuiApplication.clipboard()
     assert second is first
     assert second.text() == ""
     second.setText("next test value")
