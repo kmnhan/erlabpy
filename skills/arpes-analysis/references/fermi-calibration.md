@@ -235,7 +235,7 @@ produce a false edge trajectory.
 
 Exclude detector and analyzer-acceptance boundaries from edge diagnostics. A circular
 deflector-map mask is an analyzer boundary. Its shape and center do not measure sample
-normal emission or Fermi-edge curvature.
+normal emission or Fermi edge curvature.
 
 Retain the angle-energy diagnostic and request a compatible reference spectrum. You may
 report a scalar fit to an integrated EDC as an approximate global energy offset, but:

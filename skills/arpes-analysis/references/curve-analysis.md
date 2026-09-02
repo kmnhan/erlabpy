@@ -112,7 +112,7 @@ Choose the EDC model from the selected energy window:
   case, do not duplicate that resolution in the Voigt sigma.
 - Use `fd=False` when the fitted window is fully below the cutoff or when the model must
   not impose one.
-- Use `era.gold.quick_fit` for Fermi-edge calibration. Do not use a spectral peak fit as
+- Use `era.gold.quick_fit` for Fermi edge calibration. Do not use a spectral peak fit as
   a substitute for energy calibration.
 - Fix the calibrated Fermi center to zero when the EDC model includes a cutoff, unless
   the analysis explicitly tests a remaining offset.
@@ -239,6 +239,6 @@ slices, and uncertainty handling in the notebook.
 ## Use interactive fitting
 
 Use `ftool` to choose regions, models, bounds, and parameter propagation when sequence
-fits need visual tuning. Use `goldtool` for Fermi-edge fits. Copy the accepted public
+fits need visual tuning. Use `goldtool` for Fermi edge fits. Copy the accepted public
 API code into the notebook, rerun it, and validate the resulting dataset. Do not make
 the final notebook depend on the interactive window.

@@ -25,13 +25,13 @@ after compatible updates.
 
 (guide-goldtool-edge-controls)=
 
-## Fermi-edge fit controls
+## Fermi edge fit controls
 
 The ROI defines the detector-coordinate range and the outer energy range used for the
 fit.
 
 - {guilabel}`T (K)` sets the sample temperature. {guilabel}`Fix T` controls whether the
-  full Fermi-edge model can vary it.
+  parameter is fixed in the fitting process.
 - {guilabel}`Resolution` sets the initial energy-resolution FWHM in electronvolts.
 - {guilabel}`Step edge` uses a Gaussian-broadened step instead of the Fermi-Dirac
   model. It disables {guilabel}`Fix T`.
@@ -57,6 +57,5 @@ edge centers:
   coordinates and opens the resulting edge positions. In Manager, this output can be
   used as the shift source for another compatible ImageTool.
 
-Use {ref}`how-to-gui-fermi-edge-correction` for the complete correction workflow. Use
-{ref}`how-to-gui-fit-fermi-edge-separate-ranges` when one fixed energy range is not
-reliable for all EDCs.
+See {ref}`how-to-gui-fermi-edge-correction` for more information on using the Fermi edge
+fit controls and the corrected output.
