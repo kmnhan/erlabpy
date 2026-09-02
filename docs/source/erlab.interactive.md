@@ -4,6 +4,8 @@
 .. automodule:: erlab.interactive
 ```
 
+(interactive-tool-authoring-api)=
+
 ## Interactive-tool authoring API
 
 The following protected members are extension points for interactive tools. Use them
@@ -11,9 +13,12 @@ only when you implement a subclass of {class}`erlab.interactive.utils.ToolWindow
 
 ```{eval-rst}
 .. autoattribute:: erlab.interactive.utils.ToolWindow.sigInfoChanged
+.. autoattribute:: erlab.interactive.utils.ToolWindow.sigStateChanged
 .. autoattribute:: erlab.interactive.utils.ToolWindow.sigDataChanged
 .. automethod:: erlab.interactive.utils.ToolWindow._append_persistence_payload
 .. automethod:: erlab.interactive.utils.ToolWindow._restore_persistence_payload
+.. automethod:: erlab.interactive.utils.ToolWindow._persistence_data_items
+.. automethod:: erlab.interactive.utils.ToolWindow._restore_persistence_data_items
 .. automethod:: erlab.interactive.utils.ToolWindow._cancel_background_work
 .. automethod:: erlab.interactive.utils.ToolWindow._run_or_defer_restore_work
 .. automethod:: erlab.interactive.utils.ToolWindow._flush_restore_work
@@ -22,6 +27,7 @@ only when you implement a subclass of {class}`erlab.interactive.utils.ToolWindow
 .. automethod:: erlab.interactive.utils.ToolWindow._reset_history_stack
 .. automethod:: erlab.interactive.utils.ToolWindow._replace_last_state
 .. automethod:: erlab.interactive.utils.ToolWindow._notify_data_changed
+.. automethod:: erlab.interactive.utils.ToolWindow._defer_source_refresh
 .. automethod:: erlab.interactive.utils.ToolWindow.validate_update_inputs
    :no-index:
 .. automethod:: erlab.interactive.utils.ToolWindow.update_inputs

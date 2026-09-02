@@ -12,7 +12,7 @@ data loaders, and interactive tools. Ask general questions in
 | Change code or tests | {doc}`contributing/development` covers environment setup, branches, local checks, pull requests, and code standards. |
 | Improve the documentation | {doc}`contributing/documentation` covers documentation types, docstrings, and local builds. |
 | Add support for an endstation | {doc}`contributing/loaders` covers loader implementation, metadata, multiple-file scans, summaries, and tests. |
-| Add an interactive analysis tool | {doc}`contributing/interactive-tools` covers tool windows, Manager integration, state restoration, provenance, and tests. |
+| Add an interactive analysis tool | {doc}`contributing/interactive-tools` covers the required tool interface, optional Manager integration, and tests. |
 
 ```{toctree}
 :hidden: true
