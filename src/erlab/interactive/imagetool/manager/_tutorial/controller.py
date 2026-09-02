@@ -1564,10 +1564,7 @@ class _TutorialController(TourController):
             "select-converted-map": lambda: self._select_uid(self._converted_map_uid()),
             "expand-input-history": self._debug_expand_reusable_input,
             "select-reusable-operations": self._debug_select_reusable_operations,
-            "copy-reusable-operations": lambda: self._debug_trigger(
-                self._manager._metadata_copy_selected_action,
-                "Copy selected steps",
-            ),
+            "copy-reusable-operations": self._debug_copy_reusable_operations,
             "select-raw-cut": lambda: self._select_uid(self._raw_cut_uid()),
             "select-raw-cut-provenance": self._debug_select_provenance_tab,
             "paste-reusable-operations": self._debug_paste_reusable_operations,
@@ -1848,6 +1845,11 @@ class _TutorialController(TourController):
         self._manager._build_metadata_derivation_menu(include_row_actions=False)
         action = self._manager._metadata_paste_steps_action
         self._debug_trigger(action, "Paste selected steps")
+
+    def _debug_copy_reusable_operations(self) -> None:
+        self._manager._build_metadata_derivation_menu()
+        action = self._manager._metadata_copy_selected_action
+        self._debug_trigger(action, "Copy selected steps")
 
     def _debug_open_converted_cut(self) -> None:
         self._converted_cut_open_requested = True
@@ -2671,16 +2673,14 @@ class _TutorialController(TourController):
         self._show_converted_map_provenance()
 
     def _operations_copy_triggered(self) -> None:
-        operations = self._clipboard_provenance_operations()
         payload = self._manager._details_panel._selected_derivation_step_payload()
         self._operations_copied = bool(
-            operations is not None
-            and payload is not None
-            and self._reusable_operations_selected()
-            and operations == payload.operations
+            payload is not None and self._reusable_operations_selected()
         )
         self._copied_reusable_operations = (
-            operations if self._operations_copied else None
+            payload.operations
+            if self._operations_copied and payload is not None
+            else None
         )
         self.notify_state_changed()
 
