@@ -242,6 +242,7 @@ class WorkspaceStore:
         self._handle_generation = 0
         self._h5_file: typing.Any = None
         self._write_depth = 0
+        self._write_owner_thread: int | None = None
         self._write_pending = False
         self._write_opening = False
         self._write_target_path: pathlib.Path | None = None
@@ -385,6 +386,7 @@ class WorkspaceStore:
             store._lock = threading.RLock()
             store._access_condition = threading.Condition(store._lock)
             store._write_lock = threading.RLock()
+            store._write_owner_thread = None
             store._write_pending = False
             store._write_opening = False
         cls._active = weakref.WeakValueDictionary()
@@ -600,10 +602,22 @@ class WorkspaceStore:
                     os.close(file_descriptor)
 
     @contextlib.contextmanager
-    def read_session(self) -> typing.Iterator[typing.Any]:
-        """Yield the shared handle when no writer is changing its open mode."""
+    def read_session(
+        self, *, allow_during_write: bool = False
+    ) -> typing.Iterator[typing.Any]:
+        """Yield a shared handle while it is stable for the requested read.
+
+        Array workers can read immutable payloads during an established write.
+        Metadata readers wait until the complete write is visible.
+        The store lock stays held until the read finishes, which serializes the
+        shared HDF5 wrappers and makes handle changes wait for the reader.
+        """
         with self._access_condition:
-            while self._write_opening:
+            writer_owned = self._write_owner_thread == threading.get_ident()
+            while not writer_owned and (
+                self._write_opening
+                or (self._write_depth > 0 and not allow_during_write)
+            ):
                 self._access_condition.wait()
             if self.closed:
                 raise RuntimeError("Workspace store is closed")
@@ -637,8 +651,8 @@ class WorkspaceStore:
 
                 def _begin_open_attempt() -> None:
                     with self._access_condition:
-                        self._release_handle()
                         self._write_opening = True
+                        self._release_handle()
 
                 def _end_failed_open_attempt() -> None:
                     with self._access_condition:
@@ -677,6 +691,7 @@ class WorkspaceStore:
                 except BaseException:
                     with self._access_condition:
                         self._write_target_path = None
+                        self._write_owner_thread = None
                         self._write_pending = False
                         self._write_opening = False
                         self._access_condition.notify_all()
@@ -689,6 +704,7 @@ class WorkspaceStore:
                     self._write_target_path = copy_on_write_path
                     self._handle_generation += 1
                     self._write_depth = 1
+                    self._write_owner_thread = threading.get_ident()
                     self._write_opening = False
                     self._access_condition.notify_all()
             try:
@@ -700,14 +716,16 @@ class WorkspaceStore:
                         self._write_depth -= 1
                 else:
                     try:
-                        with self._lock:
+                        with self._access_condition:
                             self._write_depth = 0
+                            self._write_opening = True
                             try:
                                 if succeeded and copy_on_write_path is not None:
                                     self.flush(durable=True)
                             finally:
                                 self._release_handle()
                                 self._write_target_path = None
+                                self._write_owner_thread = None
                         if (
                             succeeded
                             and copy_on_write_path is not None
@@ -729,6 +747,7 @@ class WorkspaceStore:
                                 raise
                     finally:
                         with self._access_condition:
+                            self._write_owner_thread = None
                             self._write_pending = False
                             self._write_opening = False
                             self._access_condition.notify_all()

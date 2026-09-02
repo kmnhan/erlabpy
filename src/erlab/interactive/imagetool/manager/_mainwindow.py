@@ -3096,7 +3096,8 @@ class ImageToolManager(_ImageToolManagerBase):
     @QtCore.Slot()
     def garbage_collect(self) -> None:
         """Run garbage collection to free up memory."""
-        gc.collect()  # pragma: no cover
+        if gc.isenabled():
+            gc.collect()  # pragma: no cover
 
     # def __del__(self):
     # """Ensure proper cleanup of server thread when the manager is deleted."""

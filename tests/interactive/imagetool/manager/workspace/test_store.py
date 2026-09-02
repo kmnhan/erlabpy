@@ -1507,6 +1507,55 @@ def test_workspace_writer_waits_only_for_active_hdf5_reader(
         assert store.h5_file.attrs["overlap_test"]
 
 
+def test_workspace_store_reentrant_and_writer_owned_read_sessions(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.read_session() as outer, store.read_session() as inner:
+            assert inner is outer
+
+        with store.write_session() as writable, store.read_session() as reader:
+            assert reader is writable
+
+
+def test_workspace_metadata_reads_wait_during_established_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    metadata_started = threading.Event()
+    metadata_finished = threading.Event()
+    payload_finished = threading.Event()
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+
+        def _read_metadata() -> None:
+            metadata_started.set()
+            store.generations()
+            metadata_finished.set()
+
+        def _read_payload() -> None:
+            with store.read_session(allow_during_write=True) as h5_file:
+                assert h5_file.id.valid
+            payload_finished.set()
+
+        with store.write_session():
+            payload_reader = threading.Thread(target=_read_payload)
+            payload_reader.start()
+            assert payload_finished.wait(2)
+            payload_reader.join(2)
+            assert not payload_reader.is_alive()
+
+            metadata_reader = threading.Thread(target=_read_metadata)
+            metadata_reader.start()
+            assert metadata_started.wait(2)
+            assert not metadata_finished.wait(0.1)
+
+        metadata_reader.join(2)
+        assert metadata_finished.is_set()
+        assert not metadata_reader.is_alive()
+
+
 def test_workspace_writer_does_not_report_wait_without_overlap(
     tmp_path: pathlib.Path,
 ) -> None:

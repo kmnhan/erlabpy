@@ -35,7 +35,6 @@ import lmfit
 import numexpr
 import numpy as np
 import pooch
-import pyperclip
 import pytest
 import requests
 import xarray as xr
@@ -43,7 +42,15 @@ from numpy.testing import assert_almost_equal
 
 # Import before erlab so PyQt's atexit callback can be captured on first import.
 # isort: off
-from tests._qt_helpers import API_NAME, QTCORE_EXIT_CLEANUP, QtCore, QtWidgets
+from tests._qt_helpers import (
+    API_NAME,
+    QTCORE_EXIT_CLEANUP,
+    InMemoryClipboard,
+    QtCore,
+    QtWidgets,
+    reset_test_qt_clipboard,
+    reset_test_text_clipboard,
+)
 # isort: on
 
 import erlab
@@ -343,19 +350,20 @@ def _restore_interactive_options_between_tests() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _isolate_pyperclip() -> Iterator[None]:
-    clipboard_text = ""
-
-    def copy_to_memory(content: object) -> None:
-        nonlocal clipboard_text
-        clipboard_text = str(content)
-
-    def paste_from_memory() -> str:
-        return clipboard_text
-
-    with pytest.MonkeyPatch.context() as clipboard_patch:
-        clipboard_patch.setattr(pyperclip, "copy", copy_to_memory)
-        clipboard_patch.setattr(pyperclip, "paste", paste_from_memory)
+    reset_test_text_clipboard()
+    try:
         yield
+    finally:
+        reset_test_text_clipboard()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_qt_clipboard() -> Iterator[InMemoryClipboard]:
+    clipboard = reset_test_qt_clipboard()
+    try:
+        yield clipboard
+    finally:
+        reset_test_qt_clipboard()
 
 
 @pytest.fixture(autouse=True)

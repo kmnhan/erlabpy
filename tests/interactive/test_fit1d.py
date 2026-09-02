@@ -4587,6 +4587,123 @@ def test_fit_worker_suspends_gc_during_run(qtbot, exp_decay_model, monkeypatch) 
             gc.disable()
 
 
+@pytest.mark.parametrize("initially_enabled", [True, False])
+def test_fit_worker_gc_guard_nesting_restores_state(
+    exp_decay_model, initially_enabled
+) -> None:
+    data = _make_1d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    workers = [
+        fit1d._FitWorker(
+            data,
+            "x",
+            exp_decay_model,
+            params,
+            max_nfev=5,
+            method="least_squares",
+            timeout=1.0,
+        )
+        for _ in range(2)
+    ]
+    original_state = gc.isenabled()
+    if initially_enabled:
+        gc.enable()
+    else:
+        gc.disable()
+
+    try:
+        workers[0]._prepare_gc_guard()
+        workers[0]._prepare_gc_guard()
+        workers[1]._prepare_gc_guard()
+        assert not gc.isenabled()
+
+        workers[0]._release_gc_guard()
+        workers[0]._release_gc_guard()
+        assert not gc.isenabled()
+
+        workers[1]._release_gc_guard()
+        assert gc.isenabled() is initially_enabled
+    finally:
+        for worker in workers:
+            worker._release_gc_guard()
+            worker.deleteLater()
+        if original_state:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+def test_fit_worker_gc_guard_rejects_unbalanced_exit() -> None:
+    assert fit1d._fit_worker_gc_depth == 0
+    with pytest.raises(
+        RuntimeError, match="No fit-worker garbage collection guard is active"
+    ):
+        fit1d._exit_fit_worker_gc_guard()
+
+
+def test_fit_worker_gc_guard_is_active_before_qthread_start(
+    exp_decay_model, monkeypatch
+) -> None:
+    worker = fit1d._FitWorker(
+        _make_1d_data(),
+        "x",
+        exp_decay_model,
+        exp_decay_model.make_params(n0=1.0, tau=1.0),
+        max_nfev=5,
+        method="least_squares",
+        timeout=1.0,
+    )
+    gc_states: list[bool] = []
+
+    def _start(_worker, _priority) -> None:
+        gc_states.append(gc.isenabled())
+
+    monkeypatch.setattr(QtCore.QThread, "start", _start)
+    gc_enabled = gc.isenabled()
+    gc.enable()
+    try:
+        worker.start()
+        assert gc_states == [False]
+        assert not gc.isenabled()
+        worker._release_gc_guard()
+        assert gc.isenabled()
+    finally:
+        worker._release_gc_guard()
+        worker.deleteLater()
+        if not gc_enabled:
+            gc.disable()
+
+
+def test_fit_worker_start_failure_releases_gc_guard(
+    exp_decay_model, monkeypatch
+) -> None:
+    worker = fit1d._FitWorker(
+        _make_1d_data(),
+        "x",
+        exp_decay_model,
+        exp_decay_model.make_params(n0=1.0, tau=1.0),
+        max_nfev=5,
+        method="least_squares",
+        timeout=1.0,
+    )
+
+    def _start(_worker, _priority) -> None:
+        raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(QtCore.QThread, "start", _start)
+    gc_enabled = gc.isenabled()
+    gc.enable()
+    try:
+        with pytest.raises(RuntimeError, match="thread start failed"):
+            worker.start()
+        assert gc.isenabled()
+    finally:
+        worker._release_gc_guard()
+        worker.deleteLater()
+        if not gc_enabled:
+            gc.disable()
+
+
 def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)

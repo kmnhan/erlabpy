@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import itertools
 import json
@@ -9,7 +10,7 @@ import traceback
 import typing
 
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
@@ -59,7 +60,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     import xarray as xr
 
@@ -84,6 +85,8 @@ class _LineageController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
         self._tool_input_refresh_uids: set[str] = set()
+        self._remove_confirmation_dialog: QtWidgets.QMessageBox | None = None
+        self._remove_confirmation_finished_callback: Callable[[int], None] | None = None
 
     def _authorize_provenance_execution(
         self,
@@ -2105,10 +2108,21 @@ class _LineageController:
 
     def remove_selected(self) -> None:
         """Discard selected ImageTool windows."""
+        current_dialog = self._remove_confirmation_dialog
+        if current_dialog is not None:
+            if erlab.interactive.utils.qt_is_valid(current_dialog):
+                current_dialog.raise_()
+                current_dialog.activateWindow()
+                return
+            self._remove_confirmation_dialog = None
+            self._remove_confirmation_finished_callback = None
+
         indices = list(self._manager._selected_imagetool_targets())
         child_uids = list(self._manager._selected_tool_uids())
 
         msg_box = QtWidgets.QMessageBox(self._manager)
+        msg_box.setObjectName("managerRemoveSelectedConfirmationDialog")
+        msg_box.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg_box.setText("Remove selected windows?")
 
@@ -2140,5 +2154,39 @@ class _LineageController:
         )
         msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
-        if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._manager._remove_imagetools(indices, child_uids=child_uids)
+        def _finished(result: int) -> None:
+            if self._remove_confirmation_dialog is not msg_box:
+                return
+
+            callback = self._remove_confirmation_finished_callback
+            if erlab.interactive.utils.qt_is_valid(msg_box) and callback is not None:
+                with contextlib.suppress(TypeError, RuntimeError):
+                    msg_box.finished.disconnect(callback)
+            self._remove_confirmation_dialog = None
+            self._remove_confirmation_finished_callback = None
+            if erlab.interactive.utils.qt_is_valid(msg_box):
+                msg_box.deleteLater()
+
+            manager = self._manager
+            if (
+                result != QtWidgets.QMessageBox.StandardButton.Yes.value
+                or not erlab.interactive.utils.qt_is_valid(manager)
+            ):
+                return
+
+            def _remove() -> None:
+                if erlab.interactive.utils.qt_is_valid(manager):
+                    manager._remove_imagetools(indices, child_uids=child_uids)
+
+            erlab.interactive.utils.single_shot(manager, 0, _remove)
+
+        def _destroyed(_object: object | None = None) -> None:
+            if self._remove_confirmation_dialog is msg_box:
+                self._remove_confirmation_dialog = None
+                self._remove_confirmation_finished_callback = None
+
+        self._remove_confirmation_dialog = msg_box
+        self._remove_confirmation_finished_callback = _finished
+        msg_box.finished.connect(_finished)
+        msg_box.destroyed.connect(_destroyed)
+        msg_box.open()
