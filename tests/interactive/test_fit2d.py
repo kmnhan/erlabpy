@@ -1219,21 +1219,16 @@ def test_fit2d_apply_inputs_returns_false_if_fit_thread_stays_alive(qtbot) -> No
     class _StuckThread:
         def __init__(self) -> None:
             self.cancel_called = False
-            self.interrupted = False
-            self.wait_timeout_ms: int | None = None
+            self.join_timeout: float | None = None
 
         def cancel(self) -> None:
             self.cancel_called = True
 
-        def isRunning(self) -> bool:
+        def is_alive(self) -> bool:
             return True
 
-        def requestInterruption(self) -> None:
-            self.interrupted = True
-
-        def wait(self, timeout_ms: int) -> bool:
-            self.wait_timeout_ms = timeout_ms
-            return False
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeout = timeout
 
     stuck_thread = _StuckThread()
     win._fit_thread = stuck_thread  # type: ignore[assignment]
@@ -1246,8 +1241,7 @@ def test_fit2d_apply_inputs_returns_false_if_fit_thread_stays_alive(qtbot) -> No
     win.set_script_inputs((script_input,), primary_input="data")
     assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert stuck_thread.cancel_called
-    assert stuck_thread.interrupted
-    assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    assert stuck_thread.join_timeout == win.BACKGROUND_TASK_TIMEOUT_MS / 1000
     assert win.centralWidget() is old_central
     assert old_central is not None
     assert old_central.parent() is not None
@@ -1288,22 +1282,16 @@ def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     class _FinishedThread:
         def __init__(self) -> None:
             self.cancel_called = False
-            self.interrupted = False
-            self.wait_timeout_ms: int | None = None
-            self.deleted = False
+            self.join_timeout: float | None = None
 
         def cancel(self) -> None:
             self.cancel_called = True
 
-        def requestInterruption(self) -> None:
-            self.interrupted = True
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeout = timeout
 
-        def wait(self, timeout_ms: int) -> bool:
-            self.wait_timeout_ms = timeout_ms
-            return True
-
-        def deleteLater(self) -> None:
-            self.deleted = True
+        def is_alive(self) -> bool:
+            return False
 
     old_thread = _FinishedThread()
     win._fit_thread = old_thread  # type: ignore[assignment]
@@ -1327,9 +1315,7 @@ def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     assert win._apply_inputs({"data": updated}, (script_input,)) is False
     assert started == [True]
     assert old_thread.cancel_called
-    assert old_thread.interrupted
-    assert old_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
-    assert old_thread.deleted is True
+    assert old_thread.join_timeout == win.BACKGROUND_TASK_TIMEOUT_MS / 1000
 
 
 def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
