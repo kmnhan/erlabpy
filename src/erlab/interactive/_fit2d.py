@@ -128,7 +128,7 @@ def _rebuild_ui(
         @functools.wraps(func)
         def wrapper(self: Fit2DTool, *args: _P.args, **kwargs: _P.kwargs) -> _R:
             old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
-            self._cancel_fit()
+            self._cancel_fit_for_state_change()
             # A rebuild either produces a new result payload or owns no result
             # payload. Do not carry an old serialized result through a destructive
             # transpose or a replacement restore.

@@ -1271,6 +1271,45 @@ def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None
     )
 
 
+def test_fit2d_transpose_discards_published_fit_success(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    completed: list[xr.Dataset] = []
+
+    class _Thread:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self._outcome = fit1d_module._FitWorkerOutcome(
+                "success", result=xr.Dataset()
+            )
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    thread = _Thread()
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_worker_callbacks[thread] = fit1d_module._FitWorkerCallbacks(  # type: ignore[index]
+        on_success=completed.append,
+        on_timeout=lambda: None,
+        on_error=lambda _message: None,
+    )
+    fit1d_module._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
+
+    try:
+        win._do_transpose()
+
+        assert thread.cancelled
+        assert completed == []
+        assert win._fit_thread is None
+        assert thread not in win._fit_worker_callbacks
+        assert thread not in fit1d_module._running_fit_workers
+        assert win.tool_data.dims == data.dims[::-1]
+    finally:
+        fit1d_module._release_running_fit_worker(thread)  # type: ignore[arg-type]
+
+
 def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
     qtbot, monkeypatch
 ) -> None:
@@ -1283,6 +1322,7 @@ def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
         def __init__(self) -> None:
             self.cancel_called = False
             self.join_timeout: float | None = None
+            self._outcome = fit1d_module._FitWorkerOutcome("cancelled")
 
         def cancel(self) -> None:
             self.cancel_called = True
@@ -1295,6 +1335,11 @@ def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
 
     old_thread = _FinishedThread()
     win._fit_thread = old_thread  # type: ignore[assignment]
+    win._fit_worker_callbacks[old_thread] = fit1d_module._FitWorkerCallbacks(  # type: ignore[index]
+        on_success=lambda _result: None,
+        on_timeout=lambda: None,
+        on_error=lambda _message: None,
+    )
     win._last_result_ds = xr.Dataset()
     win.refit_on_source_update_check.setChecked(True)
 
@@ -1780,6 +1825,61 @@ def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
         timeout=1000,
     )
     assert started_steps == [1]
+
+
+def test_fit2d_late_cancel_keeps_completed_step_and_stops_sequence(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    deferred: list[types.MethodType] = []
+    result_ds = _fit_result_dataset(win._params)
+    monkeypatch.setattr(
+        win, "_defer_next_fit_step", lambda callback: deferred.append(callback)
+    )
+    monkeypatch.setattr(
+        win,
+        "_start_fit_worker",
+        lambda *_args, **_kwargs: pytest.fail("late cancellation started another fit"),
+    )
+
+    class _Thread:
+        _outcome = fit1d_module._FitWorkerOutcome("success", result=result_ds)
+
+    thread = _Thread()
+
+    def _on_success(completed: xr.Dataset) -> None:
+        win._store_fit_2d_sequence_result(0, completed, 0.0)
+        win._defer_next_fit_step(win._start_next_fit_2d)
+
+    win._fit_2d_total = 2
+    win._fit_2d_indices = [1]
+    win._fit_running_multi = True
+    win._fit_start_time = 0.0
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._fit_worker_callbacks[thread] = fit1d_module._FitWorkerCallbacks(  # type: ignore[index]
+        on_success=_on_success,
+        on_timeout=lambda: None,
+        on_error=lambda _message: None,
+    )
+    win._fit_cancel_requested = True
+    fit1d_module._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
+
+    try:
+        win._finalize_fit_thread(thread)  # type: ignore[arg-type]
+
+        assert win._result_ds_full[0] is not None
+        assert win._fit_thread is None
+        assert not win._fit_cancel_requested
+        assert win._fit_2d_total == 0
+        assert win._fit_2d_indices == []
+        assert len(deferred) == 1
+        deferred[0]()
+    finally:
+        fit1d_module._release_running_fit_worker(thread)  # type: ignore[arg-type]
 
 
 def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> None:
