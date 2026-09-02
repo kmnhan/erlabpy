@@ -61,7 +61,7 @@ extensions = [
     "sphinxext.rediraffe",
     "sphinx_llm.txt",
 ]
-llms_txt_build_parallel = True
+llms_txt_build_parallel = not bool(os.getenv("READTHEDOCS"))
 myst_enable_extensions = ["colon_fence", "dollarmath", "substitution"]
 
 mermaid_light_theme = "neutral"

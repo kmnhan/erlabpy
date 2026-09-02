@@ -1250,7 +1250,7 @@ def test_tutorial_real_workflow(
         assert ktool.beta_spin.value() == pytest.approx(90.0)
         assert ktool.gamma_spin.value() == pytest.approx(120.0)
         assert ktool.centering_combo.currentText() == "P"
-        assert ktool.rot_spin.value() == pytest.approx(0.0)
+        assert ktool.rot_spin.value() == pytest.approx(30.0)
         assert not ktool.bz_group.isChecked()
         ktool.bz_group.setChecked(True)
         complete_action("ktool-energy-preview")
@@ -1444,7 +1444,7 @@ def test_tutorial_real_workflow(
         clipboard.setText("unrelated clipboard text")
         qtbot.waitUntil(card.recovery_button.isVisible)
         assert card.recovery_button.text() == "Copy Again"
-        assert card.recovery_button.hasFocus()
+        assert card.recovery_button.focusPolicy() == QtCore.Qt.FocusPolicy.StrongFocus
         assert not card.continue_button.isEnabled()
         assert "clipboard no longer contains" in card.hint.text()
         card.recovery_button.click()

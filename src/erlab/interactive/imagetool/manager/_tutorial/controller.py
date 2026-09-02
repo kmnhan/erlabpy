@@ -65,7 +65,7 @@ _TUTORIAL_OPTION_OVERRIDES: dict[str, object] = {
     "ktool/bz/default_beta": 90.0,
     "ktool/bz/default_gamma": 120.0,
     "ktool/bz/default_centering": "P",
-    "ktool/bz/default_rot": 0.0,
+    "ktool/bz/default_rot": 30.0,
 }
 
 
