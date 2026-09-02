@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
-import gc
 import logging
 import pathlib
 import re
@@ -863,45 +862,16 @@ class _FitWorkerCallbacks(typing.NamedTuple):
 
 
 _running_fit_workers: dict[_FitWorker, QtWidgets.QWidget] = {}
-_gc_enabled_before_fit_workers: bool | None = None
-_restoring_gc_after_fit_workers = False
 
 
 def _register_running_fit_worker(thread: _FitWorker, owner: QtWidgets.QWidget) -> None:
-    """Keep a fit and its owner alive while cyclic collection is suspended."""
-    global _gc_enabled_before_fit_workers
-
-    if thread in _running_fit_workers:
-        return
-    if not _running_fit_workers:
-        if _gc_enabled_before_fit_workers is None:
-            _gc_enabled_before_fit_workers = gc.isenabled()
-        if gc.isenabled():
-            gc.disable()
+    """Keep a fit worker and its owner alive until GUI-thread finalization."""
     _running_fit_workers[thread] = owner
 
 
 def _release_running_fit_worker(thread: _FitWorker) -> None:
-    """Release a stopped fit worker and restore collection on the GUI thread."""
-    global _gc_enabled_before_fit_workers, _restoring_gc_after_fit_workers
-
-    if _running_fit_workers.pop(thread, None) is None or _running_fit_workers:
-        return
-
-    if not _gc_enabled_before_fit_workers:
-        _gc_enabled_before_fit_workers = None
-        return
-    if _restoring_gc_after_fit_workers:
-        return
-
-    _restoring_gc_after_fit_workers = True
-    try:
-        gc.collect()
-    finally:
-        _restoring_gc_after_fit_workers = False
-        if not _running_fit_workers:
-            _gc_enabled_before_fit_workers = None
-            gc.enable()
+    """Release a stopped fit worker after GUI-thread finalization."""
+    _running_fit_workers.pop(thread, None)
 
 
 def _rebuild_ui(
