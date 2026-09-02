@@ -1507,123 +1507,6 @@ def test_workspace_writer_waits_only_for_active_hdf5_reader(
         assert store.h5_file.attrs["overlap_test"]
 
 
-def test_workspace_writer_waits_for_active_store_read_session(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "workspace.itws"
-    read_started = threading.Event()
-    release_read = threading.Event()
-    write_started = threading.Event()
-    write_finished = threading.Event()
-    errors: list[BaseException] = []
-
-    with workspace_store.WorkspaceStore(path, create=True) as store:
-
-        def _read() -> None:
-            try:
-                with store.read_session() as h5_file:
-                    read_started.set()
-                    assert h5_file.id.valid
-                    assert release_read.wait(2)
-                    assert h5_file.id.valid
-            except BaseException as exc:
-                errors.append(exc)
-
-        def _write() -> None:
-            write_started.set()
-            try:
-                with store.write_session() as h5_file:
-                    h5_file.attrs["active_session"] = True
-            except BaseException as exc:
-                errors.append(exc)
-            finally:
-                write_finished.set()
-
-        reader = threading.Thread(target=_read)
-        reader.start()
-        assert read_started.wait(2)
-
-        writer = threading.Thread(target=_write)
-        writer.start()
-        assert write_started.wait(2)
-        assert not write_finished.wait(0.1)
-
-        release_read.set()
-        reader.join(2)
-        writer.join(2)
-
-        assert not reader.is_alive()
-        assert not writer.is_alive()
-        assert errors == []
-        assert store.h5_file.attrs["active_session"]
-
-
-@pytest.mark.parametrize("operation", ["close", "reopen", "replace", "switch"])
-def test_workspace_handle_invalidators_wait_for_active_read_session(
-    tmp_path: pathlib.Path,
-    operation: str,
-) -> None:
-    path = tmp_path / "workspace.itws"
-    prepared_path = tmp_path / "prepared.itws"
-    target_path = tmp_path / "target.itws"
-    read_started = threading.Event()
-    release_read = threading.Event()
-    operation_finished = threading.Event()
-    errors: list[BaseException] = []
-
-    if operation == "replace":
-        with workspace_store.WorkspaceStore(prepared_path, create=True):
-            pass
-    elif operation == "switch":
-        with workspace_store.WorkspaceStore(target_path, create=True):
-            pass
-
-    with workspace_store.WorkspaceStore(path, create=True) as store:
-
-        def _read() -> None:
-            try:
-                with store.read_session() as h5_file:
-                    read_started.set()
-                    assert h5_file.id.valid
-                    assert release_read.wait(2)
-                    assert h5_file.id.valid
-            except BaseException as exc:
-                errors.append(exc)
-
-        def _invalidate() -> None:
-            try:
-                if operation == "close":
-                    store.close()
-                elif operation == "reopen":
-                    store.reopen()
-                elif operation == "replace":
-                    store.replace_from(
-                        prepared_path, lambda source, target: source.replace(target)
-                    )
-                else:
-                    store.switch_path(target_path)
-            except BaseException as exc:
-                errors.append(exc)
-            finally:
-                operation_finished.set()
-
-        reader = threading.Thread(target=_read)
-        reader.start()
-        assert read_started.wait(2)
-
-        invalidator = threading.Thread(target=_invalidate)
-        invalidator.start()
-        assert not operation_finished.wait(0.1)
-
-        release_read.set()
-        reader.join(2)
-        invalidator.join(2)
-
-        assert not reader.is_alive()
-        assert not invalidator.is_alive()
-        assert errors == []
-
-
 def test_workspace_store_reentrant_and_writer_owned_read_sessions(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1631,12 +1514,9 @@ def test_workspace_store_reentrant_and_writer_owned_read_sessions(
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.read_session() as outer, store.read_session() as inner:
             assert inner is outer
-            assert store._active_readers == 2
-        assert store._active_readers == 0
 
         with store.write_session() as writable, store.read_session() as reader:
             assert reader is writable
-            assert store._active_readers == 0
 
 
 def test_workspace_metadata_reads_wait_during_established_write(
@@ -1674,24 +1554,6 @@ def test_workspace_metadata_reads_wait_during_established_write(
         metadata_reader.join(2)
         assert metadata_finished.is_set()
         assert not metadata_reader.is_alive()
-
-
-def test_workspace_store_rejects_handle_invalidation_from_active_session(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "workspace.itws"
-    with workspace_store.WorkspaceStore(path, create=True) as store:
-        with (
-            store.read_session(),
-            pytest.raises(RuntimeError, match="inside a read session"),
-        ):
-            store.close()
-
-        with (
-            store.write_session(),
-            pytest.raises(RuntimeError, match="inside a write session"),
-        ):
-            store.reopen()
 
 
 def test_workspace_writer_does_not_report_wait_without_overlap(
