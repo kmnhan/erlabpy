@@ -1676,10 +1676,16 @@ def test_tutorial_debug_skip_completes_real_workflow(
         driver.timeout.connect(skip_current_step)
         driver.start()
         try:
-            qtbot.waitUntil(
-                lambda: controller.is_cleaned or controller._fatal_error is not None,
-                timeout=120_000,
-            )
+            while not (controller.is_cleaned or controller._fatal_error is not None):
+                activation = controller._step_activation
+                qtbot.waitUntil(
+                    lambda activation=activation: (
+                        controller.is_cleaned
+                        or controller._fatal_error is not None
+                        or controller._step_activation != activation
+                    ),
+                    timeout=120_000,
+                )
         finally:
             driver.stop()
 
