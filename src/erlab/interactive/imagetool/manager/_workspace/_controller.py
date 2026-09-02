@@ -136,6 +136,8 @@ class _WorkspaceController:
             workspace_saving._WorkspaceGcResultReceiver | None
         ) = None
         self._workspace_gc_requested = False
+        self._code_trust_manifest_binding_depth = 0
+        self._code_trust_manifest_binding_pending = False
 
     def _loaded_workspace_code_trust(
         self,
@@ -181,6 +183,7 @@ class _WorkspaceController:
     ) -> bool:
         """Apply incoming trust while payloads load, and roll it back on failure."""
         previous = self._manager._workspace_state.code_trust
+        previous_binding_pending = self._code_trust_manifest_binding_pending
         if (
             not replace
             and document_trust_needs_review(previous)
@@ -190,13 +193,29 @@ class _WorkspaceController:
             # signed pre-rebase location authorize an equal existing location.
             incoming = untrusted_document_trust(incoming.manifest)
         self._merge_workspace_code_trust(incoming, replace=replace)
+        self._code_trust_manifest_binding_depth += 1
         try:
             loaded = load()
         except Exception:
+            self._code_trust_manifest_binding_pending = previous_binding_pending
             self._set_workspace_code_trust(previous)
             raise
+        finally:
+            self._code_trust_manifest_binding_depth -= 1
         if not loaded:
+            self._code_trust_manifest_binding_pending = previous_binding_pending
             self._set_workspace_code_trust(previous)
+        elif (
+            self._code_trust_manifest_binding_depth == 0
+            and self._code_trust_manifest_binding_pending
+        ):
+            self._code_trust_manifest_binding_pending = False
+            try:
+                self._bind_current_workspace_manifest_if_review_needed()
+            except Exception:
+                self._code_trust_manifest_binding_pending = previous_binding_pending
+                self._set_workspace_code_trust(previous)
+                raise
         return loaded
 
     def _set_workspace_code_trust(self, trust: _DocumentTrust) -> None:
@@ -426,6 +445,9 @@ class _WorkspaceController:
         """Bind the full inventory after a node changes a paused workspace."""
         trust = self._manager._workspace_state.code_trust
         if not document_trust_needs_review(trust):
+            return
+        if self._code_trust_manifest_binding_depth > 0:
+            self._code_trust_manifest_binding_pending = True
             return
         try:
             manifest = workspace_trust.current_workspace_code_trust_manifest(
@@ -2155,6 +2177,7 @@ class _WorkspaceController:
                 self.saving._save_workspace_document(
                     existing_access.path,
                     document_access=existing_access,
+                    legacy_source_path=existing_access.path,
                 )
             return str(existing_access.path), self._take_workspace_access_lock(
                 existing_access

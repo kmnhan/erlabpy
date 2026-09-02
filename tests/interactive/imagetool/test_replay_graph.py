@@ -1236,6 +1236,32 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         execute_replay_graph(empty_graph)
 
 
+def test_canonical_replay_keys_stay_bounded_for_long_chains() -> None:
+    first = _graph._canonical_key("source", {"left": 1, "right": 2})
+    reordered = _graph._canonical_key("source", {"right": 2, "left": 1})
+
+    assert first == reordered
+    assert first.startswith("canonical-sha256:")
+    assert len(first) == 81
+    assert first != _graph._canonical_key("other", {"left": 1, "right": 2})
+
+    keys: list[str] = []
+    parent = first
+    for index in range(256):
+        parent = _graph._canonical_key(
+            "operation",
+            {
+                "context": parent,
+                "operation": {"index": index},
+                "parent": parent,
+            },
+        )
+        keys.append(parent)
+
+    assert len(keys) == len(set(keys))
+    assert {len(key) for key in keys} == {81}
+
+
 def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     graph = ReplayGraph()
