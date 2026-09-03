@@ -1,9 +1,16 @@
+import numpy as np
 import pytest
 import xarray as xr
 
 import erlab
 from erlab.io.plugins.da30 import DA30Loader
-from erlab.io.plugins.erpes import ERPESLoader, get_cache_file
+from erlab.io.plugins.erpes import (
+    ERPESLoader,
+    _get_attrs_time,
+    _get_seq_start,
+    _get_start_time,
+    get_cache_file,
+)
 
 
 @pytest.fixture(scope="module")
@@ -16,6 +23,83 @@ def data_dir(test_data_dir):
 @pytest.fixture(scope="module")
 def expected_dir(data_dir):
     return data_dir / "expected"
+
+
+@pytest.mark.parametrize(
+    ("coordinate", "converter"),
+    [("seq_start", _get_seq_start), ("attrs_time", _get_attrs_time)],
+)
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        pytest.param(
+            ["2024-01-02T03:04:05.123456", "2024-01-03T04:05:06"],
+            ["2024-01-02T03:04:05.123456", "2024-01-03T04:05:06"],
+            id="valid",
+        ),
+        pytest.param(
+            ["2024-01-02T03:04:05.123456", np.nan],
+            ["2024-01-02T03:04:05.123456", "NaT"],
+            id="partially-missing",
+        ),
+        pytest.param(
+            [np.nan, np.nan],
+            ["NaT", "NaT"],
+            id="missing",
+        ),
+    ],
+)
+def test_sequence_timestamp_dtype(coordinate, converter, values, expected) -> None:
+    data = xr.DataArray(
+        np.zeros(len(values)),
+        dims="scan",
+        coords={coordinate: ("scan", values)},
+    )
+
+    actual = converter(data)
+
+    assert actual.dtype == np.dtype("datetime64[us]")
+    np.testing.assert_array_equal(
+        actual.values, np.asarray(expected, dtype="datetime64[us]")
+    )
+
+
+@pytest.mark.parametrize(
+    ("dates", "times", "expected"),
+    [
+        pytest.param(
+            ["2024-01-02", "2024-01-03"],
+            ["03:04:05.123456", "04:05:06"],
+            ["2024-01-02T03:04:05.123456", "2024-01-03T04:05:06"],
+            id="valid",
+        ),
+        pytest.param(
+            ["2024-01-02", np.nan, "2024-01-04"],
+            ["03:04:05.123456", "04:05:06", np.nan],
+            ["2024-01-02T03:04:05.123456", "NaT", "NaT"],
+            id="partially-missing",
+        ),
+        pytest.param(
+            [np.nan, np.nan],
+            [np.nan, np.nan],
+            ["NaT", "NaT"],
+            id="missing",
+        ),
+    ],
+)
+def test_start_timestamp_dtype(dates, times, expected) -> None:
+    data = xr.DataArray(
+        np.zeros(len(dates)),
+        dims="scan",
+        coords={"Date": ("scan", dates), "Time": ("scan", times)},
+    )
+
+    actual = _get_start_time(data)
+
+    assert actual.dtype == np.dtype("datetime64[us]")
+    np.testing.assert_array_equal(
+        actual.values, np.asarray(expected, dtype="datetime64[us]")
+    )
 
 
 @pytest.mark.parametrize(
