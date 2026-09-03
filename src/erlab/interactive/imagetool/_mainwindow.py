@@ -98,7 +98,6 @@ class BaseImageTool(QtWidgets.QMainWindow):
         central_layout.addWidget(self.controls_bar)
         central_layout.addWidget(self.slicer_area, 1)
         self.setCentralWidget(central_widget)
-        self.resize(720, 720)
 
         try:
             if state is not None:
@@ -111,6 +110,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
         # Allow writing history after initialization
         self.slicer_area._write_history = True
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(720, 720)
 
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.viewer.ImageSlicerArea:

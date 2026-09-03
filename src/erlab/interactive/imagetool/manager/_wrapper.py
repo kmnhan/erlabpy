@@ -424,7 +424,8 @@ class _ManagedWindowNode(QtCore.QObject):
         self._manager = weakref.ref(manager)
         self.uid = uid
         self.parent_uid = parent_uid
-        self._recent_geometry: QtCore.QRect | None = None
+        self._recent_geometry: QtCore.QByteArray | None = None
+        self._has_been_shown = False
         self._created_time = _coerce_added_time(created_time, node_uid=uid)
 
         self._childtools: dict[str, QtWidgets.QWidget] = {}
@@ -728,6 +729,10 @@ class _ManagedWindowNode(QtCore.QObject):
             self._sync_manager_window_reference()
             self._notify_info_and_type_badge_change(previous_type_badge)
             return
+
+        if value.isVisible():
+            self._has_been_shown = True
+            self._recent_geometry = value.saveGeometry()
 
         if isinstance(value, ImageTool):
             self._window_kind = "imagetool"
@@ -2862,6 +2867,8 @@ class _ManagedWindowNode(QtCore.QObject):
             QtCore.QEvent.Type.WindowStateChange,
         )
         if obj == self.window and event_type in tracked_event_types:
+            if event_type == QtCore.QEvent.Type.Show:
+                self._has_been_shown = True
             if self.imagetool is not None and event_type == QtCore.QEvent.Type.Show:
                 erlab.interactive.utils.single_shot(
                     self.slicer_area, 0, self.slicer_area._ensure_secondary_plots
@@ -2897,8 +2904,8 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def visibility_changed(self, *, mark_dirty: bool = True) -> None:
         window = self.window
-        if isinstance(window, QtWidgets.QWidget):
-            self._recent_geometry = window.geometry()
+        if isinstance(window, QtWidgets.QWidget) and self._has_been_shown:
+            self._recent_geometry = window.saveGeometry()
             if mark_dirty:
                 self.manager._mark_node_state_dirty(self.uid)
 
@@ -2909,18 +2916,21 @@ class _ManagedWindowNode(QtCore.QObject):
         window = self.window
         if window is None:
             return
-        if not window.isVisible() and self._recent_geometry is not None:
-            window.setGeometry(self._recent_geometry)
+        first_show = not self._has_been_shown and self._recent_geometry is None
+        if not window.isVisible() and not first_show:
+            recent_geometry = self._recent_geometry
+            if recent_geometry is not None:
+                window.restoreGeometry(recent_geometry)
 
-        if sys.platform == "win32":
+        if sys.platform == "win32" and not first_show:
             window_flags = window.windowFlags()
-            window_geometry = window.geometry()
+            window_geometry = window.saveGeometry()
             window.setWindowFlags(
                 window_flags | QtCore.Qt.WindowType.WindowStaysOnTopHint
             )
             window.show()
             window.setWindowFlags(window_flags)
-            window.setGeometry(window_geometry)
+            window.restoreGeometry(window_geometry)
 
         window.show()
         window.activateWindow()

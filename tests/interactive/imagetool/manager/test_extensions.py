@@ -405,6 +405,7 @@ def test_source_review_dialog_reads_source(
     source.write_text("VALUE = 1\n")
     dialog = extension_dialogs._SourceReviewDialog(source, parent)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint() == QtCore.QSize(760, 600)
     source_editor = dialog.findChild(
         erlab.interactive.utils.PythonCodeEditor,
         "manager_extension_source_review",
@@ -551,6 +552,7 @@ def test_manage_dialog_preserves_selected_extension(
     )
     dialog = extension_dialogs._ManageExtensionsDialog(parent)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint() == QtCore.QSize(1120, 620)
     dialog.set_catalog(_ExtensionCatalogModel(extensions={"lab.py": record}))
     top = dialog.tree.topLevelItem(0)
     assert top.childCount() == 0
@@ -8598,6 +8600,7 @@ def test_extension_source_viewer_uses_python_editor(
         "value = 1\n", parent, title="Source"
     )
     qtbot.addWidget(viewer)
+    assert viewer.sizeHint() == QtCore.QSize(800, 600)
     assert isinstance(viewer.source, erlab.interactive.utils.PythonCodeEditor)
     assert viewer.source.isReadOnly()
 

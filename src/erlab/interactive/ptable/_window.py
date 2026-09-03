@@ -455,7 +455,6 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self._workspace_state_restoring = False
 
         self.setWindowTitle("Periodic Table of the Elements")
-        self.resize(1600, 920)
 
         self.central = QtWidgets.QWidget(self)
         self.setCentralWidget(self.central)
@@ -640,6 +639,9 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self._apply_theme()
         self._refresh_inputs()
         self._refresh_window_state(ensure_visible=False)
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(1600, 920)
 
     @property
     def selected_atomic_number(self) -> int | None:

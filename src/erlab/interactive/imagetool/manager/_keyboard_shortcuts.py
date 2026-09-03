@@ -799,6 +799,9 @@ class _ShortcutTab(QtWidgets.QScrollArea):
 class KeyboardShortcutsDialog(QtWidgets.QDialog):
     """Modeless keyboard shortcut reference for Manager applications."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(760, 580)
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("managerKeyboardShortcutsDialog")
@@ -856,7 +859,6 @@ class KeyboardShortcutsDialog(QtWidgets.QDialog):
         self._close_shortcut.activated.connect(self.close)
 
         self.setMinimumSize(560, 420)
-        self.resize(760, 580)
 
     def _apply_filter(self, text: str) -> None:
         query = " ".join(text.casefold().split())

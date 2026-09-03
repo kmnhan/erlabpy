@@ -1152,11 +1152,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     assert ds.attrs["itool_title"] == "saved scan"
     assert ds.attrs["itool_name"] == "scan"
     assert ds.attrs["erlab_version"] == erlab.__version__
-    assert json.loads(ds.attrs["itool_window_state"]).keys() >= {
-        "geometry",
-        "rect",
-        "visible",
-    }
+    assert json.loads(ds.attrs["itool_window_state"]) == {"visible": False}
     assert json.loads(ds.attrs["itool_provenance_spec"]) == (
         provenance_spec.model_dump(mode="json")
     )
@@ -5876,6 +5872,7 @@ def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
 
     dialog = _SelectDataArraysDialog(None, tree)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint() == QtCore.QSize(820, 420)
     selected_data = dialog.selected_dataarrays()
 
     assert [prepared.selection for prepared in selected_data] == [
@@ -6489,6 +6486,21 @@ def _apply_constrained_splitter_geometry(qtbot, area, splitter_index: int = 0) -
             )
         )
     )
+
+
+def test_window_initial_size_is_a_hint(qtbot) -> None:
+    class ResizeTrackingImageTool(ImageTool):
+        def resize(self, *args: typing.Any) -> None:
+            self.resize_calls = (*getattr(self, "resize_calls", ()), args)
+            super().resize(*args)
+
+    win = ResizeTrackingImageTool(
+        xr.DataArray(np.arange(25).reshape((5, 5)), dims=("x", "y"))
+    )
+    qtbot.addWidget(win)
+
+    assert getattr(win, "resize_calls", ()) == ()
+    assert win.sizeHint() == QtCore.QSize(720, 720)
 
 
 def test_window_resize_preserves_splitter_layout_without_reapplying_sizes(
@@ -10193,6 +10205,7 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     data = _high_dimensional_data()
     dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint().width() == 780
     open_button = dialog.button_box.button(
         QtWidgets.QDialogButtonBox.StandardButton.Open
     )

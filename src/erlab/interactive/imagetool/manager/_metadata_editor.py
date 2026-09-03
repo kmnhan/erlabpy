@@ -1234,6 +1234,10 @@ class _MetadataFieldChooser(QtWidgets.QWidget):
 
 
 class MetadataEditorDialog(QtWidgets.QDialog):
+    def sizeHint(self) -> QtCore.QSize:
+        targets = getattr(self, "targets", ())
+        return QtCore.QSize(980, min(720, 280 + 34 * len(targets)))
+
     def __init__(
         self,
         parent: QtWidgets.QWidget,
@@ -1384,7 +1388,6 @@ class MetadataEditorDialog(QtWidgets.QDialog):
         selection_model.selectionChanged.connect(self._refresh_summary)
         selection_model.currentChanged.connect(self._refresh_summary)
         self._refresh_summary()
-        self.resize(980, min(720, 280 + 34 * len(targets)))
 
     @QtCore.Slot(str)
     def _show_cell_edit_error(self, details: str) -> None:

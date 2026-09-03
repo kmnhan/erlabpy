@@ -1483,7 +1483,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
         self.setMinimumWidth(487)
         self.setMinimumHeight(301)
-        self.resize(974, 602)
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(974, 602)
 
     @QtCore.Slot()
     def _dir_loaded(self) -> None:

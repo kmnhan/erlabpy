@@ -651,6 +651,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self._figure_window = _FigureComposerDisplayWindow(
                 self._document.recipe.setup,
+                owner=self,
                 export_callback=lambda: self.export_figure(),
                 subplot_adjust_callback=lambda: self._show_subplot_adjust_dialog(),
                 axes_customize_callback=lambda: self._show_axes_customize_dialog(),
@@ -746,7 +747,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         figure_window.show_for_setup(
             self._document.recipe.setup, self._figure_window_title(), activate=activate
         )
-        figure_window._place_beside(self)
         self._configure_managed_secondary_window(figure_window)
         self._cancel_preview_render_update()
         self._redraw_plot(show_window=True)

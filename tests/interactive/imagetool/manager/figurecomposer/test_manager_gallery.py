@@ -145,9 +145,22 @@ def test_manager_windows_figure_activation_preserves_resized_geometry(
     ],
 ) -> None:
     class _FlagResizeFigureComposer(FigureComposerTool):
+        flag_changes = 0
+        geometry_sets = 0
+        geometry_restores = 0
+
         def setWindowFlags(self, flags: QtCore.Qt.WindowType) -> None:
+            self.flag_changes += 1
             super().setWindowFlags(flags)
             self.resize(self.width(), self.sizeHint().height())
+
+        def setGeometry(self, rect: QtCore.QRect) -> None:
+            self.geometry_sets += 1
+            super().setGeometry(rect)
+
+        def restoreGeometry(self, geometry: QtCore.QByteArray) -> bool:
+            self.geometry_restores += 1
+            return super().restoreGeometry(geometry)
 
     monkeypatch.setattr(manager_wrapper.sys, "platform", "win32")
     data = xr.DataArray(
@@ -159,12 +172,22 @@ def test_manager_windows_figure_activation_preserves_resized_geometry(
 
     with manager_context() as manager:
         tool = _FlagResizeFigureComposer(data)
-        figure_uid = manager.add_figuretool(tool, show=True)
+        tool.geometry_sets = 0
+        figure_uid = manager.add_figuretool(tool, show=False)
+        node = manager._child_node(figure_uid)
+        assert not node._has_been_shown
+        node.visibility_changed(mark_dirty=False)
+        assert node._recent_geometry is None
+
+        node.show()
         qtbot.waitUntil(tool.isVisible, timeout=5000)
         qtbot.waitUntil(
             lambda: tool.width() >= tool.minimumSizeHint().width(), timeout=5000
         )
-        tool.setGeometry(80, 60, tool.width() + 80, tool.height() + 180)
+        assert tool.flag_changes == 0
+        assert tool.geometry_sets == 0
+        assert tool.geometry_restores == 0
+        tool.setGeometry(QtCore.QRect(80, 60, tool.width() + 80, tool.height() + 180))
         QtWidgets.QApplication.processEvents()
         resized_geometry = tool.geometry()
 
@@ -173,6 +196,65 @@ def test_manager_windows_figure_activation_preserves_resized_geometry(
         manager._figure_collection._show_item(item)
 
         assert tool.geometry() == resized_geometry
+        assert tool.flag_changes == 2
+        assert tool.geometry_sets == 1
+        assert tool.geometry_restores == 1
+
+        tool.hide()
+        qtbot.waitUntil(lambda: not tool.isVisible(), timeout=5000)
+        qtbot.waitUntil(
+            lambda: (
+                manager._child_node(figure_uid)._recent_geometry == tool.saveGeometry()
+            ),
+            timeout=5000,
+        )
+        manager._figure_collection._show_item(item)
+
+        assert tool.geometry() == resized_geometry
+        assert tool.flag_changes == 4
+        assert tool.geometry_sets == 1
+        assert tool.geometry_restores == 3
+
+        tool.showMaximized()
+        qtbot.waitUntil(tool.isMaximized, timeout=5000)
+        normal_geometry = tool.normalGeometry()
+        tool.hide()
+        qtbot.waitUntil(lambda: not tool.isVisible(), timeout=5000)
+        qtbot.waitUntil(
+            lambda: node._recent_geometry == tool.saveGeometry(), timeout=5000
+        )
+        node.show()
+        qtbot.waitUntil(tool.isMaximized, timeout=5000)
+        tool.showNormal()
+        QtWidgets.QApplication.processEvents()
+        assert tool.geometry() == normal_geometry
+
+        previsible = _FlagResizeFigureComposer(data)
+        previsible.show()
+        qtbot.waitUntil(previsible.isVisible, timeout=5000)
+        previsible.setGeometry(
+            QtCore.QRect(120, 90, previsible.width() + 40, previsible.height() + 80)
+        )
+        QtWidgets.QApplication.processEvents()
+        previsible_geometry = previsible.geometry()
+        previsible.flag_changes = 0
+        previsible.geometry_sets = 0
+        previsible.geometry_restores = 0
+
+        previsible_uid = manager.add_figuretool(previsible, show=False)
+        previsible_node = manager._child_node(previsible_uid)
+
+        assert previsible_node._has_been_shown
+        assert previsible_node._recent_geometry == previsible.saveGeometry()
+
+        previsible.hide()
+        qtbot.waitUntil(lambda: not previsible.isVisible(), timeout=5000)
+        previsible_node.show()
+
+        assert previsible.geometry() == previsible_geometry
+        assert previsible.flag_changes == 2
+        assert previsible.geometry_sets == 0
+        assert previsible.geometry_restores == 2
 
 
 def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(

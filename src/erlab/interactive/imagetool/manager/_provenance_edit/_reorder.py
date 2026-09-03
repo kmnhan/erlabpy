@@ -264,6 +264,9 @@ class _ProvenanceReorderDialog(QtWidgets.QDialog):
 
     apply_requested = QtCore.Signal()
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(520, 420)
+
     def __init__(
         self,
         *,
@@ -365,7 +368,6 @@ class _ProvenanceReorderDialog(QtWidgets.QDialog):
         self.cancel_button.clicked.connect(self.reject)
         layout.addWidget(self.button_box)
 
-        self.resize(520, 420)
         self._update_controls()
 
     @staticmethod

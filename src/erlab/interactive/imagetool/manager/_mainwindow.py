@@ -1125,7 +1125,6 @@ class ImageToolManager(_ImageToolManagerBase):
         # Golden ratio :)
         self.setMinimumWidth(301)
         self.setMinimumHeight(487)
-        self.resize(487, 487)
 
         # Install event filter for keyboard shortcuts
         self._kb_filter = erlab.interactive.utils.KeyboardEventFilter(self)
@@ -1152,6 +1151,9 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         self._status_bar.showMessage("")
         self._manager_layout_tracking_enabled = True
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(487, 487)
 
     def event(self, event: QtCore.QEvent | None) -> bool:
         handled = super().event(event)

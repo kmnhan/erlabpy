@@ -255,6 +255,23 @@ def test_imagetool_dataset_uses_window_state_and_keeps_rect_fallback(
     )
 
 
+def test_imagetool_dataset_preserves_never_shown_size_hint(qtbot, test_data) -> None:
+    tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+    qtbot.addWidget(tool)
+
+    ds = tool.to_dataset()
+    assert json.loads(ds.attrs["itool_window_state"]) == {"visible": False}
+
+    restored = erlab.interactive.imagetool.ImageTool.from_dataset(ds, _in_manager=True)
+    qtbot.addWidget(restored)
+    assert restored.sizeHint() == tool.sizeHint()
+
+    tool.show()
+    restored.show()
+    QtWidgets.QApplication.processEvents()
+    assert restored.size() == tool.size()
+
+
 def test_toolwindow_dataset_uses_window_state_and_keeps_rect_fallback(
     qtbot, test_data
 ) -> None:

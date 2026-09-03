@@ -840,7 +840,7 @@ def test_arrange_selected_windows_accepts_and_cancels(
         assert [first.frameGeometry(), second.frameGeometry()] == expected
         qtbot.wait_until(
             lambda: all(
-                manager._child_node(uid)._recent_geometry == window.geometry()
+                manager._child_node(uid)._recent_geometry == window.saveGeometry()
                 for uid, window in zip(
                     (first_uid, second_uid), (first, second), strict=True
                 )

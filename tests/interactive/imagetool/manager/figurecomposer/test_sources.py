@@ -1671,8 +1671,9 @@ def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     data = _figure_composer_profile_source("data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    figure_window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
-    qtbot.addWidget(figure_window)
+    figure_window = figure_window_ui._FigureComposerDisplayWindow(
+        FigureSubplotsState(), owner=tool
+    )
     tool._figure_window = figure_window
     mime = QtCore.QMimeData()
     calls: list[str] = []

@@ -397,6 +397,9 @@ class _SettingsRow(QtWidgets.QFrame):
 class OptionDialog(QtWidgets.QDialog):
     """Native settings dialog with immediate save and session revert."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(780, 560)
+
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("settingsDialog")
@@ -531,7 +534,6 @@ class OptionDialog(QtWidgets.QDialog):
         )
         escape_shortcut.activated.connect(self.close)
 
-        self.resize(780, 560)
         self.setMinimumSize(640, 420)
 
     def _build_pages(self) -> None:

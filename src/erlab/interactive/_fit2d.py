@@ -597,6 +597,9 @@ class Fit2DTool(Fit1DTool):
         self._refresh_contents_from_index()
         self._reset_history_stack()
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(1024, 610)
+
     def _summary_2d_rows(self) -> list[tuple[str, str]]:
         y_values = self._y_values()
         min_idx = self.y_min_spin.value()
@@ -1261,7 +1264,6 @@ class Fit2DTool(Fit1DTool):
         self.main_splitter.setStretchFactor(0, 3)
         self.main_splitter.setStretchFactor(1, 2)
 
-        self.resize(1024, 610)
         self._update_param_plot_options()
         self._update_param_plot_overlays()
 

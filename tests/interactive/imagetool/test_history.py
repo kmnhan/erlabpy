@@ -939,6 +939,7 @@ def test_history_dialog_open_does_not_consume_new_entry(qtbot):
     start_index = area.current_indices[0]
     dialog = _history.HistoryDialog(area)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint() == QtCore.QSize(460, 210)
 
     area.set_index(0, start_index + 1)
     area.undo()

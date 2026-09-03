@@ -2003,8 +2003,6 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.connect_signals()
         self.graphics_layout.setFocus()
 
-        self.resize(800, 600)
-
         self._result_ds: xr.Dataset | None = None
         self._fit_thread: ResolutionFitThread | None = None
         self._fit_closing = False
@@ -2014,6 +2012,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._fit_signature_current: tuple[typing.Any, ...] | None = None
         self._fit_signature_displayed: tuple[typing.Any, ...] | None = None
         self._reset_history_stack()
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(800, 600)
 
     def _configure_data(self, data: xr.DataArray) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):
