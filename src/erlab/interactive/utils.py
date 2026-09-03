@@ -701,98 +701,32 @@ class _WaitDialog(QtWidgets.QDialog):
             self.deleteLater()
 
 
-class _WaitModalGuard(QtWidgets.QDialog):
-    def __init__(self, parent: QtWidgets.QWidget) -> None:
-        super().__init__(parent)
-        self.setModal(True)
-        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
-        self._dispatcher: QtCore.QAbstractEventDispatcher | None = None
-        self._event_loop_passes = 0
-        self._close_started = False
-        self._delete_scheduled = False
-
-    def release_after_event_drain(self) -> None:
-        if (
-            not qt_is_valid(self)
-            or self._dispatcher is not None
-            or self._delete_scheduled
-        ):
-            return
-        dispatcher = QtCore.QAbstractEventDispatcher.instance()
-        if dispatcher is None or not qt_is_valid(dispatcher):
-            self._close_and_delete()
-            return
-        self._dispatcher = dispatcher
-        # Dispatcher signal order differs across QPA backends. Two wake boundaries
-        # keep modality active for at least one complete native-event drain.
-        dispatcher.awake.connect(self._event_loop_awake)
-        QtCore.QTimer.singleShot(0, self._continue_event_drain)
-
-    @QtCore.Slot()
-    def _event_loop_awake(self) -> None:
-        if not qt_is_valid(self) or self._delete_scheduled:
-            return
-        self._event_loop_passes += 1
-        if self._event_loop_passes < 2:
-            QtCore.QTimer.singleShot(0, self._continue_event_drain)
-            return
-        self._event_loop_passes = 0
-        if not self._close_started:
-            self._close_started = True
-            self.close()
-            # Closing a modal window can queue native focus and activation events.
-            # Keep both widgets alive until those events cross another full drain.
-            QtCore.QTimer.singleShot(0, self._continue_event_drain)
-            return
-        self._delete_after_event_drain()
-
-    @QtCore.Slot()
-    def _continue_event_drain(self) -> None:
-        if self._dispatcher is not None and qt_is_valid(self._dispatcher):
-            self._dispatcher.wakeUp()
-
-    def _disconnect_dispatcher(self) -> None:
-        dispatcher = self._dispatcher
-        self._dispatcher = None
-        if dispatcher is not None and qt_is_valid(dispatcher):
-            with contextlib.suppress(TypeError, RuntimeError):
-                dispatcher.awake.disconnect(self._event_loop_awake)
-
-    def _delete_after_event_drain(self) -> None:
-        if self._delete_scheduled:
-            return
-        self._delete_scheduled = True
-        self._disconnect_dispatcher()
-        if not qt_is_valid(self):
-            return
-        panel = self.parentWidget()
-        if panel is not None and qt_is_valid(panel):
-            panel.deleteLater()
-        elif qt_is_valid(self):
-            self.deleteLater()
-
-    def _close_and_delete(self) -> None:
-        if not qt_is_valid(self) or self._delete_scheduled:
-            return
-        self._close_started = True
-        self.close()
-        self._delete_after_event_drain()
-
-
 class _WaitPanel(QtWidgets.QLabel):
     def __init__(self, parent: QtWidgets.QWidget, message: str) -> None:
-        super().__init__(message, parent.window())
+        window = typing.cast("QtWidgets.QWidget", parent.window())
+        super().__init__(message, window)
+        self.setObjectName("_erlab_wait_panel")
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMargin(20)
         self.setAutoFillBackground(True)
-        self._modal_guard = _WaitModalGuard(self)
+        self._blocked_window = window
+        self._dispatcher: QtCore.QAbstractEventDispatcher | None = None
+        self._event_loop_passes = 0
+        self._generation = 0
+        self._blocking = False
+        self._restore_enabled = False
 
     def open(self) -> None:
-        if not qt_is_valid(self, self._modal_guard):
+        if not qt_is_valid(self, self._blocked_window):
             return
-        self._modal_guard.open()
+        self._generation += 1
+        self._disconnect_dispatcher()
+        if not self._blocking:
+            self._restore_enabled = self._blocked_window.isEnabled()
+            self._blocking = True
+        if self._restore_enabled and self._blocked_window.isEnabled():
+            self._blocked_window.setEnabled(False)
         self.show_centered()
 
     def show_centered(self) -> None:
@@ -816,16 +750,90 @@ class _WaitPanel(QtWidgets.QLabel):
         if not qt_is_valid(self):
             return
         self.setText(message)
-        self.show_centered()
+        if self.isVisible():
+            self.show_centered()
 
     def _finish(self) -> None:
         if not qt_is_valid(self):
             return
         self.hide()
-        if qt_is_valid(self._modal_guard):
-            self._modal_guard.release_after_event_drain()
-        else:
-            self.deleteLater()
+        if not self._blocking or self._dispatcher is not None:
+            return
+        dispatcher = QtCore.QAbstractEventDispatcher.instance()
+        if dispatcher is None or not qt_is_valid(dispatcher):
+            self._release()
+            return
+        # Keep the owner disabled while Qt discards input that was queued by the
+        # nested event loop. Two wake boundaries cover one complete native drain.
+        self._event_loop_passes = 0
+        self._dispatcher = dispatcher
+        dispatcher.awake.connect(self._event_loop_awake)
+        self._request_event_drain()
+
+    @QtCore.Slot()
+    def _event_loop_awake(self) -> None:
+        if not qt_is_valid(self, self._blocked_window) or self._dispatcher is None:
+            return
+        self._event_loop_passes += 1
+        if self._event_loop_passes < 2:
+            self._request_event_drain()
+            return
+        self._release()
+
+    def _request_event_drain(self) -> None:
+        generation = self._generation
+        single_shot(
+            self,
+            0,
+            lambda: self._continue_event_drain(generation),
+            self._blocked_window,
+        )
+
+    def _continue_event_drain(self, generation: int) -> None:
+        # A later wait can reuse this panel before an earlier timer fires.
+        if (
+            generation == self._generation
+            and self._dispatcher is not None
+            and qt_is_valid(self._dispatcher)
+        ):
+            self._dispatcher.wakeUp()
+
+    def _disconnect_dispatcher(self) -> None:
+        dispatcher = self._dispatcher
+        self._dispatcher = None
+        self._event_loop_passes = 0
+        if dispatcher is not None and qt_is_valid(dispatcher):
+            with contextlib.suppress(TypeError, RuntimeError):
+                dispatcher.awake.disconnect(self._event_loop_awake)
+
+    def _release(self) -> None:
+        if not self._blocking:
+            self._disconnect_dispatcher()
+            return
+        restore_enabled = self._restore_enabled
+        self._blocking = False
+        self._restore_enabled = False
+        self._disconnect_dispatcher()
+        if (
+            restore_enabled
+            and qt_is_valid(self._blocked_window)
+            and not self._blocked_window.isEnabled()
+        ):
+            self._blocked_window.setEnabled(True)
+
+
+def _wait_panel(parent: QtWidgets.QWidget, message: str) -> _WaitPanel:
+    window = typing.cast("QtWidgets.QWidget", parent.window())
+    # Reuse one child widget instead of creating and deleting hidden modal windows.
+    existing = window.findChild(
+        QtWidgets.QLabel,
+        "_erlab_wait_panel",
+        QtCore.Qt.FindChildOption.FindDirectChildrenOnly,
+    )
+    if isinstance(existing, _WaitPanel) and qt_is_valid(existing):
+        existing.set_message(message)
+        return existing
+    return _WaitPanel(parent, message)
 
 
 class _SuppressedWaitDialog:
@@ -863,7 +871,7 @@ def wait_dialog(
     if sys.platform == "darwin":
         indicator = _WaitDialog(parent, message)
     else:
-        indicator = _WaitPanel(parent, message)
+        indicator = _wait_panel(parent, message)
 
     _WAIT_DIALOG_DEPTH += 1
     try:

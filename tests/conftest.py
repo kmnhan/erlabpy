@@ -61,7 +61,6 @@ import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 from erlab.interactive.utils import (
     _is_deleted_qt_wrapper_error,
     _WaitDialog,
-    _WaitModalGuard,
     qt_is_valid,
 )
 from erlab.io.dataloader import LoaderBase
@@ -754,7 +753,7 @@ class _DialogHandler(QtCore.QObject):
         if (
             candidate is None
             or candidate is self._ignored_dialog
-            or isinstance(candidate, (_WaitDialog, _WaitModalGuard))
+            or isinstance(candidate, _WaitDialog)
         ):
             candidate = next(
                 (
@@ -763,7 +762,7 @@ class _DialogHandler(QtCore.QObject):
                     if (
                         isinstance(widget, QtWidgets.QDialog)
                         and widget is not self._ignored_dialog
-                        and not isinstance(widget, (_WaitDialog, _WaitModalGuard))
+                        and not isinstance(widget, _WaitDialog)
                         and widget.isVisible()
                         and widget.isModal()
                     )
