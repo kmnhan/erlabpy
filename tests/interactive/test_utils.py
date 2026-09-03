@@ -2175,10 +2175,52 @@ def test_wait_modal_guard_finishes_after_reparenting(qtbot) -> None:
     qtbot.addWidget(modal_guard)
     modal_guard.setParent(None)
 
-    modal_guard._release()
+    modal_guard.release_after_event_drain()
+    for _ in range(4):
+        modal_guard._event_loop_awake()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
     assert qt_is_valid(panel)
+    assert not qt_is_valid(modal_guard)
+
+
+def test_wait_modal_guard_drains_focus_events_before_deletion(
+    qtbot, monkeypatch
+) -> None:
+    class Dispatcher(QtCore.QObject):
+        awake = QtCore.Signal()
+
+        def wakeUp(self) -> None:
+            pass
+
+    dispatcher = Dispatcher()
+    monkeypatch.setattr(
+        QtCore.QAbstractEventDispatcher,
+        "instance",
+        lambda: dispatcher,
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    panel = erlab.interactive.utils._WaitPanel(parent, "Drain focus")
+    modal_guard = panel._modal_guard
+
+    modal_guard.release_after_event_drain()
+    dispatcher.awake.emit()
+    dispatcher.awake.emit()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    assert modal_guard._close_started
+    assert qt_is_valid(panel, modal_guard)
+
+    dispatcher.awake.emit()
+    dispatcher.awake.emit()
+    assert modal_guard._delete_scheduled
+    modal_guard.release_after_event_drain()
+    modal_guard._close_and_delete()
+    assert modal_guard._dispatcher is None
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    assert not qt_is_valid(panel)
     assert not qt_is_valid(modal_guard)
 
 
@@ -2242,7 +2284,8 @@ def test_wait_indicator_parent_destruction_is_safe(
             modal_guard.release_after_event_drain()
             modal_guard._event_loop_awake()
             modal_guard._continue_event_drain()
-            modal_guard._release()
+            modal_guard._delete_after_event_drain()
+            modal_guard._close_and_delete()
 
     assert original_depth == erlab.interactive.utils._WAIT_DIALOG_DEPTH
 

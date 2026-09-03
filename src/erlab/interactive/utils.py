@@ -709,13 +709,19 @@ class _WaitModalGuard(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
         self._dispatcher: QtCore.QAbstractEventDispatcher | None = None
         self._event_loop_passes = 0
+        self._close_started = False
+        self._delete_scheduled = False
 
     def release_after_event_drain(self) -> None:
-        if not qt_is_valid(self) or self._dispatcher is not None:
+        if (
+            not qt_is_valid(self)
+            or self._dispatcher is not None
+            or self._delete_scheduled
+        ):
             return
         dispatcher = QtCore.QAbstractEventDispatcher.instance()
         if dispatcher is None or not qt_is_valid(dispatcher):
-            self._release()
+            self._close_and_delete()
             return
         self._dispatcher = dispatcher
         # Dispatcher signal order differs across QPA backends. Two wake boundaries
@@ -725,33 +731,53 @@ class _WaitModalGuard(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _event_loop_awake(self) -> None:
-        if not qt_is_valid(self):
+        if not qt_is_valid(self) or self._delete_scheduled:
             return
         self._event_loop_passes += 1
         if self._event_loop_passes < 2:
             QtCore.QTimer.singleShot(0, self._continue_event_drain)
             return
-        self._release()
+        self._event_loop_passes = 0
+        if not self._close_started:
+            self._close_started = True
+            self.close()
+            # Closing a modal window can queue native focus and activation events.
+            # Keep both widgets alive until those events cross another full drain.
+            QtCore.QTimer.singleShot(0, self._continue_event_drain)
+            return
+        self._delete_after_event_drain()
 
     @QtCore.Slot()
     def _continue_event_drain(self) -> None:
         if self._dispatcher is not None and qt_is_valid(self._dispatcher):
             self._dispatcher.wakeUp()
 
-    def _release(self) -> None:
+    def _disconnect_dispatcher(self) -> None:
         dispatcher = self._dispatcher
         self._dispatcher = None
         if dispatcher is not None and qt_is_valid(dispatcher):
             with contextlib.suppress(TypeError, RuntimeError):
                 dispatcher.awake.disconnect(self._event_loop_awake)
+
+    def _delete_after_event_drain(self) -> None:
+        if self._delete_scheduled:
+            return
+        self._delete_scheduled = True
+        self._disconnect_dispatcher()
         if not qt_is_valid(self):
             return
         panel = self.parentWidget()
-        self.close()
         if panel is not None and qt_is_valid(panel):
             panel.deleteLater()
         elif qt_is_valid(self):
             self.deleteLater()
+
+    def _close_and_delete(self) -> None:
+        if not qt_is_valid(self) or self._delete_scheduled:
+            return
+        self._close_started = True
+        self.close()
+        self._delete_after_event_drain()
 
 
 class _WaitPanel(QtWidgets.QLabel):
