@@ -1,3 +1,17 @@
+## v3.27.1 (2026-09-03)
+
+### 🐞 Bug Fixes
+
+- **manager:** correct window sizing and placement (#585) ([b7f823e](https://github.com/kmnhan/erlabpy/commit/b7f823efd789256b703149055055df3e843bd854))
+
+  Fixes an issue where sometimes, especially on Windows, ImageTool and Figure Composer windows would appear on the edge of the screen.
+
+- **manager:** properly restore saved `ktool` windows (#584) ([ea2a5ba](https://github.com/kmnhan/erlabpy/commit/ea2a5ba31f0fae41dbcd668769b4298bff5f466a))
+
+- **io.plugins.erpes:** normalize timestamp coordinates (#583) ([fecd7f8](https://github.com/kmnhan/erlabpy/commit/fecd7f810b5ec603d243e976e5cda83a1c93291a))
+
+- **manager:** fix slow workspace open (#582) ([b113d35](https://github.com/kmnhan/erlabpy/commit/b113d35dd29a7820d943da0968e57543ff8fb0ed))
+
 ## v3.27.0 (2026-09-03)
 
 ### ✨ Features
