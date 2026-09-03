@@ -1,4 +1,5 @@
 import gc
+import json
 import tempfile
 import warnings
 from types import SimpleNamespace
@@ -3049,6 +3050,168 @@ def test_ktool_hidden_angle_scales_restore_and_remain_active(qtbot, anglemap) ->
     assert "beta_scale=0.75" in code
     namespace = _exec_generated_code(code, scan=anglemap.copy(deep=True))
     xr.testing.assert_allclose(namespace["scan_kconv"], restored._converted_output())
+
+
+@pytest.mark.parametrize(
+    ("source_configuration", "missing_configuration"),
+    [
+        pytest.param(AxesConfiguration.Type2DA, False, id="same-configuration"),
+        pytest.param(AxesConfiguration.Type2DA, True, id="missing-configuration"),
+        pytest.param(AxesConfiguration.Type1DA, False, id="changed-configuration"),
+    ],
+)
+def test_ktool_restore_prepares_referenced_data_from_saved_coordinates(
+    qtbot,
+    anglemap,
+    source_configuration: AxesConfiguration,
+    missing_configuration: bool,
+) -> None:
+    source_data = (
+        _make_da_ktool_data(anglemap)
+        .isel(beta=0)
+        .drop_vars(("xi", "chi"))
+        .copy(deep=True)
+    )
+    source_data.attrs["configuration"] = int(source_configuration)
+    if missing_configuration:
+        source_data.attrs.pop("configuration")
+    saved_data = (
+        _kspace_conversion.assign_kspace_configuration(
+            source_data, source_configuration
+        )
+        .assign_coords(xi=0.0, chi=0.0)
+        .kspace.as_configuration(AxesConfiguration.Type2DA)
+    )
+    tool = ktool(saved_data, data_name="scan", execute=False)
+    _add_hidden_tool(qtbot, tool)
+
+    status = tool.tool_status
+    source_input_coordinates = dict(status.source_input_coordinates)
+    source_input_coordinates.update({"xi": None, "chi": None})
+    tool.tool_status = status.model_copy(
+        update={
+            "source_configuration": int(source_configuration),
+            "source_configuration_missing": missing_configuration,
+            "source_input_coordinates": source_input_coordinates,
+        }
+    )
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                source_spec=full_data().model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+        state="fresh",
+    )
+    expected = tool._converted_output()
+    saved = tool.to_dataset()
+    saved.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
+    )
+    saved_tool_data = saved[erlab.interactive.utils._SAVED_TOOL_DATA_NAME]
+    assert saved_tool_data.dims == ("alpha", "eV")
+    assert float(saved_tool_data.xi) == pytest.approx(0.0)
+    assert float(saved_tool_data.chi) == pytest.approx(0.0)
+    assert "xi" not in source_data.coords
+    assert "chi" not in source_data.coords
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _source_parent_data=source_data,
+        _materialize_tool_data_references=True,
+        _defer_restore_work=True,
+    )
+    _add_hidden_tool(qtbot, restored)
+
+    assert isinstance(restored, KspaceTool)
+    assert restored.data.kspace.configuration == AxesConfiguration.Type2DA
+    assert restored._source_configuration == int(source_configuration)
+    assert restored.input_coordinates == pytest.approx(
+        {
+            "hv": float(source_data.hv),
+            "beta": float(source_data.beta),
+            "xi": 0.0,
+            "chi": 0.0,
+        }
+    )
+    assert "xi" not in restored._source_input_data.coords
+    assert "chi" not in restored._source_input_data.coords
+    assert ("configuration" not in restored._source_input_data.attrs) is (
+        missing_configuration
+    )
+    if not missing_configuration:
+        assert restored._source_input_data.kspace.configuration == source_configuration
+    assert restored.tool_status.source_input_coordinates == {
+        "hv": pytest.approx(float(source_data.hv)),
+        "beta": pytest.approx(float(source_data.beta)),
+        "xi": None,
+        "chi": None,
+    }
+    assert "xi" not in source_data.coords
+    assert "chi" not in source_data.coords
+    xr.testing.assert_allclose(restored._converted_output(), expected)
+
+
+@pytest.mark.parametrize(
+    ("missing_input", "error_match"),
+    [
+        pytest.param(
+            "configuration",
+            "Missing momentum-conversion configuration",
+            id="configuration",
+        ),
+        pytest.param(
+            "coordinates",
+            "Missing scalar momentum-conversion input coordinates",
+            id="coordinates",
+        ),
+    ],
+)
+def test_ktool_restore_rejects_unrecoverable_referenced_data(
+    qtbot, anglemap, missing_input: str, error_match: str
+) -> None:
+    source_data = (
+        _make_da_ktool_data(anglemap)
+        .isel(beta=0)
+        .drop_vars(("xi", "chi"))
+        .copy(deep=True)
+    )
+    source_data.attrs["configuration"] = int(AxesConfiguration.Type2DA)
+    saved_data = source_data.assign_coords(xi=0.0, chi=0.0)
+    tool = ktool(saved_data, execute=False)
+    _add_hidden_tool(qtbot, tool)
+    tool.set_script_inputs(
+        (
+            ScriptInput(
+                name="data",
+                source_spec=full_data().model_dump(mode="json"),
+            ),
+        ),
+        primary_input="data",
+        state="fresh",
+    )
+
+    status_update: dict[str, object] = {"input_coordinates": {}}
+    if missing_input == "configuration":
+        source_data.attrs.pop("configuration")
+        status_update = {"source_configuration": None}
+    saved = tool.to_dataset()
+    saved.attrs["tool_state"] = tool.tool_status.model_copy(
+        update=status_update
+    ).model_dump_json()
+    saved.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        erlab.interactive.utils.ToolWindow.from_dataset(
+            saved,
+            _source_parent_data=source_data,
+            _materialize_tool_data_references=True,
+            _defer_restore_work=True,
+        )
 
 
 def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:

@@ -133,7 +133,7 @@ def test_manager_workspace_saves_added_time_for_all_node_kinds(
     )
 
 
-def test_manager_workspace_restores_hidden_ktool_angle_scales(
+def test_manager_workspace_restores_hidden_ktool_added_coordinates_and_angle_scales(
     qtbot,
     tmp_path: pathlib.Path,
     manager_context: Callable[
@@ -154,10 +154,11 @@ def test_manager_workspace_restores_hidden_ktool_angle_scales(
         attrs={"configuration": int(erlab.constants.AxesConfiguration.Type1)},
     )
     data.kspace.work_function = 4.5
+    source_data = data.drop_vars("xi")
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        root = itool(data, manager=False, execute=False)
+        root = itool(source_data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(
             root,
@@ -173,6 +174,10 @@ def test_manager_workspace_restores_hidden_ktool_angle_scales(
 
         workspace_path = tmp_path / "hidden-ktool-scales.itws"
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        saved_attrs = _current_workspace_payload_attrs(
+            workspace_path, f"0/childtools/{tool_uid}"
+        )
+        assert erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in saved_attrs
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,

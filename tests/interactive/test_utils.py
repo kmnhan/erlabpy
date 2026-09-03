@@ -5332,6 +5332,7 @@ def test_tool_window_legacy_input_fallback_replays_source_transform_once(
 def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> None:
     parent_data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": range(4)})
     tool_data = parent_data.isel(x=slice(0, 2))
+    tool_data_with_scalar = tool_data.assign_coords(hv=21.2)
     tool = _PersistentTool(tool_data)
     qtbot.addWidget(tool)
 
@@ -5350,6 +5351,31 @@ def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> N
     assert (
         erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
             tool_data.rename({"x": "y"}), tool_data
+        )
+        is False
+    )
+    square_data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            square_data.transpose("y", "x"), square_data
+        )
+        is False
+    )
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            tool_data, tool_data_with_scalar
+        )
+        is False
+    )
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            tool_data.assign_coords(hv=21.3), tool_data_with_scalar
+        )
+        is False
+    )
+    assert (
+        erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            tool_data.assign_coords(x=tool_data.x + 1), tool_data
         )
         is False
     )
