@@ -670,6 +670,9 @@ def _history_entries(
 
 
 class HistoryDialog(QtWidgets.QDialog):
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(460, 210)
+
     def __init__(
         self,
         slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
@@ -680,7 +683,6 @@ class HistoryDialog(QtWidgets.QDialog):
         self.setObjectName("itool_history_dialog")
         self.setWindowTitle("History")
         self.setModal(False)
-        self.resize(460, 210)
         self.setSizeGripEnabled(False)
         self._fitting_height = False
 

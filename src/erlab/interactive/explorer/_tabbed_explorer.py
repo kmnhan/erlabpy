@@ -79,7 +79,9 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
         self.setMinimumWidth(487)
         self.setMinimumHeight(301)
-        self.resize(974, 602)
+
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(974, 602)
 
     def _setup_actions(self) -> None:
         """Set up the main window actions."""

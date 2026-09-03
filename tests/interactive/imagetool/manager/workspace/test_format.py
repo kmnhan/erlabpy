@@ -145,6 +145,66 @@ def test_qt_window_state_helpers_parse_invalid_and_restore_rect(qtbot) -> None:
     assert widget.geometry().getRect() == (10, 20, 123, 45)
 
 
+def test_qt_window_state_leaves_never_shown_geometry_unset(qtbot) -> None:
+    class HintedWindow(QtWidgets.QMainWindow):
+        def sizeHint(self) -> QtCore.QSize:
+            return QtCore.QSize(321, 243)
+
+    source = HintedWindow()
+    restored = HintedWindow()
+    qtbot.addWidget(source)
+    qtbot.addWidget(restored)
+    restored_size = restored.size()
+
+    state = qt_state.qt_window_state(source)
+
+    assert state == qt_state.QtWindowState(visible=False)
+    assert qt_state.qt_window_state_payload(source) == {"visible": False}
+    assert json.loads(qt_state.qt_window_state_json(source)) == {"visible": False}
+    assert not qt_state.restore_qt_window_state(restored, state)
+    assert restored.size() == restored_size
+
+    source.show()
+    restored.show()
+    QtWidgets.QApplication.processEvents()
+
+    assert restored.size() == source.size()
+
+
+def test_qt_window_state_ignores_native_handle_and_position_before_show(
+    qtbot,
+) -> None:
+    native = QtWidgets.QWidget()
+    hidden = QtWidgets.QWidget()
+    moved = QtWidgets.QWidget()
+    for widget in (native, hidden, moved):
+        qtbot.addWidget(widget)
+
+    native.winId()
+    hidden.hide()
+    moved.move(17, 23)
+
+    for widget in (native, hidden, moved):
+        assert qt_state.qt_window_state_payload(widget) == {"visible": False}
+
+
+def test_qt_window_state_keeps_initialized_hidden_geometry(qtbot) -> None:
+    shown = QtWidgets.QWidget()
+    resized = QtWidgets.QWidget()
+    for widget in (shown, resized):
+        qtbot.addWidget(widget)
+
+    shown.show()
+    QtWidgets.QApplication.processEvents()
+    shown.hide()
+    resized.resize(511, 433)
+
+    for widget in (shown, resized):
+        state = qt_state.qt_window_state(widget)
+        assert state.geometry is not None
+        assert state.rect == widget.geometry().getRect()
+
+
 def test_qt_window_state_native_geometry_is_authoritative(qtbot, monkeypatch) -> None:
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)

@@ -51,6 +51,9 @@ def _source_is_unavailable(state: str) -> bool:
 class _SourceReviewDialog(QtWidgets.QDialog):
     """Show extension source before the user approves it."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(760, 600)
+
     def __init__(
         self,
         path: pathlib.Path | None,
@@ -61,7 +64,6 @@ class _SourceReviewDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setObjectName("manager_extension_source_review_dialog")
         self.setWindowTitle("Review Extension Source")
-        self.resize(760, 600)
         layout = QtWidgets.QVBoxLayout(self)
         source = erlab.interactive.utils.PythonCodeEditor(self)
         source.setObjectName("manager_extension_source_review")
@@ -306,6 +308,9 @@ class _RoutineSelectionDialog(QtWidgets.QDialog):
 class _SourceViewerDialog(QtWidgets.QDialog):
     """Show extension source with Python highlighting."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(800, 600)
+
     def __init__(
         self,
         source_text: str,
@@ -316,7 +321,6 @@ class _SourceViewerDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setObjectName("manager_extension_source_viewer_dialog")
         self.setWindowTitle(title)
-        self.resize(800, 600)
         layout = QtWidgets.QVBoxLayout(self)
         self.source = erlab.interactive.utils.PythonCodeEditor(self)
         self.source.setObjectName("manager_extension_running_source")
@@ -337,11 +341,13 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
     selection_changed = QtCore.Signal(str)
     activated = QtCore.Signal()
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(1120, 620)
+
     def __init__(self, parent: QtWidgets.QWidget) -> None:
         super().__init__(parent)
         self.setObjectName("manager_manage_extensions_dialog")
         self.setWindowTitle("Manage Extensions")
-        self.resize(1120, 620)
         layout = QtWidgets.QVBoxLayout(self)
         controls = QtWidgets.QHBoxLayout()
         self.add_script_button = QtWidgets.QPushButton("Add Script…", self)

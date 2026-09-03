@@ -67,6 +67,15 @@ def qt_bytearray_from_base64(value: object) -> QtCore.QByteArray | None:
 
 
 def qt_window_state(widget: QtWidgets.QWidget) -> QtWindowState:
+    # Qt gives a never-shown widget placeholder geometry. Keep that geometry
+    # unset so the first show can use sizeHint() and native screen constraints.
+    has_explicit_size = widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized)
+    has_been_shown = widget.testAttribute(
+        QtCore.Qt.WidgetAttribute.WA_WState_ExplicitShowHide
+    ) and not widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_PendingResizeEvent)
+    if not (has_explicit_size or has_been_shown):
+        return QtWindowState(visible=bool(widget.isVisible()))
+
     return QtWindowState(
         geometry=qt_bytearray_to_base64(widget.saveGeometry()),
         rect=widget.geometry().getRect(),

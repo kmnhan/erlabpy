@@ -146,6 +146,9 @@ def _datatree_dataarray_selection(
 
 
 class _SelectDataArraysDialog(QtWidgets.QDialog):
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(820, 420)
+
     def __init__(
         self,
         parent: QtWidgets.QWidget | None,
@@ -187,7 +190,6 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
                         variable_names.append(str(variable_name))
 
         self.setWindowTitle("Select Data Variables")
-        self.resize(820, 420)
 
         layout = QtWidgets.QVBoxLayout(self)
 

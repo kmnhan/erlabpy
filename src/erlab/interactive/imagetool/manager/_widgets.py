@@ -684,9 +684,7 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
         target_width = max(self.minimumWidth(), self.sizeHint().width())
-        self.resize(target_width, self.minimumSizeHint().height())
-        target_height = self.height()
-        self.setFixedSize(target_width, target_height)
+        self.setFixedSize(target_width, self.minimumSizeHint().height())
 
     @QtCore.Slot()
     def _request_file_load_edit(self) -> None:
@@ -1024,9 +1022,7 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
         target_width = max(self.minimumWidth(), self.sizeHint().width())
-        self.resize(target_width, self.minimumSizeHint().height())
-        target_height = self.height()
-        self.setFixedSize(target_width, target_height)
+        self.setFixedSize(target_width, self.minimumSizeHint().height())
 
     @staticmethod
     def _status_text(

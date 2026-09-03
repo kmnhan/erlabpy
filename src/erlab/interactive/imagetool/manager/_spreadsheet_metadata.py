@@ -484,6 +484,9 @@ def _column_display_label(columns: tuple[str, ...], column: str | None) -> str:
 class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     """Configure an Excel or Google Sheets metadata source for a file load."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(760, 560)
+
     def __init__(
         self,
         parent: QtWidgets.QWidget,
@@ -498,7 +501,6 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         self.setWindowTitle("Spreadsheet Metadata")
         self.setModal(True)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        self.resize(760, 560)
 
         self._selected_source: SpreadsheetMetadataSource | None = source
         self._initial_directory = initial_directory

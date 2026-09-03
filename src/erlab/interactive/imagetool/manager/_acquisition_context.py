@@ -388,6 +388,9 @@ class _ContextSourcePickerDialog(QtWidgets.QDialog):
 
 
 class AcquisitionContextDialog(QtWidgets.QDialog):
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(720, 420)
+
     def __init__(
         self, parent: QtWidgets.QWidget, controller: _AcquisitionContextController
     ) -> None:
@@ -501,7 +504,6 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
         self.table.itemSelectionChanged.connect(self._sync_buttons)
         self._populate_table()
         self._sync_buttons()
-        self.resize(720, 420)
 
     def _selected_data(self) -> xr.DataArray | None:
         targets = self._manager._selected_imagetool_targets()

@@ -135,6 +135,9 @@ class _ReduceDimensionRow:
 class _HighDimensionalReductionDialog(QtWidgets.QDialog):
     """Dialog used before opening data with more than four effective dimensions."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(780, super().sizeHint().height())
+
     def __init__(
         self,
         parent: QtWidgets.QWidget | None,
@@ -210,7 +213,6 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
-        self.resize(780, self.sizeHint().height())
         self.update_preview()
 
     @property

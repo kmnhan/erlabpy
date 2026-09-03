@@ -23,6 +23,9 @@ _DIALOG_ATTR = "_figure_composer_legend_label_help_dialog"
 class LegendLabelHelpDialog(QtWidgets.QDialog):
     """Modeless help for Figure Composer legend-label placeholder syntax."""
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(520, 420)
+
     def __init__(
         self,
         contexts: Sequence[Mapping[str, typing.Any]],
@@ -90,8 +93,6 @@ class LegendLabelHelpDialog(QtWidgets.QDialog):
         )
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
-        self.resize(520, 420)
 
     def _placeholder_table(
         self, rows: Sequence[LabelPlaceholderHelpRow]

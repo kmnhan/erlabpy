@@ -1445,6 +1445,16 @@ def _workspace_sweep_assert_data_items_equal(
 def _workspace_sweep_assert_snapshot_equal(
     actual: typing.Any, expected: typing.Any, path: str = "snapshot"
 ) -> None:
+    if path.startswith("snapshot.standalone_apps."):
+        if path.endswith(".window_state.geometry"):
+            # Qt geometry is opaque and can change when Qt moves a restored frame
+            # into the available screen geometry.
+            return
+        if path.endswith(".window_state.rect"):
+            assert actual[2:] == expected[2:], (
+                f"{path}: restored size {actual[2:]!r} != {expected[2:]!r}"
+            )
+            return
     if isinstance(expected, Mapping):
         assert isinstance(actual, Mapping), (
             f"{path}: expected mapping, got {type(actual).__name__}"

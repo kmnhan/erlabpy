@@ -1299,6 +1299,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._write_history: bool = True
         self._write_state()
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(987, 610)
+
     def _emit_info_changed(self, *_args: typing.Any) -> None:
         self.sigInfoChanged.emit()
 
@@ -1669,8 +1672,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._connect_fit_finished_once(self._replace_last_state)
 
     def _build_ui(self) -> None:
-        self.resize(987, 610)
-
         central = QtWidgets.QWidget(self)
         self.setCentralWidget(central)
         layout = QtWidgets.QHBoxLayout(central)

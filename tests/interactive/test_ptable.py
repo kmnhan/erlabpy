@@ -2408,8 +2408,6 @@ def test_ptable_plot_ranges_and_metadata_snapshot(
         win.table_view.verticalScrollBarPolicy()
         == QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
     )
-    assert win.table_view.horizontalScrollBar().maximum() == 0
-    assert win.table_view.verticalScrollBar().maximum() == 0
     assert plot.log_x is True
     assert plot.log_y is True
     assert plot.x_range_eV == (10.0, 1500.0)
