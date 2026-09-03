@@ -9,7 +9,7 @@ import tempfile
 import types
 import typing
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 
 import lmfit
 import numpy as np
@@ -2099,8 +2099,7 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
 
     assert not panel.isVisible()
     assert window.isEnabled()
-    assert panel._blocking
-    qtbot.waitUntil(lambda: not panel._blocking, timeout=1000)
+    assert not panel._blocking
 
     assert input_attempted
     assert click_count == 0
@@ -2158,7 +2157,7 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
     assert not panel.eventFilter(native_window, key_event)
     native_window.destroy()
 
-    panel._release(panel._generation)
+    panel._release()
 
 
 def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
@@ -2178,10 +2177,10 @@ def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
     QtWidgets.QApplication.processEvents()
 
 
-def test_wait_panel_releases_on_next_event_loop_turn(qtbot) -> None:
+def test_wait_panel_releases_after_bounded_event_drain(qtbot) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
-    panel = erlab.interactive.utils._WaitPanel(parent, "Queued release")
+    panel = erlab.interactive.utils._WaitPanel(parent, "Event drain")
 
     panel.open()
     assert parent.isEnabled()
@@ -2189,12 +2188,31 @@ def test_wait_panel_releases_on_next_event_loop_turn(qtbot) -> None:
     panel._finish()
 
     assert parent.isEnabled()
-    assert panel._blocking
-    qtbot.waitUntil(lambda: not panel._blocking)
+    assert not panel._blocking
     assert qt_is_valid(panel)
     assert not panel.isVisible()
     panel._finish()
-    panel._release(panel._generation)
+    panel._release()
+
+
+def test_wait_panel_event_drain_is_safe_if_parent_is_destroyed(
+    qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    parent = QtWidgets.QWidget()
+    original_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
+
+    def _destroy_parent() -> None:
+        parent.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    with erlab.interactive.utils.wait_dialog(parent, "Lifetime check") as panel:
+        assert isinstance(panel, erlab.interactive.utils._WaitPanel)
+        QtCore.QTimer.singleShot(0, _destroy_parent)
+
+    assert not qt_is_valid(parent)
+    assert not qt_is_valid(panel)
+    assert original_depth == erlab.interactive.utils._WAIT_DIALOG_DEPTH
 
 
 def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
@@ -2212,17 +2230,6 @@ def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
 def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
     qtbot, monkeypatch
 ) -> None:
-    release_callbacks: list[Callable[[], None]] = []
-
-    def capture_single_shot(
-        _receiver: QtCore.QObject,
-        _msec: int,
-        callback: Callable[[], None],
-        *_guards: QtCore.QObject | None,
-    ) -> None:
-        release_callbacks.append(callback)
-
-    monkeypatch.setattr(erlab.interactive.utils, "single_shot", capture_single_shot)
     monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
 
     window = QtWidgets.QWidget()
@@ -2233,15 +2240,11 @@ def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
         assert window.isEnabled()
         assert first._blocking
 
-    stale_callback = release_callbacks.pop()
+    assert not first._blocking
     with erlab.interactive.utils.wait_dialog(window, "Second") as second:
         assert second is first
-        assert first._blocking
+        assert second._blocking
 
-    current_callback = release_callbacks.pop()
-    stale_callback()
-    assert second._blocking
-    current_callback()
     assert not second._blocking
     assert qt_is_valid(second)
 
@@ -2255,8 +2258,6 @@ def test_wait_panel_preserves_pre_disabled_window(qtbot, monkeypatch) -> None:
     with erlab.interactive.utils.wait_dialog(window, "Already disabled") as panel:
         assert isinstance(panel, erlab.interactive.utils._WaitPanel)
         assert not window.isEnabled()
-
-    qtbot.waitUntil(lambda: not panel._blocking)
 
     assert not window.isEnabled()
     assert not panel._blocking

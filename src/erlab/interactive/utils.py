@@ -710,13 +710,11 @@ class _WaitPanel(QtWidgets.QLabel):
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMargin(20)
         self.setAutoFillBackground(True)
-        self._generation = 0
         self._blocking = False
 
     def open(self) -> None:
         if not qt_is_valid(self) or self.parentWidget() is None:
             return
-        self._generation += 1
         if not self._blocking:
             application = QtWidgets.QApplication.instance()
             if application is not None:
@@ -794,18 +792,17 @@ class _WaitPanel(QtWidgets.QLabel):
         self.hide()
         if not self._blocking:
             return
-        # Keep the filter through the next event-loop turn so Qt can discard input
-        # that arrived while the GUI thread was blocked.
-        generation = self._generation
-        single_shot(
-            self,
-            0,
-            lambda: self._release(generation),
+        # Drain events that are already available while the input filter remains
+        # installed. Socket activity is unrelated to input release and can outlive
+        # its owning widget during teardown.
+        QtWidgets.QApplication.processEvents(
+            QtCore.QEventLoop.ProcessEventsFlag.ExcludeSocketNotifiers
         )
+        if qt_is_valid(self):
+            self._release()
 
-    def _release(self, generation: int) -> None:
-        # A later wait can reuse this panel before an earlier callback runs.
-        if generation != self._generation or not self._blocking:
+    def _release(self) -> None:
+        if not self._blocking:
             return
         self._blocking = False
         application = QtWidgets.QApplication.instance()

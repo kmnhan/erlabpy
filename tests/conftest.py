@@ -586,23 +586,10 @@ def manager_context() -> Callable[
                         if qt_is_valid(thread):
                             thread.stop(timeout_ms=1000)
 
-                    qapp = QtWidgets.QApplication.instance()
-                    if (
-                        isinstance(qapp, QtWidgets.QApplication)
-                        and manager._application_quit_filter is not None
-                    ):
-                        qapp.removeEventFilter(manager._application_quit_filter)
-                        manager._application_quit_filter = None
-                    manager._registry_heartbeat_timer.stop()
-                    manager._registry_heartbeat.stop()
-                    _stop_thread(server)
-                    _stop_thread(watcher_server)
-                    _drain_qt_events()
                     clipboard = QtWidgets.QApplication.clipboard()
                     if clipboard is not None:
                         clipboard.clear()
                     manager._close_standalone_apps()
-                    _drain_qt_events()
                     manager.remove_all_tools()
                     manager._workspace_controller._mark_workspace_clean()
                     manager.close()
