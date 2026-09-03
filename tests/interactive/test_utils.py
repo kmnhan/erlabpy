@@ -2100,7 +2100,6 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
     assert not panel.isVisible()
     assert window.isEnabled()
     assert panel._blocking
-    panel._continue_event_drain(panel._generation)
     qtbot.waitUntil(lambda: not panel._blocking, timeout=1000)
 
     assert input_attempted
@@ -2159,7 +2158,7 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
     assert not panel.eventFilter(native_window, key_event)
     native_window.destroy()
 
-    panel._release()
+    panel._release(panel._generation)
 
 
 def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
@@ -2179,15 +2178,10 @@ def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
     QtWidgets.QApplication.processEvents()
 
 
-def test_wait_panel_releases_without_event_dispatcher(qtbot, monkeypatch) -> None:
+def test_wait_panel_releases_on_next_event_loop_turn(qtbot) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
-    panel = erlab.interactive.utils._WaitPanel(parent, "No dispatcher")
-    monkeypatch.setattr(
-        QtCore.QAbstractEventDispatcher,
-        "instance",
-        lambda: None,
-    )
+    panel = erlab.interactive.utils._WaitPanel(parent, "Queued release")
 
     panel.open()
     assert parent.isEnabled()
@@ -2195,12 +2189,12 @@ def test_wait_panel_releases_without_event_dispatcher(qtbot, monkeypatch) -> Non
     panel._finish()
 
     assert parent.isEnabled()
-    assert not panel._blocking
+    assert panel._blocking
+    qtbot.waitUntil(lambda: not panel._blocking)
     assert qt_is_valid(panel)
     assert not panel.isVisible()
     panel._finish()
-    panel._event_loop_awake()
-    panel._release()
+    panel._release(panel._generation)
 
 
 def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
@@ -2218,7 +2212,7 @@ def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
 def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
     qtbot, monkeypatch
 ) -> None:
-    drain_callbacks: list[Callable[[], None]] = []
+    release_callbacks: list[Callable[[], None]] = []
 
     def capture_single_shot(
         _receiver: QtCore.QObject,
@@ -2226,24 +2220,8 @@ def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
         callback: Callable[[], None],
         *_guards: QtCore.QObject | None,
     ) -> None:
-        drain_callbacks.append(callback)
+        release_callbacks.append(callback)
 
-    class Dispatcher(QtCore.QObject):
-        awake = QtCore.Signal()
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.wake_count = 0
-
-        def wakeUp(self) -> None:
-            self.wake_count += 1
-
-    dispatcher = Dispatcher()
-    monkeypatch.setattr(
-        QtCore.QAbstractEventDispatcher,
-        "instance",
-        lambda: dispatcher,
-    )
     monkeypatch.setattr(erlab.interactive.utils, "single_shot", capture_single_shot)
     monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
 
@@ -2255,41 +2233,20 @@ def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
         assert window.isEnabled()
         assert first._blocking
 
-    assert first._dispatcher is dispatcher
-    stale_callback = drain_callbacks.pop()
+    stale_callback = release_callbacks.pop()
     with erlab.interactive.utils.wait_dialog(window, "Second") as second:
         assert second is first
-        assert first._dispatcher is None
         assert first._blocking
 
-    assert second._dispatcher is dispatcher
-    current_callback = drain_callbacks.pop()
+    current_callback = release_callbacks.pop()
     stale_callback()
-    assert dispatcher.wake_count == 0
-    current_callback()
-    assert dispatcher.wake_count == 1
-    dispatcher.awake.emit()
     assert second._blocking
-
-    dispatcher.awake.emit()
+    current_callback()
     assert not second._blocking
-    assert second._dispatcher is None
     assert qt_is_valid(second)
 
 
 def test_wait_panel_preserves_pre_disabled_window(qtbot, monkeypatch) -> None:
-    class Dispatcher(QtCore.QObject):
-        awake = QtCore.Signal()
-
-        def wakeUp(self) -> None:
-            pass
-
-    dispatcher = Dispatcher()
-    monkeypatch.setattr(
-        QtCore.QAbstractEventDispatcher,
-        "instance",
-        lambda: dispatcher,
-    )
     monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
     window = QtWidgets.QWidget()
     window.setEnabled(False)
@@ -2299,12 +2256,10 @@ def test_wait_panel_preserves_pre_disabled_window(qtbot, monkeypatch) -> None:
         assert isinstance(panel, erlab.interactive.utils._WaitPanel)
         assert not window.isEnabled()
 
-    dispatcher.awake.emit()
-    dispatcher.awake.emit()
+    qtbot.waitUntil(lambda: not panel._blocking)
 
     assert not window.isEnabled()
     assert not panel._blocking
-    assert panel._dispatcher is None
 
 
 @pytest.mark.parametrize(

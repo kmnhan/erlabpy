@@ -710,8 +710,6 @@ class _WaitPanel(QtWidgets.QLabel):
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMargin(20)
         self.setAutoFillBackground(True)
-        self._dispatcher: QtCore.QAbstractEventDispatcher | None = None
-        self._event_loop_passes = 0
         self._generation = 0
         self._blocking = False
 
@@ -719,7 +717,6 @@ class _WaitPanel(QtWidgets.QLabel):
         if not qt_is_valid(self) or self.parentWidget() is None:
             return
         self._generation += 1
-        self._disconnect_dispatcher()
         if not self._blocking:
             application = QtWidgets.QApplication.instance()
             if application is not None:
@@ -795,63 +792,25 @@ class _WaitPanel(QtWidgets.QLabel):
         if not qt_is_valid(self):
             return
         self.hide()
-        if not self._blocking or self._dispatcher is not None:
+        if not self._blocking:
             return
-        dispatcher = QtCore.QAbstractEventDispatcher.instance()
-        if dispatcher is None or not qt_is_valid(dispatcher):
-            self._release()
-            return
-        # Keep input blocked while Qt discards events queued by the nested event
-        # loop. Two wake boundaries cover one complete native drain.
-        self._event_loop_passes = 0
-        self._dispatcher = dispatcher
-        dispatcher.awake.connect(self._event_loop_awake)
-        self._request_event_drain()
-
-    @QtCore.Slot()
-    def _event_loop_awake(self) -> None:
-        if not qt_is_valid(self) or self._dispatcher is None:
-            return
-        self._event_loop_passes += 1
-        if self._event_loop_passes < 2:
-            self._request_event_drain()
-            return
-        self._release()
-
-    def _request_event_drain(self) -> None:
+        # Keep the filter through the next event-loop turn so Qt can discard input
+        # that arrived while the GUI thread was blocked.
         generation = self._generation
         single_shot(
             self,
             0,
-            lambda: self._continue_event_drain(generation),
+            lambda: self._release(generation),
         )
 
-    def _continue_event_drain(self, generation: int) -> None:
-        # A later wait can reuse this panel before an earlier timer fires.
-        if (
-            generation == self._generation
-            and self._dispatcher is not None
-            and qt_is_valid(self._dispatcher)
-        ):
-            self._dispatcher.wakeUp()
-
-    def _disconnect_dispatcher(self) -> None:
-        dispatcher = self._dispatcher
-        self._dispatcher = None
-        self._event_loop_passes = 0
-        if dispatcher is not None and qt_is_valid(dispatcher):
-            with contextlib.suppress(TypeError, RuntimeError):
-                dispatcher.awake.disconnect(self._event_loop_awake)
-
-    def _release(self) -> None:
-        if not self._blocking:
-            self._disconnect_dispatcher()
+    def _release(self, generation: int) -> None:
+        # A later wait can reuse this panel before an earlier callback runs.
+        if generation != self._generation or not self._blocking:
             return
         self._blocking = False
         application = QtWidgets.QApplication.instance()
         if application is not None:
             application.removeEventFilter(self)
-        self._disconnect_dispatcher()
 
 
 def _wait_panel(parent: QtWidgets.QWidget, message: str) -> _WaitPanel:
