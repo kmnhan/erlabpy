@@ -857,6 +857,44 @@ class KspaceTool(KspaceToolGUI):
         self._source_configuration_missing = status.source_configuration_missing
         self._source_input_data = source_data
 
+    @staticmethod
+    def _prepare_restored_tool_data_for_constructor(
+        data: xr.DataArray, status: StateModel
+    ) -> xr.DataArray:
+        """Restore constructor inputs that a saved data reference can omit."""
+        configuration = _kspace_conversion.kspace_configuration(data)
+        if configuration is not None:
+            input_coordinate_values = _kspace_conversion.kspace_input_coordinate_values(
+                data
+            )
+            if all(value is not None for value in input_coordinate_values.values()):
+                return data
+
+        if configuration is None:
+            configuration = status.source_configuration
+            if configuration is None:
+                return data
+            data = _kspace_conversion.assign_kspace_configuration(data, configuration)
+
+        if (
+            status.configuration is not None
+            and int(configuration) != status.configuration
+        ):
+            data = data.kspace.as_configuration(status.configuration)
+
+        coordinate_names = _kspace_conversion.kspace_input_coordinate_names(data)
+        input_coordinates = {
+            name: status.input_coordinates[name]
+            for name in coordinate_names
+            if name in status.input_coordinates
+        }
+        if not input_coordinates:
+            return data
+        return _kspace_conversion.assign_kspace_input_coordinates(
+            data,
+            input_coordinates,
+        )
+
     _OFFSET_LABELS: typing.ClassVar[dict[str, str]] = {
         "delta": "𝛿",
         "chi": "𝜒₀",

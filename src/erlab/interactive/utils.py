@@ -5274,6 +5274,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return the state model to serialize for this tool."""
         return self.tool_status
 
+    @staticmethod
+    def _prepare_restored_tool_data_for_constructor(
+        data: xr.DataArray, status: M
+    ) -> xr.DataArray:
+        """Prepare restored primary data before tool construction."""
+        del status
+        return data
+
     def _code_trust_payload_entries(self) -> Iterable[CodeTrustEntry]:
         """Return executable opaque-payload entries for the current tool state."""
         return ()
@@ -5419,11 +5427,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _reference_resolves_current_tool_data(
         resolved: xr.DataArray, data: xr.DataArray
     ) -> bool:
+        """Check reference structure and coordinates without loading primary values.
+
+        Source freshness and snapshot tokens protect array values. Comparing those
+        values here could materialize a large lazy array during every workspace save.
+        """
         if resolved.ndim != data.ndim:
             return False
         if resolved.sizes != data.sizes:
             return False
-        return tuple(resolved.dims) == tuple(data.dims)
+        if tuple(resolved.dims) != tuple(data.dims):
+            return False
+        return resolved.coords.to_dataset().identical(data.coords.to_dataset())
 
     def _tool_data_reference_payload(
         self, variable_name: str, data: xr.DataArray
@@ -5993,8 +6008,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             tool_data_name = None
         token = _TOOL_WINDOW_RESTORE_DEFER.set(defer_restore_work)
         try:
+            constructor_data = cls_obj._prepare_restored_tool_data_for_constructor(
+                data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name),
+                saved_status,
+            )
             tool = cls_obj(
-                data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs
+                constructor_data,
+                **kwargs,
             )
         finally:
             _TOOL_WINDOW_RESTORE_DEFER.reset(token)
