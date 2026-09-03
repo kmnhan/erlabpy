@@ -478,6 +478,7 @@ def test_explorer_loader_extensions_apply_only_to_manager_loads(
 ) -> None:
     explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
     qtbot.addWidget(explorer)
+    assert explorer.sizeHint() == QtCore.QSize(974, 602)
 
     file_path = example_data_dir / "data_002.h5"
     assert explorer._manager_load_kwargs({"single": True}) == {"single": True}

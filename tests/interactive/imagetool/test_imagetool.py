@@ -5872,6 +5872,7 @@ def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
 
     dialog = _SelectDataArraysDialog(None, tree)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint() == QtCore.QSize(820, 420)
     selected_data = dialog.selected_dataarrays()
 
     assert [prepared.selection for prepared in selected_data] == [
@@ -10204,6 +10205,7 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
     data = _high_dimensional_data()
     dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
     qtbot.addWidget(dialog)
+    assert dialog.sizeHint().width() == 780
     open_button = dialog.button_box.button(
         QtWidgets.QDialogButtonBox.StandardButton.Open
     )

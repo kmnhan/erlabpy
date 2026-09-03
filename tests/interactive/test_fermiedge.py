@@ -1547,6 +1547,7 @@ def test_restool(qtbot) -> None:
     )
     win = restool(gold, execute=False)
     qtbot.addWidget(win)
+    assert win.sizeHint() == QtCore.QSize(800, 600)
     win.timeout_spin.setValue(5.0)
 
     win._guess_temp()
