@@ -2096,6 +2096,42 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
     assert click_count == 1
 
 
+def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    child = QtWidgets.QWidget()
+    window.setCentralWidget(child)
+    qtbot.addWidget(window)
+    panel = erlab.interactive.utils._WaitPanel(child, "Blocking input")
+    panel.open()
+
+    key_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_V,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
+    drop_event = QtGui.QDropEvent(
+        QtCore.QPointF(),
+        QtCore.Qt.DropAction.CopyAction,
+        QtCore.QMimeData(),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    drag_leave_event = QtGui.QDragLeaveEvent()
+
+    assert key_event.isInputEvent()
+    assert panel.eventFilter(child, key_event)
+    assert not drop_event.isInputEvent()
+    assert panel.eventFilter(child, drop_event)
+    assert not drag_leave_event.isInputEvent()
+    assert panel.eventFilter(child, drag_leave_event)
+    assert not panel.eventFilter(child, QtCore.QEvent(QtCore.QEvent.Type.User))
+    native_window = QtGui.QWindow()
+    assert not panel.eventFilter(native_window, key_event)
+    native_window.destroy()
+
+    panel._release()
+
+
 def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
     qtbot, monkeypatch
 ) -> None:

@@ -701,40 +701,6 @@ class _WaitDialog(QtWidgets.QDialog):
             self.deleteLater()
 
 
-_WAIT_PANEL_INPUT_EVENTS = frozenset(
-    {
-        QtCore.QEvent.Type.MouseButtonPress,
-        QtCore.QEvent.Type.MouseButtonRelease,
-        QtCore.QEvent.Type.MouseButtonDblClick,
-        QtCore.QEvent.Type.MouseMove,
-        QtCore.QEvent.Type.NonClientAreaMouseButtonPress,
-        QtCore.QEvent.Type.NonClientAreaMouseButtonRelease,
-        QtCore.QEvent.Type.NonClientAreaMouseButtonDblClick,
-        QtCore.QEvent.Type.NonClientAreaMouseMove,
-        QtCore.QEvent.Type.Wheel,
-        QtCore.QEvent.Type.TouchBegin,
-        QtCore.QEvent.Type.TouchUpdate,
-        QtCore.QEvent.Type.TouchEnd,
-        QtCore.QEvent.Type.TouchCancel,
-        QtCore.QEvent.Type.TabletPress,
-        QtCore.QEvent.Type.TabletMove,
-        QtCore.QEvent.Type.TabletRelease,
-        QtCore.QEvent.Type.NativeGesture,
-        QtCore.QEvent.Type.Gesture,
-        QtCore.QEvent.Type.GestureOverride,
-        QtCore.QEvent.Type.DragEnter,
-        QtCore.QEvent.Type.DragMove,
-        QtCore.QEvent.Type.DragLeave,
-        QtCore.QEvent.Type.Drop,
-        QtCore.QEvent.Type.KeyPress,
-        QtCore.QEvent.Type.KeyRelease,
-        QtCore.QEvent.Type.ShortcutOverride,
-        QtCore.QEvent.Type.Shortcut,
-        QtCore.QEvent.Type.ContextMenu,
-    }
-)
-
-
 class _WaitPanel(QtWidgets.QLabel):
     def __init__(self, parent: QtWidgets.QWidget, message: str) -> None:
         window = typing.cast("QtWidgets.QWidget", parent.window())
@@ -769,7 +735,12 @@ class _WaitPanel(QtWidgets.QLabel):
         if not self._blocking or event is None:
             return False
         try:
-            if event.type() not in _WAIT_PANEL_INPUT_EVENTS:
+            # Qt classifies user input itself. Drag-and-drop events are the one
+            # input family that does not inherit QInputEvent.
+            if not (
+                event.isInputEvent()
+                or isinstance(event, (QtGui.QDropEvent, QtGui.QDragLeaveEvent))
+            ):
                 return False
         except RuntimeError:
             return False
