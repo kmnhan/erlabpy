@@ -74,7 +74,6 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
     _detached_routine_output,
     _ExtensionLoaderCall,
     _ExtensionLoaderWorker,
-    _ExtensionRoutineWaiter,
     _ExtensionRoutineWorker,
     _ExtensionValidationWorker,
     _readonly_array,
@@ -2136,9 +2135,13 @@ def test_execution_controller_removes_failed_pool_admission(
             execution._pool = original_pool
 
 
-def test_blocking_extension_task_keeps_gui_events_responsive(manager_context) -> None:
-    release_worker = threading.Event()
-    gui_callbacks: list[bool] = []
+def test_blocking_extension_task_waits_for_worker_event(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caller_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    wait_messages: list[str] = []
 
     class _Task(QtCore.QRunnable):
         def __init__(self) -> None:
@@ -2147,29 +2150,76 @@ def test_blocking_extension_task_keeps_gui_events_responsive(manager_context) ->
             self.error: Exception | None = None
 
         def run(self) -> None:
-            if not release_worker.wait(timeout=5.0):
-                self.error = RuntimeError("GUI callback did not release the worker")
+            worker_threads.append(threading.get_ident())
             self.done.set()
 
     with manager_context() as manager:
         task = _Task()
 
-        def _release_worker() -> None:
-            gui_callbacks.append(True)
-            release_worker.set()
+        class _WaitContext:
+            def __enter__(self) -> None:
+                return None
 
-        QtCore.QTimer.singleShot(0, _release_worker)
+            def __exit__(self, *_args: object) -> None:
+                return None
 
+        def record_wait_dialog(
+            _parent: QtWidgets.QWidget, message: str
+        ) -> _WaitContext:
+            wait_messages.append(message)
+            return _WaitContext()
+
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                extension_execution.erlab.interactive.utils,
+                "wait_dialog",
+                record_wait_dialog,
+            )
+            patch_context.setattr(
+                extension_execution.QtCore,
+                "QEventLoop",
+                pytest.fail,
+            )
+            manager._extensions.execution._run_blocking_task(
+                typing.cast(
+                    "_ExtensionLoaderWorker | _ExtensionValidationWorker",
+                    task,
+                ),
+                wait_message="Waiting for worker",
+            )
+
+        assert wait_messages == ["Waiting for worker"]
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != caller_thread
+        assert task.done.is_set()
+        assert task not in manager._extensions.execution._blocking_tasks
+
+
+def test_blocking_extension_task_does_not_dispatch_gui_events(manager_context) -> None:
+    gui_callbacks: list[None] = []
+
+    class _Task(QtCore.QRunnable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.done = threading.Event()
+            self.error: Exception | None = None
+
+        def run(self) -> None:
+            threading.Event().wait(0.05)
+            self.done.set()
+
+    with manager_context() as manager:
+        QtCore.QTimer.singleShot(0, lambda: gui_callbacks.append(None))
         manager._extensions.execution._run_blocking_task(
             typing.cast(
                 "_ExtensionLoaderWorker | _ExtensionValidationWorker",
-                task,
+                _Task(),
             )
         )
 
-        assert gui_callbacks == [True]
-        assert task.done.is_set()
-        assert task not in manager._extensions.execution._blocking_tasks
+        assert gui_callbacks == []
+        QtCore.QCoreApplication.processEvents()
+        assert gui_callbacks == [None]
 
 
 def test_routine_job_rejects_unavailable_catalog_state(
@@ -2327,71 +2377,84 @@ def test_extension_replay_reports_all_controller_result_states(
             execution.run_operation(operation, data)
         execution._accepting = True
 
-        execution._routine_waiters["existing"] = _ExtensionRoutineWaiter(
-            QtCore.QEventLoop()
+        queued_job = execution._routine_job(
+            script_name="scale.py",
+            source_hash=source_hash,
+            routine_id="scale",
+            parameters={"scale": 2.0},
+            input_data=data,
+            input_uid="queued",
+            input_snapshot="snapshot",
         )
+        execution._pending.append(queued_job)
         with pytest.raises(
-            erlab.extensions.ExtensionExecutionError, match="replay is in progress"
+            erlab.extensions.ExtensionExecutionError,
+            match="background extension routines to finish",
         ):
             execution.run_operation(operation, data)
-        execution._routine_waiters.clear()
+        execution._pending.clear()
 
-        class FakeEventLoop:
-            class ProcessEventsFlag:
-                ExcludeUserInputEvents = 0
+        active_worker = execution._routine_worker(queued_job)
+        execution._active = (queued_job, active_worker)
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="background extension routines to finish",
+        ):
+            execution.run_operation(operation, data)
+        execution._active = None
 
-            def exec(self, _flags: typing.Any) -> None:
-                return None
+        class ImmediatePool:
+            def __init__(self) -> None:
+                self.status: typing.Literal["success", "failed", "discarded"] | None = (
+                    None
+                )
 
-            def quit(self) -> None:
-                return None
+            def start(self, worker: _ExtensionRoutineWorker) -> None:
+                if self.status is not None:
+                    worker.result = extension_execution._ExtensionRoutineResult(
+                        job=worker.job,
+                        output=(
+                            xr.DataArray([2.0]) if self.status == "success" else None
+                        ),
+                        duration=0.0,
+                        status=self.status,
+                    )
+                worker.done.set()
 
-        def set_result(
-            status: typing.Literal["success", "failed", "discarded"] | None,
-        ) -> None:
-            job = execution._pending.pop()
-            if status is None:
-                return
-            waiter = execution._routine_waiters[job.job_id]
-            waiter.result = extension_execution._ExtensionRoutineResult(
-                job=job,
-                output=xr.DataArray([2.0]) if status == "success" else None,
-                duration=0.0,
-                status=status,
-            )
+        immediate_pool = ImmediatePool()
+        original_pool = execution._pool
 
-        with monkeypatch.context() as patch_context:
-            patch_context.setattr(
-                extension_execution.QtCore, "QEventLoop", FakeEventLoop
-            )
-            patch_context.setattr(execution, "_start_next", lambda: set_result(None))
-            with pytest.raises(
-                erlab.extensions.ExtensionExecutionError, match="without a result"
-            ):
-                execution.run_operation(operation, data)
+        try:
+            execution._pool = typing.cast("QtCore.QThreadPool", immediate_pool)
+            with monkeypatch.context() as patch_context:
+                patch_context.setattr(
+                    extension_execution.QtCore, "QEventLoop", pytest.fail
+                )
+                with pytest.raises(
+                    erlab.extensions.ExtensionExecutionError,
+                    match="without a result",
+                ):
+                    execution.run_operation(operation, data)
 
-            patch_context.setattr(
-                execution, "_start_next", lambda: set_result("discarded")
-            )
-            with pytest.raises(
-                erlab.extensions.ExtensionExecutionError, match="not enabled"
-            ):
-                execution.run_operation(operation, data)
+                immediate_pool.status = "discarded"
+                with pytest.raises(
+                    erlab.extensions.ExtensionExecutionError, match="not enabled"
+                ):
+                    execution.run_operation(operation, data)
 
-            patch_context.setattr(
-                execution, "_start_next", lambda: set_result("failed")
-            )
-            with pytest.raises(
-                erlab.extensions.ExtensionExecutionError, match="could not complete"
-            ):
-                execution.run_operation(operation, data)
+                immediate_pool.status = "failed"
+                with pytest.raises(
+                    erlab.extensions.ExtensionExecutionError,
+                    match="could not complete",
+                ):
+                    execution.run_operation(operation, data)
 
-            patch_context.setattr(
-                execution, "_start_next", lambda: set_result("success")
-            )
-            xr.testing.assert_identical(
-                execution.run_operation(operation, data), xr.DataArray([2.0])
-            )
+                immediate_pool.status = "success"
+                xr.testing.assert_identical(
+                    execution.run_operation(operation, data), xr.DataArray([2.0])
+                )
+        finally:
+            execution._pool = original_pool
 
 
 def test_extension_routine_provenance_parameters_are_editable(
@@ -6254,9 +6317,14 @@ def test_dispatched_routine_can_be_removed_before_worker_start(
             assert [job.job_id for job in manager._extensions.execution.queued] == [
                 job_id
             ]
+            active = manager._extensions.execution._active
+            if active is None:
+                pytest.fail("The queued routine worker was not retained")
+            queued_worker = active[1]
 
             manager._extensions.execution.remove_queued(job_id)
 
+            assert queued_worker.done.is_set()
             assert manager._extensions.execution.queued == ()
             assert manager.ntools == 1
         finally:
@@ -6655,11 +6723,12 @@ def scale(data: xr.DataArray) -> xr.DataArray:
             parameters={},
         )
         reload_errors: list[BaseException] = []
+        stop_reload = threading.Event()
 
         def reload_after_start() -> None:
-            if not started_path.exists():
-                QtCore.QTimer.singleShot(5, reload_after_start)
-                return
+            while not started_path.exists():
+                if stop_reload.wait(0.005):
+                    return
             try:
                 changed_source = _script(script_path, "data + scale")
                 current = store.read().extensions["waiting.py"]
@@ -6673,7 +6742,8 @@ def scale(data: xr.DataArray) -> xr.DataArray:
             finally:
                 release_path.touch()
 
-        QtCore.QTimer.singleShot(0, reload_after_start)
+        reload_thread = threading.Thread(target=reload_after_start)
+        reload_thread.start()
         try:
             with pytest.raises(
                 erlab.extensions.ExtensionExecutionError,
@@ -6682,7 +6752,10 @@ def scale(data: xr.DataArray) -> xr.DataArray:
                 execution.run_operation(operation, data)
         finally:
             release_path.touch()
+            stop_reload.set()
+            reload_thread.join(timeout=2.0)
 
+        assert not reload_thread.is_alive()
         assert reload_errors == []
 
 
@@ -6824,45 +6897,6 @@ def slow(data: xr.DataArray, amount: float, delay: float = 0.0) -> xr.DataArray:
             timeout=5000,
         )
         assert manager.ntools == 1
-
-
-def test_removing_queued_replay_releases_its_waiter(
-    manager_context,
-    tmp_path: pathlib.Path,
-) -> None:
-    script_path = tmp_path / "scale.py"
-    _script(script_path)
-
-    with manager_context() as manager:
-        catalog, source_hash = manager._extensions.catalog.store.register_script(
-            script_path
-        )
-        _validate_and_enable(
-            manager._extensions.catalog.store,
-            "scale.py",
-            expected_record_generation=(
-                catalog.extensions["scale.py"].record_generation
-            ),
-        )
-        manager._extensions.catalog.refresh()
-        job = manager._extensions.execution._routine_job(
-            script_name="scale.py",
-            source_hash=source_hash,
-            routine_id="scale",
-            parameters={"scale": 2.0},
-            input_data=xr.DataArray([1.0]),
-            input_uid="replay",
-            input_snapshot="snapshot",
-        )
-        waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
-        manager._extensions.execution._routine_waiters[job.job_id] = waiter
-        manager._extensions.execution._pending.append(job)
-
-        manager._extensions.execution.remove_queued(job.job_id)
-
-        assert waiter.result is not None
-        assert waiter.result.status == "discarded"
-        assert manager._extensions.execution.queued == ()
 
 
 def test_canceling_pending_loader_releases_waiter(tmp_path: pathlib.Path) -> None:
@@ -8298,7 +8332,7 @@ def test_loader_import_failure_is_classified_as_a_source_failure(
     assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
-def test_remove_queued_without_replay_waiter_discards_job(
+def test_remove_queued_discards_pending_job(
     manager_context,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -8374,27 +8408,19 @@ def slow(data: xr.DataArray, delay: float = 0.4) -> xr.DataArray:
             ),
             show=False,
         )
-        active_job_id = execution.queue_routine(
+        execution.queue_routine(
             script_name="slow.py",
             source_hash=source_hash,
             routine_id="slow",
             parameters={"delay": 0.4},
             target=0,
         )
-        queued_job_id = execution.queue_routine(
+        execution.queue_routine(
             script_name="slow.py",
             source_hash=source_hash,
             routine_id="slow",
             parameters={"delay": 0.4},
             target=0,
-        )
-        active_waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
-        queued_waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
-        execution._routine_waiters.update(
-            {
-                active_job_id: active_waiter,
-                queued_job_id: queued_waiter,
-            }
         )
         qtbot.wait_until(lambda: execution.active is not None, timeout=2000)
 
@@ -8423,11 +8449,6 @@ def slow(data: xr.DataArray, delay: float = 0.4) -> xr.DataArray:
         assert "canceled during manager shutdown" in str(loader_errors[0])
         assert execution.active is None
         assert execution.queued == ()
-        assert execution._routine_waiters == {}
-        assert active_waiter.result is not None
-        assert active_waiter.result.status == "success"
-        assert queued_waiter.result is not None
-        assert queued_waiter.result.status == "discarded"
         assert execution._blocking_tasks == set()
         assert execution._shutdown_complete
 
@@ -9946,6 +9967,7 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
         extension_execution._remove_manager_modules("worker-manager")
     if worker.result is None:
         raise RuntimeError("The routine worker did not return a result")
+    assert worker.done.is_set()
     assert worker.result.source_failure
     assert worker.result.status == "failed"
 
@@ -9973,9 +9995,8 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
         active_worker.signals.finished.connect(execution._finished_slot)
         active_worker.signals.started.connect(execution._started_slot)
         execution._active = (job, active_worker)
-        waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
-        execution._routine_waiters[job.job_id] = waiter
         validation_errors: list[tuple[str, str, str | None]] = []
+        dialogs: list[None] = []
         starts: list[None] = []
         with monkeypatch.context() as mp:
             mp.setattr(
@@ -9986,6 +10007,11 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
                 ),
             )
             mp.setattr(execution, "_start_next", lambda: starts.append(None))
+            mp.setattr(
+                extension_execution.erlab.interactive.utils.MessageDialog,
+                "critical",
+                lambda *_args, **_kwargs: dialogs.append(None),
+            )
             execution._finished(
                 extension_execution._ExtensionRoutineResult(
                     job=job,
@@ -9999,7 +10025,7 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
         assert validation_errors == [
             (job.script_name, job.source_hash, "source traceback")
         ]
-        assert waiter.result is not None
+        assert dialogs == [None]
         assert starts == [None]
 
         execution._accepting = False

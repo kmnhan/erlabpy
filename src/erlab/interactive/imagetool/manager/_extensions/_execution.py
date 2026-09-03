@@ -223,14 +223,6 @@ class _ExtensionRoutineResult:
 
 
 @dataclasses.dataclass
-class _ExtensionRoutineWaiter:
-    """Own the nested event loop for one synchronous manager replay call."""
-
-    loop: QtCore.QEventLoop
-    result: _ExtensionRoutineResult | None = None
-
-
-@dataclasses.dataclass
 class _ReplaySourceCapture:
     """Stage exact sources until the caller publishes replayed data.
 
@@ -899,6 +891,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         self.source_is_healthy = source_is_healthy
         self.signals = _ExtensionWorkerSignals()
         self.result: _ExtensionRoutineResult | None = None
+        self.done = threading.Event()
         self._started = threading.Event()
 
     @property
@@ -915,7 +908,10 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             status="discarded",
         )
         self.result = result
-        self.signals.finished.emit(result)
+        try:
+            self.signals.finished.emit(result)
+        finally:
+            self.done.set()
 
     def run(self) -> None:
         started = time.perf_counter()
@@ -1016,7 +1012,10 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                 source_failure=source_failure,
             )
             self.result = result
-            self.signals.finished.emit(result)
+            try:
+                self.signals.finished.emit(result)
+            finally:
+                self.done.set()
 
 
 class _ExtensionExecutionController(QtCore.QObject):
@@ -1044,7 +1043,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._script_modules: dict[tuple[str, str, str], LoadedScript] = {}
         self._pending: deque[_ExtensionRoutineJob] = deque()
         self._active: tuple[_ExtensionRoutineJob, _ExtensionRoutineWorker] | None = None
-        self._routine_waiters: dict[str, _ExtensionRoutineWaiter] = {}
         self._replay_source_captures: list[_ReplaySourceCapture] = []
         self._blocking_tasks: set[
             _ExtensionLoaderWorker | _ExtensionValidationWorker
@@ -1426,7 +1424,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         *,
         wait_message: str | None = None,
     ) -> None:
-        """Retain one synchronous task until its exact completion event arrives."""
+        """Wait for one task without re-entering the Qt event dispatcher."""
         with self._blocking_tasks_lock:
             if not self._accepting:
                 raise ExtensionExecutionError("Extension execution is shutting down")
@@ -1438,34 +1436,14 @@ class _ExtensionExecutionController(QtCore.QObject):
                 raise
         self.queue_changed.emit()
         try:
-            if QtCore.QThread.currentThread() == self.thread():
-                loop = QtCore.QEventLoop()
-                poll_timer = QtCore.QTimer()
-                poll_timer.setInterval(5)
-
-                def _quit_if_done() -> None:
-                    if task.done.is_set():
-                        loop.quit()
-
-                poll_timer.timeout.connect(_quit_if_done)
-                try:
-                    if not task.done.is_set():
-                        poll_timer.start()
-                        if wait_message is None:
-                            loop.exec(
-                                QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
-                            )
-                        else:
-                            with erlab.interactive.utils.wait_dialog(
-                                self._manager, wait_message
-                            ):
-                                loop.exec(
-                                    QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
-                                )
-                finally:
-                    poll_timer.stop()
-                    with contextlib.suppress(TypeError, RuntimeError):
-                        poll_timer.timeout.disconnect(_quit_if_done)
+            # The worker sets ``done`` directly. Processing Qt events here can reenter
+            # manager teardown while this synchronous call still owns the task.
+            if (
+                wait_message is not None
+                and QtCore.QThread.currentThread() == self.thread()
+            ):
+                with erlab.interactive.utils.wait_dialog(self._manager, wait_message):
+                    task.done.wait()
             else:
                 task.done.wait()
         finally:
@@ -1505,7 +1483,7 @@ class _ExtensionExecutionController(QtCore.QObject):
     def run_operation(
         self, operation: ToolProvenanceOperation, data: xr.DataArray
     ) -> xr.DataArray:
-        """Replay one pinned routine through this manager's serialized queue."""
+        """Replay one pinned routine without nested Qt event dispatch."""
         if not isinstance(operation, ExtensionRoutineOperation):
             raise TypeError("Expected extension routine provenance")
         if QtCore.QThread.currentThread() != self.thread():
@@ -1514,8 +1492,11 @@ class _ExtensionExecutionController(QtCore.QObject):
             )
         if not self._accepting:
             raise ExtensionExecutionError("Extension execution is shutting down")
-        if self._routine_waiters:
-            raise ExtensionExecutionError("Another extension replay is in progress")
+        if self._active is not None or self._pending:
+            raise ExtensionExecutionError(
+                "Wait for background extension routines to finish before replaying "
+                "provenance"
+            )
         job = self._routine_job(
             script_name=operation.script_name,
             source_hash=operation.source_hash,
@@ -1525,16 +1506,13 @@ class _ExtensionExecutionController(QtCore.QObject):
             input_uid="provenance-replay",
             input_snapshot="pinned-source",
         )
-        waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
-        self._routine_waiters[job.job_id] = waiter
-        self._pending.append(job)
-        self.queue_changed.emit()
-        self._start_next()
-        waiter.loop.exec(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-        self._routine_waiters.pop(job.job_id, None)
-        result = waiter.result
+        worker = self._routine_worker(job)
+        self._pool.start(worker)
+        worker.done.wait()
+        result = worker.result
         if result is None:
             raise ExtensionExecutionError("Extension replay ended without a result")
+        self._record_routine_result_health(result)
         if result.status == "discarded":
             raise ExtensionExecutionError("The extension is not enabled")
         if result.status == "failed" or result.output is None:
@@ -1599,36 +1577,27 @@ class _ExtensionExecutionController(QtCore.QObject):
         ):
             active[1].discard_pending()
             return
-        removed = tuple(job for job in self._pending if job.job_id == job_id)
         kept = deque(job for job in self._pending if job.job_id != job_id)
         if len(kept) == len(self._pending):
             return
         self._pending = kept
-        for job in removed:
-            waiter = self._routine_waiters.pop(job.job_id, None)
-            if waiter is None:
-                continue
-            waiter.result = _ExtensionRoutineResult(
-                job=job,
-                output=None,
-                duration=0.0,
-                status="discarded",
-            )
-            waiter.loop.quit()
         self.queue_changed.emit()
+
+    def _routine_worker(self, job: _ExtensionRoutineJob) -> _ExtensionRoutineWorker:
+        return _ExtensionRoutineWorker(
+            job,
+            manager_session_id=self._manager_session_id,
+            catalog_store=self._catalog.store,
+            script_modules=self._script_modules,
+            source_is_healthy=self._source_is_healthy,
+        )
 
     def _start_next(self) -> None:
         if self._active is not None or not self._accepting:
             return
         if self._pending:
             job = self._pending.popleft()
-            worker = _ExtensionRoutineWorker(
-                job,
-                manager_session_id=self._manager_session_id,
-                catalog_store=self._catalog.store,
-                script_modules=self._script_modules,
-                source_is_healthy=self._source_is_healthy,
-            )
+            worker = self._routine_worker(job)
             worker.signals.finished.connect(self._finished_slot)
             worker.signals.started.connect(self._started_slot)
             self._active = (job, worker)
@@ -1645,21 +1614,8 @@ class _ExtensionExecutionController(QtCore.QObject):
         active[1].signals.finished.disconnect(self._finished_slot)
         active[1].signals.started.disconnect(self._started_slot)
         self._active = None
-        if result.source_failure:
-            self._set_validation_error(
-                result.job.script_name,
-                result.job.source_hash,
-                result.traceback_text,
-            )
-        elif result.status == "success":
-            self._set_validation_error(
-                result.job.script_name, result.job.source_hash, None
-            )
-        waiter = self._routine_waiters.pop(result.job.job_id, None)
-        if waiter is not None:
-            waiter.result = result
-            waiter.loop.quit()
-        elif erlab.interactive.utils.qt_is_valid(self._manager):
+        self._record_routine_result_health(result)
+        if erlab.interactive.utils.qt_is_valid(self._manager):
             if result.status == "failed":
                 erlab.interactive.utils.MessageDialog.critical(
                     self._manager,
@@ -1671,6 +1627,18 @@ class _ExtensionExecutionController(QtCore.QObject):
                 self._insert_if_current(result)
         self.queue_changed.emit()
         self._start_next()
+
+    def _record_routine_result_health(self, result: _ExtensionRoutineResult) -> None:
+        if result.source_failure:
+            self._set_validation_error(
+                result.job.script_name,
+                result.job.source_hash,
+                result.traceback_text,
+            )
+        elif result.status == "success":
+            self._set_validation_error(
+                result.job.script_name, result.job.source_hash, None
+            )
 
     @QtCore.Slot()
     def _routine_started(self) -> None:
@@ -1776,19 +1744,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         with self._blocking_tasks_lock:
             self._accepting = False
             blocking_tasks = tuple(self._blocking_tasks)
-        pending = tuple(self._pending)
         self._pending.clear()
-        for job in pending:
-            waiter = self._routine_waiters.pop(job.job_id, None)
-            if waiter is None:
-                continue
-            waiter.result = _ExtensionRoutineResult(
-                job=job,
-                output=None,
-                duration=0.0,
-                status="discarded",
-            )
-            waiter.loop.quit()
         self.queue_changed.emit()
         for task in blocking_tasks:
             task.cancel_if_pending()
@@ -1804,15 +1760,6 @@ class _ExtensionExecutionController(QtCore.QObject):
                     active[1].signals.finished.disconnect(self._finished_slot)
                 with contextlib.suppress(TypeError, RuntimeError):
                     active[1].signals.started.disconnect(self._started_slot)
-                waiter = self._routine_waiters.pop(active[0].job_id, None)
-                if waiter is not None:
-                    waiter.result = active[1].result or _ExtensionRoutineResult(
-                        job=active[0],
-                        output=None,
-                        duration=0.0,
-                        status="discarded",
-                    )
-                    waiter.loop.quit()
                 self._active = None
         with self._blocking_tasks_lock:
             self._blocking_tasks.clear()
