@@ -2008,10 +2008,6 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     qtbot, monkeypatch, recwarn
 ) -> None:
     import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_qtagg import (
-        FigureCanvasQTAgg,
-        NavigationToolbar2QT,
-    )
 
     data = xr.DataArray(
         np.arange(12.0).reshape(3, 2, 2),
@@ -2046,8 +2042,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     tool.show_figure_window(activate=False)
     tool._update_operation_editor()
 
-    assert tool.findChildren(FigureCanvasQTAgg) == []
-    assert tool.findChildren(NavigationToolbar2QT) == []
+    assert tool.figure_window.isWindow()
+    assert tool.figure_window.canvas.window() is tool.figure_window
+    assert tool.figure_window.toolbar.window() is tool.figure_window
     assert set(tool.findChildren(QtWidgets.QSplitter)) == {
         tool.source_panel.source_splitter,
         tool.operation_panel.splitter,

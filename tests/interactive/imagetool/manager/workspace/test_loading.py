@@ -2037,6 +2037,7 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         fname = tmp_path / "loader-standalone.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
         expected_ptable_size = ptable.size()
+        expected_ptable_frame_size = ptable.frameGeometry().size()
 
         manifest = _current_workspace_manifest(fname)
         assert manifest["loader_state"]["recent_directory"] == str(example_data_dir)
@@ -2103,8 +2104,27 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         assert manager._standalone_app_pending_states["explorer"]["active_tab"] == 1
         restored_ptable = manager.ptable_window
         assert restored_ptable.isVisible()
-        assert restored_ptable.size().width() >= expected_ptable_size.width()
-        assert restored_ptable.size().height() == expected_ptable_size.height()
+        restored_screen = restored_ptable.screen()
+        assert restored_screen is not None
+        available_geometry = restored_screen.availableGeometry()
+        restored_frame = restored_ptable.frameGeometry()
+        if expected_ptable_frame_size.width() <= available_geometry.width():
+            assert restored_ptable.width() == expected_ptable_size.width()
+        else:
+            assert restored_ptable.width() < expected_ptable_size.width()
+            assert restored_ptable.width() <= available_geometry.width()
+        if expected_ptable_frame_size.height() <= available_geometry.height():
+            assert restored_ptable.height() == expected_ptable_size.height()
+        else:
+            assert restored_ptable.height() < expected_ptable_size.height()
+            assert restored_ptable.height() <= available_geometry.height()
+        assert (
+            available_geometry.top()
+            <= restored_frame.top()
+            <= available_geometry.bottom()
+        )
+        assert available_geometry.left() <= restored_frame.right()
+        assert restored_frame.left() <= available_geometry.right()
         assert restored_ptable.selected_atomic_numbers == (6, 8)
         assert restored_ptable._plot_atomic_number == 6
         assert restored_ptable.hv_edit.text() == "80"

@@ -91,65 +91,6 @@ def _false_mime_state(_mime: QtCore.QMimeData) -> bool:
     return False
 
 
-def _centered_window_position(
-    window_size: QtCore.QSize, screen_geometry: QtCore.QRect
-) -> QtCore.QPoint | None:
-    """Center a window frame while keeping its top-left corner on-screen."""
-    screen = QtCore.QRect(screen_geometry)
-    if window_size.isEmpty() or screen.isEmpty():
-        return None
-
-    width = window_size.width()
-    height = window_size.height()
-    centered = QtCore.QRect(QtCore.QPoint(), window_size)
-    centered.moveCenter(screen.center())
-    return QtCore.QPoint(
-        screen.left()
-        if width > screen.width()
-        else min(max(centered.left(), screen.left()), screen.right() - width + 1),
-        screen.top()
-        if height > screen.height()
-        else min(max(centered.top(), screen.top()), screen.bottom() - height + 1),
-    )
-
-
-def _non_overlapping_window_position(
-    reference_frame: QtCore.QRect,
-    window_size: QtCore.QSize,
-    screen_geometry: QtCore.QRect,
-    *,
-    gap: int = 8,
-) -> QtCore.QPoint | None:
-    """Choose a same-screen position without overlap when space permits."""
-    screen = QtCore.QRect(screen_geometry)
-    if reference_frame.isEmpty() or window_size.isEmpty() or screen.isEmpty():
-        return None
-
-    width = window_size.width()
-    height = window_size.height()
-
-    def clamp(value: int, minimum: int, maximum: int) -> int:
-        return min(max(value, minimum), maximum)
-
-    if width <= screen.width() and height <= screen.height():
-        max_left = screen.right() - width + 1
-        max_top = screen.bottom() - height + 1
-        aligned_top = clamp(reference_frame.top(), screen.top(), max_top)
-        aligned_left = clamp(reference_frame.left(), screen.left(), max_left)
-        candidates = (
-            QtCore.QPoint(reference_frame.right() + gap + 1, aligned_top),
-            QtCore.QPoint(reference_frame.left() - gap - width, aligned_top),
-            QtCore.QPoint(aligned_left, reference_frame.bottom() + gap + 1),
-            QtCore.QPoint(aligned_left, reference_frame.top() - gap - height),
-        )
-        for position in candidates:
-            candidate = QtCore.QRect(position, window_size)
-            if screen.contains(candidate) and not reference_frame.intersects(candidate):
-                return position
-
-    return _centered_window_position(window_size, screen)
-
-
 def _axis_limit_pair(axis: object, getter_name: str) -> tuple[float, float] | None:
     getter = getattr(axis, getter_name, None)
     if getter is None:
@@ -455,6 +396,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self,
         setup: FigureSubplotsState,
         *,
+        owner: QtWidgets.QWidget,
         export_callback: Callable[[], None] = _noop_toolbar_callback,
         subplot_adjust_callback: Callable[[], None] = _noop_toolbar_callback,
         axes_customize_callback: Callable[[], None] = _noop_toolbar_callback,
@@ -474,10 +416,9 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         ] = _false_mime_state,
         source_drop_callback: Callable[[QtCore.QMimeData], bool] = _false_mime_state,
     ) -> None:
-        super().__init__(None)
+        super().__init__(owner, QtCore.Qt.WindowType.Window)
         erlab.interactive.utils.patch_macos_matplotlib_qt_cursor()
         self._closing_from_owner = False
-        self._initial_placement_done = False
         self._suppress_resize_signal = False
         self._resize_signal_pending = False
         self._resize_signal_generation = 0
@@ -686,67 +627,6 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             return
         self._suppress_resize_signal = False
 
-    def _ensure_recallable_geometry(self) -> None:
-        window = self.windowHandle()
-        if window is None:
-            return
-        frame = window.frameGeometry()
-        if frame.isEmpty():
-            return
-        screen_geometries = tuple(
-            geometry
-            for screen in QtGui.QGuiApplication.screens()
-            for geometry in (screen.availableGeometry(),)
-            if not geometry.isEmpty()
-        )
-        if not screen_geometries or any(
-            geometry.intersects(frame) for geometry in screen_geometries
-        ):
-            return
-        target_screen = window.screen() or QtGui.QGuiApplication.primaryScreen()
-        if target_screen is None:
-            target_geometry = screen_geometries[0]
-        else:
-            target_geometry = target_screen.availableGeometry()
-            if target_geometry.isEmpty():
-                target_geometry = screen_geometries[0]
-        position = _centered_window_position(frame.size(), target_geometry)
-        if position is not None:
-            window.setFramePosition(position)
-
-    def _place_beside(self, owner: QtWidgets.QWidget) -> None:
-        if self._initial_placement_done:
-            return
-        owner_top_level = owner.window()
-        if owner_top_level is None:
-            return
-        owner_window = owner_top_level.windowHandle()
-        window = self.windowHandle()
-        if owner_window is None or window is None:
-            return
-        owner_frame = owner_window.frameGeometry()
-        window_size = window.frameGeometry().size()
-        if owner_frame.isEmpty() or window_size.isEmpty():
-            return
-
-        target_screen = owner_window.screen()
-        if target_screen is None:
-            target_screen = QtGui.QGuiApplication.screenAt(owner_frame.center())
-        if target_screen is None:
-            target_screen = QtGui.QGuiApplication.primaryScreen()
-        if target_screen is None:
-            return
-
-        position = _non_overlapping_window_position(
-            owner_frame,
-            window_size,
-            target_screen.availableGeometry(),
-        )
-        if position is None:
-            return
-        window.setFramePosition(position)
-        self._initial_placement_done = True
-
     def show_for_setup(
         self, setup: FigureSubplotsState, title: str, *, activate: bool
     ) -> None:
@@ -759,7 +639,6 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             self.showNormal()
         elif not self.isVisible():
             self.show()
-        self._ensure_recallable_geometry()
         if activate:
             self.raise_()
             self.activateWindow()

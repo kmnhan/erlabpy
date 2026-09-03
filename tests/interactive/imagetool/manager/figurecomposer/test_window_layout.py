@@ -1161,7 +1161,11 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
         calls.append((receiver, msec, callback_name, guards))
 
     monkeypatch.setattr(erlab.interactive.utils, "single_shot", record_single_shot)
-    window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
+    window = figure_window_ui._FigureComposerDisplayWindow(
+        FigureSubplotsState(), owner=owner
+    )
 
     window.resize_to_setup(FigureSubplotsState())
     window._suppress_resize_signal = False
@@ -1174,8 +1178,10 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
 
 
 def test_figure_display_window_skips_stale_resize_callbacks(qtbot) -> None:
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
     window = figure_window_ui._FigureComposerDisplayWindow(
-        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0), owner=owner
     )
     emitted_sizes: list[tuple[float, float]] = []
     window.sigCanvasSizeChanged.connect(
@@ -1196,8 +1202,10 @@ def test_figure_display_window_skips_stale_resize_callbacks(qtbot) -> None:
 
 
 def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
     window = figure_window_ui._FigureComposerDisplayWindow(
-        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0), owner=owner
     )
 
     emitted_sizes: list[tuple[float, float]] = []
@@ -1242,8 +1250,10 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     assert not window.isVisible()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
+    app_quit_owner = QtWidgets.QWidget()
+    qtbot.addWidget(app_quit_owner)
     app_quit_window = figure_window_ui._FigureComposerDisplayWindow(
-        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0), owner=app_quit_owner
     )
     app_quit_window.show()
     erlab.interactive.utils._set_application_quit_requested(True)
@@ -1257,8 +1267,11 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
 
 
 def test_figure_display_window_event_filter_accepts_source_drag(qtbot) -> None:
-    window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
-    qtbot.addWidget(window)
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
+    window = figure_window_ui._FigureComposerDisplayWindow(
+        FigureSubplotsState(), owner=owner
+    )
     mime = QtCore.QMimeData()
     window.set_source_drop_callbacks(can_drop=lambda data: data is mime)
 
@@ -1288,34 +1301,13 @@ def test_figure_display_window_event_filter_accepts_source_drag(qtbot) -> None:
     assert event.dropAction() == QtCore.Qt.DropAction.CopyAction
 
 
-def test_figure_display_window_show_for_setup_recalls_hidden_states(
+def test_figure_display_window_show_for_setup_recalls_minimized_state(
     qtbot, monkeypatch
 ) -> None:
-    class _FakeScreen:
-        def availableGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(0, 0, 800, 600)
-
-    class _MovedDisplayWindow(figure_window_ui._FigureComposerDisplayWindow):
-        def __init__(self) -> None:
-            super().__init__(FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0))
-            self._test_frame = QtCore.QRect(5000, 5000, 120, 120)
-            self.moved_to: list[QtCore.QPoint] = []
-
-        def frameGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(self._test_frame)
-
-        def windowHandle(self) -> typing.Any:
-            return self
-
-        def setFramePosition(self, point: QtCore.QPoint) -> None:
-            self.moved_to.append(QtCore.QPoint(point))
-            self._test_frame.moveTopLeft(point)
-
-        def screen(self) -> _FakeScreen:
-            return _FakeScreen()
-
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
     minimized = figure_window_ui._FigureComposerDisplayWindow(
-        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0), owner=owner
     )
     show_calls: list[str] = []
     monkeypatch.setattr(minimized, "isMinimized", lambda: True)
@@ -1332,164 +1324,30 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
     minimized.close_from_owner()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
-    offscreen = _MovedDisplayWindow()
-    offscreen.show_for_setup(
-        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0),
-        "offscreen",
-        activate=False,
-    )
 
-    assert offscreen.moved_to
-    assert _FakeScreen().availableGeometry().intersects(offscreen.frameGeometry())
-    offscreen.close_from_owner()
+def test_figure_display_window_uses_qt_window_ownership(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+
+    window = tool.figure_window
+
+    assert window.parentWidget() is tool
+    assert window.isWindow()
+    assert window.windowType() == QtCore.Qt.WindowType.Window
+
+    tool.show()
+    window.show()
+    QtWidgets.QApplication.processEvents()
+
+    owner_handle = tool.windowHandle()
+    window_handle = window.windowHandle()
+    assert owner_handle is not None
+    assert window_handle is not None
+    assert window_handle.transientParent() is owner_handle
+
+    tool.deleteLater()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
-
-    oversized = _MovedDisplayWindow()
-    oversized._test_frame = QtCore.QRect(5000, 5000, 900, 700)
-    oversized.show_for_setup(
-        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0),
-        "oversized",
-        activate=False,
-    )
-
-    assert oversized.moved_to == [QtCore.QPoint(0, 0)]
-    oversized.close_from_owner()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
-
-
-@pytest.mark.parametrize(
-    ("reference", "window_size", "screen", "expected"),
-    [
-        (
-            QtCore.QRect(100, 100, 300, 300),
-            QtCore.QSize(200, 150),
-            QtCore.QRect(0, 0, 1000, 800),
-            QtCore.QPoint(408, 100),
-        ),
-        (
-            QtCore.QRect(700, 100, 250, 300),
-            QtCore.QSize(300, 150),
-            QtCore.QRect(0, 0, 1000, 800),
-            QtCore.QPoint(392, 100),
-        ),
-        (
-            QtCore.QRect(100, 100, 600, 200),
-            QtCore.QSize(500, 200),
-            QtCore.QRect(0, 0, 800, 800),
-            QtCore.QPoint(100, 308),
-        ),
-        (
-            QtCore.QRect(100, 500, 600, 200),
-            QtCore.QSize(500, 200),
-            QtCore.QRect(0, 0, 800, 800),
-            QtCore.QPoint(100, 292),
-        ),
-        (
-            QtCore.QRect(0, 0, 800, 600),
-            QtCore.QSize(300, 200),
-            QtCore.QRect(0, 0, 800, 600),
-            QtCore.QPoint(250, 200),
-        ),
-        (
-            QtCore.QRect(0, 0, 800, 600),
-            QtCore.QSize(900, 700),
-            QtCore.QRect(0, 0, 800, 600),
-            QtCore.QPoint(0, 0),
-        ),
-    ],
-)
-def test_non_overlapping_figure_window_position(
-    reference: QtCore.QRect,
-    window_size: QtCore.QSize,
-    screen: QtCore.QRect,
-    expected: QtCore.QPoint,
-) -> None:
-    assert (
-        figure_window_ui._non_overlapping_window_position(
-            reference,
-            window_size,
-            screen,
-        )
-        == expected
-    )
-
-
-@pytest.mark.parametrize(
-    ("reference", "window_size", "screen"),
-    [
-        (QtCore.QRect(), QtCore.QSize(200, 150), QtCore.QRect(0, 0, 800, 600)),
-        (
-            QtCore.QRect(0, 0, 300, 300),
-            QtCore.QSize(),
-            QtCore.QRect(0, 0, 800, 600),
-        ),
-        (
-            QtCore.QRect(0, 0, 300, 300),
-            QtCore.QSize(200, 150),
-            QtCore.QRect(),
-        ),
-    ],
-)
-def test_non_overlapping_figure_window_position_requires_geometry(
-    reference: QtCore.QRect,
-    window_size: QtCore.QSize,
-    screen: QtCore.QRect,
-) -> None:
-    assert (
-        figure_window_ui._non_overlapping_window_position(
-            reference,
-            window_size,
-            screen,
-        )
-        is None
-    )
-
-
-def test_figure_display_window_is_placed_beside_composer_once(qtbot) -> None:
-    class _FakeScreen:
-        def availableGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(0, 40, 1000, 760)
-
-    class _Owner(QtWidgets.QWidget):
-        def frameGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(100, 40, 300, 300)
-
-        def screen(self) -> _FakeScreen:
-            return _FakeScreen()
-
-        def windowHandle(self) -> typing.Any:
-            return self
-
-    class _MovedDisplayWindow(figure_window_ui._FigureComposerDisplayWindow):
-        def __init__(self) -> None:
-            super().__init__(FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0))
-            self._test_frame = QtCore.QRect(0, 0, 200, 150)
-            self.moved_to: list[QtCore.QPoint] = []
-
-        def frameGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(self._test_frame)
-
-        def windowHandle(self) -> typing.Any:
-            return self
-
-        def setFramePosition(self, point: QtCore.QPoint) -> None:
-            self.moved_to.append(QtCore.QPoint(point))
-            self._test_frame.moveTopLeft(point)
-
-        def move(self, point: QtCore.QPoint) -> None:
-            raise AssertionError(f"Widget.move() received frame position {point!r}")
-
-    owner = _Owner()
-    qtbot.addWidget(owner)
-    window = _MovedDisplayWindow()
-
-    window._place_beside(owner)
-    window._place_beside(owner)
-
-    assert window.moved_to == [QtCore.QPoint(408, 40)]
-    assert window._initial_placement_done
-    window.close_from_owner()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert not erlab.interactive.utils.qt_is_valid(window)
 
 
 def test_figure_composer_managed_display_window_configures_save_shortcut(
@@ -7246,9 +7104,8 @@ def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> 
             limited_toolitems,
         )
         limited_window = figure_window_ui._FigureComposerDisplayWindow(
-            FigureSubplotsState()
+            FigureSubplotsState(), owner=tool
         )
-        qtbot.addWidget(limited_window)
     assert "back" not in limited_window.toolbar._actions
     assert "forward" not in limited_window.toolbar._actions
 

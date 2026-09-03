@@ -114,9 +114,7 @@ def restore_qt_window_state(
     geometry = qt_bytearray_from_base64(parsed.geometry)
     if geometry is not None:
         restored = bool(widget.restoreGeometry(geometry))
-    if parsed.rect is not None and (
-        not restored or widget.geometry().getRect()[2:] != parsed.rect[2:]
-    ):
+    if parsed.rect is not None and not restored:
         widget.setGeometry(*parsed.rect)
         restored = True
     return restored

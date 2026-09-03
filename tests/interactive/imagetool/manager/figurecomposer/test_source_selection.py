@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pydantic
 import pytest
-from qtpy import QtCore, QtGui
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
@@ -176,8 +176,11 @@ def test_figure_composer_state_serializes_slice_values() -> None:
 
 
 def test_figure_display_window_source_drop_event_branches(qtbot) -> None:
-    window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
-    qtbot.addWidget(window)
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
+    window = figure_window_ui._FigureComposerDisplayWindow(
+        FigureSubplotsState(), owner=owner
+    )
     mime = QtCore.QMimeData()
     assert figure_window_ui._false_mime_state(mime) is False
     assert window._handle_source_drag_event(None) is False
