@@ -4,6 +4,7 @@ import contextlib
 import json
 import pathlib
 import threading
+import types
 
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
@@ -748,7 +749,7 @@ def test_unavailable_step_stops_manager_polling(monkeypatch, qtbot) -> None:
     controller._finish_cleanup()
 
 
-def test_imagetool_menu_target_uses_window_for_native_menu(monkeypatch, qtbot) -> None:
+def test_imagetool_menu_target_uses_window(monkeypatch, qtbot) -> None:
     manager = _Manager()
     qtbot.addWidget(manager)
     controller, _loader_context = _controller(monkeypatch, manager)
@@ -759,16 +760,173 @@ def test_imagetool_menu_target_uses_window_for_native_menu(monkeypatch, qtbot) -
     menu_bar.hide()
     monkeypatch.setattr(controller, "_map_tool", lambda: tool)
 
-    monkeypatch.setattr(tutorial, "_NATIVE_MENU_BAR", True)
     assert controller._map_menus_target() is tool
     assert (
         tutorial_framework.target_geometry(controller._map_menus_target()) is not None
     )
+    assert tutorial_framework.target_geometry(menu_bar) is None
 
-    monkeypatch.setattr(tutorial, "_NATIVE_MENU_BAR", False)
-    assert controller._map_menus_target() is menu_bar
-    assert tutorial_framework.target_geometry(controller._map_menus_target()) is None
+    controller._finish_cleanup()
 
+
+def test_tutorial_menu_steps_use_passive_window_targets(monkeypatch, qtbot) -> None:
+    popup_calls: list[QtWidgets.QMenu] = []
+
+    class RecordingMenu(QtWidgets.QMenu):
+        def popup(self, *_args: object) -> None:
+            popup_calls.append(self)
+
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    manager.file_menu = RecordingMenu("File", manager)
+    manager.file_menu.setObjectName("manager_file_menu")
+    manager.explorer_action = QtGui.QAction("Data Explorer", manager)
+    manager.explorer_action.setObjectName("manager_explorer_action")
+    manager.file_menu.addAction(manager.explorer_action)
+
+    tool = QtWidgets.QMainWindow()
+    qtbot.addWidget(tool)
+    edit_menu = RecordingMenu("Edit", tool)
+    edit_menu.setObjectName("itoolEditMenu")
+    view_menu = RecordingMenu("View", tool)
+    view_menu.setObjectName("itoolViewMenu")
+    guideline_menu = RecordingMenu("Rotation Guidelines", tool)
+    guideline_menu.setObjectName("itoolRotationGuidelinesMenu")
+    window_menu = RecordingMenu("Window", tool)
+    window_menu.setObjectName("itoolWindowMenu")
+    tool.menuBar().addMenu(edit_menu)
+    tool.menuBar().addMenu(view_menu)
+    view_menu.addMenu(guideline_menu)
+    tool.menuBar().addMenu(window_menu)
+
+    coordinate_action = QtGui.QAction("Coordinates", tool)
+    coordinate_action.setObjectName("itoolEditCoordinatesAction")
+    edit_menu.addAction(coordinate_action)
+    c6_action = QtGui.QAction("Sixfold", tool)
+    c6_action.setObjectName("itoolGuidelineC6Action")
+    guideline_menu.addAction(c6_action)
+    ktool_action = QtGui.QAction("ktool", tool)
+    ktool_action.setObjectName("itoolOpenKtoolAction")
+    view_menu.addAction(ktool_action)
+    reveal_action = QtGui.QAction("Reveal", tool)
+    reveal_action.setObjectName("itool_reveal_in_manager_action")
+    window_menu.addAction(reveal_action)
+    tool.reveal_in_manager_act = reveal_action
+    tool.mnb = types.SimpleNamespace(
+        menu_dict={
+            "editMenu": edit_menu,
+            "viewMenu": view_menu,
+            "Rotation Guidelines": guideline_menu,
+            "windowMenu": window_menu,
+        }
+    )
+
+    composer = QtWidgets.QMainWindow()
+    qtbot.addWidget(composer)
+    figure_menu = RecordingMenu("Window", composer)
+    figure_menu.setObjectName("tool_window_menu")
+    composer.menuBar().addMenu(figure_menu)
+    figure_action = QtGui.QAction("Reveal", composer)
+    figure_action.setObjectName("tool_reveal_in_manager_action")
+    figure_menu.addAction(figure_action)
+
+    controller, _loader_context = _controller(monkeypatch, manager)
+    monkeypatch.setattr(controller, "_map_tool", lambda: tool)
+    monkeypatch.setattr(controller, "_coordinate_action", lambda: coordinate_action)
+    monkeypatch.setattr(controller, "_c6_action", lambda: c6_action)
+    monkeypatch.setattr(controller, "_ktool_action", lambda: ktool_action)
+    monkeypatch.setattr(
+        controller,
+        "_tool_for_uid",
+        lambda uid: tool if uid == "menu-tool" else None,
+    )
+    monkeypatch.setattr(controller, "_converted_map_uid", lambda: "menu-tool")
+    monkeypatch.setattr(controller, "_raw_cut_uid", lambda: "menu-tool")
+    monkeypatch.setattr(controller, "_figure_composer", lambda: composer)
+    monkeypatch.setattr(controller, "_figure_reveal_action", lambda: figure_action)
+    controller._figure_composer_uid = "menu-figure"
+
+    steps = {step.id: step for step in controller.steps}
+    expected_targets = {
+        "open-data-explorer": manager,
+        "imagetool-menus": tool,
+        "open-coordinate-editor": tool,
+        "select-c6-guideline": tool,
+        "open-ktool": tool,
+        "reveal-converted-map": tool,
+        "switch-to-explorer-cut": manager,
+        "switch-to-manager-operations": tool,
+        "reveal-figure-in-manager": composer,
+    }
+    for step_id, expected_target in expected_targets.items():
+        step = steps[step_id]
+        assert step.reveal is not None
+        assert callable(step.target)
+        step.reveal()
+        target = step.target()
+        assert target is expected_target
+        assert tutorial_framework.target_geometry(target) is not None
+
+    assert popup_calls == []
+    assert not any(
+        menu.isVisible()
+        for menu in (
+            manager.file_menu,
+            edit_menu,
+            view_menu,
+            guideline_menu,
+            window_menu,
+            figure_menu,
+        )
+    )
+
+    explorer_step = steps["open-data-explorer"]
+    controller._index = list(controller.steps).index(explorer_step)
+    _title, body, _hint, _continue_label, missing = controller._step_content(
+        explorer_step
+    )
+    assert not missing
+    assert [span.kind for span in body.spans if span.kind != "plain"] == [
+        "menu",
+        "menu_separator",
+        "menu_action",
+    ]
+
+    for menu in (
+        manager.file_menu,
+        edit_menu,
+        view_menu,
+        guideline_menu,
+        window_menu,
+        figure_menu,
+    ):
+        menu.close()
+    QtWidgets.QApplication.processEvents()
+    for step_id, expected_target in expected_targets.items():
+        step = steps[step_id]
+        assert callable(step.target)
+        assert step.target() is expected_target
+        assert tutorial_framework.target_geometry(expected_target) is not None
+
+    controller._steps = (explorer_step,)
+    tutorial_framework.TourController.start(controller)
+    card = controller._card
+    assert card is not None
+    assert controller.current_step is explorer_step
+    assert controller._fatal_error is None
+    assert card.isVisible()
+    assert not card.continue_button.isEnabled()
+    manager.file_menu.show()
+    QtWidgets.QApplication.processEvents()
+    manager.file_menu.close()
+    QtWidgets.QApplication.processEvents()
+    controller.notify_state_changed()
+    assert controller.current_step is explorer_step
+    assert controller._fatal_error is None
+    assert card.isVisible()
+    assert not card.continue_button.isEnabled()
+
+    controller.close()
     controller._finish_cleanup()
 
 
