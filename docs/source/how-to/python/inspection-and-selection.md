@@ -7,49 +7,8 @@ ranges, follow a path through momentum space, or compare several slices.
 
 ## Polygon masking
 
-Define polygon vertices in the coordinate order given by `dims`, then apply
-{func}`mask_with_polygon <erlab.analysis.mask.mask_with_polygon>`:
-
-This example uses the first Brillouin zone as a physically meaningful boundary for a
-repeated-zone constant energy surface. Construct the real-space basis and obtain the
-ordered zone vertices:
-
-```python
-import numpy as np
-
-import erlab
-import erlab.analysis as era
-
-constant_energy_map = data.qsel(eV=-0.2, eV_width=0.02)
-lattice_constant = 6.97
-real_space_basis = lattice_constant * np.array(
-    [
-        [1.0, 0.0],
-        [-0.5, np.sqrt(3) / 2],
-    ]
-)
-first_bz_vertices = erlab.lattice.get_2d_vertices(
-    real_space_basis,
-    reciprocal=False,
-    rotate=30.0,
-)
-masked_map = era.mask.mask_with_polygon(
-    constant_energy_map,
-    first_bz_vertices,
-    dims=("kx", "ky"),
-)
-```
-
-```{eval-rst}
-.. plot:: how_to/inspection_and_selection.py mask_momentum_region
-   :include-source: false
-   :alt: Repeated-zone constant energy surface with the first Brillouin-zone boundary beside the intensity retained inside that zone
-```
-
-The 30° rotation aligns the Γ–M direction with $k_x$ for this model. Points outside the
-first Brillouin zone become missing values. Use `invert=True` to mask the zone instead.
-Use `drop=True` to remove coordinate labels for rows and columns that contain no
-retained values.
+See {doc}`../plotting/polygon-masking` to calculate a polygon from lattice parameters,
+apply it to a constant energy surface, and reproduce the result in Figure Composer.
 
 (how-to-python-select-average-data)=
 

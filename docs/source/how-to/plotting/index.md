@@ -11,6 +11,7 @@ For figure creation, export, and recipe reuse, see {doc}`../gui/plotting`.
 colorbars
 maps-and-cuts
 two-dimensional-colormaps
+polygon-masking
 cut-trajectories
 high-symmetry-cuts
 annotations
@@ -70,8 +71,8 @@ figure-styles
 ::::
 
 ::::{grid-item-card} Polygon masking
-:link: how-to-python-mask-polygon
-:link-type: ref
+:link: polygon-masking
+:link-type: doc
 :class-card: plotting-gallery-card
 
 ```{eval-rst}
