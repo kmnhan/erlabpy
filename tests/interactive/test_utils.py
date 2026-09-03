@@ -2050,19 +2050,34 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
     with qtbot.waitExposed(window):
         window.show()
     click_count = 0
+    shortcut_blocking_states: list[bool] = []
 
     def _record_click() -> None:
         nonlocal click_count
         click_count += 1
 
+    def _record_shortcut() -> None:
+        shortcut_blocking_states.append(panel._blocking)
+
     button.clicked.connect(_record_click)
+    shortcut_action = QtGui.QAction(window)
+    shortcut_action.setObjectName("wait_panel_test_shortcut")
+    shortcut_action.setShortcut(QtGui.QKeySequence("Shift+V"))
+    shortcut_action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+    shortcut_action.triggered.connect(_record_shortcut)
+    window.addAction(shortcut_action)
     click_position = button.mapTo(window, button.rect().center())
-    click_attempted = False
+    input_attempted = False
     active_modal = QtWidgets.QApplication.activeModalWidget()
 
-    def _click_parent_window() -> None:
-        nonlocal click_attempted
-        click_attempted = True
+    def _send_parent_input() -> None:
+        nonlocal input_attempted
+        input_attempted = True
+        QtTest.QTest.keyClick(
+            window,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
         QtTest.QTest.mouseClick(
             window.windowHandle(),
             QtCore.Qt.MouseButton.LeftButton,
@@ -2075,7 +2090,7 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
         assert panel._blocking
         assert QtWidgets.QApplication.activeModalWidget() is active_modal
 
-        QtCore.QTimer.singleShot(0, _click_parent_window)
+        QtCore.QTimer.singleShot(0, _send_parent_input)
 
     assert not panel.isVisible()
     assert window.isEnabled()
@@ -2083,8 +2098,9 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
     panel._continue_event_drain(panel._generation)
     qtbot.waitUntil(lambda: not panel._blocking, timeout=1000)
 
-    assert click_attempted
+    assert input_attempted
     assert click_count == 0
+    assert shortcut_blocking_states == []
     assert QtWidgets.QApplication.activeModalWidget() is active_modal
     assert qt_is_valid(panel)
     QtTest.QTest.mouseClick(
@@ -2092,8 +2108,14 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
         QtCore.Qt.MouseButton.LeftButton,
         pos=click_position,
     )
+    QtTest.QTest.keyClick(
+        window,
+        QtCore.Qt.Key.Key_V,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
     QtWidgets.QApplication.processEvents()
     assert click_count == 1
+    assert shortcut_blocking_states == [False]
 
 
 def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
@@ -2117,6 +2139,7 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
         QtCore.Qt.KeyboardModifier.NoModifier,
     )
     drag_leave_event = QtGui.QDragLeaveEvent()
+    gesture_event = QtWidgets.QGestureEvent([])
 
     assert key_event.isInputEvent()
     assert panel.eventFilter(child, key_event)
@@ -2124,6 +2147,8 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
     assert panel.eventFilter(child, drop_event)
     assert not drag_leave_event.isInputEvent()
     assert panel.eventFilter(child, drag_leave_event)
+    assert not gesture_event.isInputEvent()
+    assert panel.eventFilter(child, gesture_event)
     assert not panel.eventFilter(child, QtCore.QEvent(QtCore.QEvent.Type.User))
     native_window = QtGui.QWindow()
     assert not panel.eventFilter(native_window, key_event)

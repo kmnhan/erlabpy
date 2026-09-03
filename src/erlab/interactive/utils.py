@@ -735,11 +735,19 @@ class _WaitPanel(QtWidgets.QLabel):
         if not self._blocking or event is None:
             return False
         try:
-            # Qt classifies user input itself. Drag-and-drop events are the one
-            # input family that does not inherit QInputEvent.
+            # Qt classifies raw input itself. Drag-and-drop, gesture, and shortcut
+            # dispatch use separate QEvent subclasses.
             if not (
                 event.isInputEvent()
-                or isinstance(event, (QtGui.QDropEvent, QtGui.QDragLeaveEvent))
+                or isinstance(
+                    event,
+                    (
+                        QtGui.QDropEvent,
+                        QtGui.QDragLeaveEvent,
+                        QtGui.QShortcutEvent,
+                        QtWidgets.QGestureEvent,
+                    ),
+                )
             ):
                 return False
         except RuntimeError:
