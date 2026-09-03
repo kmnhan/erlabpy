@@ -5236,7 +5236,13 @@ def test_itool_keeps_child_tool_registered_when_close_is_ignored(
     qtbot.addWidget(win)
 
     child = erlab.interactive.goldtool(_TEST_DATA["2D"].copy(), execute=False)
-    monkeypatch.setattr(child, "_stop_server", lambda: False)
+    stop_succeeds = False
+
+    def stop_server(*, timeout_ms: int | None = None) -> bool:
+        assert timeout_ms == child.BACKGROUND_TASK_TIMEOUT_MS
+        return stop_succeeds
+
+    monkeypatch.setattr(child, "_stop_server", stop_server)
 
     win.slicer_area.add_tool_window(child)
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
@@ -5246,7 +5252,7 @@ def test_itool_keeps_child_tool_registered_when_close_is_ignored(
     assert next(iter(win.slicer_area._associated_tools.values())) is child
     assert child.isVisible()
 
-    monkeypatch.setattr(child, "_stop_server", lambda: True)
+    stop_succeeds = True
     assert child.close() is True
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 0, timeout=5000)
     win.close()
