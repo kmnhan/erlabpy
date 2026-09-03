@@ -2066,6 +2066,11 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
     shortcut_action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
     shortcut_action.triggered.connect(_record_shortcut)
     window.addAction(shortcut_action)
+    window.raise_()
+    window.activateWindow()
+    qtbot.waitUntil(window.isActiveWindow)
+    button.setFocus()
+    qtbot.waitUntil(button.hasFocus)
     click_position = button.mapTo(window, button.rect().center())
     input_attempted = False
     active_modal = QtWidgets.QApplication.activeModalWidget()
@@ -2074,7 +2079,7 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
         nonlocal input_attempted
         input_attempted = True
         QtTest.QTest.keyClick(
-            window,
+            button,
             QtCore.Qt.Key.Key_V,
             QtCore.Qt.KeyboardModifier.ShiftModifier,
         )
@@ -2109,7 +2114,7 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
         pos=click_position,
     )
     QtTest.QTest.keyClick(
-        window,
+        button,
         QtCore.Qt.Key.Key_V,
         QtCore.Qt.KeyboardModifier.ShiftModifier,
     )
