@@ -2128,7 +2128,6 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
     window.setCentralWidget(child)
     qtbot.addWidget(window)
     panel = erlab.interactive.utils._WaitPanel(child, "Blocking input")
-    panel.open()
 
     key_event = QtGui.QKeyEvent(
         QtCore.QEvent.Type.KeyPress,
@@ -2145,6 +2144,8 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
     drag_leave_event = QtGui.QDragLeaveEvent()
     gesture_event = QtWidgets.QGestureEvent([])
 
+    assert not panel.eventFilter(child, key_event)
+    panel.open()
     assert key_event.isInputEvent()
     assert panel.eventFilter(child, key_event)
     assert not drop_event.isInputEvent()
@@ -2158,6 +2159,8 @@ def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
     assert not panel.eventFilter(native_window, key_event)
     native_window.destroy()
 
+    panel.setParent(None)
+    assert not panel.eventFilter(child, key_event)
     panel._release(panel._generation)
 
 
