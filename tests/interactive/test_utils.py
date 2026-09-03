@@ -5810,6 +5810,7 @@ def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -
             )
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph(self._handle_node_change)
             self._metadata_node_uid: str | None = None
@@ -5882,6 +5883,13 @@ def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -
             self, widget: QtWidgets.QWidget | None
         ) -> None:
             self.unregistered_interaction_windows.append(widget)
+
+        def _retain_window_until_destroyed(self, widget: QtWidgets.QWidget) -> None:
+            self.retired_windows.append(widget)
+
+        def _release_retired_window(self, widget: QtWidgets.QWidget) -> None:
+            with contextlib.suppress(ValueError):
+                self.retired_windows.remove(widget)
 
         def _note_interaction_activity(self) -> None:
             self.interaction_activity_count += 1
@@ -6090,6 +6098,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self.removed: list[str] = []
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
             self._metadata_node_uid: str | None = None
@@ -6169,6 +6178,13 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self, widget: QtWidgets.QWidget | None
         ) -> None:
             self.unregistered_interaction_windows.append(widget)
+
+        def _retain_window_until_destroyed(self, widget: QtWidgets.QWidget) -> None:
+            self.retired_windows.append(widget)
+
+        def _release_retired_window(self, widget: QtWidgets.QWidget) -> None:
+            with contextlib.suppress(ValueError):
+                self.retired_windows.remove(widget)
 
         def _note_interaction_activity(self) -> None:
             self.interaction_activity_count += 1
@@ -6333,6 +6349,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             self.renamed: list[tuple[int, object]] = []
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
 
         def _update_info(self, *, uid: str) -> None:
@@ -6358,6 +6375,13 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def name_of_imagetool(self, index: int) -> str:
             return f"name {index}"
+
+        def _retain_window_until_destroyed(self, widget: QtWidgets.QWidget) -> None:
+            self.retired_windows.append(widget)
+
+        def _release_retired_window(self, widget: QtWidgets.QWidget) -> None:
+            with contextlib.suppress(ValueError):
+                self.retired_windows.remove(widget)
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
