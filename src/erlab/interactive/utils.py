@@ -710,11 +710,13 @@ class _WaitPanel(QtWidgets.QLabel):
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMargin(20)
         self.setAutoFillBackground(True)
+        self._generation = 0
         self._blocking = False
 
     def open(self) -> None:
         if not qt_is_valid(self) or self.parentWidget() is None:
             return
+        self._generation += 1
         if not self._blocking:
             application = QtWidgets.QApplication.instance()
             if application is not None:
@@ -792,17 +794,27 @@ class _WaitPanel(QtWidgets.QLabel):
         self.hide()
         if not self._blocking:
             return
-        # Drain events that are already available while the input filter remains
-        # installed. Socket activity is unrelated to input release and can outlive
-        # its owning widget during teardown.
+        generation = self._generation
+        single_shot(
+            self,
+            0,
+            lambda: self._drain_and_release(generation),
+        )
+
+    def _drain_and_release(self, generation: int) -> None:
+        if generation != self._generation or not self._blocking:
+            return
+        # The synchronous caller has unwound. Drain events that are already available
+        # while the filter remains installed. Socket activity is unrelated to input
+        # release and can outlive its owning widget during teardown.
         QtWidgets.QApplication.processEvents(
             QtCore.QEventLoop.ProcessEventsFlag.ExcludeSocketNotifiers
         )
         if qt_is_valid(self):
-            self._release()
+            self._release(generation)
 
-    def _release(self) -> None:
-        if not self._blocking:
+    def _release(self, generation: int) -> None:
+        if generation != self._generation or not self._blocking:
             return
         self._blocking = False
         application = QtWidgets.QApplication.instance()
