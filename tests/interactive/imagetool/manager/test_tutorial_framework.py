@@ -948,7 +948,6 @@ def test_allowed_action_permits_its_shortcut_from_focused_widget(qtbot) -> None:
     focused = QtWidgets.QWidget(window)
     focused.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
     focused.show()
-    focused.setFocus()
     action = QtGui.QAction(window)
     action.setShortcut(QtGui.QKeySequence("Shift+V"))
     action.setCheckable(True)
@@ -968,31 +967,36 @@ def test_allowed_action_permits_its_shortcut_from_focused_widget(qtbot) -> None:
         window,
     )
     controller.start()
-    focused.setFocus()
-    qtbot.waitUntil(focused.hasFocus)
+    try:
+        window.raise_()
+        window.activateWindow()
+        qtbot.waitUntil(window.isActiveWindow)
+        focused.setFocus()
+        qtbot.waitUntil(focused.hasFocus)
 
-    matching = QtGui.QKeyEvent(
-        QtCore.QEvent.Type.ShortcutOverride,
-        QtCore.Qt.Key.Key_V,
-        QtCore.Qt.KeyboardModifier.ShiftModifier,
-    )
-    other = QtGui.QKeyEvent(
-        QtCore.QEvent.Type.ShortcutOverride,
-        QtCore.Qt.Key.Key_X,
-        QtCore.Qt.KeyboardModifier.ShiftModifier,
-    )
-    assert not controller.eventFilter(focused, matching)
-    assert controller.eventFilter(focused, other)
+        matching = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.ShortcutOverride,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        other = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.ShortcutOverride,
+            QtCore.Qt.Key.Key_X,
+            QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        assert not controller.eventFilter(focused, matching)
+        assert controller.eventFilter(focused, other)
 
-    qtbot.keyClick(
-        focused,
-        QtCore.Qt.Key.Key_V,
-        modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
-    )
-    assert action.isChecked()
-    assert controller.current_step is not None
-    assert controller.current_step.id == "action"
-    controller.close()
+        qtbot.keyClick(
+            focused,
+            QtCore.Qt.Key.Key_V,
+            modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        assert action.isChecked()
+        assert controller.current_step is not None
+        assert controller.current_step.id == "action"
+    finally:
+        controller.close()
 
 
 def test_message_dialog_details_toggle_bypasses_input_gating(qtbot) -> None:
