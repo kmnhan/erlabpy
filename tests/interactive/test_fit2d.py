@@ -1319,6 +1319,42 @@ def test_fit2d_transpose_discards_published_fit_success(qtbot) -> None:
         fit1d_module._release_running_fit_worker(thread)  # type: ignore[arg-type]
 
 
+def test_fit2d_rebuild_cancels_attached_worker(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _Thread:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def is_alive(self) -> bool:
+            return True
+
+    thread = _Thread()
+    win._fit_thread = thread  # type: ignore[assignment]
+    fit1d_module._register_running_fit_worker(thread, win)  # type: ignore[arg-type]
+
+    try:
+        win._rebuild_ui_for_full_data(
+            data,
+            win._params.copy(),
+            uncertainty=win._uncertainty_full,
+            direct_weights=win._direct_weights_full,
+        )
+
+        assert thread.cancelled
+        assert win._fit_thread is None
+        assert fit1d_module._fit_worker_registry().workers[thread] is None
+        xr.testing.assert_identical(win._data_full, data)
+    finally:
+        fit1d_module._release_running_fit_worker(thread)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("return_to_start", [False, True])
 def test_fit2d_active_fit_locks_inputs_and_rejects_slice_change(
     qtbot, monkeypatch, *, return_to_start: bool
@@ -1990,6 +2026,22 @@ def test_fit2d_late_cancel_keeps_completed_step_and_stops_sequence(
         deferred[0]()
     finally:
         fit1d_module._release_running_fit_worker(thread)  # type: ignore[arg-type]
+
+
+def test_fit2d_stale_revision_finishes_sequence(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_2d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    finished: list[bool] = []
+    generation = 1
+    win._fit_2d_generation = generation
+    win._fit_2d_revision = win._fit_config_revision
+    win._fit_config_revision += 1
+    monkeypatch.setattr(win, "_finish_fit_2d_sequence", lambda: finished.append(True))
+
+    win._start_next_fit_2d(generation)
+
+    assert finished == [True]
 
 
 def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> None:

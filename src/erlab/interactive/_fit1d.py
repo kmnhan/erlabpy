@@ -924,11 +924,9 @@ class _FitWorkerRegistry(QtCore.QObject):
         self, thread: _FitWorker, owner: QtWidgets.QWidget | None
     ) -> None:
         callback = self._owner_destroy_callbacks.pop(thread, None)
-        if (
-            callback is not None
-            and owner is not None
-            and erlab.interactive.utils.qt_is_valid(owner)
-        ):
+        if callback is None or owner is None:
+            return
+        if erlab.interactive.utils.qt_is_valid(owner):
             owner.destroyed.disconnect(callback)
 
     def _owner_destroyed(
@@ -4260,10 +4258,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 outcome = thread._outcome
                 action = self._fit_worker_completion_action(thread)
                 action()
-                if (
-                    cancel_requested
-                    and outcome.kind == "success"
-                    and self._fit_running_multi
+                if cancel_requested and (
+                    outcome.kind == "success" and self._fit_running_multi
                 ):
                     self._fit_cancelled()
             except Exception:
