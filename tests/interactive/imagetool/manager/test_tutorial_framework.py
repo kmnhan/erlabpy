@@ -941,6 +941,64 @@ def test_allowed_objects_and_event_predicate(qtbot) -> None:
     controller.close()
 
 
+def test_allowed_action_permits_its_shortcut_from_focused_widget(qtbot) -> None:
+    window = _shown_window(qtbot)
+    target = QtWidgets.QPushButton(window)
+    target.show()
+    focused = QtWidgets.QWidget(window)
+    focused.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+    focused.show()
+    action = QtGui.QAction(window)
+    action.setShortcut(QtGui.QKeySequence("Shift+V"))
+    action.setCheckable(True)
+    window.addAction(action)
+    controller = tutorial.TourController(
+        [
+            tutorial.TourStep(
+                "action",
+                "Action",
+                "Body",
+                mode="action",
+                target=target,
+                allowed_inputs=frozenset({"key", "shortcut"}),
+                allowed_objects=(action,),
+            )
+        ],
+        window,
+    )
+    controller.start()
+    try:
+        window.raise_()
+        window.activateWindow()
+        qtbot.waitUntil(window.isActiveWindow)
+        focused.setFocus()
+        qtbot.waitUntil(focused.hasFocus)
+
+        matching = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.ShortcutOverride,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        other = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.ShortcutOverride,
+            QtCore.Qt.Key.Key_X,
+            QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        assert not controller.eventFilter(focused, matching)
+        assert controller.eventFilter(focused, other)
+
+        qtbot.keyClick(
+            focused,
+            QtCore.Qt.Key.Key_V,
+            modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        assert action.isChecked()
+        assert controller.current_step is not None
+        assert controller.current_step.id == "action"
+    finally:
+        controller.close()
+
+
 def test_message_dialog_details_toggle_bypasses_input_gating(qtbot) -> None:
     window = _shown_window(qtbot)
     target = QtWidgets.QPushButton(window)

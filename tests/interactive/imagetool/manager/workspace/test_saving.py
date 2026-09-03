@@ -3175,6 +3175,55 @@ def test_manager_workspace_load_reopens_offloaded_data_as_dask(
         assert _compute_first_value(loaded) == 0.0
 
 
+def test_manager_offload_keeps_rebind_events_inside_one_transaction(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+
+        fname = tmp_path / "offload-transaction.itws"
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(fname)
+        adopt_workspace_path(manager, fname)
+        controller._mark_workspace_clean()
+
+        original_rebind = controller.loading._rebind_workspace_backed_imagetools
+        transaction_states: list[tuple[bool, int]] = []
+
+        def _rebind(*args, **kwargs) -> None:
+            transaction_states.append(
+                (
+                    manager._workspace_state.save_in_progress,
+                    manager._workspace_state.loading_depth,
+                )
+            )
+            original_rebind(*args, **kwargs)
+            assert not controller._mark_node_data_dirty(uid)
+
+        monkeypatch.setattr(
+            controller.loading,
+            "_rebind_workspace_backed_imagetools",
+            _rebind,
+        )
+
+        assert manager.offload_to_workspace([0], native=False)
+
+        assert transaction_states == [(True, 1)]
+        assert root.slicer_area._data.chunks is not None
+        assert not manager._workspace_state.save_in_progress
+        assert not manager.is_workspace_modified
+
+
 def test_manager_workspace_import_reopens_offloaded_data_as_dask(
     qtbot,
     accept_dialog,
@@ -3553,6 +3602,7 @@ def test_manager_offload_to_workspace_edge_paths(
             )
         ]
         assert restored == [None]
+        assert not manager._workspace_state.save_in_progress
 
 
 def test_manager_offload_to_workspace_preserves_child_source_state(

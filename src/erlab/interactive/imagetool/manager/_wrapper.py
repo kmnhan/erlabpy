@@ -71,6 +71,10 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _ManagedWindowCloseRejected(RuntimeError):
+    """A managed window rejected a requested close."""
+
+
 def _current_added_time() -> datetime.datetime:
     return datetime.datetime.now().astimezone().replace(microsecond=0)
 
@@ -563,6 +567,109 @@ class _ManagedWindowNode(QtCore.QObject):
     def is_imagetool(self) -> bool:
         return self._window_kind == "imagetool"
 
+    def _close_window_for_detach(self, window: QtWidgets.QWidget) -> bool:
+        """Request a close without changing the managed node on rejection."""
+        delete_on_close = window.testAttribute(
+            QtCore.Qt.WidgetAttribute.WA_DeleteOnClose
+        )
+        destroyed_callback = (
+            self._tool_window_destroyed_callback
+            if self._tool_window is window
+            else None
+        )
+        destroyed_callback_disconnected = False
+        if destroyed_callback is not None:
+            try:
+                window.destroyed.disconnect(destroyed_callback)
+            except (TypeError, RuntimeError):
+                pass
+            else:
+                self._tool_window_destroyed_callback = None
+                destroyed_callback_disconnected = True
+        manager = self._manager()
+        if manager is not None:
+            manager._retain_window_until_destroyed(window)
+        try:
+            window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            accepted = window.close()
+        except Exception:
+            if not erlab.interactive.utils.qt_is_valid(window):
+                if manager is not None:
+                    manager._release_retired_window(window)
+                return True
+            window.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_DeleteOnClose,
+                delete_on_close,
+            )
+            if manager is not None:
+                manager._release_retired_window(window)
+            if destroyed_callback_disconnected and destroyed_callback is not None:
+                window.destroyed.connect(destroyed_callback)
+                self._tool_window_destroyed_callback = destroyed_callback
+            raise
+        window_valid = erlab.interactive.utils.qt_is_valid(window)
+        if accepted or not window_valid:
+            if not window_valid and manager is not None:
+                manager._release_retired_window(window)
+            return True
+        window.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_DeleteOnClose,
+            delete_on_close,
+        )
+        if manager is not None:
+            manager._release_retired_window(window)
+        if destroyed_callback_disconnected and destroyed_callback is not None:
+            window.destroyed.connect(destroyed_callback)
+            self._tool_window_destroyed_callback = destroyed_callback
+        return False
+
+    def _detach_tool_window(
+        self,
+        window: erlab.interactive.utils.ToolWindow | None = None,
+    ) -> erlab.interactive.utils.ToolWindow | None:
+        old = self.tool_window if window is None else window
+        if old is None:
+            return None
+        destroyed_callback = self._tool_window_destroyed_callback
+        self._tool_window = None
+        self._tool_window_destroyed_callback = None
+        self._tool_provenance_revision_key = None
+        self._close_workspace_reference_datasets()
+        manager = self._manager()
+        if manager is not None:
+            with contextlib.suppress(Exception):
+                manager._unregister_interaction_window(old)
+        if not erlab.interactive.utils.qt_is_valid(old):
+            return old
+        with contextlib.suppress(Exception):
+            old.sigInfoChanged.disconnect(self._handle_tool_info_changed)
+        with contextlib.suppress(Exception):
+            old.sigStateChanged.disconnect(self._handle_tool_state_changed)
+        with contextlib.suppress(Exception):
+            old.sigDataChanged.disconnect(self._handle_tool_data_changed)
+        with contextlib.suppress(Exception):
+            old.sigProvenanceChanged.disconnect(self._handle_tool_provenance_changed)
+        with contextlib.suppress(Exception):
+            old._sigSourceRefreshAborted.disconnect(
+                self._handle_tool_source_refresh_aborted
+            )
+        if destroyed_callback is not None:
+            with contextlib.suppress(Exception):
+                old.destroyed.disconnect(destroyed_callback)
+        with contextlib.suppress(Exception):
+            old.removeEventFilter(self)
+        with contextlib.suppress(Exception):
+            old._set_managed_source_update_dialog(None)
+        with contextlib.suppress(Exception):
+            old._set_managed_source_reload(None)
+        with contextlib.suppress(Exception):
+            old._set_managed_secondary_window_callback(None)
+        with contextlib.suppress(Exception):
+            old._set_managed_reveal_callback(None)
+        with contextlib.suppress(Exception):
+            old._set_input_resolver(None)
+        return old
+
     @property
     def window(self) -> QtWidgets.QWidget | None:
         if self.is_imagetool:
@@ -591,50 +698,31 @@ class _ManagedWindowNode(QtCore.QObject):
                     raise TypeError(
                         f"Managed node {self.uid!r} cannot change its collection"
                     )
+        old_window = self.window
+        if old_window is value:
+            return
+        if old_window is not None:
+            try:
+                close_accepted = self._close_window_for_detach(old_window)
+            except Exception as error:
+                logger.exception("Managed window %r failed to close", self.uid)
+                raise _ManagedWindowCloseRejected(
+                    f"Managed window {self.uid!r} failed to close"
+                ) from error
+            if not close_accepted:
+                raise _ManagedWindowCloseRejected(
+                    f"Managed window {self.uid!r} rejected close"
+                )
         self._invalidate_tool_provenance_spec_cache()
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
-        if self.imagetool is not None:
-            manager = self._manager()
-            if manager is not None:
-                manager._unregister_interaction_window(self.imagetool)
-            self._detach_imagetool()
+        if isinstance(old_window, ImageTool):
+            self._detach_imagetool(close=False, window=old_window)
             self._close_workspace_reference_datasets()
-        elif self.tool_window is not None:
-            manager = self._manager()
-            if manager is not None:
-                manager._unregister_interaction_window(self.tool_window)
-            old = self.tool_window
-            with contextlib.suppress(TypeError, RuntimeError):
-                old.sigInfoChanged.disconnect(self._handle_tool_info_changed)
-            with contextlib.suppress(TypeError, RuntimeError):
-                old.sigStateChanged.disconnect(self._handle_tool_state_changed)
-            with contextlib.suppress(TypeError, RuntimeError):
-                old.sigDataChanged.disconnect(self._handle_tool_data_changed)
-            with contextlib.suppress(TypeError, RuntimeError):
-                old.sigProvenanceChanged.disconnect(
-                    self._handle_tool_provenance_changed
-                )
-            with contextlib.suppress(TypeError, RuntimeError):
-                old._sigSourceRefreshAborted.disconnect(
-                    self._handle_tool_source_refresh_aborted
-                )
-            destroyed_callback = self._tool_window_destroyed_callback
-            if destroyed_callback is not None:
-                with contextlib.suppress(TypeError, RuntimeError):
-                    old.destroyed.disconnect(destroyed_callback)
-            self._tool_window_destroyed_callback = None
-            old.removeEventFilter(self)
-            old._set_managed_source_update_dialog(None)
-            old._set_managed_source_reload(None)
-            old._set_managed_secondary_window_callback(None)
-            old._set_managed_reveal_callback(None)
-            old._set_input_resolver(None)
-            old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            old.close()
-            self._tool_window = None
-            self._tool_provenance_revision_key = None
-            self._close_workspace_reference_datasets()
+        elif old_window is not None:
+            self._detach_tool_window(
+                typing.cast("erlab.interactive.utils.ToolWindow", old_window)
+            )
 
         if value is None:
             self._sync_manager_window_reference()
@@ -843,50 +931,63 @@ class _ManagedWindowNode(QtCore.QObject):
         manager._remove_childtool(self.uid)
 
     def _detach_imagetool(
-        self, *, close: bool = True, unlink: bool = True
+        self,
+        *,
+        close: bool = True,
+        unlink: bool = True,
+        window: ImageTool | None = None,
     ) -> ImageTool | None:
-        old = self.imagetool
+        old = self.imagetool if window is None else window
         if old is None:
             return None
+        if close and not self._close_window_for_detach(old):
+            return None
+        self._imagetool = None
+        manager = self._manager()
+        if manager is not None:
+            with contextlib.suppress(Exception):
+                manager._unregister_interaction_window(old)
+        if not erlab.interactive.utils.qt_is_valid(old):
+            return old
         if unlink:
-            old.slicer_area.unlink()
-        if close:
-            old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        old.removeEventFilter(self)
-        with contextlib.suppress(TypeError, RuntimeError):
+            with contextlib.suppress(Exception):
+                old.slicer_area.unlink()
+        with contextlib.suppress(Exception):
+            old.removeEventFilter(self)
+        with contextlib.suppress(Exception):
             old.sigTitleChanged.disconnect(self.update_title)
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigHistoryChanged.disconnect(
                 self._handle_imagetool_state_changed
             )
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigShapeChanged.disconnect(
                 self._handle_imagetool_displayed_layout_changed
             )
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigDataEdited.disconnect(self._handle_imagetool_data_edited)
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigSourceDataChanged.disconnect(
                 self._handle_imagetool_source_data_changed
             )
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigDataBackingChanged.disconnect(
                 self._handle_imagetool_backing_changed
             )
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigSourceDataReplaced.disconnect(
                 self._handle_source_data_replaced
             )
-        with contextlib.suppress(TypeError, RuntimeError):
+        with contextlib.suppress(Exception):
             old.slicer_area.sigDisplayedProvenanceChanged.disconnect(
                 self._handle_imagetool_provenance_changed
             )
-        old.slicer_area._set_stored_code_authorizer(None)
-        old.slicer_area._in_manager = False
-        old._set_managed_reveal_callback(None)
-        if close:
-            old.close()
-        self._imagetool = None
+        with contextlib.suppress(Exception):
+            old.slicer_area._set_stored_code_authorizer(None)
+        with contextlib.suppress(Exception):
+            old.slicer_area._in_manager = False
+        with contextlib.suppress(Exception):
+            old._set_managed_reveal_callback(None)
         return old
 
     def take_window(self) -> QtWidgets.QWidget | None:
@@ -2832,9 +2933,13 @@ class _ManagedWindowNode(QtCore.QObject):
             window.hide()
 
     @QtCore.Slot()
-    def dispose(self) -> None:
+    def dispose(self) -> bool:
+        try:
+            self.window = None
+        except _ManagedWindowCloseRejected:
+            return False
         self._clear_pending_workspace_link_slicer_cache()
-        self.window = None
+        return True
 
     @QtCore.Slot()
     def reload(self) -> None:

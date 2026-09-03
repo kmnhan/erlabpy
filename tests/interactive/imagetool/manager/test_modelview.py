@@ -634,6 +634,19 @@ def test_tool_graph_registration_failures_do_not_mutate_cached_state() -> None:
     assert graph.structure_generation == generation
 
 
+def test_tool_graph_replaces_root_order() -> None:
+    graph = _ManagerToolGraph()
+    graph.displayed_indices = [2, 1, 0]
+    generation = graph.structure_generation
+
+    graph.replace_root_order([1, 0])
+    assert graph.displayed_indices == [1, 0]
+    assert graph.structure_generation == generation + 1
+
+    graph.replace_root_order([1, 0])
+    assert graph.structure_generation == generation + 1
+
+
 class _InfoRefreshToolState(pydantic.BaseModel):
     value: int = 0
 
@@ -3546,6 +3559,7 @@ def test_remove_imagetool_removes_childtools() -> None:
 
         def dispose(self):
             self.disposed = True
+            return True
 
         def deleteLater(self):
             self.deleted = True
@@ -3556,11 +3570,13 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
+        _bulk_remove_depth=0,
         _cancel_managed_node_change=canceled_node_change_uids.append,
-        _workspace_link_keys_for_subtree=lambda _uid: set(),
         _mark_removed_subtree_dirty=lambda _uid: None,
         _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
-        _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
+        _remove_uid_target=lambda child_uid, **_kwargs: (
+            removed_uids.append(child_uid) or {child_uid}
+        ),
         _refresh_dependency_dependents=lambda _uid: None,
         _figure_workflows=types.SimpleNamespace(
             _refresh_figure_source_controls=lambda: refresh_calls.append(None)
@@ -3582,7 +3598,7 @@ def test_remove_imagetool_removes_childtools() -> None:
         ),
     )
 
-    ImageToolManager.remove_imagetool(manager, 0)
+    assert ImageToolManager._remove_imagetool(manager, 0, preflight=False)
     assert removed_uids == [uid]
     assert removed_rows == [0]
     assert refresh_calls == [None]
@@ -3606,15 +3622,16 @@ def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:
     )
     manager._tool_graph.root_wrappers.update(
         {
-            0: types.SimpleNamespace(_childtool_indices=[uid0]),
-            1: types.SimpleNamespace(_childtool_indices=[uid1]),
+            0: types.SimpleNamespace(uid="root-0", _childtool_indices=[uid0]),
+            1: types.SimpleNamespace(uid="root-1", _childtool_indices=[uid1]),
         }
     )
     manager._bulk_remove_context = contextlib.nullcontext
-    manager.remove_imagetool = lambda index, *, update_view=True: (
+    manager._prepare_managed_nodes_for_close = lambda _uids: True
+    manager._remove_imagetool = lambda index, *, update_view=True, **_kwargs: (
         manager.removed_indices.append((index, update_view))
     )
-    manager._remove_childtool = lambda uid: manager.removed_uids.append(uid)
+    manager._remove_childtool = lambda uid, **_kwargs: manager.removed_uids.append(uid)
     manager._iter_descendant_uids = lambda uid: []
 
     ImageToolManager._remove_imagetools(manager, [0], child_uids=[uid0, uid1, uid1])

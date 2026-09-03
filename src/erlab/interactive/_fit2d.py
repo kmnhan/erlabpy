@@ -28,6 +28,7 @@ from erlab.interactive._fit1d import (
     Fit1DTool,
     _broadcast_uncertainty,
     _FitCodeEditRejected,
+    _FitJob,
     _FitRestoreState,
     _load_lmfit_for_ftool_restore,
     _SnapCursorLine,
@@ -128,7 +129,7 @@ def _rebuild_ui(
         @functools.wraps(func)
         def wrapper(self: Fit2DTool, *args: _P.args, **kwargs: _P.kwargs) -> _R:
             old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
-            self._cancel_fit()
+            self._cancel_fit_for_state_change()
             # A rebuild either produces a new result payload or owns no result
             # payload. Do not carry an old serialized result through a destructive
             # transpose or a replacement restore.
@@ -469,6 +470,7 @@ class Fit2DTool(Fit1DTool):
         )
         self._direct_weights = None
         self._uncertainty = self._current_uncertainty()
+        self._fit_configuration_changed()
 
     def _set_direct_weights(
         self, weights: xr.DataArray | None, *, weights_name: str | None = None
@@ -484,6 +486,7 @@ class Fit2DTool(Fit1DTool):
         if weights_name is not None:
             self._direct_weights_name = weights_name
             self._uncertainty_name = f"1 / ({weights_name})"
+        self._fit_configuration_changed()
         self._refresh_weighting_ui()
 
     def _direct_weights_for_persistence(self) -> xr.DataArray | None:
@@ -663,6 +666,8 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_last_completed_idx: int | None = None
         self._fit_2d_last_completed_elapsed: float | None = None
         self._fit_2d_sequence_write_history: bool | None = None
+        self._fit_2d_revision: int | None = None
+        self._fit_2d_generation: int | None = None
 
     @staticmethod
     def _data_with_saved_dims(
@@ -685,6 +690,8 @@ class Fit2DTool(Fit1DTool):
         uncertainty: xr.DataArray | None,
         direct_weights: xr.DataArray | None,
     ) -> None:
+        if self._fit_running():
+            self._cancel_fit_for_state_change()
         self._invalidate_fit_result_payload()
         old_cw = self.centralWidget()
         if old_cw is not None:
@@ -1174,6 +1181,7 @@ class Fit2DTool(Fit1DTool):
             "1) filling parameters using the fill from previous/next buttons, and\n"
             "2) when fitting to the upper/lower Y bounds using the fit up/down buttons."
         )
+        self.fill_mode_combo.currentTextChanged.connect(self._fit_configuration_changed)
         fill_mode_layout.addWidget(self.fill_mode_label)
         fill_mode_layout.addWidget(self.fill_mode_combo)
         self.parameters_layout.addLayout(fill_mode_layout)
@@ -1511,6 +1519,7 @@ class Fit2DTool(Fit1DTool):
 
     @QtCore.Slot()
     def _y_index_changed(self) -> None:
+        self._fit_configuration_changed()
         self._current_idx = self.y_index_spin.value()
         y_vals = self._y_values()
         curr_val = y_vals[self._current_idx]
@@ -2324,6 +2333,7 @@ class Fit2DTool(Fit1DTool):
         self._update_full_fit_saveable()
         self._update_param_plot_options()
         self._update_param_plot()
+        self._fit_configuration_changed()
         self._write_state()
         self._emit_info_changed()
 
@@ -2550,6 +2560,26 @@ class Fit2DTool(Fit1DTool):
         )
         self.fit_down_button.setDisabled(running)
         self.fit_up_button.setDisabled(running)
+        self.index_group.setDisabled(running)
+        for line in (
+            self.x_min_line,
+            self.x_max_line,
+            self.index_line,
+            self.y_min_line,
+            self.y_max_line,
+            self.param_plot_index_line,
+        ):
+            line.setMovable(not running)
+
+    def _fit_job(self) -> _FitJob:
+        """Identify the Fit2D slice submitted to a new worker."""
+        return _FitJob(self._fit_config_revision, int(self._current_idx))
+
+    def _fit_job_is_current(self, job: _FitJob) -> bool:
+        """Reject an outcome if its configuration or target slice changed."""
+        return super()._fit_job_is_current(job) and (
+            job.target_index == self._current_idx
+        )
 
     def _fit_step_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
         widgets = list(super()._fit_step_paint_widgets())
@@ -2602,9 +2632,13 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_live_refresh_pending = False
         self._fit_2d_param_plot_refresh_pending = False
         self._fit_2d_last_completed_idx = None
+        self._fit_2d_revision = self._fit_config_revision
+        self._fit_sequence_generation += 1
+        generation = self._fit_sequence_generation
+        self._fit_2d_generation = generation
         self._begin_fit_2d_sequence_history()
         if self._fit_2d_indices:
-            self._start_next_fit_2d()
+            self._start_next_fit_2d(generation)
 
     def _prepare_fit_2d_sequence_index(self, idx: int) -> None:
         self._current_idx = int(idx)
@@ -2639,7 +2673,12 @@ class Fit2DTool(Fit1DTool):
         self.sigFitFinished.emit(self._params.copy())
         return result
 
-    def _start_next_fit_2d(self) -> None:
+    def _start_next_fit_2d(self, generation: int) -> None:
+        if generation != self._fit_2d_generation:
+            return
+        if self._fit_2d_revision != self._fit_config_revision:
+            self._finish_fit_2d_sequence()
+            return
         if self._fit_cancel_requested:
             self._finish_fit_2d_sequence()
             return
@@ -2681,7 +2720,9 @@ class Fit2DTool(Fit1DTool):
                 )
                 self._finish_fit_2d_sequence()
                 return
-            self._defer_next_fit_step(self._start_next_fit_2d)
+            self._defer_next_fit_step(
+                functools.partial(self._start_next_fit_2d, generation)
+            )
 
         def _on_timeout() -> None:
             if self._fit_start_time is None:
@@ -2744,6 +2785,8 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_initial_range = None
         self._fit_2d_last_completed_idx = None
         self._fit_2d_last_completed_elapsed = None
+        self._fit_2d_revision = None
+        self._fit_2d_generation = None
         self._fit_2d_live_refresh_pending = False
         if self._serialized_fit_result_blob is None:
             self._cache_fit_result_payload()

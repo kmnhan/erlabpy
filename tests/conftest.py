@@ -47,6 +47,7 @@ from tests._qt_helpers import (
     QTCORE_EXIT_CLEANUP,
     InMemoryClipboard,
     QtCore,
+    QtGui as QtGui,
     QtWidgets,
     reset_test_qt_clipboard,
     reset_test_text_clipboard,
@@ -60,7 +61,6 @@ import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 from erlab.interactive.utils import (
     _is_deleted_qt_wrapper_error,
     _WaitDialog,
-    _WaitModalGuard,
     qt_is_valid,
 )
 from erlab.io.dataloader import LoaderBase
@@ -586,23 +586,10 @@ def manager_context() -> Callable[
                         if qt_is_valid(thread):
                             thread.stop(timeout_ms=1000)
 
-                    qapp = QtWidgets.QApplication.instance()
-                    if (
-                        isinstance(qapp, QtWidgets.QApplication)
-                        and manager._application_quit_filter is not None
-                    ):
-                        qapp.removeEventFilter(manager._application_quit_filter)
-                        manager._application_quit_filter = None
-                    manager._registry_heartbeat_timer.stop()
-                    manager._registry_heartbeat.stop()
-                    _stop_thread(server)
-                    _stop_thread(watcher_server)
-                    _drain_qt_events()
                     clipboard = QtWidgets.QApplication.clipboard()
                     if clipboard is not None:
                         clipboard.clear()
                     manager._close_standalone_apps()
-                    _drain_qt_events()
                     manager.remove_all_tools()
                     manager._workspace_controller._mark_workspace_clean()
                     manager.close()
@@ -753,7 +740,7 @@ class _DialogHandler(QtCore.QObject):
         if (
             candidate is None
             or candidate is self._ignored_dialog
-            or isinstance(candidate, (_WaitDialog, _WaitModalGuard))
+            or isinstance(candidate, _WaitDialog)
         ):
             candidate = next(
                 (
@@ -762,7 +749,7 @@ class _DialogHandler(QtCore.QObject):
                     if (
                         isinstance(widget, QtWidgets.QDialog)
                         and widget is not self._ignored_dialog
-                        and not isinstance(widget, (_WaitDialog, _WaitModalGuard))
+                        and not isinstance(widget, _WaitDialog)
                         and widget.isVisible()
                         and widget.isModal()
                     )

@@ -91,6 +91,28 @@ def _false_mime_state(_mime: QtCore.QMimeData) -> bool:
     return False
 
 
+def _centered_window_position(
+    window_size: QtCore.QSize, screen_geometry: QtCore.QRect
+) -> QtCore.QPoint | None:
+    """Center a window frame while keeping its top-left corner on-screen."""
+    screen = QtCore.QRect(screen_geometry)
+    if window_size.isEmpty() or screen.isEmpty():
+        return None
+
+    width = window_size.width()
+    height = window_size.height()
+    centered = QtCore.QRect(QtCore.QPoint(), window_size)
+    centered.moveCenter(screen.center())
+    return QtCore.QPoint(
+        screen.left()
+        if width > screen.width()
+        else min(max(centered.left(), screen.left()), screen.right() - width + 1),
+        screen.top()
+        if height > screen.height()
+        else min(max(centered.top(), screen.top()), screen.bottom() - height + 1),
+    )
+
+
 def _non_overlapping_window_position(
     reference_frame: QtCore.QRect,
     window_size: QtCore.QSize,
@@ -125,20 +147,7 @@ def _non_overlapping_window_position(
             if screen.contains(candidate) and not reference_frame.intersects(candidate):
                 return position
 
-    if width > screen.width() or height > screen.height():
-        return screen.topLeft()
-    return QtCore.QPoint(
-        clamp(
-            reference_frame.right() + gap + 1,
-            screen.left(),
-            screen.right() - width + 1,
-        ),
-        clamp(
-            reference_frame.top(),
-            screen.top(),
-            screen.bottom() - height + 1,
-        ),
-    )
+    return _centered_window_position(window_size, screen)
 
 
 def _axis_limit_pair(axis: object, getter_name: str) -> tuple[float, float] | None:
@@ -678,7 +687,10 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         self._suppress_resize_signal = False
 
     def _ensure_recallable_geometry(self) -> None:
-        frame = self.frameGeometry()
+        window = self.windowHandle()
+        if window is None:
+            return
+        frame = window.frameGeometry()
         if frame.isEmpty():
             return
         screen_geometries = tuple(
@@ -691,25 +703,33 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             geometry.intersects(frame) for geometry in screen_geometries
         ):
             return
-        target_screen = self.screen() or QtGui.QGuiApplication.primaryScreen()
+        target_screen = window.screen() or QtGui.QGuiApplication.primaryScreen()
         if target_screen is None:
             target_geometry = screen_geometries[0]
         else:
             target_geometry = target_screen.availableGeometry()
             if target_geometry.isEmpty():
                 target_geometry = screen_geometries[0]
-        frame.moveCenter(target_geometry.center())
-        self.move(frame.topLeft())
+        position = _centered_window_position(frame.size(), target_geometry)
+        if position is not None:
+            window.setFramePosition(position)
 
     def _place_beside(self, owner: QtWidgets.QWidget) -> None:
         if self._initial_placement_done:
             return
-        owner_frame = owner.frameGeometry()
-        window_size = self.frameGeometry().size()
+        owner_top_level = owner.window()
+        if owner_top_level is None:
+            return
+        owner_window = owner_top_level.windowHandle()
+        window = self.windowHandle()
+        if owner_window is None or window is None:
+            return
+        owner_frame = owner_window.frameGeometry()
+        window_size = window.frameGeometry().size()
         if owner_frame.isEmpty() or window_size.isEmpty():
             return
 
-        target_screen = owner.screen()
+        target_screen = owner_window.screen()
         if target_screen is None:
             target_screen = QtGui.QGuiApplication.screenAt(owner_frame.center())
         if target_screen is None:
@@ -724,7 +744,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         )
         if position is None:
             return
-        self.move(position)
+        window.setFramePosition(position)
         self._initial_placement_done = True
 
     def show_for_setup(

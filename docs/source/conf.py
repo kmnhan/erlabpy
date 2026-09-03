@@ -347,12 +347,19 @@ nbsphinx_execute_arguments = ["--InlineBackend.figure_formats={'svg', 'pdf'}"]
 # -- Qt documentation & intersphinx ------------------------------------------
 
 qt_documentation = "PyQt6"
+intersphinx_timeout = 10
 intersphinx_mapping = {
     "PyQt5": ("https://doc.qt.io/qtforpython-6", None),
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "numba": ("https://numba.readthedocs.io/en/stable", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy", None),
+    "scipy": (
+        "https://docs.scipy.org/doc/scipy",
+        (
+            "https://docs.scipy.org/doc/scipy/objects.inv",
+            "https://scipy.github.io/devdocs/objects.inv",
+        ),
+    ),
     "lmfit": ("https://lmfit.github.io/lmfit-py", None),
     "matplotlib": ("https://matplotlib.org/stable", None),
     "xarray": ("https://docs.xarray.dev/en/stable", None),

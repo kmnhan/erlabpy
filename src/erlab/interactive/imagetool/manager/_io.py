@@ -130,6 +130,8 @@ class _DataIngressController:
         data-array manager mutation. Exact script bytes are retained only after the
         corresponding ImageTool is inserted.
         """
+        if self._manager._workspace_state.closing_document:
+            return [False] * len(data)
         flags: list[bool] = []
         report_context_status = _context_summary is None
         context_summary = _context_summary or ContextIngressSummary()

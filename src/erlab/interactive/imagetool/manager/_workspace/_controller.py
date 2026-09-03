@@ -2292,14 +2292,22 @@ class _WorkspaceController:
     def _offload_targets_to_current_workspace(
         self, offload_targets: Iterable[int | str]
     ) -> bool:
-        workspace_path = self._manager._workspace_state.path
+        state = self._manager._workspace_state
+        workspace_path = state.path
         if workspace_path is None:
+            return False
+        if state.save_in_progress:
             return False
 
         origin = self._active_managed_window()
+        state.save_in_progress = True
+        self._manager._update_actions()
         try:
-            with erlab.interactive.utils.wait_dialog(
-                origin or self._manager, "Offloading to workspace..."
+            with (
+                self._workspace_load_context(),
+                erlab.interactive.utils.wait_dialog(
+                    origin or self._manager, "Offloading to workspace..."
+                ),
             ):
                 self.loading._rebind_workspace_backed_imagetools(
                     workspace_path,
@@ -2310,8 +2318,6 @@ class _WorkspaceController:
                     workspace_path,
                     mark_clean=False,
                 )
-            self._manager._status_bar.showMessage("Data offloaded to workspace", 5000)
-            self._schedule_workspace_gc()
         except Exception:
             logger.exception(
                 "Could not offload data to the current workspace",
@@ -2323,9 +2329,13 @@ class _WorkspaceController:
             )
             self._restore_focus_after_workspace_save(origin)
             return False
+        finally:
+            state.save_in_progress = False
+            self._manager._update_actions()
 
+        self._manager._status_bar.showMessage("Data offloaded to workspace", 5000)
+        self._schedule_workspace_gc()
         self._restore_focus_after_workspace_save(origin)
-        self._manager._update_actions()
         self._manager._update_info()
         return True
 

@@ -1304,7 +1304,10 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
         def frameGeometry(self) -> QtCore.QRect:
             return QtCore.QRect(self._test_frame)
 
-        def move(self, point: QtCore.QPoint) -> None:
+        def windowHandle(self) -> typing.Any:
+            return self
+
+        def setFramePosition(self, point: QtCore.QPoint) -> None:
             self.moved_to.append(QtCore.QPoint(point))
             self._test_frame.moveTopLeft(point)
 
@@ -1341,6 +1344,18 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
     offscreen.close_from_owner()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
+    oversized = _MovedDisplayWindow()
+    oversized._test_frame = QtCore.QRect(5000, 5000, 900, 700)
+    oversized.show_for_setup(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0),
+        "oversized",
+        activate=False,
+    )
+
+    assert oversized.moved_to == [QtCore.QPoint(0, 0)]
+    oversized.close_from_owner()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
 
 @pytest.mark.parametrize(
     ("reference", "window_size", "screen", "expected"),
@@ -1373,7 +1388,7 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
             QtCore.QRect(0, 0, 800, 600),
             QtCore.QSize(300, 200),
             QtCore.QRect(0, 0, 800, 600),
-            QtCore.QPoint(500, 0),
+            QtCore.QPoint(250, 200),
         ),
         (
             QtCore.QRect(0, 0, 800, 600),
@@ -1433,14 +1448,17 @@ def test_non_overlapping_figure_window_position_requires_geometry(
 def test_figure_display_window_is_placed_beside_composer_once(qtbot) -> None:
     class _FakeScreen:
         def availableGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(0, 0, 1000, 800)
+            return QtCore.QRect(0, 40, 1000, 760)
 
     class _Owner(QtWidgets.QWidget):
         def frameGeometry(self) -> QtCore.QRect:
-            return QtCore.QRect(100, 100, 300, 300)
+            return QtCore.QRect(100, 40, 300, 300)
 
         def screen(self) -> _FakeScreen:
             return _FakeScreen()
+
+        def windowHandle(self) -> typing.Any:
+            return self
 
     class _MovedDisplayWindow(figure_window_ui._FigureComposerDisplayWindow):
         def __init__(self) -> None:
@@ -1451,9 +1469,15 @@ def test_figure_display_window_is_placed_beside_composer_once(qtbot) -> None:
         def frameGeometry(self) -> QtCore.QRect:
             return QtCore.QRect(self._test_frame)
 
-        def move(self, point: QtCore.QPoint) -> None:
+        def windowHandle(self) -> typing.Any:
+            return self
+
+        def setFramePosition(self, point: QtCore.QPoint) -> None:
             self.moved_to.append(QtCore.QPoint(point))
             self._test_frame.moveTopLeft(point)
+
+        def move(self, point: QtCore.QPoint) -> None:
+            raise AssertionError(f"Widget.move() received frame position {point!r}")
 
     owner = _Owner()
     qtbot.addWidget(owner)
@@ -1462,7 +1486,7 @@ def test_figure_display_window_is_placed_beside_composer_once(qtbot) -> None:
     window._place_beside(owner)
     window._place_beside(owner)
 
-    assert window.moved_to == [QtCore.QPoint(408, 100)]
+    assert window.moved_to == [QtCore.QPoint(408, 40)]
     assert window._initial_placement_done
     window.close_from_owner()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)

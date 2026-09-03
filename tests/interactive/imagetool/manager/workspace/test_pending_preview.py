@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._workspace._loading as workspace_load
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
+import erlab.interactive.utils
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import full_data
@@ -393,6 +394,13 @@ def test_manager_pending_memory_preview_button_materializes_selected_node(
         assert load_button is not None
         assert load_button.isVisible()
 
+        wait_panel = manager.findChild(
+            QtWidgets.QLabel,
+            "_erlab_wait_panel",
+            QtCore.Qt.FindChildOption.FindDirectChildrenOnly,
+        )
+        if isinstance(wait_panel, erlab.interactive.utils._WaitPanel):
+            qtbot.waitUntil(lambda: not wait_panel._blocking, timeout=1000)
         qtbot.mouseClick(load_button, QtCore.Qt.MouseButton.LeftButton)
         qtbot.wait_until(
             lambda: wrappers[0].pending_workspace_memory_payload is None,

@@ -33,6 +33,7 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool._frozen_numba_cache import PyInstallerCacheLocator
+from erlab.interactive.imagetool._provenance._model import ScriptInput
 from erlab.interactive.imagetool.manager import load_in_manager
 from erlab.interactive.imagetool.manager._server import (
     AddDataPacket,
@@ -2558,3 +2559,329 @@ def test_manager_close_event_waits_for_busy_standalone_app(
         assert manager._extensions.execution._accepting
 
         standalone.refuse_close = False
+
+
+def test_manager_close_event_waits_for_busy_managed_tool(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    ingress_results: list[list[bool]] = []
+
+    class _BusyManagedTool(erlab.interactive.utils.ToolWindow):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_event_count = 0
+            self.refuse_close = True
+
+        def _prepare_close(self, *, timeout_ms: int) -> bool:
+            del timeout_ms
+            ingress_results.append(
+                manager._data_ingress.receive_data([test_data], {}, show=False)
+            )
+            return not self.refuse_close
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            self.close_event_count += 1
+            super().closeEvent(event)
+
+    with manager_context() as manager:
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        root_index = manager.add_imagetool(root, show=False)
+        idle_tool = erlab.interactive.utils.ToolWindow()
+        idle_tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        idle_uid = manager.add_childtool(
+            idle_tool,
+            script_inputs={"data": root_index},
+            show=False,
+        )
+        managed_tool = _BusyManagedTool()
+        managed_tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        uid = manager.add_childtool(
+            managed_tool,
+            script_inputs={"data": root_index},
+            show=False,
+        )
+        manager._workspace_controller._mark_workspace_clean()
+        managed_tool.show()
+        qtbot.wait_until(managed_tool.isVisible)
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+
+        assert not manager.close()
+
+        assert manager.isVisible()
+        assert manager._tool_graph.nodes[idle_uid].tool_window is idle_tool
+        assert manager._tool_graph.nodes[uid].tool_window is managed_tool
+        assert manager._tool_graph.root_wrappers[root_index].imagetool is root
+        assert manager.ntools == 1
+        assert managed_tool.isVisible()
+        assert managed_tool.close_event_count == 0
+        assert not manager._retired_windows
+        assert manager._extensions.execution._accepting
+        assert manager._registry_heartbeat_timer.isActive()
+        assert close_results == [False]
+        assert ingress_results == [[False]]
+        assert not manager._workspace_state.closing_document
+
+        assert manager._data_ingress.receive_data([test_data], {}, show=False) == [True]
+        assert manager.ntools == 2
+
+        managed_tool.refuse_close = False
+        manager._workspace_controller._mark_workspace_clean()
+        assert manager.close()
+        assert managed_tool.close_event_count == 1
+        assert close_results == [False, True]
+        assert ingress_results == [[False], [False]]
+        assert manager._workspace_state.closing_document
+
+
+def test_manager_close_ignores_reentrant_close_request(
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    reentrant_results: list[bool] = []
+
+    class _ReentrantCloseTool(erlab.interactive.utils.ToolWindow):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requested_close = False
+
+        def _prepare_close(self, *, timeout_ms: int) -> bool:
+            del timeout_ms
+            if self.requested_close:
+                return True
+            self.requested_close = True
+            loop = QtCore.QEventLoop()
+            watchdog_fired = False
+            watchdog = QtCore.QTimer(self)
+            watchdog.setSingleShot(True)
+
+            def abort_wait() -> None:
+                nonlocal watchdog_fired
+                watchdog_fired = True
+                loop.quit()
+
+            def request_close_again() -> None:
+                try:
+                    manager.closeEvent(None)
+                    event = QtGui.QCloseEvent()
+                    manager.closeEvent(event)
+                    reentrant_results.append(event.isAccepted())
+                finally:
+                    loop.quit()
+
+            watchdog.timeout.connect(abort_wait)
+            watchdog.start(2000)
+            QtCore.QTimer.singleShot(0, request_close_again)
+            loop.exec()
+            watchdog.stop()
+            if watchdog_fired:
+                raise TimeoutError("Reentrant close request was not delivered")
+            return True
+
+    with manager_context() as manager:
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        root_index = manager.add_imagetool(root, show=False)
+        tool = _ReentrantCloseTool()
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        manager.add_childtool(
+            tool,
+            script_inputs={"data": root_index},
+            show=False,
+        )
+        manager._workspace_controller._mark_workspace_clean()
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+
+        assert manager.close()
+
+        assert reentrant_results == [False]
+        assert close_results == [True]
+        assert not manager._tool_graph.nodes
+
+
+def test_manager_close_blocks_reentrant_additional_window(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    candidate = QtWidgets.QWidget()
+    admission_errors: list[str] = []
+
+    class _ReentrantAdditionalWindow(QtWidgets.QWidget):
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            try:
+                manager.add_widget(candidate)
+            except RuntimeError as error:
+                admission_errors.append(str(error))
+            super().closeEvent(event)
+
+    with manager_context() as manager:
+        existing = _ReentrantAdditionalWindow()
+        manager.add_widget(existing)
+        qtbot.wait_until(existing.isVisible)
+        manager._workspace_controller._mark_workspace_clean()
+
+        assert manager.close()
+
+        assert admission_errors == ["ImageTool manager is closing"]
+        assert candidate not in manager._additional_windows.values()
+        assert not candidate.isVisible()
+
+    candidate.close()
+    candidate.deleteLater()
+
+
+def test_manager_close_admission_blocks_external_mutations(
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        root_index = manager.add_imagetool(root, show=False)
+        rejected_root = erlab.interactive.imagetool.ImageTool(
+            test_data, _in_manager=True
+        )
+        rejected_child = erlab.interactive.utils.ToolWindow()
+        rejected_figure = erlab.interactive.utils.ToolWindow()
+        rejected_imagetool_child = erlab.interactive.imagetool.ImageTool(
+            test_data, _in_manager=True
+        )
+        rejected_widget = QtWidgets.QWidget()
+        calls: list[str] = []
+        with monkeypatch.context() as context:
+            for name in (
+                "_data_load",
+                "_data_replace",
+                "_remove_watched",
+                "_show_watched",
+                "_data_watched_update",
+                "_data_unwatch",
+            ):
+                context.setattr(
+                    manager._actions_controller,
+                    name,
+                    lambda *_args, method=name, **_kwargs: calls.append(method),
+                )
+
+            manager._workspace_state.closing_document = True
+            try:
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.add_imagetool(rejected_root, show=False)
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.add_childtool(
+                        rejected_child,
+                        script_inputs={"data": root_index},
+                        show=False,
+                    )
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.add_figuretool(rejected_figure, show=False)
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.add_imagetool_child(
+                        rejected_imagetool_child,
+                        root_index,
+                        show=False,
+                    )
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.add_widget(rejected_widget)
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.open_settings()
+                with pytest.raises(RuntimeError, match="manager is closing"):
+                    manager.open_keyboard_shortcuts()
+                manager._data_load([], "ask", {})
+                manager._data_replace([], [])
+                manager._remove_watched("missing")
+                manager._show_watched("missing")
+                manager._data_watched_update("value", "uid", test_data)
+                manager._data_unwatch("missing")
+                manager.remove_imagetool(root_index)
+                manager.show_imagetool(root_index)
+            finally:
+                manager._workspace_state.closing_document = False
+
+        assert calls == []
+        assert manager.ntools == 1
+        assert len(manager._tool_graph.nodes) == 1
+        assert not root.isVisible()
+        assert not rejected_widget.isVisible()
+        assert not manager._additional_windows
+        manager.add_imagetool(rejected_root, show=False)
+        assert manager.ntools == 2
+        for window in (
+            rejected_child,
+            rejected_figure,
+            rejected_imagetool_child,
+        ):
+            window.close()
+            window.deleteLater()
+        rejected_widget.close()
+        rejected_widget.deleteLater()
+
+
+def test_manager_close_recovers_after_partial_managed_removal(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _BusyRootImageTool(erlab.interactive.imagetool.ImageTool):
+        def __init__(self) -> None:
+            super().__init__(test_data, _in_manager=True)
+            self.refuse_close = True
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            if self.refuse_close and event is not None:
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+    with manager_context() as manager:
+        root = _BusyRootImageTool()
+        root_index = manager.add_imagetool(root, show=False)
+        child = erlab.interactive.utils.ToolWindow()
+        child.set_script_inputs(
+            (ScriptInput(name="data", data_role="displayed"),),
+            primary_input="data",
+        )
+        child_uid = manager.add_childtool(
+            child,
+            script_inputs={"data": root_index},
+            show=False,
+        )
+        manager._workspace_controller._mark_workspace_clean()
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+
+        assert not manager.close()
+
+        assert child_uid not in manager._tool_graph.nodes
+        assert manager._tool_graph.root_wrappers[root_index].imagetool is root
+        assert manager.tree_view._model._row_index(root_index).isValid()
+        assert manager.is_workspace_modified
+        assert manager._extensions.execution._accepting
+        assert manager._registry_heartbeat_timer.isActive()
+        assert close_results == [False]
+
+        root.refuse_close = False
+        manager._workspace_controller._mark_workspace_clean()
+        assert manager.close()
+        assert close_results == [False, True]

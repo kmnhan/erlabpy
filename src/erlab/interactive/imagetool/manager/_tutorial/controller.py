@@ -23,7 +23,6 @@ from erlab.interactive.imagetool.manager._tutorial.data import (
     tutorial_loader_registration,
 )
 from erlab.interactive.imagetool.manager._tutorial.framework import (
-    ActionTarget,
     CompositeTarget,
     GraphicsItemTarget,
     ModelIndexTarget,
@@ -72,7 +71,7 @@ _TUTORIAL_OPTION_OVERRIDES: dict[str, object] = {
 def _menu_instruction(path: str) -> str:
     if _NATIVE_MENU_BAR:
         return f"In the macOS menu bar, select {path}."
-    return f"Select {path}."
+    return f"In the menu bar at the top of the window, select {path}."
 
 
 class _GenerationSignals(QtCore.QObject):
@@ -197,7 +196,7 @@ class _TutorialController(TourController):
         if application is None:
             return None
 
-        target_text = self._current_target_ui_text(object_name, application)
+        target_text = self._current_target_ui_text(object_name)
         if target_text is not None:
             return target_text
 
@@ -205,7 +204,7 @@ class _TutorialController(TourController):
         if active_window is not None:
             active_matches = self._named_objects(active_window, object_name)
             if len(active_matches) == 1:
-                return self._object_ui_text(active_matches[0], application)
+                return self._object_ui_text(active_matches[0])
             if active_matches:
                 return None
 
@@ -218,12 +217,11 @@ class _TutorialController(TourController):
                     matches.append(obj)
         if len(matches) != 1:
             return None
-        return self._object_ui_text(matches[0], application)
+        return self._object_ui_text(matches[0])
 
     def _current_target_ui_text(
         self,
         object_name: str,
-        application: QtWidgets.QApplication,
     ) -> str | None:
         step = self.current_step
         if step is None or step.target is None:
@@ -232,20 +230,16 @@ class _TutorialController(TourController):
             target = step.target() if callable(step.target) else step.target
         except (RuntimeError, TypeError):
             return None
-        candidates: tuple[QtCore.QObject | None, ...]
-        if isinstance(target, ActionTarget):
-            candidates = (target.action, target.menu)
-        elif isinstance(target, QtCore.QObject):
-            candidates = (target,)
-        else:
-            candidates = ()
+        candidates: tuple[QtCore.QObject | None, ...] = (
+            (target,) if isinstance(target, QtCore.QObject) else ()
+        )
         matches = [
             candidate
             for candidate in candidates
             if candidate is not None and candidate.objectName() == object_name
         ]
         if len(matches) == 1:
-            return self._object_ui_text(matches[0], application)
+            return self._object_ui_text(matches[0])
         allowed_matches: list[QtCore.QObject] = []
         for resolver in step.allowed_objects:
             try:
@@ -258,7 +252,7 @@ class _TutorialController(TourController):
             ):
                 allowed_matches.append(candidate)
         if len(allowed_matches) == 1:
-            return self._object_ui_text(allowed_matches[0], application)
+            return self._object_ui_text(allowed_matches[0])
         try:
             geometry = target_geometry(target)
         except (RuntimeError, TypeError):
@@ -268,7 +262,7 @@ class _TutorialController(TourController):
         matches = self._named_objects(geometry.window, object_name)
         if len(matches) != 1:
             return None
-        return self._object_ui_text(matches[0], application)
+        return self._object_ui_text(matches[0])
 
     @staticmethod
     def _named_objects(
@@ -300,7 +294,6 @@ class _TutorialController(TourController):
     def _object_ui_text(
         cls,
         obj: QtCore.QObject,
-        application: QtWidgets.QApplication,
     ) -> str | None:
         text: str | None = None
         if isinstance(obj, QtGui.QAction):
@@ -317,13 +310,14 @@ class _TutorialController(TourController):
         elif isinstance(obj, QtWidgets.QGroupBox):
             text = obj.title()
         elif isinstance(obj, QtWidgets.QWidget):
-            for widget in application.allWidgets():
-                if not isinstance(widget, QtWidgets.QTabWidget):
-                    continue
-                index = widget.indexOf(obj)
-                if index >= 0:
-                    text = widget.tabText(index)
-                    break
+            parent = obj.parentWidget()
+            while parent is not None and erlab.interactive.utils.qt_is_valid(parent):
+                if isinstance(parent, QtWidgets.QTabWidget):
+                    index = parent.indexOf(obj)
+                    if index >= 0:
+                        text = parent.tabText(index)
+                        break
+                parent = parent.parentWidget()
         if not text:
             return None
         return cls._strip_mnemonics(text).strip() or None
@@ -431,6 +425,7 @@ class _TutorialController(TourController):
     def _handle_fatal_error(self, error: RuntimeError) -> None:
         self._state_timer.stop()
         super()._handle_fatal_error(error)
+        self._begin_cleanup()
 
     def _start_generation(self) -> None:
         if self._generation_thread is not None and self._generation_thread.is_alive():
@@ -604,8 +599,8 @@ class _TutorialController(TourController):
                 allowed_inputs=actions,
                 allowed_objects=(lambda: self._manager.explorer_action,),
                 completion=self._configure_opened_explorer,
-                reveal=self._reveal_explorer_action,
-                card_position="center" if _NATIVE_MENU_BAR else "target",
+                reveal=self._show_manager,
+                card_position="center",
             ),
             TourStep(
                 "data-explorer-introduction",
@@ -836,13 +831,14 @@ class _TutorialController(TourController):
                     "menus. These menus provide data operations, view controls, "
                     "interactive tools, and Manager actions."
                     if _NATIVE_MENU_BAR
-                    else "The ImageTool menus contain data operations, view controls, "
-                    "interactive tools, and Manager actions."
+                    else "The menu bar at the top of the ImageTool window contains "
+                    "the ImageTool menus. These menus provide data operations, view "
+                    "controls, interactive tools, and Manager actions."
                 ),
                 target=self._map_menus_target,
                 allowed_inputs=information,
                 reveal=self._show_map_tool,
-                card_position="center" if _NATIVE_MENU_BAR else "target",
+                card_position="center",
             ),
             TourStep(
                 "inspect-kinetic-energy",
@@ -864,7 +860,7 @@ class _TutorialController(TourController):
                 allowed_inputs=actions,
                 allowed_objects=(self._coordinate_action,),
                 completion=lambda: self._coordinate_dialog() is not None,
-                reveal=self._reveal_coordinate_action,
+                reveal=self._show_map_tool,
             ),
             TourStep(
                 "select-energy-coordinate",
@@ -939,7 +935,7 @@ class _TutorialController(TourController):
                 allowed_inputs=actions,
                 allowed_objects=(self._c6_action,),
                 completion=lambda: self._guideline_count() == 6,
-                reveal=self._reveal_c6_action,
+                reveal=self._show_map_tool,
                 auto_advance=False,
             ),
             TourStep(
@@ -977,7 +973,7 @@ class _TutorialController(TourController):
                 allowed_inputs=actions,
                 allowed_objects=(self._ktool_action,),
                 completion=lambda: self._ktool() is not None,
-                reveal=self._reveal_ktool_action,
+                reveal=self._show_map_tool,
             ),
             switch_window(
                 "switch-to-ktool",
@@ -1167,7 +1163,7 @@ class _TutorialController(TourController):
                 allowed_inputs=actions,
                 allowed_objects=(lambda: self._manager.explorer_action,),
                 completion=lambda: self._window_is_active(self._explorer_window()),
-                reveal=self._reveal_explorer_action,
+                reveal=self._show_manager,
                 card_position="center",
             ),
             TourStep(
@@ -1910,20 +1906,8 @@ class _TutorialController(TourController):
                 return explorer
         return None
 
-    def _explorer_action_target(self) -> ActionTarget | QtWidgets.QWidget:
-        if _NATIVE_MENU_BAR:
-            return self._manager
-        return ActionTarget(self._manager.explorer_action, self._manager.file_menu)
-
-    def _reveal_explorer_action(self) -> None:
-        self._show_manager()
-        if _NATIVE_MENU_BAR:
-            return
-        menu_bar = self._manager.menuBar()
-        menu_height = 0 if menu_bar is None else menu_bar.height()
-        self._manager.file_menu.popup(
-            self._manager.mapToGlobal(QtCore.QPoint(8, menu_height))
-        )
+    def _explorer_action_target(self) -> QtWidgets.QWidget:
+        return self._manager
 
     def _configure_opened_explorer(self) -> bool:
         explorer_window = self._explorer_window()
@@ -2098,10 +2082,7 @@ class _TutorialController(TourController):
         return widget if isinstance(widget, QtWidgets.QWidget) else None
 
     def _map_menus_target(self) -> QtWidgets.QWidget | None:
-        tool = self._map_tool()
-        if tool is None or _NATIVE_MENU_BAR:
-            return tool
-        return tool.menuBar()
+        return self._map_tool()
 
     def _named_tool_visible(self, name: str) -> bool:
         tool = self._tool_for_uid(self._find_node_uid(name))
@@ -2243,36 +2224,14 @@ class _TutorialController(TourController):
         tool = self._map_tool()
         return 0 if tool is None else int(tool.slicer_area.n_cursors)
 
-    def _menu_action_target(
-        self, action_name: str, menu: QtWidgets.QMenu | None
-    ) -> ActionTarget | None:
-        if _NATIVE_MENU_BAR:
-            return None
-        action = self._action(action_name)
-        return None if action is None else ActionTarget(action, menu)
-
     def _coordinate_action(self) -> QtGui.QAction | None:
         return self._action("itoolEditCoordinatesAction")
 
-    def _coordinate_action_target(
-        self,
-    ) -> ActionTarget | QtWidgets.QWidget | None:
+    def _coordinate_action_target(self) -> QtWidgets.QWidget | None:
         tool = self._map_tool()
-        if tool is None:
+        if tool is None or self._coordinate_action() is None:
             return None
-        if _NATIVE_MENU_BAR:
-            return tool
-        return self._menu_action_target(
-            "itoolEditCoordinatesAction", tool.mnb.menu_dict["editMenu"]
-        )
-
-    def _reveal_coordinate_action(self) -> None:
-        self._show_map_tool()
-        tool = self._map_tool()
-        if tool is not None and not _NATIVE_MENU_BAR:
-            tool.mnb.menu_dict["editMenu"].popup(
-                tool.mapToGlobal(QtCore.QPoint(50, tool.menuBar().height()))
-            )
+        return tool
 
     def _coordinate_dialog(self) -> QtWidgets.QDialog | None:
         return next(
@@ -2399,28 +2358,12 @@ class _TutorialController(TourController):
             return None
         return tool.slicer_area.main_image._guideline_actions[3]
 
-    def _c6_action_target(self) -> ActionTarget | QtWidgets.QWidget | None:
+    def _c6_action_target(self) -> QtWidgets.QWidget | None:
         tool = self._map_tool()
         action = self._c6_action()
         if tool is None or action is None:
             return None
-        if _NATIVE_MENU_BAR:
-            return tool
-        menu = tool.mnb.menu_dict.get("Rotation Guidelines")
-        return ActionTarget(action, menu)
-
-    def _reveal_c6_action(self) -> None:
-        self._show_map_tool()
-        tool = self._map_tool()
-        if tool is None or _NATIVE_MENU_BAR:
-            return
-        view_menu = tool.mnb.menu_dict["viewMenu"]
-        guideline_menu = tool.mnb.menu_dict.get("Rotation Guidelines")
-        view_menu.popup(tool.mapToGlobal(QtCore.QPoint(110, tool.menuBar().height())))
-        if guideline_menu is not None:
-            guideline_menu.popup(
-                view_menu.mapToGlobal(QtCore.QPoint(view_menu.width(), 80))
-            )
+        return tool
 
     def _guideline_count(self) -> int:
         tool = self._map_tool()
@@ -2454,23 +2397,11 @@ class _TutorialController(TourController):
     def _ktool_action(self) -> QtGui.QAction | None:
         return self._action("itoolOpenKtoolAction")
 
-    def _ktool_action_target(self) -> ActionTarget | QtWidgets.QWidget | None:
+    def _ktool_action_target(self) -> QtWidgets.QWidget | None:
         tool = self._map_tool()
-        if tool is None:
+        if tool is None or self._ktool_action() is None:
             return None
-        if _NATIVE_MENU_BAR:
-            return tool
-        return self._menu_action_target(
-            "itoolOpenKtoolAction", tool.mnb.menu_dict["viewMenu"]
-        )
-
-    def _reveal_ktool_action(self) -> None:
-        self._show_map_tool()
-        tool = self._map_tool()
-        if tool is not None and not _NATIVE_MENU_BAR:
-            tool.mnb.menu_dict["viewMenu"].popup(
-                tool.mapToGlobal(QtCore.QPoint(110, tool.menuBar().height()))
-            )
+        return tool
 
     def _ktool(self) -> QtWidgets.QWidget | None:
         return self._widget("ktoolWindow")
@@ -2583,14 +2514,12 @@ class _TutorialController(TourController):
 
     def _reveal_in_manager_action_target(
         self, uid: str | None
-    ) -> ActionTarget | QtWidgets.QWidget | None:
+    ) -> QtWidgets.QWidget | None:
         tool = self._tool_for_uid(uid)
         action = self._reveal_in_manager_action(uid)
         if tool is None or action is None:
             return None
-        if _NATIVE_MENU_BAR:
-            return tool
-        return ActionTarget(action, tool.mnb.menu_dict["windowMenu"])
+        return tool
 
     def _prepare_reveal_in_manager(self, uid: str | None) -> None:
         tool = self._tool_for_uid(uid)
@@ -2598,10 +2527,6 @@ class _TutorialController(TourController):
             action = tool.reveal_in_manager_act
             self._watch_reveal_action(action, uid)
             tool.show()
-            if not _NATIVE_MENU_BAR:
-                tool.mnb.menu_dict["windowMenu"].popup(
-                    tool.mapToGlobal(QtCore.QPoint(170, tool.menuBar().height()))
-                )
 
     def _watch_reveal_action(
         self, action: QtGui.QAction | None, uid: str | None
@@ -2885,15 +2810,12 @@ class _TutorialController(TourController):
 
     def _figure_reveal_action_target(
         self,
-    ) -> ActionTarget | QtWidgets.QWidget | None:
+    ) -> QtWidgets.QWidget | None:
         composer = self._figure_composer()
         action = self._figure_reveal_action()
         if composer is None or action is None:
             return None
-        if _NATIVE_MENU_BAR:
-            return composer
-        menu = composer.findChild(QtWidgets.QMenu, "tool_window_menu")
-        return ActionTarget(action, menu)
+        return composer
 
     def _prepare_figure_reveal(self) -> None:
         composer = self._figure_composer()
@@ -2902,12 +2824,6 @@ class _TutorialController(TourController):
         if not isinstance(composer, QtWidgets.QMainWindow):
             return
         composer.show()
-        if not _NATIVE_MENU_BAR:
-            menu = composer.findChild(QtWidgets.QMenu, "tool_window_menu")
-            if menu is not None:
-                menu_bar = composer.menuBar()
-                menu_height = 0 if menu_bar is None else menu_bar.height()
-                menu.popup(composer.mapToGlobal(QtCore.QPoint(170, menu_height)))
 
     def _figure_was_revealed(self) -> bool:
         uid = self._figure_composer_uid

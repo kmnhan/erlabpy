@@ -308,6 +308,14 @@ class _ManagerToolGraph:
         self.displayed_indices.clear()
         self._structure_changed()
 
+    def replace_root_order(self, indices: Iterable[int]) -> None:
+        """Replace the displayed root order when it changed."""
+        replacement = list(indices)
+        if replacement == self.displayed_indices:
+            return
+        self.displayed_indices[:] = replacement
+        self._structure_changed()
+
     def move_root_rows(self, moves: Iterable[tuple[int, int]]) -> None:
         for src, dest in moves:
             self.displayed_indices.insert(dest, self.displayed_indices.pop(src))

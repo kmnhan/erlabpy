@@ -9,7 +9,7 @@ import tempfile
 import types
 import typing
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import lmfit
 import numpy as np
@@ -2050,18 +2050,39 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
     with qtbot.waitExposed(window):
         window.show()
     click_count = 0
+    shortcut_blocking_states: list[bool] = []
 
     def _record_click() -> None:
         nonlocal click_count
         click_count += 1
 
-    button.clicked.connect(_record_click)
-    click_position = button.mapTo(window, button.rect().center())
-    click_attempted = False
+    def _record_shortcut() -> None:
+        shortcut_blocking_states.append(panel._blocking)
 
-    def _click_parent_window() -> None:
-        nonlocal click_attempted
-        click_attempted = True
+    button.clicked.connect(_record_click)
+    shortcut_action = QtGui.QAction(window)
+    shortcut_action.setObjectName("wait_panel_test_shortcut")
+    shortcut_action.setShortcut(QtGui.QKeySequence("Shift+V"))
+    shortcut_action.setShortcutContext(QtCore.Qt.ShortcutContext.WindowShortcut)
+    shortcut_action.triggered.connect(_record_shortcut)
+    window.addAction(shortcut_action)
+    window.raise_()
+    window.activateWindow()
+    qtbot.waitUntil(window.isActiveWindow)
+    button.setFocus()
+    qtbot.waitUntil(button.hasFocus)
+    click_position = button.mapTo(window, button.rect().center())
+    input_attempted = False
+    active_modal = QtWidgets.QApplication.activeModalWidget()
+
+    def _send_parent_input() -> None:
+        nonlocal input_attempted
+        input_attempted = True
+        QtTest.QTest.keyClick(
+            button,
+            QtCore.Qt.Key.Key_V,
+            QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
         QtTest.QTest.mouseClick(
             window.windowHandle(),
             QtCore.Qt.MouseButton.LeftButton,
@@ -2070,36 +2091,77 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
 
     with erlab.interactive.utils.wait_dialog(window, "Blocking input") as panel:
         assert isinstance(panel, erlab.interactive.utils._WaitPanel)
-        modal_guard = panel._modal_guard
-        assert modal_guard.windowModality() == QtCore.Qt.WindowModality.WindowModal
-        assert modal_guard.testAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
-        assert QtWidgets.QApplication.activeModalWidget() is modal_guard
-        modal_handle = modal_guard.windowHandle()
-        assert modal_handle is not None
-        assert not modal_handle.isVisible()
-        assert not modal_handle.isExposed()
+        assert window.isEnabled()
+        assert panel._blocking
+        assert QtWidgets.QApplication.activeModalWidget() is active_modal
 
-        QtCore.QTimer.singleShot(0, _click_parent_window)
+        QtCore.QTimer.singleShot(0, _send_parent_input)
 
     assert not panel.isVisible()
-    assert QtWidgets.QApplication.activeModalWidget() is modal_guard
-    modal_guard._continue_event_drain()
-    qtbot.waitUntil(
-        lambda: QtWidgets.QApplication.activeModalWidget() is not modal_guard,
-        timeout=1000,
-    )
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert window.isEnabled()
+    assert panel._blocking
+    qtbot.waitUntil(lambda: not panel._blocking, timeout=1000)
 
-    assert click_attempted
+    assert input_attempted
     assert click_count == 0
-    assert QtWidgets.QApplication.activeModalWidget() is not modal_guard
+    assert shortcut_blocking_states == []
+    assert QtWidgets.QApplication.activeModalWidget() is active_modal
+    assert qt_is_valid(panel)
     QtTest.QTest.mouseClick(
         window.windowHandle(),
         QtCore.Qt.MouseButton.LeftButton,
         pos=click_position,
     )
+    QtTest.QTest.keyClick(
+        button,
+        QtCore.Qt.Key.Key_V,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
     QtWidgets.QApplication.processEvents()
     assert click_count == 1
+    assert shortcut_blocking_states == [False]
+
+
+def test_wait_panel_uses_qt_input_event_classification(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    child = QtWidgets.QWidget()
+    window.setCentralWidget(child)
+    qtbot.addWidget(window)
+    panel = erlab.interactive.utils._WaitPanel(child, "Blocking input")
+
+    key_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_V,
+        QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
+    drop_event = QtGui.QDropEvent(
+        QtCore.QPointF(),
+        QtCore.Qt.DropAction.CopyAction,
+        QtCore.QMimeData(),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    drag_leave_event = QtGui.QDragLeaveEvent()
+    gesture_event = QtWidgets.QGestureEvent([])
+
+    assert not panel.eventFilter(child, key_event)
+    panel.open()
+    assert key_event.isInputEvent()
+    assert panel.eventFilter(child, key_event)
+    assert not drop_event.isInputEvent()
+    assert panel.eventFilter(child, drop_event)
+    assert not drag_leave_event.isInputEvent()
+    assert panel.eventFilter(child, drag_leave_event)
+    assert not gesture_event.isInputEvent()
+    assert panel.eventFilter(child, gesture_event)
+    assert not panel.eventFilter(child, QtCore.QEvent(QtCore.QEvent.Type.User))
+    native_window = QtGui.QWindow()
+    assert not panel.eventFilter(native_window, key_event)
+    native_window.destroy()
+
+    panel.setParent(None)
+    assert not panel.eventFilter(child, key_event)
+    panel._release(panel._generation)
 
 
 def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
@@ -2110,33 +2172,57 @@ def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
 
     with erlab.interactive.utils.wait_dialog(parent, "Lifetime check") as panel:
         assert isinstance(panel, erlab.interactive.utils._WaitPanel)
-        modal_guard = panel._modal_guard
 
-    assert qt_is_valid(panel, modal_guard)
+    assert qt_is_valid(panel)
     parent.deleteLater()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
     assert not qt_is_valid(parent)
     assert not qt_is_valid(panel)
-    assert not qt_is_valid(modal_guard)
     QtWidgets.QApplication.processEvents()
 
 
-def test_wait_panel_releases_without_event_dispatcher(qtbot, monkeypatch) -> None:
+def test_wait_panel_releases_after_bounded_event_drain(qtbot) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
-    panel = erlab.interactive.utils._WaitPanel(parent, "No dispatcher")
-    modal_guard = panel._modal_guard
-    monkeypatch.setattr(
-        QtCore.QAbstractEventDispatcher,
-        "instance",
-        lambda: None,
-    )
+    panel = erlab.interactive.utils._WaitPanel(parent, "Event drain")
 
-    modal_guard.release_after_event_drain()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    panel.open()
+    assert parent.isEnabled()
+    assert panel._blocking
+    caller_state = {"owned": True}
+    observed_states: list[bool] = []
+    QtCore.QTimer.singleShot(0, lambda: observed_states.append(caller_state["owned"]))
+    panel._finish()
 
+    assert parent.isEnabled()
+    assert panel._blocking
+    assert observed_states == []
+    caller_state["owned"] = False
+    qtbot.waitUntil(lambda: not panel._blocking)
+    assert observed_states == [False]
+    assert qt_is_valid(panel)
+    assert not panel.isVisible()
+    panel._finish()
+    panel._release(panel._generation)
+
+
+def test_wait_panel_event_drain_is_safe_if_parent_is_destroyed(
+    qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    parent = QtWidgets.QWidget()
+    panel = erlab.interactive.utils._WaitPanel(parent, "Lifetime check")
+    panel.open()
+
+    def _destroy_parent() -> None:
+        parent.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    QtCore.QTimer.singleShot(0, _destroy_parent)
+    panel._drain_and_release(panel._generation)
+
+    assert not qt_is_valid(parent)
     assert not qt_is_valid(panel)
-    assert not qt_is_valid(modal_guard)
 
 
 def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
@@ -2151,35 +2237,57 @@ def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
     assert not panel.isVisible()
 
 
-def test_wait_panel_finishes_after_modal_guard_is_destroyed(qtbot) -> None:
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    panel = erlab.interactive.utils._WaitPanel(parent, "Missing guard")
-    modal_guard = panel._modal_guard
-    modal_guard.deleteLater()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
-    assert qt_is_valid(panel)
-    assert not qt_is_valid(modal_guard)
+def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
+    qtbot, monkeypatch
+) -> None:
+    release_callbacks: list[Callable[[], None]] = []
 
-    panel._finish()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    def capture_single_shot(
+        _receiver: QtCore.QObject,
+        _msec: int,
+        callback: Callable[[], None],
+        *_guards: QtCore.QObject | None,
+    ) -> None:
+        release_callbacks.append(callback)
 
-    assert not qt_is_valid(panel)
+    monkeypatch.setattr(erlab.interactive.utils, "single_shot", capture_single_shot)
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+
+    with erlab.interactive.utils.wait_dialog(window, "First") as first:
+        assert isinstance(first, erlab.interactive.utils._WaitPanel)
+        assert window.isEnabled()
+        assert first._blocking
+
+    stale_callback = release_callbacks.pop()
+    with erlab.interactive.utils.wait_dialog(window, "Second") as second:
+        assert second is first
+        assert second._blocking
+
+    current_callback = release_callbacks.pop()
+    stale_callback()
+    assert second._blocking
+    current_callback()
+    assert not second._blocking
+    assert qt_is_valid(second)
 
 
-def test_wait_modal_guard_finishes_after_reparenting(qtbot) -> None:
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    panel = erlab.interactive.utils._WaitPanel(parent, "Detached guard")
-    modal_guard = panel._modal_guard
-    qtbot.addWidget(modal_guard)
-    modal_guard.setParent(None)
+def test_wait_panel_preserves_pre_disabled_window(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    window = QtWidgets.QWidget()
+    window.setEnabled(False)
+    qtbot.addWidget(window)
 
-    modal_guard._release()
-    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    with erlab.interactive.utils.wait_dialog(window, "Already disabled") as panel:
+        assert isinstance(panel, erlab.interactive.utils._WaitPanel)
+        assert not window.isEnabled()
 
-    assert qt_is_valid(panel)
-    assert not qt_is_valid(modal_guard)
+    assert not window.isEnabled()
+    qtbot.waitUntil(lambda: not panel._blocking)
+
+    assert not panel._blocking
 
 
 @pytest.mark.parametrize(
@@ -2226,23 +2334,16 @@ def test_wait_indicator_parent_destruction_is_safe(
     original_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
 
     with erlab.interactive.utils.wait_dialog(parent, "Lifetime check") as indicator:
-        modal_guard = getattr(indicator, "_modal_guard", None)
         parent.deleteLater()
         QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
         assert not qt_is_valid(parent)
         assert not qt_is_valid(indicator)
-        if modal_guard is not None:
-            assert not qt_is_valid(modal_guard)
 
         indicator.set_message("Ignored after destruction")
         indicator._finish()
-        if modal_guard is not None:
+        if isinstance(indicator, erlab.interactive.utils._WaitPanel):
             indicator.open()
             indicator.show_centered()
-            modal_guard.release_after_event_drain()
-            modal_guard._event_loop_awake()
-            modal_guard._continue_event_drain()
-            modal_guard._release()
 
     assert original_depth == erlab.interactive.utils._WAIT_DIALOG_DEPTH
 
@@ -5810,6 +5911,7 @@ def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -
             )
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph(self._handle_node_change)
             self._metadata_node_uid: str | None = None
@@ -5882,6 +5984,13 @@ def test_managed_window_node_kind_specific_source_branches(qtbot, monkeypatch) -
             self, widget: QtWidgets.QWidget | None
         ) -> None:
             self.unregistered_interaction_windows.append(widget)
+
+        def _retain_window_until_destroyed(self, widget: QtWidgets.QWidget) -> None:
+            self.retired_windows.append(widget)
+
+        def _release_retired_window(self, widget: QtWidgets.QWidget) -> None:
+            with contextlib.suppress(ValueError):
+                self.retired_windows.remove(widget)
 
         def _note_interaction_activity(self) -> None:
             self.interaction_activity_count += 1
@@ -6090,6 +6199,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self.removed: list[str] = []
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
             self._metadata_node_uid: str | None = None
@@ -6169,6 +6279,13 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self, widget: QtWidgets.QWidget | None
         ) -> None:
             self.unregistered_interaction_windows.append(widget)
+
+        def _retain_window_until_destroyed(self, widget: QtWidgets.QWidget) -> None:
+            self.retired_windows.append(widget)
+
+        def _release_retired_window(self, widget: QtWidgets.QWidget) -> None:
+            with contextlib.suppress(ValueError):
+                self.retired_windows.remove(widget)
 
         def _note_interaction_activity(self) -> None:
             self.interaction_activity_count += 1
@@ -6333,6 +6450,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             self.renamed: list[tuple[int, object]] = []
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
+            self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
 
         def _update_info(self, *, uid: str) -> None:
@@ -6358,6 +6476,13 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def name_of_imagetool(self, index: int) -> str:
             return f"name {index}"
+
+        def _retain_window_until_destroyed(self, widget: QtWidgets.QWidget) -> None:
+            self.retired_windows.append(widget)
+
+        def _release_retired_window(self, widget: QtWidgets.QWidget) -> None:
+            with contextlib.suppress(ValueError):
+                self.retired_windows.remove(widget)
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
