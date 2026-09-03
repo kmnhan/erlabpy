@@ -196,7 +196,7 @@ class _TutorialController(TourController):
         if application is None:
             return None
 
-        target_text = self._current_target_ui_text(object_name, application)
+        target_text = self._current_target_ui_text(object_name)
         if target_text is not None:
             return target_text
 
@@ -204,7 +204,7 @@ class _TutorialController(TourController):
         if active_window is not None:
             active_matches = self._named_objects(active_window, object_name)
             if len(active_matches) == 1:
-                return self._object_ui_text(active_matches[0], application)
+                return self._object_ui_text(active_matches[0])
             if active_matches:
                 return None
 
@@ -217,12 +217,11 @@ class _TutorialController(TourController):
                     matches.append(obj)
         if len(matches) != 1:
             return None
-        return self._object_ui_text(matches[0], application)
+        return self._object_ui_text(matches[0])
 
     def _current_target_ui_text(
         self,
         object_name: str,
-        application: QtWidgets.QApplication,
     ) -> str | None:
         step = self.current_step
         if step is None or step.target is None:
@@ -240,7 +239,7 @@ class _TutorialController(TourController):
             if candidate is not None and candidate.objectName() == object_name
         ]
         if len(matches) == 1:
-            return self._object_ui_text(matches[0], application)
+            return self._object_ui_text(matches[0])
         allowed_matches: list[QtCore.QObject] = []
         for resolver in step.allowed_objects:
             try:
@@ -253,7 +252,7 @@ class _TutorialController(TourController):
             ):
                 allowed_matches.append(candidate)
         if len(allowed_matches) == 1:
-            return self._object_ui_text(allowed_matches[0], application)
+            return self._object_ui_text(allowed_matches[0])
         try:
             geometry = target_geometry(target)
         except (RuntimeError, TypeError):
@@ -263,7 +262,7 @@ class _TutorialController(TourController):
         matches = self._named_objects(geometry.window, object_name)
         if len(matches) != 1:
             return None
-        return self._object_ui_text(matches[0], application)
+        return self._object_ui_text(matches[0])
 
     @staticmethod
     def _named_objects(
@@ -295,7 +294,6 @@ class _TutorialController(TourController):
     def _object_ui_text(
         cls,
         obj: QtCore.QObject,
-        application: QtWidgets.QApplication,
     ) -> str | None:
         text: str | None = None
         if isinstance(obj, QtGui.QAction):
@@ -312,13 +310,14 @@ class _TutorialController(TourController):
         elif isinstance(obj, QtWidgets.QGroupBox):
             text = obj.title()
         elif isinstance(obj, QtWidgets.QWidget):
-            for widget in application.allWidgets():
-                if not isinstance(widget, QtWidgets.QTabWidget):
-                    continue
-                index = widget.indexOf(obj)
-                if index >= 0:
-                    text = widget.tabText(index)
-                    break
+            parent = obj.parentWidget()
+            while parent is not None and erlab.interactive.utils.qt_is_valid(parent):
+                if isinstance(parent, QtWidgets.QTabWidget):
+                    index = parent.indexOf(obj)
+                    if index >= 0:
+                        text = parent.tabText(index)
+                        break
+                parent = parent.parentWidget()
         if not text:
             return None
         return cls._strip_mnemonics(text).strip() or None

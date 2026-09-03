@@ -482,10 +482,17 @@ def test_ui_text_resolver_uses_visible_control_text(monkeypatch, qtbot) -> None:
     page.setObjectName("testTabPage")
     tabs.addTab(page, "&Preview")
     manager.show()
-    manager.activateWindow()
-    QtWidgets.QApplication.setActiveWindow(manager)
 
     controller, _loader_context = _controller(monkeypatch, manager)
+    controller._steps = (
+        tutorial_framework.TourStep(
+            "visible-labels",
+            "Visible labels",
+            "Body",
+            target=manager,
+        ),
+    )
+    controller._index = 0
     assert controller._resolve_ui_text("testAction") == "Open & Inspect"
     assert controller._resolve_ui_text("testLabel") == "Loader"
     assert controller._resolve_ui_text("testTabPage") == "Preview"
@@ -517,8 +524,6 @@ def test_ui_text_resolver_uses_current_target_window(monkeypatch, qtbot) -> None
     other_window.addAction(other_action)
     target_window.show()
     other_window.show()
-    other_window.activateWindow()
-    QtWidgets.QApplication.setActiveWindow(other_window)
 
     controller._steps = (
         tutorial_framework.TourStep(
@@ -1234,8 +1239,8 @@ def test_tutorial_real_workflow(
             timeout=timeout,
         )
         if step_id() == switch_step:
+            destination.raise_()
             destination.activateWindow()
-            QtWidgets.QApplication.setActiveWindow(destination)
             qtbot.waitUntil(destination.isActiveWindow, timeout=timeout)
             controller.notify_state_changed()
         wait_step(expected, timeout=timeout)
