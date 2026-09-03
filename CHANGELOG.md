@@ -1,6 +1,24 @@
-## Unreleased
+## v3.27.0 (2026-09-03)
 
 ### ✨ Features
+
+- **manager:** add tutorial (#555) ([4e2b595](https://github.com/kmnhan/erlabpy/commit/4e2b5959f54e4fd6c77aa9e68fa650862a14bb4a))
+
+  Adds an interactive tutorial and keyboard shortcut reference that can be triggered from the help menu. Also updated the documentation website.
+
+- **manager:** improve edge correction and alignment workflows (#576) ([86d7d48](https://github.com/kmnhan/erlabpy/commit/86d7d4886c264327bc855132ad3f40d4f5295a70))
+
+  Added a button in GoldTool that allows opening fitted polynomial or spline evaluated at the input data's angle coordinate in an ImageTool. This can be used to correct data using the new `Shift` action.
+
+- **ftool:** support weighted fits (#564) ([b1d8688](https://github.com/kmnhan/erlabpy/commit/b1d868821b502bf45d8624ad0372799f2e01370f))
+
+  Adds uncertainty support for `ftool` inputs.
+
+- **manager:** edit shared provenance across selections (#569) ([bb9bfcc](https://github.com/kmnhan/erlabpy/commit/bb9bfcc113eab12abd26a7972f646cda54a42e80))
+
+  Show shared provenance steps when multiple ImageTools are selected. Users can edit, revert, or delete matching steps across the selection.
+
+- **manager:** add durable trust for executable saved content (#566) ([21b9992](https://github.com/kmnhan/erlabpy/commit/21b999247a6f264559a50c8f7ca30dbb13381bda))
 
 - **explorer:** preview general data files (#565) ([f0e51a2](https://github.com/kmnhan/erlabpy/commit/f0e51a2fd3ee67c2dd8ffaf76984a08fd2b57ca7))
 
@@ -56,6 +74,8 @@
 
 ### 🐞 Bug Fixes
 
+- **manager:** keep data names consistent across actions (#574) ([738bda2](https://github.com/kmnhan/erlabpy/commit/738bda20b7ec5c9f5eb374f73a2669c01cb84501))
+
 - **manager:** preserve tool type labels in restored workspaces (#560) ([3b32cfe](https://github.com/kmnhan/erlabpy/commit/3b32cfec9b5becdb210ecc972b99dc6cdca40cc6))
 
 - **figurecomposer:** support extra line style kwargs (#561) ([65189f2](https://github.com/kmnhan/erlabpy/commit/65189f2b456f6e69eb86a632fb633e8d1dad28e7))
@@ -97,6 +117,12 @@
 - **manager:** preserve data when updating (#535) ([4ac62af](https://github.com/kmnhan/erlabpy/commit/4ac62af654765c774fc7dcf8391ef68fe51563cc))
 
   Fixes an issue where updating the standalone version with an active workspace may overwrite it with an empty one.
+
+### ⚡️ Performance
+
+- **analysis.transform:** accelerate rotational transforms (#575) ([c503bd2](https://github.com/kmnhan/erlabpy/commit/c503bd2ec1039e9f7bdebb19be2d0865db4a589b))
+
+  Speed up `rotate` and `symmetrize_nfold` when using linear interpolation. For some cases, the transformation is now more than an order of magnitude faster.
 
 ### ♻️ Code Refactor
 
