@@ -2071,15 +2071,17 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
 
     with erlab.interactive.utils.wait_dialog(window, "Blocking input") as panel:
         assert isinstance(panel, erlab.interactive.utils._WaitPanel)
-        assert not window.isEnabled()
+        assert window.isEnabled()
+        assert panel._blocking
         assert QtWidgets.QApplication.activeModalWidget() is active_modal
 
         QtCore.QTimer.singleShot(0, _click_parent_window)
 
     assert not panel.isVisible()
-    assert not window.isEnabled()
+    assert window.isEnabled()
+    assert panel._blocking
     panel._continue_event_drain(panel._generation)
-    qtbot.waitUntil(window.isEnabled, timeout=1000)
+    qtbot.waitUntil(lambda: not panel._blocking, timeout=1000)
 
     assert click_attempted
     assert click_count == 0
@@ -2122,10 +2124,12 @@ def test_wait_panel_releases_without_event_dispatcher(qtbot, monkeypatch) -> Non
     )
 
     panel.open()
-    assert not parent.isEnabled()
+    assert parent.isEnabled()
+    assert panel._blocking
     panel._finish()
 
     assert parent.isEnabled()
+    assert not panel._blocking
     assert qt_is_valid(panel)
     assert not panel.isVisible()
     panel._finish()
@@ -2145,7 +2149,7 @@ def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
     assert not panel.isVisible()
 
 
-def test_wait_panel_reuses_disabled_window_across_back_to_back_waits(
+def test_wait_panel_reuses_input_blocker_across_back_to_back_waits(
     qtbot, monkeypatch
 ) -> None:
     drain_callbacks: list[Callable[[], None]] = []
@@ -2177,29 +2181,20 @@ def test_wait_panel_reuses_disabled_window_across_back_to_back_waits(
     monkeypatch.setattr(erlab.interactive.utils, "single_shot", capture_single_shot)
     monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
 
-    class RecordingWindow(QtWidgets.QWidget):
-        def __init__(self) -> None:
-            super().__init__()
-            self.enabled_states: list[bool] = []
-
-        def setEnabled(self, enabled: bool) -> None:
-            self.enabled_states.append(enabled)
-            super().setEnabled(enabled)
-
-    window = RecordingWindow()
+    window = QtWidgets.QWidget()
     qtbot.addWidget(window)
 
     with erlab.interactive.utils.wait_dialog(window, "First") as first:
         assert isinstance(first, erlab.interactive.utils._WaitPanel)
-        assert not window.isEnabled()
+        assert window.isEnabled()
+        assert first._blocking
 
     assert first._dispatcher is dispatcher
     stale_callback = drain_callbacks.pop()
     with erlab.interactive.utils.wait_dialog(window, "Second") as second:
         assert second is first
         assert first._dispatcher is None
-        assert not window.isEnabled()
-        assert window.enabled_states == [False]
+        assert first._blocking
 
     assert second._dispatcher is dispatcher
     current_callback = drain_callbacks.pop()
@@ -2208,11 +2203,10 @@ def test_wait_panel_reuses_disabled_window_across_back_to_back_waits(
     current_callback()
     assert dispatcher.wake_count == 1
     dispatcher.awake.emit()
-    assert not window.isEnabled()
+    assert second._blocking
 
     dispatcher.awake.emit()
-    assert window.isEnabled()
-    assert window.enabled_states == [False, True]
+    assert not second._blocking
     assert second._dispatcher is None
     assert qt_is_valid(second)
 

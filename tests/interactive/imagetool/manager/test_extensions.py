@@ -2136,6 +2136,42 @@ def test_execution_controller_removes_failed_pool_admission(
             execution._pool = original_pool
 
 
+def test_blocking_extension_task_keeps_gui_events_responsive(manager_context) -> None:
+    release_worker = threading.Event()
+    gui_callbacks: list[bool] = []
+
+    class _Task(QtCore.QRunnable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.done = threading.Event()
+            self.error: Exception | None = None
+
+        def run(self) -> None:
+            if not release_worker.wait(timeout=5.0):
+                self.error = RuntimeError("GUI callback did not release the worker")
+            self.done.set()
+
+    with manager_context() as manager:
+        task = _Task()
+
+        def _release_worker() -> None:
+            gui_callbacks.append(True)
+            release_worker.set()
+
+        QtCore.QTimer.singleShot(0, _release_worker)
+
+        manager._extensions.execution._run_blocking_task(
+            typing.cast(
+                "_ExtensionLoaderWorker | _ExtensionValidationWorker",
+                task,
+            )
+        )
+
+        assert gui_callbacks == [True]
+        assert task.done.is_set()
+        assert task not in manager._extensions.execution._blocking_tasks
+
+
 def test_routine_job_rejects_unavailable_catalog_state(
     manager_context,
     tmp_path: pathlib.Path,
@@ -6829,10 +6865,7 @@ def test_removing_queued_replay_releases_its_waiter(
         assert manager._extensions.execution.queued == ()
 
 
-def test_canceling_pending_loader_releases_qt_waiter(
-    qtbot: pytest.QtBot,
-    tmp_path: pathlib.Path,
-) -> None:
+def test_canceling_pending_loader_releases_waiter(tmp_path: pathlib.Path) -> None:
     call = _loader_call(
         tmp_path / "missing.py",
         erlab.extensions.LoaderDescriptor(
@@ -6853,8 +6886,7 @@ def test_canceling_pending_loader_releases_qt_waiter(
         source_is_healthy=lambda *_args: True,
     )
 
-    with qtbot.waitSignal(worker.signals.finished, timeout=1000):
-        worker.cancel_if_pending()
+    worker.cancel_if_pending()
 
     assert worker.done.is_set()
     assert isinstance(worker.error, erlab.extensions.ExtensionExecutionError)
@@ -6954,10 +6986,7 @@ def test_manager_shutdown_releases_only_its_extension_modules(
         sys.modules.pop(unrelated_name)
 
 
-def test_canceling_pending_validation_releases_qt_waiter(
-    qtbot: pytest.QtBot,
-    tmp_path: pathlib.Path,
-) -> None:
+def test_canceling_pending_validation_releases_waiter(tmp_path: pathlib.Path) -> None:
     worker = _ExtensionValidationWorker(
         "extension.py",
         "a" * 64,
@@ -6967,8 +6996,7 @@ def test_canceling_pending_validation_releases_qt_waiter(
         script_modules={},
     )
 
-    with qtbot.waitSignal(worker.signals.finished, timeout=1000):
-        worker.cancel_if_pending()
+    worker.cancel_if_pending()
 
     assert worker.done.is_set()
     assert isinstance(worker.error, erlab.extensions.ExtensionExecutionError)

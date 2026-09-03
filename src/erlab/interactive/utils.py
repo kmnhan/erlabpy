@@ -701,6 +701,40 @@ class _WaitDialog(QtWidgets.QDialog):
             self.deleteLater()
 
 
+_WAIT_PANEL_INPUT_EVENTS = frozenset(
+    {
+        QtCore.QEvent.Type.MouseButtonPress,
+        QtCore.QEvent.Type.MouseButtonRelease,
+        QtCore.QEvent.Type.MouseButtonDblClick,
+        QtCore.QEvent.Type.MouseMove,
+        QtCore.QEvent.Type.NonClientAreaMouseButtonPress,
+        QtCore.QEvent.Type.NonClientAreaMouseButtonRelease,
+        QtCore.QEvent.Type.NonClientAreaMouseButtonDblClick,
+        QtCore.QEvent.Type.NonClientAreaMouseMove,
+        QtCore.QEvent.Type.Wheel,
+        QtCore.QEvent.Type.TouchBegin,
+        QtCore.QEvent.Type.TouchUpdate,
+        QtCore.QEvent.Type.TouchEnd,
+        QtCore.QEvent.Type.TouchCancel,
+        QtCore.QEvent.Type.TabletPress,
+        QtCore.QEvent.Type.TabletMove,
+        QtCore.QEvent.Type.TabletRelease,
+        QtCore.QEvent.Type.NativeGesture,
+        QtCore.QEvent.Type.Gesture,
+        QtCore.QEvent.Type.GestureOverride,
+        QtCore.QEvent.Type.DragEnter,
+        QtCore.QEvent.Type.DragMove,
+        QtCore.QEvent.Type.DragLeave,
+        QtCore.QEvent.Type.Drop,
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.QEvent.Type.KeyRelease,
+        QtCore.QEvent.Type.ShortcutOverride,
+        QtCore.QEvent.Type.Shortcut,
+        QtCore.QEvent.Type.ContextMenu,
+    }
+)
+
+
 class _WaitPanel(QtWidgets.QLabel):
     def __init__(self, parent: QtWidgets.QWidget, message: str) -> None:
         window = typing.cast("QtWidgets.QWidget", parent.window())
@@ -710,24 +744,49 @@ class _WaitPanel(QtWidgets.QLabel):
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setMargin(20)
         self.setAutoFillBackground(True)
-        self._blocked_window = window
         self._dispatcher: QtCore.QAbstractEventDispatcher | None = None
         self._event_loop_passes = 0
         self._generation = 0
         self._blocking = False
-        self._restore_enabled = False
 
     def open(self) -> None:
-        if not qt_is_valid(self, self._blocked_window):
+        if not qt_is_valid(self) or self.parentWidget() is None:
             return
         self._generation += 1
         self._disconnect_dispatcher()
         if not self._blocking:
-            self._restore_enabled = self._blocked_window.isEnabled()
-            self._blocking = True
-        if self._restore_enabled and self._blocked_window.isEnabled():
-            self._blocked_window.setEnabled(False)
+            application = QtWidgets.QApplication.instance()
+            if application is not None:
+                application.installEventFilter(self)
+        self._blocking = True
         self.show_centered()
+
+    def eventFilter(
+        self,
+        watched: QtCore.QObject | None,
+        event: QtCore.QEvent | None,
+    ) -> bool:
+        if not self._blocking or event is None:
+            return False
+        try:
+            if event.type() not in _WAIT_PANEL_INPUT_EVENTS:
+                return False
+        except RuntimeError:
+            return False
+        window = self.parentWidget()
+        if window is None or not qt_is_valid(window):
+            return False
+        # Native input first reaches QWindow. Let Qt translate it, then discard the
+        # widget or action event that belongs to this window.
+        if isinstance(watched, QtGui.QWindow):
+            return False
+        current = watched
+        with contextlib.suppress(RuntimeError):
+            while current is not None:
+                if current is window:
+                    return True
+                current = current.parent()
+        return False
 
     def show_centered(self) -> None:
         if not qt_is_valid(self):
@@ -763,8 +822,8 @@ class _WaitPanel(QtWidgets.QLabel):
         if dispatcher is None or not qt_is_valid(dispatcher):
             self._release()
             return
-        # Keep the owner disabled while Qt discards input that was queued by the
-        # nested event loop. Two wake boundaries cover one complete native drain.
+        # Keep input blocked while Qt discards events queued by the nested event
+        # loop. Two wake boundaries cover one complete native drain.
         self._event_loop_passes = 0
         self._dispatcher = dispatcher
         dispatcher.awake.connect(self._event_loop_awake)
@@ -772,7 +831,7 @@ class _WaitPanel(QtWidgets.QLabel):
 
     @QtCore.Slot()
     def _event_loop_awake(self) -> None:
-        if not qt_is_valid(self, self._blocked_window) or self._dispatcher is None:
+        if not qt_is_valid(self) or self._dispatcher is None:
             return
         self._event_loop_passes += 1
         if self._event_loop_passes < 2:
@@ -786,7 +845,6 @@ class _WaitPanel(QtWidgets.QLabel):
             self,
             0,
             lambda: self._continue_event_drain(generation),
-            self._blocked_window,
         )
 
     def _continue_event_drain(self, generation: int) -> None:
@@ -810,16 +868,11 @@ class _WaitPanel(QtWidgets.QLabel):
         if not self._blocking:
             self._disconnect_dispatcher()
             return
-        restore_enabled = self._restore_enabled
         self._blocking = False
-        self._restore_enabled = False
+        application = QtWidgets.QApplication.instance()
+        if application is not None:
+            application.removeEventFilter(self)
         self._disconnect_dispatcher()
-        if (
-            restore_enabled
-            and qt_is_valid(self._blocked_window)
-            and not self._blocked_window.isEnabled()
-        ):
-            self._blocked_window.setEnabled(True)
 
 
 def _wait_panel(parent: QtWidgets.QWidget, message: str) -> _WaitPanel:

@@ -377,12 +377,6 @@ class _ExtensionLoaderCall:
         return result
 
 
-class _ExtensionLoaderSignals(QtCore.QObject):
-    """Signal bridge that keeps synchronous GUI waits responsive."""
-
-    finished = QtCore.Signal()
-
-
 class _ExtensionLoaderWorker(QtCore.QRunnable):
     """Run one synchronous file-loader request on the extension thread pool."""
 
@@ -403,7 +397,6 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
         self.catalog_store = catalog_store
         self.script_modules = script_modules
         self.source_is_healthy = source_is_healthy
-        self.signals = _ExtensionLoaderSignals()
         self.done = threading.Event()
         self.output: xr.DataArray | xr.Dataset | xr.DataTree | None = None
         self.error: Exception | None = None
@@ -423,7 +416,6 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
                 "The queued extension loader was canceled during manager shutdown"
             )
             self.done.set()
-        self.signals.finished.emit()
 
     def run(self) -> None:
         with self._state_lock:
@@ -464,7 +456,6 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
             self.error = _extension_error(error, "loader execution")
         finally:
             self.done.set()
-            self.signals.finished.emit()
 
 
 class _ExtensionValidationWorker(QtCore.QRunnable):
@@ -493,7 +484,6 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
         self.check_loader_filter_conflicts = check_loader_filter_conflicts
         self.enable_script = enable_script
         self.persist_result = persist_result
-        self.signals = _ExtensionLoaderSignals()
         self.done = threading.Event()
         self.output: _ExtensionCatalogModel | None = None
         self.error: Exception | None = None
@@ -513,7 +503,6 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
                 "The queued extension validation was canceled during manager shutdown"
             )
             self.done.set()
-        self.signals.finished.emit()
 
     def run(self) -> None:
         with self._state_lock:
@@ -577,7 +566,6 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
             )
         finally:
             self.done.set()
-            self.signals.finished.emit()
 
 
 class _DecoratedLoaderAdapter(LoaderBase):
@@ -1438,7 +1426,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         *,
         wait_message: str | None = None,
     ) -> None:
-        """Retain one synchronous task until its exact completion signal arrives."""
+        """Retain one synchronous task until its exact completion event arrives."""
         with self._blocking_tasks_lock:
             if not self._accepting:
                 raise ExtensionExecutionError("Extension execution is shutting down")
@@ -1452,10 +1440,17 @@ class _ExtensionExecutionController(QtCore.QObject):
         try:
             if QtCore.QThread.currentThread() == self.thread():
                 loop = QtCore.QEventLoop()
-                quit_loop = loop.quit
-                task.signals.finished.connect(quit_loop)
+                poll_timer = QtCore.QTimer()
+                poll_timer.setInterval(5)
+
+                def _quit_if_done() -> None:
+                    if task.done.is_set():
+                        loop.quit()
+
+                poll_timer.timeout.connect(_quit_if_done)
                 try:
                     if not task.done.is_set():
+                        poll_timer.start()
                         if wait_message is None:
                             loop.exec(
                                 QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
@@ -1468,8 +1463,9 @@ class _ExtensionExecutionController(QtCore.QObject):
                                     QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
                                 )
                 finally:
+                    poll_timer.stop()
                     with contextlib.suppress(TypeError, RuntimeError):
-                        task.signals.finished.disconnect(quit_loop)
+                        poll_timer.timeout.disconnect(_quit_if_done)
             else:
                 task.done.wait()
         finally:
