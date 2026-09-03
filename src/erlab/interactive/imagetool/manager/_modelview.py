@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = ["_ImageToolWrapperTreeView"]
 
 import collections
+import contextlib
 import functools
 import json
 import logging
@@ -25,7 +26,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
     from erlab.interactive.imagetool.manager import ImageToolManager
 
@@ -2248,6 +2249,32 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._model.beginResetModel()
         self._model.manager._tool_graph.clear_root_order()
         self._model.endResetModel()
+
+    @contextlib.contextmanager
+    def bulk_remove_reset(self, root_indices: Iterable[int]) -> Iterator[None]:
+        """Keep the model valid during one bulk graph removal."""
+        graph = self._model.manager._tool_graph
+        previous_order = tuple(graph.displayed_indices)
+        removed_indices = set(root_indices)
+        self.clearSelection()
+        self._model.beginResetModel()
+        graph.replace_root_order(
+            index for index in previous_order if index not in removed_indices
+        )
+        try:
+            yield
+        finally:
+            retained_order = [
+                index for index in previous_order if index in graph.root_wrappers
+            ]
+            retained_set = set(retained_order)
+            retained_order.extend(
+                index
+                for index in graph.displayed_indices
+                if index in graph.root_wrappers and index not in retained_set
+            )
+            graph.replace_root_order(retained_order)
+            self._model.endResetModel()
 
     def childtool_added(self, uid: str, parent_idx: int | str) -> None:
         """Update the list view when a new child tool is added to the manager.

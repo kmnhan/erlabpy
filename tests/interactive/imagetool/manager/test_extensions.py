@@ -5965,8 +5965,18 @@ import xarray as xr
 from erlab.extensions import loader, routine
 
 @routine(name="Slow")
-def slow(data: xr.DataArray, marker: pathlib.Path) -> xr.DataArray:
-    time.sleep(0.2)
+def slow(
+    data: xr.DataArray,
+    marker: pathlib.Path,
+    started: pathlib.Path,
+    release: pathlib.Path,
+) -> xr.DataArray:
+    started.touch()
+    deadline = time.monotonic() + 10.0
+    while not release.exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Routine release was not received")
+        time.sleep(0.01)
     marker.write_text("routine\\n")
     return data
 
@@ -5979,7 +5989,10 @@ def marker_loader(path: pathlib.Path) -> xr.DataArray:
     )
     marker = tmp_path / "marker.txt"
     marker.touch()
+    started = tmp_path / "started"
+    release = tmp_path / "release"
     failures: list[BaseException] = []
+    loader_thread: threading.Thread | None = None
 
     with manager_context() as manager:
         catalog, source_hash = manager._extensions.catalog.store.register_script(
@@ -6006,13 +6019,15 @@ def marker_loader(path: pathlib.Path) -> xr.DataArray:
             script_name="serialized.py",
             source_hash=source_hash,
             routine_id="slow",
-            parameters={"marker": str(marker)},
+            parameters={
+                "marker": str(marker),
+                "started": str(started),
+                "release": str(release),
+            },
             target=0,
         )
-        qtbot.wait_until(
-            lambda: manager._extensions.execution.active is not None,
-            timeout=2000,
-        )
+        qtbot.wait_until(started.exists, timeout=5000)
+        assert manager._extensions.execution.active is not None
 
         def invoke_loader() -> None:
             try:
@@ -6020,17 +6035,33 @@ def marker_loader(path: pathlib.Path) -> xr.DataArray:
             except BaseException as error:
                 failures.append(error)
 
-        loader_thread = threading.Thread(target=invoke_loader)
-        loader_thread.start()
-        current = manager._extensions.catalog.store.read().extensions["serialized.py"]
-        manager._extensions.catalog.store.update_script(
-            "serialized.py",
-            expected_record_generation=current.record_generation,
-            enabled=False,
-        )
-        manager._extensions.catalog.refresh()
-        qtbot.wait_until(lambda: not loader_thread.is_alive(), timeout=5000)
-        loader_thread.join()
+        execution = manager._extensions.execution
+
+        def loader_is_admitted() -> bool:
+            with execution._blocking_tasks_lock:
+                return any(
+                    getattr(task, "call", None) is call
+                    for task in execution._blocking_tasks
+                )
+
+        try:
+            loader_thread = threading.Thread(target=invoke_loader)
+            loader_thread.start()
+            qtbot.wait_until(loader_is_admitted, timeout=5000)
+            current = manager._extensions.catalog.store.read().extensions[
+                "serialized.py"
+            ]
+            manager._extensions.catalog.store.update_script(
+                "serialized.py",
+                expected_record_generation=current.record_generation,
+                enabled=False,
+            )
+            manager._extensions.catalog.refresh()
+        finally:
+            release.touch()
+            if loader_thread is not None:
+                loader_thread.join(timeout=5)
+                assert not loader_thread.is_alive()
         qtbot.wait_until(
             lambda: manager._extensions.execution.active is None,
             timeout=5000,
@@ -6481,6 +6512,66 @@ def test_started_routine_uses_pinned_bytes_during_catalog_reload(
         xr.testing.assert_identical(result.output, data * 3.0)
 
         execution._insert_if_current(result)
+        assert manager.ntools == 1
+
+
+def test_finished_routine_is_not_inserted_while_manager_closes(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    routine = erlab.extensions.RoutineDescriptor(
+        id="scale",
+        name="Scale",
+        category="Lab",
+        summary="",
+        function_name="scale",
+    )
+    snapshot = _pinned_script(tmp_path / "scale.py", routines=(routine,))
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        node = manager._node_for_target(target)
+        job = extension_execution._ExtensionRoutineJob(
+            job_id="closing-job",
+            snapshot=snapshot,
+            routine=routine,
+            parameters={},
+            input_uid=node.uid,
+            input_snapshot=node.snapshot_token,
+            input_data=data,
+        )
+        result = extension_execution._ExtensionRoutineResult(
+            job=job,
+            output=data + 1.0,
+            duration=0.0,
+            status="success",
+        )
+
+        manager._workspace_state.closing_document = True
+        try:
+            execution._insert_if_current(result)
+        finally:
+            manager._workspace_state.closing_document = False
+        assert manager.ntools == 1
+
+        def start_close_during_publication(*_args, **_kwargs) -> None:
+            manager._workspace_state.closing_document = True
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                execution,
+                "_require_current_capability",
+                start_close_during_publication,
+            )
+            try:
+                execution._insert_if_current(result)
+            finally:
+                manager._workspace_state.closing_document = False
         assert manager.ntools == 1
 
 
@@ -6940,6 +7031,7 @@ def test_stale_routine_result_is_not_inserted(
     tmp_path: pathlib.Path,
 ) -> None:
     script_path = tmp_path / "slow.py"
+    started_path = tmp_path / "started"
     release_path = tmp_path / "release"
     script_path.write_text(
         """import pathlib
@@ -6948,7 +7040,12 @@ import xarray as xr
 from erlab.extensions import routine
 
 @routine(name="Slow")
-def slow(data: xr.DataArray, release_path: str) -> xr.DataArray:
+def slow(
+    data: xr.DataArray,
+    started_path: str,
+    release_path: str,
+) -> xr.DataArray:
+    pathlib.Path(started_path).touch()
     deadline = time.monotonic() + 10.0
     while not pathlib.Path(release_path).exists():
         if time.monotonic() >= deadline:
@@ -6978,21 +7075,22 @@ def slow(data: xr.DataArray, release_path: str) -> xr.DataArray:
             script_name="slow.py",
             source_hash=source_hash,
             routine_id="slow",
-            parameters={"release_path": str(release_path)},
+            parameters={
+                "started_path": str(started_path),
+                "release_path": str(release_path),
+            },
             target=0,
         )
         try:
-            qtbot.wait_until(
-                lambda: manager._extensions.execution.active is not None,
-                timeout=5000,
-            )
+            qtbot.wait_until(started_path.exists, timeout=5000)
+            assert manager._extensions.execution.active is not None
             manager._tool_graph.root_wrappers[0]._advance_snapshot_token()
         finally:
             release_path.touch()
 
         qtbot.wait_until(
             lambda: manager._extensions.execution.active is None,
-            timeout=5000,
+            timeout=10000,
         )
         assert manager.ntools == 1
 

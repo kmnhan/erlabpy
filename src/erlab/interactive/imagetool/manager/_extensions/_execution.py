@@ -1685,9 +1685,12 @@ class _ExtensionExecutionController(QtCore.QObject):
         input_is_current = (
             node is not None and node.snapshot_token == result.job.input_snapshot
         )
-        if not self._accepting or not input_is_current:
+        manager_closing = self._manager._workspace_state.closing_document
+        if not self._accepting or manager_closing or not input_is_current:
             if not self._accepting:
                 final_status = "shutdown-after-finish"
+            elif manager_closing:
+                final_status = "manager-closing"
             else:
                 final_status = "stale-input"
             logger.info(
@@ -1736,14 +1739,16 @@ class _ExtensionExecutionController(QtCore.QObject):
         input_is_current = (
             node is not None and node.snapshot_token == result.job.input_snapshot
         )
-        if publication_error is not None or not input_is_current:
+        manager_closing = self._manager._workspace_state.closing_document
+        if publication_error is not None or manager_closing or not input_is_current:
             tool.close()
             tool.deleteLater()
-            final_status = (
-                publication_error
-                if publication_error is not None
-                else "stale-input-before-insert"
-            )
+            if publication_error is not None:
+                final_status = publication_error
+            elif manager_closing:
+                final_status = "manager-closing-before-insert"
+            else:
+                final_status = "stale-input-before-insert"
             logger.info(
                 "Discarding stale extension result",
                 extra={

@@ -5017,6 +5017,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """
         return True
 
+    def _prepare_close(self, *, timeout_ms: int) -> bool:
+        """Return whether manager-owned removal can close this tool safely.
+
+        A subclass that rejects close events while work is active must stop that work
+        here or return `False`. The method must not close or delete widgets.
+        """
+        del timeout_ms
+        return True
+
     @staticmethod
     def _wait_for_threadpool(
         threadpool: QtCore.QThreadPool,

@@ -1973,7 +1973,13 @@ class _ActionsController:
         """Show the child tool window corresponding to the given UID."""
         self._manager._child_node(uid).show()
 
-    def _remove_childtool(self, uid: str) -> None:
+    def _remove_childtool(
+        self,
+        uid: str,
+        *,
+        update_view: bool = True,
+        preflight: bool = True,
+    ) -> None:
         """Unregister a child tool window.
 
         Parameters
@@ -1983,17 +1989,34 @@ class _ActionsController:
         """
         if uid not in self._manager._tool_graph.nodes:
             return
-        was_figure = self._manager._is_figure_uid(uid)
-        removed_link_keys = self._manager._workspace_link_keys_for_subtree(uid)
-        self._manager._mark_removed_subtree_dirty(uid)
+        subtree_uids = self._manager._tool_graph.subtree_uids(uid)
+        figure_uids = {
+            node_uid
+            for node_uid in subtree_uids
+            if self._manager._is_figure_uid(node_uid)
+        }
+        link_keys_by_uid = {
+            node_uid: node.workspace_link_key
+            for node_uid in subtree_uids
+            if (node := self._manager._tool_graph.nodes.get(node_uid)) is not None
+            and node.workspace_link_key is not None
+        }
         closing_document = self._manager._workspace_state.closing_document
-        if not closing_document:
-            self._manager.tree_view.childtool_removed(uid)
-        self._manager._remove_uid_target(uid)
-        if closing_document:
+        removed_uids = self._manager._remove_uid_target(
+            uid,
+            update_view=update_view,
+            preflight=preflight,
+        )
+        if not removed_uids or closing_document:
             return
-        self._manager._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
-        if was_figure:
+        self._manager._mark_singleton_workspace_link_groups_dirty(
+            {
+                link_keys_by_uid[node_uid]
+                for node_uid in removed_uids
+                if node_uid in link_keys_by_uid
+            }
+        )
+        if removed_uids & figure_uids:
             self._manager._figure_collection.sync()
         self._manager._update_actions()
 

@@ -1658,10 +1658,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
         return self._stop_server(timeout_ms=timeout_ms)
 
+    def _prepare_close(self, *, timeout_ms: int) -> bool:
+        return self._stop_server(timeout_ms=timeout_ms)
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
         self._fit_closing = True
-        if not self._stop_server():
+        if not self._prepare_close(timeout_ms=self.BACKGROUND_TASK_TIMEOUT_MS):
             self._fit_closing = False
             logger.warning(
                 "Gold fit worker did not stop within timeout; aborting window close"
@@ -2117,7 +2120,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self._fit_closing = True
-        if not self._cancel_fit(wait=True):
+        if not self._prepare_close(timeout_ms=self.BACKGROUND_TASK_TIMEOUT_MS):
             self._fit_closing = False
             logger.warning(
                 "Resolution fit worker did not stop within timeout; "
@@ -2129,6 +2132,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         super().closeEvent(event)
 
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
+
+    def _prepare_close(self, *, timeout_ms: int) -> bool:
         return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
 
     def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
