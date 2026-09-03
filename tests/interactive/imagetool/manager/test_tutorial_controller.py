@@ -1439,6 +1439,20 @@ def test_tutorial_real_workflow(
         image = tool.slicer_area.main_image
         image.set_guidelines(3)
         complete_action("set-normal-emission-and-azimuth")
+        tool.raise_()
+        tool.activateWindow()
+        qtbot.waitUntil(tool.isActiveWindow)
+        main_image_view.setFocus()
+        qtbot.waitUntil(main_image_view.hasFocus)
+        cursor_action = tool.slicer_area.toggle_cursor_act
+        cursor_was_visible = cursor_action.isChecked()
+        qtbot.keyClick(
+            main_image_view,
+            QtCore.Qt.Key.Key_V,
+            modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        )
+        assert cursor_action.isChecked() is not cursor_was_visible
+        assert step_id() == "set-normal-emission-and-azimuth"
         tool.slicer_area.set_value(tool.slicer_area.data.get_axis_num("alpha"), 2.0)
         tool.slicer_area.set_value(tool.slicer_area.data.get_axis_num("beta"), -1.5)
         controller.notify_state_changed()

@@ -51,6 +51,12 @@ _REPOSITION_EVENTS = {
     QtCore.QEvent.Type.StyleChange,
 }
 _ALL_INPUTS = frozenset(_INPUT_EVENTS.values())
+_SHORTCUT_MODIFIER_KEYS = (
+    (QtCore.Qt.Key.Key_Shift, QtCore.Qt.KeyboardModifier.ShiftModifier),
+    (QtCore.Qt.Key.Key_Control, QtCore.Qt.KeyboardModifier.ControlModifier),
+    (QtCore.Qt.Key.Key_Alt, QtCore.Qt.KeyboardModifier.AltModifier),
+    (QtCore.Qt.Key.Key_Meta, QtCore.Qt.KeyboardModifier.MetaModifier),
+)
 _CardDirection = typing.Literal["left", "right", "top", "bottom"]
 _UI_OBJECT_ID_PATTERN = r"[A-Za-z][A-Za-z0-9_.-]*"
 _TUTORIAL_TEXT_TOKEN_PATTERN = re.compile(
@@ -1835,7 +1841,30 @@ class TourController(QtCore.QObject):
                 for receiver_ref in self._target_receivers
                 if (receiver := receiver_ref()) is not None
             )
+        if isinstance(event, QtGui.QKeyEvent) and any(
+            self._action_shortcut_matches(obj, event) for obj in allowed
+        ):
+            return True
         return any(self._object_contains(obj, watched) for obj in allowed)
+
+    @staticmethod
+    def _action_shortcut_matches(obj: object, event: QtGui.QKeyEvent) -> bool:
+        """Permit a configured shortcut for an allowed action."""
+        if not isinstance(obj, QtGui.QAction) or not obj.isEnabled():
+            return False
+        for key, modifier in _SHORTCUT_MODIFIER_KEYS:
+            if event.key() == key:
+                return any(
+                    shortcut.count() > 0
+                    and bool(shortcut[0].keyboardModifiers() & modifier)
+                    for shortcut in obj.shortcuts()
+                )
+        event_sequence = QtGui.QKeySequence(event.keyCombination())
+        return any(
+            event_sequence.matches(shortcut)
+            == QtGui.QKeySequence.SequenceMatch.ExactMatch
+            for shortcut in obj.shortcuts()
+        )
 
     @staticmethod
     def _is_message_details_toggle(watched: QtCore.QObject | None) -> bool:
