@@ -394,6 +394,66 @@ def test_workspace_file_manager_opens_unassociated_file_read_only(tmp_path) -> N
         gc.collect()
 
 
+def test_workspace_file_managers_use_access_phony_dimensions(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "phony-dimensions.itws"
+    values = np.arange(6).reshape(2, 3)
+    with h5py.File(fname, "w") as h5_file:
+        h5_file.create_group("payload").create_dataset("data", data=values)
+
+    phony_dims: list[str | None] = []
+    h5netcdf_file_init = workspace_arrays.h5netcdf.File.__init__
+
+    def _record_h5netcdf_file_init(self, *args, **kwargs):
+        phony_dims.append(kwargs.get("phony_dims"))
+        h5netcdf_file_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        workspace_arrays.h5netcdf.File,
+        "__init__",
+        _record_h5netcdf_file_init,
+    )
+
+    opened = workspace_arrays.open_workspace_dataset(fname, "/payload", chunks=None)
+    try:
+        np.testing.assert_array_equal(opened["data"].values, values)
+    finally:
+        opened.close()
+    assert phony_dims
+    assert set(phony_dims) == {"access"}
+
+    phony_dims.clear()
+    with workspace_store.WorkspaceStore(fname):
+        opened = workspace_arrays.open_workspace_dataset(fname, "/payload", chunks=None)
+        try:
+            np.testing.assert_array_equal(opened["data"].values, values)
+        finally:
+            opened.close()
+    assert phony_dims
+    assert set(phony_dims) == {"access"}
+
+    phony_dims.clear()
+    path = str(fname.resolve())
+    worker = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    worker.__setstate__(
+        (
+            "erlab-workspace-bounded-reader-v1",
+            path,
+            path,
+            None,
+            None,
+            "/payload",
+        )
+    )
+    np.testing.assert_array_equal(
+        worker._read_bounded_variable("data", slice(None)), values
+    )
+    assert phony_dims == ["access"]
+
+
 def test_workspace_file_managers_serialize_shared_cached_handle_access(
     tmp_path,
 ) -> None:

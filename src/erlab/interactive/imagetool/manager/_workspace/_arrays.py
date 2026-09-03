@@ -386,7 +386,7 @@ class WorkspaceFileManager(CachingFileManager):
             mode="r",
             kwargs={
                 "invalid_netcdf": None,
-                "phony_dims": "sort",
+                "phony_dims": "access",
                 "decode_vlen_strings": True,
                 "locking": "best-effort",
             },
@@ -461,7 +461,7 @@ class WorkspaceFileManager(CachingFileManager):
                 store.read_h5_file,
                 mode="r",
                 invalid_netcdf=True,
-                phony_dims="sort",
+                phony_dims="access",
                 decode_vlen_strings=True,
                 locking="best-effort",
             )
@@ -477,7 +477,7 @@ class WorkspaceFileManager(CachingFileManager):
                 self.reader_path,
                 mode="r",
                 invalid_netcdf=True,
-                phony_dims="sort",
+                phony_dims="access",
                 decode_vlen_strings=True,
                 locking="best-effort",
             ) as netcdf_file:
