@@ -3,20 +3,39 @@
 # High-symmetry cuts
 
 Use this guide to show a selected reciprocal-space path beside its energy–momentum cut.
-Start with converted `momentum_data`. You can extract the cut with Python or with a
-polygonal ROI in ImageTool.
+Start with converted `momentum_data`.
 
 ## Python
 
-Prepare `high_symmetry_vertices` and `high_symmetry_cut` with
-{ref}`how-to-python-extract-path`.
+Define the path vertices in the coordinates of `momentum_data`. Then interpolate the
+complete data volume along the path:
+
+```python
+import numpy as np
+
+import erlab.analysis as era
+
+lattice_constant = 6.97
+high_symmetry_vertices = {
+    "kx": [
+        0.0,
+        2 * np.pi / (np.sqrt(3) * lattice_constant),
+        2 * np.pi / (np.sqrt(3) * lattice_constant),
+        0.0,
+    ],
+    "ky": [0.0, 0.0, 2 * np.pi / (3 * lattice_constant), 0.0],
+}
+high_symmetry_cut = era.interpolate.slice_along_path(
+    momentum_data,
+    vertices=high_symmetry_vertices,
+    step_size=0.005,
+)
+```
 
 Calculate the path positions of the vertices. Use them for the x-axis ticks and the
 internal guide lines:
 
 ```python
-import numpy as np
-
 path_vertices = np.column_stack(
     [high_symmetry_vertices["kx"], high_symmetry_vertices["ky"]]
 )
@@ -82,11 +101,14 @@ axes[1].set(
 ```
 
 The interpolation follows an ideal line. It does not average intensity over a finite
-width perpendicular to the path.
+width perpendicular to the path. See {ref}`how-to-python-extract-path` for sampling and
+path checks.
 
 ## Figure Composer
 
-### ImageTool preparation
+### ImageTool calculation
+
+Start with the same converted `momentum_data` used in the Python procedure:
 
 1. Open `momentum_data` in a managed ImageTool.
 2. Display the $k_x$-$k_y$ plane. Move the energy cursor to the required binding
@@ -116,9 +138,9 @@ record the `path` value where the associated `kx` and `ky` coordinates match tha
 vertex. Use these values for the guide lines and tick labels below. The
 `path_vertex_positions` calculation in the Python section gives the same values.
 
-If the map and cut already exist as Python variables, prepare `path_energy_map` and
-`high_symmetry_cut` with the Python procedures above and in
-{ref}`how-to-python-extract-path`. Add both arrays in {guilabel}`Sources`:
+If you used the Python procedure above to prepare `path_energy_map` and
+`high_symmetry_cut`, open both arrays in ImageTool Manager and add them in
+{guilabel}`Sources`:
 
 1. Use a $1 \times 2$ layout.
 2. Add an {guilabel}`Image Plot` step for `path_energy_map` on the left axes. Set

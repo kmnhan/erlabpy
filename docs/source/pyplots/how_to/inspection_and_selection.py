@@ -9,9 +9,9 @@ from erlab.io.exampledata import generate_data
 
 
 def mask_momentum_region() -> None:
-    data = generate_data(seed=1).T
-    constant_energy_map = data.qsel(eV=-0.2, eV_width=0.02)
     lattice_constant = 6.97
+    data = generate_data(a=lattice_constant, seed=1).T
+    constant_energy_map = data.qsel(eV=-0.2, eV_width=0.02)
     real_space_basis = lattice_constant * np.array(
         [
             [1.0, 0.0],

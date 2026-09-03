@@ -40,6 +40,7 @@ eplt.plot_array(
 eplt.plot_bz(
     avec,
     ax=ax,
+    rotate=30.0,
     edgecolor="tab:purple",
     linestyle="--",
     linewidth=1.2,
@@ -81,6 +82,7 @@ avec = erlab.lattice.abc2avec(
 eplt.plot_bz(
     avec,
     ax=ax,
+    rotate=30.0,
     fill=False,
 )
 ```

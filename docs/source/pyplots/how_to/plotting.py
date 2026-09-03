@@ -240,6 +240,7 @@ def draw_brillouin_zone_overlay() -> None:
     eplt.plot_bz(
         avec,
         ax=ax,
+        rotate=30.0,
         edgecolor="tab:purple",
         linestyle="--",
         linewidth=1.2,
