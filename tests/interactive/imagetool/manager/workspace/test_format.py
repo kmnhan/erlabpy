@@ -127,22 +127,42 @@ def test_qt_bytearray_base64_helpers_reject_invalid_values() -> None:
     assert erlab.interactive.utils._qt_bytearray_from_base64("") is None
 
 
-def test_qt_window_state_helpers_parse_invalid_and_restore_rect(qtbot) -> None:
+def test_qt_window_state_helpers_parse_invalid_and_restore_size(qtbot) -> None:
     assert qt_state.QtWindowState.model_validate({"rect": None}).rect is None
+    assert qt_state.QtWindowState.model_validate(
+        {"rect": np.asarray([1, 2, 3, 4])}
+    ).rect == (1, 2, 3, 4)
     with pytest.raises(pydantic.ValidationError):
         qt_state.QtWindowState.model_validate({"rect": [1, 2, 3]})
 
     assert qt_state.qt_bytearray_from_base64(object()) is None
     assert qt_state.parse_qt_window_state(b"\xff") is None
     assert qt_state.parse_qt_window_state("{") is None
+    assert qt_state.parse_qt_window_state(object()) is None
     assert qt_state.parse_qt_window_state({"rect": [1, 2, 3]}) is None
+    assert qt_state.parse_qt_window_state({"rect": "1234"}) is None
+    assert qt_state.parse_qt_window_state({"rect": 1}) is None
+    assert qt_state.parse_qt_window_state({"rect": [0, 0, None, 45]}) is None
+    assert qt_state.parse_qt_window_state('{"rect": [0, 0, Infinity, 45]}') is None
 
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)
+    assert not qt_state.restore_qt_window_state(widget, "{")
+    initial_position = widget.pos()
+    assert not widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_Moved)
     assert qt_state.restore_qt_window_state(
-        widget, {"geometry": "", "rect": [10, 20, 123, 45]}
+        widget, {"geometry": "", "rect": [5000, 6000, 123, 45]}
     )
-    assert widget.geometry().getRect() == (10, 20, 123, 45)
+    assert widget.pos() == initial_position
+    assert not widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_Moved)
+    assert widget.size() == QtCore.QSize(123, 45)
+
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+    assert any(
+        screen.availableGeometry().intersects(widget.frameGeometry())
+        for screen in QtWidgets.QApplication.screens()
+    )
 
 
 def test_qt_window_state_leaves_never_shown_geometry_unset(qtbot) -> None:
@@ -225,26 +245,54 @@ def test_qt_window_state_native_geometry_is_authoritative(qtbot, monkeypatch) ->
     assert set_geometry_calls == []
 
 
-def test_qt_window_state_falls_back_when_native_restore_fails(
+def test_qt_window_state_uses_only_fallback_size_when_native_restore_fails(
     qtbot, monkeypatch
 ) -> None:
     widget = QtWidgets.QWidget()
     qtbot.addWidget(widget)
     native_geometry = qt_state.qt_bytearray_to_base64(QtCore.QByteArray(b"native"))
-    set_geometry_calls = []
+    resize_calls = []
 
     monkeypatch.setattr(widget, "restoreGeometry", lambda geometry: False)
     monkeypatch.setattr(
         widget,
-        "setGeometry",
-        lambda *rect: set_geometry_calls.append(rect),
+        "resize",
+        lambda *size: resize_calls.append(size),
     )
 
     assert qt_state.restore_qt_window_state(
         widget,
-        {"geometry": native_geometry, "rect": [10, 20, 123, 45]},
+        {"geometry": native_geometry, "rect": [5000, 6000, 123, 45]},
     )
-    assert set_geometry_calls == [(10, 20, 123, 45)]
+    assert resize_calls == [(123, 45)]
+
+
+@pytest.mark.parametrize(("width", "height"), [(0, 45), (123, -1)])
+def test_qt_window_state_rejects_nonpositive_fallback_size(
+    qtbot, width: int, height: int
+) -> None:
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+
+    assert not qt_state.restore_qt_window_state(
+        widget, {"rect": [10, 20, width, height]}
+    )
+
+
+def test_qt_window_state_limits_fallback_size_before_calling_qt(
+    qtbot, monkeypatch
+) -> None:
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+    available_size = widget.screen().availableGeometry().size()
+
+    assert qt_state.restore_qt_window_state(widget, {"rect": [10, 20, 2**63, 2**63]})
+    assert widget.size() == available_size
+
+    widget.setMaximumSize(200, 150)
+    monkeypatch.setattr(widget, "screen", lambda: None)
+    assert qt_state.restore_qt_window_state(widget, {"rect": [10, 20, 2**63, 2**63]})
+    assert widget.size() == QtCore.QSize(200, 150)
 
 
 def test_qt_window_state_restores_maximized_normal_geometry(qtbot) -> None:

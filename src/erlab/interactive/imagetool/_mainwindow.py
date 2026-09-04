@@ -314,7 +314,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
             )
             and "itool_rect" in ds.attrs
         ):
-            tool.setGeometry(*ds.attrs["itool_rect"])
+            _qt_state.restore_qt_window_state(tool, {"rect": ds.attrs["itool_rect"]})
         return tool
 
     @classmethod

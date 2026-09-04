@@ -6073,7 +6073,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 )
                 and "tool_rect" in ds.attrs
             ):
-                tool.setGeometry(*ds.attrs["tool_rect"])
+                _qt_state.restore_qt_window_state(tool, {"rect": ds.attrs["tool_rect"]})
             tool._reset_history_stack()
             if not defer_restore_work:
                 tool._flush_restore_work()

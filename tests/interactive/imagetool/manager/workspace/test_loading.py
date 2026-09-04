@@ -2118,23 +2118,29 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         assert restored_screen is not None
         available_geometry = restored_screen.availableGeometry()
         restored_frame = restored_ptable.frameGeometry()
+        effective_minimum_size = restored_ptable.minimumSizeHint().expandedTo(
+            restored_ptable.minimumSize()
+        )
         if expected_ptable_frame_size.width() <= available_geometry.width():
             assert restored_ptable.width() == expected_ptable_size.width()
-        else:
-            assert restored_ptable.width() < expected_ptable_size.width()
-            assert restored_ptable.width() <= available_geometry.width()
         if expected_ptable_frame_size.height() <= available_geometry.height():
             assert restored_ptable.height() == expected_ptable_size.height()
-        else:
-            assert restored_ptable.height() < expected_ptable_size.height()
-            assert restored_ptable.height() <= available_geometry.height()
+        assert restored_ptable.width() <= max(
+            expected_ptable_size.width(),
+            available_geometry.width(),
+            effective_minimum_size.width(),
+        )
+        assert restored_ptable.height() <= max(
+            expected_ptable_size.height(),
+            available_geometry.height(),
+            effective_minimum_size.height(),
+        )
+        assert available_geometry.intersects(restored_frame)
         assert (
             available_geometry.top()
             <= restored_frame.top()
             <= available_geometry.bottom()
         )
-        assert available_geometry.left() <= restored_frame.right()
-        assert restored_frame.left() <= available_geometry.right()
         assert restored_ptable.selected_atomic_numbers == (6, 8)
         assert restored_ptable._plot_atomic_number == 6
         assert restored_ptable.hv_edit.text() == "80"

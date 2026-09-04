@@ -25,21 +25,12 @@ class QtWindowState(pydantic.BaseModel):
 
     # Native Qt geometry preserves frame/window-manager state when Qt can restore it.
     geometry: str | None = None
-    # Rect is a portable fallback when native Qt geometry cannot be restored.
+    # Rect retains the client size for files whose native geometry cannot be restored.
     rect: tuple[int, int, int, int] | None = None
     # Visibility is tracked separately so hidden restored windows can stay hidden.
     visible: bool = False
 
     model_config = pydantic.ConfigDict(extra="ignore")
-
-    @pydantic.field_validator("rect", mode="before")
-    @classmethod
-    def _validate_rect(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, (list, tuple)) or len(value) != 4:
-            raise ValueError("window rect must contain four integers")
-        return tuple(int(item) for item in value)
 
 
 def qt_bytearray_to_base64(value: QtCore.QByteArray) -> str:
@@ -115,15 +106,37 @@ def parse_qt_window_state(value: object) -> QtWindowState | None:
 def restore_qt_window_state(
     widget: QtWidgets.QWidget, state: QtWindowState | object
 ) -> bool:
+    """Restore native Qt geometry or a safe client-size fallback.
+
+    Qt corrects the screen position when it accepts native geometry. A rectangle
+    fallback restores only its size because its position can refer to an unavailable
+    screen or use incompatible window-frame coordinates.
+    """
     parsed = parse_qt_window_state(state)
     if parsed is None:
         return False
 
-    restored = False
     geometry = qt_bytearray_from_base64(parsed.geometry)
-    if geometry is not None:
-        restored = bool(widget.restoreGeometry(geometry))
-    if parsed.rect is not None and not restored:
-        widget.setGeometry(*parsed.rect)
-        restored = True
-    return restored
+    if geometry is not None and widget.restoreGeometry(geometry):
+        return True
+
+    if parsed.rect is None:
+        return False
+
+    _, _, width, height = parsed.rect
+    maximum_width = widget.maximumWidth()
+    maximum_height = widget.maximumHeight()
+    screen = widget.screen()
+    if screen is not None:
+        available_size = screen.availableGeometry().size()
+        maximum_width = min(maximum_width, available_size.width())
+        maximum_height = min(maximum_height, available_size.height())
+    width = min(width, maximum_width)
+    height = min(height, maximum_height)
+    if width <= 0 or height <= 0:
+        return False
+
+    # Saved positions are not portable across screens, display scales, or window
+    # managers. Keep the current position so Qt can place an unshown window safely.
+    widget.resize(width, height)
+    return True
