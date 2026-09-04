@@ -221,7 +221,7 @@ def test_manager_added_time_display_uses_zone_name_and_offset(
         assert "Size " not in node.info_text
 
 
-def test_imagetool_dataset_uses_window_state_and_keeps_rect_fallback(
+def test_imagetool_dataset_uses_window_state_and_restores_legacy_size(
     qtbot, test_data
 ) -> None:
     tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
@@ -242,17 +242,16 @@ def test_imagetool_dataset_uses_window_state_and_keeps_rect_fallback(
 
     legacy_ds = ds.copy(deep=False)
     del legacy_ds.attrs["itool_window_state"]
-    legacy_ds.attrs["itool_rect"] = tuple(
-        int(value) for value in tool.geometry().getRect()
+    legacy_ds.attrs["itool_rect"] = np.asarray(
+        (5000, 6000, tool.width(), tool.height())
     )
     legacy_ds.attrs["itool_visible"] = True
     legacy = erlab.interactive.imagetool.ImageTool.from_dataset(
         legacy_ds, _in_manager=True
     )
     qtbot.addWidget(legacy)
-    assert tuple(legacy.geometry().getRect()) == tuple(
-        int(value) for value in legacy_ds.attrs["itool_rect"]
-    )
+    assert legacy.size() == tool.size()
+    assert legacy.pos() != QtCore.QPoint(5000, 6000)
 
 
 def test_imagetool_dataset_preserves_never_shown_size_hint(qtbot, test_data) -> None:
@@ -272,7 +271,7 @@ def test_imagetool_dataset_preserves_never_shown_size_hint(qtbot, test_data) -> 
     assert restored.size() == tool.size()
 
 
-def test_toolwindow_dataset_uses_window_state_and_keeps_rect_fallback(
+def test_toolwindow_dataset_uses_window_state_and_restores_legacy_size(
     qtbot, test_data
 ) -> None:
     tool = _AddedTimeChildTool(test_data)
@@ -293,15 +292,12 @@ def test_toolwindow_dataset_uses_window_state_and_keeps_rect_fallback(
 
     legacy_ds = ds.copy(deep=False)
     del legacy_ds.attrs["tool_window_state"]
-    legacy_ds.attrs["tool_rect"] = tuple(
-        int(value) for value in tool.geometry().getRect()
-    )
+    legacy_ds.attrs["tool_rect"] = np.asarray((5000, 6000, tool.width(), tool.height()))
     legacy_ds.attrs["tool_visible"] = True
     legacy = erlab.interactive.utils.ToolWindow.from_dataset(legacy_ds)
     qtbot.addWidget(legacy)
-    assert tuple(legacy.geometry().getRect()) == tuple(
-        int(value) for value in legacy_ds.attrs["tool_rect"]
-    )
+    assert legacy.size() == tool.size()
+    assert legacy.pos() != QtCore.QPoint(5000, 6000)
 
 
 def test_workspace_backing_uses_persistence_data_for_filtered_file_data(

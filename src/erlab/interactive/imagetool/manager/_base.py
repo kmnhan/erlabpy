@@ -871,11 +871,10 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         window_state = _qt_state.parse_qt_window_state(state.get("window_state"))
         if window_state is None:
             return
+        _qt_state.restore_qt_window_state(widget, window_state)
         if window_state.visible:
             widget.show()
-            _qt_state.restore_qt_window_state(widget, window_state)
         else:
-            _qt_state.restore_qt_window_state(widget, window_state)
             widget.hide()
         self._standalone_app_pending_states[key] = state
 
