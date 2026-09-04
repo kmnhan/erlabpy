@@ -8,13 +8,17 @@ import typing
 from collections.abc import Mapping
 
 import erlab
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 from erlab.interactive._code_trust import (
     create_manifest,
     document_path_is_trusted,
     relocate_manifest_entries,
 )
-from erlab.interactive._code_trust._payloads import CODE_PAYLOAD_ENTRIES_ATTR
+from erlab.interactive._code_trust._payloads import (
+    CODE_PAYLOAD_ENTRIES_ATTR,
+    store_code_payload_entries,
+)
 from erlab.interactive._saved_tools import resolve_saved_tool_class
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
@@ -256,3 +260,64 @@ def current_workspace_code_trust_manifest(
             ),
         )
     return create_manifest(*_MANIFEST_ID, entries)
+
+
+def inspect_pending_workspace_code_payloads(manager: ImageToolManager) -> None:
+    """Inspect legacy opaque payloads when the user requests trust review."""
+    updates = []
+    for node in manager._tool_graph.nodes.values():
+        pending = node.pending_workspace_tool_payload
+        attrs = node.pending_workspace_payload_attrs
+        if pending is None:
+            continue
+        if attrs is None:
+            raise TypeError("Workspace tool payload metadata is missing")
+        if CODE_PAYLOAD_ENTRIES_ATTR in attrs:
+            continue
+        identifier = attrs.get("tool_cls_qualname")
+        if not isinstance(identifier, str):
+            raise TypeError("Workspace tool class identifier must be a string")
+        tool_cls = resolve_saved_tool_class(identifier)
+        if not issubclass(tool_cls, erlab.interactive.utils.ToolWindow):
+            raise TypeError("Workspace tool class is not a ToolWindow subclass")
+        base_tool_cls = erlab.interactive.utils.ToolWindow
+        saved_inspector = tool_cls._code_trust_payload_entries_from_saved_dataset
+        base_saved_inspector = (
+            base_tool_cls._code_trust_payload_entries_from_saved_dataset
+        )
+        if getattr(saved_inspector, "__func__", saved_inspector) is getattr(
+            base_saved_inspector, "__func__", base_saved_inspector
+        ):
+            if (
+                tool_cls._code_trust_payload_entries
+                is not base_tool_cls._code_trust_payload_entries
+                or tool_cls._code_trust_payload_entries_from_dataset
+                is not base_tool_cls._code_trust_payload_entries_from_dataset
+            ):
+                raise TypeError(
+                    "Workspace tool opaque payload cannot be inspected without "
+                    "loading the tool"
+                )
+            entries = ()
+        else:
+            workspace_path, payload_path = pending
+            opened = workspace_arrays.open_workspace_dataset(
+                workspace_path,
+                payload_path,
+                chunks={},
+            )
+            try:
+                inspected_entries = saved_inspector(opened)
+                if inspected_entries is None:
+                    raise TypeError(
+                        "Workspace tool saved-payload inspector did not return entries"
+                    )
+                entries = tuple(inspected_entries)
+            finally:
+                opened.close()
+        updated_attrs = dict(attrs)
+        store_code_payload_entries(updated_attrs, entries)
+        updates.append((node, updated_attrs))
+
+    for node, attrs in updates:
+        node.update_pending_workspace_payload_attrs(attrs)
