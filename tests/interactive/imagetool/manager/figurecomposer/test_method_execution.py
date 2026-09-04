@@ -931,7 +931,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
         adjust_tool.operation_panel.operation_list.topLevelItem(0)
     )
     adjust_tool.operation_editor.select_section("method")
-    adjust_page = adjust_tool.operation_editor.stack.currentWidget()
+    adjust_page = adjust_tool.operation_editor.current_page
     left_spin = adjust_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustLeftEdit"
     )
@@ -968,7 +968,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
         default_tool.operation_panel.operation_list.topLevelItem(0)
     )
     default_tool.operation_editor.select_section("method")
-    default_page = default_tool.operation_editor.stack.currentWidget()
+    default_page = default_tool.operation_editor.current_page
     default_left_spin = default_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustLeftEdit"
     )
@@ -1019,7 +1019,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
         engine_tool.operation_panel.operation_list.topLevelItem(0)
     )
     engine_tool.operation_editor.select_section("method")
-    engine_page = engine_tool.operation_editor.stack.currentWidget()
+    engine_page = engine_tool.operation_editor.current_page
     engine_combo = engine_page.findChild(
         QtWidgets.QComboBox, "figureComposerFigureLayoutEngineCombo"
     )
@@ -1038,7 +1038,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     _activate_combo_text(engine_combo, "compressed")
     qtbot.waitUntil(
         lambda: (
-            engine_tool.operation_editor.stack.currentWidget().findChild(
+            engine_tool.operation_editor.current_page.findChild(
                 QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEngineHspaceEdit"
             )
             is not None
@@ -1049,7 +1049,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     assert operation.method_args == ("compressed",)
     assert operation.method_kwargs == {"hspace": 0.2}
 
-    engine_page = engine_tool.operation_editor.stack.currentWidget()
+    engine_page = engine_tool.operation_editor.current_page
     assert (
         engine_page.findChild(
             QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEnginePadEdit"

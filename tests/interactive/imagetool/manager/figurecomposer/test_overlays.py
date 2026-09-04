@@ -59,7 +59,7 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     )
 
     tool.operation_editor.select_section("slice")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     mode_combo = page.findChild(QtWidgets.QComboBox, "figureComposerBZModeCombo")
     angle_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAngleSpin")
@@ -101,7 +101,7 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     bounds_edit.editingFinished.emit()
 
     tool.operation_editor.select_section("lattice")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     a_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAEdit")
     b_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZBEdit")
@@ -129,7 +129,7 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     _activate_combo_text(centering_combo, "F")
 
     tool.operation_editor.select_section("style")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     color_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZColorEdit")
     line_style_combo = page.findChild(
@@ -202,7 +202,7 @@ def test_figure_composer_bz_overlay_restores_mode_control_visibility(
     )
 
     tool.operation_editor.select_section("slice")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     layout = page.layout()
     assert isinstance(layout, QtWidgets.QFormLayout)
@@ -252,7 +252,7 @@ def test_figure_composer_batch_bz_overlay_line_kwargs_preserve_controls(qtbot) -
 
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("style")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     line_kw_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZLineKwEdit")
     assert line_kw_edit is not None
     assert line_kw_edit.text() == ""
@@ -775,7 +775,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     _activate_combo_index(source_combo, other_index)
 
     tool.operation_editor.select_section("photon")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     energies_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerPhotonEnergyValuesEdit"
@@ -792,7 +792,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     binding_edit.editingFinished.emit()
 
     tool.operation_editor.select_section("style")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     color_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerPhotonEnergyColorEdit"

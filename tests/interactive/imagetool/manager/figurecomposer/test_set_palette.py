@@ -50,7 +50,7 @@ def _set_palette_tool(qtbot, operation: FigureOperationState) -> FigureComposerT
 
 
 def _set_palette_page(tool: FigureComposerTool) -> QtWidgets.QWidget:
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     return page
 
@@ -138,7 +138,7 @@ def test_figure_composer_set_palette_editor_preview_and_controls(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
 
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")
@@ -251,7 +251,7 @@ def test_figure_composer_set_palette_custom_colors_editor_and_codegen(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
 
     mode_combo = page.findChild(
@@ -324,7 +324,7 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     mode_combo = page.findChild(
         QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
@@ -341,8 +341,8 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     assert len(operation.palette_colors) == 3
     qtbot.waitUntil(
         lambda: (
-            tool.operation_editor.stack.currentWidget() is not None
-            and tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page is not None
+            and tool.operation_editor.current_page.findChild(
                 color_widgets._ColorListEditorWidget,
                 "figureComposerSetPaletteColorsWidget",
             )
@@ -350,7 +350,7 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
         ),
         timeout=1000,
     )
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
     colors_widget = page.findChild(
         color_widgets._ColorListEditorWidget,
@@ -387,8 +387,8 @@ def test_figure_composer_generated_palette_switch_to_custom_colors(
     assert len(current.palette_colors) == expected_count
     qtbot.waitUntil(
         lambda: (
-            tool.operation_editor.stack.currentWidget() is not None
-            and tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page is not None
+            and tool.operation_editor.current_page.findChild(
                 color_widgets._ColorListEditorWidget,
                 "figureComposerSetPaletteColorsWidget",
             )
@@ -492,8 +492,8 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
     assert current.palette_colors == expected_hex
     qtbot.waitUntil(
         lambda: (
-            tool.operation_editor.stack.currentWidget() is not None
-            and tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page is not None
+            and tool.operation_editor.current_page.findChild(
                 color_widgets._ColorListEditorWidget,
                 "figureComposerSetPaletteColorsWidget",
             )
@@ -647,7 +647,7 @@ def test_figure_composer_set_palette_diverging_color_picker(
     assert getattr(state, other_field) == pytest.approx(expected_other)
 
     qtbot.waitUntil(
-        lambda: tool.operation_editor.stack.currentWidget() is not page,
+        lambda: tool.operation_editor.current_page is not page,
         timeout=1000,
     )
     rebuilt_page = _set_palette_page(tool)
@@ -849,7 +849,7 @@ def test_figure_composer_set_palette_seed_color_picker(
     np.testing.assert_allclose(updated.color, expected)
 
     qtbot.waitUntil(
-        lambda: tool.operation_editor.stack.currentWidget() is not page,
+        lambda: tool.operation_editor.current_page is not page,
         timeout=1000,
     )
     rebuilt_page = _set_palette_page(tool)
@@ -1371,7 +1371,7 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     assert page is not None
 
     combo = page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo")

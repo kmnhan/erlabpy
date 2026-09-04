@@ -180,7 +180,7 @@ def test_figure_composer_method_docs_button_opens_current_url(
             tool.operation_panel.operation_list.topLevelItem(row)
         )
         tool.operation_editor.select_section("method")
-        button = tool.operation_editor.stack.currentWidget().findChild(
+        button = tool.operation_editor.current_page.findChild(
             QtWidgets.QToolButton, "figureComposerMethodDocsButton"
         )
         assert button is not None
@@ -818,7 +818,7 @@ def test_figure_composer_tick_params_controls_update_state(qtbot) -> None:
 
     _select_operation_rows(tool, (0,))
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     assert method_page is not None
     editor = method_page.findChild(
         figurecomposer_tick_params.TickParamsEditorWidget,
@@ -937,14 +937,14 @@ def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> 
     tool.operation_editor.select_section("method")
     qtbot.wait_until(
         lambda: (
-            tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page.findChild(
                 QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
             )
             is not None
         ),
         timeout=5000,
     )
-    limits_edit = tool.operation_editor.stack.currentWidget().findChild(
+    limits_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
     )
     assert limits_edit is not None
@@ -956,14 +956,14 @@ def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> 
     tool.operation_editor.select_section("method")
     qtbot.wait_until(
         lambda: (
-            tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page.findChild(
                 QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
             )
             is not None
         ),
         timeout=5000,
     )
-    limits_edit = tool.operation_editor.stack.currentWidget().findChild(
+    limits_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
     )
     assert limits_edit is not None
@@ -1008,7 +1008,7 @@ def test_figure_composer_method_selector_preserves_compatible_values(qtbot) -> N
     )
     tool.operation_editor.select_section("method")
 
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     method_combo = method_page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
     )
@@ -1078,7 +1078,7 @@ def test_figure_composer_erlab_label_method_selector_maps_location(
     qtbot.addWidget(tool)
     tool.operation_editor.select_section("method")
 
-    method_combo = tool.operation_editor.stack.currentWidget().findChild(
+    method_combo = tool.operation_editor.current_page.findChild(
         QtWidgets.QComboBox, "figureComposerERLabMethodCombo"
     )
     assert method_combo is not None
@@ -1520,7 +1520,7 @@ def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
 
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     title_edit = method_page.findChild(
         QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTitleEdit"
     )
@@ -1580,7 +1580,7 @@ def test_figure_composer_method_text_args_accept_real_newlines(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    label_input = tool.operation_editor.stack.currentWidget().findChild(
+    label_input = tool.operation_editor.current_page.findChild(
         completion_widgets.CompletingPlainTextEdit,
         "figureComposerAxesMethodXLabelEdit",
     )
@@ -1747,7 +1747,7 @@ def test_figure_composer_label_methods_offer_curated_manual_input(
     qtbot.addWidget(tool)
 
     tool.operation_editor.select_section("method")
-    label_input = tool.operation_editor.stack.currentWidget().findChild(
+    label_input = tool.operation_editor.current_page.findChild(
         completion_widgets.CompletingPlainTextEdit
     )
     assert label_input is not None
@@ -1799,7 +1799,7 @@ def test_figure_composer_plural_label_methods_offer_completion(qtbot, name) -> N
     qtbot.addWidget(tool)
 
     tool.operation_editor.select_section("method")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     label_input = page.findChild(
         completion_widgets.CompletingPlainTextEdit,
         "figureComposerMethodTextValuesEdit",
@@ -2007,7 +2007,7 @@ def test_figure_composer_set_titles_default_location_uses_stylesheet(qtbot) -> N
     qtbot.addWidget(tool)
 
     tool.operation_editor.select_section("method")
-    location_combo = tool.operation_editor.stack.currentWidget().findChild(
+    location_combo = tool.operation_editor.current_page.findChild(
         QtWidgets.QComboBox,
         "figureComposerERLabSetTitlesLocCombo",
     )
@@ -2051,7 +2051,7 @@ def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None
     )
     qtbot.addWidget(tool)
     tool.operation_editor.select_section("method")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     color_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodTextColorEdit"
     )
@@ -2114,8 +2114,8 @@ def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None
         "rotation_mode": "anchor",
         "fontsize": 9,
     }
-    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
-    rebuilt_page = tool.operation_editor.stack.currentWidget()
+    qtbot.waitUntil(lambda: tool.operation_editor.current_page is not page)
+    rebuilt_page = tool.operation_editor.current_page
     rebuilt_horizontal_combo = rebuilt_page.findChild(
         QtWidgets.QComboBox,
         "figureComposerAxesMethodTextHorizontalAlignmentCombo",
@@ -2173,7 +2173,7 @@ def test_figure_composer_loaded_text_none_alignments_are_unset(
 
     operation = tool.tool_status.operations[0]
     assert operation.method_kwargs == {"fontsize": 8}
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     horizontal_combo = page.findChild(
         QtWidgets.QComboBox,
         "figureComposerAxesMethodTextHorizontalAlignmentCombo",
@@ -2223,7 +2223,7 @@ def test_figure_composer_constructor_method_controls_handle_aliases(qtbot) -> No
     )
     qtbot.addWidget(tool)
     tool.operation_editor.select_section("method")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     color_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodVLineColorEdit"
     )
@@ -2262,7 +2262,7 @@ def test_figure_composer_extra_method_kwargs_canonicalize_aliases(qtbot) -> None
     )
     qtbot.addWidget(tool)
     tool.operation_editor.select_section("method")
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     assert extra_edit is not None
 
@@ -2274,8 +2274,8 @@ def test_figure_composer_extra_method_kwargs_canonicalize_aliases(qtbot) -> None
         "linestyle": ":",
         "alpha": 0.5,
     }
-    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
-    rebuilt_page = tool.operation_editor.stack.currentWidget()
+    qtbot.waitUntil(lambda: tool.operation_editor.current_page is not page)
+    rebuilt_page = tool.operation_editor.current_page
     color_edit = rebuilt_page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodVLineColorEdit"
     )
@@ -2313,7 +2313,7 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
     qtbot.addWidget(tool)
     tool.operation_editor.select_section("method")
 
-    page = tool.operation_editor.stack.currentWidget()
+    page = tool.operation_editor.current_page
     horizontal_combo = page.findChild(
         QtWidgets.QComboBox,
         "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
@@ -2325,8 +2325,8 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
         "fontsize": 8,
     }
 
-    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
-    page = tool.operation_editor.stack.currentWidget()
+    qtbot.waitUntil(lambda: tool.operation_editor.current_page is not page)
+    page = tool.operation_editor.current_page
     location_combo = page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodXLabelLocCombo"
     )
@@ -2337,8 +2337,8 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
         "fontsize": 8,
     }
 
-    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
-    page = tool.operation_editor.stack.currentWidget()
+    qtbot.waitUntil(lambda: tool.operation_editor.current_page is not page)
+    page = tool.operation_editor.current_page
     extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     font_size_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodXLabelFontSizeEdit"
@@ -2356,8 +2356,8 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
         "fontsize": 9,
     }
 
-    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
-    page = tool.operation_editor.stack.currentWidget()
+    qtbot.waitUntil(lambda: tool.operation_editor.current_page is not page)
+    page = tool.operation_editor.current_page
     horizontal_combo = page.findChild(
         QtWidgets.QComboBox,
         "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
@@ -2383,8 +2383,8 @@ def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> No
     extra_edit.editingFinished.emit()
     assert tool.tool_status.operations[0].method_kwargs == {"fontsize": 10}
 
-    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
-    page = tool.operation_editor.stack.currentWidget()
+    qtbot.waitUntil(lambda: tool.operation_editor.current_page is not page)
+    page = tool.operation_editor.current_page
     horizontal_combo = page.findChild(
         QtWidgets.QComboBox,
         "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
@@ -2531,7 +2531,7 @@ def test_figure_composer_method_controls_restore_literal_kwargs(qtbot) -> None:
             tool.operation_panel.operation_list.topLevelItem(row)
         )
         tool.operation_editor.select_section("method")
-        page = tool.operation_editor.stack.currentWidget()
+        page = tool.operation_editor.current_page
         assert page is not None
         return page
 
@@ -2757,7 +2757,7 @@ def test_figure_composer_batch_minor_tick_control_updates_selected_steps(
 
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("method")
-    minor_check = tool.operation_editor.stack.currentWidget().findChild(
+    minor_check = tool.operation_editor.current_page.findChild(
         QtWidgets.QCheckBox, "figureComposerAxesMethodXTickMinorCheck"
     )
     assert minor_check is not None
@@ -2800,11 +2800,11 @@ def test_figure_composer_batch_incompatible_methods_disable_editor(qtbot) -> Non
 
     _select_operation_rows(tool, (0, 1))
 
-    assert tool.operation_editor.stack.currentWidget().objectName() == (
+    assert tool.operation_editor.current_page.objectName() == (
         "figureComposerIncompatibleBatchPage"
     )
     assert (
-        tool.operation_editor.stack.currentWidget().findChild(
+        tool.operation_editor.current_page.findChild(
             QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTitleEdit"
         )
         is None
@@ -2921,7 +2921,7 @@ def test_figure_composer_label_subplots_preserves_empty_text_rows(qtbot) -> None
     qtbot.addWidget(tool)
 
     tool.operation_editor.select_section("method")
-    text_edit = tool.operation_editor.stack.currentWidget().findChild(
+    text_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QPlainTextEdit,
         "figureComposerMethodTextValuesEdit",
     )
@@ -2981,7 +2981,7 @@ def test_figure_composer_legacy_method_order_normalizes_to_c(
     )
 
     tool.operation_editor.select_section("method")
-    order_combo = tool.operation_editor.stack.currentWidget().findChild(
+    order_combo = tool.operation_editor.current_page.findChild(
         QtWidgets.QComboBox,
         "figureComposerERLabLabelSubplotsOrderCombo",
     )
@@ -3100,7 +3100,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
             tool.operation_panel.operation_list.topLevelItem(row)
         )
         tool.operation_editor.select_section("method")
-        page = tool.operation_editor.stack.currentWidget()
+        page = tool.operation_editor.current_page
         assert page is not None
         return page
 
@@ -3524,9 +3524,7 @@ def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    title_edit = tool.operation_editor.stack.currentWidget().findChild(
-        QtWidgets.QPlainTextEdit
-    )
+    title_edit = tool.operation_editor.current_page.findChild(QtWidgets.QPlainTextEdit)
     assert title_edit is not None
     title_edit.setPlainText("Left\n")
     assert tool.tool_status.operations[0].text_values == ("Left", "")
@@ -3535,9 +3533,7 @@ def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(1)
     )
     tool.operation_editor.select_section("method")
-    xlabel_edit = tool.operation_editor.stack.currentWidget().findChild(
-        QtWidgets.QPlainTextEdit
-    )
+    xlabel_edit = tool.operation_editor.current_page.findChild(QtWidgets.QPlainTextEdit)
     assert xlabel_edit is not None
     xlabel_edit.setPlainText("")
     assert tool.tool_status.operations[1].text_values == ("",)

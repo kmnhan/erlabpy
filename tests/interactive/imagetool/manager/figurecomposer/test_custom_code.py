@@ -582,7 +582,7 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
     )
     tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_editor.stack.currentWidget()
+    current_page = tool.operation_editor.current_page
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -641,7 +641,7 @@ def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
     )
     tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_editor.stack.currentWidget()
+    current_page = tool.operation_editor.current_page
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -705,7 +705,7 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
     )
     tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_editor.stack.currentWidget()
+    current_page = tool.operation_editor.current_page
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -745,7 +745,7 @@ def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> Non
     )
     tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_editor.stack.currentWidget()
+    current_page = tool.operation_editor.current_page
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"

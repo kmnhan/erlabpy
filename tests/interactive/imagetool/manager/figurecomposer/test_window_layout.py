@@ -64,6 +64,8 @@ from erlab.interactive._figurecomposer._ui import (
     _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
 from erlab.interactive._figurecomposer._ui._operation_editor import (
+    FigureOperationEditor,
+    StepSection,
     _FigureComposerStepEditorPage,
     _FigureComposerStepEditorScroll,
 )
@@ -3941,9 +3943,10 @@ def test_figure_composer_operation_table_presents_targets_and_selects_rows(
         operation_list.setCurrentItem(operation_list.topLevelItem(row))
         QtWidgets.QApplication.processEvents()
         assert operation_list.height() == initial_list_height
+        assert tool.operation_editor.current_scroll_area is not None
         assert (
-            tool.operation_editor.scroll_area.minimumSizeHint().width()
-            >= tool.operation_editor.stack.minimumSizeHint().width()
+            tool.operation_editor.current_scroll_area.minimumSizeHint().width()
+            >= tool.operation_editor.current_page.minimumSizeHint().width()
         )
     operation_list.setCurrentItem(palette_item)
     QtWidgets.QApplication.processEvents()
@@ -3953,7 +3956,7 @@ def test_figure_composer_operation_table_presents_targets_and_selects_rows(
     )
     target_rect = operation_list.visualRect(target_index)
     assert not target_rect.isEmpty()
-    current_page = tool.operation_editor.stack.currentWidget()
+    current_page = tool.operation_editor.current_page
     assert current_page is not None
     current_control = next(
         widget
@@ -5266,11 +5269,56 @@ def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:
     operation_list.keyPressEvent(fallback_event)
 
 
+def test_figure_composer_step_sections_scroll_independently(qtbot) -> None:
+    tabs = QtWidgets.QTabWidget()
+    qtbot.addWidget(tabs)
+    editor = FigureOperationEditor(tabs, (), tabs)
+    tabs.addTab(editor, "Recipe")
+
+    long_page = editor.create_page("longPage")
+    long_layout = QtWidgets.QVBoxLayout(long_page)
+    for index in range(30):
+        long_layout.addWidget(QtWidgets.QLabel(f"Control {index}", long_page))
+    short_page = editor.create_page("shortPage")
+    short_layout = QtWidgets.QVBoxLayout(short_page)
+    short_layout.addWidget(QtWidgets.QLabel("Control", short_page))
+    editor.replace_sections(
+        (
+            StepSection("long", "Long", long_page, "Long section"),
+            StepSection("short", "Short", short_page, "Short section"),
+        ),
+        summaries={},
+    )
+
+    tabs.resize(480, 260)
+    tabs.show()
+    editor.select_section("long")
+    long_scroll = editor.current_scroll_area
+    assert long_scroll is not None
+    qtbot.waitUntil(lambda: long_scroll.verticalScrollBar().maximum() > 0)
+    long_position = long_scroll.verticalScrollBar().maximum()
+    long_scroll.verticalScrollBar().setValue(long_position)
+
+    editor.select_section("short")
+    short_scroll = editor.current_scroll_area
+    assert short_scroll is not None
+    assert short_scroll is not long_scroll
+    assert short_scroll.widget() is short_page
+    assert short_scroll.verticalScrollBar().value() == 0
+
+    editor.select_section("long")
+    assert editor.current_scroll_area is long_scroll
+    assert long_scroll.verticalScrollBar().value() == long_position
+
+
 def test_figure_composer_step_editor_and_reorder_defensive_paths(
     qtbot, monkeypatch
 ) -> None:
-    scroll = _FigureComposerStepEditorScroll()
+    initial_content = QtWidgets.QWidget()
+    initial_content.setObjectName("initialContent")
+    scroll = _FigureComposerStepEditorScroll(initial_content)
     qtbot.addWidget(scroll)
+    scroll.takeWidget()
     empty_hint = scroll.minimumSizeHint()
 
     class _HintWidget(QtWidgets.QWidget):
@@ -5278,6 +5326,7 @@ def test_figure_composer_step_editor_and_reorder_defensive_paths(
             return QtCore.QSize(220, 20)
 
     content = _HintWidget()
+    content.setObjectName("hintContent")
     scroll.setWidget(content)
     scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     assert scroll.minimumSizeHint().width() > empty_hint.width()
@@ -7435,7 +7484,7 @@ def test_figure_composer_subplots_adjust_pairs_stay_valid(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     left_spin = method_page.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustLeftEdit"
     )
@@ -9324,7 +9373,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("selection")
-    values_edit = tool.operation_editor.stack.currentWidget().findChild(
+    values_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
     assert values_edit is not None
@@ -9351,7 +9400,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
         staticmethod(lambda: active_popup[0]),
     )
     rebuild_calls.clear()
-    values_edit = tool.operation_editor.stack.currentWidget().findChild(
+    values_edit = tool.operation_editor.current_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
     assert values_edit is not None
@@ -9367,7 +9416,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
     assert tool._operation_editor_update_pending is False
 
-    dimension_combo = tool.operation_editor.stack.currentWidget().findChild(
+    dimension_combo = tool.operation_editor.current_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
     assert dimension_combo is not None
@@ -9385,7 +9434,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
     assert tool._operation_editor_update_pending is False
 
-    dimension_combo = tool.operation_editor.stack.currentWidget().findChild(
+    dimension_combo = tool.operation_editor.current_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
     assert dimension_combo is not None
@@ -9428,7 +9477,7 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("selection")
-    old_page = tool.operation_editor.stack.currentWidget()
+    old_page = tool.operation_editor.current_page
     active_popup: list[QtWidgets.QWidget | None] = [None]
     monkeypatch.setattr(
         QtWidgets.QApplication,
@@ -9492,7 +9541,7 @@ def test_figure_composer_retired_editor_control_signal_is_ignored(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("selection")
-    old_page = tool.operation_editor.stack.currentWidget()
+    old_page = tool.operation_editor.current_page
     old_values_edit = old_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
@@ -9622,9 +9671,7 @@ def test_figure_composer_layout_change_marks_removed_axes(qtbot, monkeypatch) ->
     assert tool.tool_status.setup.nrows == 1
     assert tool.tool_status.operations[0].axes.axes == ((1, 1),)
     assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
-    assert (
-        tool.operation_editor.stack.currentWidget() is tool.operation_editor.source_page
-    )
+    assert tool.operation_editor.current_page is tool.operation_editor.source_page
     tool.operation_editor.select_section("axes")
     assert tool.keep_valid_axes_button.isEnabled()
     with pytest.raises(ValueError, match="Cannot generate code"):
