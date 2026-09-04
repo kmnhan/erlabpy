@@ -229,7 +229,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     tool._update_operation_editor()
     tool.operation_editor.select_section("selection")
-    line_selection_page = tool.operation_editor.stack.currentWidget()
+    line_selection_page = tool.operation_editor.current_page
     assert line_selection_page is not None
     _assert_step_editor_section(
         line_selection_page, "figureComposerLineSelectionDataSection"
@@ -238,7 +238,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         line_selection_page, "figureComposerLineSelectionProfilesSection"
     )
     tool.operation_editor.select_section("view")
-    line_view_page = tool.operation_editor.stack.currentWidget()
+    line_view_page = tool.operation_editor.current_page
     assert line_view_page is not None
     assert (
         line_view_page.findChild(
@@ -247,14 +247,14 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
     tool.operation_editor.select_section("style")
-    line_style_page = tool.operation_editor.stack.currentWidget()
+    line_style_page = tool.operation_editor.current_page
     assert line_style_page is not None
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLegendSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleColorSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLineSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleFillSection")
     tool.operation_editor.select_section("other")
-    line_other_page = tool.operation_editor.stack.currentWidget()
+    line_other_page = tool.operation_editor.current_page
     assert line_other_page is not None
     assert (
         _operation_section_button(tool, "other").property("section_title")
@@ -272,7 +272,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     tool._update_operation_editor()
     tool.operation_editor.select_section("selection")
-    line_slices_selection_page = tool.operation_editor.stack.currentWidget()
+    line_slices_selection_page = tool.operation_editor.current_page
     assert line_slices_selection_page is not None
     _assert_step_editor_section(
         line_slices_selection_page,
@@ -283,7 +283,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         "figureComposerPlotSlicesSelectionValuesSection",
     )
     tool.operation_editor.select_section("view")
-    line_slices_view_page = tool.operation_editor.stack.currentWidget()
+    line_slices_view_page = tool.operation_editor.current_page
     assert line_slices_view_page is not None
     _assert_step_editor_section(
         line_slices_view_page, "figureComposerPlotSlicesViewPanelsSection"
@@ -292,7 +292,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         line_slices_view_page, "figureComposerPlotSlicesViewAxesSection"
     )
     tool.operation_editor.select_section("colors")
-    line_slices_colors_page = tool.operation_editor.stack.currentWidget()
+    line_slices_colors_page = tool.operation_editor.current_page
     assert line_slices_colors_page is not None
     _assert_step_editor_section(
         line_slices_colors_page,
@@ -311,7 +311,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         "figureComposerPlotSlicesStylePanelOverridesSection",
     )
     tool.operation_editor.select_section("transform")
-    line_slices_transform_page = tool.operation_editor.stack.currentWidget()
+    line_slices_transform_page = tool.operation_editor.current_page
     assert line_slices_transform_page is not None
     assert (
         line_slices_transform_page.objectName()
@@ -329,7 +329,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     tool._update_operation_editor()
     tool.operation_editor.select_section("colors")
-    image_slices_colors_page = tool.operation_editor.stack.currentWidget()
+    image_slices_colors_page = tool.operation_editor.current_page
     assert image_slices_colors_page is not None
     _assert_step_editor_section(
         image_slices_colors_page,
@@ -349,7 +349,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     tool._update_operation_editor()
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     assert method_page is not None
     _assert_step_editor_section(method_page, "figureComposerMethodCallSection")
     _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
@@ -360,7 +360,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     tool._update_operation_editor()
     tool.operation_editor.select_section("view")
-    plot_array_view_page = tool.operation_editor.stack.currentWidget()
+    plot_array_view_page = tool.operation_editor.current_page
     assert plot_array_view_page is not None
     _assert_step_editor_section(
         plot_array_view_page, "figureComposerPlotArrayViewImageSection"
@@ -369,7 +369,7 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         plot_array_view_page, "figureComposerPlotArrayViewAxesSection"
     )
     tool.operation_editor.select_section("colors")
-    plot_array_colors_page = tool.operation_editor.stack.currentWidget()
+    plot_array_colors_page = tool.operation_editor.current_page
     assert plot_array_colors_page is not None
     _assert_step_editor_section(
         plot_array_colors_page,

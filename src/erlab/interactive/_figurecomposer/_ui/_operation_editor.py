@@ -107,6 +107,25 @@ class OperationEditorBinding:
 class _FigureComposerStepEditorScroll(QtWidgets.QScrollArea):
     """Scroll vertically without allowing editor content to clip horizontally."""
 
+    def __init__(
+        self,
+        page: QtWidgets.QWidget,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName(f"{page.objectName()}Scroll")
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.setAutoFillBackground(False)
+        viewport = typing.cast("QtWidgets.QWidget", self.viewport())
+        viewport.setObjectName(f"{page.objectName()}Viewport")
+        viewport.setAutoFillBackground(False)
+        self.setWidget(page)
+        page.setAutoFillBackground(False)
+
     def minimumSizeHint(self) -> QtCore.QSize:
         hint = super().minimumSizeHint()
         content = self.widget()
@@ -243,26 +262,10 @@ class FigureOperationEditor(QtWidgets.QWidget):
         self.navigator_layout.addStretch(1)
         layout.addWidget(self.navigator)
 
-        self.scroll_area = _FigureComposerStepEditorScroll(self)
-        self.scroll_area.setObjectName("figureComposerStepEditorScroll")
-        self.scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.scroll_area.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.scroll_area.setAutoFillBackground(False)
-        viewport = typing.cast("QtWidgets.QWidget", self.scroll_area.viewport())
-        viewport.setObjectName("figureComposerStepEditorViewport")
-        viewport.setAutoFillBackground(False)
-        layout.addWidget(self.scroll_area, 1)
-
-        self.stack = QtWidgets.QStackedWidget()
+        self.stack = QtWidgets.QStackedWidget(self)
         self.stack.setObjectName("figureComposerStepSectionStack")
         self.stack.setAutoFillBackground(False)
-        self.scroll_area.setWidget(self.stack)
+        layout.addWidget(self.stack, 1)
 
         self._source_page = self.create_page("figureComposerStepSourcesPage")
         source_page_layout = QtWidgets.QVBoxLayout(self._source_page)
@@ -314,7 +317,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         self, object_name: str, *, transient: bool = False
     ) -> QtWidgets.QWidget:
         """Create a page whose lifetime is owned by this editor."""
-        page = _FigureComposerStepEditorPage(self._editor_tabs, self.stack)
+        page = _FigureComposerStepEditorPage(self._editor_tabs, self)
         page.setObjectName(object_name)
         if transient:
             self._transient_pages.append(page)
@@ -325,12 +328,25 @@ class FigureOperationEditor(QtWidgets.QWidget):
         """Keys of the currently mounted editor sections."""
         return tuple(section.key for section in self._sections)
 
-    def _current_page(self) -> QtWidgets.QWidget | None:
-        return self.stack.currentWidget()
+    @property
+    def current_scroll_area(self) -> _FigureComposerStepEditorScroll | None:
+        """Scroll area for the visible editor section."""
+        current = self.stack.currentWidget()
+        if isinstance(current, _FigureComposerStepEditorScroll):
+            return current
+        return None
+
+    @property
+    def current_page(self) -> QtWidgets.QWidget | None:
+        """Content page for the visible editor section."""
+        scroll_area = self.current_scroll_area
+        if scroll_area is None:
+            return None
+        return scroll_area.widget()
 
     def refresh_current_background(self) -> None:
         """Refresh the current page after a palette or window change."""
-        current_page = self._current_page()
+        current_page = self.current_page
         if isinstance(current_page, _FigureComposerStepEditorPage):
             current_page.refresh_background()
 
@@ -339,14 +355,30 @@ class FigureOperationEditor(QtWidgets.QWidget):
         self.flush_pending_commits()
         self._generation += 1
         self._section_tab_stop_refs.clear()
+        transient_pages = self._transient_pages
+        mounted_transient_pages: list[QtWidgets.QWidget] = []
         while self.stack.count():
-            page = typing.cast("QtWidgets.QWidget", self.stack.widget(0))
-            page.hide()
-            self.stack.removeWidget(page)
-        pages = self._transient_pages
+            scroll_area = typing.cast(
+                "_FigureComposerStepEditorScroll", self.stack.widget(0)
+            )
+            page = scroll_area.widget()
+            if page is not None and any(
+                page is transient_page for transient_page in transient_pages
+            ):
+                self._clear_object_names_recursive(page)
+                self._retire_widget(page)
+                mounted_transient_pages.append(page)
+            elif (page := scroll_area.takeWidget()) is not None:
+                page.hide()
+                page.setParent(self)
+            self.stack.removeWidget(scroll_area)
+            self._clear_object_names_recursive(scroll_area)
+            self._retire_widget(scroll_area)
         self._transient_pages = []
-        for page in pages:
-            self._retire_widget(page)
+        for page in transient_pages:
+            if not any(page is mounted for mounted in mounted_transient_pages):
+                self._clear_object_names_recursive(page)
+                self._retire_widget(page)
 
     def flush_pending_commits(self, *, render: bool = False) -> None:
         """Commit debounced editor content before pages are replaced or saved."""
@@ -376,7 +408,9 @@ class FigureOperationEditor(QtWidgets.QWidget):
         self._sections = tuple(sections)
 
         for index, section in enumerate(self._sections):
-            self.stack.addWidget(section.page)
+            self.stack.addWidget(
+                _FigureComposerStepEditorScroll(section.page, self.stack)
+            )
             button = QtWidgets.QToolButton(self.navigator)
             button.setText(self._section_button_text(section, summaries))
             button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
@@ -400,7 +434,11 @@ class FigureOperationEditor(QtWidgets.QWidget):
         key = existing_key if existing_key in keys else keys[0] if keys else ""
         if key:
             self.select_section(key)
-        self.scroll_area.updateGeometry()
+        for index in range(self.stack.count()):
+            scroll_area = typing.cast(
+                "_FigureComposerStepEditorScroll", self.stack.widget(index)
+            )
+            scroll_area.updateGeometry()
         self.updateGeometry()
 
     def select_section(self, key: str) -> None:
@@ -443,6 +481,13 @@ class FigureOperationEditor(QtWidgets.QWidget):
         for child in widget.findChildren(QtCore.QObject):
             if erlab.interactive.utils.qt_is_valid(child):
                 child.blockSignals(True)
+
+    @staticmethod
+    def _clear_object_names_recursive(widget: QtWidgets.QWidget) -> None:
+        widget.setObjectName("")
+        for child in widget.findChildren(QtCore.QObject):
+            if erlab.interactive.utils.qt_is_valid(child):
+                child.setObjectName("")
 
     def _retire_widget(self, widget: QtWidgets.QWidget) -> None:
         """Disable and defer deletion of a replaced editor widget safely."""
@@ -905,7 +950,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
         completions: Sequence[str] = (),
     ) -> QtWidgets.QLineEdit:
-        edit_parent = parent or self._current_page() or self
+        edit_parent = parent or self.current_page or self
         edit: QtWidgets.QLineEdit
         if completions:
             edit = CompletingLineEdit(
@@ -948,7 +993,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         mixed: bool = False,
         enabled: bool = True,
     ) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox(parent or self._current_page() or self)
+        combo = QtWidgets.QComboBox(parent or self.current_page or self)
         self.mark_control(combo)
         combo.addItems(list(values))
         adapter = ComboBoxControlAdapter(combo)
@@ -973,7 +1018,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
     ) -> QtWidgets.QComboBox:
         if len(values) != len(labels):
             raise ValueError("combo values and labels must have the same length")
-        combo = QtWidgets.QComboBox(parent or self._current_page() or self)
+        combo = QtWidgets.QComboBox(parent or self.current_page or self)
         self.mark_control(combo)
         adapter = ComboBoxDataControlAdapter(combo)
         if mixed:
@@ -1001,7 +1046,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         mixed: bool = False,
         enabled: bool = True,
     ) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox(parent or self._current_page() or self)
+        combo = QtWidgets.QComboBox(parent or self.current_page or self)
         self.mark_control(combo)
         adapter = ComboBoxDataControlAdapter(combo)
         if mixed:
@@ -1048,7 +1093,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         mixed: bool = False,
         enabled: bool = True,
     ) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox(parent or self._current_page() or self)
+        combo = QtWidgets.QComboBox(parent or self.current_page or self)
         self.mark_control(combo)
         adapter = ComboBoxDataControlAdapter(combo)
         if mixed:
@@ -1083,7 +1128,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         parent: QtWidgets.QWidget | None = None,
         mixed: bool = False,
     ) -> QtWidgets.QCheckBox:
-        check = QtWidgets.QCheckBox(parent or self._current_page() or self)
+        check = QtWidgets.QCheckBox(parent or self.current_page or self)
         self.mark_control(check)
         adapter = CheckBoxControlAdapter(check)
         if mixed:
@@ -1278,7 +1323,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         return bool(widget.focusPolicy() & QtCore.Qt.FocusPolicy.TabFocus)
 
     def _first_tab_stop(self) -> QtWidgets.QWidget | None:
-        current_page = self._current_page()
+        current_page = self.current_page
         if current_page is None:
             return None
         cache_key = self._current_section_key

@@ -145,7 +145,7 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     method_combo = method_page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
     )
@@ -217,7 +217,7 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(1)
     )
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     custom_transform_edit = method_page.findChild(
         QtWidgets.QLineEdit, "figureComposerMethodTransformExpressionEdit"
     )
@@ -311,7 +311,7 @@ def test_figure_composer_axes_errorbar_method_render_and_codegen(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     method_combo = method_page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
     )
@@ -477,7 +477,7 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     mode_combo = method_page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodPlotDataModeCombo"
     )
@@ -495,7 +495,7 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     _activate_combo_index(mode_combo, mode_combo.findData("from_data"))
     qtbot.wait_until(
         lambda: (
-            tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page.findChild(
                 QtWidgets.QComboBox, "figureComposerAxesMethodPlotYSourceCombo"
             )
             is not None
@@ -508,7 +508,7 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     assert operation.method_plot_y == FigureMethodPlotValueState(
         source="data", kind="data"
     )
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     assert (
         method_page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodPlotXEdit")
         is None
@@ -559,7 +559,7 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     tool.operation_editor.select_section("method")
     qtbot.wait_until(
         lambda: (
-            tool.operation_editor.stack.currentWidget().findChild(
+            tool.operation_editor.current_page.findChild(
                 QtWidgets.QComboBox,
                 "figureComposerAxesMethodErrorbarXErrorSourceCombo",
             )
@@ -573,7 +573,7 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     assert operation.method_plot_y == FigureMethodPlotValueState(
         source="data", kind="data"
     )
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     xerr_source_combo = method_page.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodErrorbarXErrorSourceCombo"
     )
@@ -1444,7 +1444,7 @@ def test_figure_composer_batch_same_plot_method_edits_selected_steps(qtbot) -> N
 
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("method")
-    method_page = tool.operation_editor.stack.currentWidget()
+    method_page = tool.operation_editor.current_page
     color_edit = method_page.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodPlotColorEdit"
     )

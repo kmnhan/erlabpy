@@ -1122,7 +1122,7 @@ def test_figure_composer_plot_array_aspect_control_shows_mixed_batch_value(
 
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("view")
-    combo = tool.operation_editor.stack.currentWidget().findChild(
+    combo = tool.operation_editor.current_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotArrayAspectCombo"
     )
     assert combo is not None

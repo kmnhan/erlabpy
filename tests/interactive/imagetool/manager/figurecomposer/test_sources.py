@@ -4827,7 +4827,7 @@ def test_figure_composer_batch_line_source_dependent_combos_disable(
 
     _select_operation_rows(tool, (0, 1))
     tool.operation_editor.select_section("selection")
-    selection_page = tool.operation_editor.stack.currentWidget()
+    selection_page = tool.operation_editor.current_page
     coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )

@@ -1455,7 +1455,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
 
     _select_operation_rows(tool, (2,))
     tool.operation_editor.select_section("selection")
-    selection_page = tool.operation_editor.stack.currentWidget()
+    selection_page = tool.operation_editor.current_page
     profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -1476,14 +1476,14 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert tool.tool_status.operations[2].line_x is None
     _activate_combo_index(profile_values_combo, profile_values_combo.findData("kx"))
     assert tool.tool_status.operations[2].line_y == "kx"
-    selection_page = tool.operation_editor.stack.currentWidget()
+    selection_page = tool.operation_editor.current_page
     profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_values_combo is not None
     _activate_combo_index(profile_values_combo, 0)
     assert tool.tool_status.operations[2].line_y is None
-    selection_page = tool.operation_editor.stack.currentWidget()
+    selection_page = tool.operation_editor.current_page
     profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -1501,7 +1501,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
         widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QCheckBox)
     )
     tool.operation_editor.select_section("view")
-    view_page = tool.operation_editor.stack.currentWidget()
+    view_page = tool.operation_editor.current_page
     data_values_axis_combo = view_page.findChild(
         QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
     )
@@ -1517,7 +1517,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     _select_operation_rows(tool, (3,))
     assert tool.tool_status.operations[3].method_name == "clean_labels"
     tool.operation_editor.select_section("method")
-    erlab_method_page = tool.operation_editor.stack.currentWidget()
+    erlab_method_page = tool.operation_editor.current_page
     assert all(
         widget.toolTip()
         for widget in erlab_method_page.findChildren(QtWidgets.QComboBox)
