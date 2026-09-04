@@ -29,5 +29,5 @@ sphinx:
   fail_on_warning: true
 
 # Optionally build your docs in additional formats such as PDF and ePub
-formats:
-  - pdf
+# formats:
+#  - pdf
