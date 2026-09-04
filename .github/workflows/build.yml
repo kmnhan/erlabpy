@@ -112,9 +112,17 @@ jobs:
       - name: Build installer (Windows only)
         if: runner.os == 'Windows'
         run: |
-          winget install --id JRSoftware.InnoSetup -e -s winget
-          $env:path += ";$env:LOCALAPPDATA/Programs/Inno Setup 6"
-          iscc manager.iss /O+ /F"Setup-${{ steps.info.outputs.FILENAME }}"
+          winget install `
+            --id JRSoftware.InnoSetup.7 `
+            --exact `
+            --architecture x64 `
+            --scope user `
+            --source winget `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --disable-interactivity
+          $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 7\ISCC.exe"
+          & $iscc manager.iss /O+ /F"Setup-${{ steps.info.outputs.FILENAME }}"
 
       - name: Create archive (macOS/Linux)
         if: runner.os != 'Windows'

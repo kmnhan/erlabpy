@@ -21,13 +21,11 @@ AppUpdatesURL={#MyAppURL}
 Compression=lzma2/max
 DefaultDirName={autopf}\{#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-; "ArchitecturesAllowed=x64compatible" specifies that Setup cannot run
-; on anything but x64 and Windows 11 on Arm.
+; Build a 64-bit installer for the 64-bit application bundle.
+SetupArchitecture=x64
+; Allow x64 Windows and Windows 11 on Arm, which supports x64 applications.
 ArchitecturesAllowed=x64compatible
-; "ArchitecturesInstallIn64BitMode=x64compatible" requests that the
-; install be done in "64-bit mode" on x64 or Windows 11 on Arm,
-; meaning it should use the native 64-bit Program Files directory and
-; the 64-bit view of the registry.
+; Use the native 64-bit Program Files directory and registry view.
 ArchitecturesInstallIn64BitMode=x64compatible
 ChangesAssociations=yes
 DefaultGroupName={#MyAppName}
