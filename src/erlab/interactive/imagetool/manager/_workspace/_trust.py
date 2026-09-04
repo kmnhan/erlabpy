@@ -298,23 +298,22 @@ def inspect_pending_workspace_code_payloads(manager: ImageToolManager) -> None:
                     "Workspace tool opaque payload cannot be inspected without "
                     "loading the tool"
                 )
-            entries = ()
-        else:
-            workspace_path, payload_path = pending
-            opened = workspace_arrays.open_workspace_dataset(
-                workspace_path,
-                payload_path,
-                chunks={},
-            )
-            try:
-                inspected_entries = saved_inspector(opened)
-                if inspected_entries is None:
-                    raise TypeError(
-                        "Workspace tool saved-payload inspector did not return entries"
-                    )
-                entries = tuple(inspected_entries)
-            finally:
-                opened.close()
+            continue
+        workspace_path, payload_path = pending
+        opened = workspace_arrays.open_workspace_dataset(
+            workspace_path,
+            payload_path,
+            chunks={},
+        )
+        try:
+            inspected_entries = saved_inspector(opened)
+            if inspected_entries is None:
+                raise TypeError(
+                    "Workspace tool saved-payload inspector did not return entries"
+                )
+            entries = tuple(inspected_entries)
+        finally:
+            opened.close()
         updated_attrs = dict(attrs)
         store_code_payload_entries(updated_attrs, entries)
         updates.append((node, updated_attrs))

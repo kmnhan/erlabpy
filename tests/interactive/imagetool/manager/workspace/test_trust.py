@@ -21,6 +21,7 @@ from erlab.interactive import _saved_tools
 from erlab.interactive._code_trust import (
     create_entry,
     create_manifest,
+    create_payload_entry,
     document_trust_has_trusted_lineage,
     document_trust_is_trusted,
     execution_capability_allows,
@@ -637,6 +638,96 @@ def test_legacy_pending_opaque_payload_without_saved_inspector_fails_closed(
         workspace_trust.inspect_pending_workspace_code_payloads(manager)
 
     assert updated_attrs == []
+
+
+def test_pending_payload_with_saved_code_entries_is_not_reinspected(
+    monkeypatch,
+) -> None:
+    attrs = {"tool_cls_qualname": "test:SavedPayloadTool"}
+    store_code_payload_entries(
+        attrs,
+        (
+            create_payload_entry(
+                "test.saved-payload", "payload", "saved_code()", b"payload"
+            ),
+        ),
+    )
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("workspace.itws", "tools/0"),
+        pending_workspace_payload_attrs=attrs,
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: (_ for _ in ()).throw(
+            AssertionError("saved payload must not be reinspected")
+        ),
+    )
+
+    workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+
+def test_legacy_pending_tool_without_opaque_payload_needs_no_dataset(
+    monkeypatch,
+) -> None:
+    updated_attrs = []
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs={"tool_cls_qualname": "test:TrustProbeTool"},
+        update_pending_workspace_payload_attrs=updated_attrs.append,
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: _TrustProbeTool,
+    )
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays,
+        "open_workspace_dataset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("payload must not be opened")
+        ),
+    )
+
+    workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+    assert updated_attrs == []
+
+
+def test_legacy_pending_saved_payload_inspector_must_return_entries(
+    monkeypatch,
+) -> None:
+    class InvalidSavedInspectorTool(_TrustProbeTool):
+        @classmethod
+        def _code_trust_payload_entries_from_saved_dataset(cls, ds):
+            del cls, ds
+
+    closed = []
+    opened = SimpleNamespace(close=lambda: closed.append(None))
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs={
+            "tool_cls_qualname": "test:InvalidSavedInspectorTool"
+        },
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: InvalidSavedInspectorTool,
+    )
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays,
+        "open_workspace_dataset",
+        lambda *_args, **_kwargs: opened,
+    )
+
+    with pytest.raises(TypeError, match="did not return entries"):
+        workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+    assert closed == [None]
 
 
 def test_legacy_pending_payload_requires_tool_window_class(monkeypatch) -> None:
