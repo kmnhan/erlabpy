@@ -60,8 +60,9 @@ Build a standalone application when you need a Linux bundle or platform-specific
 
 4. Find the application in `dist/ImageTool Manager`.
 
-For Windows, you can install [Inno Setup](https://jrsoftware.org/isinfo.php), add it to
-the system PATH, and run `iscc manager.iss` to create an installer.
+For Windows, you can install the
+[64-bit edition of Inno Setup 7](https://jrsoftware.org/isdl.php), add it to the system
+PATH, and run `iscc manager.iss` to create an installer.
 
 (update-manager)=
 
