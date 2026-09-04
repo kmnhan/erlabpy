@@ -3791,9 +3791,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._replace_current_params(result.params.copy())
         self._fit_is_current = True
         # Fit2D copies the current slice into its full result state in this hook.
-        # Update subclass-owned state before serializing the shared result payload.
+        # Update subclass-owned state now, but defer payload serialization until the
+        # sequence finishes. An explicit save can still populate the cache on demand.
         self._sync_fit_result_state(notify=False)
-        self._cache_fit_result_payload()
         self._fit_multi_last_elapsed = time.perf_counter() - t0
         self._fit_multi_live_refresh_pending = True
         self._fit_multi_refresh_pending = True
@@ -4430,6 +4430,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _finish_multi_fit(self) -> None:
         self._sync_multi_fit_view(full=True)
+        if self._serialized_fit_result_blob is None:
+            self._cache_fit_result_payload()
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_multi_total = None

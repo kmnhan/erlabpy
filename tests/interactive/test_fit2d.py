@@ -5394,6 +5394,73 @@ def test_fit2d_sequence_serializes_full_results_once(qtbot, monkeypatch) -> None
     assert invalidation_calls == data.sizes["y"]
 
 
+@pytest.mark.parametrize("persist_during_sequence", [False, True])
+def test_fit2d_multi_fit_serializes_full_results_once_at_completion(
+    qtbot, monkeypatch, *, persist_during_sequence
+) -> None:
+    tool, _model, _params = _make_linear_fit2d_tool(qtbot)
+    deferred: list[Callable[[], None]] = []
+    started_steps: list[int] = []
+    serialized_after_steps: list[int] = []
+    serialized_slice_counts: list[int] = []
+    invalidation_calls = 0
+    original_invalidate = tool._invalidate_fit_result_payload
+
+    def tracked_invalidate() -> None:
+        nonlocal invalidation_calls
+        invalidation_calls += 1
+        original_invalidate()
+
+    def tracked_serialize(dataset: xr.Dataset) -> np.ndarray:
+        serialized_after_steps.append(len(started_steps))
+        serialized_slice_counts.append(dataset.sizes[tool._PERSISTED_FIT_INDEX_DIM])
+        return np.array([len(started_steps)], dtype=np.uint8)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        tool._fit_start_time = fit1d_module.time.perf_counter()
+        on_success(_fit_result_dataset(tool._params, nfev=step))
+        return True
+
+    monkeypatch.setattr(tool, "_defer_next_fit_step", deferred.append)
+    monkeypatch.setattr(tool, "_start_fit_worker", _start_fit_worker)
+    monkeypatch.setattr(tool, "_invalidate_fit_result_payload", tracked_invalidate)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_serialize_fit_dataset_blob",
+        tracked_serialize,
+    )
+
+    tool._run_fit_multiple(20)
+    assert started_steps == [1]
+    if persist_during_sequence:
+        assert tool._fit_result_blob_for_persistence() is not None
+
+    while deferred:
+        deferred.pop(0)()
+
+    expected_serializations = [1, 20] if persist_during_sequence else [20]
+    assert started_steps == list(range(1, 21))
+    assert invalidation_calls == 20
+    assert serialized_after_steps == expected_serializations
+    assert serialized_slice_counts == [1] * len(expected_serializations)
+    assert tool._fit_multi_total is None
+    assert tool._result_ds_full[tool._current_idx] is not None
+    result = tool._result_ds_full[tool._current_idx].modelfit_results.compute().item()
+    assert result.nfev == 20
+
+
 def test_fit2d_multi_fit_caches_updated_full_result(qtbot) -> None:
     tool, model, params = _make_linear_fit2d_tool(qtbot)
     data = tool.tool_data
