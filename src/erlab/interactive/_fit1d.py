@@ -791,6 +791,7 @@ class _FitJob:
 
     revision: int
     target_index: int | None
+    fit_range: tuple[float, float] | None = None
 
 
 class _FitWorker(threading.Thread):
@@ -806,6 +807,7 @@ class _FitWorker(threading.Thread):
         max_nfev: int,
         method: str,
         timeout: float,
+        completion_callback: Callable[[object], None] | None = None,
     ) -> None:
         # The application registry owns every worker through completion. A
         # non-daemon thread prevents Python from finalizing a live fit payload.
@@ -819,6 +821,7 @@ class _FitWorker(threading.Thread):
         self._max_nfev = max_nfev
         self._method = method
         self._timeout = timeout
+        self._completion_callback = completion_callback
         self._cancel = threading.Event()
         self._outcome = _FitWorkerOutcome("not_finished")
 
@@ -826,6 +829,17 @@ class _FitWorker(threading.Thread):
         self._cancel.set()
 
     def run(self) -> None:
+        try:
+            self._run_fit()
+        finally:
+            if self._outcome.kind == "not_finished":
+                self._outcome = _FitWorkerOutcome("error", error=traceback.format_exc())
+            completion_callback = self._completion_callback
+            if completion_callback is not None:
+                with contextlib.suppress(RuntimeError):
+                    completion_callback(self)
+
+    def _run_fit(self) -> None:
         self._outcome = _FitWorkerOutcome("not_finished")
         t0 = time.perf_counter()
         timed_out = False
@@ -884,6 +898,7 @@ class _FitWorker(threading.Thread):
         self._model = None
         self._params = None
         self._weights = None
+        self._completion_callback = None
         self._outcome = _FitWorkerOutcome("not_finished")
 
 
@@ -897,13 +912,16 @@ class _FitWorkerCallbacks(typing.NamedTuple):
 class _FitWorkerRegistry(QtCore.QObject):
     """Own fit workers until their payloads can be released on the GUI thread."""
 
+    sigWorkerFinished = QtCore.Signal(object)
+
     def __init__(self, app: QtWidgets.QApplication) -> None:
         super().__init__(app)
         self._workers: dict[_FitWorker, QtWidgets.QWidget | None] = {}
         self._owner_destroy_callbacks: dict[_FitWorker, Callable[..., None]] = {}
-        self._reap_timer = QtCore.QTimer(self)
-        self._reap_timer.setInterval(25)
-        self._reap_timer.timeout.connect(self.reap)
+        self.sigWorkerFinished.connect(
+            self._worker_finished,
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
         app.aboutToQuit.connect(self.shutdown)
 
     @property
@@ -921,8 +939,6 @@ class _FitWorkerRegistry(QtCore.QObject):
         owner_destroyed = functools.partial(self._owner_destroyed, thread, owner)
         self._owner_destroy_callbacks[thread] = owner_destroyed
         owner.destroyed.connect(owner_destroyed)
-        if not any(owner is None for owner in self._workers.values()):
-            self._reap_timer.stop()
 
     def detach(self, thread: _FitWorker) -> None:
         if thread not in self._workers:
@@ -930,14 +946,10 @@ class _FitWorkerRegistry(QtCore.QObject):
         owner = self._workers[thread]
         self._disconnect_owner(thread, owner)
         self._workers[thread] = None
-        if not self._reap_timer.isActive():
-            self._reap_timer.start()
 
     def remove(self, thread: _FitWorker) -> None:
         owner = self._workers.pop(thread, None)
         self._disconnect_owner(thread, owner)
-        if not any(owner is None for owner in self._workers.values()):
-            self._reap_timer.stop()
 
     def _disconnect_owner(
         self, thread: _FitWorker, owner: QtWidgets.QWidget | None
@@ -959,25 +971,25 @@ class _FitWorkerRegistry(QtCore.QObject):
             return
         self._owner_destroy_callbacks.pop(thread, None)
         self._workers[thread] = None
-        if not self._reap_timer.isActive():
-            self._reap_timer.start()
 
-    @QtCore.Slot()
-    def reap(self) -> None:
-        """Release stopped detached workers on the GUI thread."""
-        for thread, owner in tuple(self._workers.items()):
-            if owner is not None and erlab.interactive.utils.qt_is_valid(owner):
-                continue
-            if thread.is_alive():
-                continue
-            thread.join()
-            thread.release_payload()
-            self.remove(thread)
+    @QtCore.Slot(object)
+    def _worker_finished(self, thread: _FitWorker) -> None:
+        """Finalize one registered worker on the GUI thread."""
+        if thread not in self._workers:
+            return
+        owner = self._workers[thread]
+        thread.join()
+        if thread not in self._workers or self._workers[thread] is not owner:
+            return
+        if owner is not None and erlab.interactive.utils.qt_is_valid(owner):
+            typing.cast("Fit1DTool", owner)._finalize_fit_thread(thread)
+            return
+        thread.release_payload()
+        self.remove(thread)
 
     @QtCore.Slot()
     def shutdown(self) -> None:
         """Cancel and join all workers before Qt and Python start teardown."""
-        self._reap_timer.stop()
         workers = tuple(self._workers)
         for thread in workers:
             thread.cancel()
@@ -1285,9 +1297,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_config_revision = 0
         self._fit_sequence_generation = 0
         self._fit_worker_registry = _fit_worker_registry()
-        self._fit_poll_timer = QtCore.QTimer(self)
-        self._fit_poll_timer.setInterval(25)
-        self._fit_poll_timer.timeout.connect(self._poll_fit_worker)
         for model_class in (
             *_library_lmfit_model_classes(),
             *self.MODEL_CHOICES.values(),
@@ -3829,10 +3838,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         result = self._last_result_ds.modelfit_results.compute().item()
         self._replace_current_params(result.params.copy())
         self._fit_is_current = True
-        # Fit2D copies the current slice into its full result state in this hook.
-        # Update subclass-owned state before serializing the shared result payload.
-        self._sync_fit_result_state(notify=False)
-        self._cache_fit_result_payload()
         self._fit_multi_last_elapsed = time.perf_counter() - t0
         self._fit_multi_live_refresh_pending = True
         self._fit_multi_refresh_pending = True
@@ -4167,7 +4172,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.finalize_source_refresh()
 
     def _fit_start_errored(self, *, multi: bool) -> None:
-        self._fit_poll_timer.stop()
         self._fit_thread = None
         self._fit_cancel_requested = False
         self._fit_running_multi = False
@@ -4211,6 +4215,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 max_nfev=self.nfev_spin.value(),
                 method=self.method_combo.currentText(),
                 timeout=self.timeout_spin.value(),
+                completion_callback=self._fit_worker_registry.sigWorkerFinished.emit,
             )
         except Exception:
             self._fit_start_errored(multi=multi)
@@ -4248,19 +4253,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._fit_thread = None
             self._fit_start_errored(multi=multi)
             return False
-        self._fit_poll_timer.start()
         return True
-
-    @QtCore.Slot()
-    def _poll_fit_worker(self) -> None:
-        thread = self._fit_thread
-        if thread is None:
-            self._fit_poll_timer.stop()
-            return
-        if thread.is_alive():
-            return
-        thread.join()
-        self._finalize_fit_thread(thread)
 
     def _fit_worker_completion_action(self, thread: _FitWorker) -> Callable[[], None]:
         callbacks = self._fit_worker_callbacks.get(thread)
@@ -4273,7 +4266,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if outcome.kind == "success":
             if outcome.result is None:
                 raise RuntimeError("Fit worker returned no result.")
-            return functools.partial(callbacks.on_success, outcome.result)
+            result_ds = self._fit_result_for_job(outcome.result, callbacks.job)
+            return functools.partial(callbacks.on_success, result_ds)
         if outcome.kind == "timed_out":
             return callbacks.on_timeout
         if outcome.kind == "error":
@@ -4287,11 +4281,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return self._fit_cancelled
         raise RuntimeError("Fit worker stopped without a terminal outcome.")
 
+    def _fit_result_for_job(self, result_ds: xr.Dataset, job: _FitJob) -> xr.Dataset:
+        """Attach immutable job context to a completed fit result."""
+        return result_ds
+
     def _finalize_fit_thread(self, thread: _FitWorker) -> None:
         try:
             if self._fit_thread is not thread:
                 return
-            self._fit_poll_timer.stop()
             self._fit_thread = None
             cancel_requested = self._fit_cancel_requested
             self._fit_cancel_requested = False
@@ -4470,6 +4467,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _finish_multi_fit(self) -> None:
         self._sync_multi_fit_view(full=True)
+        if self._serialized_fit_result_blob is None:
+            self._cache_fit_result_payload()
         self._set_fit_running(False, multi=True)
         self._fit_running_multi = False
         self._fit_multi_total = None
@@ -5462,8 +5461,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         """Remove one worker from this window without releasing its payload."""
         if self._fit_thread is not thread:
             return
-        if erlab.interactive.utils.qt_is_valid(self._fit_poll_timer):
-            self._fit_poll_timer.stop()
         self._fit_thread = None
         self._fit_cancel_requested = False
         self._fit_worker_callbacks.pop(thread, None)
