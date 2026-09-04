@@ -370,6 +370,7 @@ def _fit_slices_with_ranges(
         win._set_current_index(index)
         win.domain_min_spin.setValue(fit_range[0])
         win.domain_max_spin.setValue(fit_range[1])
+        job = win._fit_job()
         fit_ds = (
             win._fit_data()
             .xlm.modelfit(
@@ -380,7 +381,7 @@ def _fit_slices_with_ranges(
             )
             .load()
         )
-        win._last_result_ds = fit_ds
+        win._last_result_ds = win._fit_result_for_job(fit_ds, job)
         result = fit_ds.modelfit_results.compute().item()
         win._params = result.params.copy()
         win._sync_fit_result_state()
@@ -3023,6 +3024,10 @@ def test_fit2d_records_range_from_dispatched_fit_data(qtbot) -> None:
     win.domain_min_spin.setValue(-0.6)
     win.domain_max_spin.setValue(0.6)
     dispatched_data = win._fit_data()
+    job = win._fit_job()
+    assert job.fit_range == (-0.6, 0.6)
+    assert Fit2DTool._FIT_RANGE_MIN_COORD not in dispatched_data.coords
+    assert Fit2DTool._FIT_RANGE_MAX_COORD not in dispatched_data.coords
     result_ds = dispatched_data.xlm.modelfit(
         win._coord_name,
         model=win._model,
@@ -3031,13 +3036,163 @@ def test_fit2d_records_range_from_dispatched_fit_data(qtbot) -> None:
 
     win.domain_min_spin.setValue(-1.0)
     win.domain_max_spin.setValue(0.0)
-    win._set_fit_ds(result_ds, 0.0)
+    assert win._current_fit_range() == (-1.0, 0.0)
+    win._set_fit_ds(win._fit_result_for_job(result_ds, job), 0.0)
 
     assert win._last_result_ds is not None
     assert win._fit_result_range(win._last_result_ds) == (-0.6, 0.6)
 
     overwritten = win._fit_result_with_range(win._last_result_ds, (-0.5, 0.5))
     assert win._fit_result_range(overwritten) == (-0.5, 0.5)
+
+
+def test_fit2d_fit_range_cache_resets_for_replacement_and_transpose(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    assert win._current_fit_range() == (-1.0, 1.0)
+    assert win._current_fit_range() == (-1.0, 1.0)
+
+    updated = data.assign_coords(x=np.linspace(-3.0, 3.0, data.sizes["x"]))
+    win.update_inputs({"data": updated})
+    assert win._current_fit_range() == (-3.0, 3.0)
+
+    win._do_transpose()
+    assert win._current_fit_range() == (0.0, 2.0)
+
+
+@pytest.mark.parametrize("full_range", [False, True], ids=["cropped", "full"])
+@pytest.mark.parametrize("operation", ["fit", "fit-20", "fit-up", "fit-down"])
+def test_fit2d_worker_inputs_exclude_fit_range_coordinates(
+    qtbot, monkeypatch, operation, full_range
+) -> None:
+    win, _model, _params = _make_linear_fit2d_tool(qtbot)
+    if not full_range:
+        win.domain_min_spin.setValue(-0.5)
+        win.domain_max_spin.setValue(0.5)
+    win.nfev_spin.setValue(0)
+
+    submitted: list[xr.DataArray] = []
+    original_init = fit1d_module._FitWorker.__init__
+
+    def tracked_init(worker, fit_data, *args, **kwargs) -> None:
+        submitted.append(fit_data)
+        original_init(worker, fit_data, *args, **kwargs)
+
+    monkeypatch.setattr(fit1d_module._FitWorker, "__init__", tracked_init)
+    monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
+
+    if operation == "fit":
+        assert win._run_fit()
+    elif operation == "fit-20":
+        win._run_fit_multiple(20)
+    elif operation == "fit-up":
+        win.y_index_spin.setValue(win.y_min_spin.value())
+        win._run_fit_2d("up")
+    else:
+        win.y_index_spin.setValue(win.y_max_spin.value())
+        win._run_fit_2d("down")
+
+    while win._fit_thread is not None:
+        thread = win._fit_thread
+        thread._run_fit()
+        win._finalize_fit_thread(thread)
+        QtWidgets.QApplication.processEvents()
+
+    expected_count = {
+        "fit": 1,
+        "fit-20": 20,
+        "fit-up": win.tool_data.sizes[win._y_dim_name],
+        "fit-down": win.tool_data.sizes[win._y_dim_name],
+    }[operation]
+    assert len(submitted) == expected_count
+    for fit_data in submitted:
+        assert Fit2DTool._FIT_RANGE_MIN_COORD not in fit_data.coords
+        assert Fit2DTool._FIT_RANGE_MAX_COORD not in fit_data.coords
+
+    stored_results = [result for result in win._result_ds_full if result is not None]
+    assert stored_results
+    expected_range = (-1.0, 1.0) if full_range else (-0.5, 0.5)
+    for result in stored_results:
+        assert win._fit_result_range(result) == expected_range
+        for coord in (
+            Fit2DTool._FIT_RANGE_MIN_COORD,
+            Fit2DTool._FIT_RANGE_MAX_COORD,
+        ):
+            assert (coord in result.coords) is not full_range
+
+
+@pytest.mark.parametrize(
+    (
+        "fit_ranges",
+        "expected_coords",
+        "expected_join",
+        "expected_reorders",
+        "expect_range_coords",
+    ),
+    [
+        ([(-1.0, 1.0), (-1.0, 1.0)], "minimal", "override", 0, False),
+        ([(-1.0, 1.0), (0.0, 1.0)], "all", "outer", 2, True),
+    ],
+)
+def test_fit2d_concat_strategy_depends_on_recorded_ranges(
+    qtbot,
+    monkeypatch,
+    fit_ranges,
+    expected_coords,
+    expected_join,
+    expected_reorders,
+    expect_range_coords,
+) -> None:
+    win, _model, _params = _make_linear_fit2d_tool(qtbot)
+    win.y_max_spin.setValue(1)
+    _fit_slices_with_ranges(win, fit_ranges)
+
+    concat_options: list[tuple[str, str]] = []
+    reorder_calls = 0
+    original_concat = xr.concat
+    original_restore_order = win._restore_fit_coord_order
+
+    def tracked_concat(*args, **kwargs):
+        concat_options.append((kwargs["coords"], kwargs["join"]))
+        return original_concat(*args, **kwargs)
+
+    def tracked_restore_order(result_ds):
+        nonlocal reorder_calls
+        reorder_calls += 1
+        return original_restore_order(result_ds)
+
+    @contextlib.contextmanager
+    def wait_stub(_parent, _message):
+        yield None
+
+    saved: list[xr.Dataset] = []
+    monkeypatch.setattr(fit2d_module.xr, "concat", tracked_concat)
+    monkeypatch.setattr(win, "_restore_fit_coord_order", tracked_restore_order)
+    monkeypatch.setattr(erlab.interactive.utils, "wait_dialog", wait_stub)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "save_fit_ui",
+        lambda fit_ds, *, parent: saved.append(fit_ds),
+    )
+
+    persisted = win._fit_result_dataset_for_persistence()
+    assert persisted is not None
+    win._save_fit_full()
+
+    assert len(saved) == 1
+    assert concat_options == [(expected_coords, expected_join)] * 2
+    assert reorder_calls == expected_reorders
+    for combined in (persisted, saved[0]):
+        for coord in (
+            Fit2DTool._FIT_RANGE_MIN_COORD,
+            Fit2DTool._FIT_RANGE_MAX_COORD,
+        ):
+            assert (coord in combined.coords) is expect_range_coords
+            if expect_range_coords:
+                assert np.isfinite(combined.coords[coord]).all()
 
 
 @pytest.mark.parametrize("descending", [False, True])
@@ -3135,8 +3290,16 @@ def test_fit2d_mixed_slice_ranges_copy_and_output_provenance(
 
 
 @pytest.mark.parametrize("descending", [False, True])
+@pytest.mark.parametrize(
+    "fit_ranges",
+    [
+        [(-1.0, 0.0), (0.0, 1.0)],
+        [(-1.0, 1.0), (0.0, 1.0)],
+    ],
+    ids=["cropped-cropped", "full-cropped"],
+)
 def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
-    qtbot, monkeypatch, descending
+    qtbot, monkeypatch, descending, fit_ranges
 ) -> None:
     x = np.linspace(-1.0, 1.0, 9)
     if descending:
@@ -3158,13 +3321,20 @@ def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    fit_ranges = [(-1.0, 0.0), (0.0, 1.0)]
     _fit_slices_with_ranges(win, fit_ranges)
     expected_results = [
         result_ds.copy(deep=True)
         for result_ds in win._result_ds_full
         if result_ds is not None
     ]
+
+    sparse = win._fit_result_dataset_for_persistence()
+    assert sparse is not None
+    for coord in (
+        Fit2DTool._FIT_RANGE_MIN_COORD,
+        Fit2DTool._FIT_RANGE_MAX_COORD,
+    ):
+        assert np.isfinite(sparse.coords[coord]).all()
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(
         win.to_dataset(), _code_trust=new_document_trust()
@@ -3215,6 +3385,11 @@ def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
     )
     win._save_fit_full()
     assert len(saved_fits) == 1
+    for coord in (
+        Fit2DTool._FIT_RANGE_MIN_COORD,
+        Fit2DTool._FIT_RANGE_MAX_COORD,
+    ):
+        assert np.isfinite(saved_fits[0].coords[coord]).all()
 
     reopened = erlab.interactive.ftool(saved_fits[0], execute=False)
     qtbot.addWidget(reopened)
@@ -3228,19 +3403,25 @@ def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
         assert result_ds is not None
         expected_x = x[(x >= fit_ranges[index][0]) & (x <= fit_ranges[index][1])]
         np.testing.assert_allclose(result_ds["x"], expected_x)
+        for coord in (
+            Fit2DTool._FIT_RANGE_MIN_COORD,
+            Fit2DTool._FIT_RANGE_MAX_COORD,
+        ):
+            assert (coord in result_ds.coords) is (fit_ranges[index] != (-1.0, 1.0))
 
     reopened._set_current_index(0)
     reopened.domain_min_spin.setValue(-0.5)
     reopened.domain_max_spin.setValue(0.0)
     refit_data = reopened._fit_data()
-    assert float(refit_data.coords[Fit2DTool._FIT_RANGE_MIN_COORD]) == -0.5
-    assert float(refit_data.coords[Fit2DTool._FIT_RANGE_MAX_COORD]) == 0.0
+    refit_job = reopened._fit_job()
+    assert Fit2DTool._FIT_RANGE_MIN_COORD not in refit_data.coords
+    assert Fit2DTool._FIT_RANGE_MAX_COORD not in refit_data.coords
     refit_ds = refit_data.xlm.modelfit(
         reopened._coord_name,
         model=reopened._model,
         params=reopened._params,
     ).load()
-    reopened._set_fit_ds(refit_ds, 0.0)
+    reopened._set_fit_ds(reopened._fit_result_for_job(refit_ds, refit_job), 0.0)
     assert reopened._last_result_ds is not None
     assert reopened._fit_result_range(reopened._last_result_ds) == (-0.5, 0.0)
 

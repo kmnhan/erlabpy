@@ -772,6 +772,7 @@ class _FitJob:
 
     revision: int
     target_index: int | None
+    fit_range: tuple[float, float] | None = None
 
 
 class _FitWorker(threading.Thread):
@@ -4225,7 +4226,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if outcome.kind == "success":
             if outcome.result is None:
                 raise RuntimeError("Fit worker returned no result.")
-            return functools.partial(callbacks.on_success, outcome.result)
+            result_ds = self._fit_result_for_job(outcome.result, callbacks.job)
+            return functools.partial(callbacks.on_success, result_ds)
         if outcome.kind == "timed_out":
             return callbacks.on_timeout
         if outcome.kind == "error":
@@ -4238,6 +4240,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if outcome.kind == "cancelled":
             return self._fit_cancelled
         raise RuntimeError("Fit worker stopped without a terminal outcome.")
+
+    def _fit_result_for_job(self, result_ds: xr.Dataset, job: _FitJob) -> xr.Dataset:
+        """Attach immutable job context to a completed fit result."""
+        return result_ds
 
     def _finalize_fit_thread(self, thread: _FitWorker) -> None:
         try:
