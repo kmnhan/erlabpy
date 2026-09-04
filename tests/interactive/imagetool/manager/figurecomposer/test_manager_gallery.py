@@ -22,6 +22,7 @@ from erlab.interactive._figurecomposer import (
     FigureOperationState,
     FigureRecipeState,
     FigureSourceState,
+    FigureSubplotsState,
 )
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
@@ -791,6 +792,11 @@ def test_figure_composer_visible_restore_queues_auto_redraw(
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(ds)
     qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+
+    qtbot.wait(20)
+    assert render_calls == []
+    restored.show()
 
     qtbot.wait_until(lambda: bool(render_calls), timeout=5000)
     assert render_calls == [((restored,), {"show_window": True})]
@@ -810,18 +816,26 @@ def test_figure_composer_deferred_restore_delays_visible_redraw(
         {"line": data},
         sources=(FigureSourceState(name="line", label="line"),),
         operations=(FigureOperationState.line(label="line", source="line"),),
+        setup=FigureSubplotsState(
+            figsize=(3.1333, 4.38),
+            dpi=150.0,
+            layout="constrained",
+        ),
         primary_source="line",
     )
     qtbot.addWidget(tool)
+    tool.resize(514, 632)
     ds = tool.to_dataset()
     window_state = json.loads(ds.attrs["tool_window_state"])
     window_state["visible"] = True
     ds.attrs["tool_window_state"] = json.dumps(window_state)
 
     render_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    original_render = figurecomposer_tool_module._render_preview
 
     def record_render(*args, **kwargs) -> None:
         render_calls.append((args, kwargs))
+        original_render(*args, **kwargs)
 
     monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", record_render)
 
@@ -832,11 +846,32 @@ def test_figure_composer_deferred_restore_delays_visible_redraw(
     qtbot.addWidget(restored)
     assert isinstance(restored, FigureComposerTool)
     assert render_calls == []
+    assert restored.tool_status.setup.figsize == (3.1333, 4.38)
 
     restored.show()
 
-    qtbot.wait_until(lambda: bool(render_calls), timeout=5000)
+    qtbot.wait_until(
+        lambda: (
+            restored._figure_window is not None
+            and restored._figure_window.isVisible()
+            and bool(render_calls)
+        ),
+        timeout=5000,
+    )
+    figure_window = restored._figure_window
+    assert figure_window is not None
+    target_width = round(3.1333 * 150.0)
+    target_height = round(4.38 * 150.0)
+    qtbot.wait_until(
+        lambda: (
+            abs(figure_window.canvas.width() - target_width) <= 2
+            and abs(figure_window.canvas.height() - target_height) <= 2
+        ),
+        timeout=5000,
+    )
+    qtbot.wait(50)
     assert render_calls == [((restored,), {"show_window": True})]
+    assert restored.tool_status.setup.figsize == (3.1333, 4.38)
 
 
 def _line_figure_composer_restore_dataset(qtbot):

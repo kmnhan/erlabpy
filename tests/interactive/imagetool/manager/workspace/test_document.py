@@ -18,6 +18,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
@@ -222,7 +223,7 @@ def test_manager_added_time_display_uses_zone_name_and_offset(
 
 
 def test_imagetool_dataset_uses_window_state_and_restores_legacy_size(
-    qtbot, test_data
+    qtbot, monkeypatch, test_data
 ) -> None:
     tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
     qtbot.addWidget(tool)
@@ -236,8 +237,34 @@ def test_imagetool_dataset_uses_window_state_and_restores_legacy_size(
     assert "itool_qt_geometry" not in ds.attrs
     assert "itool_rect" not in ds.attrs
 
+    restore_order: list[str] = []
+    restore_qt_window_state = imagetool_mainwindow._qt_state.restore_qt_window_state
+    restore_slicer_state = imagetool_viewer.ImageSlicerArea._restore_state
+
+    def _record_restore_order(widget, state) -> bool:
+        restore_order.append("window")
+        return restore_qt_window_state(widget, state)
+
+    def _record_slicer_state_restore(self, state, **kwargs) -> None:
+        restore_order.append("slicer")
+        restore_slicer_state(self, state, **kwargs)
+
+    monkeypatch.setattr(
+        imagetool_mainwindow._qt_state,
+        "restore_qt_window_state",
+        _record_restore_order,
+    )
+    monkeypatch.setattr(
+        imagetool_viewer.ImageSlicerArea,
+        "_restore_state",
+        _record_slicer_state_restore,
+    )
     restored = erlab.interactive.imagetool.ImageTool.from_dataset(ds, _in_manager=True)
     qtbot.addWidget(restored)
+    assert restore_order == ["window", "slicer"]
+    assert restored.size() == tool.size()
+    restored.show()
+    QtWidgets.QApplication.processEvents()
     assert restored.size() == tool.size()
 
     legacy_ds = ds.copy(deep=False)
@@ -246,12 +273,17 @@ def test_imagetool_dataset_uses_window_state_and_restores_legacy_size(
         (5000, 6000, tool.width(), tool.height())
     )
     legacy_ds.attrs["itool_visible"] = True
+    restore_order.clear()
     legacy = erlab.interactive.imagetool.ImageTool.from_dataset(
         legacy_ds, _in_manager=True
     )
     qtbot.addWidget(legacy)
+    assert restore_order == ["window", "slicer"]
     assert legacy.size() == tool.size()
     assert legacy.pos() != QtCore.QPoint(5000, 6000)
+    legacy.show()
+    QtWidgets.QApplication.processEvents()
+    assert legacy.size() == tool.size()
 
 
 def test_imagetool_dataset_preserves_never_shown_size_hint(qtbot, test_data) -> None:

@@ -1142,6 +1142,12 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
         "single_shot",
         lambda _owner, delay, callback: single_shot_calls.append((delay, callback)),
     )
+    show_requests: list[bool] = []
+    monkeypatch.setattr(
+        tool,
+        "_request_show_figure_window",
+        lambda *, activate: show_requests.append(activate),
+    )
 
     tool.auto_redraw_check.setChecked(False)
     assert not tool._maybe_redraw_plot(show_window=True)
@@ -1173,10 +1179,10 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
     tool._queue_post_restore_redraw_if_needed(visible_ds)
     assert single_shot_calls == []
     tool.auto_redraw_check.setChecked(True)
+    render_count = len(render_calls)
     tool._queue_post_restore_redraw_if_needed(visible_ds)
-    assert single_shot_calls[-1][0] == 0
-    single_shot_calls[-1][1]()
-    assert render_calls[-1] == {"show_window": True}
+    assert show_requests == [False]
+    assert len(render_calls) == render_count
 
     assert tool._persisted_preview_cache_pixmap() is None
     preview = QtGui.QPixmap(

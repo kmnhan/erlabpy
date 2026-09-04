@@ -2924,8 +2924,10 @@ def test_manager_workspace_show_materializes_hidden_memory_payload(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         root.slicer_area.set_index(1, 3)
+        root.resize(533, 477)
         manager.add_imagetool(root, show=False)
         root.hide()
+        saved_size = root.size()
 
         fname = tmp_path / "show-hidden-memory.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
@@ -2937,8 +2939,11 @@ def test_manager_workspace_show_materializes_hidden_memory_payload(
         assert wrapper.pending_workspace_memory_payload is not None
         manager.show_imagetool(0)
         qtbot.wait_until(lambda: manager.get_imagetool(0).isVisible())
+        QtWidgets.QApplication.processEvents()
 
-        loaded = manager.get_imagetool(0).slicer_area
+        restored = manager.get_imagetool(0)
+        assert restored.size() == saved_size
+        loaded = restored.slicer_area
         assert wrapper.pending_workspace_memory_payload is None
         assert loaded.data_loadable is False
         assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)

@@ -65,7 +65,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
     """
 
     def __init__(
-        self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
+        self,
+        data=None,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        _saved_window_state: object = None,
+        _legacy_window_rect: object = None,
+        **kwargs,
     ) -> None:
         super().__init__(parent=parent)
         state = kwargs.pop("state", None)
@@ -98,6 +104,15 @@ class BaseImageTool(QtWidgets.QMainWindow):
         central_layout.addWidget(self.controls_bar)
         central_layout.addWidget(self.slicer_area, 1)
         self.setCentralWidget(central_widget)
+
+        # Restore geometry before applying the slicer state. Some state updates create
+        # the native window and queue its initial resize on the window system backend.
+        restored_window_state = (
+            _saved_window_state is not None
+            and _qt_state.restore_qt_window_state(self, _saved_window_state)
+        )
+        if not restored_window_state and _legacy_window_rect is not None:
+            _qt_state.restore_qt_window_state(self, {"rect": _legacy_window_rect})
 
         try:
             if state is not None:
@@ -271,6 +286,8 @@ class BaseImageTool(QtWidgets.QMainWindow):
         tool = cls(
             ds[_ITOOL_DATA_NAME].rename(name),
             state=json.loads(ds.attrs["itool_state"]),
+            _saved_window_state=ds.attrs.get("itool_window_state"),
+            _legacy_window_rect=ds.attrs.get("itool_rect"),
             **kwargs,
         )
         migrated_file_selection = tool._migrate_legacy_file_load_selection()
@@ -308,13 +325,6 @@ class BaseImageTool(QtWidgets.QMainWindow):
                     "Ignoring invalid saved ImageTool provenance metadata.",
                 )
         tool.setWindowTitle(ds.attrs["itool_title"])
-        if (
-            not _qt_state.restore_qt_window_state(
-                tool, ds.attrs.get("itool_window_state")
-            )
-            and "itool_rect" in ds.attrs
-        ):
-            _qt_state.restore_qt_window_state(tool, {"rect": ds.attrs["itool_rect"]})
         return tool
 
     @classmethod
