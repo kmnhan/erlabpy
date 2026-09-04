@@ -4874,20 +4874,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _queue_post_restore_redraw_if_needed(self, ds: xr.Dataset) -> None:
         if not self._saved_tool_window_visible(ds) or not self._auto_redraw_enabled():
             return
-        if self._defer_restore_work(
+        self._run_or_defer_restore_work(
             self._redraw_restored_plot,
             key=_RESTORE_REDRAW_KEY,
             run_on_show=True,
-        ):
-            return
-        erlab.interactive.utils.single_shot(
-            self,
-            0,
-            functools.partial(self._redraw_plot, show_window=True),
         )
 
     def _redraw_restored_plot(self) -> None:
-        self._redraw_plot(show_window=True)
+        # Size the owned display after the composer show event. This request
+        # coalesces with the normal show request, so restoration renders once.
+        self._request_show_figure_window(activate=False)
 
     def _flush_restore_work_for_save(self) -> None:
         self._flush_restore_work(
