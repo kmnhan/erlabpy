@@ -3997,11 +3997,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         entry = self._fit_result_code_trust_entry(blob)
         return () if entry is None else (entry,)
 
-    def _code_trust_payload_entries_from_dataset(self, ds: xr.Dataset):
-        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+    @classmethod
+    def _code_trust_payload_entries_from_saved_dataset(cls, ds: xr.Dataset):
+        if cls._PERSISTED_FIT_RESULT_VAR not in ds:
             return ()
-        blob = np.asarray(ds[self._PERSISTED_FIT_RESULT_VAR].values, dtype=np.uint8)
-        entry = self._fit_result_code_trust_entry(blob)
+        blob = np.asarray(ds[cls._PERSISTED_FIT_RESULT_VAR].values, dtype=np.uint8)
+        entry = cls._fit_result_code_trust_entry(blob)
         return () if entry is None else (entry,)
 
     def _fit_result_dataset_for_persistence(self) -> xr.Dataset | None:

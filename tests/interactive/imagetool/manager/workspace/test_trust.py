@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import sys
 import typing
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import lmfit
@@ -20,6 +21,7 @@ from erlab.interactive import _saved_tools
 from erlab.interactive._code_trust import (
     create_entry,
     create_manifest,
+    create_payload_entry,
     document_trust_has_trusted_lineage,
     document_trust_is_trusted,
     execution_capability_allows,
@@ -35,7 +37,10 @@ from erlab.interactive._code_trust._application import (
     save_document_trust,
 )
 from erlab.interactive._code_trust._core import CodeTrustReason
-from erlab.interactive._code_trust._payloads import store_code_payload_entries
+from erlab.interactive._code_trust._payloads import (
+    CODE_PAYLOAD_ENTRIES_ATTR,
+    store_code_payload_entries,
+)
 from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
 from erlab.interactive._figurecomposer import _rendering as figure_rendering
 from erlab.interactive._figurecomposer._model._state import (
@@ -65,6 +70,7 @@ from erlab.interactive.imagetool.manager._workspace._trust import (
     workspace_code_trust_manifest,
 )
 from erlab.interactive.utils import ToolWindow
+from tests.interactive.imagetool.manager.helpers import make_fit2d_child
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
@@ -501,6 +507,298 @@ def test_workspace_manifest_includes_serialized_fit_callables(qtbot) -> None:
     assert features[0] == "erlab.fit.serialized-model"
     assert "erlab.fit.parameter-expression" in features
     assert features[-1] == "erlab.fit.serialized-result"
+
+
+def test_trusting_legacy_pending_fit_payload_completes_manifest_before_save(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    exp_decay_model,
+    manager_context,
+) -> None:
+    workspace_path = tmp_path / "legacy-fit-payload.itws"
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = xr.DataArray(
+        np.stack([(1.0 + 0.5 * index) * np.exp(-t / 2.0) for index in y]),
+        dims=("y", "t"),
+        coords={"y": y, "t": t},
+        name="decay2d",
+    )
+
+    with manager_context() as manager:
+        manager.add_imagetool(ImageTool(data), show=False)
+        fit_uid, fit_tool = make_fit2d_child(manager, 0, exp_decay_model)
+        fit_tool.timeout_spin.setValue(30.0)
+        fit_tool.nfev_spin.setValue(0)
+        fit_tool.y_index_spin.setValue(fit_tool.y_min_spin.value())
+        fit_tool._run_fit_2d("up")
+        qtbot.wait_until(
+            lambda: all(result is not None for result in fit_tool._result_ds_full),
+            timeout=10000,
+        )
+        qtbot.wait_until(
+            lambda: (
+                fit_tool._fit_thread is None
+                and fit_tool._fit_2d_total == 0
+                and not fit_tool._fit_2d_indices
+            ),
+            timeout=10000,
+        )
+        fit_tool.hide()
+        tree = manager._workspace_controller.saving._to_datatree()
+        child = typing.cast("xr.DataTree", tree[f"0/childtools/{fit_uid}/tool"])
+        child.attrs.pop(CODE_PAYLOAD_ENTRIES_ATTR)
+        child.attrs[interactive_utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = json.dumps(
+            full_data().model_dump(mode="json")
+        )
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.to_netcdf(workspace_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+    reset_saved_code_trust(domain="erlab.workspace")
+    monkeypatch.setattr(workspace_trust, "workspace_path_is_trusted", lambda _: False)
+    reviewed_manifests = []
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+        lambda _parent, manifest, **_kwargs: (
+            reviewed_manifests.append(manifest) or True
+        ),
+    )
+
+    with manager_context() as manager:
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        node = manager._child_node(fit_uid)
+        assert node.pending_workspace_tool_payload is not None
+        assert node.tool_window is None
+        assert "erlab.fit.serialized-result" not in {
+            entry.feature
+            for entry in current_workspace_code_trust_manifest(manager).entries
+        }
+
+        manager._workspace_controller.review_and_approve_workspace_code_trust()
+
+        assert len(reviewed_manifests) == 1
+        assert "erlab.fit.serialized-result" in {
+            entry.feature for entry in reviewed_manifests[0].entries
+        }
+        assert node.pending_workspace_tool_payload is not None
+        assert node.tool_window is None
+        assert document_trust_has_trusted_lineage(manager._workspace_state.code_trust)
+
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace_path)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        node = manager._child_node(fit_uid)
+        assert node.pending_workspace_tool_payload is not None
+        assert node.tool_window is None
+
+
+def test_legacy_pending_opaque_payload_without_saved_inspector_fails_closed(
+    monkeypatch,
+) -> None:
+    class OpaquePayloadTool(_TrustProbeTool):
+        def _code_trust_payload_entries(self):
+            return ()
+
+    updated_attrs = []
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs={"tool_cls_qualname": "test:OpaquePayloadTool"},
+        update_pending_workspace_payload_attrs=updated_attrs.append,
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: OpaquePayloadTool,
+    )
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays,
+        "open_workspace_dataset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("payload must not be opened")
+        ),
+    )
+
+    with pytest.raises(TypeError, match="opaque payload cannot be inspected"):
+        workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+    assert updated_attrs == []
+
+
+def test_pending_payload_with_saved_code_entries_is_not_reinspected(
+    monkeypatch,
+) -> None:
+    attrs = {"tool_cls_qualname": "test:SavedPayloadTool"}
+    store_code_payload_entries(
+        attrs,
+        (
+            create_payload_entry(
+                "test.saved-payload", "payload", "saved_code()", b"payload"
+            ),
+        ),
+    )
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("workspace.itws", "tools/0"),
+        pending_workspace_payload_attrs=attrs,
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: (_ for _ in ()).throw(
+            AssertionError("saved payload must not be reinspected")
+        ),
+    )
+
+    workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+
+def test_legacy_pending_tool_without_opaque_payload_needs_no_dataset(
+    monkeypatch,
+) -> None:
+    updated_attrs = []
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs={"tool_cls_qualname": "test:TrustProbeTool"},
+        update_pending_workspace_payload_attrs=updated_attrs.append,
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: _TrustProbeTool,
+    )
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays,
+        "open_workspace_dataset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("payload must not be opened")
+        ),
+    )
+
+    workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+    assert updated_attrs == []
+
+
+def test_legacy_pending_saved_payload_inspector_must_return_entries(
+    monkeypatch,
+) -> None:
+    class InvalidSavedInspectorTool(_TrustProbeTool):
+        @classmethod
+        def _code_trust_payload_entries_from_saved_dataset(cls, ds):
+            del cls, ds
+
+    closed = []
+    opened = SimpleNamespace(close=lambda: closed.append(None))
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs={
+            "tool_cls_qualname": "test:InvalidSavedInspectorTool"
+        },
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: InvalidSavedInspectorTool,
+    )
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays,
+        "open_workspace_dataset",
+        lambda *_args, **_kwargs: opened,
+    )
+
+    with pytest.raises(TypeError, match="did not return entries"):
+        workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+    assert closed == [None]
+
+
+def test_legacy_pending_payload_requires_tool_window_class(monkeypatch) -> None:
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs={"tool_cls_qualname": "test:InvalidTool"},
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+    monkeypatch.setattr(
+        workspace_trust,
+        "resolve_saved_tool_class",
+        lambda _identifier: object,
+    )
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays,
+        "open_workspace_dataset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("payload must not be opened")
+        ),
+    )
+
+    with pytest.raises(TypeError, match="not a ToolWindow subclass"):
+        workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+
+@pytest.mark.parametrize("attrs", [None, {}])
+def test_legacy_pending_payload_requires_tool_metadata(attrs) -> None:
+    node = SimpleNamespace(
+        pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+        pending_workspace_payload_attrs=attrs,
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+
+    with pytest.raises(TypeError, match=r"metadata|class identifier"):
+        workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+
+@pytest.mark.parametrize("error_type", [TypeError, ImportError, AttributeError])
+def test_workspace_review_does_not_confirm_uninspectable_pending_payload(
+    error_type, monkeypatch, manager_context
+) -> None:
+    confirm_calls = []
+    warnings = []
+    monkeypatch.setattr(
+        interactive_utils,
+        "wait_dialog",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        workspace_trust,
+        "inspect_pending_workspace_code_payloads",
+        lambda _manager: (_ for _ in ()).throw(error_type("uninspectable payload")),
+    )
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+        lambda *_args, **_kwargs: confirm_calls.append(None),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: warnings.append(None),
+    )
+
+    with manager_context() as manager:
+        initial_trust = manager._workspace_state.code_trust
+        manager._workspace_controller.review_and_approve_workspace_code_trust()
+
+        assert manager._workspace_state.code_trust is initial_trust
+
+    assert confirm_calls == []
+    assert warnings == [None]
 
 
 def test_signed_workspace_rejects_payload_metadata_added_outside_manifest(

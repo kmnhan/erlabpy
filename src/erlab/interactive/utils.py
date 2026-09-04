@@ -5286,11 +5286,26 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return executable opaque-payload entries for the current tool state."""
         return ()
 
+    @classmethod
+    def _code_trust_payload_entries_from_saved_dataset(
+        cls, ds: xr.Dataset
+    ) -> Iterable[CodeTrustEntry] | None:
+        """Inspect saved opaque payloads without constructing the tool.
+
+        Return ``None`` when the tool does not provide a saved-payload inspector.
+        A tool that overrides an opaque-payload trust hook must also override this
+        method so a pending legacy tool can be reviewed without construction.
+        """
+        del cls, ds
+        return None
+
     def _code_trust_payload_entries_from_dataset(
         self, ds: xr.Dataset
     ) -> Iterable[CodeTrustEntry]:
         """Return executable opaque-payload entries already serialized in ``ds``."""
-        del ds
+        saved_entries = type(self)._code_trust_payload_entries_from_saved_dataset(ds)
+        if saved_entries is not None:
+            return saved_entries
         return self._code_trust_payload_entries()
 
     @classmethod

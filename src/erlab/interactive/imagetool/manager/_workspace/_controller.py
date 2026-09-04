@@ -302,10 +302,22 @@ class _WorkspaceController:
     def review_and_approve_workspace_code_trust(self) -> None:
         """Review the current executable bundle and approve it as one unit."""
         try:
+            with erlab.interactive.utils.wait_dialog(
+                self._manager, "Inspecting saved executable content..."
+            ):
+                workspace_trust.inspect_pending_workspace_code_payloads(self._manager)
             manifest = workspace_trust.current_workspace_code_trust_manifest(
                 self._manager
             )
-        except (TypeError, ValueError):
+        except (
+            AttributeError,
+            ImportError,
+            LookupError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
             QtWidgets.QMessageBox.warning(
                 self._manager,
                 "Stored Code Cannot Be Reviewed",
