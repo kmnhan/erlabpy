@@ -896,6 +896,23 @@ class Fit2DTool(Fit1DTool):
         self._update_param_plot_options()
         self._update_param_plot(notify=notify)
 
+    def _sync_active_multi_fit_result_state(self) -> None:
+        """Sync the newest Fit ×20 result at an explicit persistence boundary."""
+        if (
+            self._fit_multi_sequence_active()
+            and self._last_result_ds is not None
+            and self._result_ds_full[self._current_idx] is not self._last_result_ds
+        ):
+            self._sync_fit_result_state(notify=False)
+
+    def _flush_restore_work_for_save(self) -> None:
+        super()._flush_restore_work_for_save()
+        self._sync_active_multi_fit_result_state()
+
+    def _fit_result_blob_for_persistence(self) -> np.ndarray | None:
+        self._sync_active_multi_fit_result_state()
+        return super()._fit_result_blob_for_persistence()
+
     def _fit_2d_sequence_active(self) -> bool:
         return self._fit_2d_total > 0
 
@@ -2940,6 +2957,7 @@ class Fit2DTool(Fit1DTool):
     @QtCore.Slot()
     def _save_fit_full(self) -> None:
         self._flush_restore_work()
+        self._sync_active_multi_fit_result_state()
         results = []
         for i, ds in enumerate(self._result_ds_full[self._y_range_slice()]):
             if ds is None:

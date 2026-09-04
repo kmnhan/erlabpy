@@ -5403,8 +5403,12 @@ def test_fit2d_multi_fit_serializes_full_results_once_at_completion(
     started_steps: list[int] = []
     serialized_after_steps: list[int] = []
     serialized_slice_counts: list[int] = []
+    synced_after_steps: list[int] = []
+    saved_state_nfev: list[int | None] = []
     invalidation_calls = 0
     original_invalidate = tool._invalidate_fit_result_payload
+    original_sync = tool._sync_fit_result_state
+    original_saved_tool_data_dataset = tool._saved_tool_data_dataset
 
     def tracked_invalidate() -> None:
         nonlocal invalidation_calls
@@ -5415,6 +5419,19 @@ def test_fit2d_multi_fit_serializes_full_results_once_at_completion(
         serialized_after_steps.append(len(started_steps))
         serialized_slice_counts.append(dataset.sizes[tool._PERSISTED_FIT_INDEX_DIM])
         return np.array([len(started_steps)], dtype=np.uint8)
+
+    def tracked_sync(*, notify=True) -> None:
+        synced_after_steps.append(len(started_steps))
+        original_sync(notify=notify)
+
+    def tracked_saved_tool_data_dataset() -> xr.Dataset:
+        result_ds = tool._result_ds_full[tool._current_idx]
+        saved_state_nfev.append(
+            None
+            if result_ds is None
+            else result_ds.modelfit_results.compute().item().nfev
+        )
+        return original_saved_tool_data_dataset()
 
     def _start_fit_worker(
         fit_data,
@@ -5436,6 +5453,12 @@ def test_fit2d_multi_fit_serializes_full_results_once_at_completion(
     monkeypatch.setattr(tool, "_defer_next_fit_step", deferred.append)
     monkeypatch.setattr(tool, "_start_fit_worker", _start_fit_worker)
     monkeypatch.setattr(tool, "_invalidate_fit_result_payload", tracked_invalidate)
+    monkeypatch.setattr(tool, "_sync_fit_result_state", tracked_sync)
+    monkeypatch.setattr(
+        tool,
+        "_saved_tool_data_dataset",
+        tracked_saved_tool_data_dataset,
+    )
     monkeypatch.setattr(
         erlab.interactive.utils,
         "_serialize_fit_dataset_blob",
@@ -5445,7 +5468,8 @@ def test_fit2d_multi_fit_serializes_full_results_once_at_completion(
     tool._run_fit_multiple(20)
     assert started_steps == [1]
     if persist_during_sequence:
-        assert tool._fit_result_blob_for_persistence() is not None
+        persisted = tool.to_dataset()
+        assert tool._PERSISTED_FIT_RESULT_VAR in persisted
 
     while deferred:
         deferred.pop(0)()
@@ -5455,6 +5479,8 @@ def test_fit2d_multi_fit_serializes_full_results_once_at_completion(
     assert invalidation_calls == 20
     assert serialized_after_steps == expected_serializations
     assert serialized_slice_counts == [1] * len(expected_serializations)
+    assert synced_after_steps == expected_serializations
+    assert saved_state_nfev == ([1] if persist_during_sequence else [])
     assert tool._fit_multi_total is None
     assert tool._result_ds_full[tool._current_idx] is not None
     result = tool._result_ds_full[tool._current_idx].modelfit_results.compute().item()
