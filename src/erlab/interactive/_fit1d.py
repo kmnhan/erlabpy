@@ -63,6 +63,25 @@ class _FitCodeEditRejected(Exception):
     """Abort one local fit-code edit without committing its trust transition."""
 
 
+class _FitTabScrollArea(QtWidgets.QScrollArea):
+    """Scroll fit controls vertically without clipping them horizontally."""
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        content = self.widget()
+        if content is None:
+            return hint
+
+        width = content.minimumSizeHint().width() + 2 * self.frameWidth()
+        if (
+            self.verticalScrollBarPolicy()
+            != QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        ):
+            scrollbar = typing.cast("QtWidgets.QScrollBar", self.verticalScrollBar())
+            width += scrollbar.sizeHint().width()
+        return QtCore.QSize(max(hint.width(), width), hint.height())
+
+
 def _reject_fit_code_edit(reason: str = "") -> typing.NoReturn:
     """Exit a local edit through the framework rollback path."""
     raise _FitCodeEditRejected(reason)
@@ -1686,12 +1705,33 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._right_layout = QtWidgets.QVBoxLayout(right_container)
         self._right_tabs = QtWidgets.QTabWidget(right_container)
         self._right_tabs.setTabPosition(QtWidgets.QTabWidget.TabPosition.North)
-        self._setup_tab = QtWidgets.QWidget()
-        self._fit_tab = QtWidgets.QWidget()
+        self._setup_tab_scroll = _FitTabScrollArea(self._right_tabs)
+        self._setup_tab_scroll.setObjectName("ftoolSetupTabScrollArea")
+        self._fit_tab_scroll = _FitTabScrollArea(self._right_tabs)
+        self._fit_tab_scroll.setObjectName("ftoolFitTabScrollArea")
+        for scroll_area in (self._setup_tab_scroll, self._fit_tab_scroll):
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            scroll_area.setHorizontalScrollBarPolicy(
+                QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            scroll_area.setVerticalScrollBarPolicy(
+                QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            )
+
+        self._setup_tab = QtWidgets.QWidget(self._setup_tab_scroll)
+        self._fit_tab = QtWidgets.QWidget(self._fit_tab_scroll)
+        for tab in (self._setup_tab, self._fit_tab):
+            tab.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
         self._setup_tab_layout = QtWidgets.QVBoxLayout(self._setup_tab)
         self._fit_tab_layout = QtWidgets.QVBoxLayout(self._fit_tab)
-        self._right_tabs.addTab(self._setup_tab, "Setup")
-        self._right_tabs.addTab(self._fit_tab, "Fit")
+        self._setup_tab_scroll.setWidget(self._setup_tab)
+        self._fit_tab_scroll.setWidget(self._fit_tab)
+        self._right_tabs.addTab(self._setup_tab_scroll, "Setup")
+        self._right_tabs.addTab(self._fit_tab_scroll, "Fit")
         self._right_layout.addWidget(self._right_tabs, stretch=1)
         layout.addWidget(right_container)
 
@@ -2112,7 +2152,6 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.copy_layout.addWidget(self.save_button, 0, 1)
         self._setup_tab_layout.addStretch()
         self._fit_tab_layout.addStretch()
-        self._right_layout.addStretch(1)
 
         separator = _Separator()
         self._right_layout.addWidget(separator)
