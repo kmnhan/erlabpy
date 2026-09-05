@@ -1,3 +1,25 @@
+## v3.27.2 (2026-09-05)
+
+### 🐞 Bug Fixes
+
+- **manager:** preserve restored window sizes (#594) ([4e823ea](https://github.com/kmnhan/erlabpy/commit/4e823ea48cb66c496dc5a51cf6e3de438aace262))
+
+- **ftool:** improve performance for 2D fits (#593) ([0988871](https://github.com/kmnhan/erlabpy/commit/0988871123117f1ac51bfa96bedda2005c63a210))
+
+- **manager:** preserve workspace trust on save (#589) ([ec683a7](https://github.com/kmnhan/erlabpy/commit/ec683a705a498cb4bec2e0af9f9cfc404bba5055))
+
+  Fixes an issue where saving a workspace after clicking trust will invalidate the trust.
+
+- **figurecomposer:** isolate step section scrolling (#590) ([eab6c2c](https://github.com/kmnhan/erlabpy/commit/eab6c2c696d0662fef51b826a6d5b82d9e998d69))
+
+  Gives each recipe step section its own scroll area.
+
+- **ftool:** make control tabs scrollable (#588) ([2cf7930](https://github.com/kmnhan/erlabpy/commit/2cf79306ab904326a2b39cc64447f3b320b00b8a))
+
+  Keeps `ftool` usable on screens with limited vertical space.
+
+- **interactive:** restore window geometry safely (#587) ([12c5271](https://github.com/kmnhan/erlabpy/commit/12c52715ad5ac5248fa1359d086734381638554c))
+
 ## v3.27.1 (2026-09-03)
 
 ### 🐞 Bug Fixes
