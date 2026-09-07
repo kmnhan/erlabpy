@@ -19,7 +19,6 @@ available locally.
 - [Fermi edge correction](https://erlabpy.readthedocs.io/en/stable/how-to/python/fermi-edge-correction.html)
 - [Curve fitting](https://erlabpy.readthedocs.io/en/stable/how-to/python/curve-fitting.html)
 - [Plotting gallery](https://erlabpy.readthedocs.io/en/stable/how-to/plotting/index.html)
-- [Fermi edge correction](https://erlabpy.readthedocs.io/en/stable/how-to/python/fermi-edge-correction.html)
 - [Annotating core levels](https://erlabpy.readthedocs.io/en/stable/how-to/plotting/core-levels.html)
 - [Transformations and filtering](https://erlabpy.readthedocs.io/en/stable/how-to/python/transformations-and-filtering.html)
 - [ARPES data conventions](https://erlabpy.readthedocs.io/en/stable/explanation/data-conventions.html)
