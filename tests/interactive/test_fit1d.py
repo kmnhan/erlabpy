@@ -5627,6 +5627,84 @@ def test_fit1d_finalize_fit_thread_action_error_restores_idle(
     assert not win.cancel_fit_button.isEnabled()
 
 
+@pytest.mark.parametrize("failure", ["serialize", "sync"])
+def test_fit1d_multi_fit_completion_failure_allows_refit(
+    qtbot, monkeypatch, failure
+) -> None:
+    tool, _data, _model, _params = _make_linear_fit1d_tool(qtbot)
+    tool.nfev_spin.setValue(0)
+    tool.timeout_spin.setValue(30.0)
+    errors = []
+    monkeypatch.setattr(
+        tool,
+        "_show_error",
+        lambda title, text, detailed_text=None: errors.append(detailed_text),
+    )
+    original_sync = tool._sync_multi_fit_view
+
+    def fail_sync(*, full=False):
+        original_sync(full=full)
+        if full:
+            raise RuntimeError("completion sync failed")
+
+    def fail_serialize(_dataset):
+        raise RuntimeError("completion serialization failed")
+
+    with monkeypatch.context() as patch:
+        if failure == "serialize":
+            patch.setattr(
+                erlab.interactive.utils, "_serialize_fit_dataset_blob", fail_serialize
+            )
+        else:
+            patch.setattr(tool, "_sync_multi_fit_view", fail_sync)
+        tool._run_fit_multiple(2)
+        qtbot.waitUntil(
+            lambda: tool._fit_multi_total is None and not tool._fit_running(),
+            timeout=10000,
+        )
+    assert len(errors) == 1
+    assert "completion" in errors[0]
+    assert tool._last_result_ds is not None
+    assert tool._serialized_fit_result_blob is None
+    assert tool._pending_persisted_fit_is_current is None
+    assert tool._fit_multi_generation is None
+    assert tool._fit_multi_sequence_write_history is None
+    assert tool._write_history
+    assert not tool._fit_running_multi
+    assert tool.fit_button.isEnabled()
+    assert tool.fit_multi_button.isEnabled()
+    assert not tool.cancel_fit_button.isEnabled()
+    assert not tool._fit_worker_callbacks
+
+    tool._run_fit_multiple(2)
+    qtbot.waitUntil(
+        lambda: tool._fit_multi_total is None and not tool._fit_running(),
+        timeout=10000,
+    )
+    assert len(errors) == 1
+    assert tool._serialized_fit_result_blob is not None
+    assert tool._fit_is_current
+
+
+def test_fit1d_failed_cache_discards_previous_payload(qtbot, monkeypatch) -> None:
+    tool, data, model, params = _make_linear_fit1d_tool(qtbot)
+    tool._last_result_ds = data.xlm.modelfit("x", model=model, params=params).load()
+    tool._cache_fit_result_payload()
+    assert tool._serialized_fit_result_blob is not None
+
+    def fail_serialize(_dataset):
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "_serialize_fit_dataset_blob", fail_serialize
+    )
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        tool._cache_fit_result_payload()
+    assert tool._serialized_fit_result_blob is None
+    assert tool._pending_persisted_fit_is_current is None
+    assert tool._last_result_ds is not None
+
+
 def test_snap_cursor_line_value(qtbot) -> None:
     line = fit1d._SnapCursorLine(pos=1.5, angle=90, movable=True)
     qtbot.addWidget(QtWidgets.QWidget())

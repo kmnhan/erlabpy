@@ -1,4 +1,6 @@
+import collections
 import contextlib
+import functools
 import json
 import os
 import re
@@ -14,6 +16,7 @@ import lmfit
 import numpy as np
 import pyqtgraph as pg
 import pytest
+import scipy.interpolate
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
@@ -253,15 +256,17 @@ def _assert_fit_result_dataset_equivalent(
         assert actual_param.vary == expected_param.vary
 
 
-def _fit_result_dataset(params, *, nfev: int = 1) -> xr.Dataset:
+def _fit_result_dataset(params, *, nfev: int = 1, model=None) -> xr.Dataset:
     params = params.copy()
-    param_args = ", ".join(("x", *params.keys()))
-    namespace = {"np": np}
-    exec(  # noqa: S102
-        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
-        namespace,
-    )
-    model = lmfit.Model(namespace["_model_func"])
+    if model is None:
+        param_args = ", ".join(("x", *params.keys()))
+        namespace = {"np": np}
+        exec(  # noqa: S102
+            f"def _model_func({param_args}):\n"
+            "    return np.zeros_like(x, dtype=float)\n",
+            namespace,
+        )
+        model = lmfit.Model(namespace["_model_func"])
     result = lmfit.model.ModelResult(
         model,
         params,
@@ -355,7 +360,7 @@ def _seed_fit2d_full_results(win: Fit2DTool, model, params) -> None:
 def _seed_fit2d_param_results(win: Fit2DTool, params_list) -> None:
     win._params_full = [params.copy() for params in params_list]
     win._result_ds_full = [
-        win._fit_result_with_range(_fit_result_dataset(params))
+        win._fit_result_with_range(_fit_result_dataset(params, model=win._model))
         for params in params_list
     ]
     win._fit_is_current = True
@@ -1015,7 +1020,9 @@ def test_fit2d_full_provenance_handles_spaced_fit_axis(qtbot) -> None:
         params["p0_center"].set(value=value)
         params_full.append(params)
     win._params_full = params_full
-    win._result_ds_full = [xr.Dataset() for _ in params_full]
+    win._result_ds_full = [
+        _fit_result_dataset(params, model=win._model) for params in params_full
+    ]
     win.y_min_spin.setValue(0)
     win.y_max_spin.setValue(len(params_full) - 1)
 
@@ -3196,6 +3203,717 @@ def test_fit2d_concat_strategy_depends_on_recorded_ranges(
 
 
 @pytest.mark.parametrize("descending", [False, True])
+@pytest.mark.parametrize("mixed_ranges", [False, True])
+@pytest.mark.parametrize("change", ["names", "degree", "order", "subset"])
+def test_fit2d_concat_preserves_parameter_axes(
+    qtbot, monkeypatch, change, mixed_ranges, descending
+) -> None:
+    x = np.linspace(0.0, 2.0, 41)
+    if descending:
+        x = x[::-1]
+    data = xr.DataArray(
+        np.stack([3 * np.exp(-x / 4) + 0.01 * np.sin(12 * x)] * 2),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": x},
+    )
+    model = lmfit.models.LinearModel()
+    other_model = {
+        "names": lmfit.models.ExponentialModel(),
+        "degree": lmfit.models.PolynomialModel(2),
+    }.get(change, model)
+    tool = erlab.interactive.ftool(data, model=model, execute=False)
+    qtbot.addWidget(tool)
+    results = []
+    for index, fit_model in enumerate((model, other_model)):
+        fit_data = data.isel(y=index)
+        if mixed_ranges and index == 1:
+            fit_data = fit_data.where(fit_data.x >= 0.5, drop=True)
+        params = fit_model.guess(fit_data.values, x=fit_data.x.values)
+        result = fit_data.xlm.modelfit("x", model=fit_model, params=params).load()
+        if index == 1:
+            if change == "order":
+                result = result.isel(param=[1, 0], cov_i=[0, 1], cov_j=[1, 0])
+            elif change == "subset":
+                result = result.sel(param=["slope"], cov_i=["slope"], cov_j=["slope"])
+        results.append(tool._fit_result_with_range(result))
+    originals = [result.copy(deep=True) for result in results]
+    tool._result_ds_full = results
+    joins = []
+    concat = xr.concat
+
+    def tracked_concat(*args, **kwargs):
+        joins.append(kwargs["join"])
+        return concat(*args, **kwargs)
+
+    monkeypatch.setattr(fit2d_module.xr, "concat", tracked_concat)
+    combined = tool._fit_result_dataset_for_persistence()
+    assert combined is not None
+    assert joins == ["outer"]
+    np.testing.assert_array_equal(combined.x, x)
+    for index, result in enumerate(results):
+        selected = combined.isel({tool._PERSISTED_FIT_INDEX_DIM: index})
+        selected = tool._fit_result_with_range(selected)
+        for variable in (
+            "modelfit_coefficients",
+            "modelfit_stderr",
+            "modelfit_covariance",
+        ):
+            array = result[variable]
+            assert np.isfinite(array).all()
+            actual = selected[variable].sel({dim: array[dim] for dim in array.dims})
+            xr.testing.assert_identical(
+                actual.drop_vars(tool._PERSISTED_FIT_INDEX_DIM), array
+            )
+        missing = combined.param.to_index().difference(result.param.to_index())
+        assert selected.modelfit_coefficients.sel(param=missing).isnull().all()
+    _assert_fit_result_list_equivalent(results, originals)
+
+    blob = erlab.interactive.utils._serialize_fit_dataset_blob(combined)
+    decoded = erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
+    tool._apply_restored_fit_result(decoded, fit_is_current=False)
+    _assert_fit_result_list_equivalent(
+        tool._result_ds_full, originals, require_model_type=False
+    )
+    assert all(
+        tool._FIT_PARAMETER_AXES_VAR not in result
+        for result in tool._result_ds_full
+        if result is not None
+    )
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_fit2d_mixed_parameter_axes_preserve_sparse_results_without_errors(
+    qtbot, legacy
+) -> None:
+    tool, model, _params = _make_linear_fit2d_tool(qtbot)
+    other_model = lmfit.models.PolynomialModel(2)
+    results = [None] * 3
+    for index, fit_model in ((0, model), (2, other_model)):
+        data = tool._data_full.isel(y=index)
+        params = fit_model.guess(data.values, x=data.x.values)
+        results[index] = data.xlm.modelfit(
+            "x", model=fit_model, params=params, method="nelder", calc_covar=False
+        ).load()
+        assert np.isfinite(results[index].modelfit_coefficients).all()
+        assert results[index].modelfit_stderr.isnull().all()
+        assert results[index].modelfit_covariance.isnull().all()
+    tool._result_ds_full = results
+    originals = [
+        None if result is None else result.copy(deep=True) for result in results
+    ]
+    if legacy:
+        # Payloads written before parameter-axis metadata was introduced can
+        # already contain outer-aligned results when their fit ranges differ.
+        combined = xr.concat(
+            [
+                result.expand_dims({tool._PERSISTED_FIT_INDEX_DIM: [index]})
+                for index, result in enumerate(results)
+                if result is not None
+            ],
+            dim=tool._PERSISTED_FIT_INDEX_DIM,
+            coords="all",
+            join="outer",
+        )
+        tool._serialized_fit_result_blob = (
+            erlab.interactive.utils._serialize_fit_dataset_blob(combined)
+        )
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        tool.to_dataset(), _code_trust=new_document_trust()
+    )
+    qtbot.addWidget(restored)
+    _assert_fit_result_list_equivalent(
+        restored._result_ds_full, originals, require_model_type=False
+    )
+    values, errors = restored._param_plot_dataarrays("c2")
+    values = values.reindex(y=tool._data_full.y)
+    errors = errors.reindex(y=tool._data_full.y)
+    assert values.isel(y=slice(0, 2)).isnull().all()
+    assert np.isfinite(values.isel(y=2))
+    assert errors.isnull().all()
+
+
+def test_fit2d_restore_results_without_parameter_arrays(qtbot) -> None:
+    tool, model, params = _make_linear_fit2d_tool(qtbot)
+    result = (
+        tool._data_full.isel(y=0).xlm.modelfit("x", model=model, params=params).load()
+    )
+    # These are the required saved-fit fields. Parameter plots can obtain the
+    # parameters and uncertainties directly from the ModelResult object.
+    result = result[["modelfit_data", "modelfit_results"]]
+    tool._result_ds_full[0] = result
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        tool.to_dataset(), _code_trust=new_document_trust()
+    )
+    qtbot.addWidget(restored)
+    _assert_fit_result_list_equivalent(
+        restored._result_ds_full, [result, None, None], require_model_type=False
+    )
+    assert restored._param_plot_names() == list(result.modelfit_results.item().params)
+
+
+@pytest.mark.parametrize("operation", ["fit", "fit-20", "fit-up", "fit-down"])
+def test_fit2d_refit_after_peak_shape_change(qtbot, monkeypatch, operation) -> None:
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        2, "voigt", fd=False, convolve=False, background="none"
+    )
+    params = model.make_params(
+        p0_center=-0.4,
+        p1_center=0.4,
+        p0_sigma=0.12,
+        p1_sigma=0.15,
+        p0_gamma=0.08,
+        p1_gamma=0.1,
+        p0_amplitude=1.0,
+        p1_amplitude=0.7,
+    )
+    x = np.linspace(-1.5, 1.5, 81)
+    data = xr.DataArray(
+        np.stack([model.eval(params, x=x)] * 3),
+        dims=("y", "x"),
+        coords={"y": [0, 1, 2], "x": x},
+        name="mdcs",
+    )
+    tool = erlab.interactive.ftool(
+        data, model=model, params=params, data_name="data", execute=False
+    )
+    qtbot.addWidget(tool)
+    warnings, errors = _configure_fit2d_for_tests(tool, monkeypatch)
+    tool.nfev_spin.setValue(0)
+    tool._result_ds_full = [
+        data.isel(y=index).xlm.modelfit("x", model=model, params=params).load()
+        for index in range(3)
+    ]
+    originals = [result.copy(deep=True) for result in tool._result_ds_full]
+    tool._set_current_index(1)
+    tool.peak_shape_combo.setCurrentText("lorentzian")
+    assert tool._model.func._peak_shapes == ["lorentzian", "lorentzian"]
+    completed = []
+    tool.sigFitFinished.connect(lambda _: completed.append(tool._current_idx))
+    if operation == "fit":
+        assert tool._run_fit()
+    elif operation == "fit-20":
+        tool._run_fit_multiple(20)
+    else:
+        tool._run_fit_2d("up" if operation == "fit-up" else "down")
+    qtbot.waitUntil(
+        lambda: (
+            not tool._fit_running()
+            and tool._fit_multi_total is None
+            and tool._fit_2d_total == 0
+        ),
+        timeout=30000,
+    )
+    assert not warnings
+    assert not errors
+    expected_indices = {
+        "fit": [1],
+        "fit-20": [1] * 20,
+        "fit-up": [1, 2],
+        "fit-down": [1, 0],
+    }[operation]
+    assert completed == expected_indices
+    for index, result in enumerate(tool._result_ds_full):
+        fitted = result.modelfit_results.item()
+        assert fitted.success
+        if index in completed:
+            assert fitted.model.func._peak_shapes == ["lorentzian", "lorentzian"]
+        else:
+            _assert_fit_result_dataset_equivalent(result, originals[index])
+
+    # Editable parameters already use the new model at every slice. They must
+    # not make historical results appear reproducible with that one model.
+    assert all("p0_sigma" not in p for p in tool._params_full if p is not None)
+    assert tool._build_full_copy_prelude(warn=False) == ""
+    assert tool._parameter_model_fit_operation("p0_center", stderr=False) is None
+    assert "p0_sigma" in tool._param_plot_names()
+    expected = [result.copy(deep=True) for result in tool._result_ds_full]
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        tool.to_dataset(), _code_trust=new_document_trust()
+    )
+    qtbot.addWidget(restored)
+    _assert_fit_result_list_equivalent(
+        restored._result_ds_full, expected, require_model_type=False
+    )
+    for original, result in zip(expected, restored._result_ds_full, strict=True):
+        assert tool._models_match(
+            original.modelfit_results.item().model,
+            [result.modelfit_results.item().model],
+        )
+    assert restored._model.func._peak_shapes == ["lorentzian", "lorentzian"]
+
+    saved = []
+    monkeypatch.setattr(
+        erlab.interactive.utils, "wait_dialog", lambda *_args: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "save_fit_ui",
+        lambda dataset, *, parent: saved.append(dataset),
+    )
+    tool._save_fit_full()
+    assert len(saved) == 1
+    for index, result in enumerate(expected):
+        actual = tool._restore_fit_parameter_axes(saved[0].isel(y=index))
+        _assert_fit_result_dataset_equivalent(actual, result)
+    tool._set_current_index(0)
+    tool._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: tool._fit_2d_total == 0 and not tool._fit_running(), timeout=30000
+    )
+    assert not errors
+    # Full-fit code deliberately shares nearly equal starting values. Use one
+    # exact seed for every slice so both executions have identical inputs.
+    seed_params = tool._params.copy()
+    tool._params_full = [seed_params.copy() for _ in tool._params_full]
+    code = tool._copy_code_full()
+    namespace = _exec_generated_code(
+        code, data=data, erlab=erlab, era=erlab.analysis, np=np, xr=xr, lmfit=lmfit
+    )
+    expected_fit = data.xlm.modelfit(
+        "x",
+        model=tool._model,
+        params=seed_params,
+        method=tool.method_combo.currentText(),
+        scale_covar=tool.scale_covar_check.isChecked(),
+    )
+    xr.testing.assert_identical(
+        namespace["result"].drop_vars("modelfit_results"),
+        expected_fit.drop_vars("modelfit_results"),
+    )
+
+    closed = []
+    original_close = Fit2DTool.close
+
+    def record_close(window):
+        closed.append(window)
+        return original_close(window)
+
+    # Keep rejected-window wrappers alive through teardown on both bindings.
+    with monkeypatch.context() as patch:
+        patch.setattr(Fit2DTool, "close", record_close)
+        with pytest.raises(ValueError, match="mixed model definitions"):
+            erlab.interactive.ftool(saved[0], execute=False)
+    assert len(closed) == 1
+
+
+@pytest.mark.parametrize("failure", ["serialize", "sync"])
+@pytest.mark.parametrize("operation", ["fit-20", "fit-up", "fit-down"])
+def test_fit2d_completion_failure_allows_refit(
+    qtbot, monkeypatch, failure, operation
+) -> None:
+    tool, _model, _params = _make_linear_fit2d_tool(qtbot)
+    warnings, errors = _configure_fit2d_for_tests(tool, monkeypatch)
+    tool.nfev_spin.setValue(0)
+    tool._set_current_index(1)
+    sync_method = (
+        "_sync_multi_fit_view"
+        if operation == "fit-20"
+        else "_sync_fit_2d_sequence_view"
+    )
+    original_sync = getattr(tool, sync_method)
+
+    def fail_sync(*args, **kwargs):
+        original_sync(*args, **kwargs)
+        if kwargs.get("full", operation != "fit-20"):
+            raise RuntimeError("completion sync failed")
+
+    def fail_serialize(_dataset):
+        raise RuntimeError("completion serialization failed")
+
+    with monkeypatch.context() as patch:
+        if failure == "serialize":
+            patch.setattr(
+                erlab.interactive.utils, "_serialize_fit_dataset_blob", fail_serialize
+            )
+        else:
+            patch.setattr(tool, sync_method, fail_sync)
+        if operation == "fit-20":
+            tool._run_fit_multiple(2)
+        else:
+            tool._run_fit_2d("up" if operation == "fit-up" else "down")
+        qtbot.waitUntil(
+            lambda: (
+                not tool._fit_running()
+                and tool._fit_multi_total is None
+                and tool._fit_2d_total == 0
+            ),
+            timeout=10000,
+        )
+    assert not warnings
+    assert len(errors) == 1
+    assert "completion" in errors[0][2]
+    assert tool._result_ds_full[tool._current_idx] is not None
+    assert tool._last_result_ds is not None
+    assert tool._serialized_fit_result_blob is None
+    assert tool._pending_persisted_fit_is_current is None
+    assert tool._fit_multi_generation is None
+    assert tool._fit_2d_generation is None
+    assert tool._fit_multi_sequence_write_history is None
+    assert tool._fit_2d_sequence_write_history is None
+    assert tool._write_history
+    assert not tool._fit_running_multi
+    assert tool.fit_button.isEnabled()
+    assert tool.fit_multi_button.isEnabled()
+    assert tool.fit_up_button.isEnabled()
+    assert tool.fit_down_button.isEnabled()
+    assert not tool.cancel_fit_button.isEnabled()
+    assert not tool._fit_worker_callbacks
+
+    tool._run_fit_multiple(2)
+    qtbot.waitUntil(
+        lambda: tool._fit_multi_total is None and not tool._fit_running(),
+        timeout=10000,
+    )
+    assert len(errors) == 1
+    assert tool._serialized_fit_result_blob is not None
+    assert tool._fit_is_current
+
+
+class _ModelComparisonLine:
+    __slots__ = ("scale",)
+
+    def __init__(self, scale):
+        self.scale = scale
+
+    def line(self, x, slope=1.0, intercept=0.0):
+        return self.scale * slope * x + intercept
+
+    def __call__(self, x):
+        return self.scale * x
+
+    @classmethod
+    def class_line(cls, x, slope=1.0, intercept=0.0):
+        return slope * x + intercept
+
+
+_MODEL_COMPARISON_REFERENCES = (
+    "interp1d",
+    "spline",
+    "slots",
+    "local",
+    "object-array",
+    "namespace",
+    "set",
+    "sequence",
+    "mapping",
+)
+
+
+def _make_model_comparison_reference(kind, scale=1.0):
+    knots = [-1.0, 0.0, 1.0]
+    values = [0.0, scale, 0.0]
+    if kind == "interp1d":
+        return scipy.interpolate.interp1d(knots, values)
+    if kind == "spline":
+        return scipy.interpolate.CubicSpline(knots, values)
+    if kind == "slots":
+        return _ModelComparisonLine(scale)
+    if kind == "local":
+
+        class Reference:
+            __slots__ = ("cycle", "scale")
+
+            def __init__(self):
+                self.scale = scale
+                self.cycle = self
+
+            def __call__(self, x):
+                return self.evaluate(x, self.value)
+
+            @property
+            def value(self):
+                return self.configured_scale(self.cycle.scale)
+
+            @staticmethod
+            def evaluate(x, value):
+                return value * x
+
+            @classmethod
+            def configured_scale(cls, value):
+                return value
+
+        return Reference()
+    if kind == "object-array":
+        references = np.array([scipy.interpolate.interp1d(knots, values)], dtype=object)
+        return lambda x: references[0](x)
+    if kind == "namespace":
+        namespace = types.SimpleNamespace(knots=knots, values=values)
+        return lambda x: np.interp(x, namespace.knots, namespace.values)
+    if kind == "set":
+        factors = frozenset({scale, scale + 1.0})
+        return lambda x: sum(factors) * x
+    if kind == "sequence":
+        factors = collections.deque([scale, scale + 1.0])
+        return lambda x: sum(factors) * x
+    if kind == "mapping":
+        offsets = collections.defaultdict(functools.partial(float, scale), x=scale)
+        return lambda x: offsets.default_factory() * x + offsets["x"]
+    raise ValueError(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "local",
+        "closure",
+        "polynomial",
+        "partial",
+        "method",
+        "classmethod",
+        "composite",
+        *[f"reference-{kind}" for kind in _MODEL_COMPARISON_REFERENCES],
+    ],
+)
+def test_fit2d_saved_custom_model_accepts_original_and_copies_code(qtbot, kind) -> None:
+    scale = 2.0
+
+    def line(x, slope=1.0, intercept=0.0):
+        return slope * x + intercept
+
+    def scaled_line(x, slope=1.0, intercept=0.0):
+        return scale * slope * x + intercept
+
+    if kind.startswith("reference-"):
+        reference = _make_model_comparison_reference(kind.removeprefix("reference-"))
+
+        def reference_model(x, amplitude=1.0):
+            return amplitude * reference(x)
+
+        model = lmfit.Model(reference_model)
+    elif kind == "polynomial":
+        model = lmfit.models.PolynomialModel(2)
+    elif kind == "composite":
+        model = lmfit.Model(line, prefix="line_") + lmfit.models.ConstantModel(
+            prefix="constant_"
+        )
+        model.set_param_hint("constant_c", expr="2 * line_intercept")
+    elif kind == "method":
+        model = lmfit.Model(_ModelComparisonLine(2.0).line)
+    elif kind == "classmethod":
+        model = lmfit.Model(_ModelComparisonLine.class_line)
+    elif kind == "partial":
+        func = functools.partial(line, intercept=1.0)
+        func.__name__ = "line"
+        model = lmfit.Model(func, independent_vars=["x"], param_names=["slope"])
+    else:
+        model = lmfit.Model(scaled_line if kind == "closure" else line)
+    model.set_param_hint(model.param_names[0], min=np.float64(-10.0))
+    params = model.make_params(**dict.fromkeys(model.param_names, 1.0))
+    x = np.linspace(-1.0, 1.0, 21)
+    values = model.eval(params, x=x) + 0.01 * np.sin(12 * x)
+    data = xr.DataArray(
+        np.stack([values] * 2),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": x},
+    )
+    result = data.xlm.modelfit("x", model=model, params=params).load()
+    decoded = erlab.interactive.utils._deserialize_fit_dataset_blob(
+        erlab.interactive.utils._serialize_fit_dataset_blob(result)
+    )
+    inferred = erlab.interactive.ftool(decoded, execute=False)
+    qtbot.addWidget(inferred)
+    tool = erlab.interactive.ftool(
+        decoded, model=model, model_name="model", data_name="saved", execute=False
+    )
+    qtbot.addWidget(tool)
+    for index, restored in enumerate(tool._result_ds_full):
+        _assert_fit_result_dataset_equivalent(
+            restored, result.isel(y=index), require_model_type=False
+        )
+    assert tool._models_match(
+        model, [slice_result.model for slice_result in decoded.modelfit_results.values]
+    )
+    # Keep the model reconstructed by history separate from its live fit results.
+    tool.tool_status = tool.tool_status
+    assert tool._build_full_copy_prelude(warn=False)
+    seed = tool._params.copy()
+    tool._params_full = [seed.copy() for _ in range(2)]
+    code = tool._copy_code_full()
+    namespace = _exec_generated_code(code, saved=decoded, model=model, np=np, xr=xr)
+    expected = data.xlm.modelfit(
+        "x",
+        model=model,
+        params=seed,
+        method=tool.method_combo.currentText(),
+        scale_covar=tool.scale_covar_check.isChecked(),
+    )
+    xr.testing.assert_identical(
+        namespace["result"].drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
+    )
+
+
+@pytest.mark.parametrize("kind", _MODEL_COMPARISON_REFERENCES)
+def test_fit2d_model_comparison_detects_changed_reference_state(kind) -> None:
+    def make_model(scale):
+        reference = _make_model_comparison_reference(kind, scale)
+
+        def model_function(x, amplitude=1.0):
+            return amplitude * reference(x)
+
+        return lmfit.Model(model_function)
+
+    original = make_model(1.0)
+    equivalent = make_model(1.0)
+    changed = make_model(2.0)
+    assert Fit2DTool._models_match(original, [equivalent])
+    assert not Fit2DTool._models_match(original, [changed])
+    x = np.linspace(-1.0, 1.0, 21)
+    np.testing.assert_array_equal(original.eval(x=x), equivalent.eval(x=x))
+    assert not np.array_equal(original.eval(x=x), changed.eval(x=x))
+
+
+def test_fit2d_model_comparison_checks_local_class_code_and_container_state() -> None:
+    def make_reference(quadratic):
+        class Reference:
+            def __call__(self, x):
+                return x
+
+        if quadratic:
+            Reference.__call__ = lambda self, x: x**2
+        return Reference()
+
+    def make_model(reference):
+        def model_function(x, amplitude=1.0):
+            return amplitude * reference(x)
+
+        return lmfit.Model(model_function)
+
+    assert not Fit2DTool._models_match(
+        make_model(make_reference(False)), [make_model(make_reference(True))]
+    )
+    # Matching items alone do not establish equal default factories or attributes.
+    left = collections.defaultdict(int, x=1)
+    right = collections.defaultdict(float, x=1)
+    assert not Fit2DTool._model_state_equal(left, right, {})
+
+    class Values(list):
+        pass
+
+    first, second = Values([1]), Values([1])
+    first.scale, second.scale = 1.0, 2.0
+    assert not Fit2DTool._model_state_equal(first, second, {})
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ({1, 2}, {1}),
+        ({1}, {1, 2}),
+        (b"first", b"second"),
+        (np.array([1]), np.array([[1]])),
+        (np.array([1]), np.array([1.0])),
+        (np.array([0.0]), np.array([-0.0])),
+        (np.array([complex(1, np.nan)]), np.array([complex(2, np.nan)])),
+        (np.array([complex(np.nan, 1)]), np.array([complex(np.nan, 2)])),
+        (abs, len),
+        (types.ModuleType("first"), types.ModuleType("second")),
+    ],
+)
+def test_fit2d_model_comparison_rejects_different_or_unsupported_state(left, right):
+    assert not Fit2DTool._model_state_equal(left, right, {})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.array([complex(1, np.nan), complex(np.nan, 1)]),
+        np.array([np.nan, -0.0, 0.0]),
+        np.array(["NaT", "2026-09-07"], dtype="datetime64[D]"),
+        np.array([(np.nan, 1.0)], dtype=[("a", float), ("b", float)]),
+    ],
+)
+def test_fit2d_model_comparison_accepts_array_state_with_missing_values(value):
+    assert Fit2DTool._model_state_equal(value, value.copy(), {})
+
+
+@pytest.mark.parametrize("change", ["code", "default", "keyword", "closure"])
+def test_fit2d_model_comparison_detects_changed_function_state(change) -> None:
+    def make_function(scale, default, keyword):
+        def line(x, slope=default, *, intercept=keyword):
+            return scale * slope * x + intercept
+
+        return line
+
+    function = make_function(2.0, 1.0, 0.0)
+    changed = make_function(
+        3.0 if change == "closure" else 2.0,
+        2.0 if change == "default" else 1.0,
+        1.0 if change == "keyword" else 0.0,
+    )
+    if change == "code":
+
+        def changed(x, slope=1.0, *, intercept=0.0):
+            return 2.0 * slope * x**2 + intercept
+
+    model = lmfit.Model(function)
+    assert Fit2DTool._models_match(model, [lmfit.Model(make_function(2.0, 1.0, 0.0))])
+    assert not Fit2DTool._models_match(model, [lmfit.Model(changed)])
+
+
+def test_fit2d_model_comparison_checks_nested_globals_and_recursive_helpers() -> None:
+    namespace = {"offset": 1.0, "np": np}
+    exec(  # noqa: S102
+        "def helper(x):\n"
+        "    return helper(x - 1) if x > 1 else x\n"
+        "def line(x, slope=1.0):\n"
+        "    return slope * x + np.array(list(offset + helper(0) for _ in x))\n",
+        namespace,
+    )
+    original = lmfit.Model(namespace["line"])
+    restored = lmfit.Model(lambda x: x).loads(original.dumps())
+    assert Fit2DTool._models_match(original, [restored])
+    x = np.linspace(0.0, 1.0, 3)
+    np.testing.assert_array_equal(original.eval(x=x), restored.eval(x=x))
+    restored.func.__globals__["offset"] = 2.0
+    assert not Fit2DTool._models_match(original, [restored])
+    np.testing.assert_array_equal(restored.eval(x=x), original.eval(x=x) + 1.0)
+
+
+def test_fit2d_model_comparison_checks_bound_state_and_unknown_values() -> None:
+    model = lmfit.Model(_ModelComparisonLine(2.0).line)
+    assert not Fit2DTool._models_match(
+        model, [lmfit.Model(_ModelComparisonLine(3.0).line)]
+    )
+
+    def make_function(marker):
+        def line(x, slope=1.0):
+            return slope * x if marker is not None else x
+
+        return line
+
+    assert not Fit2DTool._models_match(
+        lmfit.Model(make_function(object())), [lmfit.Model(make_function(object()))]
+    )
+    assert not Fit2DTool._models_match(
+        lmfit.Model(make_function(1)), [lmfit.Model(make_function(1.0))]
+    )
+
+
+def test_fit2d_model_definitions_include_expressions_options_and_operators() -> None:
+    expression = lmfit.models.ExpressionModel("slope * x + intercept")
+    equivalent = lmfit.models.ExpressionModel("slope * x + intercept")
+    different = lmfit.models.ExpressionModel("slope * x**2 + intercept")
+    assert expression.param_names == different.param_names
+    assert Fit2DTool._models_match(expression, [expression, equivalent, equivalent])
+    assert not Fit2DTool._models_match(expression, [different])
+    assert not Fit2DTool._models_match(expression, [None])
+    equivalent.set_param_hint("slope", min=0.0)
+    assert not Fit2DTool._models_match(expression, [equivalent])
+
+    left = lmfit.models.LinearModel(prefix="line_")
+    right = lmfit.models.ConstantModel(prefix="constant_")
+    composite = left + right
+    assert Fit2DTool._models_match(composite, [left + right])
+    assert not Fit2DTool._models_match(composite, [left - right])
+
+    model = erlab.analysis.fit.models.MultiPeakModel(1, "lorentzian")
+    changed = erlab.analysis.fit.models.MultiPeakModel(1, "lorentzian", oversample=5)
+    assert model.param_names == changed.param_names
+    assert not Fit2DTool._models_match(model, [changed])
+
+
+@pytest.mark.parametrize("descending", [False, True])
 @pytest.mark.parametrize("slice_dim", ["slice", "bound"])
 def test_fit2d_mixed_slice_ranges_copy_and_output_provenance(
     qtbot, descending, slice_dim
@@ -3439,7 +4157,9 @@ def test_fit2d_copy_code_full_inconsistent_expr_warning(qtbot, monkeypatch) -> N
     win._params["p0_center"].set(expr="p0_width / 2")
 
     win._params_full = [params1, params2]
-    win._result_ds_full = [xr.Dataset(), xr.Dataset()]
+    win._result_ds_full = [
+        _fit_result_dataset(params, model=win._model) for params in (params1, params2)
+    ]
     win.y_min_spin.setValue(0)
     win.y_max_spin.setValue(1)
 
@@ -3461,7 +4181,7 @@ def test_fit2d_copy_code_full_missing_fit_warning(qtbot, monkeypatch) -> None:
     assert isinstance(win, Fit2DTool)
 
     win._params_full = [win._params.copy(), win._params.copy()]
-    win._result_ds_full = [xr.Dataset(), None]
+    win._result_ds_full = [_fit_result_dataset(win._params, model=win._model), None]
     win.y_min_spin.setValue(0)
     win.y_max_spin.setValue(1)
 
@@ -3487,7 +4207,9 @@ def test_fit2d_copy_code_full_inconsistent_params_warning(qtbot, monkeypatch) ->
     del params2["p0_center"]
 
     win._params_full = [params1, params2]
-    win._result_ds_full = [xr.Dataset(), xr.Dataset()]
+    win._result_ds_full = [
+        _fit_result_dataset(params, model=win._model) for params in (params1, params2)
+    ]
     win.y_min_spin.setValue(0)
     win.y_max_spin.setValue(1)
 
