@@ -118,9 +118,7 @@ contain enough information for its setter to reproduce the visible tool state.
 Add a public launcher beside the class:
 
 ```python
-def scaletool(
-    data: xr.DataArray, *, execute: bool | None = None
-) -> ScaleTool:
+def scaletool(data: xr.DataArray, *, execute: bool | None = None) -> ScaleTool:
     """Open the scale tool."""
     with erlab.interactive.utils.setup_qapp(execute):
         window = ScaleTool(data)
