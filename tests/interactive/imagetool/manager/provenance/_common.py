@@ -203,16 +203,12 @@ def _set_provenance_steps_clipboard(
     QtWidgets.QApplication.clipboard().setMimeData(mime_data)
 
 
-def _fit2d_param_result_dataset(params: typing.Any) -> xr.Dataset:
+def _fit2d_param_result_dataset(
+    model: lmfit.Model, params: lmfit.Parameters
+) -> xr.Dataset:
     params = params.copy()
-    param_args = ", ".join(("x", *params.keys()))
-    namespace = {"np": np}
-    exec(  # noqa: S102
-        f"def _model_func({param_args}):\n    return np.zeros_like(x, dtype=float)\n",
-        namespace,
-    )
     result = lmfit.model.ModelResult(
-        lmfit.Model(namespace["_model_func"]),
+        model,
         params,
         data=np.zeros(3),
         fcn_args=(np.arange(3, dtype=float),),
@@ -223,10 +219,12 @@ def _fit2d_param_result_dataset(params: typing.Any) -> xr.Dataset:
     return xr.Dataset({"modelfit_results": xr.DataArray(result, dims=())})
 
 
-def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -> None:
+def _seed_fit2d_param_results(
+    child: Fit2DTool, params_list: list[lmfit.Parameters]
+) -> None:
     child._params_full = [params.copy() for params in params_list]
     child._result_ds_full = [
-        _fit2d_param_result_dataset(params) for params in params_list
+        _fit2d_param_result_dataset(child._model, params) for params in params_list
     ]
     child._fit_is_current = True
     child._update_full_fit_saveable()

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import dis
 import enum
 import functools
+import json
 import logging
 import os
 import time
+import traceback
+import types
 import typing
 import urllib.parse
 
@@ -54,7 +58,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Mapping
+    from collections.abc import Callable, Hashable, Iterable, Mapping
 
     import lmfit
     import varname
@@ -396,6 +400,7 @@ class Fit2DTool(Fit1DTool):
     _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
     _FIT_RANGE_MIN_COORD: typing.ClassVar[str] = "__ftool_fit_range_min__"
     _FIT_RANGE_MAX_COORD: typing.ClassVar[str] = "__ftool_fit_range_max__"
+    _FIT_PARAMETER_AXES_VAR: typing.ClassVar[str] = "__ftool_fit_parameter_axes__"
     _PARAMETER_OUTPUT_SEPARATOR: typing.ClassVar[str] = ":"
     _direct_weights_full: xr.DataArray | None
 
@@ -874,6 +879,25 @@ class Fit2DTool(Fit1DTool):
             return result_ds
         return result_ds.reindex({self._coord_name: ordered})
 
+    def _restore_fit_parameter_axes(self, result_ds: xr.Dataset) -> xr.Dataset:
+        """Remove alignment padding and recover each slice's parameter order."""
+        if self._FIT_PARAMETER_AXES_VAR in result_ds:
+            axes = json.loads(result_ds[self._FIT_PARAMETER_AXES_VAR].item())
+            result_ds = result_ds.drop_vars(self._FIT_PARAMETER_AXES_VAR)
+        else:
+            if not any(name in result_ds.dims for name in ("param", "cov_i", "cov_j")):
+                return result_ds
+            # Older payloads do not record the pre-alignment order. Recover the
+            # native parameter order, including parameters with missing errors.
+            names = list(self._extract_fit_result(result_ds).params)
+            axes = {
+                name: [param for param in names if param in result_ds.get_index(name)]
+                for name in ("param", "cov_i", "cov_j")
+                if name in result_ds.dims
+                and any(param not in names for param in result_ds.get_index(name))
+            }
+        return result_ds.sel(axes)
+
     def _concat_fit_results(
         self,
         results: list[xr.Dataset],
@@ -881,7 +905,7 @@ class Fit2DTool(Fit1DTool):
         dim: Hashable,
         fit_ranges: list[tuple[float, float]] | None = None,
     ) -> xr.Dataset:
-        """Combine fit results without aligning identical fit coordinates."""
+        """Align different result indexes and retain the identical-index fast path."""
         if fit_ranges is None:
             range_coord_names = (
                 self._FIT_RANGE_MIN_COORD,
@@ -920,16 +944,55 @@ class Fit2DTool(Fit1DTool):
                 self._fit_result_with_explicit_range(result, fit_ranges[0])
                 for result in results
             ]
+        indexes = [
+            {name: index for name, index in result.xindexes.items() if name != dim}
+            for result in results
+        ]
+        identical_indexes = all(
+            other.keys() == indexes[0].keys()
+            and all(index.equals(other[name]) for name, index in indexes[0].items())
+            for other in indexes[1:]
+        )
+        mixed_parameter_axes = any(
+            (name in indexes[0]) != (name in other)
+            or (
+                name in indexes[0]
+                and name in other
+                and not indexes[0][name].equals(other[name])
+            )
+            for other in indexes[1:]
+            for name in ("param", "cov_i", "cov_j")
+        )
+        if mixed_parameter_axes:
+            # Parameter output axes can be reordered or restricted independently
+            # of ModelResult.params. Record their exact labels before alignment.
+            results = [
+                result.assign(
+                    {
+                        self._FIT_PARAMETER_AXES_VAR: xr.DataArray(
+                            json.dumps(
+                                {
+                                    name: result.get_index(name).tolist()
+                                    for name in ("param", "cov_i", "cov_j")
+                                    if name in result.dims
+                                }
+                            )
+                        )
+                    }
+                )
+                for result in results
+            ]
+        align_results = mixed_ranges or not identical_indexes
         combined = xr.concat(
             results,
             dim=dim,
             data_vars="all",
-            coords="all" if mixed_ranges else "minimal",
+            coords="all" if align_results else "minimal",
             compat="override",
-            join="outer" if mixed_ranges else "override",
+            join="outer" if align_results else "override",
             combine_attrs="override",
         )
-        if mixed_ranges:
+        if align_results:
             return self._restore_fit_coord_order(combined)
         return combined
 
@@ -2330,6 +2393,7 @@ class Fit2DTool(Fit1DTool):
         slice_states: list[tuple[_FitRestoreState, xr.Dataset]] = []
         for idx in range(results_da.sizes[y_dim]):
             slice_ds = fit_ds.isel({y_dim: idx}).copy()
+            slice_ds = self._restore_fit_parameter_axes(slice_ds)
             slice_ds = self._trim_fit_result_to_range(slice_ds)
             restore = self._parse_fit_dataset_for_restore(slice_ds, model=model)
             if restore.data.ndim != 1:
@@ -2339,18 +2403,13 @@ class Fit2DTool(Fit1DTool):
             slice_states.append((restore, slice_ds))
 
         base_model = slice_states[0][0].model
-        base_param_names = list(base_model.param_names)
-        base_indep = list(base_model.independent_vars)
-        for restore, _ in slice_states:
-            result_model = restore.result.model or restore.model
-            if (
-                type(result_model) is not type(base_model)
-                or list(result_model.param_names) != base_param_names
-                or list(result_model.independent_vars) != base_indep
-            ):
-                raise ValueError(
-                    "Fit dataset contains mixed model definitions across slices."
-                )
+        if not self._models_match(
+            base_model,
+            (restore.result.model or restore.model for restore, _ in slice_states),
+        ):
+            raise ValueError(
+                "Fit dataset contains mixed model definitions across slices."
+            )
 
         self._model = base_model
         self._serialized_model_state = self._serialize_model_state(base_model)
@@ -2412,6 +2471,7 @@ class Fit2DTool(Fit1DTool):
                         }
                     )
                 result_ds = self._trim_fit_result_to_range(result_ds)
+                result_ds = self._restore_fit_parameter_axes(result_ds)
                 self._result_ds_full[idx] = self._fit_result_with_range(result_ds)
         self._refresh_contents_from_index(mark_fit_stale=not fit_is_current)
         self._update_param_plot_options()
@@ -2884,30 +2944,38 @@ class Fit2DTool(Fit1DTool):
             self._finish_fit_2d_sequence()
 
     def _finish_fit_2d_sequence(self) -> None:
-        final_idx = self._fit_2d_last_completed_idx
-        if final_idx is None and self._data_full.sizes[self._y_dim_name] > 0:
-            final_idx = self._current_idx
-        if final_idx is not None:
-            self._sync_fit_2d_sequence_view(
-                final_idx,
-                mark_fit_stale=self._result_ds_full[final_idx] is None,
+        try:
+            final_idx = self._fit_2d_last_completed_idx
+            if final_idx is None and self._data_full.sizes[self._y_dim_name] > 0:
+                final_idx = self._current_idx
+            try:
+                if final_idx is not None:
+                    self._sync_fit_2d_sequence_view(
+                        final_idx,
+                        mark_fit_stale=self._result_ds_full[final_idx] is None,
+                    )
+                if self._serialized_fit_result_blob is None:
+                    self._cache_fit_result_payload()
+            finally:
+                self._fit_running_multi = False
+                self._fit_2d_indices = []
+                self._fit_2d_total = 0
+                self._fit_2d_direction = None
+                self._fit_2d_initial_range = None
+                self._fit_2d_last_completed_idx = None
+                self._fit_2d_last_completed_elapsed = None
+                self._fit_2d_revision = None
+                self._fit_2d_generation = None
+                self._fit_2d_live_refresh_pending = False
+                self._set_fit_running(False, multi=True)
+                self._update_full_fit_saveable()
+                self._flush_fit_2d_sequence_param_plot(force=True)
+        except Exception:
+            self._fit_errored(
+                erlab.interactive.utils._format_traceback(traceback.format_exc())
             )
-        self._set_fit_running(False, multi=True)
-        self._fit_running_multi = False
-        self._fit_2d_indices = []
-        self._fit_2d_total = 0
-        self._fit_2d_direction = None
-        self._fit_2d_initial_range = None
-        self._fit_2d_last_completed_idx = None
-        self._fit_2d_last_completed_elapsed = None
-        self._fit_2d_revision = None
-        self._fit_2d_generation = None
-        self._fit_2d_live_refresh_pending = False
-        if self._serialized_fit_result_blob is None:
-            self._cache_fit_result_payload()
-        self._update_full_fit_saveable()
-        self._flush_fit_2d_sequence_param_plot(force=True)
-        self._finish_fit_2d_sequence_history()
+        finally:
+            self._finish_fit_2d_sequence_history()
 
     def _y_values(self) -> np.ndarray:
         if self._y_values_cache is not None:
@@ -3084,6 +3152,21 @@ class Fit2DTool(Fit1DTool):
             if warn:
                 self._show_warning(title, text)
 
+        if not self._models_match(
+            self._model,
+            (
+                self._extract_fit_result(result).model
+                for result in self._result_ds_full[self._y_range_slice()]
+                if result is not None
+            ),
+        ):
+            _warn_user(
+                "Inconsistent Models",
+                "Stored fits use different model definitions. Refit the selected "
+                "slices with the current model before generating combined fit code.",
+            )
+            return None
+
         param_names: list[str] = []
         param_names_all: list[str] = []
         params_expr: dict[str, str] = {}
@@ -3192,6 +3275,244 @@ class Fit2DTool(Fit1DTool):
                 vary=vary,
             )
         return parameter_specs
+
+    @classmethod
+    def _models_match(
+        cls, model: lmfit.Model, candidates: Iterable[lmfit.Model | None]
+    ) -> bool:
+        """Check fit definitions, including functions, options, and expressions."""
+        checked = {model}
+        model_state: dict[str, typing.Any] | None = None
+        with _patch_encode4js():
+            for candidate in candidates:
+                if candidate in checked:
+                    continue
+                if candidate is None:
+                    return False
+                if model_state is None:
+                    model_state = cls._model_definition(model)
+                if not cls._model_state_equal(
+                    model_state, cls._model_definition(candidate), {}
+                ):
+                    return False
+                checked.add(candidate)
+        return True
+
+    @classmethod
+    def _model_definition(cls, model: lmfit.Model) -> dict[str, typing.Any]:
+        """Describe a model without serializing its callable definition."""
+        if isinstance(model, lmfit.model.CompositeModel):
+            # lmfit persists the operands and operator. Composite-level hints
+            # are not restored; per-slice Parameters retain their constraints.
+            return {
+                "left": cls._model_definition(model.left),
+                "right": cls._model_definition(model.right),
+                "op": model.op,
+            }
+        state, _, _ = model._get_state()
+        func = model.func
+        if isinstance(func, erlab.analysis.fit.functions.dynamic.DynamicFunction):
+            state["funcdef"] = {
+                "class": type(func),
+                "state": {
+                    name: value
+                    for name, value in vars(func).items()
+                    if not isinstance(
+                        getattr(type(func), name, None), functools.cached_property
+                    )
+                },
+            }
+        return state
+
+    @staticmethod
+    def _model_function_state(func: types.FunctionType) -> tuple[typing.Any, ...]:
+        """Keep values read by a function, including globals in nested code."""
+        names: set[str] = set()
+        codes = [func.__code__]
+        while codes:
+            code = codes.pop()
+            names.update(
+                instruction.argval
+                for instruction in dis.get_instructions(code)
+                if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
+            )
+            codes.extend(
+                const for const in code.co_consts if isinstance(const, types.CodeType)
+            )
+        builtin_namespace: dict[str, typing.Any] = typing.cast(
+            "typing.Any", func
+        ).__builtins__
+        namespace = {
+            name: func.__globals__[name]
+            if name in func.__globals__
+            else builtin_namespace[name]
+            for name in names
+            if name in func.__globals__ or name in builtin_namespace
+        }
+        closure = {}
+        for name, cell in zip(
+            func.__code__.co_freevars, func.__closure__ or (), strict=True
+        ):
+            with contextlib.suppress(ValueError):  # An empty cell has no bound value.
+                closure[name] = cell.cell_contents
+        return func.__defaults__, func.__kwdefaults__, closure, namespace, vars(func)
+
+    @classmethod
+    def _model_state_equal(
+        cls,
+        left: typing.Any,
+        right: typing.Any,
+        seen: dict[tuple[int, int], tuple[typing.Any, typing.Any]],
+    ) -> bool:
+        """Compare model state without pickle identity for Python functions."""
+        if left is right:
+            return True
+        same_type = type(left) is type(right)
+        pair = (id(left), id(right))
+        if pair in seen:
+            return True
+        # Keep temporary function-state objects alive to prevent ID reuse.
+        seen[pair] = (left, right)
+        if same_type and isinstance(left, types.FunctionType):
+            # Code equality survives dill round trips. Pickle bytes do not: memo
+            # references and globals dictionaries can change during restoration.
+            return left.__code__ == right.__code__ and cls._model_state_equal(
+                cls._model_function_state(left), cls._model_function_state(right), seen
+            )
+        if same_type and isinstance(left, types.MethodType):
+            return cls._model_state_equal(
+                (left.__func__, left.__self__),
+                (right.__func__, right.__self__),
+                seen,
+            )
+        if same_type and type(left) is functools.partial:
+            return cls._model_state_equal(
+                (left.func, left.args, left.keywords, vars(left)),
+                (right.func, right.args, right.keywords, vars(right)),
+                seen,
+            )
+        if same_type and type(left) in {staticmethod, classmethod}:
+            return cls._model_state_equal(left.__func__, right.__func__, seen)
+        if same_type and type(left) is property:
+            return cls._model_state_equal(
+                (left.fget, left.fset, left.fdel),
+                (right.fget, right.fset, right.fdel),
+                seen,
+            )
+        if same_type and type(left) is dict:
+            return left.keys() == right.keys() and all(
+                cls._model_state_equal(value, right[key], seen)
+                for key, value in left.items()
+            )
+        if same_type and type(left) in {list, tuple}:
+            return len(left) == len(right) and all(
+                cls._model_state_equal(a, b, seen)
+                for a, b in zip(left, right, strict=True)
+            )
+        if same_type and type(left) in {set, frozenset}:
+            remaining = list(right)
+            for value in left:
+                for index, candidate in enumerate(remaining):
+                    candidate_seen = seen.copy()
+                    if cls._model_state_equal(value, candidate, candidate_seen):
+                        seen.update(candidate_seen)
+                        remaining.pop(index)
+                        break
+                else:
+                    return False
+            return not remaining
+        if type(left) is np.ndarray and type(right) is np.ndarray:
+            if left.dtype != right.dtype or left.shape != right.shape:
+                return False
+            if left.dtype.names is not None:
+                return all(
+                    cls._model_state_equal(left[name], right[name], seen)
+                    for name in left.dtype.names
+                )
+            if left.dtype.hasobject:
+                return cls._model_state_equal(left.tolist(), right.tolist(), seen)
+            if left.dtype.kind == "c":
+                return cls._model_state_equal(left.real, right.real, seen) and (
+                    cls._model_state_equal(left.imag, right.imag, seen)
+                )
+            return bool(
+                np.array_equal(left, right, equal_nan=left.dtype.kind in "fmM")
+                and (
+                    left.dtype.kind != "f"
+                    or np.array_equal(
+                        np.signbit(left[left == 0]), np.signbit(right[right == 0])
+                    )
+                )
+            )
+        if same_type and type(left) in {bytes, bytearray}:
+            return left == right
+        if isinstance(left, type) and isinstance(right, type):
+            # dill can reconstruct locally defined classes. Compare their
+            # definitions as well as instance state, including __call__ methods.
+            return (
+                left.__module__ == right.__module__
+                and left.__qualname__ == right.__qualname__
+                and cls._model_state_equal(type(left), type(right), seen)
+                and cls._model_state_equal(left.__bases__, right.__bases__, seen)
+                and cls._model_state_equal(
+                    {
+                        key: value
+                        for key, value in vars(left).items()
+                        if key not in {"__slotnames__", "__firstlineno__"}
+                        and not (
+                            key in {"__dict__", "__weakref__"}
+                            and isinstance(value, types.GetSetDescriptorType)
+                        )
+                    },
+                    {
+                        key: value
+                        for key, value in vars(right).items()
+                        if key not in {"__slotnames__", "__firstlineno__"}
+                        and not (
+                            key in {"__dict__", "__weakref__"}
+                            and isinstance(value, types.GetSetDescriptorType)
+                        )
+                    },
+                    seen,
+                )
+            )
+        if (
+            not callable(left)
+            and not callable(right)
+            and not isinstance(left, (dict, list, tuple, np.ndarray))
+            and not isinstance(right, (dict, list, tuple, np.ndarray))
+        ):
+            try:
+                return json.dumps(
+                    lmfit.jsonutils.encode4js(left), sort_keys=True
+                ) == json.dumps(lmfit.jsonutils.encode4js(right), sort_keys=True)
+            except (TypeError, ValueError):
+                pass
+        # An opaque object has identity but no state that establishes equivalence.
+        if type(left) is object or type(right) is object:
+            return False
+        try:
+            left_state = cls._model_object_state(left)
+            right_state = cls._model_object_state(right)
+        except (AttributeError, TypeError, ValueError):
+            # Unsupported state cannot establish equivalence for combined code.
+            return False
+        return cls._model_state_equal(left_state, right_state, seen)
+
+    @staticmethod
+    def _model_object_state(value: typing.Any) -> tuple[typing.Any, ...]:
+        """Read pickle reconstruction state without executing its constructor."""
+        reduced = value.__reduce_ex__(4)
+        if isinstance(reduced, str):
+            return type(value), value.__module__, reduced
+        fields = list(reduced)
+        # Reducers can provide iterators for sequence and mapping contents.
+        # Materialize those contents once, while retaining cyclic references.
+        if len(fields) > 3 and fields[3] is not None:
+            fields[3] = list(fields[3])
+        if len(fields) > 4 and fields[4] is not None:
+            fields[4] = dict(fields[4])
+        return type(value), tuple(fields)
 
     def _build_full_copy_prelude(
         self, *, warn: bool = True, input_name: str | None = None

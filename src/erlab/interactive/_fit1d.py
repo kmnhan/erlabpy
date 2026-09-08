@@ -4016,13 +4016,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _cache_fit_result_payload(self) -> None:
         """Cache the current result payload for save and deferred restore."""
+        self._serialized_fit_result_blob = None
+        self._pending_persisted_fit_is_current = None
         result = self._fit_result_dataset_for_persistence()
         self._serialized_fit_result_blob = (
             None
             if result is None
             else erlab.interactive.utils._serialize_fit_dataset_blob(result)
         )
-        self._pending_persisted_fit_is_current = None
 
     def _invalidate_fit_result_payload(self) -> None:
         """Discard all saved and deferred state for replaced fit results."""
@@ -4466,22 +4467,30 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._finish_multi_fit()
 
     def _finish_multi_fit(self) -> None:
-        self._sync_multi_fit_view(full=True)
-        if self._serialized_fit_result_blob is None:
-            self._cache_fit_result_payload()
-        self._set_fit_running(False, multi=True)
-        self._fit_running_multi = False
-        self._fit_multi_total = None
-        self._fit_multi_step = 0
-        self._fit_multi_fit_data = None
-        self._fit_multi_weights = None
-        self._fit_multi_params = None
-        self._fit_multi_revision = None
-        self._fit_multi_generation = None
-        self._fit_multi_live_refresh_pending = False
-        self._fit_multi_refresh_pending = False
-        self._fit_multi_last_elapsed = None
-        self._finish_fit_multi_history()
+        try:
+            try:
+                self._sync_multi_fit_view(full=True)
+                if self._serialized_fit_result_blob is None:
+                    self._cache_fit_result_payload()
+            finally:
+                self._fit_running_multi = False
+                self._fit_multi_total = None
+                self._fit_multi_step = 0
+                self._fit_multi_fit_data = None
+                self._fit_multi_weights = None
+                self._fit_multi_params = None
+                self._fit_multi_revision = None
+                self._fit_multi_generation = None
+                self._fit_multi_live_refresh_pending = False
+                self._fit_multi_refresh_pending = False
+                self._fit_multi_last_elapsed = None
+                self._set_fit_running(False, multi=True)
+        except Exception:
+            self._fit_errored(
+                erlab.interactive.utils._format_traceback(traceback.format_exc())
+            )
+        finally:
+            self._finish_fit_multi_history()
 
     def _set_fit_running(
         self,
