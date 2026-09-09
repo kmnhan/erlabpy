@@ -2286,6 +2286,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.array_slicer._obj.chunks is None:
             return
+        if self._state_refresh_deferred():
+            # The delayed initial update will compute all plots from the final state.
+            return
         if _workspace_write_in_progress(self._data):
             self._workspace_pending_dask_refresh = (cursor, axes)
             if not self._workspace_dask_refresh_scheduled:
@@ -2691,6 +2694,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self._update_delayed:
             self._update_delayed = False
             with self.history_suppressed(), self.link_sync_suppressed():
+                for ax in self._materialized_axes():
+                    ax.set_active_cursor(self.current_cursor)
                 self.sigDataChanged.emit()
                 logger.debug("Data refresh triggered (delayed)")
 

@@ -9,7 +9,9 @@ import threading
 import types
 import typing
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
+import h5netcdf
 import h5py
 import hdf5plugin
 import numpy as np
@@ -22,7 +24,7 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
+from erlab.interactive import _persistence_constants
 from tests.interactive.imagetool.manager.workspace._support import (
     _assert_rich_workspace_attr,
     _hdf5_blosc2_level_codec,
@@ -30,6 +32,273 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _rich_workspace_attr_value,
     _write_transaction_test_workspace,
 )
+
+
+@contextlib.contextmanager
+def _numeric_workspace_reader(tmp_path, values, *, legacy=False):
+    path = tmp_path / "numeric-reader.itws"
+    group_path = (
+        "/legacy" if legacy else workspace_store.WorkspaceStore.object_path("payload")
+    )
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file,
+                group_path,
+                xr.Dataset(
+                    {"data": (tuple(f"d{i}" for i in range(values.ndim)), values)}
+                ),
+                compression_mode="none",
+            )
+        manager = workspace_arrays.WorkspaceFileManager(
+            path, object_id=None if legacy else "payload", group_path=group_path
+        )
+        datastore = workspace_arrays._WorkspaceH5NetCDFStore(
+            manager, group=group_path, mode="r", lock=manager.lock
+        )
+        backend = workspace_arrays._WorkspaceBackendArray(
+            "data", datastore, shape=values.shape, dtype=values.dtype
+        )
+        try:
+            yield store, manager, backend
+        finally:
+            manager.close()
+
+
+@pytest.mark.parametrize("dtype", ["i2", "u4", "f4", "f8", ">f8"])
+def test_workspace_numeric_reads_preserve_indexing(monkeypatch, tmp_path, dtype):
+    values = np.arange(5 * 6 * 7).reshape(5, 6, 7).astype(dtype)
+    if values.dtype.kind == "f":
+        values[0, 0, :3] = [np.nan, np.inf, -np.inf]
+    with _numeric_workspace_reader(tmp_path, values) as (_, manager, backend):
+        selections = []
+        original = h5netcdf.Variable.__getitem__
+
+        def read(variable, key):
+            selections.append(key)
+            return original(variable, key)
+
+        monkeypatch.setattr(h5netcdf.Variable, "__getitem__", read)
+        basic_keys = [
+            (slice(None),) * 3,
+            (slice(1, 4, 2), slice(-4, None), slice(None, None, 3)),
+            (-1, slice(None), np.int64(2)),
+            (slice(0, 0), slice(None), slice(None)),
+            (1, 2, 3),
+            (slice(None, None, -1), slice(None), slice(None, None, -2)),
+        ]
+        for key in basic_keys:
+            result = backend[workspace_arrays.indexing.BasicIndexer(key)]
+            np.testing.assert_array_equal(result, values[key])
+            assert result.dtype == values[key].dtype
+        assert not selections
+        assert manager._direct_read_datasets["data"] is not None
+
+        # Vector indexing retains h5netcdf's semantics. The xarray adapter also
+        # supports unsorted indices, duplicates, and empty index arrays.
+        for indices in [np.array([3, 1, 3]), np.array([], dtype=int)]:
+            key = (indices, slice(None), slice(None))
+            result = backend[workspace_arrays.indexing.OuterIndexer(key)]
+            np.testing.assert_array_equal(result, values[key])
+        assert selections
+        np.testing.assert_array_equal(backend._getitem(Ellipsis), values)
+        with pytest.raises(IndexError):
+            backend[workspace_arrays.indexing.BasicIndexer((5, 0, 0))]
+
+
+def test_workspace_numeric_scalar_read(tmp_path):
+    values = np.array(4.5)
+    with _numeric_workspace_reader(tmp_path, values) as (_, manager, backend):
+        result = backend[workspace_arrays.indexing.BasicIndexer(())]
+        np.testing.assert_array_equal(result, values[()])
+        assert manager._direct_read_datasets["data"] is not None
+
+
+@pytest.mark.parametrize("copy_on_write", [False, True])
+def test_workspace_numeric_read_cache_obeys_handle_lifetime(tmp_path, copy_on_write):
+    values = np.arange(12.0).reshape(3, 4)
+    with _numeric_workspace_reader(tmp_path, values) as (store, manager, backend):
+        np.testing.assert_array_equal(backend._getitem((slice(None),) * 2), values)
+        cached = manager._direct_read_datasets["data"]
+        store._locking_supported = not copy_on_write
+        with store.write_session() as h5_file:
+            assert not manager._direct_read_datasets
+            assert not cached.id.valid
+            h5_file.attrs["saved"] = True
+            # Reads during an established write still use the stable read handle.
+            np.testing.assert_array_equal(backend._getitem((1, slice(None))), values[1])
+        assert not manager._direct_read_datasets
+        np.testing.assert_array_equal(backend._getitem((slice(None),) * 2), values)
+        assert manager._direct_read_datasets["data"] is not cached
+
+        # A serialized reader owns bounded handles and carries no cached Dataset.
+        worker_backend = pickle.loads(pickle.dumps(backend))
+        np.testing.assert_array_equal(
+            worker_backend._getitem((slice(None),) * 2), values
+        )
+        assert not worker_backend.datastore._manager._direct_read_datasets
+        manager.close()
+        assert not manager._direct_read_datasets
+        np.testing.assert_array_equal(backend._getitem((slice(None),) * 2), values)
+
+
+def test_workspace_numeric_reader_rebinds_legacy_payload(tmp_path):
+    values = np.arange(4.0)
+    with _numeric_workspace_reader(tmp_path, values, legacy=True) as (
+        store,
+        manager,
+        backend,
+    ):
+        np.testing.assert_array_equal(backend._getitem(slice(None)), values)
+        assert not manager._direct_read_datasets
+        with store.write_session() as h5_file:
+            h5_file[store.object_path("payload")] = h5_file["legacy"]
+        manager._rebind_legacy_group_to_object("payload")
+        np.testing.assert_array_equal(backend._getitem(slice(None)), values)
+        assert manager._direct_read_datasets["data"] is not None
+
+
+def test_workspace_numeric_read_keeps_handle_locked_until_selection_finishes(
+    monkeypatch, tmp_path
+):
+    values = np.arange(4.0)
+    with _numeric_workspace_reader(tmp_path, values) as (store, manager, backend):
+        np.testing.assert_array_equal(backend._getitem(slice(None)), values)
+        cached = manager._direct_read_datasets["data"]
+        reading = threading.Event()
+        release_read = threading.Event()
+        writing = threading.Event()
+        entered_write = threading.Event()
+        original = h5py.Dataset.__getitem__
+
+        def read(dataset, key, **kwargs):
+            if dataset is cached:
+                reading.set()
+                if not release_read.wait(5):
+                    raise TimeoutError("Reader was not released")
+            return original(dataset, key, **kwargs)
+
+        def write():
+            writing.set()
+            with store.write_session() as h5_file:
+                entered_write.set()
+                h5_file.attrs["saved"] = True
+
+        monkeypatch.setattr(h5py.Dataset, "__getitem__", read)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pending_read = executor.submit(backend._getitem, slice(None))
+            try:
+                assert reading.wait(5)
+                pending_write = executor.submit(write)
+                assert writing.wait(5)
+                assert not entered_write.wait(0.05)
+            finally:
+                release_read.set()
+            np.testing.assert_array_equal(pending_read.result(timeout=5), values)
+            pending_write.result(timeout=5)
+        assert entered_write.is_set()
+        assert not cached.id.valid
+        assert not manager._direct_read_datasets
+
+
+def test_workspace_numeric_reader_preserves_physical_name_and_decoding(
+    monkeypatch, tmp_path
+):
+    raw = np.array([1, 2, -99, 4], dtype=np.int16)
+    selections = []
+    original = h5netcdf.Variable.__getitem__
+
+    def read(variable, key):
+        selections.append(variable.name)
+        return original(variable, key)
+
+    monkeypatch.setattr(h5netcdf.Variable, "__getitem__", read)
+    with _numeric_workspace_reader(tmp_path, raw) as (store, _manager, _):
+        with store.write_session() as h5_file:
+            group = h5_file[store.object_path("payload")]
+            group.move("data", "_nc4_non_coord_data")
+            group["_nc4_non_coord_data"].attrs.update(
+                {"_FillValue": np.int16(-99), "scale_factor": 0.5, "add_offset": 10.0}
+            )
+        with workspace_arrays.open_workspace_dataset(
+            store.path, store.object_path("payload"), chunks={}
+        ) as opened:
+            xr.testing.assert_identical(
+                opened.compute(),
+                xr.Dataset(
+                    {"data": ("d0", [10.5, 11.0, np.nan, 12.0])},
+                    coords={"d0": np.arange(4)},
+                ),
+            )
+        assert not any(name.endswith("/data") for name in selections)
+
+
+@pytest.mark.parametrize(
+    "kind", ["string", "complex", "enum", "compound", "padded", "unlimited"]
+)
+def test_workspace_numeric_read_fallback_preserves_netcdf(monkeypatch, tmp_path, kind):
+    with _numeric_workspace_reader(tmp_path, np.arange(4.0)) as (store, _manager, _):
+        with (
+            store.write_session() as h5_file,
+            h5netcdf.File(h5_file, "a", invalid_netcdf=True) as netcdf_file,
+        ):
+            group = netcdf_file.create_group(store.object_path("special"))
+            group.dimensions["x"] = None if kind in {"padded", "unlimited"} else 4
+            if kind in {"padded", "unlimited"}:
+                group.resize_dimension("x", 4)
+            if kind == "string":
+                dtype = h5py.string_dtype()
+                values = np.array(["a", "beta", "", "δ"], dtype=object)
+            elif kind == "complex":
+                dtype = np.dtype(complex)
+                values = np.arange(4) + 2j
+            elif kind == "enum":
+                dtype = group.create_enumtype(np.uint8, "choice", {"a": 0, "b": 1})
+                values = np.array([0, 1, 0, 1], dtype=np.uint8)
+            elif kind == "compound":
+                dtype = group.create_cmptype(
+                    np.dtype([("a", "i4"), ("b", "f8")]), "pair"
+                )
+                values = np.array([(i, float(i)) for i in range(4)], dtype=dtype.dtype)
+            else:
+                dtype = np.dtype(float)
+                values = np.arange(4.0)
+            kwargs = {"maxshape": (4,)} if kind == "unlimited" else {}
+            variable = group.create_variable("data", ("x",), dtype=dtype, **kwargs)
+            variable[:] = values
+            if kind == "padded":
+                variable._h5ds.resize((2,))
+        special = workspace_arrays.WorkspaceFileManager(
+            store.path, object_id="special", group_path=store.object_path("special")
+        )
+        datastore = workspace_arrays._WorkspaceH5NetCDFStore(
+            special, group=special._group_path, mode="r", lock=special.lock
+        )
+        try:
+            with store.read_session():
+                variable = datastore._acquire(needs_lock=False).variables["data"]
+                expected = variable[:]
+                backend = workspace_arrays._WorkspaceBackendArray(
+                    "data", datastore, shape=variable.shape, dtype=variable.dtype
+                )
+            reads = []
+            original = h5netcdf.Variable.__getitem__
+
+            def read(variable, key):
+                reads.append(key)
+                return original(variable, key)
+
+            monkeypatch.setattr(h5netcdf.Variable, "__getitem__", read)
+            for _ in range(2):
+                np.testing.assert_array_equal(
+                    backend._getitem((slice(None),)), expected
+                )
+            assert len(reads) == 2
+            assert special._direct_read_datasets == {"data": None}
+            special.close()
+            assert not special._direct_read_datasets
+        finally:
+            special.close()
 
 
 def test_workspace_h5py_copy_rebuilds_attrs_and_dimension_scales(tmp_path) -> None:
@@ -158,11 +427,11 @@ def test_write_workspace_dataset_group_h5py_cleans_failed_independent_items(
     monkeypatch, tmp_path
 ) -> None:
     fname = tmp_path / "independent-items.itws"
-    saved_tool_data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    saved_tool_data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     ds = xr.Dataset(
         {
             saved_tool_data_name: (
-                (workspace_arrays._SAVED_TOOL_DATA_REFERENCE_DIM,),
+                (_persistence_constants.SAVED_TOOL_DATA_REFERENCE_DIM,),
                 np.empty(0, dtype=np.float64),
             )
         }
@@ -504,7 +773,7 @@ def test_workspace_file_manager_lifecycle_guards(tmp_path) -> None:
     ):
         manager = workspace_arrays.WorkspaceFileManager(
             path,
-            group_path=f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/current",
+            group_path=f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/current",
         )
         try:
             manager._attach_store(store)
@@ -568,7 +837,9 @@ def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> No
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "payload"
+            )
             h5_file.create_group("legacy")
         store.publish({"schema_version": 5, "nodes": []})
         manager = workspace_arrays.WorkspaceFileManager(
@@ -623,7 +894,9 @@ def test_workspace_file_manager_rebinds_legacy_reader_to_immutable_object(
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
             h5_file.create_group("legacy")
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "payload"
+            )
         store.publish({"schema_version": 6, "nodes": []})
         manager = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
         try:
@@ -653,7 +926,7 @@ def test_workspace_dask_tokenization_pins_only_serialized_graph(tmp_path) -> Non
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),
-        name=_ITOOL_DATA_NAME,
+        name=_persistence_constants.ITOOL_DATA_NAME,
     ).to_dataset()
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
@@ -671,7 +944,9 @@ def test_workspace_dask_tokenization_pins_only_serialized_graph(tmp_path) -> Non
         )
         try:
             assert store.serialized_object_ids == set()
-            pickle.dumps(opened[_ITOOL_DATA_NAME].data.__dask_graph__())
+            pickle.dumps(
+                opened[_persistence_constants.ITOOL_DATA_NAME].data.__dask_graph__()
+            )
             assert store.serialized_object_ids == {object_id}
         finally:
             opened.close()
@@ -774,7 +1049,9 @@ def test_workspace_root_attrs_require_valid_generation(tmp_path) -> None:
         workspace_arrays._read_workspace_root_attrs_h5py(path)
 
     with h5py.File(path, "r+") as h5_file:
-        generations = h5_file.create_group(workspace_store._WORKSPACE_GENERATIONS_GROUP)
+        generations = h5_file.create_group(
+            _persistence_constants.WORKSPACE_GENERATIONS_GROUP
+        )
         generations.create_group("invalid-name")
         generations.create_group("00000000000000000001")
     with pytest.raises(ValueError, match="no valid committed generation"):
@@ -900,6 +1177,33 @@ def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
         workspace_arrays._read_workspace_root_attrs_h5py(fname)
 
 
+def test_workspace_h5py_attrs_excludes_values_before_reading(
+    monkeypatch, tmp_path
+) -> None:
+    with h5py.File(tmp_path / "excluded-attrs.h5", "w") as h5_file:
+        workspace_arrays._replace_h5_attrs(
+            h5_file.attrs,
+            {"metadata": _rich_workspace_attr_value(), "name": "value"},
+        )
+        h5_file.attrs["excluded"] = np.arange(1000)
+        original_getitem = h5py.AttributeManager.__getitem__
+        reads = []
+
+        def _record_getitem(self, name):
+            reads.append(name)
+            return original_getitem(self, name)
+
+        monkeypatch.setattr(h5py.AttributeManager, "__getitem__", _record_getitem)
+        attrs = workspace_arrays._h5py_attrs_to_dict(
+            h5_file.attrs, exclude=("excluded", "absent")
+        )
+
+        assert "excluded" not in reads
+        assert set(attrs) == {"metadata", "name"}
+        assert attrs["name"] == "value"
+        _assert_rich_workspace_attr(attrs["metadata"])
+
+
 def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
 
     fname = tmp_path / "replace-invalid-attrs.itws"
@@ -931,7 +1235,7 @@ def test_replace_h5_attrs_encodes_non_native_attr_values(tmp_path) -> None:
         )
 
         assert "Single Motor Scan" not in group.attrs
-        assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        assert _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
         decoded = workspace_arrays._h5py_attrs_to_dict(group.attrs)
         assert decoded["valid"] == "kept"
         _assert_rich_workspace_attr(decoded["Single Motor Scan"])
@@ -940,7 +1244,7 @@ def test_replace_h5_attrs_encodes_non_native_attr_values(tmp_path) -> None:
 def _assert_workspace_h5py_roundtrip(
     tmp_path: pathlib.Path, label: str, data: xr.DataArray
 ) -> tuple[xr.Dataset, xr.Dataset, pathlib.Path]:
-    data_name = _ITOOL_DATA_NAME
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     fname = tmp_path / f"{label}.itws"
     ds = data.rename(data_name).to_dataset()
 
@@ -972,7 +1276,7 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
         dims=("x", "y"),
         coords={"x": np.arange(2.0), "y": np.arange(3.0), "temperature": 20.0},
         attrs={"coordinates": b""},
-        name=_ITOOL_DATA_NAME,
+        name=_persistence_constants.ITOOL_DATA_NAME,
     )
     ds = data.to_dataset()
 
@@ -982,19 +1286,19 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
     loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname,
         "0/imagetool",
-        preferred_data_name=_ITOOL_DATA_NAME,
+        preferred_data_name=_persistence_constants.ITOOL_DATA_NAME,
     )
 
     assert loaded is not None
     expected = data.copy()
     expected.attrs.pop("coordinates")
     xr.testing.assert_equal(
-        loaded[_ITOOL_DATA_NAME],
+        loaded[_persistence_constants.ITOOL_DATA_NAME],
         expected,
     )
     assert loaded.coords["temperature"].item() == 20.0
     with h5py.File(fname, "r") as h5_file:
-        saved_data = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
+        saved_data = h5_file["0/imagetool"][_persistence_constants.ITOOL_DATA_NAME]
         coordinates = saved_data.attrs["coordinates"]
     if isinstance(coordinates, bytes):
         coordinates = coordinates.decode()
@@ -1004,7 +1308,7 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
 def test_workspace_writer_encodes_saved_tool_spaced_associated_coord(
     tmp_path,
 ) -> None:
-    data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -1039,7 +1343,7 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
 ) -> None:
     import hdf5plugin
 
-    data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     primary = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -1106,14 +1410,14 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
 
 
 def test_workspace_h5py_fast_path_roundtrips_saved_tool_references(tmp_path) -> None:
-    data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     ds = xr.Dataset(
         {
             data_name: erlab.interactive.utils._tool_data_placeholder(),
             "data_1": erlab.interactive.utils._tool_data_placeholder(),
         },
         attrs={
-            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                 {
                     data_name: {"kind": "manager_node", "node_uid": "uid-0"},
                     "data_1": {"kind": "manager_node", "node_uid": "uid-1"},
@@ -1132,19 +1436,19 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_references(tmp_path) -> 
 
     assert loaded is not None
     assert set(loaded.data_vars) == {data_name, "data_1"}
-    reference_dim = erlab.interactive.utils._SAVED_TOOL_DATA_REFERENCE_DIM
+    reference_dim = _persistence_constants.SAVED_TOOL_DATA_REFERENCE_DIM
     assert loaded[data_name].dims == (reference_dim,)
     assert loaded["data_1"].dims == (reference_dim,)
     assert json.loads(
-        loaded.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
-    ) == json.loads(ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR])
+        loaded.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
+    ) == json.loads(ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR])
 
 
 def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
     tmp_path,
 ) -> None:
 
-    data_name = _ITOOL_DATA_NAME
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     base = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -1233,7 +1537,7 @@ def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
 
 
 def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
-    data_name = _ITOOL_DATA_NAME
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     fname = tmp_path / "numeric-since-units.itws"
     data = xr.DataArray(
         [1.0, 2.0],
@@ -1269,7 +1573,7 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
     tmp_path,
 ) -> None:
 
-    data_name = _ITOOL_DATA_NAME
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     fname = tmp_path / "rich-attrs-fast-path.itws"
     rich_attr = _rich_workspace_attr_value()
     data = xr.DataArray(
@@ -1302,8 +1606,8 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
         saved_data = group[data_name]
         assert "dataset_config" not in group.attrs
         assert "Single Motor Scan" not in saved_data.attrs
-        assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
-        assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+        assert _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        assert _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
 
     loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "0/imagetool", preferred_data_name=data_name
@@ -1326,7 +1630,7 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
 
 def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> None:
 
-    data_name = _ITOOL_DATA_NAME
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     fname = tmp_path / "invalid-attrs-fast-path.itws"
     data = xr.DataArray(
         np.arange(2.0),
@@ -1431,8 +1735,8 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     caplog, monkeypatch, tmp_path
 ) -> None:
-    data_name = _ITOOL_DATA_NAME
-    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    private_attr = imagetool_serialization.PRIVATE_COORDS_ATTR
 
     assert not workspace_arrays._workspace_dataset_can_write_h5py(
         xr.Dataset(
@@ -1509,8 +1813,8 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
 
 def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
 
-    data_name = _ITOOL_DATA_NAME
-    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    private_attr = imagetool_serialization.PRIVATE_COORDS_ATTR
     fname = tmp_path / "malformed-reader.itws"
 
     with h5py.File(fname, "w") as h5_file:
@@ -1643,8 +1947,8 @@ def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
 
 def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
 
-    data_name = _ITOOL_DATA_NAME
-    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    private_attr = imagetool_serialization.PRIVATE_COORDS_ATTR
     fname = tmp_path / "legacy-spaced-coord.itws"
 
     with h5py.File(fname, "w") as h5_file:
@@ -1700,8 +2004,8 @@ def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
 
 def test_workspace_h5py_writer_replaces_groups_and_preserves_attrs(tmp_path) -> None:
 
-    data_name = _ITOOL_DATA_NAME
-    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    private_attr = imagetool_serialization.PRIVATE_COORDS_ATTR
     fname = tmp_path / "writer-attrs.itws"
     ds = xr.Dataset(
         {

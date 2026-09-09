@@ -17,6 +17,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureOperationState,
@@ -25,7 +26,6 @@ from erlab.interactive._figurecomposer import (
     FigureSubplotsState,
 )
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._figurecomposer import _collection
 from tests.interactive.imagetool.manager.helpers import (
@@ -1615,17 +1615,17 @@ def test_manager_workspace_figure_sources_save_as_references(
                 "xr.DataTree", tree[f"figures/{figure_uid}/tool"]
             ).to_dataset(inherit=False)
             references = json.loads(
-                ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+                ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
             )
 
-            assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
+            assert _persistence_constants.SAVED_TOOL_DATA_NAME in references
             assert "second" in references
-            assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
+            assert ds[_persistence_constants.SAVED_TOOL_DATA_NAME].size == 0
             assert ds["second"].size == 0
             assert workspace_arrays._workspace_dataset_can_write_h5py(ds)
 
             source_data_by_uid = {
-                references[erlab.interactive.utils._SAVED_TOOL_DATA_NAME][
+                references[_persistence_constants.SAVED_TOOL_DATA_NAME][
                     "node_uid"
                 ]: first,
                 references["second"]["node_uid"]: second,
@@ -1648,7 +1648,7 @@ def test_manager_workspace_figure_sources_save_as_references(
             saved_ds = workspace_arrays._read_workspace_dataset_group_h5py(
                 fname,
                 _current_workspace_payload_path(fname, f"figures/{figure_uid}"),
-                preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+                preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
             )
             assert saved_ds is not None
             assert "second" in saved_ds
@@ -1896,11 +1896,11 @@ def test_manager_workspace_embeds_figure_snapshot_after_source_transpose(
         saved_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
-            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
         )
         assert saved_figure is not None
         saved_references = FigureComposerTool._saved_tool_data_references(saved_figure)
-        assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in saved_references
+        assert _persistence_constants.SAVED_TOOL_DATA_NAME in saved_references
         assert (
             manager._child_node(figure_uid)._workspace_tool_data_references
             == saved_references
@@ -1917,15 +1917,15 @@ def test_manager_workspace_embeds_figure_snapshot_after_source_transpose(
         rewritten_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
-            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
         )
         assert rewritten_figure is not None
         rewritten_references = FigureComposerTool._saved_tool_data_references(
             rewritten_figure
         )
-        assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME not in rewritten_references
+        assert _persistence_constants.SAVED_TOOL_DATA_NAME not in rewritten_references
         assert (
-            rewritten_figure[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size
+            rewritten_figure[_persistence_constants.SAVED_TOOL_DATA_NAME].size
             == data.size
         )
         assert manager._workspace_controller.loading._load_workspace_file(
@@ -1981,7 +1981,7 @@ def test_manager_failed_save_keeps_last_saved_figure_references(
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
         adopt_workspace_path(manager, workspace_path)
         saved_references = dict(figure_node._workspace_tool_data_references)
-        assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in saved_references
+        assert _persistence_constants.SAVED_TOOL_DATA_NAME in saved_references
         manager._workspace_controller._mark_workspace_clean()
 
         root.slicer_area.transpose_main_image()
@@ -2043,11 +2043,11 @@ def test_manager_save_as_preserves_figure_source_snapshot(
         saved_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             target_path,
             _current_workspace_payload_path(target_path, f"figures/{figure_uid}"),
-            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
         )
         assert saved_figure is not None
         assert (
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            _persistence_constants.SAVED_TOOL_DATA_NAME
             not in FigureComposerTool._saved_tool_data_references(saved_figure)
         )
         assert manager._child_node(figure_uid)._workspace_tool_data_references == {}
@@ -2109,11 +2109,11 @@ def test_manager_generation_save_preserves_pending_figure_snapshot(
         rewritten_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
-            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
         )
         assert rewritten_figure is not None
         assert (
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            _persistence_constants.SAVED_TOOL_DATA_NAME
             not in FigureComposerTool._saved_tool_data_references(rewritten_figure)
         )
 
@@ -2163,11 +2163,15 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
         saved_ds = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             payload_path,
-            preferred_data_name=_ITOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.ITOOL_DATA_NAME,
         )
         assert saved_ds is not None
         stored = xr.Dataset(
-            {_ITOOL_DATA_NAME: saved_ds[_ITOOL_DATA_NAME].transpose("hv", "y", "x")},
+            {
+                _persistence_constants.ITOOL_DATA_NAME: saved_ds[
+                    _persistence_constants.ITOOL_DATA_NAME
+                ].transpose("hv", "y", "x")
+            },
             attrs=dict(saved_ds.attrs),
         )
         with h5py.File(workspace_path, "r+") as h5_file:
@@ -2236,7 +2240,7 @@ def test_manager_workspace_generation_rewrites_stale_figure_source_references(
                 "xr.DataTree", tree[f"figures/{figure_uid}/tool"]
             ).to_dataset(inherit=False)
             saved_refs = json.loads(
-                saved_ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+                saved_ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
             )
             assert "second" in saved_refs
             assert saved_ds["second"].size == 0
@@ -2278,7 +2282,7 @@ def test_manager_workspace_generation_rewrites_stale_figure_source_references(
             rewritten_ds = object_write.dataset
             assert rewritten_ds is not None
             rewritten_refs = json.loads(
-                rewritten_ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+                rewritten_ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
             )
             assert all(
                 reference.get("node_uid") != stale_uid

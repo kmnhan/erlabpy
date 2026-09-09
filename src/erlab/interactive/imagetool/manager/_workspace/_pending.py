@@ -23,8 +23,9 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
     mark_promoted_1d_source,
@@ -290,7 +291,9 @@ class _PendingWorkspacePayloads:
     ) -> xr.DataArray:
         """Restore script-input data without requiring a live manager node."""
         ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
-        ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
+        ds = _serialization.restore_private_coords(
+            ds, _persistence_constants.ITOOL_DATA_NAME
+        )
         data = self._loader._workspace_imagetool_payload_data(ds).rename(name)
         if attrs is None:
             attrs = ds.attrs
@@ -353,11 +356,13 @@ class _PendingWorkspacePayloads:
                 workspace_path, payload_path, load_data=False
             )
             try:
-                ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
-                if _ITOOL_DATA_NAME not in ds:
+                ds = _serialization.restore_private_coords(
+                    ds, _persistence_constants.ITOOL_DATA_NAME
+                )
+                if _persistence_constants.ITOOL_DATA_NAME not in ds:
                     return None, None
                 name = None if node.name == "" else node.name
-                data = ds[_ITOOL_DATA_NAME].rename(name)
+                data = ds[_persistence_constants.ITOOL_DATA_NAME].rename(name)
                 attrs = node.pending_workspace_payload_attrs
                 if attrs is None:
                     attrs = ds.attrs
@@ -409,10 +414,13 @@ class _PendingWorkspacePayloads:
         data_name = workspace_format._decode_workspace_attr_text(
             attrs.get("tool_data_name")
         )
-        if data_name is not None and data_name != "<none-value>":
+        if (
+            data_name is not None
+            and data_name != _persistence_constants.NONE_TOOL_DATA_NAME
+        ):
             lines.append(f"<p>Data: <code>{html.escape(data_name)}</code></p>")
         source_state = workspace_format._decode_workspace_attr_text(
-            attrs.get("tool_source_state")
+            attrs.get(_persistence_constants.TOOL_SOURCE_STATE_ATTR)
         )
         if source_state is not None:
             lines.append(f"<p>Source: {html.escape(source_state)}</p>")
@@ -564,7 +572,7 @@ class _PendingWorkspacePayloads:
                 group = h5_file.get(payload_path.strip("/"))
                 if not isinstance(group, h5py.Group):
                     return None
-                dataset = group.get(_ITOOL_DATA_NAME)
+                dataset = group.get(_persistence_constants.ITOOL_DATA_NAME)
                 if not isinstance(dataset, h5py.Dataset) or dataset.ndim != 1:
                     return None
                 if dataset.dtype.kind not in "biuf":
@@ -660,7 +668,7 @@ class _PendingWorkspacePayloads:
                 group = h5_file.get(payload_path.strip("/"))
                 if not isinstance(group, h5py.Group):
                     return None
-                dataset = group.get(_ITOOL_DATA_NAME)
+                dataset = group.get(_persistence_constants.ITOOL_DATA_NAME)
                 if not isinstance(dataset, h5py.Dataset):
                     return None
                 if dataset.dtype.kind not in "biuf":
@@ -981,7 +989,7 @@ class _PendingWorkspacePayloads:
                             )
                     else:
                         state = copy.deepcopy(node.slicer_area.state)
-                        data = ds[_ITOOL_DATA_NAME].rename(name)
+                        data = ds[_persistence_constants.ITOOL_DATA_NAME].rename(name)
                         node.slicer_area.set_data(data, auto_compute=False)
                         node.slicer_area.state = state
                     node._restore_replay_source_data(
@@ -1240,10 +1248,15 @@ class _PendingWorkspacePayloads:
                     workspace_path, payload_path, load_data=False
                 )
                 try:
-                    ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
-                    if _ITOOL_DATA_NAME not in ds:
+                    ds = _serialization.restore_private_coords(
+                        ds, _persistence_constants.ITOOL_DATA_NAME
+                    )
+                    if _persistence_constants.ITOOL_DATA_NAME not in ds:
                         return False
-                    valid_dims = tuple(str(dim) for dim in ds[_ITOOL_DATA_NAME].dims)
+                    valid_dims = tuple(
+                        str(dim)
+                        for dim in ds[_persistence_constants.ITOOL_DATA_NAME].dims
+                    )
                 finally:
                     ds.close()
             except Exception:
@@ -1320,10 +1333,12 @@ class _PendingWorkspacePayloads:
                     workspace_path, payload_path, load_data=False
                 )
                 try:
-                    ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
-                    if _ITOOL_DATA_NAME not in ds:
+                    ds = _serialization.restore_private_coords(
+                        ds, _persistence_constants.ITOOL_DATA_NAME
+                    )
+                    if _persistence_constants.ITOOL_DATA_NAME not in ds:
                         return False
-                    target_data = ds[_ITOOL_DATA_NAME]
+                    target_data = ds[_persistence_constants.ITOOL_DATA_NAME]
                     target_data = self._pending_workspace_data_with_saved_dim_order(
                         target_data, attrs
                     )
@@ -1641,7 +1656,7 @@ class _PendingWorkspacePayloads:
             payload_attrs=attrs,
         )
         node._source_auto_update = bool(
-            attrs.get(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR)
+            attrs.get(_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR)
         )
         source_state = self._loader._workspace_tool_source_state_from_attrs(attrs)
         node._source_state = source_state if node.tool_script_inputs else "fresh"

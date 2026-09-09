@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import _storage as workspace_storage
 from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
@@ -114,7 +115,7 @@ def test_workspace_store_manifest_validation_contract() -> None:
         ) -> None:
             super().__init__()
             if dataset is not None:
-                self[workspace_store._WORKSPACE_MANIFEST_DATASET] = dataset
+                self["manifest"] = dataset
             self.file = set() if objects is None else objects
 
     def _group(manifest: object, *, objects: set[str] | None = None) -> _Group:
@@ -229,7 +230,9 @@ def test_workspace_store_rebinds_only_existing_legacy_payloads(tmp_path) -> None
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "payload"
+            )
         matching = _Reader("/legacy/tool")
         unrelated = _Reader("/other/tool")
         store.register_reader(matching)
@@ -271,7 +274,7 @@ def test_workspace_compaction_allows_missing_optional_extension_source(
 def test_workspace_store_identity_helpers_decode_bytes() -> None:
     class _File:
         def __init__(self, value: object) -> None:
-            self.attrs = {workspace_store._WORKSPACE_ID_ATTR: value}
+            self.attrs = {_persistence_constants.WORKSPACE_ID_ATTR: value}
             self.flush_count = 0
 
         def flush(self) -> None:
@@ -288,7 +291,7 @@ def test_workspace_store_identity_helpers_decode_bytes() -> None:
     missing = _File(None)
     generated = workspace_store.WorkspaceStore._ensure_workspace_id(missing)
     assert generated
-    assert missing.attrs[workspace_store._WORKSPACE_ID_ATTR] == generated
+    assert missing.attrs[_persistence_constants.WORKSPACE_ID_ATTR] == generated
     assert missing.flush_count == 1
     assert workspace_store.WorkspaceStore._workspace_id_from_file(_File("")) is None
     assert (
@@ -302,7 +305,7 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
     with workspace_store.WorkspaceStore(path, create=True):
         pass
     with h5py.File(path, "a") as h5_file:
-        del h5_file.attrs[workspace_store._WORKSPACE_ID_ATTR]
+        del h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
         h5_file.attrs["imagetool_workspace_schema_version"] = 4
 
     unchanged = path.read_bytes()
@@ -319,7 +322,7 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
         assert store.serialized_legacy_group_paths == {"/legacy"}
     assert path.read_bytes() == unchanged
     with h5py.File(path, "r") as h5_file:
-        assert workspace_store._WORKSPACE_ID_ATTR not in h5_file.attrs
+        assert _persistence_constants.WORKSPACE_ID_ATTR not in h5_file.attrs
 
     with workspace_store.WorkspaceStore(path) as store:
         store.publish(_manifest())
@@ -343,7 +346,7 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
 
     assert workspace_id
     with h5py.File(path, "r") as h5_file:
-        assert h5_file.attrs[workspace_store._WORKSPACE_ID_ATTR] == workspace_id
+        assert h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR] == workspace_id
 
 
 def test_hdf5_error_filters_cover_platform_independent_messages() -> None:
@@ -636,9 +639,11 @@ def test_workspace_store_rejects_invalid_gc_limit_and_clears_staging(
 
         store.clear_staging()
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_STAGING_GROUP].create_group("orphan")
+            h5_file[_persistence_constants.WORKSPACE_STAGING_GROUP].create_group(
+                "orphan"
+            )
         store.clear_staging()
-        assert len(store.h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
+        assert len(store.h5_file[_persistence_constants.WORKSPACE_STAGING_GROUP]) == 0
 
 
 def test_workspace_store_publishes_valid_generations(
@@ -647,7 +652,7 @@ def test_workspace_store_publishes_valid_generations(
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             objects.create_group("first")
             objects.create_group("second")
         first = store.publish(_manifest("first"))
@@ -669,22 +674,20 @@ def test_workspace_store_publishes_valid_generations(
         assert second.sequence == 2
         assert store.current_generation() == second
         assert read_names == [
-            f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
+            f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
         ]
 
         with store.write_session() as h5_file:
             generation_group = h5_file[
-                f"{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
+                f"{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
             ]
-            generation_group[workspace_store._WORKSPACE_MANIFEST_DATASET].attrs[
-                "sha256"
-            ] = "invalid"
+            generation_group["manifest"].attrs["sha256"] = "invalid"
 
         read_names.clear()
         assert store.current_generation() == first
         assert read_names == [
-            f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}",
-            f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{first.sequence:020d}",
+            f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}",
+            f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{first.sequence:020d}",
         ]
 
 
@@ -697,7 +700,7 @@ def test_workspace_store_rejects_generation_with_missing_object(
             store.publish(_manifest("missing"))
 
         assert store.generations() == ()
-        assert len(store.h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
+        assert len(store.h5_file[_persistence_constants.WORKSPACE_STAGING_GROUP]) == 0
 
 
 def test_workspace_store_limits_writable_handle_to_write_session(
@@ -876,7 +879,7 @@ def test_workspace_store_gc_retains_two_generations_and_leases(
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             for object_id in ("first", "second", "third"):
                 objects.create_group(object_id)
         store.publish(_manifest("first"))
@@ -885,7 +888,7 @@ def test_workspace_store_gc_retains_two_generations_and_leases(
         store.publish(_manifest("third"))
 
         assert not store.collect_garbage(max_objects=10)
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "first",
             "second",
             "third",
@@ -894,7 +897,7 @@ def test_workspace_store_gc_retains_two_generations_and_leases(
 
         store.release_object("first")
         assert not store.collect_garbage(max_objects=10)
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "second",
             "third",
         }
@@ -906,7 +909,7 @@ def test_workspace_store_gc_preserves_serialized_reader_objects(
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             for object_id in ("first", "second", "third"):
                 objects.create_group(object_id)
         first_generation = store.publish(_manifest("first"))
@@ -921,7 +924,7 @@ def test_workspace_store_gc_preserves_serialized_reader_objects(
 
         assert not store.collect_garbage(max_objects=1)
         assert len(store.generations()) == 2
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "first",
             "second",
             "third",
@@ -936,7 +939,9 @@ def test_workspace_store_gc_preserves_serialized_reader_objects(
         reopened.clear_serialized_reader_pins()
         assert not reopened.has_serialized_readers
         assert not reopened.collect_garbage(max_objects=10)
-        assert set(reopened.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(
+            reopened.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+        ) == {
             "second",
             "third",
         }
@@ -956,7 +961,9 @@ def test_workspace_reader_export_waits_for_compaction_boundary(tmp_path) -> None
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("obsolete")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "obsolete"
+            )
 
         def _export_reader() -> None:
             export_started.set()
@@ -976,7 +983,9 @@ def test_workspace_reader_export_waits_for_compaction_boundary(tmp_path) -> None
             assert export_started.wait(timeout=2)
             assert not export_finished.wait(timeout=0.05)
             with store.write_session() as h5_file:
-                del h5_file[f"{workspace_store._WORKSPACE_OBJECTS_GROUP}/obsolete"]
+                del h5_file[
+                    f"{_persistence_constants.WORKSPACE_OBJECTS_GROUP}/obsolete"
+                ]
 
         export_thread.join(timeout=2)
         assert not export_thread.is_alive()
@@ -1017,16 +1026,20 @@ def test_workspace_store_gc_removes_malformed_generation_names(
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "current"
+            )
         store.publish(_manifest("current"))
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP].create_group("1")
+            h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP].create_group(
+                "1"
+            )
 
         assert not store.collect_garbage(max_objects=1)
 
-        assert set(store.h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP]) == {
-            "00000000000000000001"
-        }
+        assert set(
+            store.h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP]
+        ) == {"00000000000000000001"}
 
 
 def test_workspace_generation_write_blocks_concurrent_gc(
@@ -1096,7 +1109,9 @@ def test_workspace_generation_write_blocks_concurrent_gc(
         assert not gc_thread.is_alive()
         assert errors == []
         assert store.current_generation().manifest == _manifest("pending")
-        assert "pending" in store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+        assert (
+            "pending" in store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+        )
 
 
 def test_workspace_generation_removes_partial_object_after_write_error(
@@ -1139,7 +1154,9 @@ def test_workspace_generation_removes_partial_object_after_copy_error(
     target_path = tmp_path / "target.itws"
     with workspace_store.WorkspaceStore(source_path, create=True) as source_store:
         with source_store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("source")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "source"
+            )
         source_store.publish(_manifest("source"))
 
     def _copy_partial_then_fail(
@@ -1198,7 +1215,9 @@ def test_workspace_generation_removes_all_new_objects_after_plan_error(
                 store, plan, compression_mode="none"
             )
 
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == set()
+        assert (
+            set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == set()
+        )
         assert store.generations() == ()
 
 
@@ -1302,7 +1321,9 @@ def test_workspace_generation_keeps_objects_referenced_by_committed_generation(
             )
 
         assert store.current_generation().manifest == _manifest("committed")
-        assert "committed" in store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+        assert (
+            "committed" in store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+        )
 
 
 def test_workspace_store_shares_lazy_reader_and_generation_writer(
@@ -1730,7 +1751,7 @@ def test_workspace_compaction_keeps_current_state_and_reopens_store(
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             objects.create_group("obsolete").create_dataset(
                 "data", data=np.ones(2_000_000, dtype=np.float64)
             )
@@ -1747,7 +1768,7 @@ def test_workspace_compaction_keeps_current_state_and_reopens_store(
         assert workspace_store.WorkspaceStore.active(path) is store
         assert store.workspace_id == workspace_id
         assert store.h5_file.id.valid
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "current"
         }
         generations = store.generations()
@@ -1764,12 +1785,16 @@ def test_workspace_store_active_waits_for_file_replacement(
     prepared_path = tmp_path / "prepared.itws"
     with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
         with prepared_store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("prepared")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "prepared"
+            )
         prepared_store.publish(_manifest("prepared"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "current"
+            )
         store.publish(_manifest("current"))
         replacement_started = threading.Event()
         allow_replacement = threading.Event()
@@ -1839,7 +1864,9 @@ def test_workspace_store_uses_prepared_recovery_if_original_cannot_reopen(
     prepared_path = tmp_path / "prepared.itws"
     with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
         with prepared_store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("prepared")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "prepared"
+            )
         prepared_store.publish(_manifest("prepared"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
@@ -1873,7 +1900,9 @@ def test_workspace_store_retries_reopen_after_successful_replacement(
     prepared_path = tmp_path / "prepared.itws"
     with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
         with prepared_store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("prepared")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "prepared"
+            )
         prepared_store.publish(_manifest("prepared"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
@@ -1914,7 +1943,9 @@ def test_workspace_compaction_retains_prepared_recovery_file(
     recovery_path: pathlib.Path | None = None
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "current"
+            )
         store.publish(_manifest("current"))
 
         def _deny_reopen(*, create: bool, workspace_id: str | None = None) -> None:
@@ -1951,12 +1982,16 @@ def test_workspace_compaction_does_not_overwrite_external_replacement(
     external_path = tmp_path / "external.itws"
     with workspace_store.WorkspaceStore(external_path, create=True) as external_store:
         with external_store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("external")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "external"
+            )
         external_store.publish(_manifest("external"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "current"
+            )
         store.publish(_manifest("current"))
         original_release = store._release_handle
         replacement_installed = False
@@ -1991,12 +2026,16 @@ def test_workspace_compaction_rejects_replacement_after_identity_check(
     external_path = tmp_path / "external.itws"
     with workspace_store.WorkspaceStore(external_path, create=True) as external_store:
         with external_store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("external")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "external"
+            )
         external_store.publish(_manifest("external"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "current"
+            )
         store.publish(_manifest("current"))
         original_require_identity = store._require_path_identity
 
@@ -2026,7 +2065,7 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
         with store.write_session() as h5_file:
-            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             objects.create_group("leased")
             objects.create_group("serialized")
             objects.create_group("current")
@@ -2042,7 +2081,7 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
 
         workspace_storage._compact_workspace_store(store)
 
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "current",
             "leased",
             "serialized",
@@ -2060,7 +2099,7 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
             discard_serialized_reader_pins=confirmed_pins,
         )
 
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "current",
             "leased",
             "serialized",
@@ -2072,7 +2111,7 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
             discard_serialized_reader_pins=discarded_pins,
         )
 
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+        assert set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
             "current",
             "leased",
         }
@@ -2081,7 +2120,7 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
         assert not store.has_serialized_readers
         store.release_object("leased")
         assert not store.collect_garbage(max_objects=1)
-        remaining = set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP])
+        remaining = set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP])
         assert remaining == {"current"}
 
 
@@ -2095,7 +2134,9 @@ def test_workspace_compaction_preserves_serialized_legacy_group(
             workspace_arrays._write_workspace_dataset_group_to_file(
                 h5_file, "legacy/imagetool", dataset, compression_mode="none"
             )
-            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+            h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP].create_group(
+                "current"
+            )
         store.publish(_manifest("current"))
         manager = workspace_arrays.WorkspaceFileManager(
             path,
@@ -2229,9 +2270,9 @@ def test_workspace_store_conflict_keeps_lazy_data_for_save_as(
         try:
             with workspace_store.WorkspaceStore(replacement, create=True) as other:
                 with other.write_session() as h5_file:
-                    h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-                        "external"
-                    )
+                    h5_file[
+                        _persistence_constants.WORKSPACE_OBJECTS_GROUP
+                    ].create_group("external")
                 other.publish(_manifest("external"))
             replacement.replace(path)
 

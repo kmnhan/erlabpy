@@ -17,11 +17,11 @@ import erlab
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive import _persistence_constants
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._execution import rebuild_script_inputs
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
@@ -1009,7 +1009,7 @@ def test_manager_operation_filter_preserves_output_binding(
         state = json.loads(saved.attrs["itool_state"])
         assert state["filter_operation"]["op"] == "gaussian_filter"
         xr.testing.assert_identical(
-            saved[_ITOOL_DATA_NAME].rename(initial_output.name),
+            saved[_persistence_constants.ITOOL_DATA_NAME].rename(initial_output.name),
             initial_output,
         )
 

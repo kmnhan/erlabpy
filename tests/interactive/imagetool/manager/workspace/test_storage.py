@@ -17,6 +17,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+from erlab.interactive import _persistence_constants
 from tests.interactive.imagetool.manager.workspace._support import (
     _assert_no_workspace_internal_groups,
     _transaction_test_dataset,
@@ -46,9 +47,9 @@ def _create_legacy_transaction(
     status: str,
     group_replacements: list[dict[str, object]] | None = None,
 ) -> tuple[h5py.Group, str, str]:
-    txn_path = f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    txn_path = f"{_persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"__itws_pending_{txn_id}"
+    backup_root = f"__itws_backup_{txn_id}"
     txn_group = h5_file.create_group(txn_path)
     txn_group.attrs.update(
         {
@@ -398,10 +399,8 @@ def test_workspace_recovery_cleans_orphan_internal_groups(tmp_path) -> None:
     fname = tmp_path / "orphan-internal.itws"
     _write_transaction_test_workspace(fname)
     with h5py.File(fname, "a") as h5_file:
-        h5_file.create_group(
-            f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}orphan"
-        )
-        h5_file.create_group(f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}orphan")
+        h5_file.create_group("__itws_pending_orphan")
+        h5_file.create_group("__itws_backup_orphan")
 
     workspace_storage._recover_workspace_transactions(fname)
 
@@ -661,7 +660,7 @@ def test_workspace_h5_transaction_helper_edge_cases(tmp_path) -> None:
         assert workspace_storage._workspace_txn_attr_target(h5_file, "/missing") is None
 
         txn = h5_file.create_group(
-            f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
+            f"{_persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
         )
         txn_name = txn.name.strip("/")
         workspace_storage._restore_workspace_attr_backups(h5_file, txn)
@@ -718,12 +717,16 @@ def test_workspace_h5_transaction_helper_edge_cases(tmp_path) -> None:
 def test_recover_workspace_transactions_ignores_non_workspace_file(tmp_path) -> None:
     fname = tmp_path / "plain.itws"
     with h5py.File(fname, "w") as h5_file:
-        h5_file.create_group(f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x")
+        h5_file.create_group(
+            f"{_persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
+        )
 
     workspace_storage._recover_workspace_transactions(fname)
 
     with h5py.File(fname, "r") as h5_file:
-        assert f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x" in h5_file
+        assert (
+            f"{_persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX}x" in h5_file
+        )
 
 
 def test_workspace_storage_links_and_compares_immutable_payload_groups(
@@ -785,7 +788,7 @@ def test_workspace_blob_and_dataset_comparison_edge_cases(tmp_path) -> None:
             compression_mode="none",
         )
     with h5py.File(path, "r+") as h5_file:
-        h5_file[f"{workspace_store._WORKSPACE_OBJECTS_GROUP}/blob"].attrs[
+        h5_file[f"{_persistence_constants.WORKSPACE_OBJECTS_GROUP}/blob"].attrs[
             "erlab_object_kind"
         ] = np.bytes_(b"kind")
 

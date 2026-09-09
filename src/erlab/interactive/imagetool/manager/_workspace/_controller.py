@@ -27,7 +27,7 @@ import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.interactive import _shortcut_sequences
+from erlab.interactive import _persistence_constants, _shortcut_sequences
 from erlab.interactive._code_trust import (
     approve_document_trust,
     bind_document_trust_manifest,
@@ -1495,7 +1495,7 @@ class _WorkspaceController:
                             opened
                         )
                         replace_ds = imagetool_serialization.restore_private_coords(
-                            replace_ds, erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                            replace_ds, _persistence_constants.SAVED_TOOL_DATA_NAME
                         )
                         source_parent_data, reference_resolver = (
                             self.loading._workspace_tool_restore_references(
@@ -2232,7 +2232,7 @@ class _WorkspaceController:
             associated_lock = self._take_workspace_access_lock(workspace_access)
 
         associated_store = None
-        if schema_version >= workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION:
+        if schema_version >= _persistence_constants.WORKSPACE_LEGACY_SCHEMA_VERSION:
             associated_store = workspace_store.WorkspaceStore.active(associated_fname)
             if associated_store is None:
                 associated_store = workspace_store.WorkspaceStore(associated_fname)

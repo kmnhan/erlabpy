@@ -7,6 +7,7 @@ functionality of the ImageTool window, including GUI controls and keyboard short
 
 from __future__ import annotations
 
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ReplayStep,
@@ -36,9 +37,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
-
-_ITOOL_DATA_NAME: str = _serialization.ITOOL_DATA_NAME
-#: Name to use for the data variable in cached datasets
 
 
 class BaseImageTool(QtWidgets.QMainWindow):
@@ -231,7 +229,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = data.name
         if name is None:
             name = ""
-        ds = data.to_dataset(name=_ITOOL_DATA_NAME, promote_attrs=False)
+        ds = data.to_dataset(
+            name=_persistence_constants.ITOOL_DATA_NAME, promote_attrs=False
+        )
         attrs = {
             "itool_state": json.dumps(state),
             "itool_title": self.windowTitle(),
@@ -240,7 +240,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
             "erlab_version": erlab.__version__,
         }
         if self._provenance_spec is not None:
-            attrs["itool_provenance_spec"] = json.dumps(
+            attrs[_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR] = json.dumps(
                 self._provenance_spec.model_dump(mode="json")
             )
         return ds.assign_attrs(attrs)
@@ -258,7 +258,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
         """
         _serialization.encode_private_coords(
-            self.to_dataset(), _ITOOL_DATA_NAME
+            self.to_dataset(), _persistence_constants.ITOOL_DATA_NAME
         ).to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
@@ -273,7 +273,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
 
         """
-        ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
+        ds = _serialization.restore_private_coords(
+            ds, _persistence_constants.ITOOL_DATA_NAME
+        )
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
         if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
             erlab.utils.misc.emit_user_level_warning(
@@ -284,7 +286,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(
-            ds[_ITOOL_DATA_NAME].rename(name),
+            ds[_persistence_constants.ITOOL_DATA_NAME].rename(name),
             state=json.loads(ds.attrs["itool_state"]),
             _saved_window_state=ds.attrs.get("itool_window_state"),
             _legacy_window_rect=ds.attrs.get("itool_rect"),
@@ -295,7 +297,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             tool._sync_file_load_provenance()
         migrated_file_provenance = tool.provenance_spec
 
-        provenance_spec = ds.attrs.get("itool_provenance_spec")
+        provenance_spec = ds.attrs.get(
+            _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR
+        )
         if provenance_spec is not None:
             try:
                 saved_provenance = parse_tool_provenance_spec(

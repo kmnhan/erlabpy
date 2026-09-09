@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._code import _replace_code_identifiers
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
@@ -168,10 +169,11 @@ def _preview_from_imagetool(
     if width <= 0 or height <= 0:
         return fallback_ratio, fallback_pixmap
 
-    if not main_image.slicer_data_items:
+    cursor = slicer_area.current_cursor
+    if not 0 <= cursor < len(main_image.slicer_data_items):
         return fallback_ratio, fallback_pixmap
 
-    image_item = main_image.slicer_data_items[0]
+    image_item = main_image.slicer_data_items[cursor]
     if not erlab.interactive.utils.qt_is_valid(image_item):
         return fallback_ratio, fallback_pixmap
 
@@ -200,10 +202,11 @@ def _preview_curve_from_imagetool(
 
     if not erlab.interactive.utils.qt_is_valid(main_image):
         return None
-    if not main_image.slicer_data_items:
+    cursor = slicer_area.current_cursor
+    if not 0 <= cursor < len(main_image.slicer_data_items):
         return None
 
-    data_item = main_image.slicer_data_items[0]
+    data_item = main_image.slicer_data_items[cursor]
     if not erlab.interactive.utils.qt_is_valid(data_item):
         return None
 
@@ -1713,10 +1716,10 @@ class _ManagedWindowNode(QtCore.QObject):
             or self._provenance_spec != snapshot.node_provenance_spec
         )
         provenance_attr_keys = (
-            erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
-            erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
-            erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR,
-            erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR,
+            _persistence_constants.TOOL_SOURCE_SPEC_ATTR,
+            _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+            _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR,
+            _persistence_constants.TOOL_PRIMARY_INPUT_ATTR,
         )
         current_attrs = self._pending_workspace_payload_attrs or {}
         replacement_attrs = snapshot.pending_payload_attrs or {}
@@ -1817,10 +1820,8 @@ class _ManagedWindowNode(QtCore.QObject):
                         remapped_pending_inputs, pending_primary_input
                     )
                 )
-                attrs.pop(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR, None)
-                attrs.pop(
-                    erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR, None
-                )
+                attrs.pop(_persistence_constants.TOOL_SOURCE_SPEC_ATTR, None)
+                attrs.pop(_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR, None)
                 pending_attrs_changed = True
 
         changed = (

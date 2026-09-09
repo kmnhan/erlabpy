@@ -309,10 +309,15 @@ def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
 
     class _FakeSlicerArea:
         def __init__(
-            self, main_image: object = None, *, raise_main: bool = False
+            self,
+            main_image: object = None,
+            *,
+            raise_main: bool = False,
+            current_cursor: int = 0,
         ) -> None:
             self._main_image = _FakeMainImage() if main_image is None else main_image
             self._raise_main = raise_main
+            self.current_cursor = current_cursor
 
         def _update_if_delayed(self) -> None:
             return
@@ -357,7 +362,14 @@ def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
         fallback,
     )
     assert _preview(_FakeSlicerArea(_FakeMainImage(items=[]))) == (1.5, fallback)
+    for cursor in (-1, 1):
+        assert _preview(_FakeSlicerArea(current_cursor=cursor)) == (1.5, fallback)
     assert _preview(_FakeSlicerArea(_FakeMainImage(items=[invalid]))) == (1.5, fallback)
+    assert _preview(
+        _FakeSlicerArea(
+            _FakeMainImage(items=[_FakeImageItem(), invalid]), current_cursor=1
+        )
+    ) == (1.5, fallback)
     assert _preview(
         _FakeSlicerArea(_FakeMainImage(items=[_FakeImageItem(raise_pixmap=True)]))
     ) == (1.5, fallback)

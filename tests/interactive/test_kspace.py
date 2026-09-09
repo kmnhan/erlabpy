@@ -14,6 +14,7 @@ from qtpy import QtCore
 import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
+from erlab.interactive import _persistence_constants
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.imagetool import _dialog_widgets, _kspace_conversion
 from erlab.interactive.imagetool import dialogs as imagetool_dialogs
@@ -3107,10 +3108,10 @@ def test_ktool_restore_prepares_referenced_data_from_saved_coordinates(
     )
     expected = tool._converted_output()
     saved = tool.to_dataset()
-    saved.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
-        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
+    saved.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {_persistence_constants.SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
     )
-    saved_tool_data = saved[erlab.interactive.utils._SAVED_TOOL_DATA_NAME]
+    saved_tool_data = saved[_persistence_constants.SAVED_TOOL_DATA_NAME]
     assert saved_tool_data.dims == ("alpha", "eV")
     assert float(saved_tool_data.xi) == pytest.approx(0.0)
     assert float(saved_tool_data.chi) == pytest.approx(0.0)
@@ -3201,8 +3202,8 @@ def test_ktool_restore_rejects_unrecoverable_referenced_data(
     saved.attrs["tool_state"] = tool.tool_status.model_copy(
         update=status_update
     ).model_dump_json()
-    saved.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
-        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
+    saved.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+        {_persistence_constants.SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
     )
 
     with pytest.raises(ValueError, match=error_match):

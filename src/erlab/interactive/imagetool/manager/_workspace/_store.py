@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Self
 
 import erlab
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool.manager._workspace._format import (
     _current_workspace_schema_version,
     _workspace_schema_uses_immutable_generations,
@@ -34,12 +35,6 @@ else:
     h5py = _lazy.load("h5py")
 
 
-_WORKSPACE_OBJECTS_GROUP = "__itws_objects"
-_WORKSPACE_STAGING_GROUP = "__itws_staging"
-_WORKSPACE_GENERATIONS_GROUP = "__itws_generations"
-_WORKSPACE_MANIFEST_DATASET = "manifest"
-_WORKSPACE_GENERATION_WIDTH = 20
-_WORKSPACE_ID_ATTR = "imagetool_workspace_id"
 _FILE_ACCESS_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 _HDF5_CONTENTION_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 _RETRYABLE_FILE_ACCESS_ERRNOS = frozenset(
@@ -486,19 +481,21 @@ class WorkspaceStore:
 
     @staticmethod
     def _ensure_workspace_id(h5_file: typing.Any, preferred: str | None = None) -> str:
-        workspace_id = preferred or h5_file.attrs.get(_WORKSPACE_ID_ATTR)
+        workspace_id = preferred or h5_file.attrs.get(
+            _persistence_constants.WORKSPACE_ID_ATTR
+        )
         if isinstance(workspace_id, bytes):
             workspace_id = workspace_id.decode()
         if not isinstance(workspace_id, str) or not workspace_id:
             workspace_id = uuid.uuid4().hex
-        if h5_file.attrs.get(_WORKSPACE_ID_ATTR) != workspace_id:
-            h5_file.attrs[_WORKSPACE_ID_ATTR] = workspace_id
+        if h5_file.attrs.get(_persistence_constants.WORKSPACE_ID_ATTR) != workspace_id:
+            h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR] = workspace_id
             h5_file.flush()
         return workspace_id
 
     @staticmethod
     def _workspace_id_from_file(h5_file: typing.Any) -> str | None:
-        workspace_id = h5_file.attrs.get(_WORKSPACE_ID_ATTR)
+        workspace_id = h5_file.attrs.get(_persistence_constants.WORKSPACE_ID_ATTR)
         if isinstance(workspace_id, bytes):
             workspace_id = workspace_id.decode()
         if isinstance(workspace_id, str) and workspace_id:
@@ -535,9 +532,9 @@ class WorkspaceStore:
                 _current_workspace_schema_version()
             )
             h5_file.attrs["erlab_version"] = str(erlab.__version__)
-            h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
-            h5_file.require_group(_WORKSPACE_STAGING_GROUP)
-            h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
+            h5_file.require_group(_persistence_constants.WORKSPACE_OBJECTS_GROUP)
+            h5_file.require_group(_persistence_constants.WORKSPACE_STAGING_GROUP)
+            h5_file.require_group(_persistence_constants.WORKSPACE_GENERATIONS_GROUP)
             h5_file.flush()
             h5_file.close()
         else:
@@ -1178,7 +1175,7 @@ class WorkspaceStore:
             or object_id in {".", ".."}
         ):
             raise ValueError("Workspace object ID must be one path component")
-        return f"/{_WORKSPACE_OBJECTS_GROUP}/{object_id}"
+        return f"/{_persistence_constants.WORKSPACE_OBJECTS_GROUP}/{object_id}"
 
     @staticmethod
     def _manifest_text(manifest: Mapping[str, typing.Any]) -> str:
@@ -1192,7 +1189,7 @@ class WorkspaceStore:
     ) -> None:
         text = cls._manifest_text(manifest)
         dataset = group.create_dataset(
-            _WORKSPACE_MANIFEST_DATASET,
+            "manifest",
             data=text,
             dtype=h5py.string_dtype(encoding="utf-8"),
         )
@@ -1200,9 +1197,9 @@ class WorkspaceStore:
 
     @classmethod
     def _read_manifest(cls, group: typing.Any) -> dict[str, typing.Any]:
-        if _WORKSPACE_MANIFEST_DATASET not in group:
+        if "manifest" not in group:
             raise ValueError("Workspace generation has no manifest")
-        dataset = group[_WORKSPACE_MANIFEST_DATASET]
+        dataset = group["manifest"]
         raw = dataset.asstr()[()]
         if not isinstance(raw, str):
             raise TypeError("Workspace generation manifest is not text")
@@ -1238,12 +1235,15 @@ class WorkspaceStore:
     def generations(self) -> tuple[_WorkspaceGeneration, ...]:
         """Return all valid committed generations in ascending order."""
         with self.read_session() as h5_file:
-            root = h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
+            root = h5_file.get(_persistence_constants.WORKSPACE_GENERATIONS_GROUP)
             if root is None:
                 return ()
             generations: list[_WorkspaceGeneration] = []
             for name in sorted(root):
-                if len(name) != _WORKSPACE_GENERATION_WIDTH or not name.isdigit():
+                if (
+                    len(name) != _persistence_constants.WORKSPACE_GENERATION_WIDTH
+                    or not name.isdigit()
+                ):
                     continue
                 with contextlib.suppress(Exception):
                     generations.append(
@@ -1254,10 +1254,13 @@ class WorkspaceStore:
     def current_generation(self) -> _WorkspaceGeneration:
         """Return the newest valid committed generation."""
         with self.read_session() as h5_file:
-            root = h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
+            root = h5_file.get(_persistence_constants.WORKSPACE_GENERATIONS_GROUP)
             if root is not None:
                 for name in sorted(root, reverse=True):
-                    if len(name) != _WORKSPACE_GENERATION_WIDTH or not name.isdigit():
+                    if (
+                        len(name) != _persistence_constants.WORKSPACE_GENERATION_WIDTH
+                        or not name.isdigit()
+                    ):
                         continue
                     with contextlib.suppress(Exception):
                         return _WorkspaceGeneration(
@@ -1270,14 +1273,19 @@ class WorkspaceStore:
         with self.write_session():
             if self._workspace_id is None:
                 self._workspace_id = self._ensure_workspace_id(self.h5_file)
-            generation_root = self.h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
+            generation_root = self.h5_file.require_group(
+                _persistence_constants.WORKSPACE_GENERATIONS_GROUP
+            )
             existing_sequences = [
                 int(name)
                 for name in generation_root
-                if len(name) == _WORKSPACE_GENERATION_WIDTH and name.isdigit()
+                if len(name) == _persistence_constants.WORKSPACE_GENERATION_WIDTH
+                and name.isdigit()
             ]
             sequence = 1 if not existing_sequences else max(existing_sequences) + 1
-            staging_root = self.h5_file.require_group(_WORKSPACE_STAGING_GROUP)
+            staging_root = self.h5_file.require_group(
+                _persistence_constants.WORKSPACE_STAGING_GROUP
+            )
             staging_name = uuid.uuid4().hex
             staging = staging_root.create_group(staging_name)
             generation_manifest = dict(manifest)
@@ -1293,10 +1301,12 @@ class WorkspaceStore:
                     self.flush()
                 raise
 
-            generation_name = f"{sequence:0{_WORKSPACE_GENERATION_WIDTH}d}"
+            generation_name = (
+                f"{sequence:0{_persistence_constants.WORKSPACE_GENERATION_WIDTH}d}"
+            )
             self.h5_file.move(
-                f"/{_WORKSPACE_STAGING_GROUP}/{staging_name}",
-                f"/{_WORKSPACE_GENERATIONS_GROUP}/{generation_name}",
+                f"/{_persistence_constants.WORKSPACE_STAGING_GROUP}/{staging_name}",
+                f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{generation_name}",
             )
             self.h5_file.attrs["imagetool_workspace_schema_version"] = (
                 _current_workspace_schema_version()
@@ -1379,10 +1389,12 @@ class WorkspaceStore:
             generations = self.generations()
             retained = generations[-2:]
             retained_names = {
-                f"{generation.sequence:0{_WORKSPACE_GENERATION_WIDTH}d}"
+                f"{generation.sequence:0{_persistence_constants.WORKSPACE_GENERATION_WIDTH}d}"
                 for generation in retained
             }
-            generation_root = self.h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
+            generation_root = self.h5_file.require_group(
+                _persistence_constants.WORKSPACE_GENERATIONS_GROUP
+            )
             for name in list(generation_root):
                 if name in retained_names:
                     continue
@@ -1393,7 +1405,9 @@ class WorkspaceStore:
             for generation in retained:
                 reachable.update(self.manifest_object_ids(generation.manifest))
 
-            object_root = self.h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
+            object_root = self.h5_file.require_group(
+                _persistence_constants.WORKSPACE_OBJECTS_GROUP
+            )
             obsolete = [name for name in object_root if name not in reachable]
             remove_count = len(obsolete) if not self._locking_supported else max_objects
             for name in obsolete[:remove_count]:
@@ -1404,11 +1418,13 @@ class WorkspaceStore:
     def clear_staging(self) -> None:
         """Remove unpublished staging groups left by interrupted saves."""
         with self.read_session() as h5_file:
-            staging_root = h5_file.get(_WORKSPACE_STAGING_GROUP)
+            staging_root = h5_file.get(_persistence_constants.WORKSPACE_STAGING_GROUP)
             if staging_root is None or not staging_root:
                 return
         with self.write_session():
-            staging_root = self.h5_file.require_group(_WORKSPACE_STAGING_GROUP)
+            staging_root = self.h5_file.require_group(
+                _persistence_constants.WORKSPACE_STAGING_GROUP
+            )
             for name in list(staging_root):
                 del staging_root[name]
             self.h5_file.flush()

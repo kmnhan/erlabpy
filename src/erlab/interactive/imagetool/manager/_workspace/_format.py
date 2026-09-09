@@ -6,21 +6,18 @@ names identify payload locations; they do not define the complete workspace sche
 
 from __future__ import annotations
 
-import base64
 import collections.abc
 import contextlib
 import copy
 import json
 import logging
-import math
-import numbers
 import pathlib
 import typing
 
-import numpy as np
 import pydantic
 
 from erlab.extensions._models import _script_name_key, _validate_source_hash
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 
 if typing.TYPE_CHECKING:
@@ -30,18 +27,6 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 logger = logging.getLogger(__name__)
-
-_WORKSPACE_SCHEMA_VERSION = 6
-_WORKSPACE_MANIFEST_SCHEMA_VERSION = 4
-_WORKSPACE_LEGACY_SCHEMA_VERSION = 3
-_WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
-_WORKSPACE_TRANSACTION_PROTOCOL = "recoverable-delta-v1"
-_WORKSPACE_PENDING_GROUP_PREFIX = "__itws_pending_"
-_WORKSPACE_BACKUP_GROUP_PREFIX = "__itws_backup_"
-_WORKSPACE_TRANSACTION_GROUP_PREFIX = "__itws_txn_"
-_WORKSPACE_ENCODED_ATTRS_ATTR = "_erlab_workspace_encoded_attrs"
-_WORKSPACE_ENCODED_ATTRS_VERSION = 1
-_WORKSPACE_REPLAY_SOURCE_BLOB_NAME = "<manager-replay-source-data>"
 
 
 class _WorkspaceEmbeddedScriptEntry(pydantic.BaseModel):
@@ -113,7 +98,7 @@ class WorkspaceOptionOverridesState(pydantic.BaseModel):
 def _workspace_manifest_from_attrs(
     attrs: Mapping[typing.Any, typing.Any],
 ) -> dict[str, typing.Any]:
-    raw_manifest = attrs.get(_WORKSPACE_MANIFEST_ATTR)
+    raw_manifest = attrs.get(_persistence_constants.WORKSPACE_MANIFEST_ATTR)
     if isinstance(raw_manifest, bytes):
         raw_manifest = raw_manifest.decode()
     if isinstance(raw_manifest, str):
@@ -206,18 +191,19 @@ def _workspace_file_metadata_from_attrs(
 ) -> tuple[int, dict[str, typing.Any] | None]:
     schema_version = int(attrs.get("imagetool_workspace_schema_version", 1))
     manifest = None
-    if schema_version >= _WORKSPACE_MANIFEST_SCHEMA_VERSION:
+    # Schema 4 introduced the root manifest.
+    if schema_version >= 4:
         manifest = _workspace_manifest_from_attrs(attrs) or None
     return schema_version, manifest
 
 
 def _current_workspace_schema_version() -> int:
-    return _WORKSPACE_SCHEMA_VERSION
+    return _persistence_constants.WORKSPACE_SCHEMA_VERSION
 
 
 def _workspace_schema_uses_immutable_generations(schema_version: int) -> bool:
     """Return whether a readable schema uses immutable generation storage."""
-    return 5 <= schema_version <= _WORKSPACE_SCHEMA_VERSION
+    return 5 <= schema_version <= _persistence_constants.WORKSPACE_SCHEMA_VERSION
 
 
 def _workspace_path_is_itws(
@@ -234,11 +220,13 @@ def _require_itws_workspace_path(fname: str | os.PathLike[str], message: str) ->
 def _set_legacy_workspace_schema(
     attrs: MutableMapping[typing.Hashable, typing.Any],
 ) -> None:
-    attrs["imagetool_workspace_schema_version"] = _WORKSPACE_LEGACY_SCHEMA_VERSION
+    attrs["imagetool_workspace_schema_version"] = (
+        _persistence_constants.WORKSPACE_LEGACY_SCHEMA_VERSION
+    )
 
 
 def _workspace_schema_requires_conversion(schema_version: int) -> bool:
-    return schema_version < _WORKSPACE_LEGACY_SCHEMA_VERSION
+    return schema_version < _persistence_constants.WORKSPACE_LEGACY_SCHEMA_VERSION
 
 
 def _workspace_manifest_payload(
@@ -256,7 +244,7 @@ def _workspace_manifest_payload(
     embedded_extension_sources: Iterable[typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
-        "schema_version": _WORKSPACE_SCHEMA_VERSION,
+        "schema_version": _persistence_constants.WORKSPACE_SCHEMA_VERSION,
         "erlab_version": erlab_version,
         # HDF5 group order is not the manager's authoritative top-level order.
         "root_order": list(root_order),
@@ -295,12 +283,11 @@ def _workspace_manifest_payload(
 def _is_workspace_internal_group_name(name: typing.Any) -> bool:
     return str(name).startswith(
         (
-            "__itws_objects",
-            "__itws_staging",
-            "__itws_generations",
-            _WORKSPACE_PENDING_GROUP_PREFIX,
-            _WORKSPACE_BACKUP_GROUP_PREFIX,
-            _WORKSPACE_TRANSACTION_GROUP_PREFIX,
+            _persistence_constants.WORKSPACE_OBJECTS_GROUP,
+            _persistence_constants.WORKSPACE_STAGING_GROUP,
+            _persistence_constants.WORKSPACE_GENERATIONS_GROUP,
+            *_persistence_constants.WORKSPACE_LEGACY_TEMP_GROUP_PREFIXES,
+            _persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX,
         )
     )
 
@@ -313,7 +300,10 @@ def _workspace_manifest_attrs(
     for key, value in attrs.items():
         try:
             encoded.append(
-                [_workspace_encode_attr_key(key), _workspace_encode_attr_value(value)]
+                [
+                    _serialization.encode_attr_key(key),
+                    _serialization.encode_attr_value(value),
+                ]
             )
         except TypeError:
             logger.warning(
@@ -334,8 +324,8 @@ def _restore_workspace_manifest_attrs(
     for item in payload:
         if not isinstance(item, list) or len(item) != 2:
             raise TypeError("Workspace manifest attribute entry is invalid")
-        attrs[_workspace_decode_attr_key(item[0])] = _workspace_decode_attr_value(
-            item[1]
+        attrs[_serialization.decode_attr_key(item[0])] = (
+            _serialization.decode_attr_value(item[1])
         )
     return attrs
 
@@ -383,20 +373,23 @@ def _workspace_serializable_attrs(
     for key, value in attrs.items():
         if not isinstance(key, str) or not key:
             continue
-        if key == _WORKSPACE_ENCODED_ATTRS_ATTR:
+        if key == _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR:
             existing_entries = _workspace_encoded_attr_entries(value)
             if existing_entries is not None:
                 encoded_entries.extend(existing_entries)
                 continue
         if (
-            key != _WORKSPACE_ENCODED_ATTRS_ATTR
-            and _workspace_attr_value_writes_natively(value)
+            key != _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR
+            and _serialization.attr_value_writes_natively(value)
         ):
             serializable[key] = value
             continue
         try:
             encoded_entries.append(
-                [_workspace_encode_attr_key(key), _workspace_encode_attr_value(value)]
+                [
+                    _serialization.encode_attr_key(key),
+                    _serialization.encode_attr_value(value),
+                ]
             )
         except TypeError:
             logger.warning(
@@ -405,232 +398,14 @@ def _workspace_serializable_attrs(
                 type(value).__name__,
             )
     if encoded_entries:
-        serializable[_WORKSPACE_ENCODED_ATTRS_ATTR] = json.dumps(
+        serializable[_persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR] = json.dumps(
             {
-                "version": _WORKSPACE_ENCODED_ATTRS_VERSION,
+                "version": _persistence_constants.WORKSPACE_ENCODED_ATTRS_VERSION,
                 "attrs": encoded_entries,
             },
             separators=(",", ":"),
         )
     return serializable
-
-
-def _workspace_attr_value_writes_natively(value: typing.Any) -> bool:
-    if isinstance(value, str):
-        return True
-    if isinstance(value, bytes):
-        return b"\x00" not in value and _workspace_bytes_are_utf8(value)
-    if isinstance(value, np.ndarray):
-        return value.dtype.kind in "biufcSU"
-    if isinstance(value, np.generic):
-        return isinstance(value, (np.number, np.bool_))
-    if isinstance(value, bool | int | float | complex):
-        return True
-    if isinstance(value, list | tuple):
-        return _workspace_attr_sequence_writes_natively(value)
-    return False
-
-
-def _workspace_attr_sequence_writes_natively(
-    value: list[typing.Any] | tuple[typing.Any, ...],
-) -> bool:
-    if not value:
-        return True
-    if all(isinstance(item, str) for item in value):
-        return True
-    if all(
-        isinstance(item, bytes)
-        and b"\x00" not in item
-        and _workspace_bytes_are_utf8(item)
-        for item in value
-    ):
-        return True
-    return all(_workspace_attr_numeric_scalar_writes_natively(item) for item in value)
-
-
-def _workspace_attr_numeric_scalar_writes_natively(value: typing.Any) -> bool:
-    if isinstance(value, np.generic):
-        return isinstance(value, (np.number, np.bool_))
-    return isinstance(value, bool | int | float | complex)
-
-
-def _workspace_bytes_are_utf8(value: bytes) -> bool:
-    try:
-        value.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
-def _workspace_encode_attr_key(value: typing.Any) -> dict[str, typing.Any]:
-    if isinstance(value, np.generic):
-        value = value.item()
-    if value is None:
-        return {"kind": "none"}
-    if isinstance(value, bool):
-        return {"kind": "bool", "value": value}
-    if isinstance(value, int):
-        return {"kind": "int", "value": value}
-    if isinstance(value, float):
-        return {"kind": "float", **_workspace_encode_float(value)}
-    if isinstance(value, complex):
-        return {
-            "kind": "complex",
-            "real": _workspace_encode_float(value.real),
-            "imag": _workspace_encode_float(value.imag),
-        }
-    if isinstance(value, str):
-        return {"kind": "str", "value": value}
-    if isinstance(value, bytes):
-        return {
-            "kind": "bytes",
-            "value": base64.b64encode(value).decode("ascii"),
-        }
-    if isinstance(value, tuple):
-        return {
-            "kind": "tuple",
-            "items": [_workspace_encode_attr_key(item) for item in value],
-        }
-    raise TypeError(f"unsupported attr key type {type(value).__name__!r}")
-
-
-def _workspace_decode_attr_key(value: typing.Any) -> typing.Hashable:
-    decoded = _workspace_decode_attr_value(value)
-    if not isinstance(decoded, collections.abc.Hashable):
-        raise TypeError(f"decoded attr key is not hashable: {type(decoded).__name__!r}")
-    return decoded
-
-
-def _workspace_encode_attr_value(value: typing.Any) -> dict[str, typing.Any]:
-    if isinstance(value, np.ndarray):
-        return _workspace_encode_array(value, kind="ndarray")
-    if isinstance(value, np.generic):
-        return _workspace_encode_array(np.asarray(value), kind="numpy_scalar")
-    if value is None:
-        return {"kind": "none"}
-    if isinstance(value, bool):
-        return {"kind": "bool", "value": value}
-    if isinstance(value, int):
-        return {"kind": "int", "value": value}
-    if isinstance(value, float):
-        return {"kind": "float", **_workspace_encode_float(value)}
-    if isinstance(value, complex):
-        return {
-            "kind": "complex",
-            "real": _workspace_encode_float(value.real),
-            "imag": _workspace_encode_float(value.imag),
-        }
-    if isinstance(value, str):
-        return {"kind": "str", "value": value}
-    if isinstance(value, bytes):
-        return {
-            "kind": "bytes",
-            "value": base64.b64encode(value).decode("ascii"),
-        }
-    if isinstance(value, list):
-        return {
-            "kind": "list",
-            "items": [_workspace_encode_attr_value(item) for item in value],
-        }
-    if isinstance(value, tuple):
-        return {
-            "kind": "tuple",
-            "items": [_workspace_encode_attr_value(item) for item in value],
-        }
-    if isinstance(value, collections.abc.Mapping):
-        return {
-            "kind": "dict",
-            "items": [
-                [_workspace_encode_attr_key(key), _workspace_encode_attr_value(item)]
-                for key, item in value.items()
-            ],
-        }
-    if isinstance(value, numbers.Number):
-        raise TypeError(f"unsupported numeric attr type {type(value).__name__!r}")
-    raise TypeError(f"unsupported attr value type {type(value).__name__!r}")
-
-
-def _workspace_decode_attr_value(value: typing.Any) -> typing.Any:
-    if not isinstance(value, collections.abc.Mapping):
-        raise TypeError("encoded workspace attr value must be a mapping")
-    kind = value.get("kind")
-    match kind:
-        case "none":
-            return None
-        case "bool":
-            return bool(value["value"])
-        case "int":
-            return int(value["value"])
-        case "float":
-            return _workspace_decode_float(value)
-        case "complex":
-            return complex(
-                _workspace_decode_float(value["real"]),
-                _workspace_decode_float(value["imag"]),
-            )
-        case "str":
-            return str(value["value"])
-        case "bytes":
-            return base64.b64decode(str(value["value"]).encode("ascii"))
-        case "list":
-            return [_workspace_decode_attr_value(item) for item in value["items"]]
-        case "tuple":
-            return tuple(_workspace_decode_attr_value(item) for item in value["items"])
-        case "dict":
-            return {
-                _workspace_decode_attr_key(key): _workspace_decode_attr_value(item)
-                for key, item in value["items"]
-            }
-        case "ndarray":
-            return _workspace_decode_array(value)
-        case "numpy_scalar":
-            return _workspace_decode_array(value)[()]
-        case _:
-            raise TypeError(f"unknown workspace attr value kind {kind!r}")
-
-
-def _workspace_encode_float(value: float) -> dict[str, typing.Any]:
-    if math.isnan(value):
-        return {"special": "nan"}
-    if math.isinf(value):
-        return {"special": "inf" if value > 0 else "-inf"}
-    return {"value": value}
-
-
-def _workspace_decode_float(value: Mapping[str, typing.Any]) -> float:
-    special = value.get("special")
-    if special == "nan":
-        return math.nan
-    if special == "inf":
-        return math.inf
-    if special == "-inf":
-        return -math.inf
-    return float(value["value"])
-
-
-def _workspace_encode_array(value, *, kind: str) -> dict[str, typing.Any]:
-    array = np.asarray(value)
-    payload: dict[str, typing.Any] = {
-        "kind": kind,
-        "dtype": array.dtype.str,
-        "shape": list(array.shape),
-    }
-    if array.dtype.kind == "O":
-        payload["items"] = _workspace_encode_attr_value(array.tolist())
-        return payload
-    contiguous = np.ascontiguousarray(array)
-    payload["data"] = base64.b64encode(contiguous.tobytes()).decode("ascii")
-    return payload
-
-
-def _workspace_decode_array(value: Mapping[str, typing.Any]):
-    dtype = np.dtype(typing.cast("str", value["dtype"]))
-    shape = tuple(int(size) for size in typing.cast("list[typing.Any]", value["shape"]))
-    if "items" in value:
-        items = _workspace_decode_attr_value(value["items"])
-        return np.asarray(items, dtype=object).reshape(shape)
-    data = base64.b64decode(str(value["data"]).encode("ascii"))
-    return np.frombuffer(data, dtype=dtype).copy().reshape(shape)
 
 
 def _workspace_encoded_attr_entries(value: typing.Any) -> list[list[typing.Any]] | None:
@@ -647,7 +422,8 @@ def _workspace_encoded_attr_entries(value: typing.Any) -> list[list[typing.Any]]
         return None
     if (
         not isinstance(payload, dict)
-        or payload.get("version") != _WORKSPACE_ENCODED_ATTRS_VERSION
+        or payload.get("version")
+        != _persistence_constants.WORKSPACE_ENCODED_ATTRS_VERSION
         or not isinstance(payload.get("attrs"), list)
     ):
         return None
@@ -664,19 +440,19 @@ def _restore_workspace_serialized_attrs(
     attrs: Mapping[typing.Any, typing.Any],
 ) -> dict[typing.Any, typing.Any]:
     encoded_entries = _workspace_encoded_attr_entries(
-        attrs.get(_WORKSPACE_ENCODED_ATTRS_ATTR)
+        attrs.get(_persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR)
     )
     if encoded_entries is None:
         return dict(attrs)
     restored = {
         key: value
         for key, value in attrs.items()
-        if key != _WORKSPACE_ENCODED_ATTRS_ATTR
+        if key != _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR
     }
     for key_payload, value_payload in encoded_entries:
         try:
-            key = _workspace_decode_attr_key(key_payload)
-            value = _workspace_decode_attr_value(value_payload)
+            key = _serialization.decode_attr_key(key_payload)
+            value = _serialization.decode_attr_value(value_payload)
         except (KeyError, TypeError, ValueError):
             logger.warning(
                 "Ignoring invalid encoded workspace attribute", exc_info=True

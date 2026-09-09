@@ -6,12 +6,13 @@ import hashlib
 import json
 import typing
 
+from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust._core import CodeTrustEntry
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, MutableMapping
 
-CODE_PAYLOAD_ENTRIES_ATTR = "erlab_code_trust_payload_entries"
+
 _PAYLOAD_SHA256_KEY = "payload_sha256"
 
 
@@ -56,7 +57,7 @@ def code_payload_entries_from_metadata(
     attrs: Mapping[str, typing.Any],
 ) -> tuple[CodeTrustEntry, ...]:
     """Read validated opaque-payload entries from saved document metadata."""
-    raw = attrs.get(CODE_PAYLOAD_ENTRIES_ATTR)
+    raw = attrs.get(_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR)
     if raw is None:
         return ()
     if isinstance(raw, bytes):
@@ -95,9 +96,9 @@ def store_code_payload_entries(
     """Store opaque-payload entries as deterministic document metadata."""
     validated = _validated_entries(entries)
     if not validated:
-        attrs.pop(CODE_PAYLOAD_ENTRIES_ATTR, None)
+        attrs.pop(_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR, None)
         return
-    attrs[CODE_PAYLOAD_ENTRIES_ATTR] = json.dumps(
+    attrs[_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR] = json.dumps(
         [entry.payload() for entry in validated],
         ensure_ascii=False,
         allow_nan=False,

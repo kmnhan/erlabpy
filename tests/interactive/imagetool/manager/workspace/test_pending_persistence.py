@@ -18,8 +18,8 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     compose_display_provenance,
@@ -807,7 +807,11 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
     assert tuple(state["slice"]["dims"]) == data.dims
 
     stored = xr.Dataset(
-        {_ITOOL_DATA_NAME: saved[_ITOOL_DATA_NAME].transpose("hv", "y", "x")},
+        {
+            _persistence_constants.ITOOL_DATA_NAME: saved[
+                _persistence_constants.ITOOL_DATA_NAME
+            ].transpose("hv", "y", "x")
+        },
         attrs=dict(saved.attrs),
     )
     fname = tmp_path / "pending-saved-dim-order.itws"
@@ -995,7 +999,7 @@ def test_pending_workspace_source_data_decodes_saved_state_attrs(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    data_name = _ITOOL_DATA_NAME
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     payload = xr.Dataset(
         {data_name: xr.DataArray(np.arange(3.0), dims=("x",), name=data_name)}
     )
@@ -1286,10 +1290,8 @@ def test_generation_save_embeds_pending_tool_data_after_source_removal(
             payload = h5_file[
                 _current_workspace_payload_path(fname, f"figures/{figure_uid}")
             ]
-            assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in payload
-            assert (
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in payload.attrs
-            )
+            assert _persistence_constants.SAVED_TOOL_DATA_NAME in payload
+            assert _persistence_constants.TOOL_DATA_REFERENCES_ATTR not in payload.attrs
 
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
@@ -1426,11 +1428,11 @@ def test_pending_toolwindow_legacy_binding_is_materialized_by_saved_input_decode
             squeeze=True,
         )
         attrs = {
-            erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR: json.dumps(
+            _persistence_constants.TOOL_SOURCE_BINDING_ATTR: json.dumps(
                 binding.model_dump(mode="json")
             ),
-            erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR: b"stale",
-            erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR: True,
+            _persistence_constants.TOOL_SOURCE_STATE_ATTR: b"stale",
+            _persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR: True,
         }
 
         loader = manager._workspace_controller.loading
@@ -1439,17 +1441,17 @@ def test_pending_toolwindow_legacy_binding_is_materialized_by_saved_input_decode
             parent_target=0,
         )
         script_inputs = parse_script_inputs(
-            deferred.attrs[erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR]
+            deferred.attrs[_persistence_constants.TOOL_SCRIPT_INPUTS_ATTR]
         )
         assert len(script_inputs) == 1
         assert script_inputs[0].data_role == "displayed"
         assert script_inputs[0].node_uid == root_node.uid
         assert script_inputs[0].node_snapshot_token == root_node.snapshot_token
         assert script_inputs[0].source_spec is None
-        assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in deferred.attrs
+        assert _persistence_constants.TOOL_SOURCE_BINDING_ATTR in deferred.attrs
 
         assert bool(
-            deferred.attrs.get(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR)
+            deferred.attrs.get(_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR)
         )
         assert loader._workspace_tool_source_state_from_attrs(deferred.attrs) == "stale"
 
@@ -1472,7 +1474,7 @@ def test_pending_toolwindow_legacy_binding_is_materialized_by_saved_input_decode
         xr.testing.assert_identical(source_spec.apply(data), data.isel(x=0))
 
         invalid_attrs = dict(deferred.attrs)
-        invalid_attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "not-valid"
+        invalid_attrs[_persistence_constants.TOOL_SOURCE_STATE_ATTR] = "not-valid"
         assert loader._workspace_tool_source_state_from_attrs(invalid_attrs) == "fresh"
 
 
@@ -1500,10 +1502,10 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
     legacy_tool = _AddedTimeChildTool(resolved)
     qtbot.addWidget(legacy_tool)
     legacy_ds = legacy_tool.to_dataset()
-    legacy_ds.attrs[erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR] = json.dumps(
+    legacy_ds.attrs[_persistence_constants.TOOL_SOURCE_SPEC_ATTR] = json.dumps(
         source_spec.model_dump(mode="json")
     )
-    legacy_ds.attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+    legacy_ds.attrs[_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
         json.dumps(legacy_input_provenance.model_dump(mode="json"))
     )
 
@@ -1560,11 +1562,11 @@ def test_legacy_toolwindow_input_provenance_binds_live_parent(
     legacy_tool = _AddedTimeChildTool(data)
     qtbot.addWidget(legacy_tool)
     legacy_ds = legacy_tool.to_dataset()
-    legacy_ds.attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+    legacy_ds.attrs[_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
         json.dumps(input_provenance.model_dump(mode="json"))
     )
-    legacy_ds.attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] = True
-    legacy_ds.attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "fresh"
+    legacy_ds.attrs[_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR] = True
+    legacy_ds.attrs[_persistence_constants.TOOL_SOURCE_STATE_ATTR] = "fresh"
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
