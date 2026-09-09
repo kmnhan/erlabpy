@@ -28,12 +28,12 @@ import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.extensions._models import _script_name_key
-from erlab.interactive import _qt_state
+from erlab.interactive import _persistence_constants, _qt_state
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
     _file_path_stem,
 )
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
+from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
     ToolProvenanceSpec,
@@ -357,7 +357,7 @@ class _WorkspaceLoader:
         ds = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             payload_path,
-            preferred_data_name=_ITOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.ITOOL_DATA_NAME,
         )
         if ds is not None:
             return ds
@@ -378,7 +378,7 @@ class _WorkspaceLoader:
         ds = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             payload_path,
-            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
         )
         if ds is not None:
             return ds
@@ -537,9 +537,9 @@ class _WorkspaceLoader:
 
     @staticmethod
     def _workspace_imagetool_payload_data(ds: xr.Dataset) -> xr.DataArray:
-        if _ITOOL_DATA_NAME not in ds:
+        if _persistence_constants.ITOOL_DATA_NAME not in ds:
             raise ValueError("Pending workspace payload has no ImageTool data")
-        return ds[_ITOOL_DATA_NAME]
+        return ds[_persistence_constants.ITOOL_DATA_NAME]
 
     def _workspace_tool_reference_source_data(
         self,
@@ -599,7 +599,7 @@ class _WorkspaceLoader:
                 reference.get("kind") == "parent_source"
                 for reference in tool_data_references.values()
             )
-            or erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in ds.attrs
+            or _persistence_constants.TOOL_SOURCE_BINDING_ATTR in ds.attrs
         ):
             source_parent_data = _source_data_for_target(parent_target)
 
@@ -693,7 +693,7 @@ class _WorkspaceLoader:
         cls, attrs: Mapping[str, typing.Any]
     ) -> _ManagedWindowNode._source_state_type:
         source_state = workspace_format._decode_workspace_attr_text(
-            attrs.get(erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR)
+            attrs.get(_persistence_constants.TOOL_SOURCE_STATE_ATTR)
         )
         return erlab.interactive.utils._normalize_tool_source_state(source_state)
 
@@ -704,14 +704,14 @@ class _WorkspaceLoader:
         parent_target: int | str | None,
     ) -> xr.Dataset:
         """Convert released unary ToolWindow metadata to one canonical input."""
-        inputs_attr = erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR
+        inputs_attr = _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR
         if parent_target is None or inputs_attr in ds.attrs:
             return ds
 
         legacy_attrs = (
-            erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
-            erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR,
-            erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+            _persistence_constants.TOOL_SOURCE_SPEC_ATTR,
+            _persistence_constants.TOOL_SOURCE_BINDING_ATTR,
+            _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
         )
         if not any(key in ds.attrs for key in legacy_attrs):
             return ds
@@ -746,7 +746,7 @@ class _WorkspaceLoader:
             tool_cls._saved_script_input_attrs(updated_inputs, primary_input)
         )
         if source_spec is not None:
-            migrated.attrs.pop(erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR, None)
+            migrated.attrs.pop(_persistence_constants.TOOL_SOURCE_BINDING_ATTR, None)
         return migrated
 
     def _root_workspace_imagetool_kwargs(
@@ -932,8 +932,12 @@ class _WorkspaceLoader:
     ) -> int | str:
         with _workspace_load_stage(profiler, "imagetool metadata restore"):
             uid = ds.attrs.get("manager_node_uid")
-            provenance_spec = ds.attrs.get("manager_node_provenance_spec")
-            live_source_spec = ds.attrs.get("manager_node_live_source_spec")
+            provenance_spec = ds.attrs.get(
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
+            )
+            live_source_spec = ds.attrs.get(
+                _persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR
+            )
             live_source_binding = ds.attrs.get("manager_node_live_source_binding")
             parse_provenance_spec = parse_tool_provenance_spec
             parsed_provenance_spec = None
@@ -982,12 +986,12 @@ class _WorkspaceLoader:
                         exc_info=True,
                     )
             replay_source_pending = (
-                workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
+                _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
                 and pending_workspace_memory_payload is not None
             )
             replay_source_data = None
             if (
-                workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
+                _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
                 and not replay_source_pending
             ):
                 replay_source_data = self._workspace_replay_source_data(ds, uid=uid)
@@ -1028,7 +1032,10 @@ class _WorkspaceLoader:
             }
             if profiler is not None:
                 tool_kwargs["_workspace_load_profiler"] = profiler
-            if _ITOOL_DATA_NAME in ds and ds[_ITOOL_DATA_NAME].chunks is not None:
+            if (
+                _persistence_constants.ITOOL_DATA_NAME in ds
+                and ds[_persistence_constants.ITOOL_DATA_NAME].chunks is not None
+            ):
                 tool_kwargs["auto_compute"] = False
             legacy_name = _legacy_saved_title_data_name(ds, parsed_provenance_spec)
             if legacy_name is not None:
@@ -1108,7 +1115,7 @@ class _WorkspaceLoader:
         *,
         uid: object,
     ) -> xr.DataArray | None:
-        blob_name = workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME
+        blob_name = _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME
         if blob_name not in ds:
             return None
         try:
@@ -1247,7 +1254,7 @@ class _WorkspaceLoader:
     @staticmethod
     def _tool_dataset_without_saved_input_provenance(ds: xr.Dataset) -> xr.Dataset:
         """Remove the legacy duplicate input-provenance snapshot before restore."""
-        attr_name = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+        attr_name = _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR
         if attr_name not in ds.attrs:
             return ds
         restored = ds.copy(deep=False)
@@ -1894,14 +1901,12 @@ class _WorkspaceLoader:
                 opened.close()
 
         def _load_dataset(
-            payload_path: str, *, entry: Mapping[str, typing.Any], imagetool: bool
+            payload_path: str,
+            *,
+            entry: Mapping[str, typing.Any],
+            imagetool: bool,
+            current_attrs: dict[typing.Hashable, typing.Any] | None,
         ) -> tuple[xr.Dataset, tuple[str | os.PathLike[str], str] | None]:
-            manifest_attrs = entry.get("payload_attrs")
-            current_attrs = (
-                workspace_format._restore_workspace_manifest_attrs(manifest_attrs)
-                if manifest_attrs is not None
-                else None
-            )
             prefix = "itool" if imagetool else "tool"
             if current_attrs is None:
                 window_visible = _workspace_payload_window_visible_h5py(
@@ -1943,9 +1948,9 @@ class _WorkspaceLoader:
                     if attrs is not None:
                         return xr.Dataset(attrs=attrs), (fname, payload_path)
             preferred_data_name = (
-                _ITOOL_DATA_NAME
+                _persistence_constants.ITOOL_DATA_NAME
                 if imagetool
-                else erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                else _persistence_constants.SAVED_TOOL_DATA_NAME
             )
             try:
                 ds = workspace_arrays._read_workspace_dataset_group_h5py(
@@ -1973,15 +1978,21 @@ class _WorkspaceLoader:
             if not isinstance(payload_path, str):
                 payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
             with profiler.stage("payload read"):
+                manifest_attrs = entry.get("payload_attrs")
+                current_attrs = (
+                    workspace_format._restore_workspace_manifest_attrs(manifest_attrs)
+                    if manifest_attrs is not None
+                    else None
+                )
                 ds, pending_payload = _load_dataset(
-                    payload_path, entry=entry, imagetool=is_imagetool
+                    payload_path,
+                    entry=entry,
+                    imagetool=is_imagetool,
+                    current_attrs=current_attrs,
                 )
-            manifest_attrs = entry.get("payload_attrs")
-            if manifest_attrs is not None:
+            if current_attrs is not None:
                 ds = ds.copy(deep=False)
-                ds.attrs = workspace_format._restore_workspace_manifest_attrs(
-                    manifest_attrs
-                )
+                ds.attrs = current_attrs
             if is_imagetool:
                 target = self._load_workspace_imagetool_dataset(
                     ds,
@@ -2559,8 +2570,8 @@ class _WorkspaceLoader:
         try:
             ds = workspace_format._restore_workspace_dataset_attrs(ds)
             data_name: Hashable
-            if _ITOOL_DATA_NAME in ds.data_vars:
-                data_name = _ITOOL_DATA_NAME
+            if _persistence_constants.ITOOL_DATA_NAME in ds.data_vars:
+                data_name = _persistence_constants.ITOOL_DATA_NAME
             else:
                 data_name = next(iter(ds.data_vars))
             name = ds.attrs.get("itool_name", "")
@@ -2861,7 +2872,7 @@ class _WorkspaceLoader:
                 if (
                     associate
                     and schema_version
-                    >= workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION
+                    >= _persistence_constants.WORKSPACE_LEGACY_SCHEMA_VERSION
                 ):
                     fallback_store = workspace_store.WorkspaceStore.active(access.path)
                     if fallback_store is None:

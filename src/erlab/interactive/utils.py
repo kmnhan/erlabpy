@@ -43,7 +43,12 @@ import xarray as xr
 from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
-from erlab.interactive import _qt_state, _saved_tools, _shortcut_sequences
+from erlab.interactive import (
+    _persistence_constants,
+    _qt_state,
+    _saved_tools,
+    _shortcut_sequences,
+)
 from erlab.interactive._code_trust import (
     approve_document_trust,
     commit_local_edit_trust,
@@ -71,7 +76,7 @@ from erlab.interactive._code_trust._ui import (
     create_code_trust_banner,
 )
 from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
-from erlab.interactive._plot_state import TOOL_VIEW_STATE_ATTR, ToolPlotStateRegistry
+from erlab.interactive._plot_state import ToolPlotStateRegistry
 from erlab.interactive._widgets import _Separator
 from erlab.utils._code import (
     _parse_single_arg,
@@ -1177,16 +1182,6 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     return content
 
 
-_TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
-_TOOL_SOURCE_BINDING_ATTR = "tool_source_binding"
-_TOOL_SOURCE_STATE_ATTR = "tool_source_state"
-_TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
-_TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
-_TOOL_SCRIPT_INPUTS_ATTR = "tool_script_inputs"
-_TOOL_PRIMARY_INPUT_ATTR = "tool_primary_input"
-_TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
-_TOOL_DATA_BLOB_NAME_ATTR = "tool_data_blob_name"
-_SAVED_TOOL_DATA_NAME = "<saved-tool-data>"
 _TOOL_INPUT_CODE_TRUST_DOMAIN = "erlab.tool-inputs"
 _TOOL_INPUT_CODE_TRUST_POLICY_VERSION = 1
 
@@ -1204,24 +1199,6 @@ def _normalize_tool_source_state(
     return "fresh"
 
 
-_SAVED_TOOL_DATA_REFERENCE_DIM = "<saved-tool-data-reference>"
-_SAVED_TOOL_DATA_BLOB_DIM_PREFIX = "<saved-tool-data-blob-"
-_NONE_TOOL_DATA_NAME = "<none-value>"
-_STALE_TOOL_DATA_ENCODING_KEYS = frozenset(
-    (
-        "chunksizes",
-        "compression",
-        "compression_opts",
-        "contiguous",
-        "fletcher32",
-        "original_shape",
-        "preferred_chunks",
-        "shuffle",
-        "source",
-    )
-)
-
-
 class _MissingSavedToolDataReferenceError(ValueError):
     """Raised when a saved tool-data reference cannot be resolved."""
 
@@ -1229,22 +1206,33 @@ class _MissingSavedToolDataReferenceError(ValueError):
 def _tool_data_placeholder() -> xr.DataArray:
     return xr.DataArray(
         np.empty((0,), dtype=np.uint8),
-        dims=(_SAVED_TOOL_DATA_REFERENCE_DIM,),
+        dims=(_persistence_constants.SAVED_TOOL_DATA_REFERENCE_DIM,),
     )
 
 
 def _tool_data_blob_dim(variable_name: str) -> str:
-    return f"{_SAVED_TOOL_DATA_BLOB_DIM_PREFIX}{variable_name.encode().hex()}>"
+    return (
+        f"{_persistence_constants.SAVED_TOOL_DATA_BLOB_DIM_PREFIX}"
+        f"{variable_name.encode().hex()}>"
+    )
 
 
 def _tool_data_to_blob(data: xr.DataArray, variable_name: str) -> xr.DataArray:
     from erlab.interactive.imagetool import _serialization
 
-    data_name = _NONE_TOOL_DATA_NAME if data.name is None else str(data.name)
-    ds = data.to_dataset(name=_SAVED_TOOL_DATA_NAME, promote_attrs=False)
-    ds.attrs[_TOOL_DATA_BLOB_NAME_ATTR] = data_name
-    encoded = _serialization.encode_private_coords(ds, _SAVED_TOOL_DATA_NAME)
-    encoded = _drop_stale_tool_data_encoding(encoded)
+    data_name = (
+        _persistence_constants.NONE_TOOL_DATA_NAME
+        if data.name is None
+        else str(data.name)
+    )
+    ds = data.to_dataset(
+        name=_persistence_constants.SAVED_TOOL_DATA_NAME, promote_attrs=False
+    )
+    ds.attrs[_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR] = data_name
+    encoded = _serialization.encode_private_coords(
+        ds, _persistence_constants.SAVED_TOOL_DATA_NAME
+    )
+    encoded = _serialization.prepare_tool_dataset(encoded, strip_backend_encoding=True)
     blob = encoded.to_netcdf(
         path=None,
         engine="h5netcdf",
@@ -1253,19 +1241,8 @@ def _tool_data_to_blob(data: xr.DataArray, variable_name: str) -> xr.DataArray:
     return xr.DataArray(
         np.frombuffer(blob, dtype=np.uint8).copy(),
         dims=(_tool_data_blob_dim(variable_name),),
-        attrs={_TOOL_DATA_BLOB_NAME_ATTR: data_name},
+        attrs={_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR: data_name},
     )
-
-
-def _drop_stale_tool_data_encoding(ds: xr.Dataset) -> xr.Dataset:
-    serialized = ds.copy(deep=False)
-    for variable in serialized.variables.values():
-        variable.encoding = {
-            key: value
-            for key, value in variable.encoding.items()
-            if key not in _STALE_TOOL_DATA_ENCODING_KEYS
-        }
-    return serialized
 
 
 def _tool_data_from_blob(blob: xr.DataArray) -> xr.DataArray:
@@ -1275,11 +1252,17 @@ def _tool_data_from_blob(blob: xr.DataArray) -> xr.DataArray:
         memoryview(np.asarray(blob.values, dtype=np.uint8).tobytes()),
         engine="h5netcdf",
     )
-    restored = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
-    data_name = restored.attrs.get(_TOOL_DATA_BLOB_NAME_ATTR, _NONE_TOOL_DATA_NAME)
-    if data_name == _NONE_TOOL_DATA_NAME:
+    ds = _serialization.restore_tool_dataset_attrs(ds)
+    restored = _serialization.restore_private_coords(
+        ds, _persistence_constants.SAVED_TOOL_DATA_NAME
+    )
+    data_name = restored.attrs.get(
+        _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR,
+        _persistence_constants.NONE_TOOL_DATA_NAME,
+    )
+    if data_name == _persistence_constants.NONE_TOOL_DATA_NAME:
         data_name = None
-    return restored[_SAVED_TOOL_DATA_NAME].rename(data_name)
+    return restored[_persistence_constants.SAVED_TOOL_DATA_NAME].rename(data_name)
 
 
 class _ToolWindowMeta(type(QtWidgets.QMainWindow)):  # type: ignore[misc]
@@ -5229,7 +5212,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._flush_pending_history_write()
         data_name = self.tool_data.name
         if data_name is None:
-            data_name = "<none-value>"
+            data_name = _persistence_constants.NONE_TOOL_DATA_NAME
         attrs: dict[str, typing.Any] = {
             "tool_state": self._saved_tool_status().model_dump_json(),
             "tool_data_name": str(data_name),
@@ -5242,13 +5225,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         }
         view_state = self._plot_state_registry.state_json()
         if view_state is not None:
-            attrs[TOOL_VIEW_STATE_ATTR] = view_state
+            attrs["tool_view_state"] = view_state
         attrs.update(
             self._saved_script_input_attrs(self._script_inputs, self._primary_input)
         )
         if self._script_inputs:
-            attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
-            attrs[_TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(self._source_auto_update)
+            attrs[_persistence_constants.TOOL_SOURCE_STATE_ATTR] = self._source_state
+            attrs[_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(
+                self._source_auto_update
+            )
         return attrs
 
     @staticmethod
@@ -5264,10 +5249,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if primary_input not in {item.name for item in inputs}:
             raise ValueError("primary input must name a script input")
         return {
-            _TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
+            _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
                 [item.model_dump(mode="json") for item in inputs]
             ),
-            _TOOL_PRIMARY_INPUT_ATTR: primary_input,
+            _persistence_constants.TOOL_PRIMARY_INPUT_ATTR: primary_input,
         }
 
     def _saved_tool_status(self) -> M:
@@ -5329,7 +5314,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         """Return named data artifacts that belong to this saved tool window."""
-        return {_SAVED_TOOL_DATA_NAME: self.tool_data}
+        return {_persistence_constants.SAVED_TOOL_DATA_NAME: self.tool_data}
 
     def _persistence_reference_node_uids(self) -> frozenset[str]:
         """Return manager node UIDs that saved data references may point to."""
@@ -5346,7 +5331,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Map canonical input names to their saved data item keys."""
         return {
             item.name: (
-                _SAVED_TOOL_DATA_NAME if item.name == self._primary_input else item.name
+                _persistence_constants.SAVED_TOOL_DATA_NAME
+                if item.name == self._primary_input
+                else item.name
             )
             for item in self._script_inputs
         }
@@ -5461,7 +5448,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return a saved reference payload for a persistence data item."""
         if (
             not self._save_tool_data_references
-            or variable_name != _SAVED_TOOL_DATA_NAME
+            or variable_name != _persistence_constants.SAVED_TOOL_DATA_NAME
             or self.source_state != "fresh"
             or len(self._script_inputs) != 1
         ):
@@ -5528,7 +5515,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def _saved_tool_data_dataset(self) -> xr.Dataset:
         data_items = self._persistence_data_items()
-        required_items = {_SAVED_TOOL_DATA_NAME}
+        required_items = {_persistence_constants.SAVED_TOOL_DATA_NAME}
         required_items.update(self._persistence_input_item_keys().values())
         missing_items = required_items.difference(data_items)
         if missing_items:
@@ -5549,14 +5536,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if reference is not None:
                 variables[variable_name] = _tool_data_placeholder()
                 references[variable_name] = reference
-            elif variable_name == _SAVED_TOOL_DATA_NAME:
+            elif variable_name == _persistence_constants.SAVED_TOOL_DATA_NAME:
                 variables[variable_name] = data
             else:
                 variables[variable_name] = _tool_data_to_blob(data, variable_name)
 
         ds = xr.Dataset(variables).assign_attrs(self._saved_tool_attrs)
         if references:
-            ds.attrs[_TOOL_DATA_REFERENCES_ATTR] = json.dumps(references)
+            ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+                references
+            )
         return ds
 
     def to_dataset(self) -> xr.Dataset:
@@ -5595,7 +5584,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _saved_tool_data_references_from_metadata(
         attrs: Mapping[str, typing.Any],
     ) -> dict[str, dict[str, typing.Any]]:
-        payload = attrs.get(_TOOL_DATA_REFERENCES_ATTR)
+        payload = attrs.get(_persistence_constants.TOOL_DATA_REFERENCES_ATTR)
         if payload is None:
             return {}
         if not isinstance(payload, str):
@@ -5654,11 +5643,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 )
                 return None
 
-        raw_script_inputs = attrs.get(_TOOL_SCRIPT_INPUTS_ATTR)
+        raw_script_inputs = attrs.get(_persistence_constants.TOOL_SCRIPT_INPUTS_ATTR)
         if raw_script_inputs is not None:
             try:
                 script_inputs = parse_script_inputs(raw_script_inputs)
-                raw_primary = attrs.get(_TOOL_PRIMARY_INPUT_ATTR)
+                raw_primary = attrs.get(_persistence_constants.TOOL_PRIMARY_INPUT_ATTR)
                 if isinstance(raw_primary, bytes):
                     raw_primary = raw_primary.decode()
                 primary_input = raw_primary if isinstance(raw_primary, str) else None
@@ -5671,7 +5660,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 if (
                     script_inputs
                     and source_parent_data is not None
-                    and _TOOL_SOURCE_BINDING_ATTR in attrs
+                    and _persistence_constants.TOOL_SOURCE_BINDING_ATTR in attrs
                 ):
                     primary_index = tuple(item.name for item in script_inputs).index(
                         primary_input
@@ -5679,7 +5668,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     if script_inputs[primary_index].source_spec is None:
                         source_spec = _materialized_source_spec(
                             _legacy_value(
-                                _TOOL_SOURCE_BINDING_ATTR,
+                                _persistence_constants.TOOL_SOURCE_BINDING_ATTR,
                                 ImageToolSelectionSourceBinding.model_validate,
                             )
                         )
@@ -5695,9 +5684,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                             script_inputs = tuple(updated)
                 return script_inputs, primary_input
 
-        raw_source_spec = attrs.get(_TOOL_SOURCE_SPEC_ATTR)
-        raw_source_binding = attrs.get(_TOOL_SOURCE_BINDING_ATTR)
-        raw_input_provenance = attrs.get(_TOOL_INPUT_PROVENANCE_SPEC_ATTR)
+        raw_source_spec = attrs.get(_persistence_constants.TOOL_SOURCE_SPEC_ATTR)
+        raw_source_binding = attrs.get(_persistence_constants.TOOL_SOURCE_BINDING_ATTR)
+        raw_input_provenance = attrs.get(
+            _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR
+        )
         if (
             raw_source_spec is None
             and raw_source_binding is None
@@ -5705,21 +5696,22 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         ):
             return (), None
         source_spec = _legacy_value(
-            _TOOL_SOURCE_SPEC_ATTR,
+            _persistence_constants.TOOL_SOURCE_SPEC_ATTR,
             lambda value: require_live_source_spec(parse_tool_provenance_spec(value)),
         )
         source_binding = (
             None
             if source_spec is not None
             else _legacy_value(
-                _TOOL_SOURCE_BINDING_ATTR,
+                _persistence_constants.TOOL_SOURCE_BINDING_ATTR,
                 ImageToolSelectionSourceBinding.model_validate,
             )
         )
         if source_spec is None:
             source_spec = _materialized_source_spec(source_binding)
         provenance_spec = _legacy_value(
-            _TOOL_INPUT_PROVENANCE_SPEC_ATTR, parse_tool_provenance_spec
+            _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+            parse_tool_provenance_spec,
         )
         if source_spec is None and provenance_spec is None and source_binding is None:
             return (), None
@@ -5889,6 +5881,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         requested = None if variable_names is None else frozenset(variable_names)
         references = cls._saved_tool_data_references(ds)
         data_items: dict[str, xr.DataArray] = {}
+        materialized_references: dict[
+            int, tuple[xr.DataArray, xr.DataArray, bool, tuple[Hashable, ...]]
+        ] = {}
         for variable_name, reference in references.items():
             if requested is not None and variable_name not in requested:
                 continue
@@ -5903,7 +5898,42 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     entry_locator=entry_locator,
                 )
                 if materialize_references:
-                    resolved = resolved.copy(deep=False).load()
+                    cached = materialized_references.get(id(resolved))
+                    if cached is None:
+                        source_data = resolved
+                        # IndexVariable.load() is a no-op, even when its index
+                        # adapter reports that the expanded values are not in memory.
+                        lazy_data = (
+                            not isinstance(source_data.variable, xr.IndexVariable)
+                            and not source_data.variable._in_memory
+                        )
+                        lazy_coords = tuple(
+                            name
+                            for name, coord in source_data.coords.variables.items()
+                            if not isinstance(coord, xr.IndexVariable)
+                            and not coord._in_memory
+                        )
+                        resolved = resolved.copy(deep=False).load()
+                        # Keep the source alive so its identity cannot be reused.
+                        # Loading a copy leaves the resolver's source lazy.
+                        if lazy_data or lazy_coords:
+                            materialized_references[id(source_data)] = (
+                                source_data,
+                                resolved,
+                                lazy_data,
+                                lazy_coords,
+                            )
+                    else:
+                        _, loaded, lazy_data, lazy_coords = cached
+                        resolved = loaded.copy(deep=False)
+                        # Separate buffers created by loading. Keep existing eager
+                        # buffers shared, as shallow-copy/load does without caching.
+                        if lazy_data:
+                            resolved.data = loaded.data.copy()
+                        for name in lazy_coords:
+                            resolved.coords[name].variable.data = loaded.coords[
+                                name
+                            ].data.copy()
                 data_items[variable_name] = resolved
             except _MissingSavedToolDataReferenceError:
                 if cls._missing_saved_tool_data_reference_optional(
@@ -5917,17 +5947,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 continue
             if variable_name in data_items:
                 continue
-            if _TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs:
+            if _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs:
                 if not isinstance(variable_name, str):
                     raise TypeError("Saved tool data variable names must be strings")
                 data_items[variable_name] = _tool_data_from_blob(data_array)
 
         if (
-            requested is None or _SAVED_TOOL_DATA_NAME in requested
-        ) and _SAVED_TOOL_DATA_NAME not in data_items:
-            if _SAVED_TOOL_DATA_NAME not in ds:
+            requested is None
+            or _persistence_constants.SAVED_TOOL_DATA_NAME in requested
+        ) and _persistence_constants.SAVED_TOOL_DATA_NAME not in data_items:
+            if _persistence_constants.SAVED_TOOL_DATA_NAME not in ds:
                 raise ValueError("Saved tool dataset is missing primary tool data")
-            data_items[_SAVED_TOOL_DATA_NAME] = ds[_SAVED_TOOL_DATA_NAME]
+            data_items[_persistence_constants.SAVED_TOOL_DATA_NAME] = ds[
+                _persistence_constants.SAVED_TOOL_DATA_NAME
+            ]
         return data_items
 
     @staticmethod
@@ -5984,7 +6017,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None",
             kwargs.pop("_code_trust_entry_locator", None),
         )
-        ds = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
+        ds = _serialization.restore_private_coords(
+            ds, _persistence_constants.SAVED_TOOL_DATA_NAME
+        )
 
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
         if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
@@ -6018,13 +6053,17 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         )
 
         # Instantiate the class and set the status
-        tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
-        if tool_data_name == "<none-value>":
+        tool_data_name: str | None = ds.attrs.get(
+            "tool_data_name", _persistence_constants.NONE_TOOL_DATA_NAME
+        )
+        if tool_data_name == _persistence_constants.NONE_TOOL_DATA_NAME:
             tool_data_name = None
         token = _TOOL_WINDOW_RESTORE_DEFER.set(defer_restore_work)
         try:
             constructor_data = cls_obj._prepare_restored_tool_data_for_constructor(
-                data_items[_SAVED_TOOL_DATA_NAME].rename(tool_data_name),
+                data_items[_persistence_constants.SAVED_TOOL_DATA_NAME].rename(
+                    tool_data_name
+                ),
                 saved_status,
             )
             tool = cls_obj(
@@ -6068,10 +6107,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     script_inputs,
                     primary_input=primary_input,
                     auto_update=bool(
-                        ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)
+                        ds.attrs.get(
+                            _persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR, False
+                        )
                     ),
                     state=_normalize_tool_source_state(
-                        ds.attrs.get(_TOOL_SOURCE_STATE_ATTR)
+                        ds.attrs.get(_persistence_constants.TOOL_SOURCE_STATE_ATTR)
                     ),
                 )
             if script_inputs:
@@ -6080,7 +6121,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             else:
                 tool._restore_persistence_payload(ds)
                 tool._restore_persistence_data_items(data_items, ds)
-            tool._plot_state_registry.restore_json(ds.attrs.get(TOOL_VIEW_STATE_ATTR))
+            tool._plot_state_registry.restore_json(ds.attrs.get("tool_view_state"))
             tool.setWindowTitle(ds.attrs["tool_title"])
             if (
                 not _qt_state.restore_qt_window_state(
@@ -6112,6 +6153,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         The saved netcdf dataset can be used to recreate the ImageTool with the class
         method :meth:`from_file`.
 
+        .. versionchanged:: 3.28.0
+           Nested attributes on data and coordinates are preserved in saved tool files.
+
         Parameters
         ----------
         filename
@@ -6125,7 +6169,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         manifest = self._code_trust_manifest_from_saved_metadata(
             saved_status, dataset.attrs
         )
-        _serialization.encode_private_coords(dataset, _SAVED_TOOL_DATA_NAME).to_netcdf(
+        encoded = _serialization.encode_private_coords(
+            dataset, _persistence_constants.SAVED_TOOL_DATA_NAME
+        )
+        _serialization.prepare_tool_dataset(encoded).to_netcdf(
             filename, engine="h5netcdf", invalid_netcdf=True
         )
         if manifest is not None:
@@ -6144,6 +6191,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def from_file(cls, filename: str | os.PathLike, **kwargs) -> typing.Self:
         """Restore a window from a file saved using :meth:`to_file`.
 
+        .. versionchanged:: 3.28.0
+           Restore typed attributes from new tool files. Older files remain supported.
+
         Parameters
         ----------
         filename
@@ -6151,7 +6201,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         **kwargs
             Additional keyword arguments passed to the constructor.
         """
+        from erlab.interactive.imagetool import _serialization
+
         with xr.open_dataset(filename, engine="h5netcdf") as opened:
+            opened = _serialization.restore_tool_dataset_attrs(opened)
             cls_obj = cls._saved_tool_class_from_dataset(opened)
             status = cls_obj.StateModel.model_validate_json(opened.attrs["tool_state"])
             manifest = cls_obj._code_trust_manifest_from_saved_metadata(

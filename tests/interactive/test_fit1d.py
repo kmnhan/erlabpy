@@ -7,6 +7,8 @@ import threading
 import typing
 import weakref
 
+from erlab.interactive import _persistence_constants
+
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -670,7 +672,7 @@ def test_fit1d_managed_uncertainty_uses_named_persistence_input(qtbot) -> None:
     replacement_uncertainty = uncertainty + 0.1
     win._replace_persistence_data_items(
         {
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: replacement_data,
+            _persistence_constants.SAVED_TOOL_DATA_NAME: replacement_data,
             "uncertainty": replacement_uncertainty,
         },
         xr.Dataset(),

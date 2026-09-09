@@ -14,6 +14,7 @@ from qtpy import QtCore, QtWidgets
 import erlab.interactive._code_trust as code_trust
 import erlab.interactive._code_trust._application as _application
 import erlab.interactive._code_trust._notary as _notary
+from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     approve_document_trust,
     document_trust_has_trusted_lineage,
@@ -35,7 +36,6 @@ from erlab.interactive._code_trust._locations import (
 )
 from erlab.interactive._code_trust._notary import CodeTrustError, CodeTrustNotary
 from erlab.interactive._code_trust._payloads import (
-    CODE_PAYLOAD_ENTRIES_ATTR,
     code_payload_entries_from_metadata,
     store_code_payload_entries,
 )
@@ -1150,7 +1150,9 @@ def test_code_payload_metadata_validates_saved_values() -> None:
     )
     attrs: dict[str, object] = {}
     store_code_payload_entries(attrs, (entry,))
-    attrs[CODE_PAYLOAD_ENTRIES_ATTR] = str(attrs[CODE_PAYLOAD_ENTRIES_ATTR]).encode()
+    attrs[_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR] = str(
+        attrs[_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR]
+    ).encode()
 
     assert code_payload_entries_from_metadata(attrs) == (entry,)
 
@@ -1175,7 +1177,9 @@ def test_code_payload_metadata_validates_saved_values() -> None:
     )
     for raw, message in invalid_metadata:
         with pytest.raises(TypeError, match=message):
-            code_payload_entries_from_metadata({CODE_PAYLOAD_ENTRIES_ATTR: raw})
+            code_payload_entries_from_metadata(
+                {_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR: raw}
+            )
 
 
 def test_code_payload_metadata_rejects_invalid_entries() -> None:
@@ -1202,9 +1206,9 @@ def test_code_payload_metadata_rejects_invalid_entries() -> None:
     with pytest.raises(ValueError, match="unique locations"):
         store_code_payload_entries({}, (entry, duplicate))
 
-    attrs = {CODE_PAYLOAD_ENTRIES_ATTR: "stale"}
+    attrs = {_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR: "stale"}
     store_code_payload_entries(attrs, ())
-    assert CODE_PAYLOAD_ENTRIES_ATTR not in attrs
+    assert _persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR not in attrs
 
 
 def test_code_trust_notary_sign_check_remove_and_domain_separation(tmp_path) -> None:

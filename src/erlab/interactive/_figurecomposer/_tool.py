@@ -18,6 +18,7 @@ import unicodedata
 import uuid
 import weakref
 
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
@@ -4580,7 +4581,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self, variable_name: str, data: xr.DataArray
     ) -> dict[str, typing.Any] | None:
         del data
-        if variable_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
+        if variable_name == _persistence_constants.SAVED_TOOL_DATA_NAME:
             return self._source_reference_payload(self._document.recipe.primary_source)
         return self._source_reference_payload(variable_name)
 
@@ -4593,7 +4594,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> bool:
         del ds
         return (
-            variable_name != erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            variable_name != _persistence_constants.SAVED_TOOL_DATA_NAME
             and reference.get("kind") == "manager_node"
         )
 
@@ -4605,11 +4606,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         else:
             primary_data = self.tool_data
-        items = {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: primary_data}
+        items = {_persistence_constants.SAVED_TOOL_DATA_NAME: primary_data}
         for source_name in self._document.source_data:
             if source_name == self._document.recipe.primary_source:
                 continue
-            if source_name == erlab.interactive.utils._SAVED_TOOL_DATA_NAME:
+            if source_name == _persistence_constants.SAVED_TOOL_DATA_NAME:
                 raise ValueError(
                     "Figure source names cannot use the reserved saved-tool data name"
                 )
@@ -4642,7 +4643,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 continue
             _data, already_selected = self._persistence_source_data(source.name)
             variable_name = (
-                erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                _persistence_constants.SAVED_TOOL_DATA_NAME
                 if source.name == self._document.recipe.primary_source
                 else source.name
             )
@@ -4702,7 +4703,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         def persisted_data(source: FigureSourceState) -> xr.DataArray | None:
             variable_name = (
-                erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                _persistence_constants.SAVED_TOOL_DATA_NAME
                 if source.name == self._document.recipe.primary_source
                 else source.name
             )
@@ -4714,8 +4715,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             current_primary = source_data.get(source.name)
             if current_primary is not None:
                 return data.rename(current_primary.name)
-            tool_data_name = ds.attrs.get("tool_data_name", "<none-value>")
-            if tool_data_name == "<none-value>":
+            tool_data_name = ds.attrs.get(
+                "tool_data_name", _persistence_constants.NONE_TOOL_DATA_NAME
+            )
+            if tool_data_name == _persistence_constants.NONE_TOOL_DATA_NAME:
                 tool_data_name = None
             return data.rename(tool_data_name)
 

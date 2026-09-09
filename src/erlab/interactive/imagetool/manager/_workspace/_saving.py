@@ -22,7 +22,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
-from erlab.interactive import _qt_state
+from erlab.interactive import _persistence_constants, _qt_state
 from erlab.interactive._code_trust import document_trust_has_trusted_lineage
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
@@ -326,17 +326,17 @@ class _WorkspaceSaver:
         provenance_spec = persistence.provenance_spec
         if kind == "imagetool" and persistence.replay_source_data is not None:
             ds = ds.copy(deep=False)
-            blob_name = workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME
+            blob_name = _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME
             ds[blob_name] = erlab.interactive.utils._tool_data_to_blob(
                 persistence.replay_source_data,
                 blob_name,
             )
         if kind == "imagetool" and provenance_spec is not None:
-            ds.attrs["manager_node_provenance_spec"] = json.dumps(
+            ds.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
                 provenance_spec.model_dump(mode="json")
             )
         else:
-            ds.attrs.pop("manager_node_provenance_spec", None)
+            ds.attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
             ds.attrs["manager_node_source_input_ndim"] = int(node.source_input_ndim)
         if isinstance(node, _ImageToolWrapper) and node.watched:
@@ -366,7 +366,7 @@ class _WorkspaceSaver:
             ds.attrs["manager_node_output_id"] = output_id
         source_spec = persistence.source_spec
         if kind == "imagetool" and source_spec is not None:
-            ds.attrs["manager_node_live_source_spec"] = json.dumps(
+            ds.attrs[_persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR] = json.dumps(
                 source_spec.model_dump(mode="json")
             )
         if kind == "imagetool" and (source_spec is not None or output_id is not None):
@@ -427,7 +427,7 @@ class _WorkspaceSaver:
             ):
                 ds = tool.to_dataset()
             ds.attrs.pop(
-                erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+                _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
                 None,
             )
             ds.attrs["tool_title"] = _strip_workspace_modified_placeholder(
@@ -859,9 +859,9 @@ class _WorkspaceSaver:
 
         provenance_spec = node.provenance_spec
         if provenance_spec is None:
-            attrs.pop("manager_node_provenance_spec", None)
+            attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
         else:
-            attrs["manager_node_provenance_spec"] = json.dumps(
+            attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
                 provenance_spec.model_dump(mode="json")
             )
 
@@ -913,9 +913,9 @@ class _WorkspaceSaver:
 
         source_spec = node.source_spec
         if source_spec is None:
-            attrs.pop("manager_node_live_source_spec", None)
+            attrs.pop(_persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR, None)
         else:
-            attrs["manager_node_live_source_spec"] = json.dumps(
+            attrs[_persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR] = json.dumps(
                 source_spec.model_dump(mode="json")
             )
         if source_spec is None and output_id is None:
@@ -958,32 +958,32 @@ class _WorkspaceSaver:
                 )
             )
             if not has_legacy_parent_reference:
-                attrs.pop(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR, None)
+                attrs.pop(_persistence_constants.TOOL_SOURCE_SPEC_ATTR, None)
             if not any(
                 item.name == primary_input and item.source_spec is None
                 for item in script_inputs
             ):
-                attrs.pop(erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR, None)
-        elif erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR not in attrs:
-            attrs.pop(erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR, None)
+                attrs.pop(_persistence_constants.TOOL_SOURCE_BINDING_ATTR, None)
+        elif _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR not in attrs:
+            attrs.pop(_persistence_constants.TOOL_PRIMARY_INPUT_ATTR, None)
         has_saved_inputs = bool(script_inputs) or any(
             key in attrs
             for key in (
-                erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR,
-                erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR,
-                erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR,
+                _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR,
+                _persistence_constants.TOOL_SOURCE_SPEC_ATTR,
+                _persistence_constants.TOOL_SOURCE_BINDING_ATTR,
             )
         )
         if has_saved_inputs:
-            attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = node.source_state
-            attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(
+            attrs[_persistence_constants.TOOL_SOURCE_STATE_ATTR] = node.source_state
+            attrs[_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(
                 node.source_auto_update
             )
         else:
-            attrs.pop(erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR, None)
-            attrs.pop(erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR, None)
-        attrs.pop(erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR, None)
-        attrs.pop("manager_node_provenance_spec", None)
+            attrs.pop(_persistence_constants.TOOL_SOURCE_STATE_ATTR, None)
+            attrs.pop(_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR, None)
+        attrs.pop(_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR, None)
+        attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
         return attrs
 
     @staticmethod
@@ -992,7 +992,7 @@ class _WorkspaceSaver:
         previous: Mapping[str, typing.Any] | None,
     ) -> bool:
         """Return whether a reusable tool payload has legacy input provenance."""
-        attr_name = erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+        attr_name = _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR
         pending_attrs = node.pending_workspace_payload_attrs
         if pending_attrs is not None and attr_name in pending_attrs:
             return True
@@ -1026,12 +1026,12 @@ class _WorkspaceSaver:
         if attrs is None:
             return {}
         payload = workspace_format._decode_workspace_attr_text(
-            attrs.get(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR)
+            attrs.get(_persistence_constants.TOOL_DATA_REFERENCES_ATTR)
         )
         if payload is None:
             return (
                 {}
-                if erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in attrs
+                if _persistence_constants.TOOL_DATA_REFERENCES_ATTR not in attrs
                 else None
             )
         try:
@@ -1177,6 +1177,7 @@ class _WorkspaceSaver:
         object_writes: dict[str, workspace_storage._WorkspaceObjectWrite] = {}
         final_entries: list[dict[str, typing.Any]] = []
         serialized_datasets: list[xr.Dataset] = []
+        serialized_dataset_ids: set[int] = set()
         legacy_payload_rewrite_uids: set[str] = set()
         extension_object_ids = set(
             workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
@@ -1248,6 +1249,7 @@ class _WorkspaceSaver:
                             dataset.attrs
                         )
                         serialized_datasets.append(dataset)
+                        serialized_dataset_ids.add(id(dataset))
             if attrs_payload is not None:
                 entry["payload_attrs"] = attrs_payload
 
@@ -1296,11 +1298,12 @@ class _WorkspaceSaver:
                         dataset = _serialize(uid)
                         if dataset is None:
                             continue
-                    if all(existing is not dataset for existing in serialized_datasets):
+                        entry["payload_attrs"] = (
+                            workspace_format._workspace_manifest_attrs(dataset.attrs)
+                        )
+                    if id(dataset) not in serialized_dataset_ids:
                         serialized_datasets.append(dataset)
-                    entry["payload_attrs"] = workspace_format._workspace_manifest_attrs(
-                        dataset.attrs
-                    )
+                        serialized_dataset_ids.add(id(dataset))
                     object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
                         object_id,
                         dataset=dataset,

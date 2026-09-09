@@ -824,6 +824,15 @@ def test_imagetool_preview_image_is_cached_until_node_changes(
         assert node._preview_image[1].cacheKey() == pixmap.cacheKey()
         assert calls == [node.imagetool, node.imagetool, node.imagetool]
 
+        area = node.imagetool.slicer_area
+        area.add_cursor()
+        for cursor in (0, 1, 0):
+            previous_calls = len(calls)
+            area.set_current_cursor(cursor)
+            preview = node._preview_image
+            assert node._preview_image is preview
+            assert len(calls) == previous_calls + 1
+
         missing_calls: list[object] = []
 
         def _missing_preview(imagetool, fallback_ratio, fallback_pixmap):

@@ -21,8 +21,7 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TOOL_VIEW_STATE_ATTR = "tool_view_state"
-_TOOL_VIEW_STATE_VERSION = 1
+
 _MAX_SAVED_COLORMAP_STOPS = 256
 
 
@@ -126,7 +125,7 @@ def _parse_tool_view_state(payload: object) -> ToolViewState:
     raw = json.loads(payload)
     if not isinstance(raw, dict):
         raise TypeError("saved tool view state must be a JSON object")
-    if raw.get("version", _TOOL_VIEW_STATE_VERSION) != _TOOL_VIEW_STATE_VERSION:
+    if raw.get("version", 1) != 1:
         raise ValueError("unsupported saved tool view state version")
     raw_plots = raw.get("plots", {})
     if not isinstance(raw_plots, dict):

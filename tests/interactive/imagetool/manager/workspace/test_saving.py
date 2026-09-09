@@ -27,11 +27,11 @@ import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import new_document_trust
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import ScriptInput, full_data
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
@@ -177,7 +177,7 @@ def test_manager_workspace_restores_hidden_ktool_added_coordinates_and_angle_sca
         saved_attrs = _current_workspace_payload_attrs(
             workspace_path, f"0/childtools/{tool_uid}"
         )
-        assert erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in saved_attrs
+        assert _persistence_constants.TOOL_DATA_REFERENCES_ATTR not in saved_attrs
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
@@ -1567,7 +1567,7 @@ def test_manager_legacy_itws_schema_save_helpers(
         )
         manager._workspace_controller._associate_loaded_workspace_file(
             tmp_path / "legacy-schema.itws",
-            workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
+            _persistence_constants.WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
         )
 
         assert manager._workspace_state.path is None
@@ -1822,9 +1822,9 @@ def test_pending_workspace_tool_attrs_update_script_inputs() -> None:
     pending_base = {
         "tool_display_name": "old",
         "tool_title": "prefix old",
-        erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR: "stale",
-        erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR: "legacy",
-        erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR: "data",
+        _persistence_constants.TOOL_SOURCE_BINDING_ATTR: "stale",
+        _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR: "legacy",
+        _persistence_constants.TOOL_PRIMARY_INPUT_ATTR: "data",
     }
     saver._pending_workspace_node_attrs = types.MethodType(
         lambda _self, _node, _attrs, *, kind: dict(pending_base),
@@ -1843,33 +1843,29 @@ def test_pending_workspace_tool_attrs_update_script_inputs() -> None:
     attrs = saver._pending_workspace_tool_attrs(node)
 
     assert attrs["tool_title"] == "prefix new"
-    assert json.loads(attrs[erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR]) == [
+    assert json.loads(attrs[_persistence_constants.TOOL_SCRIPT_INPUTS_ATTR]) == [
         script_input.model_dump(mode="json")
     ]
-    assert attrs[erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR] == "data"
-    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR not in attrs
-    assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR not in attrs
-    assert attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] == "valid"
-    assert attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] is True
-    assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
+    assert attrs[_persistence_constants.TOOL_PRIMARY_INPUT_ATTR] == "data"
+    assert _persistence_constants.TOOL_SOURCE_SPEC_ATTR not in attrs
+    assert _persistence_constants.TOOL_SOURCE_BINDING_ATTR not in attrs
+    assert attrs[_persistence_constants.TOOL_SOURCE_STATE_ATTR] == "valid"
+    assert attrs[_persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR] is True
+    assert _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
 
     pending_base.clear()
     pending_base.update(
         {
-            erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR: json.dumps(
+            _persistence_constants.TOOL_SOURCE_SPEC_ATTR: json.dumps(
                 full_data().model_dump(mode="json")
             ),
-            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
-                {
-                    erlab.interactive.utils._SAVED_TOOL_DATA_NAME: {
-                        "kind": "parent_source"
-                    }
-                }
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {_persistence_constants.SAVED_TOOL_DATA_NAME: {"kind": "parent_source"}}
             ),
         }
     )
     attrs = saver._pending_workspace_tool_attrs(node)
-    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR in attrs
+    assert _persistence_constants.TOOL_SOURCE_SPEC_ATTR in attrs
 
     node.name = "plain"
     node.tool_script_inputs = ()
@@ -1877,10 +1873,10 @@ def test_pending_workspace_tool_attrs_update_script_inputs() -> None:
     attrs = saver._pending_workspace_tool_attrs(node)
 
     assert attrs["tool_title"] == "plain"
-    assert erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR not in attrs
-    assert erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR not in attrs
-    assert erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR not in attrs
-    assert erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR not in attrs
+    assert _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR not in attrs
+    assert _persistence_constants.TOOL_PRIMARY_INPUT_ATTR not in attrs
+    assert _persistence_constants.TOOL_SOURCE_STATE_ATTR not in attrs
+    assert _persistence_constants.TOOL_SOURCE_AUTO_UPDATE_ATTR not in attrs
 
 
 def test_workspace_reference_uid_detection_and_invalid_reader_path() -> None:
@@ -1965,7 +1961,7 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
         is_imagetool=False,
         pending_workspace_payload=("workspace.itws", "/tool"),
         pending_workspace_payload_attrs={
-            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                 {
                     "data": {
                         "kind": "manager_node",
@@ -2001,26 +1997,26 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
     [
         (None, None, {}, ()),
         (
-            {erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: b"\xff"},
+            {_persistence_constants.TOOL_DATA_REFERENCES_ATTR: b"\xff"},
             None,
             {},
             (),
         ),
         (
-            {erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: "not-json"},
+            {_persistence_constants.TOOL_DATA_REFERENCES_ATTR: "not-json"},
             None,
             {},
             (),
         ),
         (
-            {erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: "[]"},
+            {_persistence_constants.TOOL_DATA_REFERENCES_ATTR: "[]"},
             None,
             {},
             (),
         ),
         (
             {
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {
                         "invalid": None,
                         "parent": {"kind": "parent_source"},
@@ -2039,7 +2035,7 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
         ),
         (
             {
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {"parent": {"kind": "parent_source"}}
                 )
             },
@@ -2971,11 +2967,13 @@ def test_manager_opens_schema_5_immutable_generation_workspace(
 
         with h5py.File(fname, "r+") as h5_file:
             h5_file.attrs["imagetool_workspace_schema_version"] = 5
-            generation_root = h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP]
+            generation_root = h5_file[
+                _persistence_constants.WORKSPACE_GENERATIONS_GROUP
+            ]
             for generation in generation_root.values():
                 manifest = workspace_store.WorkspaceStore._read_manifest(generation)
                 manifest["schema_version"] = 5
-                del generation[workspace_store._WORKSPACE_MANIFEST_DATASET]
+                del generation["manifest"]
                 workspace_store.WorkspaceStore._write_manifest(generation, manifest)
 
         extra = itool(data + 1, manager=False, execute=False)
@@ -3444,7 +3442,9 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved[0, 0] == 10.0
 
 
@@ -3488,7 +3488,9 @@ def test_manager_compute_offloaded_workspace_data_marks_backing_dirty(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved.chunks is None
 
 
@@ -3690,14 +3692,18 @@ def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
         assert manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved.chunks is None
 
         assert _request_workspace_save_and_wait(qtbot, manager)
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved.chunks == (2, 3)
 
         opened = workspace_arrays.open_workspace_dataset(
@@ -3706,7 +3712,7 @@ def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
             chunks={},
         )
         try:
-            rebound = opened[_ITOOL_DATA_NAME]
+            rebound = opened[_persistence_constants.ITOOL_DATA_NAME]
             assert rebound.chunks == ((2, 2, 1), (3, 2))
         finally:
             opened.close()
@@ -4568,7 +4574,7 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         store = manager._workspace_controller._workspace_store
         assert store is not None
         with store.read_session() as h5_file:
-            assert len(h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) >= 2
+            assert len(h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) >= 2
 
         monkeypatch.setattr(
             erlab.interactive.utils,
@@ -4583,7 +4589,7 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
             assert h5_file.id.valid
         _assert_no_workspace_internal_groups(fname)
         with store.read_session() as h5_file:
-            assert set(h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            assert set(h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == {
                 current_entry["payload_object_id"]
             }
         generations = store.generations()
@@ -4626,7 +4632,9 @@ def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
         manifest = manager._workspace_controller.saving._workspace_manifest()
         manifest["schema_version"] = schema_version
         tree.attrs["imagetool_workspace_schema_version"] = schema_version
-        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            manifest
+        )
         tree.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
         tree.close()
 
@@ -4808,7 +4816,9 @@ def test_manager_workspace_save_as_and_compact_deduplicates_legacy_payload(
         manifest = manager._workspace_controller.saving._workspace_manifest()
         manifest["schema_version"] = 4
         tree.attrs["imagetool_workspace_schema_version"] = 4
-        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            manifest
+        )
         tree.to_netcdf(old_path, engine="h5netcdf", invalid_netcdf=True)
         tree.close()
 
@@ -4873,7 +4883,9 @@ def test_manager_workspace_save_as_and_compact_deduplicates_legacy_payload(
         with store.read_session() as h5_file:
             assert legacy_path not in h5_file
         np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
-        np.testing.assert_array_equal(stale_legacy[_ITOOL_DATA_NAME], data)
+        np.testing.assert_array_equal(
+            stale_legacy[_persistence_constants.ITOOL_DATA_NAME], data
+        )
         stale_legacy.close()
 
 
@@ -4902,7 +4914,9 @@ def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
         manifest["schema_version"] = 4
         manifest["nodes"][0]["data_backing"] = "dask"
         tree.attrs["imagetool_workspace_schema_version"] = 4
-        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            manifest
+        )
         tree.to_netcdf(old_path, engine="h5netcdf", invalid_netcdf=True)
         tree.close()
 
@@ -4986,7 +5000,9 @@ def test_manager_workspace_upgrade_repoints_pending_payload_before_compaction(
         manifest["schema_version"] = 4
         manifest["nodes"][0]["data_backing"] = "memory"
         tree.attrs["imagetool_workspace_schema_version"] = 4
-        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            manifest
+        )
         payload_attrs = tree["0/imagetool"].attrs
         payload_attrs.pop("itool_window_state", None)
         payload_attrs["itool_visible"] = False
@@ -5049,7 +5065,7 @@ def test_manager_releases_eager_legacy_source_when_conversion_is_canceled(
         manager.add_imagetool(root, show=False)
         tree = manager._workspace_controller.saving._to_datatree()
         tree.attrs["imagetool_workspace_schema_version"] = 2
-        tree.attrs.pop(workspace_format._WORKSPACE_MANIFEST_ATTR, None)
+        tree.attrs.pop(_persistence_constants.WORKSPACE_MANIFEST_ATTR, None)
         tree.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
         tree.close()
         manager.remove_all_tools()
@@ -5124,7 +5140,7 @@ def test_manager_workspace_save_collects_old_generations_in_background(
         assert store is not None
         assert len(store.generations()) == 2
         with store.read_session() as h5_file:
-            object_group = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            object_group = h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
             assert first_object_id not in object_group
             assert len(object_group) == 2
 
@@ -5720,10 +5736,102 @@ def test_manager_workspace_full_save_drops_empty_attr_name(
         assert "" in root.slicer_area._data.attrs
         with h5py.File(fname, "r") as h5_file:
             saved_attrs = h5_file[_current_workspace_payload_path(fname)][
-                _ITOOL_DATA_NAME
+                _persistence_constants.ITOOL_DATA_NAME
             ].attrs
             assert "" not in list(saved_attrs)
             assert saved_attrs["note"] == ""
+
+
+def test_manager_workspace_stale_figure_preserves_nested_attrs(
+    qtbot, tmp_path, manager_context
+) -> None:
+    from erlab.interactive._figurecomposer import (
+        FigureComposerTool,
+        FigureRecipeState,
+        FigureSourceState,
+    )
+    from erlab.interactive.imagetool import ImageTool
+
+    original = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(4.0), "y": np.arange(5.0)},
+        attrs={"nested": {"values": [1, 2, 3]}},
+        name="source",
+    )
+    changed = original.copy(deep=True)
+    changed.data = changed.values + 500
+    path = tmp_path / "original.itws"
+    copy_path = tmp_path / "copy.itws"
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        root = ImageTool(original.copy(deep=True), _in_manager=True)
+        manager.add_imagetool(root, show=False, uid="source")
+        source = root.slicer_area._data
+        script_input = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target("source")
+        )
+        assert script_input.node_snapshot_token is not None
+        state = FigureSourceState.from_script_input(script_input).model_copy(
+            update={"name": "primary"}
+        )
+        figure = FigureComposerTool(
+            source,
+            recipe=FigureRecipeState(sources=(state,), primary_source="primary"),
+            source_data={"primary": source},
+        )
+        (duplicate,) = figure._document.duplicate_sources(("primary",))
+        manager.add_figuretool(figure, show=False, uid="figure")
+
+        def check(expected_root: xr.DataArray) -> None:
+            root_node = manager._node_for_target("source")
+            figure_node = manager._node_for_target("figure")
+            root_node.show()
+            figure_node.show()
+            xr.testing.assert_identical(
+                root_node.imagetool.slicer_area._data.compute(), expected_root
+            )
+            restored = figure_node.tool_window
+            assert isinstance(restored, FigureComposerTool)
+            assert set(restored.source_data()) == {"primary", duplicate}
+            for payload in restored.source_data().values():
+                xr.testing.assert_identical(payload.compute(), original)
+
+        def reopen(filename) -> None:
+            assert controller.loading._load_workspace_file(
+                filename,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+            assert not controller.loading._skipped_workspace_nodes
+
+        controller.saving._save_workspace_document(path)
+        reopen(path)
+        check(original)
+        manager._node_for_target("source").imagetool.slicer_area.replace_source_data(
+            changed, auto_compute=False
+        )
+        qtbot.wait_until(
+            lambda: (
+                manager._node_for_target("source").snapshot_token_for_role(
+                    script_input.data_role
+                )
+                != script_input.node_snapshot_token
+            )
+        )
+        check(changed)
+
+        controller.saving._save_workspace_document(path)
+        reopen(path)
+        check(changed)
+        assert controller.compact_workspace()
+        check(changed)
+        controller.saving._save_workspace_document(copy_path)
+        reopen(copy_path)
+        check(changed)
 
 
 def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
@@ -5763,15 +5871,17 @@ def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
         assert root.slicer_area._data.attrs["Single Motor Scan"] is live_rich_attr
         assert root.slicer_area._data.coords["x"].attrs["axis_config"] is live_axis_attr
         assert (
-            workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR
+            _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR
             not in root.slicer_area._data.attrs
         )
         with h5py.File(fname, "r") as h5_file:
             saved_data = h5_file[_current_workspace_payload_path(fname)][
-                _ITOOL_DATA_NAME
+                _persistence_constants.ITOOL_DATA_NAME
             ]
             assert "Single Motor Scan" not in saved_data.attrs
-            assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+            assert (
+                _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+            )
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -5795,7 +5905,7 @@ def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
         )
         try:
             restored = workspace_format._restore_workspace_dataset_attrs(opened)
-            loaded = restored[_ITOOL_DATA_NAME]
+            loaded = restored[_persistence_constants.ITOOL_DATA_NAME]
         finally:
             opened.close()
         _assert_rich_workspace_attr(loaded.attrs["Single Motor Scan"])
@@ -5922,7 +6032,24 @@ def test_manager_workspace_delta_save_splits_state_and_data_writes(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         fname = tmp_path / "delta.itws"
+        encoded_attrs = []
+        original_encode = workspace_format._workspace_manifest_attrs
+
+        def _record_encode(attrs):
+            encoded = original_encode(attrs)
+            encoded_attrs.append(encoded)
+            return encoded
+
+        monkeypatch.setattr(
+            workspace_format, "_workspace_manifest_attrs", _record_encode
+        )
         manager._workspace_controller.saving._save_workspace_document(fname)
+        assert len(encoded_attrs) == 1
+        assert (
+            _current_workspace_manifest(fname)["nodes"][0]["payload_attrs"]
+            == (encoded_attrs[0])
+        )
+        encoded_attrs.clear()
         adopt_workspace_path(manager, fname)
 
         dataset_writes: list[str | None] = []
@@ -5937,17 +6064,38 @@ def test_manager_workspace_delta_save_splits_state_and_data_writes(
         manager.rename_imagetool(0, "state only")
         assert _request_workspace_save_and_wait(qtbot, manager)
         assert dataset_writes == []
+        assert len(encoded_attrs) == 1
+        assert (
+            _current_workspace_manifest(fname)["nodes"][0]["payload_attrs"]
+            == (encoded_attrs[0])
+        )
+        encoded_attrs.clear()
 
         replacement = data.copy(deep=True)
         replacement.data = np.asarray(replacement.data) + 10
         root.slicer_area.replace_source_data(replacement)
         assert _request_workspace_save_and_wait(qtbot, manager)
+        assert len(encoded_attrs) == 1
+        assert (
+            _current_workspace_manifest(fname)["nodes"][0]["payload_attrs"]
+            == (encoded_attrs[0])
+        )
+        encoded_attrs.clear()
 
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
-            assert saved[0, 0] == 10
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
+            np.testing.assert_array_equal(saved[...], replacement.values)
+
+        snapshot = manager._workspace_controller.saving._workspace_save_snapshot(fname)
+        try:
+            assert encoded_attrs == []
+            assert all(obj.dataset is None for obj in snapshot.generation_plan.objects)
+        finally:
+            snapshot.close()
 
 
 def test_manager_workspace_full_save_keeps_full_persistence_for_serialized_nodes(
@@ -6090,7 +6238,9 @@ def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replac
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved[0, 0] == 10
 
 
@@ -6131,7 +6281,9 @@ def test_manager_workspace_same_file_lazy_data_delta_save_does_not_deadlock(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved[0, 0] == 0
             assert saved.chunks == (128, 64)
 
@@ -6183,9 +6335,11 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
         assert not _request_workspace_save_and_wait(qtbot, manager)
         assert _current_workspace_manifest(fname) == manifest_before
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file[_current_workspace_payload_path(fname)][_ITOOL_DATA_NAME]
+            saved = h5_file[_current_workspace_payload_path(fname)][
+                _persistence_constants.ITOOL_DATA_NAME
+            ]
             assert saved[0, 0] == 0
-            assert set(h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == set(
+            assert set(h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == set(
                 workspace_store.WorkspaceStore.manifest_object_ids(manifest_before)
             )
 
@@ -6209,12 +6363,8 @@ def test_manager_workspace_stale_pending_groups_do_not_poison_open_or_save(
         fname = tmp_path / "stale-pending.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
         with h5py.File(fname, "a") as h5_file:
-            h5_file.create_group(
-                f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}stale"
-            )
-            h5_file.create_group(
-                f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}stale"
-            )
+            h5_file.create_group("__itws_pending_stale")
+            h5_file.create_group("__itws_backup_stale")
 
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False

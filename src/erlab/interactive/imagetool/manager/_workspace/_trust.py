@@ -10,15 +10,13 @@ from collections.abc import Mapping
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_manifest,
     document_path_is_trusted,
     relocate_manifest_entries,
 )
-from erlab.interactive._code_trust._payloads import (
-    CODE_PAYLOAD_ENTRIES_ATTR,
-    store_code_payload_entries,
-)
+from erlab.interactive._code_trust._payloads import store_code_payload_entries
 from erlab.interactive._saved_tools import resolve_saved_tool_class
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
@@ -35,29 +33,27 @@ if typing.TYPE_CHECKING:
 WORKSPACE_CODE_TRUST_DOMAIN = "erlab.workspace"
 WORKSPACE_CODE_TRUST_POLICY_VERSION = 7
 _MANIFEST_ID = (WORKSPACE_CODE_TRUST_DOMAIN, WORKSPACE_CODE_TRUST_POLICY_VERSION)
-_MANAGER_LIVE_SOURCE_SPEC_ATTR = "manager_node_live_source_spec"
-_MANAGER_PROVENANCE_SPEC_ATTR = "manager_node_provenance_spec"
-_ITOOL_PROVENANCE_SPEC_ATTR = "itool_provenance_spec"
-_TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
-_TOOL_SCRIPT_INPUTS_ATTR = "tool_script_inputs"
-_TOOL_PRIMARY_INPUT_ATTR = "tool_primary_input"
-_TOOL_DATA_REFERENCES_ATTR = "tool_data_references"
-_PROVENANCE_ATTRS = (_MANAGER_PROVENANCE_SPEC_ATTR, _ITOOL_PROVENANCE_SPEC_ATTR)
+
+
+_PROVENANCE_ATTRS = (
+    _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+    _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+)
 _SOURCE_ATTRS = {
-    _MANAGER_LIVE_SOURCE_SPEC_ATTR: "source",
-    _TOOL_SOURCE_SPEC_ATTR: "tool-source",
+    _persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR: "source",
+    _persistence_constants.TOOL_SOURCE_SPEC_ATTR: "tool-source",
 }
 _ALL_SOURCE_ATTRS = tuple(_SOURCE_ATTRS.items())
 _CODE_TRUST_ATTRS = frozenset(
     (
         *_PROVENANCE_ATTRS,
         *_SOURCE_ATTRS,
-        CODE_PAYLOAD_ENTRIES_ATTR,
+        _persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR,
         "tool_cls_qualname",
         "tool_state",
-        _TOOL_SCRIPT_INPUTS_ATTR,
-        _TOOL_PRIMARY_INPUT_ATTR,
-        _TOOL_DATA_REFERENCES_ATTR,
+        _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR,
+        _persistence_constants.TOOL_PRIMARY_INPUT_ATTR,
+        _persistence_constants.TOOL_DATA_REFERENCES_ATTR,
     )
 )
 
@@ -129,7 +125,7 @@ def _tool_code_trust_from_attrs(
         tool_cls = typing.cast("type[ToolWindow]", resolve_saved_tool_class(identifier))
         status = tool_cls.StateModel.model_validate_json(tool_state)
         manifest_attrs = dict(attrs)
-        manifest_attrs.pop(_TOOL_SOURCE_SPEC_ATTR, None)
+        manifest_attrs.pop(_persistence_constants.TOOL_SOURCE_SPEC_ATTR, None)
         return tool_cls._code_trust_manifest_from_saved_metadata(status, manifest_attrs)
     except Exception as exc:
         raise TypeError("Workspace tool trust metadata could not be inspected") from exc
@@ -206,14 +202,16 @@ def workspace_code_trust_manifest(
             node_entry.get("kind") == "imagetool" and "tool_cls_qualname" not in attrs
         )
         if not is_imagetool:
-            attrs.pop(_MANAGER_PROVENANCE_SPEC_ATTR, None)
+            attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
         tool_manifest = _tool_code_trust_from_attrs(attrs)
         entries += _node_code_trust_entries(
             path,
             attrs,
             tool_manifest,
             saved_provenance_attrs=(
-                _PROVENANCE_ATTRS if is_imagetool else (_ITOOL_PROVENANCE_SPEC_ATTR,)
+                _PROVENANCE_ATTRS
+                if is_imagetool
+                else (_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,)
             ),
         )
     return create_manifest(*_MANIFEST_ID, entries)
@@ -235,9 +233,9 @@ def current_workspace_code_trust_manifest(
             tool_manifest = _tool_code_trust_from_attrs(attrs)
         source_spec = node.source_spec
         source_attr, source_segment = (
-            (_MANAGER_LIVE_SOURCE_SPEC_ATTR, "source")
+            (_persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR, "source")
             if node.is_imagetool
-            else (_TOOL_SOURCE_SPEC_ATTR, "tool-source")
+            else (_persistence_constants.TOOL_SOURCE_SPEC_ATTR, "tool-source")
         )
         include_source = node.is_imagetool or tool is None or tool_manifest is None
         entries += _node_code_trust_entries(
@@ -272,15 +270,28 @@ def inspect_pending_workspace_code_payloads(manager: ImageToolManager) -> None:
             continue
         if attrs is None:
             raise TypeError("Workspace tool payload metadata is missing")
-        if CODE_PAYLOAD_ENTRIES_ATTR in attrs:
+        if _persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR in attrs:
             continue
         identifier = attrs.get("tool_cls_qualname")
         if not isinstance(identifier, str):
             raise TypeError("Workspace tool class identifier must be a string")
         tool_cls = resolve_saved_tool_class(identifier)
-        if not issubclass(tool_cls, erlab.interactive.utils.ToolWindow):
+        current_tool_base = erlab.interactive.utils.ToolWindow
+        # Match the reload-aware subclass check, but retain the inherited base:
+        # its default hooks can predate the current utils module.
+        base_tool_cls = next(
+            (
+                base
+                for base in tool_cls.__mro__
+                if (base.__module__, base.__qualname__)
+                == (current_tool_base.__module__, current_tool_base.__qualname__)
+            ),
+            None,
+        )
+        if base_tool_cls is None:
             raise TypeError("Workspace tool class is not a ToolWindow subclass")
-        base_tool_cls = erlab.interactive.utils.ToolWindow
+        tool_cls = typing.cast("type[ToolWindow]", tool_cls)
+        base_tool_cls = typing.cast("type[ToolWindow]", base_tool_cls)
         saved_inspector = tool_cls._code_trust_payload_entries_from_saved_dataset
         base_saved_inspector = (
             base_tool_cls._code_trust_payload_entries_from_saved_dataset

@@ -11,10 +11,10 @@ import pydantic
 import xarray as xr
 
 import erlab
-import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
@@ -74,7 +74,7 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         primary = self.primary_input or "data"
-        items = {imagetool_serialization.SAVED_TOOL_DATA_NAME: self._data}
+        items = {_persistence_constants.SAVED_TOOL_DATA_NAME: self._data}
         items.update(
             (name, value)
             for name, value in self._last_inputs.items()
@@ -141,7 +141,7 @@ class _WorkspaceSweepChildTool(
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         return {
-            imagetool_serialization.SAVED_TOOL_DATA_NAME: self._data,
+            _persistence_constants.SAVED_TOOL_DATA_NAME: self._data,
             "auxiliary": self._extra_data,
         }
 
@@ -149,7 +149,7 @@ class _WorkspaceSweepChildTool(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
         del ds
-        self._data = data_items[imagetool_serialization.SAVED_TOOL_DATA_NAME].rename(
+        self._data = data_items[_persistence_constants.SAVED_TOOL_DATA_NAME].rename(
             self._data.name
         )
         self._extra_data = data_items["auxiliary"]
@@ -173,7 +173,7 @@ class _WorkspaceManagerReferenceFigureTool(_WorkspaceSweepFigureTool):
         del data
         if (
             not self._save_tool_data_references
-            or variable_name != imagetool_serialization.SAVED_TOOL_DATA_NAME
+            or variable_name != _persistence_constants.SAVED_TOOL_DATA_NAME
             or self._reference_uid is None
         ):
             return None
@@ -224,7 +224,7 @@ def _open_external_hdf5_imagetool_data(
             group=_current_workspace_payload_path(fname),
             **open_kwargs,
         )
-        data = ds[imagetool_serialization.ITOOL_DATA_NAME]
+        data = ds[_persistence_constants.ITOOL_DATA_NAME]
         data.set_close(ds.close)
         return data
     tree = xr.open_datatree(fname, **open_kwargs)
@@ -344,13 +344,11 @@ def _transaction_test_root_attrs(delta_save_count: int = 0) -> dict[str, object]
         "nodes": [],
     }
     if delta_save_count > 0:
-        manifest["transaction_protocol"] = (
-            workspace_format._WORKSPACE_TRANSACTION_PROTOCOL
-        )
+        manifest["transaction_protocol"] = "recoverable-delta-v1"
         manifest["delta_save_count"] = delta_save_count
     return {
         "imagetool_workspace_schema_version": 4,
-        workspace_format._WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
+        _persistence_constants.WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
     }
 
 
@@ -373,17 +371,17 @@ def _write_transaction_test_workspace(fname: pathlib.Path, value: float = 1.0) -
 def _assert_no_workspace_internal_groups(fname: pathlib.Path) -> None:
     with h5py.File(fname, "r") as h5_file:
         generation_groups = {
-            workspace_store._WORKSPACE_OBJECTS_GROUP,
-            workspace_store._WORKSPACE_STAGING_GROUP,
-            workspace_store._WORKSPACE_GENERATIONS_GROUP,
+            _persistence_constants.WORKSPACE_OBJECTS_GROUP,
+            _persistence_constants.WORKSPACE_STAGING_GROUP,
+            _persistence_constants.WORKSPACE_GENERATIONS_GROUP,
         }
         assert not any(
             workspace_format._is_workspace_internal_group_name(name)
             and name not in generation_groups
             for name in h5_file
         )
-        if workspace_store._WORKSPACE_STAGING_GROUP in h5_file:
-            assert len(h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
+        if _persistence_constants.WORKSPACE_STAGING_GROUP in h5_file:
+            assert len(h5_file[_persistence_constants.WORKSPACE_STAGING_GROUP]) == 0
 
 
 def _rich_workspace_attr_value() -> dict[str, typing.Any]:

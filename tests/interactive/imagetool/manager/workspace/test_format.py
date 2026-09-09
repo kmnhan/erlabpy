@@ -14,6 +14,7 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 from erlab.extensions._models import _script_name_key
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._model import ScriptInput, script
 from tests.interactive.imagetool.manager.workspace._support import (
     _workspace_test_file_spec,
@@ -46,6 +47,423 @@ def test_tool_data_blob_preserves_none_name() -> None:
     restored = erlab.interactive.utils._tool_data_from_blob(blob)
 
     assert restored.name is None
+
+
+@pytest.mark.parametrize("name", [None, "source"])
+def test_tool_data_blob_preserves_nested_attrs(name) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={
+            "x": [0.0, 1.0],
+            "y": [0.0, 1.0, 2.0],
+            "Fake Motor": ("x", [10.0, 20.0]),
+        },
+        name=name,
+        attrs={"nested": {"values": [1, 2, 3]}},
+    )
+    data.coords["Fake Motor"].attrs["calibration"] = {
+        "offset": None,
+        "limits": (1.0, 2.0),
+    }
+    before = data.copy(deep=True)
+
+    for _ in range(2):
+        blob = erlab.interactive.utils._tool_data_to_blob(data, "secondary")
+        restored = erlab.interactive.utils._tool_data_from_blob(blob)
+        xr.testing.assert_identical(restored, before)
+        xr.testing.assert_identical(data, before)
+        data = restored
+
+
+def _assert_tool_attr_equal(actual, expected) -> None:
+    assert type(actual) is type(expected)
+    if isinstance(expected, dict):
+        assert actual.keys() == expected.keys()
+        for key, value in expected.items():
+            _assert_tool_attr_equal(actual[key], value)
+    elif isinstance(expected, list | tuple):
+        assert len(actual) == len(expected)
+        for left, right in zip(actual, expected, strict=True):
+            _assert_tool_attr_equal(left, right)
+    elif isinstance(expected, np.str_ | np.bytes_):
+        assert actual.dtype == expected.dtype
+        assert len(actual) == len(expected)
+        assert actual.tobytes() == expected.tobytes()
+    elif isinstance(expected, np.ndarray):
+        assert actual.dtype == expected.dtype
+        assert actual.shape == expected.shape
+        if expected.dtype.kind == "O":
+            for left, right in zip(actual.flat, expected.flat, strict=True):
+                _assert_tool_attr_equal(left, right)
+        else:
+            np.testing.assert_array_equal(actual, expected, strict=True)
+    else:
+        np.testing.assert_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {"bytes": b"plain bytes"},
+        b"\x00\xff",
+        "text\x00tail",
+        np.str_("sample\x00"),
+        np.bytes_(b"sample\x00"),
+        {
+            "sample": 1,
+            np.str_("sample\x00"): 2,
+            np.str_(""): 3,
+            np.str_("\x00"): 4,
+            (np.str_("β\x00"), np.bytes_(b"\xff\x00")): 5,
+        },
+        {
+            b"sample": 1,
+            np.bytes_(b"sample\x00"): 2,
+            np.bytes_(b""): 3,
+            np.bytes_(b"\x00"): 4,
+        },
+        {
+            "unicode": [
+                np.str_(text)
+                for text in (
+                    "",
+                    "plain",
+                    "\x00",
+                    "\x00\x00",
+                    "a\x00b\x00\x00",
+                    "\ufeffβ😀\ud800\x00",
+                )
+            ],
+            "bytes": [
+                np.bytes_(data)
+                for data in (b"", b"plain", b"\x00", b"\x00\x00", b"a\x00b\xff\x00\x00")
+            ],
+            "empty_unicode_array": np.ndarray((2,), dtype="U0"),
+            "empty_bytes_array": np.ndarray((0,), dtype="S0"),
+        },
+        [1, "text", None],
+        ("text", b"bytes"),
+        np.datetime64("2025-01-01", "ns"),
+        np.timedelta64(3, "ns"),
+        [np.timedelta64(1, "ns"), np.timedelta64(2, "ns")],
+        np.array([1, 2], dtype="timedelta64[ns]"),
+        np.array(["alpha", "β"]),
+        {"array": np.array([b"a\x00b", b"\xff"], dtype="S3")},
+        np.array(["a\x00b"]),
+        np.empty(0, dtype=object),
+        np.array([{"nested": (None, np.int16(3))}], dtype=object),
+        {
+            "array": np.arange(4, dtype=np.int16).reshape(2, 2),
+            "scalar": np.float32(1.5),
+            "tuple": (None, b"bytes", complex(2, 3)),
+            "mapping": {(1, "x"): [False, float("inf"), float("nan")]},
+        },
+    ],
+)
+def test_tool_dataset_attrs_roundtrip_typed_values(value) -> None:
+    ds = xr.Dataset(
+        {"data": ("x", [1.0, 2.0])},
+        coords={"x": [0, 1]},
+        attrs={"metadata": value},
+    )
+    ds["data"].attrs["metadata"] = value
+    ds["x"].attrs["metadata"] = value
+    # Both transport keys are user metadata here. Even a plausible envelope is literal.
+    ds.attrs[_persistence_constants.TOOL_ATTRS_VERSION_ATTR] = 99
+    ds.attrs[_persistence_constants.TOOL_ENCODED_ATTRS_ATTR] = json.dumps(
+        {"dataset": [], "variables": {}}
+    )
+    # NumPy's deep copy also strips trailing NULs from string scalars.
+    original = ds.copy(deep=False)
+
+    for _ in range(2):
+        prepared = imagetool_serialization.prepare_tool_dataset(ds)
+        raw = prepared.to_netcdf(engine="h5netcdf", invalid_netcdf=True)
+        opened = xr.load_dataset(memoryview(raw), engine="h5netcdf")
+        restored = imagetool_serialization.restore_tool_dataset_attrs(opened)
+        _assert_tool_attr_equal(restored.attrs, original.attrs)
+        _assert_tool_attr_equal(ds.attrs, original.attrs)
+        for name in original.variables:
+            _assert_tool_attr_equal(restored[name].attrs, original[name].attrs)
+            _assert_tool_attr_equal(ds[name].attrs, original[name].attrs)
+            np.testing.assert_array_equal(restored[name].values, original[name].values)
+        ds = restored
+
+
+def test_tool_dataset_native_attrs_keep_legacy_storage(monkeypatch) -> None:
+    ds = xr.Dataset({"data": ("x", [1.0, 2.0])}, coords={"x": [0, 1]})
+    ds.attrs.update(
+        title="source",
+        count=3,
+        valid=True,
+        scalar=np.float32(1.5),
+        numbers=[1, 2, 3],
+        names=("one", "two"),
+        empty=[],
+        coefficients=np.array([1 + 2j, 3 + 4j]),
+        bytes=b"text",
+        bytes_array=np.array([b"one", b"two"]),
+        object_strings=np.array(["one", "two"], dtype=object),
+        object_bytes=np.array([b"one", b"two"], dtype=object),
+        compound=np.array([(1, 2), (3, 4)], dtype=[("first", "i4"), ("second", "i4")]),
+        void_array=np.array([b"ab", b"cd"], dtype="V2"),
+        dtype_metadata=np.array([1, 2], dtype=np.dtype("i4", metadata={"units": "x"})),
+    )
+    ds["data"].attrs["units"] = "counts"
+
+    def fail_if_encoded(value):
+        raise AssertionError("Native attributes must not use the typed codec")
+
+    monkeypatch.setattr(imagetool_serialization, "encode_attr_value", fail_if_encoded)
+    prepared = imagetool_serialization.prepare_tool_dataset(ds)
+    assert _persistence_constants.TOOL_ATTRS_VERSION_ATTR not in prepared.attrs
+    assert imagetool_serialization.restore_tool_dataset_attrs(prepared) is prepared
+    baseline = xr.load_dataset(
+        memoryview(ds.to_netcdf(engine="h5netcdf", invalid_netcdf=True)),
+        engine="h5netcdf",
+    )
+    restored = xr.load_dataset(
+        memoryview(prepared.to_netcdf(engine="h5netcdf", invalid_netcdf=True)),
+        engine="h5netcdf",
+    )
+    xr.testing.assert_identical(restored, baseline)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_tool_dataset_metadata_preparation_shares_buffers(lazy) -> None:
+    import dask.array
+    from dask.callbacks import Callback
+
+    data = np.arange(6.0).reshape(2, 3)
+    coord = np.arange(6.0).reshape(2, 3) + 10
+    if lazy:
+        data = dask.array.from_array(data, chunks=(1, 3))
+        coord = dask.array.from_array(coord, chunks=(1, 3))
+    ds = xr.Dataset({"data": (("x", "y"), data)}, coords={"aux": (("x", "y"), coord)})
+    ds["data"].attrs["metadata"] = {"values": [1, 2, 3]}
+    ds["data"].encoding = {"compression": "unknown", "dtype": np.dtype("float64")}
+    ds["aux"].encoding = {"source": "old-file"}
+    attrs = ds["data"].attrs.copy()
+    executed = []
+    with Callback(posttask=lambda *args: executed.append(args)):
+        prepared = imagetool_serialization.prepare_tool_dataset(
+            ds, strip_backend_encoding=True
+        )
+        restored = imagetool_serialization.restore_tool_dataset_attrs(prepared)
+
+    assert not executed
+    for name in ds.variables:
+        assert prepared[name].data is ds[name].data
+        assert restored[name].data is ds[name].data
+    assert prepared["data"].encoding == {"dtype": np.dtype("float64")}
+    assert prepared["aux"].encoding == {}
+    assert ds["data"].encoding["compression"] == "unknown"
+    assert ds["aux"].encoding == {"source": "old-file"}
+    assert ds["data"].attrs == attrs
+    assert restored["data"].attrs == attrs
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        object(),
+        np.array([(1,)], dtype=[("field", "i4")]),
+        np.array([(object(),)], dtype=[("field", object)]),
+        np.array([1], dtype=np.dtype("i4", metadata={"units": "x"})),
+        np.array(["short", "long" * 20], dtype=np.dtypes.StringDType()),
+    ],
+)
+def test_tool_dataset_attrs_reject_unsupported_nested_values(value) -> None:
+    ds = xr.Dataset({"data": ("x", [1.0])})
+    metadata = {"nested": value}
+    ds["data"].attrs["metadata"] = metadata
+    with pytest.raises(TypeError, match="Cannot serialize tool attribute 'metadata'"):
+        imagetool_serialization.prepare_tool_dataset(ds)
+    assert ds["data"].attrs["metadata"] is metadata
+
+
+@pytest.mark.parametrize(
+    "value", [object(), np.array(["text"], dtype=np.dtypes.StringDType())]
+)
+def test_tool_dataset_attrs_reject_unsupported_direct_values(value) -> None:
+    ds = xr.Dataset(attrs={"metadata": value})
+    with pytest.raises(TypeError, match="Cannot serialize tool attribute 'metadata'"):
+        imagetool_serialization.prepare_tool_dataset(ds)
+
+
+@pytest.mark.parametrize("container", [list, tuple, lambda value: [value]])
+def test_tool_dataset_native_structured_sequences(container) -> None:
+    values = np.array([(1, 2.0), (3, 4.0)], dtype=[("count", "i4"), ("value", "f8")])
+    ds = xr.Dataset(attrs={"metadata": container(list(values))})
+    prepared = imagetool_serialization.prepare_tool_dataset(ds)
+    assert _persistence_constants.TOOL_ATTRS_VERSION_ATTR not in prepared.attrs
+    baseline = xr.load_dataset(
+        memoryview(ds.to_netcdf(engine="h5netcdf", invalid_netcdf=True)),
+        engine="h5netcdf",
+    )
+    restored = xr.load_dataset(
+        memoryview(prepared.to_netcdf(engine="h5netcdf", invalid_netcdf=True)),
+        engine="h5netcdf",
+    )
+    xr.testing.assert_identical(restored, baseline)
+
+
+def test_tool_dataset_native_vlen_attributes() -> None:
+    import h5py
+
+    ds = xr.Dataset(
+        attrs={"metadata": np.array(["first", "second"], dtype=h5py.string_dtype())}
+    )
+    prepared = imagetool_serialization.prepare_tool_dataset(ds)
+    assert _persistence_constants.TOOL_ATTRS_VERSION_ATTR not in prepared.attrs
+    baseline = xr.load_dataset(
+        memoryview(ds.to_netcdf(engine="h5netcdf", invalid_netcdf=True)),
+        engine="h5netcdf",
+    )
+    restored = xr.load_dataset(
+        memoryview(prepared.to_netcdf(engine="h5netcdf", invalid_netcdf=True)),
+        engine="h5netcdf",
+    )
+    xr.testing.assert_identical(restored, baseline)
+
+
+def test_tool_dataset_attrs_reject_object_sequences_and_cycles() -> None:
+    sequence = np.empty(1, dtype=object)
+    sequence[0] = [1, 2]
+    cycle = {}
+    cycle["self"] = cycle
+    cyclic_list = []
+    cyclic_list.append(cyclic_list)
+    for value in (sequence, cycle, cyclic_list):
+        ds = xr.Dataset(attrs={"metadata": value})
+        with pytest.raises(
+            TypeError, match="Cannot serialize tool attribute 'metadata'"
+        ):
+            imagetool_serialization.prepare_tool_dataset(ds)
+
+
+@pytest.mark.parametrize("name", ["", 1])
+def test_tool_dataset_attrs_reject_invalid_names(name) -> None:
+    with pytest.raises(TypeError, match="non-empty strings"):
+        imagetool_serialization.prepare_tool_dataset(xr.Dataset(attrs={name: "value"}))
+
+
+def test_tool_dataset_attrs_reject_non_string_variable_name() -> None:
+    ds = xr.Dataset({1: ("x", [1.0])})
+    ds[1].attrs["metadata"] = None
+    with pytest.raises(TypeError, match="variable names must be strings"):
+        imagetool_serialization.prepare_tool_dataset(ds)
+
+
+@pytest.mark.parametrize("version", [0, 2, True, "1", [1]])
+def test_tool_dataset_attrs_reject_unknown_version(version) -> None:
+    ds = xr.Dataset(attrs={_persistence_constants.TOOL_ATTRS_VERSION_ATTR: version})
+    with pytest.raises(ValueError, match="Unsupported tool attribute encoding version"):
+        imagetool_serialization.restore_tool_dataset_attrs(ds)
+
+
+@pytest.mark.parametrize("payload", [None, "{bad-json", [], {}, {"dataset": []}])
+def test_tool_dataset_attrs_reject_invalid_envelope(payload) -> None:
+    ds = xr.Dataset(attrs={_persistence_constants.TOOL_ATTRS_VERSION_ATTR: 1})
+    if payload is not None:
+        ds.attrs[_persistence_constants.TOOL_ENCODED_ATTRS_ATTR] = (
+            payload if isinstance(payload, str) else json.dumps(payload)
+        )
+    with pytest.raises(ValueError, match=r"[Ii]nvalid.*tool attribute"):
+        imagetool_serialization.restore_tool_dataset_attrs(ds)
+
+
+def test_tool_dataset_attrs_reject_invalid_variable_table() -> None:
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.TOOL_ATTRS_VERSION_ATTR: 1,
+            _persistence_constants.TOOL_ENCODED_ATTRS_ATTR: json.dumps(
+                {"dataset": [], "variables": []}
+            ),
+        }
+    )
+    with pytest.raises(TypeError, match="must be a mapping"):
+        imagetool_serialization.restore_tool_dataset_attrs(ds)
+
+
+@pytest.mark.parametrize(
+    ("scope", "entries", "error"),
+    [
+        (None, {}, "must be a list"),
+        (None, [[{}]], "Invalid encoded tool attribute entry"),
+        (None, [[{}, {"kind": "none"}]], "Invalid encoded tool attribute name"),
+        (None, [[{"kind": "str", "value": ""}, {"kind": "none"}]], "attribute name"),
+        (None, [[{"kind": "int", "value": 1}, {"kind": "none"}]], "attribute name"),
+        (
+            None,
+            [[{"kind": "str", "value": "new", "extra": 1}, {"kind": "none"}]],
+            "attribute name",
+        ),
+        (None, [[{"kind": "str", "value": "new"}, {}]], "attribute value"),
+        (
+            None,
+            [[{"kind": "str", "value": "new"}, {"kind": "bool", "value": "true"}]],
+            "attribute value",
+        ),
+        ("missing", [], "missing variable"),
+        (
+            "data",
+            [[{"kind": "str", "value": "units"}, {"kind": "none"}]],
+            "cannot replace metadata",
+        ),
+        (
+            None,
+            [[{"kind": "str", "value": "new"}, {"kind": "none"}]] * 2,
+            "cannot replace metadata",
+        ),
+    ],
+)
+def test_tool_dataset_attrs_reject_invalid_entries(scope, entries, error) -> None:
+    ds = xr.Dataset({"data": ("x", [1.0])})
+    ds["data"].attrs["units"] = "counts"
+    ds.attrs[_persistence_constants.TOOL_ATTRS_VERSION_ATTR] = 1
+    ds.attrs[_persistence_constants.TOOL_ENCODED_ATTRS_ATTR] = json.dumps(
+        {
+            "dataset": entries if scope is None else [],
+            "variables": {} if scope is None else {scope: entries},
+        }
+    )
+    before = ds.copy(deep=True)
+    with pytest.raises((TypeError, ValueError), match=error):
+        imagetool_serialization.restore_tool_dataset_attrs(ds)
+    xr.testing.assert_identical(ds, before)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "tool_cls_qualname",
+        "tool_state",
+        "tool_script_inputs",
+        "erlab_code_trust_payload_entries",
+    ],
+)
+def test_tool_dataset_attrs_keep_control_metadata_native(key, monkeypatch) -> None:
+    with pytest.raises(TypeError, match="control attribute"):
+        imagetool_serialization.prepare_tool_dataset(
+            xr.Dataset(attrs={key: {"bad": 1}})
+        )
+
+    def fail_if_decoded(value):
+        raise AssertionError("Control metadata must be rejected before decoding values")
+
+    monkeypatch.setattr(imagetool_serialization, "_decode_array", fail_if_decoded)
+    ds = xr.Dataset(attrs={_persistence_constants.TOOL_ATTRS_VERSION_ATTR: 1})
+    ds.attrs[_persistence_constants.TOOL_ENCODED_ATTRS_ATTR] = json.dumps(
+        {
+            "dataset": [[{"kind": "str", "value": key}, {"kind": "ndarray"}]],
+            "variables": {},
+        }
+    )
+    with pytest.raises(ValueError, match="cannot replace metadata"):
+        imagetool_serialization.restore_tool_dataset_attrs(ds)
 
 
 def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
@@ -335,9 +753,9 @@ def test_qt_window_state_restores_maximized_normal_geometry(qtbot) -> None:
 
 
 def test_imagetool_private_coord_serialization_edge_cases() -> None:
-    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
-    private_prefix = imagetool_serialization._PRIVATE_COORD_VAR_PREFIX
-    data_name = imagetool_serialization.ITOOL_DATA_NAME
+    private_attr = imagetool_serialization.PRIVATE_COORDS_ATTR
+    private_prefix = "__erlab_imagetool_coord_"
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     valid_payload = json.dumps(
         [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["x"]}]
     )
@@ -391,8 +809,8 @@ def test_imagetool_private_coord_serialization_edge_cases() -> None:
 
 
 def test_imagetool_private_coord_restore_ignores_invalid_records() -> None:
-    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
-    data_name = imagetool_serialization.ITOOL_DATA_NAME
+    private_attr = imagetool_serialization.PRIVATE_COORDS_ATTR
+    data_name = _persistence_constants.ITOOL_DATA_NAME
     missing_data = xr.Dataset({"other": ("x", [1.0])})
 
     assert imagetool_serialization.restore_private_coords(missing_data) is missing_data
@@ -434,29 +852,27 @@ def test_imagetool_private_coord_restore_ignores_invalid_records() -> None:
 
 
 def test_workspace_attr_native_detection_handles_edge_types() -> None:
-    assert workspace_format._workspace_attr_value_writes_natively(b"ok")
-    assert not workspace_format._workspace_attr_value_writes_natively(b"\xff")
-    assert not workspace_format._workspace_attr_value_writes_natively(b"a\x00")
-    assert workspace_format._workspace_attr_value_writes_natively(
+    assert imagetool_serialization.attr_value_writes_natively(b"ok")
+    assert not imagetool_serialization.attr_value_writes_natively(b"\xff")
+    assert not imagetool_serialization.attr_value_writes_natively(b"a\x00")
+    assert imagetool_serialization.attr_value_writes_natively(
         np.array([1, 2], dtype=np.int16)
     )
-    assert not workspace_format._workspace_attr_value_writes_natively(
+    assert not imagetool_serialization.attr_value_writes_natively(
         np.array([object()], dtype=object)
     )
-    assert workspace_format._workspace_attr_value_writes_natively(np.float64(1.0))
-    assert not workspace_format._workspace_attr_value_writes_natively(
+    assert imagetool_serialization.attr_value_writes_natively(np.float64(1.0))
+    assert not imagetool_serialization.attr_value_writes_natively(
         np.datetime64("2024-01-01")
     )
-    assert workspace_format._workspace_attr_value_writes_natively(("left", "right"))
-    assert workspace_format._workspace_attr_value_writes_natively((b"left", b"right"))
-    assert workspace_format._workspace_attr_value_writes_natively(
+    assert imagetool_serialization.attr_value_writes_natively(("left", "right"))
+    assert imagetool_serialization.attr_value_writes_natively((b"left", b"right"))
+    assert imagetool_serialization.attr_value_writes_natively(
         (np.bool_(True), complex(1.0, 2.0))
     )
-    assert not workspace_format._workspace_attr_value_writes_natively([1, "text"])
-    assert not workspace_format._workspace_attr_value_writes_natively(
-        ("text", b"bytes")
-    )
-    assert not workspace_format._workspace_attr_value_writes_natively(([1],))
+    assert not imagetool_serialization.attr_value_writes_natively([1, "text"])
+    assert not imagetool_serialization.attr_value_writes_natively(("text", b"bytes"))
+    assert not imagetool_serialization.attr_value_writes_natively(([1],))
 
 
 def test_workspace_mixed_scalar_attrs_use_typed_encoding() -> None:
@@ -475,6 +891,141 @@ def test_workspace_mixed_scalar_attrs_use_typed_encoding() -> None:
     assert restored["mixed_list"] == [1, "text"]
     assert restored["mixed_tuple"] == ("text", b"bytes")
     assert restored["native_numbers"] == [1, 2.0]
+
+
+@pytest.mark.parametrize("dtype", ["S1", "<U1", ">U1"])
+def test_workspace_legacy_empty_numpy_string_attrs_roundtrip(dtype, tmp_path) -> None:
+    # Released writers expanded empty scalars to one zero code unit.
+    scalar = {
+        "kind": "numpy_scalar",
+        "dtype": dtype,
+        "shape": [],
+        "data": "AA==" if dtype == "S1" else "AAAAAA==",
+    }
+    entries = [
+        [
+            {"kind": "str", "value": "metadata"},
+            {
+                "kind": "dict",
+                "items": [[{"kind": "str", "value": "empty"}, scalar]],
+            },
+        ]
+    ]
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR: json.dumps(
+                {"version": 1, "attrs": entries}
+            )
+        }
+    )
+    path = tmp_path / "legacy-attrs.nc"
+    ds.to_netcdf(path, engine="h5netcdf")
+    opened = xr.load_dataset(path, engine="h5netcdf")
+    expected = np.bytes_(b"") if dtype == "S1" else np.str_("")
+
+    for attrs in (
+        workspace_format._restore_workspace_serialized_attrs(opened.attrs),
+        workspace_format._restore_workspace_manifest_attrs(entries),
+    ):
+        _assert_tool_attr_equal(attrs["metadata"]["empty"], expected)
+        assert not attrs["metadata"]["empty"]
+        # A new save must retain the old value after conversion to the new record.
+        restored = workspace_format._restore_workspace_manifest_attrs(
+            workspace_format._workspace_manifest_attrs(attrs)
+        )
+        _assert_tool_attr_equal(restored["metadata"]["empty"], expected)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        np.str_(""),
+        np.bytes_(b""),
+        np.str_("β\x00\x00"),
+        np.bytes_(b"\xff\x00\x00"),
+        np.datetime64("2025-01-01", "ns"),
+        np.timedelta64(3, "ns"),
+        np.datetime64("NaT"),
+        np.timedelta64("NaT"),
+    ],
+)
+def test_workspace_numpy_keys_preserve_type_and_contents(key) -> None:
+    decoded = imagetool_serialization.decode_attr_key(
+        imagetool_serialization.encode_attr_key(key)
+    )
+    _assert_tool_attr_equal(decoded, key)
+
+
+@pytest.mark.parametrize("key", [np.datetime64("NaT"), np.timedelta64("NaT")])
+def test_tool_dataset_attrs_keep_nat_keys_distinct_from_none(key) -> None:
+    ds = xr.Dataset(attrs={"metadata": {None: "none", key: "nat"}})
+    for _ in range(2):
+        prepared = imagetool_serialization.prepare_tool_dataset(ds)
+        raw = prepared.to_netcdf(engine="h5netcdf", invalid_netcdf=True)
+        opened = xr.load_dataset(memoryview(raw), engine="h5netcdf")
+        ds = imagetool_serialization.restore_tool_dataset_attrs(opened)
+        metadata = ds.attrs["metadata"]
+        assert len(metadata) == 2
+        assert metadata[None] == "none"
+        restored_key = next(item for item in metadata if item is not None)
+        _assert_tool_attr_equal(restored_key, key)
+        assert metadata[restored_key] == "nat"
+
+
+@pytest.mark.parametrize("tuple_keys", [False, True])
+def test_tool_dataset_attrs_preserve_distinct_nan_keys(tuple_keys) -> None:
+    keys = [float("nan"), float("nan")]
+    if tuple_keys:
+        keys = [(key,) for key in keys]
+    ds = xr.Dataset(attrs={"metadata": dict(zip(keys, [1, 2], strict=True))})
+    for _ in range(2):
+        prepared = imagetool_serialization.prepare_tool_dataset(ds)
+        raw = prepared.to_netcdf(engine="h5netcdf", invalid_netcdf=True)
+        opened = xr.load_dataset(memoryview(raw), engine="h5netcdf")
+        ds = imagetool_serialization.restore_tool_dataset_attrs(opened)
+        metadata = ds.attrs["metadata"]
+        assert len(metadata) == 2
+        assert list(metadata.values()) == [1, 2]
+        assert all(np.isnan(key[0] if tuple_keys else key) for key in metadata)
+
+
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+def test_workspace_attr_numpy_unicode_scalar_byteorder(byteorder) -> None:
+    text = "\ufeffβ😀\ud800\x00\x00"
+    array = np.array(text, dtype=f"{byteorder}U{len(text)}")
+    payload = imagetool_serialization.encode_attr_value(array)
+    payload["kind"] = "numpy_string"
+
+    decoded = imagetool_serialization.decode_attr_value(payload)
+
+    _assert_tool_attr_equal(decoded, np.str_(text))
+
+
+@pytest.mark.parametrize("kind", ["numpy_scalar", "numpy_string"])
+@pytest.mark.parametrize("dtype", ["U0", "S0"])
+def test_workspace_attr_zero_width_strings_reject_nonempty_data(dtype, kind) -> None:
+    payload = {"kind": kind, "dtype": dtype, "shape": [], "data": "AA=="}
+
+    with pytest.raises(ValueError, match="zero-width string array must have no data"):
+        imagetool_serialization.decode_attr_value(payload)
+
+
+@pytest.mark.parametrize("kind", ["numpy_scalar", "numpy_string"])
+@pytest.mark.parametrize("dtype", ["U1", "S1", "i4"])
+def test_workspace_attr_numpy_scalar_rejects_array_shape(dtype, kind) -> None:
+    payload = imagetool_serialization.encode_attr_value(np.zeros(1, dtype=dtype))
+    payload["kind"] = kind
+
+    with pytest.raises(ValueError, match="scalar must have an empty shape"):
+        imagetool_serialization.decode_attr_value(payload)
+
+
+def test_workspace_attr_numpy_string_rejects_nonstring_dtype() -> None:
+    payload = imagetool_serialization.encode_attr_value(np.float64(1.0))
+    payload["kind"] = "numpy_string"
+
+    with pytest.raises(TypeError, match="string must have a string dtype"):
+        imagetool_serialization.decode_attr_value(payload)
 
 
 def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
@@ -496,8 +1047,8 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
         ],
     }
 
-    decoded = workspace_format._workspace_decode_attr_value(
-        workspace_format._workspace_encode_attr_value(value)
+    decoded = imagetool_serialization.decode_attr_value(
+        imagetool_serialization.encode_attr_value(value)
     )
 
     assert decoded[None] is None
@@ -514,15 +1065,15 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
     assert decoded[("tuple", 2)][1][0]["nested"] == (None, complex(3.0, 4.0))
 
     with pytest.raises(TypeError, match="unsupported attr key type"):
-        workspace_format._workspace_encode_attr_key(["bad"])
+        imagetool_serialization.encode_attr_key(["bad"])
     with pytest.raises(TypeError, match="unsupported numeric attr type"):
-        workspace_format._workspace_encode_attr_value(decimal.Decimal("1.0"))
+        imagetool_serialization.encode_attr_value(decimal.Decimal("1.0"))
     with pytest.raises(TypeError, match="must be a mapping"):
-        workspace_format._workspace_decode_attr_value([])
+        imagetool_serialization.decode_attr_value([])
     with pytest.raises(TypeError, match="unknown workspace attr value kind"):
-        workspace_format._workspace_decode_attr_value({"kind": "unknown"})
+        imagetool_serialization.decode_attr_value({"kind": "unknown"})
     with pytest.raises(TypeError, match="not hashable"):
-        workspace_format._workspace_decode_attr_key({"kind": "list", "items": []})
+        imagetool_serialization.decode_attr_key({"kind": "list", "items": []})
 
     assert workspace_format._workspace_encoded_attr_entries(b"\xff") is None
     assert workspace_format._workspace_encoded_attr_entries(1) is None
@@ -537,7 +1088,7 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
         workspace_format._workspace_encoded_attr_entries(
             json.dumps(
                 {
-                    "version": workspace_format._WORKSPACE_ENCODED_ATTRS_VERSION,
+                    "version": _persistence_constants.WORKSPACE_ENCODED_ATTRS_VERSION,
                     "attrs": [["too-short"]],
                 }
             )
@@ -547,13 +1098,13 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
 
     invalid_payload = json.dumps(
         {
-            "version": workspace_format._WORKSPACE_ENCODED_ATTRS_VERSION,
+            "version": _persistence_constants.WORKSPACE_ENCODED_ATTRS_VERSION,
             "attrs": [[{"kind": "list", "items": []}, {"kind": "str", "value": "x"}]],
         }
     )
     with caplog.at_level(logging.WARNING):
         restored = workspace_format._restore_workspace_serialized_attrs(
-            {workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR: invalid_payload}
+            {_persistence_constants.WORKSPACE_ENCODED_ATTRS_ATTR: invalid_payload}
         )
     assert restored == {}
     assert "Ignoring invalid encoded workspace attribute" in caplog.text
@@ -568,16 +1119,16 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
     raw_manifest = json.dumps(manifest)
 
     encoded_manifest = workspace_format._workspace_manifest_from_attrs(
-        {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
+        {_persistence_constants.WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
     )
     assert encoded_manifest["root_order"] == ["1"]
     decoded_manifest = workspace_format._workspace_manifest_from_attrs(
-        {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest}
+        {_persistence_constants.WORKSPACE_MANIFEST_ATTR: raw_manifest}
     )
     assert decoded_manifest["nodes"] == [{"path": "1"}]
     assert (
         workspace_format._workspace_manifest_from_attrs(
-            {workspace_format._WORKSPACE_MANIFEST_ATTR: "{not-json"}
+            {_persistence_constants.WORKSPACE_MANIFEST_ATTR: "{not-json"}
         )
         == {}
     )

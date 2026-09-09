@@ -30,6 +30,7 @@ import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
+from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     issue_complete_execution_capability,
     new_document_trust,
@@ -4849,8 +4850,8 @@ def test_itool_save_preserves_filter_state_and_exports_displayed_data(
     state = json.loads(ds.attrs["itool_state"])
     assert state["filter_operation"] == operation.model_dump(mode="json")
     xarray.testing.assert_identical(
-        ds[imagetool_mainwindow._ITOOL_DATA_NAME],
-        data.rename(imagetool_mainwindow._ITOOL_DATA_NAME),
+        ds[_persistence_constants.ITOOL_DATA_NAME],
+        data.rename(_persistence_constants.ITOOL_DATA_NAME),
     )
     restored = ImageTool.from_dataset(ds)
     qtbot.addWidget(restored)
@@ -8265,6 +8266,105 @@ def test_owned_values_copy_handles_dask_and_array_fallback() -> None:
     fake = types.SimpleNamespace(data=(1, 2, 3))
     fallback = ImageSlicerArea._owned_values_copy(fake)
     np.testing.assert_array_equal(fallback, np.array([1, 2, 3]))
+
+
+@pytest.mark.parametrize("defer_state_refresh", [False, True])
+def test_dask_state_refresh_waits_for_delayed_initial_update(
+    qtbot, defer_state_refresh: bool
+) -> None:
+    from dask.callbacks import Callback
+
+    values = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    data = xr.DataArray(values, dims=("x", "y", "z"))
+    reference = ImageTool(data)
+    qtbot.addWidget(reference)
+    expected_area = reference.slicer_area
+    expected_area.add_cursor()
+    expected_area.array_slicer.set_indices(0, [1, 2, 3])
+    expected_area.array_slicer.set_bins(0, [1, 3, 1])
+    expected_area.array_slicer.set_indices(1, [2, 3, 4])
+    state = expected_area.state
+
+    win = ImageTool(
+        data.chunk({"x": 2, "y": 5, "z": 3}),
+        auto_compute=False,
+        _in_manager=True,
+        _defer_state_refresh=defer_state_refresh,
+    )
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    computations: list[None] = []
+    bin_updates = []
+    point_values: list[float] = []
+    area.sigBinChanged.connect(lambda *args: bin_updates.append(args))
+    area.sigPointValueChanged.connect(point_values.append)
+
+    with Callback(start=lambda _graph: computations.append(None)):
+        area.state = state
+
+    assert bin_updates == [(area.current_cursor, (0, 1, 2))]
+    if defer_state_refresh:
+        assert computations == []
+        assert point_values == []
+    else:
+        assert computations
+        assert point_values
+
+    def assert_display_matches_reference() -> None:
+        for actual_axis, expected_axis in zip(
+            area._materialized_axes(), expected_area._materialized_axes(), strict=True
+        ):
+            for actual, expected in zip(
+                actual_axis.slicer_data_items,
+                expected_axis.slicer_data_items,
+                strict=True,
+            ):
+                assert actual.isVisible() == expected.isVisible()
+                if not actual.isVisible():
+                    continue
+                if actual_axis.is_image:
+                    np.testing.assert_array_equal(actual.image, expected.image)
+                else:
+                    for actual_values, expected_values in zip(
+                        actual.getData(), expected.getData(), strict=True
+                    ):
+                        np.testing.assert_array_equal(actual_values, expected_values)
+        assert point_values[-1] == pytest.approx(
+            expected_area.array_slicer.point_value(
+                expected_area.current_cursor, binned=True
+            )
+        )
+
+    for tool in (reference, win):
+        with qtbot.waitExposed(tool):
+            tool.show()
+
+    computations.clear()
+    with Callback(start=lambda _graph: computations.append(None)):
+        area._update_if_delayed()
+        area._update_if_delayed()
+    assert computations == [None]
+    assert_display_matches_reference()
+
+    # Once initialized, cursor and bin changes must refresh immediately.
+    for update in (
+        lambda target: target.set_index(2, 2),
+        lambda target: target.array_slicer.set_bins(target.current_cursor, [3, 1, 1]),
+        lambda target: target.set_current_cursor(0),
+    ):
+        update(expected_area)
+        computations.clear()
+        with Callback(start=lambda _graph: computations.append(None)):
+            update(area)
+        assert computations == [None]
+        assert_display_matches_reference()
+
+    computations.clear()
+    with Callback(start=lambda _graph: computations.append(None)):
+        area.state = state
+    assert computations
+    reference.close()
+    win.close()
 
 
 def test_dask_refresh_defers_only_while_workspace_write_is_active(

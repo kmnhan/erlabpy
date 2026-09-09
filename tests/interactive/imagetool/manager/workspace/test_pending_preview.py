@@ -21,8 +21,8 @@ import erlab.interactive.imagetool.manager._workspace._pending as workspace_pend
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.utils
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import full_data
 from tests.interactive.imagetool.manager.helpers import select_tools
 from tests.interactive.imagetool.manager.workspace._support import (
@@ -281,10 +281,10 @@ def test_pending_workspace_metadata_coord_load_failure_falls_back(
         np.arange(6, dtype=np.float64).reshape((2, 3)),
         dims=["x", "y"],
         coords={"x": [0.0, 1.0], "y": [10.0, 11.0, 12.0], "temperature": 12.0},
-        name=_ITOOL_DATA_NAME,
+        name=_persistence_constants.ITOOL_DATA_NAME,
     )
     ds = xr.Dataset(
-        {_ITOOL_DATA_NAME: data},
+        {_persistence_constants.ITOOL_DATA_NAME: data},
         attrs={"itool_name": "pending"},
     )
     assert workspace_arrays._write_workspace_dataset_group_h5py(
@@ -790,8 +790,10 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
             self,
             main_image: object | None,
             coord_values: np.ndarray | None = None,
+            current_cursor: int = 0,
         ) -> None:
             self._main_image = main_image
+            self.current_cursor = current_cursor
             if coord_values is None:
                 coord_values = np.arange(3.0)
             self.array_slicer = types.SimpleNamespace(
@@ -824,6 +826,16 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     empty_image = types.SimpleNamespace(slicer_data_items=[])
     valid_objects.add(id(empty_image))
     assert manager_wrapper._preview_curve_from_imagetool(_tool(empty_image)) is None
+
+    for cursor in (-1, 1):
+        assert (
+            manager_wrapper._preview_curve_from_imagetool(
+                types.SimpleNamespace(
+                    slicer_area=_FakeArea(empty_image, current_cursor=cursor)
+                )
+            )
+            is None
+        )
 
     invalid_item = types.SimpleNamespace()
     item_image = types.SimpleNamespace(slicer_data_items=[invalid_item])
@@ -1164,7 +1176,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             np.arange(4 * 5 * 6, dtype=np.float64).reshape((4, 5, 6)),
             dims=["x", "y", "z"],
             coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
-            name=_ITOOL_DATA_NAME,
+            name=_persistence_constants.ITOOL_DATA_NAME,
         )
         state = {
             "slice": {
@@ -1180,7 +1192,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             },
         }
         ds = xr.Dataset(
-            {_ITOOL_DATA_NAME: data},
+            {_persistence_constants.ITOOL_DATA_NAME: data},
             attrs={"itool_state": json.dumps(state), "itool_name": "pending"},
         )
         assert workspace_arrays._write_workspace_dataset_group_h5py(
@@ -1211,7 +1223,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
                 "eV": np.arange(5, dtype=np.float64),
                 "z": np.arange(6, dtype=np.float64),
             },
-            name=_ITOOL_DATA_NAME,
+            name=_persistence_constants.ITOOL_DATA_NAME,
         )
         nonuniform_state = {
             "slice": {
@@ -1223,7 +1235,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             "color": {"cmap": "viridis"},
         }
         nonuniform_ds = xr.Dataset(
-            {_ITOOL_DATA_NAME: nonuniform_data},
+            {_persistence_constants.ITOOL_DATA_NAME: nonuniform_data},
             attrs={
                 "itool_state": json.dumps(nonuniform_state),
                 "itool_name": "nonuniform",
@@ -1238,7 +1250,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
                 "alpha_physical_scale", data=np.array([-2.0, -0.4, 0.2, 2.1])
             )
             physical_coord.make_scale("alpha")
-            data_dataset = group[_ITOOL_DATA_NAME]
+            data_dataset = group[_persistence_constants.ITOOL_DATA_NAME]
             data_dataset.dims[0].attach_scale(physical_coord)
             assert len(list(data_dataset.dims[0].keys())) > 1
         node.pending_workspace_memory_payload = (nonuniform_fname, "0/imagetool")
@@ -1258,7 +1270,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
                 "eV": np.linspace(-0.5, 0.5, 5),
                 "alpha": np.linspace(-2.0, 2.0, 4),
             },
-            name=_ITOOL_DATA_NAME,
+            name=_persistence_constants.ITOOL_DATA_NAME,
         )
         permuted_state = {
             "slice": {
@@ -1270,7 +1282,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             "color": {"cmap": "viridis"},
         }
         permuted_ds = xr.Dataset(
-            {_ITOOL_DATA_NAME: permuted_data},
+            {_persistence_constants.ITOOL_DATA_NAME: permuted_data},
             attrs={
                 "itool_state": json.dumps(permuted_state),
                 "itool_name": "permuted",
@@ -1280,7 +1292,9 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             permuted_fname, "0/imagetool", permuted_ds
         )
         with h5py.File(permuted_fname, "r") as h5_file:
-            data_dataset = h5_file[f"0/imagetool/{_ITOOL_DATA_NAME}"]
+            data_dataset = h5_file[
+                f"0/imagetool/{_persistence_constants.ITOOL_DATA_NAME}"
+            ]
             assert loader.pending._pending_preview_dataset_dims(
                 data_dataset, ("alpha", "eV", "sample_temp_idx")
             ) == (("sample_temp_idx", "eV", "alpha"), None)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from erlab.interactive import _persistence_constants
+
 __all__ = [
     "HOST_IP",
     "PORT",
@@ -47,7 +49,6 @@ import zmq.utils.monitor
 from qtpy import QtCore
 
 import erlab
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool.manager._registry import (
     ImageToolManagerAmbiguousError,
     ImageToolManagerNotFoundError,
@@ -1144,7 +1145,7 @@ def show_in_manager(
 
     direct_manager = _direct_manager_for_target(target)
 
-    if isinstance(data, xr.Dataset) and _ITOOL_DATA_NAME in data:
+    if isinstance(data, xr.Dataset) and _persistence_constants.ITOOL_DATA_NAME in data:
         # Dataset created with ImageTool.to_dataset()
         input_data: list[xr.DataArray] | list[xr.Dataset] = [data]
     elif data is None:

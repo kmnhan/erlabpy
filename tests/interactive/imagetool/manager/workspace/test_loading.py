@@ -18,7 +18,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._qt_state as qt_state
-import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
@@ -29,6 +28,7 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+from erlab.interactive import _persistence_constants
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
@@ -1180,11 +1180,11 @@ def test_managed_tool_rebuilds_input_provenance_from_parent(
         manager._workspace_controller.saving._save_workspace_document(fname)
         node_path = f"0/childtools/{child_uid}"
         attrs = _current_workspace_payload_attrs(fname, node_path)
-        assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
+        assert _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
         with h5py.File(fname, "r") as h5_file:
             payload = h5_file[_current_workspace_payload_path(fname, node_path)]
             assert (
-                erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+                _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR
                 not in payload.attrs
             )
 
@@ -1238,12 +1238,12 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
     node_path = f"0/childtools/{child_uid}"
     encoded_injection = json.dumps(_injected_input_provenance().model_dump(mode="json"))
     with _edit_current_workspace_payload_attrs(fname, node_path) as attrs:
-        attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+        attrs[_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
             encoded_injection
         )
     with h5py.File(fname, "a") as h5_file:
         payload = h5_file[_current_workspace_payload_path(fname, node_path)]
-        payload.attrs[erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+        payload.attrs[_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
             encoded_injection
         )
 
@@ -1258,7 +1258,7 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
         )
         child_node = manager._child_node(child_uid)
         assert child_node.pending_workspace_tool_payload is not None
-        assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR in (
+        assert _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR in (
             child_node.pending_workspace_payload_attrs or {}
         )
 
@@ -1277,11 +1277,11 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
         assert "attacker" not in current.display_code()
 
         attrs = _current_workspace_payload_attrs(fname, node_path)
-        assert erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
+        assert _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR not in attrs
         with h5py.File(fname, "r") as h5_file:
             payload = h5_file[_current_workspace_payload_path(fname, node_path)]
             assert (
-                erlab.interactive.utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR
+                _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR
                 not in payload.attrs
             )
         manager._workspace_controller._drain_workspace_deferred_events()
@@ -1851,7 +1851,7 @@ def test_eager_tool_reference_does_not_read_associated_workspace(
         reference = {"kind": "manager_node", "node_uid": "missing-source"}
         ds = xr.Dataset(
             attrs={
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {"data": reference}
                 )
             }
@@ -1892,7 +1892,7 @@ def test_pending_tool_reference_reads_owner_workspace(
         }
         ds = xr.Dataset(
             attrs={
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {"data": reference}
                 )
             }
@@ -2562,7 +2562,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             assert "auxiliary" in tool_group
             assert (
                 tool_group["auxiliary"].attrs[
-                    workspace_arrays._TOOL_DATA_BLOB_NAME_ATTR
+                    _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR
                 ]
                 == extra_data.name
             )
@@ -3177,8 +3177,8 @@ def test_manager_workspace_partially_loads_corrupted_child_with_warning(
                 "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
             ).to_dataset(inherit=False)
             child_ds = child_ds.copy(deep=True)
-            child_ds.attrs.pop(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR, None)
-            saved_data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+            child_ds.attrs.pop(_persistence_constants.TOOL_DATA_REFERENCES_ATTR, None)
+            saved_data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
             child_ds[saved_data_name] = xr.DataArray(
                 np.arange(50.0).reshape(2, 5, 5),
                 dims=("z", "y", "x"),
@@ -4245,6 +4245,90 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         np.testing.assert_array_equal(loaded._data.values, data.values)
 
 
+@pytest.mark.parametrize(
+    "attrs_mode", ["missing", "empty", "invalid", "hidden", "visible"]
+)
+def test_manager_h5py_workspace_load_decodes_manifest_attrs_once(
+    qtbot, monkeypatch, tmp_path, manager_context, attrs_mode
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+        name="source",
+    )
+    with manager_context() as manager:
+        for _ in range(2):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+                show=False,
+            )
+        fname = tmp_path / "manifest-attrs.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
+        entry = manifest["nodes"][1]
+        expected_attrs = _current_workspace_payload_attrs(fname, "1")
+        if attrs_mode == "missing":
+            del entry["payload_attrs"]
+        elif attrs_mode == "empty":
+            entry["payload_attrs"] = []
+            expected_attrs = {}
+        elif attrs_mode == "invalid":
+            entry["payload_attrs"] = {"invalid": True}
+        else:
+            expected_attrs.pop("itool_window_state")
+            expected_attrs["itool_visible"] = attrs_mode == "visible"
+            expected_attrs["manager_node_note"] = "Updated manifest note"
+            expected_attrs["calibration"] = np.arange(3, dtype=np.int16)
+            expected_attrs["metadata"] = (1, {"gain": 2})
+            entry["payload_attrs"] = workspace_format._workspace_manifest_attrs(
+                expected_attrs
+            )
+
+        loader = manager._workspace_controller.loading
+        original_decode = workspace_format._restore_workspace_manifest_attrs
+        original_load = loader._load_workspace_imagetool_dataset
+        decoded_payloads = []
+        loaded_datasets = {}
+
+        def _record_decode(payload):
+            decoded_payloads.append(payload)
+            return original_decode(payload)
+
+        def _record_load(ds, **kwargs):
+            loaded_datasets[kwargs["node_path"]] = ds.copy(deep=False)
+            return original_load(ds, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_format, "_restore_workspace_manifest_attrs", _record_decode
+        )
+        monkeypatch.setattr(loader, "_load_workspace_imagetool_dataset", _record_load)
+
+        assert loader._from_h5py_workspace_file(
+            fname, manifest, replace=True, mark_dirty=False
+        )
+        assert len(decoded_payloads) == (1 if attrs_mode == "missing" else 2)
+        if attrs_mode != "invalid":
+            xr.testing.assert_identical(
+                xr.Dataset(attrs=loaded_datasets["1"].attrs),
+                xr.Dataset(attrs=expected_attrs),
+            )
+        if attrs_mode in {"empty", "invalid"}:
+            assert manager.ntools == 1
+            assert len(loader._skipped_workspace_nodes) == 1
+            error = loader._skipped_workspace_nodes[0][3]
+            assert isinstance(error, KeyError if attrs_mode == "empty" else TypeError)
+        else:
+            assert manager.ntools == 2
+            assert loader._skipped_workspace_nodes == []
+            node = manager._node_for_target(1)
+            if node.pending_workspace_memory_payload is not None:
+                assert loader.pending._materialize_pending_workspace_payload(node)
+            xr.testing.assert_identical(
+                manager.get_imagetool(1).slicer_area._data, data
+            )
+
+
 def test_manager_h5py_workspace_load_defers_hidden_imagetool_refresh_and_profiles(
     qtbot,
     monkeypatch,
@@ -4319,6 +4403,90 @@ def test_manager_h5py_workspace_load_defers_hidden_imagetool_refresh_and_profile
         assert profiler._durations["imagetool manager registration"] > 0.0
         assert "imagetool state restore: layout" in profiler._durations
         assert "imagetool state refresh" not in profiler._durations
+
+
+@pytest.mark.parametrize("use_dask", [False, True])
+@pytest.mark.parametrize("current_cursor", [0, 1])
+@pytest.mark.parametrize(
+    ("ndim", "transpose"), [(1, False), (1, True), (2, False), (3, False)]
+)
+def test_manager_workspace_load_restores_active_cursor_preview_once(
+    qtbot,
+    tmp_path,
+    use_dask: bool,
+    current_cursor: int,
+    ndim: int,
+    transpose: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    from dask.callbacks import Callback
+
+    from erlab.interactive.imagetool.manager._wrapper import (
+        _preview_curve_from_imagetool,
+    )
+
+    shape = (4, 5, 6)[-ndim:]
+    data = xr.DataArray(
+        np.arange(np.prod(shape), dtype=np.float32).reshape(shape),
+        dims=("x", "y", "z")[-ndim:],
+        coords={"z": np.linspace(-1, 1, 6)},
+    )
+    if use_dask:
+        data = data.chunk(dict.fromkeys(data.dims, 2))
+    with manager_context() as manager:
+        root = erlab.interactive.imagetool.ImageTool(data, auto_compute=False)
+        manager.add_imagetool(root, show=True)
+        qtbot.waitUntil(lambda: root.isVisible())
+        root.slicer_area.add_cursor()
+        root.slicer_area.set_current_cursor(current_cursor)
+        if ndim == 3:
+            root.slicer_area.set_index(2, 3)
+            root.slicer_area.array_slicer.set_bins(current_cursor, [1, 1, 3])
+        if transpose:
+            root.slicer_area.transpose_main_image()
+        expected_image = root.slicer_area.main_image.slicer_data_items[
+            current_cursor
+        ].image.copy()
+        expected_slice = root.slicer_area.array_slicer.state
+        expected_curve = _preview_curve_from_imagetool(root)
+        fname = tmp_path / "active-cursor.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manager.remove_all_tools()
+        QtWidgets.QApplication.processEvents()
+
+        computations: list[None] = []
+        with Callback(start=lambda _graph: computations.append(None)):
+            assert manager._workspace_controller.loading._load_workspace_file(
+                fname, replace=True, associate=True, mark_dirty=False, select=False
+            )
+            loaded = manager.get_imagetool(0).slicer_area
+            qtbot.waitUntil(lambda: not loaded._update_delayed)
+            node = manager._node_for_target(0)
+            # Details requests a curve before the image. Neither preview should
+            # compute the inactive cursor or repeat the initial display load.
+            curve = _preview_curve_from_imagetool(node.imagetool)
+            ratio, pixmap = node._preview_image
+
+        assert computations == ([None] if use_dask else [])
+        assert (loaded.data.chunks is not None) is use_dask
+        assert loaded.current_cursor == current_cursor
+        assert loaded.array_slicer.state == expected_slice
+        image_item = loaded.main_image.slicer_data_items[current_cursor]
+        np.testing.assert_array_equal(image_item.image, expected_image)
+        assert np.isfinite(ratio)
+        assert not pixmap.isNull()
+        expected_pixmap = image_item.getPixmap().transformed(
+            QtGui.QTransform().scale(1.0, -1.0)
+        )
+        assert pixmap.toImage() == expected_pixmap.toImage()
+        if expected_curve is None:
+            assert curve is None
+        else:
+            assert curve is not None
+            np.testing.assert_array_equal(curve[0], expected_curve[0])
+            np.testing.assert_array_equal(curve[1], expected_curve[1])
 
 
 def test_manager_h5py_workspace_load_defers_hidden_secondary_plot_widgets(
@@ -4515,12 +4683,8 @@ def test_manager_workspace_load_dialog_skips_stale_internal_groups(
         fname = tmp_path / "stale-dialog.itws"
         manager._workspace_controller.saving._save_workspace_document(fname)
         with h5py.File(fname, "a") as h5_file:
-            h5_file.create_group(
-                f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}stale"
-            )
-            h5_file.create_group(
-                f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}stale"
-            )
+            h5_file.create_group("__itws_pending_stale")
+            h5_file.create_group("__itws_backup_stale")
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)

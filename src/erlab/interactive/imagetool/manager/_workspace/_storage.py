@@ -20,10 +20,8 @@ from qtpy import QtCore
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool.manager._workspace._format import (
-    _WORKSPACE_BACKUP_GROUP_PREFIX,
-    _WORKSPACE_PENDING_GROUP_PREFIX,
-    _WORKSPACE_TRANSACTION_GROUP_PREFIX,
     _workspace_file_is_workspace,
     _workspace_path_is_itws,
 )
@@ -860,18 +858,19 @@ def _recover_open_workspace_transaction(h5_file, txn_path: str) -> None:
 def _cleanup_orphan_workspace_internal_groups(h5_file) -> None:
     transaction_roots: set[str] = set()
     for name in list(h5_file):
-        if not name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX):
+        if not name.startswith(
+            _persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX
+        ):
             continue
         pending_root, backup_root = _workspace_transaction_roots(h5_file[name])
         transaction_roots.update(
             root for root in (pending_root, backup_root) if root is not None
         )
-    internal_prefixes = (
-        _WORKSPACE_PENDING_GROUP_PREFIX,
-        _WORKSPACE_BACKUP_GROUP_PREFIX,
-    )
     for name in list(h5_file):
-        if name.startswith(internal_prefixes) and name not in transaction_roots:
+        if (
+            name.startswith(_persistence_constants.WORKSPACE_LEGACY_TEMP_GROUP_PREFIXES)
+            and name not in transaction_roots
+        ):
             del h5_file[name]
 
 
@@ -893,7 +892,9 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
             transaction_names = {
                 name
                 for name in h5_file
-                if name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX)
+                if name.startswith(
+                    _persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX
+                )
             }
             transaction_roots: set[str] = set()
             for name in transaction_names:
@@ -903,7 +904,7 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
                 )
             has_orphan = any(
                 name.startswith(
-                    (_WORKSPACE_PENDING_GROUP_PREFIX, _WORKSPACE_BACKUP_GROUP_PREFIX)
+                    _persistence_constants.WORKSPACE_LEGACY_TEMP_GROUP_PREFIXES
                 )
                 and name not in transaction_roots
                 for name in h5_file
@@ -919,7 +920,9 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
             if not _workspace_file_is_workspace(h5_file):
                 return
             for name in list(h5_file):
-                if name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX):
+                if name.startswith(
+                    _persistence_constants.WORKSPACE_TRANSACTION_GROUP_PREFIX
+                ):
                     _recover_open_workspace_transaction(h5_file, name)
             _cleanup_orphan_workspace_internal_groups(h5_file)
             h5_file.flush()

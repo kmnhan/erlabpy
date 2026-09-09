@@ -19,7 +19,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
-import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
@@ -29,6 +28,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+from erlab.interactive import _persistence_constants
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.derivative import DerivativeTool
@@ -783,10 +783,10 @@ def test_manager_workspace_tool_data_reference_roundtrip(
                 "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
             ).to_dataset(inherit=False)
             references = json.loads(
-                ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+                ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
             )
-            assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in references
-            assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
+            assert _persistence_constants.SAVED_TOOL_DATA_NAME in references
+            assert ds[_persistence_constants.SAVED_TOOL_DATA_NAME].size == 0
             with pytest.raises(ValueError, match="no manager-node resolver"):
                 erlab.interactive.utils.ToolWindow.from_dataset(ds)
 
@@ -829,9 +829,9 @@ def test_manager_workspace_tool_data_reference_falls_back_on_shape_mismatch(
             ds = typing.cast(
                 "xr.DataTree", tree[f"0/childtools/{child_uid}/tool"]
             ).to_dataset(inherit=False)
-            assert erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in ds.attrs
+            assert _persistence_constants.TOOL_DATA_REFERENCES_ATTR not in ds.attrs
             xr.testing.assert_identical(
-                ds[imagetool_serialization.SAVED_TOOL_DATA_NAME].rename(
+                ds[_persistence_constants.SAVED_TOOL_DATA_NAME].rename(
                     child.tool_data.name
                 ),
                 child.tool_data,

@@ -14,10 +14,11 @@ import pytest
 import xarray as xr
 from qtpy import QtWidgets
 
+import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
 import erlab.interactive.utils as interactive_utils
-from erlab.interactive import _saved_tools
+from erlab.interactive import _persistence_constants, _saved_tools
 from erlab.interactive._code_trust import (
     create_entry,
     create_manifest,
@@ -37,10 +38,7 @@ from erlab.interactive._code_trust._application import (
     save_document_trust,
 )
 from erlab.interactive._code_trust._core import CodeTrustReason
-from erlab.interactive._code_trust._payloads import (
-    CODE_PAYLOAD_ENTRIES_ATTR,
-    store_code_payload_entries,
-)
+from erlab.interactive._code_trust._payloads import store_code_payload_entries
 from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
 from erlab.interactive._figurecomposer import _rendering as figure_rendering
 from erlab.interactive._figurecomposer._model._state import (
@@ -548,14 +546,16 @@ def test_trusting_legacy_pending_fit_payload_completes_manifest_before_save(
         fit_tool.hide()
         tree = manager._workspace_controller.saving._to_datatree()
         child = typing.cast("xr.DataTree", tree[f"0/childtools/{fit_uid}/tool"])
-        child.attrs.pop(CODE_PAYLOAD_ENTRIES_ATTR)
-        child.attrs[interactive_utils._TOOL_INPUT_PROVENANCE_SPEC_ATTR] = json.dumps(
-            full_data().model_dump(mode="json")
+        child.attrs.pop(_persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR)
+        child.attrs[_persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR] = (
+            json.dumps(full_data().model_dump(mode="json"))
         )
         manifest = manager._workspace_controller.saving._workspace_manifest()
         manifest["schema_version"] = 4
         tree.attrs["imagetool_workspace_schema_version"] = 4
-        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            manifest
+        )
         tree.to_netcdf(workspace_path, engine="h5netcdf", invalid_netcdf=True)
         tree.close()
 
@@ -605,6 +605,115 @@ def test_trusting_legacy_pending_fit_payload_completes_manifest_before_save(
         node = manager._child_node(fit_uid)
         assert node.pending_workspace_tool_payload is not None
         assert node.tool_window is None
+
+
+@pytest.mark.parametrize("reloads", [0, 1, 2])
+@pytest.mark.parametrize("hook", ["none", "live", "dataset", "saved", "invalid_saved"])
+def test_pending_payload_inspection_preserves_hooks_across_utils_reload(
+    monkeypatch, reloads: int, hook: str
+) -> None:
+    entry = create_payload_entry(
+        "test.reload-payload", "payload", "payload_code()", b"saved payload"
+    )
+    inspected = []
+    opened = []
+    closed = []
+
+    def make_tool_class(base: type) -> type:
+        class ReloadProbe(base):
+            def __init__(self, *args, **kwargs):
+                pytest.fail("pending payload inspection must not construct the tool")
+
+        def live_payload(self):
+            pytest.fail("pending payload inspection must not use a live tool hook")
+
+        def dataset_payload(self, ds):
+            pytest.fail("pending payload inspection must use the saved inspector")
+
+        def saved_payload(cls, ds):
+            inspected.append((cls, ds))
+            return None if hook == "invalid_saved" else (entry,)
+
+        if hook == "live":
+            ReloadProbe._code_trust_payload_entries = live_payload
+        elif hook == "dataset":
+            ReloadProbe._code_trust_payload_entries_from_dataset = dataset_payload
+        elif hook in {"saved", "invalid_saved"}:
+            ReloadProbe._code_trust_payload_entries = live_payload
+            ReloadProbe._code_trust_payload_entries_from_saved_dataset = classmethod(
+                saved_payload
+            )
+        return ReloadProbe
+
+    before_reload = make_tool_class(interactive_utils.ToolWindow)
+    for _ in range(reloads):
+        importlib.reload(interactive_utils)
+    after_reload = make_tool_class(interactive_utils.ToolWindow)
+
+    class InheritedBeforeReload(before_reload):
+        pass
+
+    class InheritedAfterReload(after_reload):
+        pass
+
+    def open_payload(path, group, *, chunks):
+        assert (path, group, chunks) == ("legacy.itws", "tools/0", {})
+        dataset = xr.Dataset()
+        dataset.set_close(lambda: closed.append(dataset))
+        opened.append(dataset)
+        return dataset
+
+    monkeypatch.setattr(
+        workspace_trust.workspace_arrays, "open_workspace_dataset", open_payload
+    )
+    for tool_cls in (
+        before_reload,
+        after_reload,
+        InheritedBeforeReload,
+        InheritedAfterReload,
+    ):
+        inspected.clear()
+        opened.clear()
+        closed.clear()
+        updated_attrs = []
+        attrs = {"tool_cls_qualname": "test:ReloadProbe"}
+        node = SimpleNamespace(
+            pending_workspace_tool_payload=("legacy.itws", "tools/0"),
+            pending_workspace_payload_attrs=attrs,
+            update_pending_workspace_payload_attrs=updated_attrs.append,
+        )
+        manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"0": node}))
+        monkeypatch.setattr(
+            workspace_trust,
+            "resolve_saved_tool_class",
+            lambda _identifier, cls=tool_cls: cls,
+        )
+
+        if hook in {"live", "dataset", "invalid_saved"}:
+            error = (
+                "did not return entries"
+                if hook == "invalid_saved"
+                else "opaque payload cannot be inspected"
+            )
+            with pytest.raises(TypeError, match=error):
+                workspace_trust.inspect_pending_workspace_code_payloads(manager)
+        else:
+            workspace_trust.inspect_pending_workspace_code_payloads(manager)
+
+        if hook in {"saved", "invalid_saved"}:
+            assert len(opened) == len(closed) == len(inspected) == 1
+            assert closed[0] is opened[0]
+            assert inspected[0][0] is tool_cls
+            assert inspected[0][1] is opened[0]
+        else:
+            assert opened == closed == inspected == []
+        if hook == "saved":
+            expected_attrs = dict(attrs)
+            store_code_payload_entries(expected_attrs, (entry,))
+            assert updated_attrs == [expected_attrs]
+        else:
+            assert updated_attrs == []
+        assert _persistence_constants.CODE_PAYLOAD_ENTRIES_ATTR not in attrs
 
 
 def test_legacy_pending_opaque_payload_without_saved_inspector_fails_closed(
@@ -950,7 +1059,7 @@ def test_signed_workspace_materializes_child_parent_source_code(
                 workspace_path, f"0/childtools/{child_uid}"
             )["tool_data_references"]
         )
-        reference = references[interactive_utils._SAVED_TOOL_DATA_NAME]
+        reference = references[_persistence_constants.SAVED_TOOL_DATA_NAME]
         assert reference["kind"] == "manager_node"
         assert reference["input_name"] == "data"
         assert reference["node_uid"] == parent_uid
@@ -1672,7 +1781,7 @@ def test_workspace_code_trust_manifest_does_not_decode_unrelated_arrays(
     def fail_if_decoded(*_args, **_kwargs):
         raise AssertionError("unrelated array metadata was decoded")
 
-    monkeypatch.setattr(workspace_format, "_workspace_decode_array", fail_if_decoded)
+    monkeypatch.setattr(imagetool_serialization, "_decode_array", fail_if_decoded)
 
     assert workspace_code_trust_manifest(manifest).has_executable_code
 
@@ -1693,7 +1802,7 @@ def test_workspace_code_trust_manifest_rejects_array_in_code_attribute_without_d
     def fail_if_decoded(*_args, **_kwargs):
         raise AssertionError("array metadata was decoded")
 
-    monkeypatch.setattr(workspace_format, "_workspace_decode_array", fail_if_decoded)
+    monkeypatch.setattr(imagetool_serialization, "_decode_array", fail_if_decoded)
 
     with pytest.raises(TypeError, match="must be a string"):
         workspace_code_trust_manifest(manifest)

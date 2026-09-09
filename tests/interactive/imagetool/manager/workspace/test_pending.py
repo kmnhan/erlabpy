@@ -15,7 +15,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool._load_source as imagetool_load_source
-import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
@@ -26,9 +25,9 @@ import erlab.interactive.imagetool.manager._workspace._loading as workspace_load
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import _register_local_callable_loader
-from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ScriptInput,
@@ -92,10 +91,10 @@ def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
 
         def __init__(self) -> None:
             self.attrs = {
-                erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
+                _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
                     [script_input.model_dump(mode="json")]
                 ),
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     references
                 ),
             }
@@ -109,7 +108,7 @@ def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
             return tuple(
                 ScriptInput.model_validate(item)
                 for item in json.loads(
-                    self.attrs[erlab.interactive.utils._TOOL_SCRIPT_INPUTS_ATTR]
+                    self.attrs[_persistence_constants.TOOL_SCRIPT_INPUTS_ATTR]
                 )
             )
 
@@ -151,11 +150,9 @@ def test_workspace_dependency_rebase_updates_tool_data_references() -> None:
     controller._rebase_node_dependency_refs(nodes, {saved_uid: actual_uid})
 
     assert pending_node.tool_script_inputs[0].node_uid == actual_uid
-    assert (
-        pending_node.attrs[erlab.interactive.utils._TOOL_PRIMARY_INPUT_ATTR] == "data"
-    )
+    assert pending_node.attrs[_persistence_constants.TOOL_PRIMARY_INPUT_ATTR] == "data"
     pending_references = json.loads(
-        pending_node.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
+        pending_node.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
     )
     assert pending_references["<saved-tool-data>"]["node_uid"] == actual_uid
     assert pending_references["legacy"]["node_uid"] == saved_uid
@@ -1452,7 +1449,7 @@ def test_pending_workspace_link_payload_helper_fallbacks(
         )
 
         def _metadata_dataset(*_args, **_kwargs):
-            return xr.Dataset({_ITOOL_DATA_NAME: data})
+            return xr.Dataset({_persistence_constants.ITOOL_DATA_NAME: data})
 
         monkeypatch.setattr(
             controller.loading,
@@ -2055,7 +2052,7 @@ def test_manager_workspace_file_backed_data_can_load_into_memory(
     workspace_arrays._write_workspace_dataset_group_to_file(
         source_file,
         "0/imagetool",
-        source.to_dataset(name=_ITOOL_DATA_NAME),
+        source.to_dataset(name=_persistence_constants.ITOOL_DATA_NAME),
     )
     with h5py.File(source_file, "a") as h5_file:
         h5_file.attrs.update(_transaction_test_root_attrs())
@@ -2153,9 +2150,9 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
 
     stored = xr.Dataset(
         {
-            _ITOOL_DATA_NAME: saved[_ITOOL_DATA_NAME].transpose(
-                "sample_temp", "eV", "alpha"
-            )
+            _persistence_constants.ITOOL_DATA_NAME: saved[
+                _persistence_constants.ITOOL_DATA_NAME
+            ].transpose("sample_temp", "eV", "alpha")
         },
         attrs=dict(saved.attrs),
     )
@@ -2293,7 +2290,7 @@ def test_detached_pending_workspace_source_preserves_promoted_1d_marker(
     ],
 ) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
-    opened = xr.Dataset({_ITOOL_DATA_NAME: data})
+    opened = xr.Dataset({_persistence_constants.ITOOL_DATA_NAME: data})
 
     with manager_context() as manager:
         pending = manager._workspace_controller.loading.pending
@@ -2611,7 +2608,7 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
             tmp_path / "source.itws",
             f"0/childtools/{child_uid}/tool",
             payload_attrs={
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {"data": {"kind": "manager_node", "node_uid": root_uid}}
                 )
             },
@@ -2621,7 +2618,7 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
 
         child_node.update_pending_workspace_payload_attrs(
             {
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {"data": {"kind": "future_reference", "node_uid": root_uid}}
                 )
             }
@@ -2634,7 +2631,7 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
 
         child_node.update_pending_workspace_payload_attrs(
             {
-                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                     {"data": {"kind": "manager_node", "node_uid": "missing"}}
                 )
             }
@@ -2984,7 +2981,7 @@ def test_manager_workspace_child_tool_reference_materializes_only_child_data(
                 "tool_data_references"
             ]
         )
-        reference = references[imagetool_serialization.SAVED_TOOL_DATA_NAME]
+        reference = references[_persistence_constants.SAVED_TOOL_DATA_NAME]
         assert reference["kind"] == "manager_node"
         assert reference["node_uid"] == root_node.uid
         assert reference["node_snapshot_token"] == root_node.snapshot_token
@@ -3071,11 +3068,11 @@ def test_manager_workspace_tool_reference_materializes_without_opening_source(
             figure_group = h5_file[
                 _current_workspace_payload_path(fname, f"figures/{figure_uid}")
             ]
-            assert references[imagetool_serialization.SAVED_TOOL_DATA_NAME] == {
+            assert references[_persistence_constants.SAVED_TOOL_DATA_NAME] == {
                 "kind": "manager_node",
                 "node_uid": wrapper.uid,
             }
-            assert figure_group[imagetool_serialization.SAVED_TOOL_DATA_NAME].shape == (
+            assert figure_group[_persistence_constants.SAVED_TOOL_DATA_NAME].shape == (
                 0,
             )
 
@@ -3242,7 +3239,7 @@ def test_manager_workspace_replacing_pending_memory_data_clears_pending_payload(
                 "replacement"
             )
             np.testing.assert_array_equal(
-                group[_ITOOL_DATA_NAME][...],
+                group[_persistence_constants.ITOOL_DATA_NAME][...],
                 replacement.values,
             )
 
@@ -3313,6 +3310,6 @@ def test_manager_workspace_attr_update_keeps_pending_hidden_memory_unmaterialize
         with h5py.File(fname, "r") as h5_file:
             group = h5_file[_current_workspace_payload_path(fname)]
             np.testing.assert_array_equal(
-                group[_ITOOL_DATA_NAME][...],
+                group[_persistence_constants.ITOOL_DATA_NAME][...],
                 data.values,
             )

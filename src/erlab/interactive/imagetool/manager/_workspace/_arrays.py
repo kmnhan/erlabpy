@@ -20,6 +20,7 @@ from xarray.backends.locks import SerializableLock
 from xarray.core import indexing
 
 import erlab
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
 
@@ -35,7 +36,6 @@ else:
     h5py = _lazy.load("h5py")
 
 from erlab.interactive.imagetool.manager._workspace._format import (
-    _WORKSPACE_MANIFEST_ATTR,
     _restore_workspace_serialized_attrs,
     _sanitize_workspace_attr_names,
     _workspace_file_is_workspace,
@@ -46,9 +46,8 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
 _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
-_TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
-_SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
-_SAVED_TOOL_DATA_BLOB_DIM_PREFIX = _serialization.SAVED_TOOL_DATA_BLOB_DIM_PREFIX
+
+
 _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
     {"CLASS", "NAME", "DIMENSION_LIST", "REFERENCE_LIST"}
 )
@@ -361,6 +360,7 @@ class WorkspaceFileManager(CachingFileManager):
         self._group_path = None if group_path is None else f"/{group_path.strip('/')}"
         self._store_lease_released = True
         self._netcdf_file: h5netcdf.File | None = None
+        self._direct_read_datasets: dict[str, h5py.Dataset | None] = {}
         self._store_handle_generation = -1
         self._serialized_worker = False
         self._workspace_id: str | None = None
@@ -454,9 +454,8 @@ class WorkspaceFileManager(CachingFileManager):
             self._netcdf_file is None
             or self._store_handle_generation != store.handle_generation
         ):
-            if self._netcdf_file is not None:
-                with contextlib.suppress(Exception):
-                    self._netcdf_file.close()
+            with contextlib.suppress(Exception):
+                self._close_store_wrapper()
             self._netcdf_file = h5netcdf.File(
                 store.read_h5_file,
                 mode="r",
@@ -467,6 +466,38 @@ class WorkspaceFileManager(CachingFileManager):
             )
             self._store_handle_generation = store.handle_generation
         return self._netcdf_file
+
+    def _direct_read_dataset(
+        self, variable_name: str, variable: h5netcdf.Variable
+    ) -> h5py.Dataset | None:
+        """Cache numeric read eligibility while the store read session is held.
+
+        Immutable payloads with fixed, matching physical and netCDF dimensions
+        need neither netCDF padding nor type conversion. Other variables retain
+        h5netcdf's selection semantics. Closing the wrapper clears both positive
+        and negative decisions before the handle or payload binding changes.
+        """
+        store = self._store
+        if store is None or self._object_id is None:
+            return None
+        if variable_name not in self._direct_read_datasets:
+            # h5netcdf can expose a name different from the physical HDF5 name.
+            dataset = variable._h5ds
+            dtype = dataset.dtype
+            self._direct_read_datasets[variable_name] = (
+                dataset
+                if (
+                    dtype.kind in "iuf"
+                    and dtype.metadata is None
+                    and dataset.shape == dataset.maxshape == variable.shape
+                    and all(
+                        not variable._parent._all_dimensions[dim].isunlimited()
+                        for dim in variable.dimensions
+                    )
+                )
+                else None
+            )
+        return self._direct_read_datasets[variable_name]
 
     def _read_bounded_variable(self, variable_name: str, key: typing.Any) -> typing.Any:
         """Read one array selection through a worker-owned file handle."""
@@ -481,7 +512,9 @@ class WorkspaceFileManager(CachingFileManager):
                 decode_vlen_strings=True,
                 locking="best-effort",
             ) as netcdf_file:
-                workspace_id = netcdf_file.attrs.get(workspace_store._WORKSPACE_ID_ATTR)
+                workspace_id = netcdf_file.attrs.get(
+                    _persistence_constants.WORKSPACE_ID_ATTR
+                )
                 if isinstance(workspace_id, bytes):
                     workspace_id = workspace_id.decode()
                 if (
@@ -508,6 +541,7 @@ class WorkspaceFileManager(CachingFileManager):
             ) from exc
 
     def _close_store_wrapper(self) -> None:
+        self._direct_read_datasets.clear()
         netcdf_file = self._netcdf_file
         self._netcdf_file = None
         self._store_handle_generation = -1
@@ -517,7 +551,7 @@ class WorkspaceFileManager(CachingFileManager):
     def _remember_workspace_id(self, netcdf_file: h5netcdf.File) -> None:
         if self._workspace_id is not None:
             return
-        workspace_id = netcdf_file.attrs.get(workspace_store._WORKSPACE_ID_ATTR)
+        workspace_id = netcdf_file.attrs.get(_persistence_constants.WORKSPACE_ID_ATTR)
         if isinstance(workspace_id, bytes):
             workspace_id = workspace_id.decode()
         if isinstance(workspace_id, str) and workspace_id:
@@ -619,6 +653,7 @@ class WorkspaceFileManager(CachingFileManager):
         self._netcdf_file = None
         self._store_handle_generation = -1
         self._serialized_worker = True
+        self._direct_read_datasets = {}
         self.lock = SerializableLock(("erlab-workspace-reader", self.reader_path))
 
     def __dask_tokenize__(self) -> tuple[str, str, str | None, str | None]:
@@ -705,6 +740,14 @@ class _WorkspaceBackendArray(BackendArray):
             array = self.datastore._acquire(needs_lock=False).variables[
                 self.variable_name
             ]
+            dataset = manager._direct_read_dataset(self.variable_name, array)
+            if dataset is not None and all(
+                type(part) is int
+                or isinstance(part, np.integer)
+                or (isinstance(part, slice) and (part.step is None or part.step > 0))
+                for part in (key if isinstance(key, tuple) else (key,))
+            ):
+                return dataset[key]
             return array[key]
 
 
@@ -789,7 +832,7 @@ def open_workspace_dataset(
     object_id = (
         group_parts[1]
         if len(group_parts) >= 2
-        and group_parts[0] == workspace_store._WORKSPACE_OBJECTS_GROUP
+        and group_parts[0] == _persistence_constants.WORKSPACE_OBJECTS_GROUP
         else None
     )
     return _open_workspace_dataset_from_manager(
@@ -854,9 +897,10 @@ def _h5py_attrs_to_dict(
 ) -> dict[typing.Hashable, typing.Any]:
     excluded = set(exclude)
     out: dict[typing.Hashable, typing.Any] = {}
-    for key, value in attrs.items():
+    for key in attrs:
         if key in excluded:
             continue
+        value = attrs[key]
         if isinstance(value, bytes):
             value = value.decode()
         out[key] = value
@@ -874,7 +918,7 @@ def _read_workspace_root_attrs_h5py(
             if _workspace_schema_uses_immutable_generations(
                 int(attrs.get("imagetool_workspace_schema_version", 1))
             ):
-                attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
                     active_store.current_generation().manifest
                 )
             return attrs
@@ -886,23 +930,25 @@ def _read_workspace_root_attrs_h5py(
         if _workspace_schema_uses_immutable_generations(
             int(attrs.get("imagetool_workspace_schema_version", 1))
         ):
-            generation_root = h5_file.get(workspace_store._WORKSPACE_GENERATIONS_GROUP)
+            generation_root = h5_file.get(
+                _persistence_constants.WORKSPACE_GENERATIONS_GROUP
+            )
             if generation_root is None:
                 raise ValueError("Workspace has no committed generation")
             for name in sorted(generation_root, reverse=True):
                 if (
-                    len(name) != workspace_store._WORKSPACE_GENERATION_WIDTH
+                    len(name) != _persistence_constants.WORKSPACE_GENERATION_WIDTH
                     or not name.isdigit()
                 ):
                     continue
                 with contextlib.suppress(Exception):
-                    attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                    attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
                         workspace_store.WorkspaceStore._read_manifest(
                             generation_root[name]
                         )
                     )
                     break
-            if _WORKSPACE_MANIFEST_ATTR not in attrs:
+            if _persistence_constants.WORKSPACE_MANIFEST_ATTR not in attrs:
                 raise ValueError("Workspace has no valid committed generation")
         return attrs
 
@@ -1176,19 +1222,22 @@ def _workspace_h5py_create_dataset(
 
 
 def _workspace_h5py_tool_data_blob_dim(variable_name: str) -> str:
-    return f"{_SAVED_TOOL_DATA_BLOB_DIM_PREFIX}{variable_name.encode().hex()}>"
+    return (
+        f"{_persistence_constants.SAVED_TOOL_DATA_BLOB_DIM_PREFIX}"
+        f"{variable_name.encode().hex()}>"
+    )
 
 
 def _workspace_h5py_dataarray_is_tool_reference(data_array: xr.DataArray) -> bool:
     return (
         data_array.ndim == 1
-        and data_array.dims == (_SAVED_TOOL_DATA_REFERENCE_DIM,)
+        and data_array.dims == (_persistence_constants.SAVED_TOOL_DATA_REFERENCE_DIM,)
         and data_array.size == 0
     )
 
 
 def _workspace_h5py_dataarray_is_tool_blob(data_array: xr.DataArray) -> bool:
-    return _TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs
+    return _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs
 
 
 def _workspace_h5py_dataarray_is_independent_tool_item(
@@ -1209,10 +1258,10 @@ def _workspace_h5py_dataset_independent_tool_variable(
     if not _workspace_h5py_dataset_storage_supported(dataset):
         return None
     attrs = _h5py_attrs_to_dict(dataset.attrs, exclude=exclude_attrs)
-    if _TOOL_DATA_BLOB_NAME_ATTR in attrs:
+    if _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR in attrs:
         dims = (_workspace_h5py_tool_data_blob_dim(variable_name),)
     elif dataset.ndim == 1 and dataset.size == 0:
-        dims = (_SAVED_TOOL_DATA_REFERENCE_DIM,)
+        dims = (_persistence_constants.SAVED_TOOL_DATA_REFERENCE_DIM,)
     else:
         return None
     return xr.Variable(dims, _workspace_h5py_read_values(dataset), attrs)
@@ -1222,8 +1271,8 @@ def _workspace_h5py_extra_tool_data_names(
     ds: xr.Dataset, data_name: typing.Hashable
 ) -> frozenset[typing.Hashable]:
     if data_name not in {
-        _serialization.ITOOL_DATA_NAME,
-        _serialization.SAVED_TOOL_DATA_NAME,
+        _persistence_constants.ITOOL_DATA_NAME,
+        _persistence_constants.SAVED_TOOL_DATA_NAME,
     }:
         return frozenset()
     return frozenset(
@@ -1238,7 +1287,7 @@ def _workspace_h5py_dataset_has_only_independent_tool_items(
     ds: xr.Dataset, data_name: typing.Hashable
 ) -> bool:
     return (
-        data_name == _serialization.SAVED_TOOL_DATA_NAME
+        data_name == _persistence_constants.SAVED_TOOL_DATA_NAME
         and not ds.coords
         and all(
             _workspace_h5py_dataarray_is_independent_tool_item(data_array)
@@ -1287,7 +1336,11 @@ def _read_workspace_dataset_group_h5py(
         else:
             return None
 
-        if preferred_data_name == data_name == _serialization.SAVED_TOOL_DATA_NAME:
+        if (
+            preferred_data_name
+            == data_name
+            == _persistence_constants.SAVED_TOOL_DATA_NAME
+        ):
             independent_data_vars: dict[typing.Hashable, xr.Variable] = {}
             for variable_name, dataset in datasets.items():
                 variable = _workspace_h5py_dataset_independent_tool_variable(
@@ -1299,7 +1352,7 @@ def _read_workspace_dataset_group_h5py(
                     break
                 independent_data_vars[variable_name] = variable
             else:
-                if _serialization.SAVED_TOOL_DATA_NAME in independent_data_vars:
+                if _persistence_constants.SAVED_TOOL_DATA_NAME in independent_data_vars:
                     return xr.Dataset(
                         independent_data_vars,
                         attrs=_h5py_attrs_to_dict(group.attrs),
@@ -1440,8 +1493,8 @@ def _read_workspace_dataset_group_h5py(
             data_vars[variable_name] = coord_variable
 
         if data_name in {
-            _serialization.ITOOL_DATA_NAME,
-            _serialization.SAVED_TOOL_DATA_NAME,
+            _persistence_constants.ITOOL_DATA_NAME,
+            _persistence_constants.SAVED_TOOL_DATA_NAME,
         }:
             for variable_name, dataset in datasets.items():
                 if (
@@ -1456,7 +1509,7 @@ def _read_workspace_dataset_group_h5py(
                     exclude_attrs=internal_attrs,
                 )
                 if variable is None:
-                    if data_name == _serialization.SAVED_TOOL_DATA_NAME:
+                    if data_name == _persistence_constants.SAVED_TOOL_DATA_NAME:
                         return None
                     continue
                 data_vars[variable_name] = variable
@@ -1472,10 +1525,10 @@ def _read_workspace_dataset_group_h5py(
 
 
 def _workspace_h5py_data_name(ds: xr.Dataset) -> typing.Hashable | None:
-    if _serialization.ITOOL_DATA_NAME in ds.data_vars:
-        return _serialization.ITOOL_DATA_NAME
-    if _serialization.SAVED_TOOL_DATA_NAME in ds.data_vars:
-        return _serialization.SAVED_TOOL_DATA_NAME
+    if _persistence_constants.ITOOL_DATA_NAME in ds.data_vars:
+        return _persistence_constants.ITOOL_DATA_NAME
+    if _persistence_constants.SAVED_TOOL_DATA_NAME in ds.data_vars:
+        return _persistence_constants.SAVED_TOOL_DATA_NAME
     if len(ds.data_vars) == 1:
         return next(iter(ds.data_vars))
     return None

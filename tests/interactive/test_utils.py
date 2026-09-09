@@ -11,6 +11,8 @@ import typing
 import warnings
 from collections.abc import Callable, Mapping
 
+import dask
+import dask.array
 import lmfit
 import numpy as np
 import pydantic
@@ -23,6 +25,7 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
+from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_entry,
     create_manifest,
@@ -256,7 +259,7 @@ class _TwoInputPersistentTool(_PersistentTool):
 
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
         return {
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self._data,
+            _persistence_constants.SAVED_TOOL_DATA_NAME: self._data,
             "weights": self.weights,
         }
 
@@ -4468,7 +4471,7 @@ def test_tool_window_dataset_normalizes_invalid_source_state(qtbot) -> None:
         state="stale",
     )
     saved = tool.to_dataset()
-    saved.attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "unknown"
+    saved.attrs[_persistence_constants.TOOL_SOURCE_STATE_ATTR] = "unknown"
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
@@ -4556,6 +4559,69 @@ def test_tool_window_dataset_roundtrips_script_inputs(qtbot) -> None:
     missing.set_script_inputs(inputs, primary_input="data")
     with pytest.raises(ValueError, match="canonical input item 'weights'"):
         missing.to_dataset()
+
+
+def test_tool_window_file_roundtrips_nested_input_attrs(qtbot, tmp_path) -> None:
+    strings = {
+        "unicode": np.str_("β😀\x00\x00"),
+        "bytes": np.bytes_(b"\xff\x00\x00"),
+        "empty_unicode": np.str_(""),
+        "empty_bytes": np.bytes_(b""),
+        "null_unicode": np.str_("\x00"),
+        "null_bytes": np.bytes_(b"\x00"),
+    }
+    keyed = {
+        "sample": 1,
+        np.str_("sample\x00"): 2,
+        b"sample": 3,
+        np.bytes_(b"sample\x00"): 4,
+        (np.str_("\x00"), np.bytes_(b"\x00")): 5,
+    }
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims="x",
+        coords={"x": np.arange(4.0), "Fake Motor": ("x", np.arange(4.0) + 10)},
+        attrs={"nested": {"values": [1, 2, 3]}},
+        name="source",
+    )
+    data.coords["Fake Motor"].attrs["calibration"] = {"offset": None}
+    weights = data.copy(deep=True).rename("weights")
+    weights.attrs["nested"] = {"values": [4, 5, 6]}
+    # Add the scalars after copying: NumPy's deep copy strips trailing NULs.
+    for input_data in (data, weights):
+        input_data.attrs["strings"] = strings
+        input_data.attrs["keyed"] = keyed
+        input_data.coords["x"].attrs["strings"] = strings
+        input_data.coords["x"].attrs["keyed"] = keyed
+        input_data.coords["Fake Motor"].attrs["strings"] = strings
+        input_data.coords["Fake Motor"].attrs["keyed"] = keyed
+    tool = _TwoInputPersistentTool(data, weights)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        (ScriptInput(name="data"), ScriptInput(name="weights")), primary_input="data"
+    )
+    path = tmp_path / "tool.nc"
+
+    for _ in range(2):
+        tool.to_file(path)
+        restored = erlab.interactive.utils.ToolWindow.from_file(path)
+        qtbot.addWidget(restored)
+        xr.testing.assert_identical(restored.tool_data, data)
+        xr.testing.assert_identical(restored.weights, weights)
+        for restored_input in (restored.tool_data, restored.weights):
+            for attrs in (
+                restored_input.attrs,
+                restored_input.coords["x"].attrs,
+                restored_input.coords["Fake Motor"].attrs,
+            ):
+                assert attrs["keyed"] == keyed
+                for key, expected in strings.items():
+                    actual = attrs["strings"][key]
+                    assert type(actual) is type(expected)
+                    assert actual.dtype == expected.dtype
+                    assert len(actual) == len(expected)
+                    assert actual.tobytes() == expected.tobytes()
+        tool = restored
 
 
 def test_tool_window_named_input_update_validates_before_mutation(qtbot) -> None:
@@ -4679,7 +4745,7 @@ def test_tool_window_persistence_replacement_uses_complete_named_inputs(
 
         def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
             return {
-                erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self._data,
+                _persistence_constants.SAVED_TOOL_DATA_NAME: self._data,
                 "weights": self.weights,
                 "auxiliary": self.auxiliary,
             }
@@ -4725,7 +4791,7 @@ def test_tool_window_persistence_replacement_uses_complete_named_inputs(
         state="stale",
     )
 
-    saved_name = erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    saved_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     replacement_data = (data + 10.0).rename("stored-data")
     replacement_weights = (weights + 1.0).rename("stored-weights")
     replacement_auxiliary = xr.DataArray(2.0)
@@ -4767,7 +4833,7 @@ def test_tool_window_persistence_replacement_uses_complete_named_inputs(
 
 def test_source_free_persistence_replacement_requires_direct_restore(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims="x")
-    saved_name = erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    saved_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     tool = _PersistentTool(data)
     qtbot.addWidget(tool)
     with pytest.raises(NotImplementedError, match="_restore_persistence_data_items"):
@@ -4793,7 +4859,7 @@ def test_tool_window_deferred_named_input_update_commits_current_bindings(
     class _DeferredMultiInputTool(_PersistentTool):
         def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
             return {
-                erlab.interactive.utils._SAVED_TOOL_DATA_NAME: self._data,
+                _persistence_constants.SAVED_TOOL_DATA_NAME: self._data,
                 "weights": self.weights,
             }
 
@@ -5402,7 +5468,7 @@ def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> N
     with tool._save_tool_data_reference_context(available_node_uids=frozenset()):
         assert (
             tool._tool_data_reference_payload(
-                erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+                _persistence_constants.SAVED_TOOL_DATA_NAME,
                 tool_data,
             )
             is None
@@ -5479,14 +5545,14 @@ def test_tool_window_rejects_invalid_reference_payload(qtbot) -> None:
     qtbot.addWidget(list_payload_tool)
     with pytest.raises(TypeError, match="must be a dictionary"):
         list_payload_tool._reference_saved_tool_data(
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME, data
+            _persistence_constants.SAVED_TOOL_DATA_NAME, data
         )
 
     missing_kind_tool = _PayloadTool(data, {"kind": ""})
     qtbot.addWidget(missing_kind_tool)
     with pytest.raises(ValueError, match="non-empty kind"):
         missing_kind_tool._reference_saved_tool_data(
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME, data
+            _persistence_constants.SAVED_TOOL_DATA_NAME, data
         )
 
 
@@ -5509,7 +5575,7 @@ def test_tool_window_rejects_invalid_persistence_data_items(qtbot) -> None:
     empty_name = _BadItemsTool(
         data,
         {
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data,
+            _persistence_constants.SAVED_TOOL_DATA_NAME: data,
             "": data,
         },
     )
@@ -5519,22 +5585,22 @@ def test_tool_window_rejects_invalid_persistence_data_items(qtbot) -> None:
 
 
 def test_tool_window_rejects_invalid_saved_reference_metadata() -> None:
-    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
-    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = ["not-json"]
+    ds = xr.Dataset({_persistence_constants.SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
+    ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = ["not-json"]
     with pytest.raises(TypeError, match="JSON text"):
         erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
 
-    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps([])
+    ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps([])
     with pytest.raises(TypeError, match="JSON object"):
         erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
 
-    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+    ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
         {"": {"kind": "manager_node"}}
     )
     with pytest.raises(TypeError, match="names must be strings"):
         erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
 
-    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+    ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
         {"data": "manager_node"}
     )
     with pytest.raises(TypeError, match="must be an object"):
@@ -5573,7 +5639,7 @@ def test_tool_window_rejects_unreplayable_saved_source_reference() -> None:
 
 def test_tool_window_resolves_saved_reference_errors() -> None:
     data = xr.DataArray(np.arange(2.0), dims=("x",))
-    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data})
+    ds = xr.Dataset({_persistence_constants.SAVED_TOOL_DATA_NAME: data})
 
     with pytest.raises(ValueError, match="parent data is unavailable"):
         erlab.interactive.utils.ToolWindow._resolve_saved_tool_data_reference(
@@ -5617,8 +5683,8 @@ def test_tool_window_saved_source_reference_authorizes_before_execution(
 ) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4.0)})
     operation = _expression_fit_operation()
-    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data})
-    ds.attrs[erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR] = json.dumps(
+    ds = xr.Dataset({_persistence_constants.SAVED_TOOL_DATA_NAME: data})
+    ds.attrs[_persistence_constants.TOOL_SOURCE_SPEC_ATTR] = json.dumps(
         full_data(operation).model_dump(mode="json")
     )
     executions: list[None] = []
@@ -5840,8 +5906,8 @@ def test_tool_window_rejects_partial_capability_from_document_host(qtbot) -> Non
 
 
 def test_tool_window_resolves_references_with_missing_placeholder_variables() -> None:
-    ds = xr.Dataset({erlab.interactive.utils._SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
-    ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+    ds = xr.Dataset({_persistence_constants.SAVED_TOOL_DATA_NAME: xr.DataArray(0)})
+    ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
         {"missing": {"kind": "manager_node", "node_uid": "missing"}}
     )
 
@@ -5853,16 +5919,16 @@ def test_tool_window_resolves_references_with_missing_placeholder_variables() ->
 
     xr.testing.assert_identical(data_items["missing"], xr.DataArray(1))
     xr.testing.assert_identical(
-        data_items[erlab.interactive.utils._SAVED_TOOL_DATA_NAME],
-        xr.DataArray(0, name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME),
+        data_items[_persistence_constants.SAVED_TOOL_DATA_NAME],
+        xr.DataArray(0, name=_persistence_constants.SAVED_TOOL_DATA_NAME),
     )
     primary_only = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
         ds,
         source_parent_data=None,
         reference_resolver=None,
-        variable_names={erlab.interactive.utils._SAVED_TOOL_DATA_NAME},
+        variable_names={_persistence_constants.SAVED_TOOL_DATA_NAME},
     )
-    assert tuple(primary_only) == (erlab.interactive.utils._SAVED_TOOL_DATA_NAME,)
+    assert tuple(primary_only) == (_persistence_constants.SAVED_TOOL_DATA_NAME,)
 
     with pytest.raises(ValueError, match="could not be resolved"):
         erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
@@ -5882,10 +5948,10 @@ def test_tool_window_resolves_references_with_missing_placeholder_variables() ->
 
 def test_tool_window_materializes_referenced_data_without_mutating_source() -> None:
     source = xr.DataArray(np.arange(4.0), dims=("x",)).chunk({"x": 2})
-    variable_name = erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    variable_name = _persistence_constants.SAVED_TOOL_DATA_NAME
     ds = xr.Dataset(
         attrs={
-            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
                 {variable_name: {"kind": "manager_node", "node_uid": "source"}}
             )
         }
@@ -5901,6 +5967,322 @@ def test_tool_window_materializes_referenced_data_without_mutating_source() -> N
     assert source.chunks is not None
     assert data_items[variable_name].chunks is None
     xr.testing.assert_identical(data_items[variable_name], source.compute())
+
+
+@pytest.mark.parametrize("materialize", [False, True])
+@pytest.mark.parametrize("lazy_data", [False, True])
+@pytest.mark.parametrize("lazy_coordinate", [False, True])
+def test_tool_window_reuses_materialized_references_with_independent_items(
+    materialize: bool,
+    lazy_data: bool,
+    lazy_coordinate: bool,
+) -> None:
+    values = np.arange(6.0).reshape(2, 3)
+    reads = {"data": 0, "coordinate": 0}
+
+    @dask.delayed
+    def read_values(kind: str) -> np.ndarray:
+        reads[kind] += 1
+        return values.copy() + (10 if kind == "coordinate" else 0)
+
+    source = xr.DataArray(
+        dask.array.from_delayed(read_values("data"), shape=(2, 3), dtype=float)
+        if lazy_data
+        else values.copy(),
+        name="source",
+        dims=("x", "y"),
+        coords={
+            "calibration": (
+                ("x", "y"),
+                dask.array.from_delayed(
+                    read_values("coordinate"), shape=(2, 3), dtype=float
+                )
+                if lazy_coordinate
+                else values.copy() + 10,
+            )
+        },
+        attrs={"metadata": {"label": "source"}},
+    )
+    expected = xr.DataArray(
+        values,
+        name="source",
+        dims=("x", "y"),
+        coords={"calibration": (("x", "y"), values + 10)},
+        attrs={"metadata": {"label": "source"}},
+    )
+    source_data = source.data
+    source_coordinate = source.calibration.data
+    primary = _persistence_constants.SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    name: {"kind": "manager_node", "node_uid": "source"}
+                    for name in (primary, "secondary")
+                }
+            )
+        }
+    )
+    resolutions = []
+
+    def resolve(reference):
+        resolutions.append(reference)
+        return source
+
+    for restoration in range(1, 3):
+        items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+            ds,
+            source_parent_data=None,
+            reference_resolver=resolve,
+            materialize_references=materialize,
+        )
+        assert len(resolutions) == 2 * restoration
+        assert source.data is source_data
+        assert source.calibration.data is source_coordinate
+        assert reads == {
+            "data": restoration if materialize and lazy_data else 0,
+            "coordinate": restoration if materialize and lazy_coordinate else 0,
+        }
+        if materialize:
+            for item in items.values():
+                assert item.chunks is None
+                xr.testing.assert_identical(item, expected)
+            assert (
+                np.shares_memory(items[primary].data, items["secondary"].data)
+                is not lazy_data
+            )
+            assert (
+                np.shares_memory(
+                    items[primary].calibration.data, items["secondary"].calibration.data
+                )
+                is not lazy_coordinate
+            )
+            if lazy_data:
+                items["secondary"].data[0, 0] = -1
+            else:
+                assert np.shares_memory(items["secondary"].data, source_data)
+            if lazy_coordinate:
+                items["secondary"].calibration.data[0, 0] = -2
+            else:
+                assert np.shares_memory(
+                    items["secondary"].calibration.data, source_coordinate
+                )
+            xr.testing.assert_identical(items[primary], expected)
+            assert source.attrs == expected.attrs
+        else:
+            assert items[primary] is items["secondary"] is source
+
+
+def test_tool_window_materialization_keeps_distinct_reference_results() -> None:
+    source = xr.DataArray(np.arange(6.0), dims="x").chunk({"x": 2})
+    primary = _persistence_constants.SAVED_TOOL_DATA_NAME
+    selection_spec = full_data(IselOperation(kwargs={"x": slice(0, 2)}))
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    primary: {"kind": "manager_node", "node_uid": "source"},
+                    "selection": {
+                        "kind": "manager_node",
+                        "node_uid": "source",
+                        "source_spec": selection_spec.model_dump(mode="json"),
+                    },
+                    "other": {"kind": "manager_node", "node_uid": "other"},
+                }
+            )
+        }
+    )
+    other = source + 10
+    items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=lambda reference: (
+            source if reference["node_uid"] == "source" else other
+        ),
+        materialize_references=True,
+    )
+
+    xr.testing.assert_identical(items[primary], source.compute())
+    xr.testing.assert_identical(
+        items["selection"], source.isel(x=slice(0, 2)).compute()
+    )
+    xr.testing.assert_identical(items["other"], other.compute())
+    assert source.chunks is not None
+    assert other.chunks is not None
+
+
+@pytest.mark.parametrize("resident", [None, "data", "calibration"])
+def test_tool_window_materializes_backend_references_once(
+    tmp_path, monkeypatch, resident: str | None
+) -> None:
+    import xarray.backends.h5netcdf_
+
+    expected = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        name="data",
+        dims=("x", "y"),
+        coords={
+            "x": [0.0, 1.0],
+            "y": [2.0, 3.0, 4.0],
+            "calibration": (("x", "y"), np.arange(6.0).reshape(2, 3) + 10),
+        },
+    )
+    path = tmp_path / "reference.h5"
+    expected.to_netcdf(path, engine="h5netcdf")
+    primary = _persistence_constants.SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    name: {"kind": "manager_node", "node_uid": "source"}
+                    for name in (primary, "secondary", "third")
+                }
+            )
+        }
+    )
+    with xr.open_dataarray(path, engine="h5netcdf", chunks=None) as source:
+        if resident == "data":
+            source.variable.load()
+        elif resident == "calibration":
+            source.calibration.variable.load()
+        source_data = source.variable._data
+        source_coordinate = source.calibration.variable._data
+        reads: list[str] = []
+        original_getitem = xarray.backends.h5netcdf_.H5NetCDFArrayWrapper._getitem
+
+        def read_values(self, key):
+            reads.append(self.variable_name)
+            return original_getitem(self, key)
+
+        monkeypatch.setattr(
+            xarray.backends.h5netcdf_.H5NetCDFArrayWrapper, "_getitem", read_values
+        )
+        items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+            ds,
+            source_parent_data=None,
+            reference_resolver=lambda _reference: source,
+            materialize_references=True,
+        )
+        assert sorted(reads) == sorted(
+            name for name in ("data", "calibration") if name != resident
+        )
+        assert source.variable._data is source_data
+        assert source.calibration.variable._data is source_coordinate
+        assert source.variable._in_memory is (resident == "data")
+        assert source.calibration.variable._in_memory is (resident == "calibration")
+        for item in items.values():
+            xr.testing.assert_identical(item, expected)
+            for dim in expected.dims:
+                assert item.indexes[dim].equals(expected.indexes[dim])
+        for name in ("secondary", "third"):
+            assert np.shares_memory(items[primary].data, items[name].data) is (
+                resident == "data"
+            )
+            assert np.shares_memory(
+                items[primary].calibration.data, items[name].calibration.data
+            ) is (resident == "calibration")
+        if resident != "data":
+            items["secondary"].data[0, 0] = -1
+        if resident != "calibration":
+            items["secondary"].calibration.data[0, 0] = -2
+        xr.testing.assert_identical(items[primary], expected)
+        xr.testing.assert_identical(items["third"], expected)
+
+
+def test_tool_window_materialization_keeps_unindexed_lazy_coordinates() -> None:
+    reads: list[None] = []
+
+    @dask.delayed
+    def read_coordinate() -> np.ndarray:
+        reads.append(None)
+        return np.arange(3.0)
+
+    source = xr.DataArray(
+        np.arange(3.0),
+        dims="x",
+        coords=xr.Coordinates(
+            {
+                "x": xr.Variable(
+                    "x",
+                    dask.array.from_delayed(read_coordinate(), shape=(3,), dtype=float),
+                )
+            },
+            indexes={},
+        ),
+    )
+    primary = _persistence_constants.SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    name: {"kind": "manager_node", "node_uid": "source"}
+                    for name in (primary, "secondary")
+                }
+            )
+        }
+    )
+    items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=lambda _reference: source,
+        materialize_references=True,
+    )
+    assert reads == [None]
+    assert source.x.chunks is not None
+    for item in items.values():
+        assert not item.xindexes
+        assert item.x.chunks is None
+        np.testing.assert_array_equal(item.x.data, np.arange(3.0))
+    assert not np.shares_memory(items[primary].x.data, items["secondary"].x.data)
+    assert np.shares_memory(items[primary].data, items["secondary"].data)
+    xr.testing.assert_identical(items[primary], items["secondary"])
+
+
+@pytest.mark.parametrize("kind", ["eager", "lazy", "index", "level"])
+def test_tool_window_materialization_preserves_multiindex_references(kind: str) -> None:
+    stacked = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [10, 20], "y": [1, 2, 3]},
+    ).stack(z=("x", "y"))
+    if kind == "index":
+        source = stacked.z
+    elif kind == "level":
+        source = stacked.x
+    elif kind == "lazy":
+        source = stacked.chunk({"z": 2})
+    else:
+        source = stacked
+    primary = _persistence_constants.SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        attrs={
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    name: {"kind": "manager_node", "node_uid": "source"}
+                    for name in (primary, "secondary")
+                }
+            )
+        }
+    )
+    items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=lambda _reference: source,
+        materialize_references=True,
+    )
+    for item in items.values():
+        xr.testing.assert_identical(item, source.compute())
+        assert set(item.xindexes) == set(source.xindexes)
+        assert item.indexes["z"].equals(source.indexes["z"])
+        xr.testing.assert_identical(
+            item.sel(z=(10, 2)), source.sel(z=(10, 2)).compute()
+        )
+        assert type(item.variable) is type(source.variable)
+    if kind in {"eager", "lazy"}:
+        assert np.shares_memory(items[primary].data, items["secondary"].data) is (
+            kind == "eager"
+        )
+        assert (source.chunks is not None) is (kind == "lazy")
 
 
 def test_tool_window_without_inputs_has_no_source_controls(qtbot) -> None:

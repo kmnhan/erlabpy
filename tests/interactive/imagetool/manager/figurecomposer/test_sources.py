@@ -17,6 +17,7 @@ import erlab.interactive._figurecomposer._ui._editor_controls as _editor_control
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 import erlab.interactive._stylesheets
 import erlab.plotting as eplt
+from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -134,7 +135,7 @@ def test_figure_composer_source_alias_candidate_normalizes_usable_names() -> Non
     )
     assert (
         figurecomposer_sources._source_alias_error(
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            _persistence_constants.SAVED_TOOL_DATA_NAME
         )
         is not None
     )
@@ -335,6 +336,43 @@ def test_figure_composer_selected_source_reference_restores_from_base_data(
     )
 
 
+def test_figure_composer_duplicate_eager_reference_roundtrip_shares_buffers(
+    qtbot,
+) -> None:
+    source = xr.DataArray(
+        np.arange(42.0).reshape(6, 7),
+        dims=("x", "y"),
+        coords={"calibration": (("x", "y"), np.ones((6, 7)))},
+        name="source",
+    )
+    tool = FigureComposerTool(
+        source,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="primary", node_uid="source-node"),),
+            primary_source="primary",
+        ),
+        source_data={"primary": source},
+    )
+    qtbot.addWidget(tool)
+    (duplicate,) = tool._document.duplicate_sources(("primary",))
+    with tool._save_tool_data_reference_context({"source-node"}):
+        saved = tool.to_dataset()
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved,
+        _tool_data_reference_resolver=lambda _reference: source,
+        _materialize_tool_data_references=True,
+        _defer_restore_work=True,
+    )
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    restored_sources = restored.source_data()
+    assert set(restored_sources) == {"primary", duplicate}
+    for item in restored_sources.values():
+        xr.testing.assert_identical(item, source)
+        assert np.shares_memory(item.data, source.data)
+        assert np.shares_memory(item.calibration.data, source.calibration.data)
+
+
 def test_figure_composer_selected_alias_roundtrip_uses_source_alias_base(
     qtbot,
 ) -> None:
@@ -419,7 +457,7 @@ def test_figure_composer_restore_recomputes_cached_selected_descendants(qtbot) -
 
     tool._restore_persistence_data_items(
         {
-            erlab.interactive.utils._SAVED_TOOL_DATA_NAME: replacement,
+            _persistence_constants.SAVED_TOOL_DATA_NAME: replacement,
             "selected_u": base,
             "selected_v": selected_u,
         },
@@ -526,7 +564,7 @@ def test_figure_composer_persistence_metadata_fallbacks(qtbot) -> None:
 
     items = tool._persistence_data_items()
     xr.testing.assert_identical(
-        items[erlab.interactive.utils._SAVED_TOOL_DATA_NAME], fallback
+        items[_persistence_constants.SAVED_TOOL_DATA_NAME], fallback
     )
     assert tool._embedded_selected_source_names(xr.Dataset()) == ()
 
@@ -1756,7 +1794,7 @@ def test_figure_composer_source_structure_edge_paths(qtbot) -> None:
     assert tool._document.source_alias_error("") is not None
     assert tool._document.source_alias_error("bad name") is not None
     assert tool._document.source_alias_error(
-        erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+        _persistence_constants.SAVED_TOOL_DATA_NAME
     )
     assert tool._document.source_alias_error("fig") is not None
     assert tool._document.source_alias_error("second", current="first") is not None
@@ -4866,9 +4904,7 @@ def test_figure_composer_restore_skips_missing_nonprimary_source_reference(
     with tool._save_tool_data_reference_context({"n-primary", "n-stale"}):
         ds = tool.to_dataset()
 
-    references = json.loads(
-        ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
-    )
+    references = json.loads(ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR])
     assert references["stale"]["node_uid"] == "n-stale"
     assert ds["stale"].size == 0
 
@@ -5164,7 +5200,7 @@ def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> Non
     )
     primary_tool.set_source_data({})
     primary_tool._restore_persistence_data_items(
-        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data},
+        {_persistence_constants.SAVED_TOOL_DATA_NAME: data},
         xr.Dataset(attrs={"tool_data_name": "restored"}),
     )
     assert primary_tool.source_data()["primary"].name == "restored"
@@ -5184,7 +5220,7 @@ def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> Non
     qtbot.addWidget(descendant_tool)
     descendant_tool.set_source_data({})
     descendant_tool._restore_persistence_data_items(
-        {erlab.interactive.utils._SAVED_TOOL_DATA_NAME: data}, xr.Dataset()
+        {_persistence_constants.SAVED_TOOL_DATA_NAME: data}, xr.Dataset()
     )
     assert "root" in descendant_tool.source_data()
     assert "child" not in descendant_tool.source_data()

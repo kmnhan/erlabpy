@@ -14,6 +14,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._execution import (
     _memoized_live_input_resolver,
@@ -1469,7 +1470,7 @@ class _LineageController:
                     )
                 if attrs is not None:
                     raw_references = attrs.get(
-                        erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR
+                        _persistence_constants.TOOL_DATA_REFERENCES_ATTR
                     )
                     if isinstance(raw_references, (str, bytes, bytearray)):
                         try:
@@ -1491,7 +1492,7 @@ class _LineageController:
                                 if updated_attrs is None:
                                     updated_attrs = dict(attrs)
                                 updated_attrs[
-                                    erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR
+                                    _persistence_constants.TOOL_DATA_REFERENCES_ATTR
                                 ] = json.dumps(rebased_references)
                 if updated_attrs is not None:
                     node.update_pending_workspace_payload_attrs(updated_attrs)
