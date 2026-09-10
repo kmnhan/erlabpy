@@ -490,6 +490,86 @@ def test_colorbar_image_maps_to_large_data_limits(qtbot):
     assert mapped_rect.bottom() == pytest.approx(mx)
 
 
+@pytest.fixture(params=["standalone", "imagetool"])
+def zoomed_colorbar(qtbot, request):
+    data = np.arange(100, dtype=float).reshape(10, 10)
+    if request.param == "imagetool":
+        window = erlab.interactive.itool(data, execute=False)
+        qtbot.addWidget(window)
+        window.show()
+        window.slicer_area.lock_levels(True)
+        widget = window.slicer_area._colorbar
+        colorbar = widget.cb
+    else:
+        image = BetterImageItem(data)
+        image.set_colormap("viridis", gamma=1.0)
+        colorbar = BetterColorBarItem(image=image)
+        widget = pg.PlotWidget(plotItem=colorbar)
+        qtbot.addWidget(widget)
+        widget.resize(150, 400)
+        widget.show()
+
+    QtWidgets.QApplication.processEvents()
+    colorbar.setSpanRegion((20.0, 80.0))
+    colorbar.vb.setYRange(15.0, 90.0, padding=0.0)
+    QtWidgets.QApplication.processEvents()
+    # Retain the image or window until qtbot closes the widgets.
+    return widget, colorbar, window if request.param == "imagetool" else image
+
+
+@pytest.mark.parametrize("level", [20.0, 50.0, 80.0])
+def test_colorbar_drag_preserves_zoom(qtbot, zoomed_colorbar, level):
+    widget, colorbar, _owner = zoomed_colorbar
+    start = widget.mapFromScene(colorbar.vb.mapViewToScene(pg.Point(0.5, level)))
+    end = start - QtCore.QPoint(0, 12)
+    delta = (
+        colorbar.vb.mapSceneToView(widget.mapToScene(end)).y()
+        - colorbar.vb.mapSceneToView(widget.mapToScene(start)).y()
+    )
+
+    qtbot.mousePress(widget.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(widget.viewport(), pos=end)
+    qtbot.mouseRelease(widget.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=end)
+    QtWidgets.QApplication.processEvents()
+
+    expected = (
+        20.0 + (delta if level != 80.0 else 0.0),
+        80.0 + (delta if level != 20.0 else 0.0),
+    )
+    assert colorbar.spanRegion() == pytest.approx(expected)
+    assert colorbar.levels == pytest.approx(expected)
+    assert colorbar.vb.viewRange()[1] == pytest.approx((15.0, 90.0))
+
+
+@pytest.mark.parametrize("edit_min", [True, False])
+def test_colorbar_limit_editor_preserves_zoom(qtbot, zoomed_colorbar, edit_min):
+    _, colorbar, _owner = zoomed_colorbar
+    colorbar.vb.getMenu(None)
+    menu = colorbar._clim_menu
+    editor = colorbar._clim_widget
+    menu.popup(QtCore.QPoint(0, 0))
+    QtWidgets.QApplication.processEvents()
+
+    assert colorbar.spanRegion() == pytest.approx((20.0, 80.0))
+    assert colorbar.vb.viewRange()[1] == pytest.approx((15.0, 90.0))
+    spin = editor.min_spin if edit_min else editor.max_spin
+    spin.setValue(21.0 if edit_min else 79.0)
+
+    expected = (21.0, 80.0) if edit_min else (20.0, 79.0)
+    assert colorbar.spanRegion() == pytest.approx(expected)
+    assert colorbar.levels == pytest.approx(expected)
+    assert colorbar.vb.viewRange()[1] == pytest.approx((15.0, 90.0))
+
+    for _ in range(2):
+        # Reset also restores the view when the selected levels are already full range.
+        colorbar.vb.setYRange(15.0, 90.0, padding=0.0)
+        qtbot.mouseClick(editor.rst_btn, QtCore.Qt.MouseButton.LeftButton)
+        assert colorbar.spanRegion() == pytest.approx((0.0, 99.0))
+        assert colorbar.levels == pytest.approx((0.0, 99.0))
+        assert colorbar.vb.viewRange()[1] == pytest.approx((0.0, 99.0))
+    menu.close()
+
+
 def test_colorbar_limit_change_preserves_data_levels(qtbot):
     image = BetterImageItem(np.arange(100, dtype=float).reshape(10, 10))
     image.set_colormap("viridis", gamma=1.0)
@@ -501,11 +581,15 @@ def test_colorbar_limit_change_preserves_data_levels(qtbot):
     QtWidgets.QApplication.processEvents()
 
     colorbar.setSpanRegion((2.0, 8.0))
+    colorbar.vb.setYRange(1.0, 9.0, padding=0.0)
+    colorbar.setLimits((0.0, 10.0))
+    assert colorbar.vb.viewRange()[1] == pytest.approx((1.0, 9.0))
     colorbar.setLimits((0.0, 20.0))
     QtWidgets.QApplication.processEvents()
 
     assert colorbar.spanRegion() == pytest.approx((2.0, 8.0))
     assert image.getLevels() == pytest.approx((2.0, 8.0))
+    assert colorbar.vb.viewRange()[1] == pytest.approx((0.0, 20.0))
 
 
 def test_colorbar_normalized_helpers_handle_invalid_limits(qtbot, monkeypatch):
@@ -515,7 +599,7 @@ def test_colorbar_normalized_helpers_handle_invalid_limits(qtbot, monkeypatch):
     widget = pg.PlotWidget(plotItem=colorbar)
     qtbot.addWidget(widget)
 
-    colorbar._fixedlimits = (np.inf, np.inf)
+    colorbar._fixed_limits = (np.inf, np.inf)
     monkeypatch.setattr(colorbar._colorbar, "width", lambda: 0)
     monkeypatch.setattr(colorbar._colorbar, "height", lambda: 0)
 
@@ -528,7 +612,7 @@ def test_colorbar_normalized_helpers_handle_invalid_limits(qtbot, monkeypatch):
         QtCore.QRectF(0.0, 0.0, 1.0, 1.0)
     )
 
-    colorbar._fixedlimits = (5.0, 5.0)
+    colorbar._fixed_limits = (5.0, 5.0)
 
     assert colorbar._level_to_span_unit(np.nan) == 0.0
     assert colorbar._level_to_span_unit(6.0) == 0.0

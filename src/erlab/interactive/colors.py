@@ -486,6 +486,7 @@ class _ColorBarLimitWidget(QtWidgets.QWidget):
     def reset(self):
         self._set_spin_values(-np.inf, np.inf)
         self.update_region()
+        self.cb.vb.setRange(xRange=(0.0, 1.0), yRange=self.cb.limits, padding=0.0)
 
     @QtCore.Slot()
     def update_region(self):
@@ -631,7 +632,8 @@ class BetterColorBarItem(pg.PlotItem):
 
         self.addItem(self._span)
 
-        self._fixedlimits: tuple[float, float] | None = None
+        self._fixed_limits: tuple[float, float] | None = None
+        self._view_limits: tuple[float, float] | None = None
         self.setAutoLevels(autoLevels)
         self._images: set[weakref.ref[BetterImageItem]] = set()
         self._primary_image: weakref.ref[BetterImageItem] | None = None
@@ -721,8 +723,8 @@ class BetterColorBarItem(pg.PlotItem):
 
     @property
     def limits(self) -> tuple[float, float]:
-        if self._fixedlimits is not None:
-            return self._fixedlimits
+        if self._fixed_limits is not None:
+            return self._fixed_limits
         image = self.primary_image()
         limits = tuple(float(value) for value in image.quickMinMax(targetSize=2**16))
         if all(np.isfinite(value) for value in limits):
@@ -859,7 +861,7 @@ class BetterColorBarItem(pg.PlotItem):
             if levels is None:
                 levels = self.spanRegion()
 
-        self._fixedlimits = limits
+        self._fixed_limits = limits
         if self._primary_image is not None:
             if levels is not None:
                 self._set_span_region_blocked(levels)
@@ -1038,14 +1040,16 @@ class BetterColorBarItem(pg.PlotItem):
         if not hasattr(self, "limits"):
             return
         self.color_changed()
-        # if (self._fixedlimits is not None) or (mn is None):
+        # if (self._fixed_limits is not None) or (mn is None):
         mn, mx = self.limits
         self._colorbar.setTransform(self._colorbar_image_transform())
         self._span.setTransform(self._normalized_transform())
         if self.levels is not None:
             self._colorbar.setLevels(self._levels_to_span_units(self.levels))
         self._span.setBounds((0.0, 1.0))
-        self.vb.setRange(xRange=(0.0, 1.0), yRange=(mn, mx), padding=0.0)
+        if self._view_limits != (mn, mx):
+            self.vb.setRange(xRange=(0.0, 1.0), yRange=(mn, mx), padding=0.0)
+            self._view_limits = (mn, mx)
 
     # def cmap_changed(self):
     #     cmap = self.imageItem()._colorMap
