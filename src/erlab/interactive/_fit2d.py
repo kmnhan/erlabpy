@@ -674,6 +674,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_last_live_refresh: float = 0.0
         self._fit_2d_live_refresh_pending: bool = False
         self._fit_2d_param_plot_refresh_pending: bool = False
+        self._pending_param_plot_selection: str = ""
         self._fit_2d_last_completed_idx: int | None = None
         self._fit_2d_last_completed_elapsed: float | None = None
         self._fit_2d_sequence_write_history: bool | None = None
@@ -1505,6 +1506,10 @@ class Fit2DTool(Fit1DTool):
                 self.fill_mode_combo.currentText().lower(),
             ),
             y_limits=(self.y_min_spin.value(), self.y_max_spin.value()),
+            param_plot_selection=(
+                self._pending_param_plot_selection
+                or self.param_plot_combo.currentText()
+            ),
             param_plot_overlay_states={
                 name: checked
                 for name, checked in self._param_plot_overlay_states.items()
@@ -1540,6 +1545,9 @@ class Fit2DTool(Fit1DTool):
     ) -> None:
         """Apply base and per-slice state under one execution capability."""
         state2d = status.state2d
+        self._pending_param_plot_selection = (
+            state2d.param_plot_selection if state2d is not None else ""
+        )
         restored_data = self._data_with_saved_dims(self._data_full, state2d)
         if restored_data.dims != self._data_full.dims:
             with self._history_suppressed():
@@ -1703,9 +1711,14 @@ class Fit2DTool(Fit1DTool):
     @QtCore.Slot()
     def _update_param_plot_options(self) -> None:
         with QtCore.QSignalBlocker(self.param_plot_combo):
-            prev_param = self.param_plot_combo.currentText()
+            prev_param = (
+                self._pending_param_plot_selection
+                or self.param_plot_combo.currentText()
+            )
             self.param_plot_combo.clear()
             updated_names = self._param_plot_names()
+            if updated_names:
+                self._pending_param_plot_selection = ""
             self.param_plot_combo.addItems(updated_names)
             for name in updated_names:
                 self._param_plot_overlay_states.setdefault(name, False)

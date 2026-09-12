@@ -768,6 +768,7 @@ class _State2D(pydantic.BaseModel):
     params_from_coord_full: list[dict[str, str]]
     fill_mode: typing.Literal["previous", "extrapolate", "none"]
     y_limits: tuple[int, int] | None = None
+    param_plot_selection: str = ""
     param_plot_overlay_states: dict[str, bool] = pydantic.Field(default_factory=dict)
 
 
