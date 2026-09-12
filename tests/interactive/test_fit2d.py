@@ -2419,8 +2419,9 @@ def test_fit2d_rejects_ambiguous_internal_weighting(qtbot) -> None:
         )
 
 
+@pytest.mark.parametrize("defer_restore", [False, True])
 def test_fit2d_persistence_roundtrip_preserves_fit_results(
-    qtbot, exp_decay_model
+    qtbot, exp_decay_model, defer_restore
 ) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
@@ -2435,24 +2436,64 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     assert isinstance(win, Fit2DTool)
 
     _seed_fit2d_full_results(win, exp_decay_model, params)
+    win.param_plot_combo.setCurrentIndex(1)
+    selected_param = win.param_plot_combo.currentText()
+    assert selected_param
     expected_results = [
         None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
     ]
     expected_status = win.tool_status.model_dump()
 
     win_restored = erlab.interactive.utils.ToolWindow.from_dataset(
-        win.to_dataset(), _code_trust=new_document_trust()
+        win.to_dataset(),
+        _code_trust=new_document_trust(),
+        _defer_restore_work=defer_restore,
     )
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit2DTool)
 
+    if defer_restore:
+        saved_status = json.loads(win_restored.to_dataset().attrs["tool_state"])
+        assert saved_status["state2d"]["param_plot_selection"] == selected_param
+        win_restored._flush_restore_work()
     assert win_restored._fit_is_current
+    assert win_restored.param_plot_combo.currentText() == selected_param
+    plot_y, values, _ = win_restored._param_plot_data(selected_param)
+    plot_x, actual_y = win_restored.param_plot_scatter.getData()
+    np.testing.assert_array_equal(plot_x, values)
+    np.testing.assert_array_equal(actual_y, plot_y)
     assert all(ds is not None for ds in win_restored._result_ds_full)
     _assert_fit_result_list_equivalent(win_restored._result_ds_full, expected_results)
     assert win_restored.tool_status.model_dump() == expected_status
     assert win_restored.copy_full_button.isEnabled()
     assert win_restored.save_full_button.isEnabled()
     assert win_restored.current_provenance_spec() is not None
+
+
+@pytest.mark.parametrize("selection", [None, "unavailable_parameter"])
+def test_fit2d_restore_missing_param_plot_selection(
+    qtbot, exp_decay_model, selection
+) -> None:
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        _make_2d_data(), model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    _seed_fit2d_full_results(win, exp_decay_model, params)
+    dataset = win.to_dataset()
+    status = json.loads(dataset.attrs["tool_state"])
+    if selection is None:
+        del status["state2d"]["param_plot_selection"]
+    else:
+        status["state2d"]["param_plot_selection"] = selection
+    dataset.attrs["tool_state"] = json.dumps(status)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        dataset, _code_trust=new_document_trust()
+    )
+    qtbot.addWidget(restored)
+    assert restored.param_plot_combo.currentIndex() == 0
+    assert restored.param_plot_combo.currentText() == win.param_plot_combo.itemText(0)
 
 
 def test_fit2d_irregular_current_slice_disables_unsafe_segments(
