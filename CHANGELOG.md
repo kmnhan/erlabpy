@@ -1,3 +1,17 @@
+## v3.27.3 (2026-09-12)
+
+### 🐞 Bug Fixes
+
+- **ftool:** persist parameter plot selection (#599) ([f5d0ac9](https://github.com/kmnhan/erlabpy/commit/f5d0ac94f4049fdb42a3e65fcae25d25ea93c267))
+
+- **imagetool:** preserve colorbar zoom during limit edits (#598) ([989fa29](https://github.com/kmnhan/erlabpy/commit/989fa298456415b517b3961e57a02ebffbd41356))
+
+- **manager:** improve workspace restoration and metadata persistence (#597) ([e8e8036](https://github.com/kmnhan/erlabpy/commit/e8e803623df6fc5b4a1c2abdca3a571b02e13e2b))
+
+- **ftool:** preserve fits after model changes (#596) ([ee41849](https://github.com/kmnhan/erlabpy/commit/ee41849359a9e6b016bfef631b8f1312fd2b758e))
+
+  Fixed a crash in ftool when refitting slices after changing the model parameters.
+
 ## v3.27.2 (2026-09-05)
 
 ### 🐞 Bug Fixes
