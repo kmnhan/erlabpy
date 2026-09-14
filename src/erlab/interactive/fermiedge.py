@@ -627,6 +627,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         # Setup fitter worker
         # This allows the GUI to remain responsive during fitting so it can be aborted
         self._threadpool = QtCore.QThreadPool(self)
+        self._threadpool.setStackSize(
+            erlab.interactive.utils._python_thread_stack_size()
+        )
         self._fit_task: EdgeFitTask | None = None
         self._fit_closing = False
         self.sigAbortFitting.connect(self._abort_fit_task)
@@ -1689,6 +1692,7 @@ class ResolutionFitThread(QtCore.QThread):
         timeout: float,
     ) -> None:
         super().__init__()
+        self.setStackSize(erlab.interactive.utils._python_thread_stack_size())
         self._fit_data = fit_data.copy()
         self._fit_params = dict(fit_params)
         self._timeout = timeout

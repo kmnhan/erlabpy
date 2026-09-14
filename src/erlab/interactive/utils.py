@@ -25,6 +25,7 @@ import os
 import pathlib
 import re
 import sys
+import sysconfig
 import threading
 import time
 import traceback
@@ -161,6 +162,21 @@ _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
     contextvars.ContextVar("_TOOL_WINDOW_RESTORE_DEFER", default=None)
 )
 _WAIT_DIALOG_DEPTH = 0
+
+
+def _python_thread_stack_size() -> int:
+    """Return Python's explicit or configured worker stack size for Qt.
+
+    Qt does not apply CPython's build-time stack setting, which avoids hard crashes
+    during cold Numba compilation on macOS. Zero preserves the OS default when
+    Python provides neither an explicit override nor a build-time setting.
+    """
+    if stack_size := threading.stack_size():
+        return stack_size
+    configured_size = sysconfig.get_config_var("THREAD_STACK_SIZE")
+    if isinstance(configured_size, str):
+        return int(configured_size, 0)
+    return configured_size or 0
 
 
 def _tool_window_restore_in_progress() -> bool:
