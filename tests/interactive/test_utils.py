@@ -106,6 +106,27 @@ def _exec_generated_code(
 
 
 @pytest.mark.parametrize(
+    ("override", "configured_size", "expected"),
+    [
+        (0, None, 0),
+        (0, 0, 0),
+        (0, 1048576, 1048576),
+        (0, "0x1000000", 16777216),
+        (2097152, "0x1000000", 2097152),
+    ],
+)
+def test_python_thread_stack_size(
+    monkeypatch, override: int, configured_size: str | int | None, expected: int
+) -> None:
+    monkeypatch.setattr("threading.stack_size", lambda: override)
+    monkeypatch.setattr(
+        "sysconfig.get_config_var", {"THREAD_STACK_SIZE": configured_size}.get
+    )
+
+    assert erlab.interactive.utils._python_thread_stack_size() == expected
+
+
+@pytest.mark.parametrize(
     "order",
     [(0, 1, 2), (1, 2, 0), (2, 0, 1)],
 )

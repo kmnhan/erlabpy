@@ -1,4 +1,8 @@
 import json
+import os
+import pathlib
+import subprocess
+import sys
 import tempfile
 import time
 import typing
@@ -144,6 +148,50 @@ def _drop_goldtool_fit_payload(ds: xr.Dataset) -> xr.Dataset:
 
 def test_goldtool_can_save_and_load() -> None:
     assert GoldTool.can_save_and_load() is True
+
+
+def test_fermi_fit_workers_use_python_stack_setting(qtbot, gold, monkeypatch) -> None:
+    monkeypatch.setattr("threading.stack_size", lambda: 0)
+    monkeypatch.setattr(
+        "sysconfig.get_config_var", {"THREAD_STACK_SIZE": "0x800000"}.get
+    )
+    win = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    thread = ResolutionFitThread(gold.mean("alpha"), {}, timeout=1.0)
+
+    assert win._threadpool.stackSize() == 8 * 1024 * 1024
+    assert thread.stackSize() == 8 * 1024 * 1024
+
+
+def test_goldtool_first_fit_with_empty_numba_cache(gold, tmp_path) -> None:
+    input_path = tmp_path / "gold.h5"
+    output_path = tmp_path / "edge.h5"
+    gold.to_netcdf(input_path, engine="h5netcdf")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-X",
+            "faulthandler",
+            str(pathlib.Path(__file__).with_name("_goldtool_first_fit.py")),
+            str(input_path),
+            str(output_path),
+        ],
+        env={
+            **os.environ,
+            "NUMBA_CACHE_DIR": str(tmp_path / "numba"),
+            "QT_QPA_PLATFORM": "offscreen",
+        },
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    edge_center = xr.load_dataarray(output_path, engine="h5netcdf")
+    xr.testing.assert_identical(edge_center.alpha, gold.alpha)
+    # The noiseless gold fixture has this known quadratic Fermi edge.
+    expected = np.polynomial.polynomial.polyval(edge_center.alpha, (0.04, 1e-5, -3e-4))
+    np.testing.assert_allclose(edge_center, expected, atol=1e-3, rtol=0)
 
 
 def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
