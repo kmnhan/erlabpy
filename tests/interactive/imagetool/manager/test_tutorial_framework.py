@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from qtpy import QtCore, QtGui, QtTest, QtWidgets
 
@@ -16,8 +18,8 @@ def _shown_window(qtbot) -> QtWidgets.QWidget:
     window = QtWidgets.QWidget()
     window.resize(640, 480)
     qtbot.addWidget(window)
-    window.show()
-    qtbot.waitExposed(window)
+    with qtbot.waitExposed(window):
+        window.show()
     return window
 
 
@@ -60,37 +62,39 @@ def test_action_target_geometry(qtbot) -> None:
     window = _shown_window(qtbot)
     menu = QtWidgets.QMenu(window)
     action = menu.addAction("Action")
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "menu",
-                "Menu",
-                "Body",
-                mode="action",
-                target=tutorial.ActionTarget(action, menu),
-            )
-        ],
-        window,
-    )
-    controller.start()
-    qtbot.waitUntil(lambda: len(controller._overlays) == 1)
-    menu.popup(window.mapToGlobal(QtCore.QPoint(20, 20)))
-    qtbot.waitUntil(menu.isVisible)
-    controller.notify_state_changed()
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "menu",
+                    "Menu",
+                    "Body",
+                    mode="action",
+                    target=tutorial.ActionTarget(action, menu),
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: len(controller._overlays) == 1)
+        menu.popup(window.mapToGlobal(QtCore.QPoint(20, 20)))
+        qtbot.waitUntil(menu.isVisible)
+        controller.notify_state_changed()
 
-    geometry = tutorial.target_geometry(tutorial.ActionTarget(action, menu))
-    assert geometry is not None
-    expected = menu.actionGeometry(action)
-    expected.moveTopLeft(menu.mapToGlobal(expected.topLeft()))
-    assert geometry.rect == expected
-    assert geometry.receivers == (menu,)
-    assert controller._card is not None
-    assert controller._card.isVisible()
-    assert menu.isVisible()
-    assert controller._overlays[0][0]() is window
-    assert controller._overlays[0][1]._spotlight is None
-    controller.close()
-    menu.close()
+        geometry = tutorial.target_geometry(tutorial.ActionTarget(action, menu))
+        assert geometry is not None
+        expected = menu.actionGeometry(action)
+        expected.moveTopLeft(menu.mapToGlobal(expected.topLeft()))
+        assert geometry.rect == expected
+        assert geometry.receivers == (menu,)
+        assert controller._card is not None
+        assert controller._card.isVisible()
+        assert menu.isVisible()
+        assert controller._overlays[0][0]() is window
+        assert controller._overlays[0][1]._spotlight is None
+        controller.close()
+        menu.close()
 
 
 def test_model_row_and_model_index_target_geometry(qtbot) -> None:
@@ -145,27 +149,27 @@ def test_information_step_readiness_and_transition(qtbot) -> None:
             "finish", "Finish", "Body", target_required=False, continue_label="Finish"
         ),
     ]
-    controller = tutorial.TourController(steps, window)
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
-    card = controller._card
-    assert card is not None
-    assert not card.skip_button.isVisible()
-    assert not card.continue_button.isEnabled()
-    qtbot.mouseClick(card.continue_button, QtCore.Qt.MouseButton.LeftButton)
-    assert controller.current_step is steps[0]
+    with contextlib.closing(tutorial.TourController(steps, window)) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
+        card = controller._card
+        assert card is not None
+        assert not card.skip_button.isVisible()
+        assert not card.continue_button.isEnabled()
+        qtbot.mouseClick(card.continue_button, QtCore.Qt.MouseButton.LeftButton)
+        assert controller.current_step is steps[0]
 
-    ready = True
-    controller.update_current(title="Ready", body="Ready body")
-    controller.notify_state_changed()
-    assert card.continue_button.isEnabled()
-    assert window.focusWidget() is card.continue_button
-    qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
-    assert controller.current_step is steps[1]
-    assert window.focusWidget() is card.continue_button
-    with qtbot.waitSignal(controller.finished):
-        qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Enter)
-    assert not controller.is_running
+        ready = True
+        controller.update_current(title="Ready", body="Ready body")
+        controller.notify_state_changed()
+        assert card.continue_button.isEnabled()
+        assert window.focusWidget() is card.continue_button
+        qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
+        assert controller.current_step is steps[1]
+        assert window.focusWidget() is card.continue_button
+        with qtbot.waitSignal(controller.finished):
+            qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Enter)
+        assert not controller.is_running
 
 
 def test_debug_skip_advances_information_and_action_steps(qtbot) -> None:
@@ -190,20 +194,21 @@ def test_debug_skip_advances_information_and_action_steps(qtbot) -> None:
         ),
         tutorial.TourStep("finish", "Finish", "Body", target_required=False),
     ]
-    controller = tutorial.TourController(steps, window, debug=True)
-    controller.start()
-    card = controller._card
-    assert card is not None
-    assert card.skip_button.isVisible()
+    with contextlib.closing(
+        tutorial.TourController(steps, window, debug=True)
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        assert card.skip_button.isVisible()
 
-    assert window.focusWidget() is card.continue_button
-    qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
-    assert controller.current_step is steps[1]
-    assert window.focusWidget() is card.skip_button
-    qtbot.keyClick(card.skip_button, QtCore.Qt.Key.Key_Return)
-    qtbot.waitUntil(lambda: controller.current_step is steps[2])
-    assert action_complete
-    controller.close()
+        assert window.focusWidget() is card.continue_button
+        qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
+        assert controller.current_step is steps[1]
+        assert window.focusWidget() is card.skip_button
+        qtbot.keyClick(card.skip_button, QtCore.Qt.Key.Key_Return)
+        qtbot.waitUntil(lambda: controller.current_step is steps[2])
+        assert action_complete
 
 
 def test_debug_skip_requires_an_action(qtbot) -> None:
@@ -216,11 +221,12 @@ def test_debug_skip_requires_an_action(qtbot) -> None:
         target_required=False,
         completion=lambda: False,
     )
-    controller = tutorial.TourController([step], window, debug=True)
-    controller.start()
-    with pytest.raises(tutorial.TutorialDebugActionError, match="'action'"):
-        controller._card_skip()
-    controller.close()
+    with contextlib.closing(
+        tutorial.TourController([step], window, debug=True)
+    ) as controller:
+        controller.start()
+        with pytest.raises(tutorial.TutorialDebugActionError, match="'action'"):
+            controller._card_skip()
 
 
 def test_ui_text_placeholders_resolve_lazily(qtbot) -> None:
@@ -230,33 +236,34 @@ def test_ui_text_placeholders_resolve_lazily(qtbot) -> None:
         "control": "Preview",
         "continue": "Proceed",
     }
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "labels",
-                "Use [[ui:action]]",
-                "Select [[ui:control]].",
-                target_required=False,
-                hint="The [[ui:control]] control is available.",
-                continue_label="[[ui:continue]]",
-            )
-        ],
-        window,
-        text_resolver=labels.get,
-    )
-    controller.start()
-    card = controller._card
-    assert card is not None
-    assert card.title.text() == "Use &Open && Inspect"
-    assert card.body.text() == "Select Preview."
-    assert card.hint.text() == "The Preview control is available."
-    assert card.continue_button.text() == "Proceed"
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "labels",
+                    "Use [[ui:action]]",
+                    "Select [[ui:control]].",
+                    target_required=False,
+                    hint="The [[ui:control]] control is available.",
+                    continue_label="[[ui:continue]]",
+                )
+            ],
+            window,
+            text_resolver=labels.get,
+        )
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        assert card.title.text() == "Use &Open && Inspect"
+        assert card.body.text() == "Select Preview."
+        assert card.hint.text() == "The Preview control is available."
+        assert card.continue_button.text() == "Proceed"
 
-    labels["control"] = "Data Preview"
-    controller.notify_state_changed()
-    assert card.body.text() == "Select Data Preview."
-    assert card.hint.text() == "The Data Preview control is available."
-    controller.close()
+        labels["control"] = "Data Preview"
+        controller.notify_state_changed()
+        assert card.body.text() == "Select Data Preview."
+        assert card.hint.text() == "The Data Preview control is available."
 
 
 def test_menu_path_uses_semantic_inline_segments(qtbot) -> None:
@@ -272,127 +279,138 @@ def test_menu_path_uses_semantic_inline_segments(qtbot) -> None:
         "Select [[menu:menu|submenu|action]].",
         target_required=False,
     )
-    controller = tutorial.TourController([step], window, text_resolver=labels.get)
-    controller.start()
-    card = controller._card
-    assert card is not None
-    assert card.body.text() == (
-        "Select View \N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} Rotation "
-        "Guidelines \N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} C6."
-    )
-    assert [span.kind for span in card.body._text.spans] == [
-        "plain",
-        "menu",
-        "menu_separator",
-        "menu",
-        "menu_separator",
-        "menu_action",
-        "plain",
-    ]
-    assert card.body.accessibleName() == card.body.text()
-    controller.close()
+    with contextlib.closing(
+        tutorial.TourController([step], window, text_resolver=labels.get)
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        assert card.body.text() == (
+            "Select View \N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} Rotation "
+            "Guidelines \N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} C6."
+        )
+        assert [span.kind for span in card.body._text.spans] == [
+            "plain",
+            "menu",
+            "menu_separator",
+            "menu",
+            "menu_separator",
+            "menu_action",
+            "plain",
+        ]
+        assert card.body.accessibleName() == card.body.text()
 
 
 def test_tutorial_colors_use_palette_roles(qtbot) -> None:
     window = _shown_window(qtbot)
-    controller = tutorial.TourController(
-        [tutorial.TourStep("step", "Step", "Body", target_required=False)],
-        window,
-    )
-    controller.start()
-    card = controller._card
-    assert card is not None
-    roles = (
-        tutorial._CARD_BACKGROUND_ROLE,
-        tutorial._CARD_BORDER_ROLE,
-        tutorial._TEXT_ROLE,
-        tutorial._MUTED_TEXT_ROLE,
-        tutorial._UI_BACKGROUND_ROLE,
-        tutorial._UI_BORDER_ROLE,
-        tutorial._UI_TEXT_ROLE,
-        tutorial._MENU_BACKGROUND_ROLE,
-        tutorial._MENU_BORDER_ROLE,
-        tutorial._MENU_ACTION_BORDER_ROLE,
-        tutorial._MENU_TEXT_ROLE,
-        tutorial._BUTTON_TEXT_ROLE,
-        tutorial._OVERLAY_ROLE,
-        tutorial._SPOTLIGHT_BORDER_ROLE,
-    )
-    assert all(isinstance(role, QtGui.QPalette.ColorRole) for role in roles)
-    assert card.backgroundRole() == QtGui.QPalette.ColorRole.Base
-    assert card.foregroundRole() == QtGui.QPalette.ColorRole.Text
-    assert card.progress.foregroundRole() == QtGui.QPalette.ColorRole.PlaceholderText
-    controller.close()
+    with contextlib.closing(
+        tutorial.TourController(
+            [tutorial.TourStep("step", "Step", "Body", target_required=False)],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        roles = (
+            tutorial._CARD_BACKGROUND_ROLE,
+            tutorial._CARD_BORDER_ROLE,
+            tutorial._TEXT_ROLE,
+            tutorial._MUTED_TEXT_ROLE,
+            tutorial._UI_BACKGROUND_ROLE,
+            tutorial._UI_BORDER_ROLE,
+            tutorial._UI_TEXT_ROLE,
+            tutorial._MENU_BACKGROUND_ROLE,
+            tutorial._MENU_BORDER_ROLE,
+            tutorial._MENU_ACTION_BORDER_ROLE,
+            tutorial._MENU_TEXT_ROLE,
+            tutorial._BUTTON_TEXT_ROLE,
+            tutorial._OVERLAY_ROLE,
+            tutorial._SPOTLIGHT_BORDER_ROLE,
+        )
+        assert all(isinstance(role, QtGui.QPalette.ColorRole) for role in roles)
+        assert card.backgroundRole() == QtGui.QPalette.ColorRole.Base
+        assert card.foregroundRole() == QtGui.QPalette.ColorRole.Text
+        assert (
+            card.progress.foregroundRole() == QtGui.QPalette.ColorRole.PlaceholderText
+        )
 
 
 def test_missing_ui_text_waits_without_retry(qtbot) -> None:
     window = _shown_window(qtbot)
     labels: dict[str, str] = {}
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "labels",
-                "Use the control",
-                "Select [[ui:control]].",
-                target_required=False,
-            )
-        ],
-        window,
-        text_resolver=labels.get,
-    )
-    controller.start()
-    card = controller._card
-    assert card is not None
-    assert card.continue_button.text() == "Next"
-    assert not card.continue_button.isEnabled()
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "labels",
+                    "Use the control",
+                    "Select [[ui:control]].",
+                    target_required=False,
+                )
+            ],
+            window,
+            text_resolver=labels.get,
+        )
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        assert card.continue_button.text() == "Next"
+        assert not card.continue_button.isEnabled()
 
-    labels["control"] = "Preview"
-    controller.notify_state_changed()
-    assert card.title.text() == "Use the control"
-    assert card.body.text() == "Select Preview."
-    assert card.continue_button.text() == "Next"
-    assert card.continue_button.isEnabled()
-    controller.close()
+        labels["control"] = "Preview"
+        controller.notify_state_changed()
+        assert card.title.text() == "Use the control"
+        assert card.body.text() == "Select Preview."
+        assert card.continue_button.text() == "Next"
+        assert card.continue_button.isEnabled()
 
 
 def test_malformed_ui_text_placeholder_is_unavailable(qtbot) -> None:
     window = _shown_window(qtbot)
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "labels",
-                "Use the control",
-                "Select [[ui:control].",
-                target_required=False,
-                timeout_ms=0,
+    with (
+        contextlib.closing(
+            tutorial.TourController(
+                [
+                    tutorial.TourStep(
+                        "labels",
+                        "Use the control",
+                        "Select [[ui:control].",
+                        target_required=False,
+                        timeout_ms=0,
+                    )
+                ],
+                window,
+                text_resolver=lambda _object_name: "Control",
             )
-        ],
-        window,
-        text_resolver=lambda _object_name: "Control",
-    )
-    with pytest.raises(tutorial.TutorialStepUnavailableError, match="'labels'"):
+        ) as controller,
+        pytest.raises(tutorial.TutorialStepUnavailableError, match="'labels'"),
+    ):
         controller.start()
-    controller.close()
 
 
 def test_malformed_menu_path_placeholder_is_unavailable(qtbot) -> None:
     window = _shown_window(qtbot)
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "labels",
-                "Use the menu",
-                "Select [[menu:menu]].",
-                target_required=False,
-                timeout_ms=0,
+    with (
+        contextlib.closing(
+            tutorial.TourController(
+                [
+                    tutorial.TourStep(
+                        "labels",
+                        "Use the menu",
+                        "Select [[menu:menu]].",
+                        target_required=False,
+                        timeout_ms=0,
+                    )
+                ],
+                window,
+                text_resolver=lambda _object_name: "Menu",
             )
-        ],
-        window,
-        text_resolver=lambda _object_name: "Menu",
-    )
-    with pytest.raises(tutorial.TutorialStepUnavailableError, match="'labels'"):
+        ) as controller,
+        pytest.raises(tutorial.TutorialStepUnavailableError, match="'labels'"),
+    ):
         controller.start()
-    controller.close()
 
 
 def test_instruction_card_is_not_a_window(qtbot) -> None:
@@ -400,45 +418,45 @@ def test_instruction_card_is_not_a_window(qtbot) -> None:
     button = QtWidgets.QPushButton(window)
     button.setGeometry(40, 50, 120, 30)
     button.show()
-    controller = tutorial.TourController(
-        [tutorial.TourStep("overview", "Overview", "Body", target=button)],
-        window,
-    )
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
+    with contextlib.closing(
+        tutorial.TourController(
+            [tutorial.TourStep("overview", "Overview", "Body", target=button)],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
 
-    overlay = controller._overlays[0][1]
-    card = controller._card
-    assert isinstance(card, QtWidgets.QFrame)
-    assert not card.isWindow()
-    assert card.parentWidget() is window
-    assert card.isVisible()
-    assert overlay._spotlight is not None
-    assert not controller.eventFilter(
-        card.continue_button, QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress)
-    )
-    assert window.rect().contains(card.geometry())
+        overlay = controller._overlays[0][1]
+        card = controller._card
+        assert isinstance(card, QtWidgets.QFrame)
+        assert not card.isWindow()
+        assert card.parentWidget() is window
+        assert card.isVisible()
+        assert overlay._spotlight is not None
+        assert not controller.eventFilter(
+            card.continue_button, QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress)
+        )
+        assert window.rect().contains(card.geometry())
 
-    clicks: list[bool] = []
-    card.continue_button.clicked.connect(lambda: clicks.append(True))
-    window_handle = window.windowHandle()
-    assert window_handle is not None
-    button_center = card.continue_button.mapTo(
-        window, card.continue_button.rect().center()
-    )
-    hit = QtWidgets.QApplication.widgetAt(
-        card.continue_button.mapToGlobal(card.continue_button.rect().center())
-    )
-    assert controller._object_contains(card.continue_button, hit)
-    QtTest.QTest.mouseClick(
-        window_handle,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-        button_center,
-    )
-    assert clicks == [True]
-
-    controller.close()
+        clicks: list[bool] = []
+        card.continue_button.clicked.connect(lambda: clicks.append(True))
+        window_handle = window.windowHandle()
+        assert window_handle is not None
+        button_center = card.continue_button.mapTo(
+            window, card.continue_button.rect().center()
+        )
+        # Other xdist workers can cover this window on the shared X11 display.
+        # Check child stacking within the window before sending the native click.
+        hit = window.childAt(button_center)
+        assert controller._object_contains(card.continue_button, hit)
+        QtTest.QTest.mouseClick(
+            window_handle,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            button_center,
+        )
+        assert clicks == [True]
 
 
 def test_instruction_card_can_be_centered(qtbot) -> None:
@@ -446,26 +464,27 @@ def test_instruction_card_can_be_centered(qtbot) -> None:
     target = QtWidgets.QPushButton(window)
     target.setGeometry(8, 8, 80, 30)
     target.show()
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "switch",
-                "Switch windows",
-                "Body",
-                target=target,
-                card_position="center",
-            )
-        ],
-        window,
-    )
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "switch",
+                    "Switch windows",
+                    "Body",
+                    target=target,
+                    card_position="center",
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
 
-    card = controller._card
-    assert card is not None
-    offset = card.geometry().center() - window.rect().center()
-    assert offset.manhattanLength() <= 2
-    controller.close()
+        card = controller._card
+        assert card is not None
+        offset = card.geometry().center() - window.rect().center()
+        assert offset.manhattanLength() <= 2
 
 
 def test_instruction_card_can_be_placed_above_target(qtbot) -> None:
@@ -473,54 +492,56 @@ def test_instruction_card_can_be_placed_above_target(qtbot) -> None:
     target = QtWidgets.QPushButton(window)
     target.setGeometry(240, 400, 160, 30)
     target.show()
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "tab",
-                "Select a tab",
-                "Body",
-                target=target,
-                card_position="top",
-            )
-        ],
-        window,
-    )
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "tab",
+                    "Select a tab",
+                    "Body",
+                    target=target,
+                    card_position="top",
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
 
-    card = controller._card
-    assert card is not None
-    assert card.geometry().bottom() < target.geometry().top()
-    controller.close()
+        card = controller._card
+        assert card is not None
+        assert card.geometry().bottom() < target.geometry().top()
 
 
 def test_instruction_card_recalculates_height_for_narrow_window(qtbot) -> None:
     window = _shown_window(qtbot)
     window.resize(260, 420)
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "narrow",
-                "Narrow tutorial card",
-                "Select [[ui:control]] to apply the coordinate offset. The second "
-                "sentence must wrap without being cut off.",
-                target_required=False,
-            )
-        ],
-        window,
-        text_resolver=lambda _object_name: "Offset",
-    )
-    controller.start()
-    card = controller._card
-    assert card is not None
-    qtbot.waitUntil(card.isVisible)
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "narrow",
+                    "Narrow tutorial card",
+                    "Select [[ui:control]] to apply the coordinate offset. The second "
+                    "sentence must wrap without being cut off.",
+                    target_required=False,
+                )
+            ],
+            window,
+            text_resolver=lambda _object_name: "Offset",
+        )
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        qtbot.waitUntil(card.isVisible)
 
-    assert window.rect().contains(card.geometry())
-    assert card.body.height() >= card.body.heightForWidth(card.body.width())
-    layout = card.layout()
-    assert layout is not None
-    assert card.height() >= layout.heightForWidth(card.width())
-    controller.close()
+        assert window.rect().contains(card.geometry())
+        assert card.body.height() >= card.body.heightForWidth(card.body.width())
+        layout = card.layout()
+        assert layout is not None
+        assert card.height() >= layout.heightForWidth(card.width())
 
 
 def test_instruction_card_header_drag_preserves_position_during_refresh(qtbot) -> None:
@@ -528,44 +549,45 @@ def test_instruction_card_header_drag_preserves_position_during_refresh(qtbot) -
     target = QtWidgets.QPushButton(window)
     target.setGeometry(8, 8, 80, 30)
     target.show()
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep("first", "First", "Body", target=target),
-            tutorial.TourStep("second", "Second", "Body", target=target),
-        ],
-        window,
-    )
-    controller.start()
-    card = controller._card
-    assert card is not None
-    qtbot.waitUntil(card.isVisible)
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep("first", "First", "Body", target=target),
+                tutorial.TourStep("second", "Second", "Body", target=target),
+            ],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        qtbot.waitUntil(card.isVisible)
 
-    initial = card.pos()
-    press_position = card.header.rect().center()
-    drag_delta = QtCore.QPoint(60, 8)
-    qtbot.mousePress(
-        card.header,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=press_position,
-    )
-    qtbot.mouseMove(card.header, pos=press_position + drag_delta)
-    qtbot.mouseRelease(
-        card.header,
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=press_position + drag_delta,
-    )
+        initial = card.pos()
+        press_position = card.header.rect().center()
+        drag_delta = QtCore.QPoint(60, 8)
+        qtbot.mousePress(
+            card.header,
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=press_position,
+        )
+        qtbot.mouseMove(card.header, pos=press_position + drag_delta)
+        qtbot.mouseRelease(
+            card.header,
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=press_position + drag_delta,
+        )
 
-    moved = card.pos()
-    assert moved != initial
-    assert window.rect().contains(card.geometry())
-    controller.notify_state_changed()
-    assert card.pos() == moved
+        moved = card.pos()
+        assert moved != initial
+        assert window.rect().contains(card.geometry())
+        controller.notify_state_changed()
+        assert card.pos() == moved
 
-    controller.continue_step()
-    assert controller.current_step is not None
-    assert controller.current_step.id == "second"
-    assert card._manual_position is None
-    controller.close()
+        controller.continue_step()
+        assert controller.current_step is not None
+        assert controller.current_step.id == "second"
+        assert card._manual_position is None
 
 
 def test_instruction_card_survives_target_window_close(qtbot) -> None:
@@ -573,22 +595,23 @@ def test_instruction_card_survives_target_window_close(qtbot) -> None:
     dialog = QtWidgets.QDialog(window)
     dialog.setWindowFlag(QtCore.Qt.WindowType.Window, True)
     dialog.resize(320, 240)
-    dialog.show()
-    qtbot.waitExposed(dialog)
-    controller = tutorial.TourController(
-        [tutorial.TourStep("dialog", "Dialog", "Body", target=dialog)],
-        window,
-    )
-    controller.start()
-    qtbot.waitUntil(lambda: controller._card is not None)
-    card = controller._card
-    assert card is not None
-    qtbot.waitUntil(lambda: card.parentWidget() is dialog)
+    with qtbot.waitExposed(dialog):
+        dialog.show()
+    with contextlib.closing(
+        tutorial.TourController(
+            [tutorial.TourStep("dialog", "Dialog", "Body", target=dialog)],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: controller._card is not None)
+        card = controller._card
+        assert card is not None
+        qtbot.waitUntil(lambda: card.parentWidget() is dialog)
 
-    dialog.close()
-    qtbot.waitUntil(lambda: card.parentWidget() is window)
-    assert erlab.interactive.utils.qt_is_valid(card, card.continue_button)
-    controller.close()
+        dialog.close()
+        qtbot.waitUntil(lambda: card.parentWidget() is window)
+        assert erlab.interactive.utils.qt_is_valid(card, card.continue_button)
 
 
 def test_transient_popup_does_not_own_instruction_card(qtbot) -> None:
@@ -598,45 +621,46 @@ def test_transient_popup_does_not_own_instruction_card(qtbot) -> None:
     dialog.resize(480, 320)
     target = QtWidgets.QPushButton("Target", dialog)
     target.move(20, 20)
-    dialog.show()
-    qtbot.waitExposed(dialog)
+    with qtbot.waitExposed(dialog):
+        dialog.show()
     complete = False
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "dialog-action",
-                "Dialog action",
-                "Body",
-                mode="action",
-                target=target,
-                completion=lambda: complete,
-                auto_advance=False,
-            )
-        ],
-        window,
-    )
-    popup = QtWidgets.QWidget(dialog, QtCore.Qt.WindowType.Popup)
-    popup.resize(120, 80)
-    try:
-        controller.start()
-        card = controller._card
-        assert card is not None
-        qtbot.waitUntil(lambda: card.parentWidget() is dialog)
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "dialog-action",
+                    "Dialog action",
+                    "Body",
+                    mode="action",
+                    target=target,
+                    completion=lambda: complete,
+                    auto_advance=False,
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        popup = QtWidgets.QWidget(dialog, QtCore.Qt.WindowType.Popup)
+        popup.resize(120, 80)
+        try:
+            controller.start()
+            card = controller._card
+            assert card is not None
+            qtbot.waitUntil(lambda: card.parentWidget() is dialog)
 
-        popup.show()
-        qtbot.waitUntil(popup.isVisible)
-        QtWidgets.QApplication.processEvents()
-        complete = True
-        controller.notify_state_changed()
+            popup.show()
+            qtbot.waitUntil(popup.isVisible)
+            QtWidgets.QApplication.processEvents()
+            complete = True
+            controller.notify_state_changed()
 
-        assert popup not in controller._visible_windows()
-        assert card.parentWidget() is dialog
-        popup.hide()
-        QtWidgets.QApplication.processEvents()
-        assert card.isVisible()
-    finally:
-        popup.close()
-        controller.close()
+            assert popup not in controller._visible_windows()
+            assert card.parentWidget() is dialog
+            popup.hide()
+            QtWidgets.QApplication.processEvents()
+            assert card.isVisible()
+        finally:
+            popup.close()
 
 
 def test_overlay_darkens_untargeted_area(qtbot) -> None:
@@ -648,31 +672,33 @@ def test_overlay_darkens_untargeted_area(qtbot) -> None:
     QtWidgets.QApplication.processEvents()
     before = window.grab().toImage()
 
-    controller = tutorial.TourController(
-        [tutorial.TourStep("spotlight", "Spotlight", "Body", target=button)],
-        window,
-    )
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
-    QtWidgets.QApplication.processEvents()
-    after = window.grab().toImage()
+    with contextlib.closing(
+        tutorial.TourController(
+            [tutorial.TourStep("spotlight", "Spotlight", "Body", target=button)],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
+        QtWidgets.QApplication.processEvents()
+        after = window.grab().toImage()
 
-    outside = QtCore.QPoint(300, 300)
-    target = button.geometry().center()
-    rounded_corner = button.geometry().topLeft() - QtCore.QPoint(5, 5)
-    assert (
-        after.pixelColor(outside).lightness() < before.pixelColor(outside).lightness()
-    )
-    assert (
-        after.pixelColor(outside).lightness()
-        > before.pixelColor(outside).lightness() / 2
-    )
-    assert after.pixelColor(target) == before.pixelColor(target)
-    assert (
-        after.pixelColor(rounded_corner).lightness()
-        < before.pixelColor(rounded_corner).lightness()
-    )
-    controller.close()
+        outside = QtCore.QPoint(300, 300)
+        target = button.geometry().center()
+        rounded_corner = button.geometry().topLeft() - QtCore.QPoint(5, 5)
+        assert (
+            after.pixelColor(outside).lightness()
+            < before.pixelColor(outside).lightness()
+        )
+        assert (
+            after.pixelColor(outside).lightness()
+            > before.pixelColor(outside).lightness() / 2
+        )
+        assert after.pixelColor(target) == before.pixelColor(target)
+        assert (
+            after.pixelColor(rounded_corner).lightness()
+            < before.pixelColor(rounded_corner).lightness()
+        )
 
 
 def test_action_step_requires_continue_after_observed_state(qtbot) -> None:
@@ -692,24 +718,24 @@ def test_action_step_requires_continue_after_observed_state(qtbot) -> None:
         ),
         tutorial.TourStep("done", "Done", "Body", target_required=False),
     ]
-    controller = tutorial.TourController(steps, window)
-    controller.start()
-    card = controller._card
-    assert card is not None
-    assert card.continue_button.isVisible()
-    assert not card.continue_button.isEnabled()
-    emitter.changed.emit()
-    assert controller.current_step is steps[0]
-    complete = True
-    emitter.changed.emit()
-    assert controller.current_step is steps[0]
-    assert card.continue_button.isEnabled()
-    qtbot.mouseClick(card.continue_button, QtCore.Qt.MouseButton.LeftButton)
-    assert controller.current_step is steps[1]
+    with contextlib.closing(tutorial.TourController(steps, window)) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        assert card.continue_button.isVisible()
+        assert not card.continue_button.isEnabled()
+        emitter.changed.emit()
+        assert controller.current_step is steps[0]
+        complete = True
+        emitter.changed.emit()
+        assert controller.current_step is steps[0]
+        assert card.continue_button.isEnabled()
+        qtbot.mouseClick(card.continue_button, QtCore.Qt.MouseButton.LeftButton)
+        assert controller.current_step is steps[1]
 
-    controller.close()
-    emitter.changed.emit()
-    assert controller.current_step is None
+        controller.close()
+        emitter.changed.emit()
+        assert controller.current_step is None
 
 
 def test_recovery_button_revisits_an_earlier_step(qtbot) -> None:
@@ -736,25 +762,26 @@ def test_recovery_button_revisits_an_earlier_step(qtbot) -> None:
             auto_advance=False,
         ),
     ]
-    controller = tutorial.TourController(steps, window, debug=True)
-    controller.start()
-    card = controller._card
-    assert card is not None
-    assert not card.recovery_button.isVisible()
+    with contextlib.closing(
+        tutorial.TourController(steps, window, debug=True)
+    ) as controller:
+        controller.start()
+        card = controller._card
+        assert card is not None
+        assert not card.recovery_button.isVisible()
 
-    qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
-    assert controller.current_step is steps[1]
-    assert card.recovery_button.objectName() == "tutorialRecoveryButton"
-    assert card.recovery_button.isVisible()
-    assert card.recovery_button.text() == "Copy Again"
-    assert card.hint.text() == "The clipboard contents changed."
-    assert window.focusWidget() is card.recovery_button
-    assert not card.skip_button.isEnabled()
+        qtbot.keyClick(card.continue_button, QtCore.Qt.Key.Key_Return)
+        assert controller.current_step is steps[1]
+        assert card.recovery_button.objectName() == "tutorialRecoveryButton"
+        assert card.recovery_button.isVisible()
+        assert card.recovery_button.text() == "Copy Again"
+        assert card.hint.text() == "The clipboard contents changed."
+        assert window.focusWidget() is card.recovery_button
+        assert not card.skip_button.isEnabled()
 
-    qtbot.keyClick(card.recovery_button, QtCore.Qt.Key.Key_Return)
-    assert controller.current_step is steps[0]
-    assert not card.recovery_button.isVisible()
-    controller.close()
+        qtbot.keyClick(card.recovery_button, QtCore.Qt.Key.Key_Return)
+        assert controller.current_step is steps[0]
+        assert not card.recovery_button.isVisible()
 
 
 def test_recovery_options_require_a_label_and_action() -> None:
@@ -797,12 +824,11 @@ def test_discrete_action_advances_on_observed_state(qtbot) -> None:
         ),
         tutorial.TourStep("done", "Done", "Body", target_required=False),
     ]
-    controller = tutorial.TourController(steps, window)
-    controller.start()
-    complete = True
-    emitter.changed.emit()
-    assert controller.current_step is steps[1]
-    controller.close()
+    with contextlib.closing(tutorial.TourController(steps, window)) as controller:
+        controller.start()
+        complete = True
+        emitter.changed.emit()
+        assert controller.current_step is steps[1]
 
 
 def test_queued_auto_advance_does_not_skip_next_step(qtbot) -> None:
@@ -829,15 +855,14 @@ def test_queued_auto_advance_does_not_skip_next_step(qtbot) -> None:
             target_required=False,
         ),
     ]
-    controller = tutorial.TourController(steps, window)
-    controller.start()
+    with contextlib.closing(tutorial.TourController(steps, window)) as controller:
+        controller.start()
 
-    controller.notify_state_changed()
-    assert controller.current_step is steps[1]
-    QtWidgets.QApplication.processEvents()
+        controller.notify_state_changed()
+        assert controller.current_step is steps[1]
+        QtWidgets.QApplication.processEvents()
 
-    assert controller.current_step is steps[1]
-    controller.close()
+        assert controller.current_step is steps[1]
 
 
 def test_input_gating_and_escape(qtbot) -> None:
@@ -851,65 +876,70 @@ def test_input_gating_and_escape(qtbot) -> None:
     step = tutorial.TourStep(
         "action", "Action", "Body", mode="action", target=lambda: target
     )
-    controller = tutorial.TourController([step], window)
-    controller.start()
-    controller.notify_state_changed()
-    card = controller._card
-    assert card is not None
-    assert isinstance(card.exit_button, _CenteredIconToolButton)
-    assert card.exit_button.parentWidget() is card.header
-    assert card.exit_button.autoRaise()
-    assert not card.exit_button.icon().isNull()
-    assert card.exit_button.accessibleName()
-    overlay = controller._overlays[0][1]
-    assert overlay.testAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    with contextlib.closing(tutorial.TourController([step], window)) as controller:
+        controller.start()
+        controller.notify_state_changed()
+        card = controller._card
+        assert card is not None
+        assert isinstance(card.exit_button, _CenteredIconToolButton)
+        assert card.exit_button.parentWidget() is card.header
+        assert card.exit_button.autoRaise()
+        assert not card.exit_button.icon().isNull()
+        assert card.exit_button.accessibleName()
+        overlay = controller._overlays[0][1]
+        assert overlay.testAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
 
-    clicks: list[bool] = []
-    target.clicked.connect(lambda: clicks.append(True))
-    window_handle = window.windowHandle()
-    assert window_handle is not None
-    QtTest.QTest.mouseClick(
-        window_handle,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-        target.mapTo(window, target.rect().center()),
-    )
-    assert clicks == [True]
+        clicks: list[bool] = []
+        target.clicked.connect(lambda: clicks.append(True))
+        window_handle = window.windowHandle()
+        assert window_handle is not None
+        QtTest.QTest.mouseClick(
+            window_handle,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            target.mapTo(window, target.rect().center()),
+        )
+        assert clicks == [True]
 
-    outside_clicks: list[bool] = []
-    outside.clicked.connect(lambda: outside_clicks.append(True))
-    QtTest.QTest.mouseClick(
-        window_handle,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-        outside.mapTo(window, outside.rect().center()),
-    )
-    assert outside_clicks == []
+        outside_clicks: list[bool] = []
+        outside.clicked.connect(lambda: outside_clicks.append(True))
+        QtTest.QTest.mouseClick(
+            window_handle,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            outside.mapTo(window, outside.rect().center()),
+        )
+        assert outside_clicks == []
 
-    mouse = QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress)
-    assert not controller.eventFilter(target, mouse)
-    assert controller.eventFilter(outside, QtCore.QEvent(QtCore.QEvent.Type.Wheel))
-    assert controller.eventFilter(outside, QtCore.QEvent(QtCore.QEvent.Type.TouchBegin))
-    assert controller.eventFilter(outside, QtCore.QEvent(QtCore.QEvent.Type.DragEnter))
-    assert controller.eventFilter(outside, QtCore.QEvent(QtCore.QEvent.Type.Drop))
-    assert controller.eventFilter(
-        outside, QtCore.QEvent(QtCore.QEvent.Type.ContextMenu)
-    )
+        mouse = QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress)
+        assert not controller.eventFilter(target, mouse)
+        assert controller.eventFilter(outside, QtCore.QEvent(QtCore.QEvent.Type.Wheel))
+        assert controller.eventFilter(
+            outside, QtCore.QEvent(QtCore.QEvent.Type.TouchBegin)
+        )
+        assert controller.eventFilter(
+            outside, QtCore.QEvent(QtCore.QEvent.Type.DragEnter)
+        )
+        assert controller.eventFilter(outside, QtCore.QEvent(QtCore.QEvent.Type.Drop))
+        assert controller.eventFilter(
+            outside, QtCore.QEvent(QtCore.QEvent.Type.ContextMenu)
+        )
 
-    exits: list[bool] = []
-    controller.exit_requested.connect(lambda: exits.append(True))
-    qtbot.mouseClick(card.exit_button, QtCore.Qt.MouseButton.LeftButton)
-    assert exits == [True]
-    exits.clear()
-    escape = QtGui.QKeyEvent(
-        QtCore.QEvent.Type.KeyPress,
-        QtCore.Qt.Key.Key_Escape,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-    )
-    assert controller.eventFilter(outside, escape)
-    assert exits == [True]
-    assert controller.is_running
-    controller.close()
+        exits: list[bool] = []
+        controller.exit_requested.connect(lambda: exits.append(True))
+        qtbot.mouseClick(card.exit_button, QtCore.Qt.MouseButton.LeftButton)
+        assert exits == [True]
+        exits.clear()
+        escape = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_Escape,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+        assert controller.eventFilter(outside, escape)
+        assert exits == [True]
+        assert controller.is_running
 
 
 def test_allowed_objects_and_event_predicate(qtbot) -> None:
@@ -928,17 +958,16 @@ def test_allowed_objects_and_event_predicate(qtbot) -> None:
             watched is other and event.type() == QtCore.QEvent.Type.ContextMenu
         ),
     )
-    controller = tutorial.TourController([step], window)
-    controller.start()
+    with contextlib.closing(tutorial.TourController([step], window)) as controller:
+        controller.start()
 
-    assert not controller.eventFilter(
-        allowed, QtCore.QEvent(QtCore.QEvent.Type.KeyPress)
-    )
-    assert not controller.eventFilter(
-        other, QtCore.QEvent(QtCore.QEvent.Type.ContextMenu)
-    )
-    assert controller.eventFilter(other, QtCore.QEvent(QtCore.QEvent.Type.KeyPress))
-    controller.close()
+        assert not controller.eventFilter(
+            allowed, QtCore.QEvent(QtCore.QEvent.Type.KeyPress)
+        )
+        assert not controller.eventFilter(
+            other, QtCore.QEvent(QtCore.QEvent.Type.ContextMenu)
+        )
+        assert controller.eventFilter(other, QtCore.QEvent(QtCore.QEvent.Type.KeyPress))
 
 
 def test_allowed_action_permits_its_shortcut_from_focused_widget(qtbot) -> None:
@@ -952,22 +981,23 @@ def test_allowed_action_permits_its_shortcut_from_focused_widget(qtbot) -> None:
     action.setShortcut(QtGui.QKeySequence("Shift+V"))
     action.setCheckable(True)
     window.addAction(action)
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "action",
-                "Action",
-                "Body",
-                mode="action",
-                target=target,
-                allowed_inputs=frozenset({"key", "shortcut"}),
-                allowed_objects=(action,),
-            )
-        ],
-        window,
-    )
-    controller.start()
-    try:
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "action",
+                    "Action",
+                    "Body",
+                    mode="action",
+                    target=target,
+                    allowed_inputs=frozenset({"key", "shortcut"}),
+                    allowed_objects=(action,),
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        controller.start()
         window.raise_()
         window.activateWindow()
         qtbot.waitUntil(window.isActiveWindow)
@@ -995,45 +1025,43 @@ def test_allowed_action_permits_its_shortcut_from_focused_widget(qtbot) -> None:
         assert action.isChecked()
         assert controller.current_step is not None
         assert controller.current_step.id == "action"
-    finally:
-        controller.close()
 
 
 def test_message_dialog_details_toggle_bypasses_input_gating(qtbot) -> None:
     window = _shown_window(qtbot)
     target = QtWidgets.QPushButton(window)
     target.show()
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "action",
-                "Action",
-                "Body",
-                mode="action",
-                target=target,
-            )
-        ],
-        window,
-    )
-    controller.start()
-    dialog = erlab.interactive.utils.MessageDialog(
-        parent=window,
-        title="Error",
-        text="An error occurred",
-        detailed_text="Traceback",
-    )
-    qtbot.addWidget(dialog)
-    dialog.show()
-    qtbot.waitUntil(dialog._details_toggle.isVisible)
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "action",
+                    "Action",
+                    "Body",
+                    mode="action",
+                    target=target,
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        controller.start()
+        dialog = erlab.interactive.utils.MessageDialog(
+            parent=window,
+            title="Error",
+            text="An error occurred",
+            detailed_text="Traceback",
+        )
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.waitUntil(dialog._details_toggle.isVisible)
 
-    assert not controller.eventFilter(
-        dialog._details_toggle,
-        QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress),
-    )
-    qtbot.mouseClick(dialog._details_toggle, QtCore.Qt.MouseButton.LeftButton)
-    assert dialog._details_container.isVisible()
-
-    controller.close()
+        assert not controller.eventFilter(
+            dialog._details_toggle,
+            QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress),
+        )
+        qtbot.mouseClick(dialog._details_toggle, QtCore.Qt.MouseButton.LeftButton)
+        assert dialog._details_container.isVisible()
 
 
 def test_transient_missing_target_waits_without_retry(qtbot) -> None:
@@ -1049,27 +1077,26 @@ def test_transient_missing_target_waits_without_retry(qtbot) -> None:
         timeout_ms=1000,
         retry_interval_ms=5,
     )
-    controller = tutorial.TourController([step], window)
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
-    card = controller._card
-    assert card is not None
-    assert card.continue_button.isVisible()
-    assert card.continue_button.text() == "Next"
-    assert not card.continue_button.isEnabled()
-    assert reveals == [True]
+    with contextlib.closing(tutorial.TourController([step], window)) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
+        card = controller._card
+        assert card is not None
+        assert card.continue_button.isVisible()
+        assert card.continue_button.text() == "Next"
+        assert not card.continue_button.isEnabled()
+        assert reveals == [True]
 
-    target = QtWidgets.QPushButton(window)
-    target.show()
-    controller.notify_state_changed()
-    assert controller.is_running
-    assert card.continue_button.isEnabled()
-    target.deleteLater()
-    qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(target))
-    controller.notify_state_changed()
-    assert controller.is_running
-    assert not card.continue_button.isEnabled()
-    controller.close()
+        target = QtWidgets.QPushButton(window)
+        target.show()
+        controller.notify_state_changed()
+        assert controller.is_running
+        assert card.continue_button.isEnabled()
+        target.deleteLater()
+        qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(target))
+        controller.notify_state_changed()
+        assert controller.is_running
+        assert not card.continue_button.isEnabled()
 
 
 def test_missing_target_raises_diagnostic_error(qtbot) -> None:
@@ -1078,49 +1105,51 @@ def test_missing_target_raises_diagnostic_error(qtbot) -> None:
     button.show()
     clicks: list[bool] = []
     button.clicked.connect(lambda: clicks.append(True))
-    controller = tutorial.TourController(
-        [
-            tutorial.TourStep(
-                "missing-target",
-                "Missing target",
-                "Body",
-                target=lambda: None,
-                timeout_ms=0,
-            )
-        ],
-        window,
-    )
-    with pytest.raises(
-        tutorial.TutorialStepUnavailableError, match="'missing-target'"
-    ) as error:
-        controller.start()
-    assert controller._fatal_error is error.value
-    assert not controller.is_running
-    assert not controller._retry_timer.isActive()
-    assert not controller._debug_timer.isActive()
-    assert controller._overlays == []
-    assert controller._card is None
-    controller.notify_state_changed()
-    qtbot.mouseClick(button, QtCore.Qt.MouseButton.LeftButton)
-    assert clicks == [True]
+    with contextlib.closing(
+        tutorial.TourController(
+            [
+                tutorial.TourStep(
+                    "missing-target",
+                    "Missing target",
+                    "Body",
+                    target=lambda: None,
+                    timeout_ms=0,
+                )
+            ],
+            window,
+        )
+    ) as controller:
+        with pytest.raises(
+            tutorial.TutorialStepUnavailableError, match="'missing-target'"
+        ) as error:
+            controller.start()
+        assert controller._fatal_error is error.value
+        assert not controller.is_running
+        assert not controller._retry_timer.isActive()
+        assert not controller._debug_timer.isActive()
+        assert controller._overlays == []
+        assert controller._card is None
+        controller.notify_state_changed()
+        qtbot.mouseClick(button, QtCore.Qt.MouseButton.LeftButton)
+        assert clicks == [True]
 
 
 def test_overlay_resize_cleanup(qtbot) -> None:
     window = _shown_window(qtbot)
     step = tutorial.TourStep("step", "Step", "Body", target_required=False)
-    controller = tutorial.TourController([step], window)
-    controller.start()
-    qtbot.waitUntil(lambda: bool(controller._overlays))
-    overlay = controller._overlays[0][1]
-    card = controller._card
-    assert card is not None
+    with contextlib.closing(tutorial.TourController([step], window)) as controller:
+        controller.start()
+        qtbot.waitUntil(lambda: bool(controller._overlays))
+        overlay = controller._overlays[0][1]
+        card = controller._card
+        assert card is not None
 
-    window.resize(720, 520)
-    qtbot.waitUntil(lambda: overlay.size() == window.size())
-    assert window.rect().contains(card.geometry())
+        window.resize(720, 520)
+        qtbot.waitUntil(lambda: overlay.size() == window.size())
+        assert window.rect().contains(card.geometry())
 
-    controller.close()
-    assert controller._overlays == []
-    assert controller._card is None
-    assert controller._connections == []
-    assert not controller._retry_timer.isActive()
+        controller.close()
+        assert controller._overlays == []
+        assert controller._card is None
+        assert controller._connections == []
+        assert not controller._retry_timer.isActive()
