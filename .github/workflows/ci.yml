@@ -221,9 +221,12 @@ jobs:
     needs: partition-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Keep Python 3.15 experimental until its dependencies support it.
+    continue-on-error: ${{ matrix.python-version == '3.15' }}
     env:
       MPLBACKEND: Agg
       QT_QPA_PLATFORM: offscreen
+      UV_PRERELEASE: ${{ matrix.python-version == '3.15' && 'allow' || 'if-necessary-or-explicit' }}
     strategy:
       fail-fast: false
       matrix:
@@ -232,11 +235,15 @@ jobs:
             qt-api: "pyqt6"
           - python-version: "3.14"
             qt-api: "pyqt6"
+          - python-version: "3.15"
+            qt-api: "pyqt6"
           - python-version: "3.11"
             qt-api: "pyside6"
           - python-version: "3.13"
             qt-api: "pyside6"
           - python-version: "3.14"
+            qt-api: "pyside6"
+          - python-version: "3.15"
             qt-api: "pyside6"
     steps:
       - uses: actions/checkout@v7
@@ -256,7 +263,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install project with test dependencies
-        run: uv sync --all-extras --dev --group ${{ matrix.qt-api }}
+        run: >-
+          uv sync --all-extras --dev --group ${{ matrix.qt-api }}
+          ${{ matrix.python-version == '3.15' && '--upgrade' || '' }}
 
       - name: Resolve smoke targets
         run: uv run python -m scripts.ci_test_groups compat > "$RUNNER_TEMP/targets.txt"
