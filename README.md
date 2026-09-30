@@ -108,11 +108,11 @@ If you use `erlab` in your research, citation is appreciated! Citation informati
 
 ## Papers using ERLabPy
 
-A selection of publications that used ERLabPy:
-
 - K. Higashihira Han et al.,
   [Unexpected stabilization of a single-q charge density wave in pristine 1T-TiSe₂](https://doi.org/10.1038/s41467-026-78072-0),
   *Nature Communications* (2026).
+
+- More coming soon
 
 Thank you for using ERLabPy in your research! If you would like to add your paper or
 preprint to this list, please [open an issue](https://github.com/kmnhan/erlabpy/issues/new?template=paper.yml).
