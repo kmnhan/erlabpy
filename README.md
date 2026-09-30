@@ -108,7 +108,7 @@ If you use `erlab` in your research, citation is appreciated! Citation informati
 
 ## Papers using ERLabPy
 
-The following papers used ERLabPy for data analysis or visualization.
+A selection of publications that used ERLabPy:
 
 - K. Higashihira Han et al.,
   [Unexpected stabilization of a single-q charge density wave in pristine 1T-TiSe₂](https://doi.org/10.1038/s41467-026-78072-0),
