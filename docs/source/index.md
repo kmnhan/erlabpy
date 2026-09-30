@@ -110,3 +110,8 @@ contributing
 bibliography
 changelog
 ```
+
+```{include} ../../README.md
+:start-after: <!-- papers-using-erlabpy-start -->
+:end-before: <!-- papers-using-erlabpy-end -->
+```

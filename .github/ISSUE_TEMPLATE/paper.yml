@@ -1,0 +1,28 @@
+name: Paper using ERLabPy
+description: Add a paper that used ERLabPy to the README list.
+title: "[Paper]: "
+assignees: [kmnhan]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for using ERLabPy in your research!
+        Use this form to suggest a paper for the README list.
+        Published papers and preprints are welcome.
+
+  - type: textarea
+    id: citation
+    attributes:
+      label: Paper citation
+      description: Include the authors, title, journal or preprint server, and year.
+    validations:
+      required: true
+
+  - type: input
+    id: paper-link
+    attributes:
+      label: DOI or paper link
+      description: Provide a DOI URL or a link to the paper or preprint.
+      placeholder: https://doi.org/...
+    validations:
+      required: true
