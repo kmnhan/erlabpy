@@ -163,7 +163,7 @@ datasets to catch multidimensional regressions.
 
 The fast PR workflow runs one fully covered, sharded `3.13 + pyqt6` lane plus smaller
 compatibility smoke jobs. The weekly compatibility workflow keeps the full upgraded
-`3.11-3.14 x pyqt6/pyside6` matrix.
+`3.11-3.15 x pyqt6/pyside6` matrix.
 
 Test grouping is centralized in `scripts/_ci_test_groups.py`. When adding a new
 top-level test module under `tests/analysis/`, `tests/interactive/`, `tests/io/`, or
