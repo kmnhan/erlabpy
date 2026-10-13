@@ -384,6 +384,28 @@ def test_qsel_around() -> None:
     )
 
 
+@pytest.mark.parametrize("average", [False, True])
+def test_qsel_around_ignores_center_coordinates(average: bool) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(5.0),
+            "y": np.arange(5.0),
+            "sample": "data",
+            "sample_position": ("y", np.arange(5.0)),
+        },
+        name="intensity",
+        attrs={"units": "counts"},
+    )
+    center = xr.DataArray(2.0, coords={"sample": "reference", "fit_source": "fit"})
+
+    expected = data.qsel.around(radius=1.0, x=2.0, average=average)
+    actual = data.qsel.around(radius=1.0, x=center, average=average)
+
+    xr.testing.assert_identical(actual, expected)
+
+
 def test_qsel_mean_single_dim() -> None:
     # Create a simple 2D DataArray with dims 'x' and 'y'
 

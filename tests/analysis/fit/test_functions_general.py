@@ -448,6 +448,157 @@ def test_fermi_dirac_broad_rejects_non_1d_dataarray_x() -> None:
         fermi_dirac_broad(x, center=0.0, temp=20.0, resolution=0.01)
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("vector", [False, True])
+@pytest.mark.parametrize(
+    ("func", "kwargs", "param_name", "param_values"),
+    [
+        (fermi_dirac_broad, {"center": 0.0, "resolution": 0.01}, "temp", [20.0, 30.0]),
+        (
+            fermi_dirac_linbkg_broad,
+            {
+                "center": 0.0,
+                "temp": 20.0,
+                "resolution": 0.01,
+                "back1": 0.1,
+                "dos0": 1.0,
+                "dos1": 0.2,
+            },
+            "back0",
+            [0.1, 0.3],
+        ),
+        (tll, {"temp": 20.0, "resolution": 0.01}, "amp", [1.0, 2.0]),
+        (
+            sc_spectral_function,
+            {"gamma1": 0.02, "delta": 0.03, "resolution": 0.01},
+            "amp",
+            [1.0, 2.0],
+        ),
+    ],
+)
+def test_broadened_models_ignore_parameter_non_index_coords(
+    func, kwargs, param_name, param_values, vector, lazy
+) -> None:
+    x_vals = np.linspace(-0.1, 0.1, 31)
+    x = xr.DataArray(
+        x_vals,
+        dims="eV",
+        coords={
+            "eV": x_vals,
+            "energy_aux": ("eV", x_vals + 1.0),
+            "sample": "input",
+        },
+        attrs={"units": "eV"},
+        name="energy",
+    )
+    param = xr.DataArray(
+        param_values if vector else param_values[0],
+        dims="hv" if vector else (),
+        coords={
+            **({"hv": [21.0, 22.0], "param_aux": ("hv", [1, 2])} if vector else {}),
+            "eV": 100.0,
+            "energy_aux": -1.0,
+            "sample": "parameter",
+            "parameter_only": "discard",
+        },
+        attrs={"source": "parameter"},
+    )
+    original_param = param.copy(deep=True)
+    if lazy:
+        x = x.chunk({"eV": -1})
+        param = param.copy(
+            data=da.from_array(param.data, chunks=(1,) if vector else ())
+        )
+
+    result = func(x, **kwargs, **{param_name: param})
+
+    assert (result.chunks is not None) == lazy
+    values = [func(x_vals, **kwargs, **{param_name: v}) for v in param_values]
+    expected = xr.DataArray(
+        np.column_stack(values) if vector else values[0],
+        dims=("eV", "hv") if vector else ("eV",),
+        coords={**x.coords, **({"hv": [21.0, 22.0]} if vector else {})},
+        attrs=x.attrs,
+    )
+    xr.testing.assert_identical(result.compute(), expected)
+    xr.testing.assert_identical(param.compute(), original_param)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("vector", [False, True])
+def test_fermi_dirac_broad_numpy_x_ignores_parameter_non_index_coords(
+    vector: bool, lazy: bool
+) -> None:
+    x = np.linspace(-0.1, 0.1, 31)
+    temp = xr.DataArray(
+        [20.0, 30.0] if vector else 20.0,
+        dims="x" if vector else (),
+        coords={**({"x": [21.0, 22.0]} if vector else {}), "parameter_only": 1},
+        attrs={"source": "temperature"},
+    )
+    if lazy:
+        temp = temp.copy(data=da.from_array(temp.data, chunks=(1,) if vector else ()))
+
+    result = fermi_dirac_broad(x, center=0.0, temp=temp, resolution=0.01)
+
+    assert (result.chunks is not None) == lazy
+    values = [fermi_dirac_broad(x, 0.0, t, 0.01) for t in [20.0, 30.0]]
+    expected = xr.DataArray(
+        np.column_stack(values) if vector else values[0],
+        dims=("_x", "x") if vector else ("x",),
+        coords={"_x": x, "x": [21.0, 22.0]} if vector else {"x": x},
+        attrs=temp.attrs,
+    )
+    xr.testing.assert_identical(result.compute(), expected)
+
+
+def test_fermi_dirac_broad_retains_parameter_index_alignment() -> None:
+    x = xr.DataArray(np.linspace(-0.1, 0.1, 31), dims="eV")
+    temp = xr.DataArray([20.0, 30.0], dims="hv", coords={"hv": [21.0, 22.0]})
+    center = xr.DataArray([0.0, 0.01], dims="hv", coords={"hv": [22.0, 21.0]})
+
+    with pytest.raises(ValueError, match=r"align.*exact"):
+        fermi_dirac_broad(x, center=center, temp=temp, resolution=0.01)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("vector", [False, True])
+def test_tll_ignores_background_non_index_coords(vector: bool, lazy: bool) -> None:
+    x_vals = np.linspace(-0.1, 0.1, 31)
+    x = xr.DataArray(
+        x_vals,
+        dims="eV",
+        coords={"eV": x_vals, "sample": "input"},
+        attrs={"units": "eV"},
+    )
+    background = xr.DataArray(
+        [0.1, 0.2] if vector else 0.1,
+        dims="hv" if vector else (),
+        coords={
+            **({"hv": [21.0, 22.0], "param_aux": ("hv", [1, 2])} if vector else {}),
+            "sample": "parameter",
+            "eV": 100.0,
+            "parameter_only": 1,
+        },
+    )
+    if lazy:
+        background = background.copy(
+            data=da.from_array(background.data, chunks=(1,) if vector else ())
+        )
+
+    result = tll(x, temp=20.0, const_bkg=background)
+
+    assert (result.chunks is not None) == lazy
+    values = [tll(x_vals, temp=20.0, const_bkg=b) for b in [0.1, 0.2]]
+    expected = xr.DataArray(
+        np.column_stack(values) if vector else values[0],
+        dims=("eV", "hv") if vector else ("eV",),
+        coords={**x.coords, **({"hv": [21.0, 22.0]} if vector else {})},
+        attrs=x.attrs,
+    )
+    xr.testing.assert_identical(result.compute(), expected)
+
+
 def test_fermi_dirac_linbkg_broad() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0

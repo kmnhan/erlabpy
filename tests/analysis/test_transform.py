@@ -535,6 +535,47 @@ def test_shift_aligns_reversed_shift_index(shift_coords) -> None:
 
 
 @pytest.mark.parametrize("shift_coords", [False, True])
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+@pytest.mark.parametrize("scalar_shift", [False, True], ids=["vector", "scalar"])
+def test_shift_ignores_auxiliary_correction_coordinates(
+    shift_coords: bool, use_dask: bool, scalar_shift: bool
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={
+            "x": ["a", "b", "c"],
+            "y": [0.0, 1.0, 2.0, 3.0],
+            "sample_temp": 10.0,
+            "sample_position": ("x", [1.0, 2.0, 3.0]),
+            "detector_position": ("y", [1.0, 2.0, 3.0, 4.0]),
+        },
+        name="intensity",
+        attrs={"sample": "test"},
+    )
+    clean_shift = (
+        xr.DataArray(1.0)
+        if scalar_shift
+        else xr.DataArray([0.0, 1.0, -1.0], dims="x", coords={"x": data.x})
+    )
+    correction = clean_shift.assign_coords(
+        sample_temp=20.0, detector_position=-1.0, fit_source="reference"
+    )
+    if not scalar_shift:
+        correction = correction.assign_coords(
+            sample_position=("x", [4.0, 5.0, 6.0]),
+            fit_position=("x", [7.0, 8.0, 9.0]),
+        ).isel(x=slice(None, None, -1))
+    if use_dask:
+        data = data.chunk({"x": 1, "y": -1})
+
+    expected = shift(data, clean_shift, along="y", shift_coords=shift_coords)
+    actual = shift(data, correction, along="y", shift_coords=shift_coords)
+
+    xarray.testing.assert_identical(actual, expected)
+
+
+@pytest.mark.parametrize("shift_coords", [False, True])
 def test_shift_accepts_positional_dimensions(shift_coords) -> None:
     data = xr.DataArray(
         np.arange(12, dtype=float).reshape(3, 4),
