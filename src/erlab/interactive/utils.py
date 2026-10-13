@@ -78,6 +78,7 @@ from erlab.interactive._code_trust._ui import (
 )
 from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
 from erlab.interactive._plot_state import ToolPlotStateRegistry
+from erlab.interactive._stateful_window import StatefulWindow
 from erlab.interactive._widgets import _Separator
 from erlab.utils._code import (
     _parse_single_arg,
@@ -155,7 +156,6 @@ __all__ = [
 
 _LOAD_UI_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
-_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS = 150
 
 
 _TOOL_WINDOW_RESTORE_DEFER: contextvars.ContextVar[bool | None] = (
@@ -3364,7 +3364,7 @@ def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
     return output_id
 
 
-class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindowMeta):
+class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     """A window that can be saved and restored from a netcdf file.
 
     Mainly for interactive tools used in the ImageTool manager.
@@ -3586,14 +3586,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._save_tool_data_reference_validator: (
             Callable[[Mapping[str, typing.Any], xr.DataArray], bool] | None
         ) = None
-        self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
-        self._next_states: collections.deque[M] = collections.deque(maxlen=5000)
-        self._write_history = True
-        self._history_write_pending = False
-        self._history_write_timer = QtCore.QTimer(self)
-        self._history_write_timer.setSingleShot(True)
-        self._history_write_timer.setInterval(_TOOL_HISTORY_WRITE_QUIET_INTERVAL_MS)
-        self._history_write_timer.timeout.connect(self._flush_pending_history_write)
         self._restoring_from_dataset = restore_defer is not None
         self._defer_restored_tool_work = bool(restore_defer)
         self._deferred_restore_work: dict[
@@ -3620,27 +3612,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         self._tool_edit_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&Edit"))
         self._tool_edit_menu.setObjectName("tool_edit_menu")
-        self.undo_action = QtWidgets.QAction("&Undo", self)
-        self.undo_action.setObjectName("tool_undo_action")
-        self.undo_action.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
-        self.undo_action.setShortcutContext(
-            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-        self.undo_action.setIcon(QtGui.QIcon.fromTheme("edit-undo"))
-        self.undo_action.setEnabled(False)
-        self.undo_action.triggered.connect(self.undo)
-        self._tool_edit_menu.addAction(self.undo_action)
-        self.redo_action = QtWidgets.QAction("&Redo", self)
-        self.redo_action.setObjectName("tool_redo_action")
-        self.redo_action.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
-        self.redo_action.setShortcutContext(
-            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-        self.redo_action.setIcon(QtGui.QIcon.fromTheme("edit-redo"))
-        self.redo_action.setEnabled(False)
-        self.redo_action.triggered.connect(self.redo)
-        self._tool_edit_menu.addAction(self.redo_action)
-        self._update_history_actions()
+        self._tool_edit_menu.addActions((self.undo_action, self.redo_action))
 
         self._tool_window_menu = typing.cast(
             "QtWidgets.QMenu", menu_bar.addMenu("&Window")
@@ -3661,12 +3633,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             False
         )
 
-        # Enable closing with keyboard shortcut
-        self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self._hide_or_close)
-        self.__close_shortcut.setContext(
-            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-
         # Enable removing from the manager with keyboard shortcut
         self.__remove_shortcut = QtWidgets.QShortcut(
             QtGui.QKeySequence.StandardKey.Delete, self, self._remove_from_manager
@@ -3675,11 +3641,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
 
-    @staticmethod
-    def _history_state_equal(left: M | None, right: M | None) -> bool:
-        if left is None or right is None:
-            return left is right
-        return left.model_dump() == right.model_dump()
+    @property
+    def _history_state(self) -> M:
+        return self.tool_status
+
+    @_history_state.setter
+    def _history_state(self, state: M) -> None:
+        self.tool_status = state
 
     def _register_plot_appearance(self, plot_id: str, target: object) -> None:
         """Register a colorbar or histogram under a stable semantic plot ID."""
@@ -3689,38 +3657,17 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Let image updates control the levels for a registered plot."""
         self._plot_state_registry.clear_manual_levels(plot_id)
 
-    @property
-    def undoable(self) -> bool:
-        """Return whether a previous tool state is available."""
-        return len(self._prev_states) > 1
+    def _history_suppression_context(self) -> contextlib.AbstractContextManager[None]:
+        return self._coalesce_provenance_changes()
 
-    @property
-    def redoable(self) -> bool:
-        """Return whether an undone tool state is available."""
-        return len(self._next_states) > 0
-
+    @typing.final
     @contextlib.contextmanager
-    def _history_suppressed(self):
-        self._flush_pending_history_changes()
-        original = bool(self._write_history)
-        self._write_history = False
+    def _history_transition(self, target_state: M):
         with self._coalesce_provenance_changes():
-            try:
+            if self._history_transition_affects_provenance(target_state):
+                self._notify_provenance_changed()
+            with super()._history_transition(target_state):
                 yield
-            finally:
-                self._write_history = original
-
-    def _flush_pending_history_changes(self) -> None:
-        """Flush all pending history state owned by this tool."""
-        self._flush_pending_history_write()
-
-    def _reset_history_stack(self) -> None:
-        self._history_write_timer.stop()
-        self._history_write_pending = False
-        self._prev_states.clear()
-        self._next_states.clear()
-        self._prev_states.append(self.tool_status)
-        self._update_history_actions()
 
     @typing.final
     @QtCore.Slot()
@@ -3734,15 +3681,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 self._notify_provenance_changed()
             if self._write_history:
                 self._record_state_change()
-
-    def _record_state_change(self) -> None:
-        """Record one state change after base provenance invalidation."""
-        if not self._prev_states:
-            self._prev_states.append(self.tool_status)
-            self._update_history_actions()
-            return
-        self._history_write_pending = True
-        self._history_write_timer.start()
 
     @property
     def provenance_revision(self) -> int:
@@ -3795,34 +3733,23 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @QtCore.Slot()
     def _flush_pending_history_write(self) -> bool:
+        if self._restoring_from_dataset:
+            self._history_write_timer.stop()
+            self._history_write_pending = False
+            return False
         if not self._history_write_pending:
             return False
         timing_enabled = _manager_perf_timing_enabled()
         start_time = time.perf_counter() if timing_enabled else 0.0
-        self._history_write_timer.stop()
-        self._history_write_pending = False
-        if not self._write_history or self._restoring_from_dataset:
-            return False
-        curr_state = self.tool_status
-        last_state = self._prev_states[-1] if self._prev_states else None
-        if not self._history_state_equal(last_state, curr_state):
-            self._prev_states.append(curr_state)
-            self._next_states.clear()
-            self._update_history_actions()
-            if timing_enabled:
-                logger.debug(
-                    "ToolWindow history flush appended state for %s in %.1f ms",
-                    type(self).__name__,
-                    (time.perf_counter() - start_time) * 1000.0,
-                )
-            return True
+        appended = super()._flush_pending_history_write()
         if timing_enabled:
             logger.debug(
-                "ToolWindow history flush skipped unchanged state for %s in %.1f ms",
+                "ToolWindow history flush %s for %s in %.1f ms",
+                "appended state" if appended else "skipped unchanged state",
                 type(self).__name__,
                 (time.perf_counter() - start_time) * 1000.0,
             )
-        return False
+        return appended
 
     @typing.final
     @QtCore.Slot()
@@ -3833,22 +3760,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if not self._PROVENANCE_IS_MODEL_OWNED:
                 self._notify_provenance_changed()
             self._replace_recorded_state()
-
-    def _replace_recorded_state(self) -> None:
-        """Replace the last saved state after base provenance invalidation."""
-        self._flush_pending_history_changes()
-        curr_state = self.tool_status
-        if self._prev_states:
-            self._prev_states[-1] = curr_state
-        else:
-            self._prev_states.append(curr_state)
-        self._update_history_actions()
-
-    def _update_history_actions(self) -> None:
-        if hasattr(self, "undo_action") and qt_is_valid(self.undo_action):
-            self.undo_action.setEnabled(self.undoable)
-        if hasattr(self, "redo_action") and qt_is_valid(self.redo_action):
-            self.redo_action.setEnabled(self.redoable)
 
     def _status_assignment_affects_provenance(self, target_state: M) -> bool:
         """Return whether applying a complete state changes provenance output."""
@@ -4002,45 +3913,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 self._deferred_restore_work.pop(pending_key)
             flushed = True
         return flushed
-
-    @typing.final
-    @QtCore.Slot()
-    def undo(self) -> None:
-        """Undo the most recent recorded tool state change."""
-        self._flush_pending_history_changes()
-        if not self.undoable:
-            return
-        with self._coalesce_provenance_changes():
-            if self._history_transition_affects_provenance(self._prev_states[-2]):
-                self._notify_provenance_changed()
-            with self._history_suppressed():
-                self._undo_recorded_state()
-        self._update_history_actions()
-
-    def _undo_recorded_state(self) -> None:
-        """Move the base history stacks to the previous state."""
-        self._next_states.append(self._prev_states.pop())
-        self.tool_status = self._prev_states[-1]
-
-    @typing.final
-    @QtCore.Slot()
-    def redo(self) -> None:
-        """Redo the most recently undone tool state change."""
-        self._flush_pending_history_changes()
-        if not self.redoable:
-            return
-        with self._coalesce_provenance_changes():
-            if self._history_transition_affects_provenance(self._next_states[-1]):
-                self._notify_provenance_changed()
-            with self._history_suppressed():
-                self._redo_recorded_state()
-        self._update_history_actions()
-
-    def _redo_recorded_state(self) -> None:
-        """Move the base history stacks to the next state."""
-        next_state = self._next_states.pop()
-        self._prev_states.append(next_state)
-        self.tool_status = next_state
 
     def centralWidget(self) -> QtWidgets.QWidget | None:
         """Return the content widget shown below the source-status banner."""
@@ -6656,7 +6528,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         # Teardown has no consumer for optional restored state, and running it here can
         # queue paints for widgets that Qt is already deleting.
         self._deferred_restore_work.clear()
-        self._flush_pending_history_write()
         return super().closeEvent(event)
 
     @property
