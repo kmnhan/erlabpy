@@ -15,6 +15,158 @@ from erlab.constants import AxesConfiguration
 from erlab.io.exampledata import generate_hvdep_cuts
 
 
+@pytest.fixture
+def density_map():
+    return xarray.DataArray(
+        np.ones((31, 25, 2)),
+        dims=("alpha", "beta", "eV"),
+        coords={
+            "alpha": np.linspace(-60, 60, 31),
+            "beta": np.linspace(-40, 40, 25),
+            "eV": [-1.0, 0.0],
+            "hv": 24.3,
+            "xi": 0.0,
+            "chi": 0.0,
+        },
+        attrs={"configuration": 1, "sample_workfunction": 4.3},
+        name="density",
+    )
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("energy_axis", [False, True])
+def test_convert_hv_maps_recovers_measured_points(
+    density_map, configuration, energy_axis
+):
+    data = density_map.drop_vars("hv").expand_dims(hv=[22.0, 24.0, 26.0])
+    data = data.copy(
+        data=(2 + 0.01 * data.alpha + 0.02 * data.beta + 0.05 * data.hv + data.eV)
+        .broadcast_like(data)
+        .values
+    )
+    if not energy_axis:
+        data = data.sel(eV=0.0)
+    data.attrs["configuration"] = configuration.value
+    data.kspace.inner_potential = 10.0
+    data.kspace.angle_scales = {"alpha": 1.1, "beta": 0.9}
+    data.kspace.offsets["delta"] = 17.0
+    data = data.assign_coords(xi=5.0, chi=-3.0)
+    measured = data.kspace.convert_coords()
+    point = measured.isel(alpha=12, beta=15).sel(hv=24.0)
+    if energy_axis:
+        point = point.sel(eV=0.0)
+    targets = {axis: [point[axis].item()] for axis in ("kx", "ky", "kz")}
+    result = data.kspace.convert(**targets)
+    assert data.kspace.momentum_axes == ("kx", "ky", "kz")
+    assert dict(result.sizes) == {
+        "kx": 1,
+        "ky": 1,
+        "kz": 1,
+        **({"eV": 2} if energy_axis else {}),
+    }
+    recovered = result.sel(eV=0.0) if energy_axis else result
+    assert recovered.item() == pytest.approx(point.item(), rel=2e-7)
+    assert result.name == data.name
+    assert result.attrs == data.attrs
+    xarray.testing.assert_identical(result, measured.kspace.convert(**targets))
+    reordered = data.isel(alpha=slice(None, None, -1), hv=slice(None, None, -1))
+    xarray.testing.assert_allclose(
+        reordered.transpose(*reversed(data.dims)).kspace.convert(**targets),
+        result,
+    )
+    expected_kz = erlab.analysis.kspace.kz_func(
+        24.0 - data.kspace.analyzer_work_function + result.eV,
+        data.kspace.inner_potential,
+        result.kx,
+        result.ky,
+    )
+    overlay = result.kspace.hv_to_kz([24.0, 26.0]).sel(hv=24.0)
+    np.testing.assert_allclose(overlay, expected_kz.transpose(*overlay.dims), rtol=2e-7)
+
+
+@pytest.mark.parametrize(
+    ("kz", "xi", "kx", "photon_energies"),
+    [
+        ([-2.8, 2.8], 0.0, 0.0, [22.0, 24.0, 26.0]),
+        ([1.0, 1.8], 80.0, 2.0, [12.0, 14.0, 16.0]),
+        ([np.nan, 2.8], 0.0, 0.0, [22.0, 24.0, 26.0]),
+        ([np.inf, 2.8], 0.0, 0.0, [22.0, 24.0, 26.0]),
+    ],
+)
+def test_convert_hv_maps_rejects_nonphysical_kz(
+    density_map, kz, xi, kx, photon_energies
+):
+    data = (
+        density_map.sel(eV=0.0)
+        .drop_vars("hv")
+        .expand_dims(hv=photon_energies)
+        .assign_coords(xi=xi)
+    )
+    data.kspace.inner_potential = 10.0
+    with pytest.raises(ValueError, match="Target kz values"):
+        data.kspace.convert(kx=[kx], ky=[0.0], kz=kz)
+
+
+def test_convert_hv_maps_accepts_kz_boundary_roundoff(density_map):
+    data = (
+        density_map.sel(eV=0.0)
+        .drop_vars("hv")
+        .expand_dims(hv=[12.0, 14.0, 16.0])
+        .assign_coords(xi=80.0)
+    )
+    data.kspace.inner_potential = 10.0
+    minimum = np.sqrt(10.0 / erlab.constants.rel_kzconv)
+    kz = [np.nextafter(minimum, 0.0), minimum, np.nextafter(minimum, np.inf)]
+    result = data.kspace.convert(kx=[1.5], ky=[0.0], kz=kz)
+    np.testing.assert_allclose(result, 1.0)
+    np.testing.assert_array_equal(result.kz, kz)
+
+
+def test_convert_hv_maps_lazy_batch_dimensions(density_map):
+    data = density_map.drop_vars("hv").expand_dims(
+        hv=[22.0, 24.0, 26.0], repeat=["first", "second"]
+    )
+    data.kspace.inner_potential = 10.0
+    targets = {"kx": [-0.2, 0.0, 0.2], "ky": [-0.1, 0.0], "kz": [2.7, 2.8, 2.9]}
+    expected = data.kspace.convert(**targets)
+    assert expected.notnull().any()
+    lazy = data.chunk({"repeat": 1}).kspace.convert(**targets)
+    assert lazy.chunks is not None
+    xarray.testing.assert_identical(lazy.compute(), expected)
+    expanded = data.kspace.convert(
+        kx=[-0.3, -0.2, 0.0, 0.1, 0.2],
+        ky=targets["ky"],
+        kz=[2.7, 2.75, 2.8, 2.9],
+    )
+    xarray.testing.assert_identical(expanded.sel(targets), expected)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("angular_map", [False, True])
+@pytest.mark.parametrize("kinetic", [False, True])
+@pytest.mark.filterwarnings(
+    "ignore:The energy axis seems to be in terms of kinetic energy"
+)
+def test_convert_single_photon_energy_dimension(
+    density_map, configuration, angular_map, kinetic
+):
+    data = density_map.drop_vars("hv").expand_dims(hv=[24.0])
+    if not angular_map:
+        data = data.sel(beta=0.0)
+    data.attrs["configuration"] = configuration.value
+    data.kspace.inner_potential = 10.0
+    if kinetic:
+        data = data.assign_coords(
+            eV=data.eV + 24.0 - data.kspace.analyzer_work_function
+        )
+    targets = {axis: [-0.1, 0.0, 0.1] for axis in data.kspace.momentum_axes}
+    with pytest.warns(RuntimeWarning, match="not uniform"):
+        result = data.kspace.convert(**targets)
+    expected = data.sel(hv=24.0).kspace.convert(**targets)
+    assert result.sizes["hv"] == 1
+    xarray.testing.assert_allclose(result.sel(hv=24.0), expected)
+
+
 @pytest.fixture(scope="module")
 def hvdep():
     data = generate_hvdep_cuts((24, 120, 140), seed=1)

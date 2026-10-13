@@ -383,13 +383,7 @@ def _conversion_dimension_mapping(
     tuple[str, ...],
     tuple[str, ...],
 ]:
-    output_dims: list[str]
-    if data.kspace._has_hv:
-        output_dims = [data.kspace.slit_axis, "kz"]
-    elif data.kspace._has_beta:
-        output_dims = ["kx", "ky"]
-    else:
-        output_dims = [data.kspace.slit_axis]
+    output_dims = list(data.kspace.momentum_axes)
 
     input_dims: list[str] = []
     for dim in tuple(output_dims):
@@ -403,6 +397,9 @@ def _conversion_dimension_mapping(
     if data.kspace._has_eV and "eV" in data.dims:
         input_dims.append("eV")
         output_dims.append("eV")
+    if "hv" in data.dims and not data.kspace._has_hv:
+        input_dims.append("hv")
+        output_dims.append("hv")
 
     return tuple(input_dims), tuple(output_dims)
 
