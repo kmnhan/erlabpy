@@ -1526,6 +1526,10 @@ class _ActionsController:
         """Show data explorer window."""
         self._manager._show_standalone_app("explorer")
 
+    def show_angle_calculator(self) -> None:
+        """Show the Angle calculator window."""
+        self._manager._show_standalone_app("angle_calculator")
+
     def show_ptable(self) -> None:
         """Show the periodic-table explorer window."""
         self._manager._show_standalone_app("ptable")

@@ -29,7 +29,7 @@ from erlab.interactive._options.schema import AppOptions
 from erlab.interactive._widgets import _Separator
 
 _Scope = typing.Literal["user", "workspace"]
-_CATEGORY_ORDER = ("colors", "io", "ktool", "figure", "security")
+_CATEGORY_ORDER = ("colors", "io", "ktool", "angle_calculator", "figure", "security")
 
 
 def _object_path(path: str) -> str:

@@ -2885,3 +2885,48 @@ def test_manager_close_recovers_after_partial_managed_removal(
         manager._workspace_controller._mark_workspace_clean()
         assert manager.close()
         assert close_results == [False, True]
+
+
+def test_manager_angle_calculator_launcher_reuses_instance_without_affecting_tree(
+    qtbot,
+    manager_context,
+) -> None:
+    from erlab.interactive.angle_calculator._window import AngleCalculatorWindow
+
+    with manager_context() as manager:
+        manager._set_workspace_option_overrides(
+            {
+                "angle_calculator/configuration": 2,
+                "angle_calculator/photon_energy": 40.0,
+                "angle_calculator/analyzer_work_function": 4.5,
+                "ktool/bz/default_a": 5.0,
+            },
+            mark_dirty=False,
+        )
+        with pytest.raises(AttributeError):
+            _ = manager.angle_calculator_window
+        initial_rows = manager.tree_view.model().rowCount(QtCore.QModelIndex())
+        initial_ntools = manager.ntools
+        action = manager.angle_calculator_action
+        assert action.objectName() == "manager_angle_calculator_action"
+        assert action in manager.apps_menu.actions()
+        assert action.shortcut().isEmpty()
+        action.trigger()
+        angle_calculator = manager.angle_calculator_window
+        assert isinstance(angle_calculator, AngleCalculatorWindow)
+        assert angle_calculator._state.geometry.configuration == 2
+        assert angle_calculator.inputs["photon_energy"].value() == 40.0
+        assert angle_calculator.inputs["analyzer_work_function"].value() == 4.5
+        assert angle_calculator.inputs["lattice_a"].value() == 5.0
+        qtbot.wait_until(angle_calculator.isVisible)
+        angle_calculator.close()
+        qtbot.wait_until(lambda: not angle_calculator.isVisible())
+        manager.show_angle_calculator()
+        qtbot.wait_until(angle_calculator.isVisible)
+        assert manager.angle_calculator_window is angle_calculator
+        assert manager.ntools == initial_ntools
+        assert manager.tree_view.model().rowCount(QtCore.QModelIndex()) == initial_rows
+        manager.close()
+        QtWidgets.QApplication.sendPostedEvents(None, 0)
+        QtWidgets.QApplication.processEvents()
+        assert not erlab.interactive.utils.qt_is_valid(angle_calculator)

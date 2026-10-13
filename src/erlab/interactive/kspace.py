@@ -31,6 +31,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.constants import AxesConfiguration
+from erlab.interactive._momentum_overlays._editor import MomentumOverlayEditor
+from erlab.interactive._momentum_overlays._state import (
+    MomentumOverlayState,
+    PocketState,
+)
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._dialog_widgets import (
     KspaceInputCoordinatesControl,
@@ -53,125 +58,29 @@ else:
     varname = _lazy.load("varname")
 
 
-class _CircleROIControlWidget(QtWidgets.QWidget):
-    def __init__(self, roi: _MovableCircleROI) -> None:
+class _KspaceTabScrollArea(QtWidgets.QScrollArea):
+    """Scroll controls vertically without clipping them horizontally."""
+
+    def __init__(self) -> None:
         super().__init__()
-        self.setGeometry(QtCore.QRect(0, 640, 242, 182))
-        self._roi = roi
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        layout = QtWidgets.QFormLayout(self)
-        self.setLayout(layout)
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        content = self.widget()
+        if content is None:
+            return hint
 
-        self.x_spin = pg.SpinBox(dec=True, compactHeight=False)
-        self.y_spin = pg.SpinBox(dec=True, compactHeight=False)
-        self.r_spin = pg.SpinBox(dec=True, compactHeight=False)
-        self.x_spin.sigValueChanged.connect(self.update_roi)
-        self.y_spin.sigValueChanged.connect(self.update_roi)
-        self.r_spin.sigValueChanged.connect(self.update_roi)
-
-        layout.addRow("X", self.x_spin)
-        layout.addRow("Y", self.y_spin)
-        layout.addRow("Radius", self.r_spin)
-
-        self._roi.sigRegionChanged.connect(self.update_spins)
-
-    @QtCore.Slot()
-    def update_roi(self) -> None:
-        self._roi.blockSignals(True)
-        self._roi.set_position(
-            (self.x_spin.value(), self.y_spin.value()), self.r_spin.value()
+        scrollbar = typing.cast("QtWidgets.QScrollBar", self.verticalScrollBar())
+        width = (
+            content.minimumSizeHint().width()
+            + 2 * self.frameWidth()
+            + scrollbar.sizeHint().width()
         )
-        self._roi.blockSignals(False)
-
-    @QtCore.Slot()
-    def update_spins(self) -> None:
-        x, y, r = self._roi.get_position()
-        self.x_spin.blockSignals(True)
-        self.y_spin.blockSignals(True)
-        self.r_spin.blockSignals(True)
-        self.x_spin.setValue(x)
-        self.y_spin.setValue(y)
-        self.r_spin.setValue(r)
-        self.x_spin.blockSignals(False)
-        self.y_spin.blockSignals(False)
-        self.r_spin.blockSignals(False)
-
-    def setVisible(self, visible: bool) -> None:
-        super().setVisible(visible)
-        if visible:
-            self.update_spins()
-
-
-class _MovableCircleROI(pg.CircleROI):
-    """Circle ROI with a menu to control position and radius."""
-
-    removable: bool
-
-    def __init__(self, pos, size=None, radius=None, **args) -> None:
-        args.setdefault("removable", True)
-        super().__init__(pos, size, radius, **args)
-        self._remove_action: QtGui.QAction | None = None
-        self._pos_menu: QtWidgets.QMenu | None = None
-        self._pos_action: QtWidgets.QWidgetAction | None = None
-        self._pos_widget: _CircleROIControlWidget | None = None
-
-    def getMenu(self) -> QtWidgets.QMenu:
-        menu_created = self.menu is None
-        add_remove_action = menu_created and self.removable
-        if add_remove_action:
-            self.removable = False
-        try:
-            menu = super().getMenu()
-        finally:
-            if add_remove_action:
-                self.removable = True
-
-        if add_remove_action:
-            self._remove_action = QtGui.QAction("Remove Circle", menu)
-            self._remove_action.triggered.connect(self._remove_clicked)
-            menu.addAction(self._remove_action)
-
-        if self._pos_menu is None:
-            self._pos_menu = menu.addMenu("Edit Circle")
-            self._pos_widget = _CircleROIControlWidget(self)
-            self._pos_action = QtWidgets.QWidgetAction(self._pos_menu)
-            self._pos_action.setDefaultWidget(self._pos_widget)
-            self._pos_menu.addAction(self._pos_action)
-
-        return menu
-
-    @QtCore.Slot()
-    def _remove_clicked(self) -> None:
-        QtCore.QTimer.singleShot(0, self._emit_remove_request)
-
-    @QtCore.Slot()
-    def _emit_remove_request(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self):
-            return
-        self.sigRemoveRequested.emit(self)
-
-    def radius(self) -> float:
-        """Radius of the circle."""
-        return float(self.size()[0] / 2)
-
-    def center(self) -> tuple[float, float]:
-        """Center of the circle."""
-        x, y = self.pos()
-        r = self.radius()
-        return x + r, y + r
-
-    def get_position(self) -> tuple[float, float, float]:
-        """Return the center and radius of the circle."""
-        return (*self.center(), self.radius())
-
-    def set_position(self, center, radius: float | None = None) -> None:
-        """Set the center and radius of the circle."""
-        if radius is None:
-            radius = self.radius()
-        else:
-            diameter = 2 * radius
-            self.setSize((diameter, diameter), update=False)
-        self.setPos(center[0] - radius, center[1] - radius)
+        return QtCore.QSize(max(hint.width(), width), hint.height())
 
 
 class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
@@ -194,6 +103,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         erlab.interactive.utils.load_ui(
             str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui")), self
         )
+        self.setCentralWidget(self.centralwidget)
         self.setObjectName("ktoolWindow")
         self.setWindowTitle("Momentum Conversion")
         self.tab.setObjectName("ktoolParametersPage")
@@ -202,6 +112,36 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.label_5.setObjectName("ktoolEnergyCenterLabel")
         self.label_6.setObjectName("ktoolEnergyBinsLabel")
         self.jacobian_check.setToolTip(_kspace_conversion.JACOBIAN_CORRECTION_TOOLTIP)
+
+        self._parameters_scroll = _KspaceTabScrollArea()
+        self._visualization_scroll = _KspaceTabScrollArea()
+        for page, scroll, buttons in (
+            (self.tab, self._parameters_scroll, (self.open_btn, self.copy_btn)),
+            (self.tab_2, self._visualization_scroll, ()),
+        ):
+            content_layout = typing.cast("QtWidgets.QVBoxLayout", page.layout())
+            content = QtWidgets.QWidget()
+            content.setLayout(content_layout)
+            content.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
+            scroll.setWidget(content)
+            page_layout = QtWidgets.QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.setSpacing(0)
+            page_layout.addWidget(scroll, 1)
+            if buttons:
+                footer = QtWidgets.QWidget(page)
+                footer_layout = QtWidgets.QVBoxLayout(footer)
+                margins = content_layout.contentsMargins()
+                footer_layout.setContentsMargins(
+                    margins.left(), 0, margins.right(), margins.bottom()
+                )
+                for button in buttons:
+                    content_layout.removeWidget(button)
+                    footer_layout.addWidget(button)
+                page_layout.addWidget(footer)
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
         self.images: tuple[
@@ -241,6 +181,8 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.contrast_check.stateChanged.connect(self.update_cmap)
         self.update_cmap()
 
+        self._bz_items: list[pg.PlotDataItem] = []
+
         # Set up BZ controls
         self.bz_group.toggled.connect(self.update_bz)
         self.a_spin.valueChanged.connect(self.update_bz)
@@ -260,8 +202,25 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         )
         self.angle_plot_check.stateChanged.connect(self._write_state_if_ready)
 
-        self._roi_list: list[_MovableCircleROI] = []
-        self.add_circle_btn.clicked.connect(self._add_circle)
+        self.overlays = MomentumOverlayEditor(
+            self.plotitems[1], self, projected_plot=self.plotitems[0], image_z=1
+        )
+        self.overlays.setToolTip("Overlays are available on kx and ky previews.")
+        self.overlays.set_available(False)
+        self.overlays.sigStateChanged.connect(self._write_state_if_ready)
+        self.overlays.sigDragStarted.connect(self._flush_pending_history_changes)
+        self.overlays.sigDragFinished.connect(self._finish_overlay_drag)
+        self.angle_plot_check.stateChanged.connect(self.overlays.redraw)
+        self.overlay_tab = _KspaceTabScrollArea()
+        self.overlay_tab.setObjectName("ktoolOverlaysPage")
+        overlay_container = QtWidgets.QWidget()
+        overlay_layout = QtWidgets.QVBoxLayout(overlay_container)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.addWidget(self.overlays)
+        overlay_layout.addStretch(1)
+        self.overlay_tab.setWidget(overlay_container)
+        self.tabWidget.addTab(self.overlay_tab, "Overlays")
+        self._register_history_spinboxes(self.overlays.inputs.values())
         self.preview_symmetry_group.setEnabled(False)
 
         if rotate_bz is None:
@@ -341,22 +300,13 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
             return 4
         return 2
 
-    @QtCore.Slot()
-    def _add_circle(self) -> None:
-        roi = _MovableCircleROI(
-            [-0.3, -0.3], radius=0.3, removable=True, pen=pg.mkPen("m", width=2)
-        )
-        self.plotitems[1].addItem(roi)
-        self._roi_list.append(roi)
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self.overlays.set_active(True)
 
-        def _remove_roi():
-            self.plotitems[1].removeItem(roi)
-            self._roi_list.remove(roi)
-            self._write_state_if_ready()
-
-        roi.sigRemoveRequested.connect(_remove_roi)
-        roi.sigRegionChangeFinished.connect(self._write_state_if_ready)
-        self._write_state_if_ready()
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        super().closeEvent(event)
+        self.overlays.set_active(False)
 
     def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
@@ -374,39 +324,56 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         raise NotImplementedError
 
     def update_bz(self) -> None:
-        self.plotitems[1].clearPlots()
-        if not self.bz_group.isChecked():
-            self._write_state_if_ready()
-            return
-
-        lines, vertices, midpoints = self.get_bz_lines()
-        for line in lines:
-            self.plotitems[1].plot(line[:, 0], line[:, 1], pen=pg.mkPen("m", width=2))
-
-        if self.points_check.isChecked():
-            self.plotitems[1].plot(
-                vertices[:, 0],
-                vertices[:, 1],
-                symbol="o",
-                pen=pg.mkColor(255, 255, 255, 0),
-                symbolPen=pg.mkColor(255, 255, 255, 0),
-                symbolBrush=pg.mkColor("m"),
-                symbolSize=6,
-            )
-            self.plotitems[1].plot(
-                midpoints[:, 0],
-                midpoints[:, 1],
-                symbol="x",
-                pen=pg.mkColor(255, 255, 255, 0),
-                symbolPen=pg.mkColor(255, 255, 255, 0),
-                symbolBrush=pg.mkColor("m"),
-                symbolSize=8,
-            )
+        for item in self._bz_items:
+            self.plotitems[1].removeItem(item)
+        self._bz_items.clear()
+        if self.bz_group.isChecked():
+            lines, vertices, midpoints = self.get_bz_lines()
+            for line in lines:
+                self._bz_items.append(
+                    self.plotitems[1].plot(
+                        line[:, 0], line[:, 1], pen=pg.mkPen("m", width=2)
+                    )
+                )
+            if self.points_check.isChecked():
+                for points, symbol, size in ((vertices, "o", 6), (midpoints, "x", 8)):
+                    self._bz_items.append(
+                        self.plotitems[1].plot(
+                            points[:, 0],
+                            points[:, 1],
+                            symbol=symbol,
+                            pen=None,
+                            symbolPen=None,
+                            symbolBrush=pg.mkColor("m"),
+                            symbolSize=size,
+                        )
+                    )
+            for item in self._bz_items:
+                item.setZValue(2)
         self._write_state_if_ready()
 
     def _write_state_if_ready(self, *_args: typing.Any) -> None:
         if hasattr(self, "data"):
             self._write_state()
+
+    def _record_state_change(self) -> None:
+        overlays = getattr(self, "overlays", None)
+        if overlays is not None and overlays.dragging:
+            self.undo_action.setEnabled(True)
+            self.redo_action.setEnabled(False)
+        else:
+            super()._record_state_change()
+
+    def _finish_overlay_drag(self) -> None:
+        self._write_state()
+        self._flush_pending_history_write()
+        self._update_history_actions()
+
+    def _flush_pending_history_changes(self) -> None:
+        overlays = getattr(self, "overlays", None)
+        if overlays is not None:
+            overlays.finish_drag()
+        super()._flush_pending_history_changes()
 
 
 class KspaceTool(KspaceToolGUI):
@@ -494,7 +461,13 @@ class KspaceTool(KspaceToolGUI):
         kz: float
         centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"]
         points: bool
-        circle_rois: list[tuple[float, float, float]]
+        # Read old circle state only. New saves use the shared overlay state.
+        circle_rois: list[tuple[float, float, float]] = pydantic.Field(
+            default_factory=list, exclude=True
+        )
+        overlays: MomentumOverlayState = pydantic.Field(
+            default_factory=MomentumOverlayState
+        )
         cmap_name: str
         cmap_gamma: float
         cmap_invert: bool
@@ -693,7 +666,7 @@ class KspaceTool(KspaceToolGUI):
             kz=self.kz_spin.value(),
             centering=self.centering_combo.currentText(),
             points=self.points_check.isChecked(),
-            circle_rois=[roi.get_position() for roi in self._roi_list],
+            overlays=self.overlays.state.model_copy(deep=True),
             cmap_name=self.cmap_combo.currentText(),
             cmap_gamma=self.gamma_widget.value(),
             cmap_invert=self.invert_check.isChecked(),
@@ -706,6 +679,7 @@ class KspaceTool(KspaceToolGUI):
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
+        self.overlays.finish_drag(notify=False)
         self._argnames["data"] = status.data_name
         self._restore_source_input_state(status)
         configuration = int(
@@ -797,14 +771,30 @@ class KspaceTool(KspaceToolGUI):
             self.centering_combo.setCurrentText(status.centering)
             self.points_check.setChecked(status.points)
 
-        # Restore circle ROIs
-        for roi in list(self._roi_list):
-            self.plotitems[1].removeItem(roi)
-            roi.deleteLater()
-        self._roi_list.clear()
-        for x0, y0, radius in status.circle_rois:
-            self._add_circle()
-            self._roi_list[-1].set_position((x0, y0), radius)
+        overlay_state = status.overlays.model_copy(deep=True)
+        if set(self._preview_angle_data().dims) == {"alpha", "beta"}:
+            skipped_circles = 0
+            for x, y, radius in status.circle_rois:
+                try:
+                    pocket = PocketState(
+                        center=(x, y),
+                        radii=(radius, radius),
+                        symmetry=False,
+                        color="#ff00ff",
+                    )
+                except pydantic.ValidationError:
+                    # Old circle controls had no bounds. One unsupported overlay
+                    # must not prevent restoration of the remaining tool state.
+                    skipped_circles += 1
+                else:
+                    overlay_state.pockets.append(pocket)
+            if skipped_circles:
+                erlab.utils.misc.emit_user_level_warning(
+                    f"Skipped {skipped_circles} legacy circle overlays with "
+                    "unsupported coordinates or radii while restoring ktool."
+                )
+        with QtCore.QSignalBlocker(self.overlays):
+            self.overlays.restore_state(overlay_state)
 
         # Restore colormap
         with (
@@ -2146,6 +2136,8 @@ class KspaceTool(KspaceToolGUI):
         self.images[1].data_array = None
         self._set_preview_symmetry_available(False)
         self._set_bz_available(False)
+        self.overlays.set_available(False)
+        self.update_bz()
         self._notify_ktool_state_changed()
 
     @QtCore.Slot()
@@ -2167,17 +2159,61 @@ class KspaceTool(KspaceToolGUI):
         k_preview = k.T
         preview_symmetry_available = self._preview_supports_symmetry(k_preview)
         self._set_preview_symmetry_available(preview_symmetry_available)
+        if preview_symmetry_available:
+            k_preview = k_preview.transpose("ky", "kx")
         if preview_symmetry_available and self.preview_symmetry_group.isChecked():
             k_preview = self._symmetrized_preview(k_preview)
         bz_available = self._preview_supports_bz(k_preview)
         self._set_bz_available(bz_available)
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k_preview)
+        self._update_overlays(ang, available=preview_symmetry_available)
         self._notify_ktool_state_changed()
         self._queue_output_memory_estimate()
-        if bz_available and self.bz_group.isChecked():
-            self.update_bz()
+        self.update_bz()
         self._write_state()
+
+    def _update_overlays(self, angle_data: xr.DataArray, *, available: bool) -> None:
+        self.overlays.set_available(available)
+        if not available:
+            return
+        accessor = angle_data.kspace
+        energy = float(np.asarray(accessor._kinetic_energy).item())
+        params = accessor.angle_params
+        scales = (accessor.alpha_scale, accessor.beta_scale)
+        axes = tuple(angle_data.dims)
+        forward = erlab.analysis.kspace.get_kconv_forward(accessor.configuration)
+        inverse = erlab.analysis.kspace.get_kconv_inverse(accessor.configuration)
+
+        def display_to_momentum(x, y):
+            alpha, beta = (x, y) if axes == ("alpha", "beta") else (y, x)
+            return forward(alpha * scales[0], beta * scales[1], energy, **params)
+
+        def momentum_to_display(kx, ky):
+            with np.errstate(invalid="ignore", divide="ignore"):
+                alpha, beta = inverse(kx, ky, None, energy, **params)
+                actual_x, actual_y = forward(alpha, beta, energy, **params)
+                valid = np.isclose(actual_x, kx, atol=1e-8, rtol=1e-7) & np.isclose(
+                    actual_y, ky, atol=1e-8, rtol=1e-7
+                )
+                alpha = np.where(valid, alpha / scales[0], np.nan)
+                beta = np.where(valid, beta / scales[1], np.nan)
+            return (alpha, beta) if axes == ("alpha", "beta") else (beta, alpha)
+
+        display_scales = scales if axes == ("alpha", "beta") else scales[::-1]
+        self.overlays.set_projection(
+            momentum_to_display,
+            display_to_momentum,
+            token=(
+                int(accessor.configuration),
+                energy,
+                tuple(params.items()),
+                scales,
+                axes,
+            ),
+            max_step=(90 / abs(display_scales[0]), 90 / abs(display_scales[1])),
+        )
+        self.overlays.redraw()
 
     @staticmethod
     def _bz_digest_array(values: npt.ArrayLike) -> bytes:

@@ -213,6 +213,19 @@
          </widget>
         </item>
         <item>
+         <spacer name="verticalSpacer_2">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
          <widget class="QPushButton" name="open_btn">
           <property name="text">
            <string>Open in ImageTool</string>
@@ -699,16 +712,6 @@
             </widget>
            </item>
           </layout>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="add_circle_btn">
-          <property name="toolTip">
-           <string>Create a circle ROI. The position and radius can be edited by right-clicking on the created ROI.</string>
-          </property>
-          <property name="text">
-           <string>Add Circle ROI</string>
-          </property>
          </widget>
         </item>
         <item>

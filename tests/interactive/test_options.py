@@ -32,6 +32,7 @@ from erlab.interactive._options.schema import (
     WorkspaceOptions,
     normalize_workspace_compression_mode,
 )
+from erlab.interactive.angle_calculator._window import AngleCalculatorWindow
 from erlab.interactive.colors import ColorMapComboBox
 
 
@@ -135,8 +136,8 @@ def test_dialog_initial_settings(dialog: OptionDialog):
 def test_dialog_native_structure(dialog: OptionDialog):
     assert dialog.findChild(QtWidgets.QDialogButtonBox) is None
     assert dialog.findChild(QtWidgets.QTabBar, "settingsScopeTabs").count() == 1
-    assert dialog.findChild(QtWidgets.QListWidget, "settingsCategoryList").count() == 5
-    assert dialog.findChild(QtWidgets.QStackedWidget, "settingsPageStack").count() == 5
+    assert dialog.findChild(QtWidgets.QListWidget, "settingsCategoryList").count() == 6
+    assert dialog.findChild(QtWidgets.QStackedWidget, "settingsPageStack").count() == 6
     assert dialog.findChild(QtWidgets.QPushButton, "settingsRevertButton") is not None
     page = dialog.findChild(QtWidgets.QScrollArea, "settingsPage_user_colors")
     if page is None:
@@ -291,7 +292,10 @@ def test_stylesheet_editor_fits_settings_page(dialog: OptionDialog, qtbot):
     category_list = dialog.findChild(QtWidgets.QListWidget, "settingsCategoryList")
     if category_list is None:
         raise AssertionError("Missing settings category list")
-    category_list.setCurrentRow(3)
+    for index in range(category_list.count()):
+        if category_list.item(index).data(QtCore.Qt.ItemDataRole.UserRole) == "figure":
+            category_list.setCurrentRow(index)
+            break
     dialog.resize(dialog.minimumSize())
     dialog.show()
 
@@ -363,6 +367,173 @@ def test_user_figure_export_settings_save_immediately(dialog: OptionDialog) -> N
         transparent="true",
         bbox_inches="tight",
         pad_inches="layout",
+    )
+
+
+@pytest.mark.parametrize("configuration", [1, 2, 3, 4])
+def test_user_angle_calculator_settings_save_immediately(dialog, qtbot, configuration):
+    original = AngleCalculatorWindow()
+    qtbot.addWidget(original)
+    controls = {
+        name: _control(dialog, "user", f"angle_calculator/{name}", cls)
+        for name, cls in (
+            ("configuration", QtWidgets.QComboBox),
+            ("analyzer_work_function", QtWidgets.QDoubleSpinBox),
+            ("photon_energy", QtWidgets.QDoubleSpinBox),
+        )
+    }
+    combo = controls["configuration"]
+    assert [combo.itemData(i) for i in range(combo.count())] == [1, 2, 3, 4]
+    assert combo.currentData() == 3
+    combo.setCurrentIndex(combo.findData(configuration))
+    energies = {
+        "analyzer_work_function": 4.65,
+        "photon_energy": 21.2,
+    }
+    for name, value in energies.items():
+        controls[name].setValue(value)
+    expected = {"configuration": configuration, **energies}
+    assert options.model.angle_calculator.model_dump() == {
+        **expected,
+        "show_laser_arpes_controls": False,
+    }
+    assert OptionManager().model.angle_calculator == options.model.angle_calculator
+    window = AngleCalculatorWindow()
+    qtbot.addWidget(window)
+    assert window.da_check.isChecked() == (configuration > 2)
+    assert window.slit_combo.currentIndex() == (configuration - 1) % 2
+    for name, value in expected.items():
+        assert getattr(window._state.geometry, name) == value
+        if name in energies:
+            assert window.inputs[name].value() == value
+    assert original._state.geometry.configuration == 3
+    assert original.inputs["analyzer_work_function"].value() == 4.3
+    assert original.inputs["photon_energy"].value() == 90.0
+    for name in controls:
+        _button(dialog, "user", f"angle_calculator/{name}").click()
+    assert options.model.angle_calculator == AppOptions().angle_calculator
+    assert OptionManager().model.angle_calculator == AppOptions().angle_calculator
+
+
+def test_user_angle_calculator_laser_arpes_visibility(dialog, qtbot):
+    control = _control(
+        dialog,
+        "user",
+        "angle_calculator/show_laser_arpes_controls",
+        QtWidgets.QCheckBox,
+    )
+    assert not control.isChecked()
+    control.setChecked(True)
+    assert OptionManager().model.angle_calculator.show_laser_arpes_controls
+    window = AngleCalculatorWindow()
+    qtbot.addWidget(window)
+    assert window._show_laser_arpes_controls
+    assert window.geometry_layout.isRowVisible(window.inputs["sample_work_function"])
+    assert not window.correction_check.isHidden()
+    assert not window.cutoff_check.isHidden()
+    _button(dialog, "user", "angle_calculator/show_laser_arpes_controls").click()
+    assert not OptionManager().model.angle_calculator.show_laser_arpes_controls
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("configuration", 0),
+        ("configuration", 5),
+        ("configuration", 1.5),
+        ("analyzer_work_function", -0.01),
+        ("analyzer_work_function", float("inf")),
+        ("photon_energy", 0),
+        ("photon_energy", 1000.001),
+        ("photon_energy", float("nan")),
+    ],
+)
+def test_angle_calculator_options_validate(name, value):
+    with pytest.raises(pydantic.ValidationError):
+        AppOptions.model_validate({"angle_calculator": {name: value}})
+
+
+def test_angle_calculator_options_photon_energy_maximum(dialog):
+    model = AppOptions.model_validate({"angle_calculator": {"photon_energy": 1000}})
+    assert model.angle_calculator.photon_energy == 1000
+    control = _control(
+        dialog, "user", "angle_calculator/photon_energy", QtWidgets.QDoubleSpinBox
+    )
+    assert control.maximum() == 1000
+    control.setValue(1000.001)
+    assert control.value() == 1000
+    assert options.model.angle_calculator.photon_energy == 1000
+    assert OptionManager().model.angle_calculator.photon_energy == 1000
+
+
+def test_angle_calculator_options_ignore_removed_settings() -> None:
+    saved = {
+        "configuration": 2,
+        "analyzer_work_function": 4.6,
+        "photon_energy": 21.2,
+        "sample_work_function": 5.1,
+        "show_emission_limit": True,
+    }
+    expected = {
+        "configuration": 2,
+        "analyzer_work_function": 4.6,
+        "photon_energy": 21.2,
+    }
+    qsettings = options.qsettings
+    for name, value in saved.items():
+        qsettings.setValue(f"angle_calculator/{name}", value)
+    qsettings.sync()
+
+    expected_model = {**expected, "show_laser_arpes_controls": False}
+    assert OptionManager().model.angle_calculator.model_dump() == expected_model
+    assert (
+        AppOptions.model_validate(
+            {"angle_calculator": saved}
+        ).angle_calculator.model_dump()
+        == expected_model
+    )
+    assert normalize_workspace_option_overrides(
+        {f"angle_calculator/{name}": value for name, value in saved.items()}
+    ) == {f"angle_calculator/{name}": value for name, value in expected.items()}
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "control_type"),
+    [
+        ("configuration", 2, QtWidgets.QComboBox),
+        ("analyzer_work_function", 4.6, QtWidgets.QDoubleSpinBox),
+        ("photon_energy", 21.2, QtWidgets.QDoubleSpinBox),
+    ],
+)
+def test_workspace_angle_calculator_settings(qtbot, name, value, control_type):
+    path = f"angle_calculator/{name}"
+    user_value = options[path]
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dialog = OptionDialog(manager)
+    qtbot.addWidget(dialog)
+    dialog.scope_tabs.setCurrentIndex(1)
+    control = _control(dialog, "workspace", path, control_type)
+    assert not control.isEnabled()
+    assert dialog._control_value(control, path) == user_value
+    override = _override(dialog, path)
+    override.setChecked(True)
+    if isinstance(control, QtWidgets.QComboBox):
+        control.setCurrentIndex(control.findData(value))
+    else:
+        control.setValue(value)
+    assert control.isEnabled()
+    assert manager.overrides[path] == value
+    assert options[path] == user_value
+    window = AngleCalculatorWindow(options=manager.effective_interactive_options)
+    qtbot.addWidget(window)
+    assert getattr(window._state.geometry, name) == value
+    override.setChecked(False)
+    assert path not in manager.overrides
+    assert not control.isEnabled()
+    assert dialog._control_value(control, path) == user_value
+    assert getattr(manager.effective_interactive_options.angle_calculator, name) == (
+        user_value
     )
 
 
@@ -1106,6 +1277,12 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
     assert "figure/export/bbox_inches" in paths
     assert "figure/export/pad_inches" in paths
     assert "ktool/show_angle_scale_controls" not in paths
+    assert "angle_calculator/show_laser_arpes_controls" not in paths
+    assert {
+        "angle_calculator/configuration",
+        "angle_calculator/analyzer_work_function",
+        "angle_calculator/photon_energy",
+    } <= set(paths)
     assert normalize_workspace_option_overrides(
         {
             "colors/cmap/name": "bwr",

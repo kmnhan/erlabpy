@@ -1,20 +1,19 @@
-import gc
 import json
 import tempfile
 import warnings
 from types import SimpleNamespace
 
 import numpy as np
-import pyqtgraph as pg
 import pytest
 import scipy.optimize
 import xarray as xr
-from qtpy import QtCore
+from qtpy import QtCore, QtGui
 
 import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
 from erlab.interactive import _persistence_constants
+from erlab.interactive._momentum_overlays._state import PocketState
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.imagetool import _dialog_widgets, _kspace_conversion
 from erlab.interactive.imagetool import dialogs as imagetool_dialogs
@@ -280,34 +279,6 @@ def test_kspace_conversion_dialog_jacobian_seed_restore_and_batch(qtbot, anglema
     ]
     dialog.restore_transform_operations(legacy)
     assert not dialog.jacobian_check.isChecked()
-
-
-@pytest.mark.parametrize("configuration", list(AxesConfiguration))
-@pytest.mark.parametrize("jacobian", [False, True])
-@pytest.mark.parametrize("photon_energies", [[24.0], [22.0, 24.0, 26.0]])
-@pytest.mark.filterwarnings("ignore:Dimension.*not uniform:RuntimeWarning")
-def test_kspace_conversion_estimate_hv_maps(
-    anglemap, configuration, jacobian, photon_energies
-):
-    data = _make_ktool_data(anglemap, configuration, {"xi": 0.0, "chi": 0.0})
-    data = data.drop_vars("hv").expand_dims(hv=photon_energies)
-    data.kspace.inner_potential = 10.0
-    bounds = {"kx": (-0.1, 0.1), "ky": (-0.1, 0.1)}
-    if len(photon_energies) > 1:
-        bounds["kz"] = (2.7, 2.9)
-    resolution = dict.fromkeys(bounds, 0.1)
-    estimate = _kspace_conversion.estimate_kspace_conversion(
-        data,
-        bounds=bounds,
-        resolution=resolution,
-        jacobian=jacobian,
-        memory=_memory_budget(),
-    )
-    result = data.kspace.convert(bounds, resolution, jacobian=jacobian)
-    assert estimate.output_sizes == dict(result.sizes)
-    assert estimate.total_points == result.size
-    assert estimate.final_bytes == result.size * 8
-    assert set(estimate.input_dims) == {"alpha", "beta", "hv", "eV"}
 
 
 def _set_input_coordinates(dialog, values: dict[str, float]) -> None:
@@ -1492,6 +1463,34 @@ def test_kspace_conversion_estimate_matches_safe_output(
     assert estimate.final_bytes == converted.size * 8
 
 
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("jacobian", [False, True])
+@pytest.mark.parametrize("photon_energies", [[24.0], [22.0, 24.0, 26.0]])
+@pytest.mark.filterwarnings("ignore:Dimension.*not uniform:RuntimeWarning")
+def test_kspace_conversion_estimate_hv_maps(
+    anglemap, configuration, jacobian, photon_energies
+):
+    data = _make_ktool_data(anglemap, configuration, {"xi": 0.0, "chi": 0.0})
+    data = data.drop_vars("hv").expand_dims(hv=photon_energies)
+    data.kspace.inner_potential = 10.0
+    bounds = {"kx": (-0.1, 0.1), "ky": (-0.1, 0.1)}
+    if len(photon_energies) > 1:
+        bounds["kz"] = (2.7, 2.9)
+    resolution = dict.fromkeys(bounds, 0.1)
+    estimate = _kspace_conversion.estimate_kspace_conversion(
+        data,
+        bounds=bounds,
+        resolution=resolution,
+        jacobian=jacobian,
+        memory=_memory_budget(),
+    )
+    result = data.kspace.convert(bounds, resolution, jacobian=jacobian)
+    assert estimate.output_sizes == dict(result.sizes)
+    assert estimate.total_points == result.size
+    assert estimate.final_bytes == result.size * 8
+    assert set(estimate.input_dims) == {"alpha", "beta", "hv", "eV"}
+
+
 def test_kspace_conversion_memory_budget_uses_available_physical_memory(
     monkeypatch,
 ) -> None:
@@ -1691,68 +1690,6 @@ def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
     )
 
 
-@pytest.mark.parametrize("removable", [False, True])
-def test_movable_circle_roi_extends_upstream_menu(
-    qtbot, monkeypatch, removable: bool
-) -> None:
-    upstream_get_menu = pg.CircleROI.getMenu
-    upstream_calls: list[tuple[object, bool]] = []
-
-    def tracked_get_menu(roi):
-        upstream_calls.append((roi, roi.removable))
-        return upstream_get_menu(roi)
-
-    monkeypatch.setattr(pg.CircleROI, "getMenu", tracked_get_menu)
-    roi = erlab.interactive.kspace._MovableCircleROI(
-        (0.0, 0.0), radius=1.0, removable=removable
-    )
-
-    menu = roi.getMenu()
-    assert roi.getMenu() is menu
-    assert upstream_calls == [(roi, False), (roi, removable)]
-    assert roi.removable is removable
-    assert roi._pos_menu.menuAction() in menu.actions()
-    assert roi._pos_action in roi._pos_menu.actions()
-    assert roi._pos_action.defaultWidget() is roi._pos_widget
-
-    gc.collect()
-
-    assert erlab.interactive.utils.qt_is_valid(
-        menu,
-        roi._pos_menu,
-        roi._pos_action,
-        roi._pos_widget,
-    )
-    assert roi._pos_action.defaultWidget() is roi._pos_widget
-
-    if removable:
-        removed: list[object] = []
-        roi.sigRemoveRequested.connect(removed.append)
-        assert roi._remove_action in menu.actions()
-        assert menu.actions() == [roi._remove_action, roi._pos_menu.menuAction()]
-        roi._remove_action.trigger()
-        qtbot.wait_until(lambda: removed == [roi])
-    else:
-        assert roi._remove_action is None
-        assert menu.actions() == [roi._pos_menu.menuAction()]
-
-
-def test_movable_circle_roi_deferred_remove_ignores_deleted_roi(qtbot) -> None:
-    roi = erlab.interactive.kspace._MovableCircleROI((0.0, 0.0), radius=1.0)
-    removed: list[object] = []
-    roi.sigRemoveRequested.connect(removed.append)
-
-    roi._remove_clicked()
-    roi.deleteLater()
-    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
-    assert not erlab.interactive.utils.qt_is_valid(roi)
-
-    roi._emit_remove_request()
-    QtCore.QCoreApplication.processEvents()
-
-    assert removed == []
-
-
 @pytest.mark.parametrize("wf", ["wf_auto", "wf_manual"])
 @pytest.mark.parametrize("kind", ["map", "const_energy"])
 @pytest.mark.parametrize("assignment", ["before", "after"])
@@ -1811,20 +1748,15 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
 
     _check_code_kconv(win)
 
-    # Test ROI
-    win.add_circle_btn.click()
-    roi = win._roi_list[0]
-    roi.getMenu()
-    roi.set_position((0.1, 0.1), 0.2)
-    assert roi.get_position() == (0.1, 0.1, 0.2)
-
-    roi_control_widget = roi._pos_menu.actions()[0].defaultWidget()
-    roi_control_widget.x_spin.setValue(0.0)
-    roi_control_widget.y_spin.setValue(0.2)
-    roi_control_widget.r_spin.setValue(0.3)
-    assert roi.get_position() == (0.0, 0.2, 0.3)
+    # The shared editor updates the pocket state through numeric controls and ROIs.
+    roi = win.overlays.add_pocket()
+    roi.setGeometry((0.1, 0.1), (0.2, 0.2), 0)
+    assert win.overlays.state.pockets[0].center == pytest.approx((0.1, 0.1))
+    win.overlays.inputs["pocket_x"].setValue(0.0)
+    win.overlays.inputs["pocket_y"].setValue(0.2)
+    assert roi.geometry()[0] == pytest.approx((0.0, 0.2))
     roi.sigRemoveRequested.emit(roi)
-    assert win._roi_list == []
+    assert win.overlays.state.pockets == []
 
     assert win.preview_symmetry_group.isEnabled()
     win.preview_symmetry_fold_spin.setValue(4)
@@ -4099,8 +4031,7 @@ def test_ktool_update_inputs_preserves_state(qtbot, anglemap) -> None:
     win._normal_emission_spins["beta"].setValue(
         win._normal_emission_spins["beta"].value() - 1.5
     )
-    win.add_circle_btn.click()
-    win._roi_list[0].set_position((0.1, 0.2), 0.25)
+    win.overlays.add_pocket().setGeometry((0.1, 0.2), (0.25, 0.25), 0)
 
     status = win.tool_status
     new_data = data.copy(deep=True)
@@ -4327,3 +4258,331 @@ def test_ktool_validate_update_inputs_rejects_incompatible_metadata(
 
     with pytest.raises(ValueError, match=match):
         win.validate_update_inputs({"data": object()})
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("transpose", [False, True])
+def test_ktool_overlay_projection(qtbot, anglemap, configuration, transpose):
+    data = _make_ktool_data(anglemap, configuration, {"xi": 2.0, "chi": 3.0})
+    if transpose:
+        data = data.transpose("beta", "alpha", "eV")
+    data.kspace.alpha_scale = 1.1
+    data.kspace.beta_scale = 0.9
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    win.angle_plot_check.setChecked(True)
+    win.overlays.add_pocket(state=PocketState(center=(0.05, 0.04)))
+    before = win.overlays.state.model_copy(deep=True)
+
+    for delta in (0.0, 7.0):
+        win._offset_spins["delta"].setValue(delta)
+        win.update()
+        raw = win.images[0].data_array
+        assert raw is not None
+        assert win.images[1].data_array.dims == ("ky", "kx")
+        assert win.overlays.isEnabled()
+        x, y = np.meshgrid(raw[raw.dims[1]], raw[raw.dims[0]])
+        expected = raw.kspace.convert_coords()
+        kx, ky = win.overlays._display_to_momentum(x, y)
+        np.testing.assert_allclose(kx, expected.kx.transpose(*raw.dims))
+        np.testing.assert_allclose(ky, expected.ky.transpose(*raw.dims))
+        actual_x, actual_y = win.overlays._momentum_to_display(kx, ky)
+        np.testing.assert_allclose(actual_x, x, atol=1e-8)
+        np.testing.assert_allclose(actual_y, y, atol=1e-8)
+        assert win.overlays.state == before
+        invalid = win.overlays._momentum_to_display(
+            np.array([100.0]), np.array([100.0])
+        )
+        assert all(np.isnan(axis).all() for axis in invalid)
+
+
+def test_ktool_overlays_do_not_convert_and_survive_bz(qtbot, anglemap, monkeypatch):
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    expected = win._converted_output()
+    before = win.images[1].data_array.copy(deep=True)
+    with monkeypatch.context() as patch:
+
+        def unexpected_convert(*args, **kwargs):
+            pytest.fail("Overlay edits must not convert measured data")
+
+        patch.setattr(MomentumAccessor, "convert", unexpected_convert)
+        roi = win.overlays.add_pocket()
+        roi.setGeometry((0.1, 0.2), (0.25, 0.1), 30)
+        win.overlays.redraw()
+        contours = tuple(win.overlays._contours)
+        win.bz_group.setChecked(True)
+        win.points_check.setChecked(True)
+        win.a_spin.setValue(4.2)
+        assert win._bz_items
+        assert all(item.zValue() > win.images[1].zValue() for item in win._bz_items)
+        win.bz_group.setChecked(False)
+        assert not win._bz_items
+        for primary, projected in contours:
+            assert primary in win.plotitems[1].items
+            assert projected in win.plotitems[0].items
+        assert roi in win.plotitems[1].items
+        xr.testing.assert_identical(before, win.images[1].data_array)
+    code = win.copy_code()
+    namespace = _exec_generated_code(code, data=data)
+    xr.testing.assert_identical(namespace["data_kconv"], expected)
+
+
+@pytest.mark.parametrize("in_plane", [True, False])
+def test_ktool_legacy_circles(qtbot, anglemap, in_plane):
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    if not in_plane:
+        data = data.isel(beta=0)
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    status = win.tool_status.model_dump()
+    status.pop("overlays")
+    status["circle_rois"] = [(0.1, 0.2, 0.3)]
+    win.tool_status = win.StateModel.model_validate(status)
+    assert win.overlays.isEnabled() is in_plane
+    assert len(win.overlays.state.pockets) == int(in_plane)
+    if in_plane:
+        pocket = win.overlays.state.pockets[0]
+        assert pocket.center == (0.1, 0.2)
+        assert pocket.radii == (0.3, 0.3)
+        assert not pocket.symmetry
+    assert "circle_rois" not in win.tool_status.model_dump()
+
+
+@pytest.mark.parametrize("keep_valid", [False, True])
+def test_ktool_legacy_circles_skip_unsupported(qtbot, anglemap, keep_valid):
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    existing = PocketState(center=(0.2, -0.1), radii=(0.1, 0.2))
+    win.overlays.add_pocket(state=existing)
+    win.rot_spin.setValue(17.0)
+    expected_status = win.tool_status.model_dump()
+    saved = win.to_dataset()
+    status = json.loads(saved.attrs["tool_state"])
+    invalid_circles = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, -0.1),
+        (0.0, 0.0, 1e-6),
+        (0.0, 0.0, 101.0),
+        (101.0, 0.0, 0.3),
+        (0.0, -101.0, 0.3),
+        (float("nan"), 0.0, 0.3),
+        (0.0, 0.0, float("inf")),
+    ]
+    valid_circles = [(0.1, 0.2, 0.3), (-0.2, 0.1, 0.4)] if keep_valid else []
+    status["circle_rois"] = valid_circles[:1] + invalid_circles + valid_circles[1:]
+    saved.attrs["tool_state"] = json.dumps(status)
+    with pytest.warns(UserWarning, match="Skipped 8 legacy circle overlays") as caught:
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    _add_hidden_tool(qtbot, restored)
+    assert len(caught) == 1
+    pockets = restored.overlays.state.pockets
+    assert pockets[0] == existing
+    assert len(pockets) == 1 + len(valid_circles)
+    for pocket, (x, y, radius) in zip(pockets[1:], valid_circles, strict=True):
+        assert pocket.center == (x, y)
+        assert pocket.radii == (radius, radius)
+        assert not pocket.symmetry
+    actual_status = restored.tool_status.model_dump()
+    actual_status.pop("overlays")
+    expected_status.pop("overlays")
+    assert actual_status == expected_status
+    assert "circle_rois" not in actual_status
+    # The next save contains only valid modern overlays and needs no migration.
+    resaved = restored.to_dataset()
+    with warnings.catch_warnings(record=True) as caught_again:
+        warnings.simplefilter("always")
+        reopened = erlab.interactive.utils.ToolWindow.from_dataset(resaved)
+    _add_hidden_tool(qtbot, reopened)
+    assert not caught_again
+    assert reopened.tool_status == restored.tool_status
+    xr.testing.assert_identical(reopened.tool_data, restored.tool_data)
+
+
+def test_ktool_overlay_image_roundtrip(qtbot, anglemap, tmp_path):
+    data = _make_ktool_data(
+        anglemap, AxesConfiguration.Type1DA, {"xi": 0.0, "chi": 0.0}
+    )
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    path = tmp_path / "overlay.png"
+    image = QtGui.QImage(12, 8, QtGui.QImage.Format.Format_RGBA8888)
+    image.fill(QtGui.QColor("red"))
+    assert image.save(str(path))
+    win.overlays.load_image(str(path))
+    win.overlays.add_pocket(state=PocketState(point_group="6mm", radii=(0.04, 0.02)))
+    win.overlays.inputs["image_opacity"].setValue(0.4)
+    win.overlays.image_locked.setChecked(True)
+    win.overlays.image_invert.setChecked(True)
+    win.overlays.image_black_transparent.setChecked(True)
+    win.overlays.inputs["image_black_threshold"].setValue(20)
+    expected = win.overlays.state.model_copy(deep=True)
+    win.overlays.redraw()
+    assert win.overlays.momentum_image.zValue() > win.images[1].zValue()
+    saved = tmp_path / "ktool.h5"
+    win.to_file(saved)
+    path.unlink()
+    restored = erlab.interactive.utils.ToolWindow.from_file(saved)
+    _add_hidden_tool(qtbot, restored)
+    assert restored.overlays.state == expected
+    assert restored.overlays.image_locked.isChecked()
+    assert not restored.overlays._image_roi.isVisible()
+    np.testing.assert_array_equal(
+        restored.overlays._source_image, win.overlays._source_image
+    )
+    restored.close()
+    assert not restored.overlays._redraw_timer.isActive()
+    assert not restored.overlays._refine_timer.isActive()
+    restored.show()
+    assert restored.overlays._active
+
+
+def test_ktool_overlay_memory_refusal_hides_items(qtbot, monkeypatch, anglemap):
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    roi = win.overlays.add_pocket()
+    win.overlays.redraw()
+    win.bz_group.setChecked(True)
+    state = win.overlays.state.model_copy(deep=True)
+    monkeypatch.setattr(
+        win,
+        "_preview_conversion_estimate",
+        lambda *_: _conversion_estimate_stub(safe=False, peak_bytes=16),
+    )
+    win.update()
+    assert not win.overlays.isEnabled()
+    assert not roi.isVisible()
+    assert not win._bz_items
+    assert win.overlays.state == state
+
+
+def test_ktool_undo_redo_overlay_edits(qtbot, anglemap, tmp_path):
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    initial = win.tool_status
+    win.overlays.add_button.click()
+    qtbot.wait_until(lambda: win.undo_action.isEnabled())
+    pocket_state = win.tool_status
+    win.undo_action.trigger()
+    assert win.tool_status == initial
+    win.redo_action.trigger()
+    assert win.tool_status == pocket_state
+
+    for field, value in (("pocket_x", 0.1), ("pocket_rotation", 35.0)):
+        before = win.tool_status
+        win.overlays.inputs[field].setValue(value)
+        win.undo()
+        assert win.tool_status == before
+        win.redo()
+        assert win.overlays.inputs[field].value() == value
+
+    before = win.tool_status
+    win.overlays.delete_button.click()
+    win.undo()
+    assert win.tool_status == before
+    win.redo()
+    assert not win.overlays.state.pockets
+
+    for index in range(2):
+        path = tmp_path / f"image{index}.png"
+        image = QtGui.QImage(4, 4, QtGui.QImage.Format.Format_RGBA8888)
+        image.fill(QtGui.QColor("white" if index == 0 else "red"))
+        assert image.save(str(path))
+        before = win.tool_status
+        win.overlays.load_image(str(path))
+        after = win.tool_status
+        path.unlink()
+        win.undo()
+        assert win.tool_status == before
+        win.redo()
+        assert win.tool_status == after
+
+    for field, value in (
+        ("image_x", 0.2),
+        ("image_width", 0.5),
+        ("image_rotation", 40.0),
+        ("image_opacity", 0.3),
+    ):
+        before = win.tool_status
+        win.overlays.inputs[field].setValue(value)
+        win.undo()
+        assert win.tool_status == before
+        win.redo()
+        assert win.overlays.inputs[field].value() == value
+    for name in ("image_visible", "image_invert", "image_black_transparent"):
+        before = win.tool_status
+        checkbox = getattr(win.overlays, name)
+        enabled = not checkbox.isChecked()
+        checkbox.setChecked(enabled)
+        win.undo()
+        assert win.tool_status == before
+        win.redo()
+        assert checkbox.isChecked() == enabled
+    before = win.tool_status
+    win.overlays.inputs["image_black_threshold"].setValue(30)
+    win.undo()
+    assert win.tool_status == before
+    win.redo()
+    assert win.overlays.state.image.black_threshold == 30
+    win.undo()
+    win.overlays.inputs["image_width"].setValue(0.6)
+    win._flush_pending_history_write()
+    assert not win.redoable
+
+
+@pytest.mark.parametrize("focus_numeric", [True, False])
+@pytest.mark.parametrize("commit", [True, False])
+def test_ktool_overlay_undo_redo_shortcuts(qtbot, anglemap, focus_numeric, commit):
+    from qtpy import QtTest
+
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    win.tabWidget.setCurrentWidget(win.overlay_tab)
+    win.show()
+    win.activateWindow()
+    qtbot.wait_until(win.isActiveWindow)
+    win.overlays.add_button.click()
+    win._flush_pending_history_write()
+    initial = win.tool_status
+    spin = win.overlays.inputs["pocket_x"]
+    spin.setFocus()
+    spin.selectAll()
+    qtbot.keyClicks(spin, "0.2")
+    if commit:
+        qtbot.keyClick(spin, QtCore.Qt.Key.Key_Return)
+        qtbot.wait_until(lambda: len(win._prev_states) == 3)
+        assert win.overlays.state.pockets[0].center[0] == 0.2
+    focus = spin if focus_numeric else win.overlays.add_button
+    focus.setFocus()
+    QtTest.QTest.keySequence(focus, win.undo_action.shortcut())
+    assert win.tool_status == initial
+    QtTest.QTest.keySequence(focus, win.redo_action.shortcut())
+    assert win.overlays.state.pockets[0].center[0] == 0.2
+
+
+def test_ktool_history_preserves_pocket_selection(qtbot, anglemap):
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    win = ktool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    for _ in range(2):
+        win.overlays.add_button.click()
+        win._flush_pending_history_write()
+    win.overlays.pocket_list.setCurrentRow(0)
+    uid = win.overlays._selected_pocket
+    win.overlays.inputs["pocket_x"].setValue(0.1)
+    win._flush_pending_history_write()
+    for action, x in ((win.undo_action, 0.0), (win.redo_action, 0.1)):
+        action.trigger()
+        assert win.overlays._selected_pocket == uid
+        assert win.overlays.inputs["pocket_x"].value() == x
+    win.undo()
+    win.overlays.inputs["pocket_x"].setValue(0.2)
+    assert [pocket.center for pocket in win.overlays.state.pockets] == [
+        (0.2, 0.0),
+        (0.0, 0.0),
+    ]

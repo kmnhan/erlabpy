@@ -36,7 +36,8 @@ There are four ways to start `ktool`.
 
 4. From IPython using the `%ktool` magic described in {ref}`interactive-misc-magics`.
 
-The GUI is divided into two tabs.
+The GUI has three tabs: {guilabel}`Parameters`, {guilabel}`Visualization`, and
+{guilabel}`Overlays`.
 
 ```{image} ../../../images/ktool_1_light.png
 :align: center
@@ -100,7 +101,30 @@ the unsymmetrized momentum-converted data.
 
 :::
 
-The {guilabel}`Add Circle ROI` button allows you to add a circular region of interest to the image, which can be edited by dragging or right-clicking on it.
+(ktool-overlays)=
+
+## Overlays
+
+You can add ellipses in momentum coordinates and overlay reference images to the
+converted data. The controls are available for $k_x$–$k_y$ previews. Enable
+{guilabel}`Show angle plot` to see the overlays projected onto the recorded angles.
+Overlays stay fixed in physical $k_x$ and $k_y$ coordinates while you adjust the
+conversion parameters.
+
+### Pockets
+
+Select {guilabel}`Add` to add a pocket, then drag its center, radius, or rotation
+handles to adjust its size. See {ref}`angle-calculator-pockets` for detailed controls
+and copying between windows.
+
+### Reference image
+
+Open a PNG or JPEG image that shows band contours in momentum space and set its center,
+{guilabel}`Image width` in Å⁻¹, and rotation in momentum space. Scaling preserves the
+aspect ratio. Reduce {guilabel}`Opacity` to see the data underneath. After alignment,
+enable {guilabel}`Lock image` to prevent accidental dragging.
+
+## Python options
 
 You can pass some parameters to customize the GUI. For example, you can set the Brillouin zone size/orientation and the colormap like this:
 

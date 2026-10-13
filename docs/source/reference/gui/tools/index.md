@@ -15,6 +15,7 @@ interfaces. Most can be opened from ImageTool or from Python.
 | {doc}`meshtool` | Detect and remove grid-like mesh artifacts from fixed-mode ARPES data |
 | {doc}`data-explorer` | Browse files, preview data and metadata, and open supported datasets |
 | {doc}`periodic-table` | Inspect element data, absorption edges, masses, and photoionization cross sections |
+| {doc}`angle-calculator` | Plan experiments by visualizing angular and momentum coverage |
 | {doc}`bzplotter` | Create and export three-dimensional Brillouin-zone plots |
 | {doc}`notebook-shortcuts` | Launch interactive tools with IPython and Jupyter line magics |
 
@@ -34,6 +35,7 @@ restool
 meshtool
 data-explorer
 periodic-table
+angle-calculator
 bzplotter
 notebook-shortcuts
 ```
