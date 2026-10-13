@@ -520,6 +520,25 @@ def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     assert not win.redoable
 
 
+def test_tool_window_history_shortcuts_from_child_widget(qtbot):
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    button = QtWidgets.QPushButton(win)
+    win.setCentralWidget(button)
+    win.show()
+    win.activateWindow()
+    button.setFocus()
+    win._reset_history_stack()
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+    qtbot.wait_until(lambda: win.undo_action.isEnabled())
+    QtTest.QTest.keySequence(button, win.undo_action.shortcut())
+    assert win.tool_status == _PersistentToolState(value=0)
+    QtTest.QTest.keySequence(button, win.redo_action.shortcut())
+    assert win.tool_status == _PersistentToolState(value=1)
+
+
 def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     win = _PersistentTool(data)
@@ -7422,3 +7441,161 @@ def test_tool_window_unbound_launches_open_distinct_windows(qtbot) -> None:
 
     first.close()
     second.close()
+
+
+class _StateOnlyWindow(
+    erlab.interactive._stateful_window.StatefulWindow[_PersistentToolState]
+):
+    def __init__(self):
+        super().__init__()
+        self.spin = QtWidgets.QSpinBox(self)
+        self.setCentralWidget(self.spin)
+        self.spin.valueChanged.connect(self._write_state)
+        self._register_history_spinboxes((self.spin,))
+        self._reset_history_stack()
+
+    @property
+    def _history_state(self):
+        return _PersistentToolState(value=self.spin.value())
+
+    @_history_state.setter
+    def _history_state(self, state):
+        self.spin.setValue(state.value)
+
+
+def test_stateful_window_standalone_history_and_suppression(qtbot):
+    win = _StateOnlyWindow()
+    qtbot.addWidget(win)
+    assert not isinstance(win, erlab.interactive.utils.ToolWindow)
+    win.spin.setValue(1)
+
+    def suppressed_failure():
+        with win._history_suppressed():
+            assert not win._write_history
+            with win._history_suppressed():
+                win.spin.setValue(2)
+            assert not win._write_history
+            raise ValueError("stop")
+
+    with pytest.raises(ValueError, match="stop"):
+        suppressed_failure()
+    assert win._write_history
+    assert [state.value for state in win._prev_states] == [0, 1]
+    win._replace_last_state()
+    win.undo()
+    assert win.spin.value() == 0
+    win.redo()
+    assert win.spin.value() == 2
+    win._write_state()
+    assert not win._flush_pending_history_write()
+    win.undo()
+    win.spin.setValue(3)
+    win._flush_pending_history_write()
+    assert not win.redoable
+    win._prev_states.clear()
+    win._write_state()
+    assert [state.value for state in win._prev_states] == [3]
+    win._prev_states.clear()
+    win._replace_last_state()
+    assert [state.value for state in win._prev_states] == [3]
+    with win._history_suppressed():
+        win._replace_last_state()
+        win._history_write_pending = True
+        assert not win._flush_pending_history_write()
+
+
+def test_stateful_window_deleted_controls_actions_and_pending_timer(qtbot):
+    win = _StateOnlyWindow()
+    qtbot.addWidget(win)
+    win.spin.setValue(2)
+    win.undo_action.deleteLater()
+    win.redo_action.deleteLater()
+    qtbot.wait_until(lambda: not qt_is_valid(win.undo_action, win.redo_action))
+    win._flush_pending_history_write()
+    win.spin.deleteLater()
+    qtbot.wait_until(lambda: not qt_is_valid(win.spin))
+    win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    win.close()
+    qtbot.wait_until(lambda: not qt_is_valid(win))
+    qtbot.wait(200)
+
+
+@pytest.mark.parametrize(("text", "expected"), [("2", 2), ("", 1)])
+@pytest.mark.parametrize("shortcut", [False, True])
+def test_stateful_window_close_commits_focused_editor(qtbot, text, expected, shortcut):
+    win = _StateOnlyWindow()
+    qtbot.addWidget(win)
+    win.spin.setKeyboardTracking(False)
+    win.spin.setValue(1)
+    win._flush_pending_history_write()
+    win.show()
+    win.activateWindow()
+    win.spin.setFocus()
+    qtbot.wait_until(win.spin.hasFocus)
+    win.spin.selectAll()
+    qtbot.keyClick(win.spin, QtCore.Qt.Key.Key_Backspace)
+    qtbot.keyClicks(win.spin, text)
+    assert win.spin.value() == 1
+    assert not win._history_write_pending
+    if shortcut:
+        qtbot.keySequence(win.spin, QtGui.QKeySequence("Ctrl+W"))
+    else:
+        assert win.close()
+    assert not win.isVisible()
+    assert win.spin.value() == expected
+    assert not win._history_write_pending
+    assert not win._history_write_timer.isActive()
+    assert [state.value for state in win._prev_states] == (
+        [0, 1, 2] if text else [0, 1]
+    )
+    win.show()
+    win.undo()
+    assert win.spin.value() == (1 if text else 0)
+    win.redo()
+    assert win.spin.value() == expected
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_tool_window_close_shortcut_preserves_manager_behavior(
+    qtbot, monkeypatch, managed
+):
+    win = _PersistentTool(xr.DataArray([1.0], dims="x"))
+    qtbot.addWidget(win)
+    editor = QtWidgets.QLineEdit(win)
+    win.setCentralWidget(editor)
+    monkeypatch.setattr(win, "_is_in_manager", lambda: managed)
+    closed = []
+    close = win.close
+
+    def track_close():
+        closed.append(True)
+        return close()
+
+    monkeypatch.setattr(win, "close", track_close)
+    win.show()
+    win.activateWindow()
+    editor.setFocus()
+    qtbot.wait_until(editor.hasFocus)
+    qtbot.keySequence(editor, QtGui.QKeySequence("Ctrl+W"))
+    assert not win.isVisible()
+    assert closed == ([] if managed else [True])
+
+
+def test_tool_window_suppressed_edit_notifies_after_history_resumes(qtbot):
+    win = _PersistentTool(xr.DataArray([1.0], dims="x"))
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+
+    def update_dependent_setting():
+        if win.tool_status.value == 1:
+            win._status = _PersistentToolState(value=2)
+            win._write_state()
+
+    win.sigProvenanceChanged.connect(update_dependent_setting)
+    with win._history_suppressed():
+        win._status = _PersistentToolState(value=1)
+        win._write_state()
+    assert win._flush_pending_history_write()
+    assert win.tool_status.value == 2
+    win.undo()
+    assert win.tool_status.value == 0
