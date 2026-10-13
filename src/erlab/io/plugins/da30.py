@@ -4,21 +4,32 @@ Provides a base class for implementing loaders that can load data acquired with 
 Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual loading.
 """
 
-__all__ = ["CasePreservingConfigParser", "DA30Loader", "load_zip", "parse_ini"]
+from __future__ import annotations
+
+__all__ = [
+    "CasePreservingConfigParser",
+    "DA30Loader",
+    "load_txt",
+    "load_zip",
+    "parse_ini",
+]
 
 import configparser
+import itertools
 import os
 import pathlib
 import re
 import typing
 import zipfile
-from collections.abc import Callable
 
 import numpy as np
 import xarray as xr
 
 import erlab
 from erlab.io.dataloader import LoaderBase
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Mapping
 
 
 class InvalidDA30ZipError(Exception):
@@ -38,15 +49,15 @@ class CasePreservingConfigParser(configparser.ConfigParser):
 class DA30Loader(LoaderBase):
     """Load Scienta Omicron DA30 data acquired through SES.
 
-    This loader reads Igor Binary Wave (``.ibw``), packed Igor (``.pxt``), and DA30
-    ZIP or unpacked-directory data. A file with multiple regions returns an
+    This loader reads Igor Binary Wave (``.ibw``), packed Igor (``.pxt``), SES text
+    (``.txt``), and DA30 ZIP data. A file with multiple regions returns an
     :class:`xarray.DataTree`.
     """
 
     name = "da30"
     description = "Scienta Omicron DA30 with SES"
 
-    extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".zip", ""}
+    extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".txt", ".zip", ""}
 
     name_map: typing.ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
@@ -60,7 +71,7 @@ class DA30Loader(LoaderBase):
 
     @property
     def file_dialog_methods(self):
-        return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
+        return {"DA30 Raw Data (*.ibw *.pxt *.txt *.zip)": (self.load, {})}
 
     def load_single(
         self,
@@ -87,6 +98,11 @@ class DA30Loader(LoaderBase):
             case ".zip" | "":
                 data = load_zip(file_path, without_values=without_values)
 
+            case ".txt":
+                data = load_txt(
+                    file_path, without_values=without_values, name_map=self.name_map
+                )
+
             case _:
                 raise ValueError(f"Unsupported file extension {file_path.suffix}")
 
@@ -100,7 +116,9 @@ class DA30Loader(LoaderBase):
             r"(.*?)" + str(num).zfill(4) + ".*" + str(num).zfill(3)
         )
         for file in sorted(
-            erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".pxt", ".zip"))
+            erlab.io.utils.get_files(
+                data_dir, extensions=(".ibw", ".pxt", ".txt", ".zip")
+            )
         ):
             match file.suffix:
                 case ".ibw":
@@ -126,8 +144,260 @@ class DA30Loader(LoaderBase):
 
     def files_for_summary(self, data_dir: str | os.PathLike):
         return sorted(
-            erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw", ".zip"))
+            erlab.io.utils.get_files(
+                data_dir, extensions=(".pxt", ".ibw", ".txt", ".zip")
+            )
         )
+
+
+def load_txt(
+    filename: str | os.PathLike,
+    without_values: bool = False,
+    *,
+    name_map: Mapping[str, str | Iterable[str]] | None = None,
+) -> xr.DataArray | xr.DataTree:
+    """Load data from an SES ``.txt`` file from a Scienta Omicron analyzer.
+
+    Signals with matching coordinates are attached to the spectrum as coordinates.
+    Multiple regions or signals with separate coordinates are returned in a DataTree.
+
+    Parameters
+    ----------
+    filename : str or os.PathLike
+        The path to the SES ``.txt`` file.
+    without_values : bool, optional
+        If True, the values are not loaded, only the coordinates and attributes.
+    name_map : mapping, optional
+        Loader name mapping. Signal coordinate names cannot use its keys or aliases.
+
+    Returns
+    -------
+    xr.DataArray or xr.DataTree
+        A DataArray for one spectrum, or a DataTree containing the separate arrays.
+    """
+    filename = pathlib.Path(filename)
+    sections: dict[str, list[str]] = {}
+    data_locations: dict[str, tuple[int, int]] = {}
+    section = ""
+    with filename.open("rb") as stream:
+        for lineno, line in enumerate(stream):
+            if lineno == 0:
+                line = line.removeprefix(b"\xef\xbb\xbf")
+            line = line.strip()
+            if line.startswith(b"[") and line.endswith(b"]"):
+                section = line[1:-1].decode("utf-8")
+                if section in sections:
+                    raise ValueError(f"{filename}: duplicate section [{section}]")
+                sections[section] = []
+                if section.startswith(("Data ", "Signal ")):
+                    # Store the byte offset and physical line count, not the data text.
+                    data_locations[section] = (stream.tell(), 0)
+            elif section in data_locations:
+                offset, count = data_locations[section]
+                data_locations[section] = (offset, count + 1)
+            elif line:
+                sections[section].append(line.decode("utf-8").strip())
+
+    metadata: dict[str, dict[str, typing.Any]] = {}
+    for name, lines in sections.items():
+        if name.startswith(("Data ", "Signal ")):
+            continue
+        metadata[name] = {}
+        for line in lines:
+            key, sep, value = line.partition("=")
+            if sep:
+                metadata[name][key.strip()] = _parse_value(value.strip())
+
+    reserved_names: set[str] = set()
+    for name, aliases in (name_map or {}).items():
+        reserved_names.add(name)
+        reserved_names.update((aliases,) if isinstance(aliases, str) else aliases)
+
+    num_regions = int(metadata["Info"]["Number of Regions"])
+    with filename.open("rb") as stream:
+        out = [
+            _load_txt_region(
+                sections,
+                metadata,
+                region,
+                stream=stream,
+                data_locations=data_locations,
+                without_values=without_values,
+                reserved_names=reserved_names,
+            )
+            for region in range(1, num_regions + 1)
+        ]
+
+    if len(out) == 1 and len(out[0]) == 1:
+        return next(iter(out[0].values()))
+    # Region names are normally unique. Use numbered nodes if they cannot be paths.
+    names = [
+        str(metadata[f"Region {region}"]["Region Name"])
+        for region in range(1, num_regions + 1)
+    ]
+    use_names = len(set(names)) == len(names) and all(
+        name and "/" not in name and name not in {".", ".."} for name in names
+    )
+    nodes = {}
+    for region, (name, payloads) in enumerate(zip(names, out, strict=True), start=1):
+        region_name = name if use_names else f"Region {region}"
+        for kind, data in payloads.items():
+            path = region_name if len(payloads) == 1 else f"{region_name}/{kind}"
+            nodes[path] = data.to_dataset(promote_attrs=True)
+    return xr.DataTree.from_dict(nodes)
+
+
+def _load_txt_region(
+    sections: dict[str, list[str]],
+    metadata: dict[str, dict[str, typing.Any]],
+    region: int,
+    *,
+    stream: typing.BinaryIO,
+    data_locations: dict[str, tuple[int, int]],
+    without_values: bool,
+    reserved_names: set[str],
+) -> dict[str, xr.DataArray]:
+    header = metadata[f"Region {region}"]
+    attrs = {}
+    for prefix in (
+        "Info",
+        "Run Mode Information",
+        "User Interface Information",
+        "Manipulator",
+        "Monochromator",
+    ):
+        attrs.update(metadata.get(f"{prefix} {region}", {}))
+    attrs.pop("Region Name", None)
+    run_mode = sections.get(f"Run Mode Information {region}", [])
+    if any("=" not in line for line in run_mode):
+        attrs["Run Mode Information"] = "\n".join(run_mode)
+
+    out: dict[str, xr.DataArray] = {}
+    for kind in ("Data", "Signal"):
+        data_sections = [
+            name
+            for name in sections
+            if re.fullmatch(rf"{kind} {region}(?::[^\]]+)?", name)
+        ]
+        if not data_sections:
+            continue
+        if kind == "Data":
+            axis_keys = []
+            for dim in range(1, 4):
+                prefix = f"Dimension {dim}"
+                if f"{prefix} size" not in header:
+                    break
+                axis_keys.append(
+                    (f"{prefix} name", f"{prefix} size", f"{prefix} scale")
+                )
+            stacked = len(axis_keys) == 3
+        else:
+            num_signals = int(header["Number of signals"])
+            names = str(header["Signal names"])
+            signal_names = names.split() if num_signals > 1 else [names]
+            axis_keys = [("Signal unit", "Signal steps", "Signal scale [0]")]
+            stacked = any(":" in name for name in data_sections)
+            if stacked:
+                axis_keys.append(
+                    ("Dimension 3 name", "Dimension 3 size", "Dimension 3 scale")
+                )
+
+        sizes = []
+        dims = []
+        coords = {}
+        for name_key, size_key, scale_key in axis_keys:
+            size = int(header[size_key])
+            name = str(header[name_key])
+            coord = np.asarray(str(header[scale_key]).split(), dtype=np.float64)
+            if name in coords:
+                raise ValueError(f"[{region}]: duplicate dimension name {name!r}")
+            dims.append(name)
+            sizes.append(size)
+            coords[name] = coord
+
+        nframes = sizes[-1] if stacked else 1
+
+        shape = tuple(reversed(sizes))
+        if kind == "Signal":
+            shape = (*shape[:-1], num_signals, shape[-1])
+            ncolumns = num_signals
+        else:
+            ncolumns = sizes[1] if len(sizes) > 1 else 1
+        if without_values:
+            values = np.zeros(shape, dtype=np.float64)
+        else:
+            values = np.empty(shape, dtype=np.float64)
+            for frame, name in zip(range(nframes), data_sections, strict=True):
+                offset, count = data_locations[name]
+                stream.seek(offset)
+                table = np.loadtxt(
+                    itertools.islice(stream, count), ndmin=2, encoding="utf-8"
+                )
+                if table.shape != (sizes[0], ncolumns + 1):
+                    raise ValueError(
+                        f"[{name}]: expected a {sizes[0]} by {ncolumns + 1} table, "
+                        f"found {table.shape}"
+                    )
+                if not np.allclose(table[:, 0], coords[dims[0]]):
+                    raise ValueError(
+                        f"[{name}]: data coordinates do not match the scale"
+                    )
+                if frame == 0:
+                    coords[dims[0]] = table[:, 0].copy()
+                target = values[frame] if stacked else values
+                target[...] = table[:, 1:].T.reshape(target.shape)
+                del table
+
+        if kind == "Data":
+            out[kind] = xr.DataArray(
+                values,
+                dims=dims[::-1],
+                coords=coords,
+                name=str(header["Region Name"]),
+                attrs=attrs,
+            )
+        else:
+            for index, signal_name in zip(
+                range(num_signals), signal_names, strict=True
+            ):
+                if index == 0:
+                    signal_scale = coords[dims[0]]
+                else:
+                    scale_key = f"Signal scale [{index}]"
+                    signal_scale = np.asarray(
+                        str(header[scale_key]).split(), dtype=np.float64
+                    )
+                key = "Signal" if num_signals == 1 else f"Signal {index + 1}"
+                signal = xr.DataArray(
+                    values[..., index, :],
+                    dims=dims[::-1],
+                    coords=coords | {dims[0]: signal_scale},
+                    name=f"{header['Region Name']}_{signal_name}",
+                    attrs=attrs,
+                )
+                spectrum = out.get("Data")
+                if (
+                    spectrum is not None
+                    and signal_name
+                    and signal_name not in spectrum.coords
+                    and signal_name != spectrum.name
+                    and signal_name not in reserved_names
+                    and all(
+                        dim in spectrum.dims
+                        and signal.sizes[dim] == spectrum.sizes[dim]
+                        and np.allclose(
+                            signal[dim], spectrum[dim], rtol=1e-12, atol=1e-12
+                        )
+                        for dim in signal.dims
+                    )
+                ):
+                    out["Data"] = spectrum.assign_coords(
+                        {signal_name: (signal.dims, signal.data)}
+                    )
+                else:
+                    out[key] = signal
+
+    return out
 
 
 def load_zip(

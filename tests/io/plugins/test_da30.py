@@ -78,12 +78,38 @@ def expected_dir(data_dir):
         (2, "f0002.h5"),
         ("f0003.pxt", "f0003.h5"),
         (3, "f0003.h5"),
+        ("f0004.txt", "f0004.h5"),
+        (4, "f0004.h5"),
+        (
+            {"identifier": "f0004.txt", "load_kwargs": {"without_values": True}},
+            "f0004.h5",
+        ),
+        ("f0005.txt", "f0005.h5"),
+        (5, "f0005.h5"),
+        ("f0006.txt", "f0006.h5"),
+        (6, "f0006.h5"),
+        ("f0007.txt", "f0007.h5"),
+        (7, "f0007.h5"),
+        ("f0008.txt", "f0008.h5"),
+        (8, "f0008.h5"),
+        ("f0009.txt", "f0009.h5"),
+        (9, "f0009.h5"),
+        ("f0010.txt", "f0010.h5"),
+        (10, "f0010.h5"),
     ],
 )
 def test_load(expected_dir, args, expected) -> None:
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
+    if expected in {"f0005.h5", "f0009.h5"}:
+        xr.testing.assert_identical(
+            loaded, xr.load_datatree(expected_dir / expected, engine="h5netcdf")
+        )
+        return
+
     expected_darr = xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
+    if isinstance(args, dict) and args.get("load_kwargs", {}).get("without_values"):
+        expected_darr = xr.zeros_like(expected_darr)
 
     xr.testing.assert_equal(loaded, expected_darr)
     assert loaded.name == expected_darr.name
