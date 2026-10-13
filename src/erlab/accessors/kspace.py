@@ -8,6 +8,7 @@ import typing
 from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
 
 import numpy as np
+import numpy.typing as npt
 import xarray as xr
 
 import erlab
@@ -15,6 +16,7 @@ from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.constants import AxesConfiguration
 
 _ANGLE_SCALE_KEYS = ("alpha", "beta")
+_Coordinate = typing.TypeVar("_Coordinate", xr.DataArray, np.ndarray)
 
 
 class IncompleteDataError(ValueError):
@@ -594,8 +596,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         DataArray attributes ``alpha_scale`` and ``beta_scale`` and must be finite
         positive scalars. Use these factors sparingly to compensate known extrinsic
         angle-coordinate warping.
-
-        .. versionadded:: 3.24.0
         """
         if not hasattr(self, "_anglescaleview"):
             self._anglescaleview = AngleScaleView(self._obj)
@@ -671,16 +671,15 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         Returns
         -------
         tuple
-            For photon energy dependent scans, it returns the slit axis and ``'kz'``.
-            For maps, it returns ``'kx'`` and ``'ky'``. Otherwise, it returns only the
-            slit axis.
+            For angular maps, returns ``'kx'`` and ``'ky'``, with ``'kz'`` added for
+            photon-energy-dependent maps. For cuts, returns the slit axis, with
+            ``'kz'`` added for photon-energy-dependent cuts.
 
         """
-        if self._has_hv:
-            return (self.slit_axis, "kz")
-        if self._has_beta:
-            return ("kx", "ky")
-        return (self.slit_axis,)
+        axes: tuple[typing.Literal["kx", "ky", "kz"], ...] = (
+            ("kx", "ky") if self._has_beta_axis else (self.slit_axis,)
+        )
+        return (*axes, "kz") if self._has_hv else axes
 
     @property
     def angle_params(self) -> dict[str, float]:
@@ -721,8 +720,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _scaled_angle_coord(
         self,
         axis: typing.Literal["alpha", "beta"],
-        coord: xr.DataArray,
-    ) -> xr.DataArray:
+        coord: _Coordinate,
+    ) -> _Coordinate:
         scale = self.angle_scales[axis]
         if np.isclose(scale, 1.0):
             return coord
@@ -763,7 +762,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                     "binding energy."
                 )
             # eV values are kinetic, transform to binding energy
-            binding = self._obj.eV - self._hv + self.analyzer_work_function
+            binding = (
+                self._obj.eV - self._hv.squeeze(drop=True) + self.analyzer_work_function
+            )
             erlab.utils.misc.emit_user_level_warning(
                 "The energy axis seems to be in terms of kinetic energy, "
                 "attempting conversion to binding energy."
@@ -867,6 +868,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         """
         return self._beta.size > 1
+
+    @property
+    def _has_beta_axis(self) -> bool:
+        """Distinguish angular maps from cuts with auxiliary beta coordinates."""
+        return "beta" in self._obj.dims and self._has_beta
 
     @property
     def _valid_offset_keys(self) -> tuple[str, str, str]:
@@ -1159,16 +1165,41 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         return False
 
-    def _get_transformed_coords(
+    def _forward_coords(
         self,
-    ) -> dict[typing.Literal["kx", "ky", "kz"], xr.DataArray]:
-        kx, ky = self._forward_func(self._alpha, self._beta)
-        if "hv" in kx.dims:
+        alpha: _Coordinate,
+        beta: _Coordinate,
+        hv: _Coordinate,
+        binding_energy: _Coordinate,
+    ) -> dict[typing.Literal["kx", "ky", "kz"], _Coordinate]:
+        """Evaluate the complete forward map from original measured coordinates."""
+        kinetic_energy = hv - self.analyzer_work_function + binding_energy
+        kx, ky = erlab.analysis.kspace.get_kconv_forward(self.configuration)(
+            self._scaled_angle_coord("alpha", alpha),
+            self._scaled_angle_coord("beta", beta),
+            kinetic_energy,
+            **self.angle_params,
+        )
+        if "hv" in self._obj.dims:
             kz = erlab.analysis.kspace.kz_func(
-                self._kinetic_energy, self.inner_potential, kx, ky
+                kinetic_energy, self.inner_potential, kx, ky
             )
             return {"kx": kx, "ky": ky, "kz": kz}
         return {"kx": kx, "ky": ky}
+
+    def _source_binding_energy(self) -> xr.DataArray:
+        """Keep measured coordinate labels while using binding-energy values."""
+        binding = self._binding_energy
+        if "eV" in binding.dims:
+            binding = binding.assign_coords(eV=self._obj.eV)
+        return binding
+
+    def _get_transformed_coords(
+        self,
+    ) -> dict[typing.Literal["kx", "ky", "kz"], xr.DataArray]:
+        return self._forward_coords(
+            self._raw_alpha, self._raw_beta, self._hv, self._source_binding_energy()
+        )
 
     def estimate_bounds(
         self,
@@ -1249,11 +1280,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         return self._best_kp_resolution(axis)
 
-    def _forward_func(self, alpha, beta):
-        return erlab.analysis.kspace.get_kconv_forward(self.configuration)(
-            alpha, beta, self._kinetic_energy, **self.angle_params
-        )
-
     def _inverse_func(self, kx, ky, kperp=None):
         return erlab.analysis.kspace.get_kconv_inverse(self.configuration)(
             kx, ky, kperp, self._kinetic_energy, **self.angle_params
@@ -1308,6 +1334,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         out_dict: dict[str, xr.DataArray] = {"alpha": alpha}
         if self._has_eV:
             out_dict["eV"] = self._binding_energy
+        if "hv" in self._obj.dims:
+            out_dict["hv"] = self._hv
 
         return self._broadcast_exact_targets(out_dict, other_momentum)
 
@@ -1337,6 +1365,23 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._broadcast_exact_targets(out_dict, other_momentum)
 
     def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
+        if kz is not None:
+            kz_values = np.asarray(kz, dtype=float)
+            minimum = np.sqrt(
+                max(self.inner_potential / erlab.constants.rel_kzconv, 0.0)
+            )
+            # Allow roundoff at the zero-kperp boundary without changing the axis.
+            tolerance = 8 * np.finfo(float).eps * max(1.0, minimum)
+            if (
+                not np.isfinite(kz_values).all()
+                or np.any(kz_values < 0.0)
+                or np.any(kz_values < minimum - tolerance)
+            ):
+                raise ValueError(
+                    "Target kz values must be finite, nonnegative, and at least "
+                    f"{minimum:.6g} Å⁻¹ for the current inner potential."
+                )
+
         kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
         kyval = xr.DataArray(ky, dims="ky", coords={"ky": ky})
         if kz is not None:
@@ -1362,6 +1407,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 self.analyzer_work_function,
                 self._binding_energy,
             )
+        elif "hv" in self._obj.dims:
+            out_dict["hv"] = self._hv
 
         return typing.cast(
             "dict[str, xr.DataArray]",
@@ -1372,6 +1419,21 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                     strict=True,
                 )
             ),
+        )
+
+    def _inverse_targets(
+        self, momentum_coords: Mapping[str, npt.ArrayLike]
+    ) -> dict[str, xr.DataArray]:
+        if not self._has_beta_axis:
+            if self._has_hv:
+                return self._inverse_exact_hv_cut(
+                    momentum_coords[self.slit_axis], momentum_coords["kz"]
+                )
+            return self._inverse_exact_cut(momentum_coords[self.slit_axis])
+        return self._inverse_broadcast(
+            momentum_coords.get("kx"),
+            momentum_coords.get("ky"),
+            momentum_coords.get("kz") if self._has_hv else None,
         )
 
     @_only_angles
@@ -1405,11 +1467,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if name == "beta":
             return self._beta
         return self._obj[name]
-
-    @_only_angles
-    def _data_ensure_binding(self) -> xr.DataArray:
-        """Return the data while ensuring that the energy axis is in binding energy."""
-        return self._obj.assign_coords(eV=self._binding_energy)
 
     @_only_angles
     def convert(
@@ -1546,32 +1603,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if not silent:
             print("Calculating destination coordinates")
 
-        target_dict: dict[str, xr.DataArray]
-        if not (self._has_beta and not self._has_hv):
-            if self._has_hv:
-                target_dict = self._inverse_exact_hv_cut(
-                    momentum_coords[self.slit_axis], momentum_coords["kz"]
-                )
-            else:
-                target_dict = self._inverse_exact_cut(momentum_coords[self.slit_axis])
-        else:
-            target_dict = self._inverse_broadcast(
-                momentum_coords.get("kx"),
-                momentum_coords.get("ky"),
-                momentum_coords.get("kz"),
-            )
+        target_dict = self._inverse_targets(momentum_coords)
 
-        # Coords of first value in target_dict. Output of inverse_broadcast are all
-        # broadcasted to each other, so all values will have same coords
+        # Targets share the same coordinates. Retain the computed cut coordinates
+        # so stored momentum coordinates from convert_coords cannot discard them
+        # when xarray merges the interpolation inputs.
         coords_for_transform = next(iter(target_dict.values())).coords
-
-        # Remove non-dimension coordinates
-        for k in list(coords_for_transform.keys()):
-            if k not in coords_for_transform.dims:
-                del coords_for_transform[k]
-
-        # Now, coords_for_transform contains a subset of kx, ky, kz, eV, and hv coords,
-        # depending on the dimensions of the input data.
 
         dim_mapping: dict[str, str] = {}
         for d in coords_for_transform.dims:
@@ -1600,7 +1637,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             points, xi = args[: arr.ndim], args[arr.ndim :]
             return erlab.analysis.interpolate.interpn(
                 points, arr, xi, method=method, bounds_error=False
-            ).squeeze()
+            )
 
         input_core_dims = [input_dims]
         input_core_dims.extend([(d,) for d in input_dims])
@@ -1608,9 +1645,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             [typing.cast("tuple[str, ...]", target_dict[d].dims) for d in input_dims]
         )
 
+        source = self._obj
         out = xr.apply_ufunc(
             _wrap_interpn,
-            self._data_ensure_binding(),
+            source.assign_coords(eV=self._binding_energy),
             *tuple(self._coord_for_conversion(dim) for dim in input_dims),
             *tuple(target_dict[dim] for dim in input_dims),
             vectorize=True,
@@ -1622,7 +1660,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             },
             keep_attrs=True,
             output_dtypes=[np.float64],
-        ).assign_coords({k: v.squeeze() for k, v in coords_for_transform.items()})
+        ).assign_coords(coords_for_transform)
         if not self._has_beta and "beta" in out.dims:
             out = out.squeeze("beta", drop=True)
         if (
@@ -1702,8 +1740,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     ) -> xr.DataArray | None:
         target_order = tuple(
             dim
-            for dim in ("hv", "eV", self.slit_axis)
-            if dim in kinetic.dims or dim == self.slit_axis
+            for dim in ("hv", "eV", self.slit_axis, self.other_axis)
+            if dim in kinetic.dims
+            or (dim in (self.slit_axis, self.other_axis) and dim in self._obj.dims)
         )
         if self.other_axis not in self._obj.coords:
             return None
@@ -1751,7 +1790,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         -------
         xarray.DataArray
             Calculated ``kz`` values in Å⁻¹. A scalar photon energy returns values along
-            the applicable ``eV`` and slit-parallel momentum dimensions. An array of
+            the applicable ``eV`` and in-plane momentum dimensions. An array of
             photon energies adds an ``hv`` dimension with the supplied values. The
             converted intensity data is not changed.
 
