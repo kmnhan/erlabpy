@@ -6,6 +6,8 @@ from erlab.lattice import (
     _plane_frame,
     _snap_polyline_endpoints,
     _surface_bz_active_pair_bounds,
+    _surface_bz_cells,
+    _surface_bz_translation_bounds,
     _surface_bz_translation_grid,
     get_bz_edge,
     get_bz_slice,
@@ -94,6 +96,86 @@ def test_get_bz_edge_reciprocal_input():
     )
     for v in expected:
         assert np.any(np.all(np.isclose(vertices, v, atol=1e-8), axis=1))
+
+
+@pytest.mark.parametrize("reciprocal", [False, True])
+@pytest.mark.parametrize(
+    "basis",
+    [
+        np.eye(2) * 3.5,
+        np.diag([1.0, 4.0]),
+        np.array([[1.0, 0.0], [0.5, np.sqrt(3) / 2]]),
+        np.array([[1.2, 0.3], [-0.2, 1.7]]),
+    ],
+)
+@pytest.mark.parametrize(
+    "transform",
+    [
+        np.array([[1, 0], [2, 1]]),
+        np.array([[13, 21], [8, 13]]),
+        np.array([[0, -1], [1, 7]]),
+        np.array([[1, 0], [2, -1]]),
+    ],
+)
+def test_get_bz_edge_equivalent_2d_bases(basis, transform, reciprocal):
+    transformed = transform @ basis
+    original = transformed.copy()
+    expected_lines, expected_vertices = get_bz_edge(basis, reciprocal=reciprocal)
+    lines, vertices = get_bz_edge(transformed, reciprocal=reciprocal)
+    np.testing.assert_array_equal(transformed, original)
+    assert lines.shape == expected_lines.shape
+    assert vertices.shape == expected_vertices.shape
+    distances = np.linalg.norm(vertices[:, None] - expected_vertices[None, :], axis=-1)
+    np.testing.assert_allclose(distances.min(axis=0), 0, atol=1e-10)
+    np.testing.assert_allclose(distances.min(axis=1), 0, atol=1e-10)
+    for line in lines:
+        assert any(
+            np.allclose(line, expected) or np.allclose(line, expected[::-1])
+            for expected in expected_lines
+        )
+
+
+def test_get_bz_edge_nearly_coincident_corners():
+    basis = np.array([[13, 21], [8, 13]]) @ (np.eye(2) * 3.5)
+    lines, vertices = get_bz_edge(to_reciprocal(basis))
+    assert lines.shape == (4, 2, 2)
+    assert vertices.shape == (4, 2)
+    np.testing.assert_allclose(np.abs(vertices), np.pi / 3.5)
+    np.testing.assert_allclose(
+        np.linalg.norm(lines[:, 1] - lines[:, 0], axis=1), 2 * np.pi / 3.5
+    )
+
+
+def test_get_bz_edge_nonreduced_extension():
+    basis = np.array([[1.0, 0.0], [2.0, 1.0]])
+    base_lines, base_vertices = get_bz_edge(np.eye(2))
+    lines, vertices = get_bz_edge(basis, extend=(1, 2))
+    # Repetitions must use the original reciprocal vectors, even after reduction.
+    np.testing.assert_allclose(vertices.mean(axis=0), [0.0, 0.0], atol=1e-14)
+    for shift in (-basis[1], np.zeros(2), basis[1]):
+        for vertex in base_vertices + shift:
+            assert np.any(np.all(np.isclose(vertices, vertex), axis=1))
+        for line in base_lines + shift:
+            assert any(
+                np.allclose(line, actual) or np.allclose(line, actual[::-1])
+                for actual in lines
+            )
+    assert vertices.shape[0] == base_vertices.shape[0] * 3
+    assert lines.shape[0] == base_lines.shape[0] * 3
+
+
+@pytest.mark.parametrize(
+    "basis",
+    [
+        np.array([[0.0, 0.0], [1.0, 0.0]]),
+        np.array([[1.0, 2.0], [2.0, 4.0]]),
+        np.array([[np.inf, 0.0], [0.0, 1.0]]),
+        np.array([[1.0, np.nan], [0.0, 1.0]]),
+    ],
+)
+def test_get_bz_edge_invalid_2d_basis(basis):
+    with pytest.raises(ValueError, match="finite and linearly independent"):
+        get_bz_edge(basis)
 
 
 def test_get_bz_edge_extend():
@@ -511,3 +593,195 @@ def test_get_surface_bz_covers_interior_extrema_with_default_padding():
         max(len(line) - 1, 0) for line in lines_padded
     )
     assert vertices_default.shape == vertices_padded.shape
+
+
+@pytest.mark.parametrize("centering", ["P", "F"])
+def test_surface_bz_cells_selects_reciprocal_cells(centering):
+    basis = to_reciprocal(to_primitive(2.0 * np.pi * np.eye(3), centering))
+    surface = np.array(
+        [
+            [[0.1, 0.1, 0.1], [0.7, 0.1, 0.1]],
+            [[1.1, 0.9, 0.9], [2.1, 0.1, 0.1]],
+        ]
+    )
+    expected = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0 if centering == "P" else 0.0, 0.0, 0.0]],
+            [[1.0, 1.0, 1.0], [2.0, 0.0, 0.0]],
+        ]
+    )
+
+    shifts, owner = _surface_bz_cells(basis, surface)
+
+    assert owner.shape == surface.shape[:-1]
+    np.testing.assert_allclose(shifts[owner], expected, atol=1e-14)
+
+
+def test_surface_bz_cells_uses_first_translation_at_ties():
+    coords = np.array([-0.5, 0.5, 1.5])
+    x, y = np.meshgrid(coords, coords)
+    surface = np.stack((x, y, np.full_like(x, 0.5)), axis=-1)
+
+    shifts, owner = _surface_bz_cells(np.eye(3), surface)
+
+    distance_squared = np.sum((surface[..., None, :] - shifts) ** 2, axis=-1)
+    np.testing.assert_array_equal(owner, np.argmin(distance_squared, axis=-1))
+    np.testing.assert_array_equal(shifts[owner], np.floor(surface))
+
+
+@pytest.mark.parametrize("pad_cells", [0, 1, 3])
+@pytest.mark.parametrize(("length", "angle", "nearest_x"), [(5, 30, 3), (30, 5, 15)])
+def test_surface_bz_cells_finds_nearest_cell_for_skew_basis(
+    pad_cells, length, angle, nearest_x
+):
+    angle = np.deg2rad(angle)
+    basis = np.array(
+        [[1, 0, 0], [length * np.cos(angle), length * np.sin(angle), 0], [0, 0, 1]]
+    )
+    surface = (0.49 * (basis[0] + basis[1]))[None, None, :]
+
+    shifts, owner = _surface_bz_cells(basis, surface, pad_cells=pad_cells)
+
+    np.testing.assert_allclose(shifts[owner[0, 0]], [nearest_x, 0, 0], atol=1e-14)
+    lo, hi = _surface_bz_translation_bounds(basis, surface, pad_cells=pad_cells)
+    assert len(shifts) == np.prod(hi - lo + 1)
+
+
+def test_surface_bz_cells_skew_basis_is_batch_and_translation_invariant():
+    basis = np.array([[1, 0, 0], [5 * np.cos(np.pi / 6), 2.5, 0], [0.4, -0.3, 1.2]])
+    points = np.array(
+        [0.49 * (basis[0] + basis[1]), [4, 0, 0.1], [0.8, 2.1, -0.6], [-1.3, 0.2, 1.1]]
+    )
+    integers = np.stack(np.meshgrid(*([np.arange(-12, 13)] * 3)), axis=-1)
+    candidates = integers.reshape(-1, 3) @ basis
+    distances = np.sum((points[:, None, :] - candidates[None, :, :]) ** 2, axis=-1)
+    expected = candidates[np.argmin(distances, axis=-1)]
+    shifts, owner = _surface_bz_cells(basis, points[None, :, :])
+    np.testing.assert_allclose(shifts[owner[0]], expected, atol=1e-13)
+
+    for point, nearest in zip(points, expected, strict=True):
+        for translation in (np.zeros(3), np.array([21, -13, 4]) @ basis):
+            shifts, owner = _surface_bz_cells(
+                basis, (point + translation)[None, None, :]
+            )
+            np.testing.assert_allclose(
+                shifts[owner[0, 0]], nearest + translation, atol=1e-13
+            )
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_surface_bz_cells_masks_invalid_points(value):
+    surface = np.array([[[0.1, 0.1, 0.1], [1.1, 0.1, 0.1], [0.1, value, 0.1]]])
+
+    shifts, owner = _surface_bz_cells(np.eye(3), surface)
+
+    assert owner[0, 2] == -1
+    np.testing.assert_array_equal(shifts[owner[0, :2]], [[0, 0, 0], [1, 0, 0]])
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_surface_bz_cells_empty_invalid_surface(value):
+    shifts, owner = _surface_bz_cells(np.eye(3), np.full((2, 4, 3), value))
+
+    assert shifts.shape == (0, 3)
+    np.testing.assert_array_equal(owner, np.full((2, 4), -1))
+
+
+@pytest.mark.parametrize("surface_kind", ["curved", "bisector", "masked", "skew"])
+def test_get_surface_bz_matches_dense_distance_reference(surface_kind):
+    import contourpy
+
+    plot = np.linspace(-1.75, 1.75, 29)
+    x, y = np.meshgrid(plot, plot)
+    if surface_kind == "bisector":
+        basis = np.eye(3)
+        z = np.full_like(x, 0.5)
+    elif surface_kind == "skew":
+        basis = np.array([[1, 0, 0], [5 * np.cos(np.pi / 6), 2.5, 0], [0, 0, 1]])
+        x = 2.61 + 0.03 * x
+        y = 1.225 + 0.03 * y
+        z = np.full_like(x, 0.17)
+    else:
+        basis = np.array([[1.0, 0.1, 0.0], [-0.3, 1.1, 0.2], [0.1, -0.1, 0.9]])
+        # Avoid accidental floating-point ties in this curved-surface comparison.
+        # The separate bisector case checks a surface made entirely of exact ties.
+        x = x + 0.003
+        z = 0.17 + 0.2 * x**2 + 0.11 * y
+    surface = np.stack((x, y, z), axis=-1)
+    if surface_kind == "masked":
+        surface[11:18, 11:18] = np.nan
+    finite = np.isfinite(surface).all(axis=-1)
+    if surface_kind == "skew":
+        # Cover the reference independently of the production search bounds.
+        integers = np.stack(
+            np.meshgrid(*([np.arange(-8, 9)] * 3), indexing="ij"), axis=-1
+        )
+        shifts = integers.reshape(-1, 3) @ basis
+    else:
+        shifts = _surface_bz_translation_grid(basis, surface, pad_cells=1)
+    # Independent dense reference: retain the former global squared distances.
+    distance_squared = (
+        np.sum(shifts**2, axis=1)[:, None, None]
+        - 2.0 * np.tensordot(shifts, surface, axes=([1], [2]))
+        + np.sum(surface**2, axis=-1)[None]
+    )
+    owners = np.argmin(distance_squared, axis=0)
+    owners[~finite] = -1
+    reference_lines = []
+    reference_pairs = []
+    for (i, j), (r0, r1, c0, c1) in _surface_bz_active_pair_bounds(owners).items():
+        if i < 0:
+            continue
+        rows = slice(max(r0 - 1, 0), min(r1 + 2, len(plot)))
+        cols = slice(max(c0 - 1, 0), min(c1 + 2, len(plot)))
+        local_owners = owners[rows, cols]
+        local_mask = (local_owners == i) | (local_owners == j)
+        delta = distance_squared[i, rows, cols] - distance_squared[j, rows, cols]
+        lines = contourpy.contour_generator(
+            x=plot[cols], y=plot[rows], z=np.ma.array(delta, mask=~local_mask)
+        ).lines(0.0)
+        for line in lines:
+            if line.shape[0] >= 2 and np.linalg.norm(np.ptp(line, axis=0)) > 1e-9:
+                reference_lines.append(line)
+                reference_pairs.append((i, j))
+    reference_lines = _snap_polyline_endpoints(
+        reference_lines, reference_pairs, np.sqrt(2) * (plot[1] - plot[0]), 1e-9
+    )
+    actual_lines, _ = get_surface_bz(basis, plot, plot, surface)
+
+    def canonical_segments(lines):
+        segments = np.round(_segmentize_polylines(lines), decimals=8)
+        segments = np.sort(segments.view([("x", float), ("y", float)]), axis=1)
+        return np.unique(segments.view(float).reshape(-1, 4), axis=0)
+
+    np.testing.assert_allclose(
+        canonical_segments(actual_lines), canonical_segments(reference_lines), atol=1e-8
+    )
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize("return_midpoints", [False, True])
+def test_get_surface_bz_empty_invalid_surface(value, return_midpoints):
+    result = get_surface_bz(
+        np.eye(3),
+        [-1.0, 1.0],
+        [-1.0, 1.0],
+        np.full((2, 2, 3), value),
+        return_midpoints=return_midpoints,
+    )
+    assert result[0] == []
+    assert result[1].shape == (0, 2)
+    if return_midpoints:
+        assert result[2].shape == (0, 2)
+
+
+def test_get_surface_bz_masks_nonfinite_gap():
+    plot = np.linspace(-0.8, 0.8, 33)
+    x, y = np.meshgrid(plot, plot)
+    surface = np.stack((x, y, np.full_like(x, 0.1)), axis=-1)
+    surface[10:23, :, :] = np.inf
+    lines, _ = get_surface_bz(np.eye(3), plot, plot, surface)
+    assert lines
+    for line in lines:
+        assert np.isfinite(line).all()
+        assert np.all(line[:, 1] < plot[10]) or np.all(line[:, 1] > plot[22])
