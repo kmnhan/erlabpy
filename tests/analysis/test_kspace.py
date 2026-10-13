@@ -12,6 +12,42 @@ from erlab.constants import AxesConfiguration
 kinetic = np.array([1.0, 2.0, 3.0])
 
 
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("energy", [1.0, 20.0, 120.0])
+def test_forward_jacobian_matches_analytic_map(configuration, energy):
+    params = {"delta": 23.0, "xi": 17.0, "xi0": 2.0}
+    if configuration in (AxesConfiguration.Type1, AxesConfiguration.Type2):
+        params["beta0"] = -3.0
+    else:
+        params.update(chi=11.0, chi0=-2.0)
+    forward = erlab.analysis.kspace.get_kconv_forward(configuration)
+    radius = erlab.constants.rel_kconv * np.sqrt(energy)
+    alpha, beta = np.meshgrid(np.linspace(-40, 40, 7), [-10.0, 0.0, 20.0])
+    a, b, tilt = (
+        np.deg2rad(alpha),
+        np.deg2rad(beta - params.get("beta0", 0)),
+        np.deg2rad(15),
+    )
+    if configuration == AxesConfiguration.Type1:
+        determinant = (
+            radius**2
+            * np.cos(a)
+            * (np.cos(tilt) * np.cos(b) * np.cos(a) + np.sin(tilt) * np.sin(a))
+        )
+    elif configuration == AxesConfiguration.Type2:
+        determinant = radius**2 * np.cos(b) * np.cos(a - tilt) ** 2
+    else:
+        perpendicular = forward(alpha, beta, energy, return_kperp=True, **params)[2]
+        determinant = radius * perpendicular * np.sinc(np.hypot(alpha, beta) / 180)
+    expected = np.abs(determinant * (np.pi / 180) ** 2)
+    result = erlab.analysis.kspace._forward_jacobian_determinant(
+        lambda a, b: np.array(forward(a, b, energy, **params)),
+        (alpha, beta),
+        initial_step=(0.1, 0.1),
+    )
+    np.testing.assert_allclose(result, expected, rtol=2e-7)
+
+
 def test_forward_jacobian_boundaries_invalid_and_grid_independence():
     def forward(x):
         return np.array([np.where((x >= 0) & (x <= 1), np.exp(x), np.nan)])
@@ -158,6 +194,45 @@ def test_transform() -> None:
         assert kx.size == ky.size == kinetic.size
         assert np.allclose(kx, 0.1)
         assert np.allclose(ky, 0.2)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("lazy", [False, True])
+def test_forward_signed_normal_component(configuration, lazy):
+    alpha = xr.DataArray([-30.0, -5.0, 0.0, 10.0, 25.0], dims="alpha")
+    beta = xr.DataArray([-20.0, -5.0, 10.0, 30.0], dims="beta")
+    energy = xr.DataArray([6.0, 40.0, 90.0], dims="energy")
+    if lazy:
+        alpha, beta, energy = (arr.chunk() for arr in (alpha, beta, energy))
+    params = {"delta": 17.0, "xi": 13.0, "xi0": -2.0}
+    if configuration in (AxesConfiguration.Type1, AxesConfiguration.Type2):
+        params["beta0"] = 7.0
+    else:
+        params.update(chi=25.0, chi0=-10.0)
+    forward = erlab.analysis.kspace.get_kconv_forward(configuration)
+    components = forward(alpha, beta, energy, return_kperp=True, **params)
+    assert len(components) == 3
+    for original, component in zip(
+        forward(alpha, beta, energy, **params), components[:2], strict=True
+    ):
+        xr.testing.assert_identical(component, original)
+    assert all((component.chunks is not None) == lazy for component in components)
+    expected = xr.broadcast(erlab.constants.rel_kconv**2 * energy, alpha, beta)[0]
+    xr.testing.assert_allclose(
+        sum(component**2 for component in components),
+        expected.transpose(*components[0].dims),
+    )
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("xi", [0.0, 180.0])
+def test_forward_normal_component_keeps_hemisphere_sign(configuration, xi):
+    kx, ky, kperp = erlab.analysis.kspace.get_kconv_forward(configuration)(
+        0.0, 0.0, 40.0, xi=xi, return_kperp=True
+    )
+    np.testing.assert_allclose([kx, ky], [0.0, 0.0], atol=1e-14)
+    expected = erlab.constants.rel_kconv * np.sqrt(40.0)
+    assert kperp == pytest.approx(expected if xi == 0.0 else -expected)
 
 
 def test_invalid_configuration_error_for_invalid_value() -> None:
@@ -1286,3 +1361,15 @@ def test_exact_hv_da_cut_coords_matches_manual_inversion(
 
     xr.testing.assert_allclose(alpha_target, expected_alpha_da)
     xr.testing.assert_allclose(hv_target, expected_hv_da)
+
+
+@pytest.mark.parametrize("configuration", [3, 4])
+@pytest.mark.parametrize("angles", [(0.0, 0.0), (1e-10, -2e-10)])
+@pytest.mark.parametrize("params", [{}, {"delta": 27.0, "chi": 13.0, "xi": -8.0}])
+def test_deflector_inverse_near_analyzer_axis(configuration, angles, params):
+    forward, inverse = erlab.analysis.kspace.get_kconv_func(
+        np.array([1.0, 20.0, 100.0]), configuration, params
+    )
+    alpha, beta = inverse(*forward(*angles))
+    np.testing.assert_allclose(alpha, angles[0], rtol=1e-5, atol=1e-13)
+    np.testing.assert_allclose(beta, angles[1], rtol=1e-5, atol=1e-13)

@@ -460,10 +460,9 @@ def get_kconv_func(
 def get_kconv_forward(configuration: AxesConfiguration | int) -> Callable:
     """Return the appropriate forward momentum conversion function.
 
-    The returned function takes :math:`(α, β, k_{tot})` as mandatory arguments and
-    returns :math:`(k_x, k_y)`. Note that :math:`k_{tot}` must be computed from the
-    kinetic energy before passing it to the function. The angle parameters can be passed
-    as optional arguments with default values of zero.
+    The returned function takes :math:`(α, β, E_k)` as mandatory arguments and returns
+    :math:`(k_x, k_y)`. Angles are in degrees and kinetic energy is in eV. The angle
+    parameters can be passed as optional arguments with defaults of zero.
 
     Parameters
     ----------
@@ -477,12 +476,17 @@ def get_kconv_forward(configuration: AxesConfiguration | int) -> Callable:
 
         .. code-block:: python
 
-            def forward(alpha, beta, kinetic_energy, **angle_params) -> (kx, ky)
-            ...
+            def forward(
+                alpha, beta, kinetic_energy, *, return_kperp=False, **angle_params
+            ) -> (kx, ky)
+
+        ...
 
         ``**angle_params`` are the optional angle parameters. For geometry without DA,
         they are ``delta, xi, xi0, beta0``. For geometry with DA, they are ``delta, chi,
         chi0, xi, xi0``. All angle parameters have default values of zero.
+
+        If ``return_kperp`` is true, the output is ``(kx, ky, kperp)``.
 
     """
     configuration = _normalize_configuration(
@@ -1082,14 +1086,24 @@ def _normal_emission_from_angle_params(
 
 
 @broadcast_args
-def _calc_forward_type1(k_tot, cd, sd, cx, sx, ca, sa, cb, sb):
+def _calc_forward_type1(k_tot, cd, sd, cx, sx, ca, sa, cb, sb, *, return_kperp=False):
     kx = ne.evaluate("k_tot * ((sd * sb + cd * sx * cb) * ca - cd * cx * sa)")
     ky = ne.evaluate("k_tot * ((-cd * sb + sd * sx * cb) * ca - sd * cx * sa)")
+    if return_kperp:
+        return kx, ky, ne.evaluate("k_tot * (cx * cb * ca + sx * sa)")
     return kx, ky
 
 
 def _kconv_forward_type1(
-    alpha, beta, kinetic_energy, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0
+    alpha,
+    beta,
+    kinetic_energy,
+    delta=0.0,
+    xi=0.0,
+    xi0=0.0,
+    beta0=0.0,
+    *,
+    return_kperp=False,
 ):
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
@@ -1097,7 +1111,9 @@ def _kconv_forward_type1(
     alpha_r, beta_r = np.deg2rad(alpha), np.deg2rad(beta - beta0)
     ca, cb = np.cos(alpha_r), np.cos(beta_r)
     sa, sb = np.sin(alpha_r), np.sin(beta_r)
-    return _calc_forward_type1(k_tot, cd, sd, cx, sx, ca, sa, cb, sb)
+    return _calc_forward_type1(
+        k_tot, cd, sd, cx, sx, ca, sa, cb, sb, return_kperp=return_kperp
+    )
 
 
 @broadcast_args
@@ -1127,25 +1143,38 @@ def _kconv_inverse_type1(
 
 
 @broadcast_args
-def _calc_forward_type2(k_tot, cd, sd, cx, sx, ca, sa, sb):
+def _calc_forward_type2(k_tot, cd, sd, cx, sx, ca, sa, cb, sb, *, return_kperp=False):
     kx = ne.evaluate(
         "k_tot * ((sd * sx + cd * sb * cx) * ca - (sd * cx - cd * sb * sx) * sa)"
     )
     ky = ne.evaluate(
         "k_tot * ((-cd * sx + sd * sb * cx) * ca + (cd * cx + sd * sb * sx) * sa)"
     )
+    if return_kperp:
+        return kx, ky, ne.evaluate("k_tot * cb * (cx * ca + sx * sa)")
     return kx, ky
 
 
 def _kconv_forward_type2(
-    alpha, beta, kinetic_energy, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0
+    alpha,
+    beta,
+    kinetic_energy,
+    delta=0.0,
+    xi=0.0,
+    xi0=0.0,
+    beta0=0.0,
+    *,
+    return_kperp=False,
 ):
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
     alpha_r, beta_r = np.deg2rad(alpha), np.deg2rad(beta - beta0)
-    ca, sa, sb = np.cos(alpha_r), np.sin(alpha_r), np.sin(beta_r)
-    return _calc_forward_type2(k_tot, cd, sd, cx, sx, ca, sa, sb)
+    ca, sa = np.cos(alpha_r), np.sin(alpha_r)
+    cb, sb = np.cos(beta_r), np.sin(beta_r)
+    return _calc_forward_type2(
+        k_tot, cd, sd, cx, sx, ca, sa, cb, sb, return_kperp=return_kperp
+    )
 
 
 @broadcast_args
@@ -1174,7 +1203,9 @@ def _kconv_inverse_type2(
 
 
 @broadcast_args
-def _calc_forward_type2_da(k_tot, cd, sd, cx, sx, cc, sc, ar, br, scab, cab):
+def _calc_forward_type2_da(
+    k_tot, cd, sd, cx, sx, cc, sc, ar, br, scab, cab, *, return_kperp=False
+):
     kx = ne.evaluate(
         "k_tot * ((-br * cd * cx - ar * sd * cc + ar * cd * sx * sc) * scab"
         " + (sd * sc + cd * sx * cc) * cab)"
@@ -1183,11 +1214,26 @@ def _calc_forward_type2_da(k_tot, cd, sd, cx, sx, cc, sc, ar, br, scab, cab):
         "k_tot * ((-br * sd * cx + ar * cd * cc + ar * sd * sx * sc) * scab"
         " - (cd * sc - sd * sx * cc) * cab)"
     )
+    if return_kperp:
+        return (
+            kx,
+            ky,
+            ne.evaluate("k_tot * ((br * sx + ar * cx * sc) * scab + cx * cc * cab)"),
+        )
     return kx, ky
 
 
 def _kconv_forward_type2_da(
-    alpha, beta, kinetic_energy, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0
+    alpha,
+    beta,
+    kinetic_energy,
+    delta=0.0,
+    chi=0.0,
+    chi0=0.0,
+    xi=0.0,
+    xi0=0.0,
+    *,
+    return_kperp=False,
 ):
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ, azimuth
@@ -1197,7 +1243,20 @@ def _kconv_forward_type2_da(
     absq = np.sqrt(ar**2 + br**2)
     scab, cab = _sinc(absq), np.cos(absq)
 
-    return _calc_forward_type2_da(k_tot, cd, sd, cx, sx, cc, sc, ar, br, scab, cab)
+    return _calc_forward_type2_da(
+        k_tot,
+        cd,
+        sd,
+        cx,
+        sx,
+        cc,
+        sc,
+        ar,
+        br,
+        scab,
+        cab,
+        return_kperp=return_kperp,
+    )
 
 
 @broadcast_args
@@ -1223,13 +1282,20 @@ def _calc_inverse_type2_da(kx, ky, k_sq, k, cd, sd, cx, sx, cc, sc):
     proj3_expr = (
         f"({t31_expr}) * kx + ({t32_expr}) * ky + ({t33_expr}) * ({kperp_expr})"
     )
-    alpha = ne.evaluate(
-        f"arccos(({proj3_expr}) / k) * ({proj2_expr}) / sqrt(k_sq - ({proj3_expr})**2)"
-    )
-    beta = ne.evaluate(
-        f"-arccos(({proj3_expr}) / k) * ({proj1_expr}) / sqrt(k_sq - ({proj3_expr})**2)"
-    )
-    return np.rad2deg(alpha), np.rad2deg(beta)
+    proj1 = ne.evaluate(proj1_expr)
+    proj2 = ne.evaluate(proj2_expr)
+    proj3 = ne.evaluate(proj3_expr)
+    transverse = np.hypot(proj1, proj2)
+    # atan2 retains small deflections that arccos loses near the analyzer axis.
+    # The ratio tends to 1 / k on the forward axis; the backward axis is singular.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        scale = np.divide(
+            np.arctan2(transverse, proj3),
+            transverse,
+            out=np.where(proj3 > 0.0, 1.0 / k, np.nan),
+            where=transverse != 0.0,
+        )
+    return np.rad2deg(scale * proj2), np.rad2deg(-scale * proj1)
 
 
 def _kconv_inverse_type2_da(
@@ -1251,10 +1317,27 @@ def _kconv_inverse_type2_da(
 
 
 def _kconv_forward_type1_da(
-    alpha, beta, kinetic_energy, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0
+    alpha,
+    beta,
+    kinetic_energy,
+    delta=0.0,
+    chi=0.0,
+    chi0=0.0,
+    xi=0.0,
+    xi0=0.0,
+    *,
+    return_kperp=False,
 ):
     return _kconv_forward_type2_da(
-        -beta, alpha, kinetic_energy, delta, chi, chi0, xi, xi0
+        -beta,
+        alpha,
+        kinetic_energy,
+        delta,
+        chi,
+        chi0,
+        xi,
+        xi0,
+        return_kperp=return_kperp,
     )
 
 
