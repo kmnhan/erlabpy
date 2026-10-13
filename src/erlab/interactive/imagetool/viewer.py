@@ -4236,6 +4236,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         initial_normal_emission, initial_delta = (
             _kspace_conversion.initial_normal_emission_from_slicer_area(self)
         )
+        manager = self._manager_instance if self._in_manager else None
 
         tool = erlab.interactive.ktool(
             self.data,
@@ -4245,7 +4246,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             initial_normal_emission=initial_normal_emission,
             initial_delta=initial_delta,
             _initial_delta_from_guideline=initial_delta is not None,
-            options_model=self._options_model,
+            options_model=(
+                manager.effective_interactive_options
+                if manager is not None
+                else self._options_model
+            ),
             execute=False,
         )
         if tool is None:

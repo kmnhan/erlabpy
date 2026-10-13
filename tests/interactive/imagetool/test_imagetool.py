@@ -9090,7 +9090,9 @@ def test_itool_from_file_recovers_legacy_spaced_associated_coord(
 
 
 def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None:
-    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    options_model = erlab.interactive.options.model.model_copy(deep=True)
+    options_model.ktool.bz.default_a = 8.1
+    win = itool(_TEST_DATA["3D"].copy(), execute=False, options_model=options_model)
     qtbot.addWidget(win)
 
     captured: dict[str, object] = {}
@@ -9110,6 +9112,7 @@ def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None
     assert captured["data"] is win.slicer_area.data
     assert captured["kwargs"]["initial_normal_emission"] == (1.0, 4.0)
     assert captured["kwargs"]["initial_delta"] is None
+    assert captured["kwargs"]["options_model"] is options_model
 
     win.close()
 
