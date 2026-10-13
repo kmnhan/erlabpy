@@ -20,6 +20,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ConsoleOperationPattern,
     ProvenanceHashable,
     ProvenanceHashableMapping,
+    ProvenanceHashableTuple,
     ProvenanceMapping,
     ToolProvenanceOperation,
     _console_mapping_values,
@@ -334,6 +335,29 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
         coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
         value_code = _provenance_value_code(self.decoded_value)
         return f"{input_name}.assign_coords({{{coord_name_code}: {value_code}}})"
+
+
+class DropScalarCoordsOperation(ToolProvenanceOperation):
+    op: typing.Literal["drop_scalar_coords"] = "drop_scalar_coords"
+    batch_available: typing.ClassVar[bool] = True
+    names: ProvenanceHashableTuple = pydantic.Field(min_length=1)
+
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
+        for name in self.names:
+            if name not in data.coords:
+                raise ValueError(f"Coordinate {name!r} is not present in the data.")
+            if data.coords[name].ndim != 0:
+                raise ValueError(f"Coordinate {name!r} must be scalar.")
+        return data.reset_coords(list(self.names), drop=True)
+
+    def derivation_label(self) -> str:
+        return f"Remove Scalar Coordinates({_format_derivation_value(self.names)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        names_code = _provenance_value_code(list(self.names))
+        return f"{input_name}.reset_coords({names_code}, drop=True)"
 
 
 class AssignCoord1DOperation(ToolProvenanceOperation):

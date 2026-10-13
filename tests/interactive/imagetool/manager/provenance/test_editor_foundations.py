@@ -48,6 +48,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     BoxcarFilterOperation,
     CoarsenOperation,
     DivideByCoordOperation,
+    DropScalarCoordsOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
     InterpolationOperation,
@@ -996,6 +997,7 @@ def test_file_load_edit_dialog_batch_disabled_without_peers(qtbot) -> None:
         AffineCoordOperation(coord_name="x", scale=1.0, offset=0.0),
         AssignCoordsOperation(coord_name="x", values=[0.0, 1.0]),
         AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        DropScalarCoordsOperation(names=("temperature", "label")),
         AssignCoord1DOperation(
             coord_name="kx",
             dim="x",

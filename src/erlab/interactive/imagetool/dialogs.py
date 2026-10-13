@@ -46,6 +46,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    DropScalarCoordsOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
     InterpolationOperation,
@@ -5873,6 +5874,7 @@ class AssignCoordsDialog(DataTransformDialog):
         AssignCoordsOperation,
         AssignScalarCoordOperation,
         AssignCoord1DOperation,
+        DropScalarCoordsOperation,
     )
 
     def setup_widgets(self) -> None:
@@ -5881,8 +5883,11 @@ class AssignCoordsDialog(DataTransformDialog):
         )
         if apply_button is not None:  # pragma: no branch
             apply_button.setObjectName("coordinateEditorApplyButton")
+            self._default_apply_text = apply_button.text()
         self._mode_tabs = QtWidgets.QTabWidget(self)
         self._mode_tabs.setObjectName("coordinateEditorModeTabs")
+        self._mode_tabs.setUsesScrollButtons(False)
+        self._mode_tabs.setElideMode(QtCore.Qt.TextElideMode.ElideNone)
         self.layout_.addRow(self._mode_tabs)
 
         scalar_coords: dict[str, float] = {}
@@ -5964,6 +5969,93 @@ class AssignCoordsDialog(DataTransformDialog):
         self._mode_tabs.addTab(add_widget, "Add Coordinate")
         self._add_reference_changed()
         self._sync_add_widgets()
+
+        remove_widget = QtWidgets.QWidget(self)
+        remove_layout = QtWidgets.QVBoxLayout(remove_widget)
+        remove_layout.addWidget(
+            QtWidgets.QLabel("Select scalar coordinates to remove.")
+        )
+
+        self._remove_coord_table = QtWidgets.QTableWidget(0, 3)
+        self._remove_coord_table.setObjectName("coordinateEditorRemoveTable")
+        self._remove_coord_table.setHorizontalHeaderLabels(["Remove", "Name", "Value"])
+        self._remove_coord_table.setAlternatingRowColors(True)
+        self._remove_coord_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._remove_coord_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self._remove_coord_items: dict[Hashable, QtWidgets.QTableWidgetItem] = {}
+        for name, coord in self.slicer_area.data.coords.items():
+            if coord.ndim != 0:
+                continue
+            row = self._remove_coord_table.rowCount()
+            self._remove_coord_table.insertRow(row)
+            check_item = QtWidgets.QTableWidgetItem()
+            check_item.setFlags(
+                QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                | QtCore.Qt.ItemFlag.ItemIsSelectable
+                | QtCore.Qt.ItemFlag.ItemIsEnabled
+            )
+            check_item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            self._remove_coord_table.setItem(row, 0, check_item)
+            self._remove_coord_items[name] = check_item
+            self._remove_coord_table.setItem(
+                row, 1, QtWidgets.QTableWidgetItem(str(name))
+            )
+            value_text = str(coord.values)
+            value_item = QtWidgets.QTableWidgetItem(value_text)
+            value_item.setToolTip(value_text)
+            self._remove_coord_table.setItem(row, 2, value_item)
+
+        header = typing.cast(
+            "QtWidgets.QHeaderView", self._remove_coord_table.horizontalHeader()
+        )
+        for column in (0, 1):
+            header.setSectionResizeMode(
+                column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        typing.cast(
+            "QtWidgets.QHeaderView", self._remove_coord_table.verticalHeader()
+        ).hide()
+        self._remove_coord_table.resizeRowsToContents()
+        self._remove_coord_table.setVisible(bool(self._remove_coord_items))
+        remove_layout.addWidget(self._remove_coord_table)
+
+        self._remove_selection_label = QtWidgets.QLabel()
+        remove_layout.addWidget(self._remove_selection_label)
+        self._mode_tabs.addTab(remove_widget, "Remove Coordinates")
+        self._remove_coord_table.itemChanged.connect(self._sync_remove_widgets)
+        self._mode_tabs.currentChanged.connect(self._sync_remove_widgets)
+        self._sync_remove_widgets()
+
+    @property
+    def _selected_remove_coords(self) -> tuple[Hashable, ...]:
+        return tuple(
+            name
+            for name, item in self._remove_coord_items.items()
+            if item.checkState() == QtCore.Qt.CheckState.Checked
+        )
+
+    @QtCore.Slot()
+    def _sync_remove_widgets(self) -> None:
+        count = len(self._selected_remove_coords)
+        if self._remove_coord_items:
+            noun = "coordinate" if count == 1 else "coordinates"
+            self._remove_selection_label.setText(f"{count} {noun} selected")
+        else:
+            self._remove_selection_label.setText("No scalar coordinates to remove.")
+        apply_button = self.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        if apply_button is not None:  # pragma: no branch
+            removing = self._mode_tabs.currentIndex() == 2
+            apply_button.setText(
+                "Remove Selected" if removing else self._default_apply_text
+            )
+            apply_button.setEnabled(not removing or count > 0)
 
     @property
     def current_coord_name(self) -> str:
@@ -6059,6 +6151,13 @@ class AssignCoordsDialog(DataTransformDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
+        if self._mode_tabs.currentIndex() == 2 and not self._selected_remove_coords:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Coordinates Selected",
+                "Choose at least one scalar coordinate to remove.",
+            )
+            return
         if self._mode_tabs.currentIndex() != 1:
             super().accept()
             return
@@ -6095,6 +6194,8 @@ class AssignCoordsDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> ToolProvenanceOperation:
+        if self._mode_tabs.currentIndex() == 2:
+            return DropScalarCoordsOperation(names=self._selected_remove_coords)
         if self._mode_tabs.currentIndex() == 1:
             values, dim = self._add_coord_values()
             name = self._add_name_edit.text().strip()
@@ -6125,6 +6226,18 @@ class AssignCoordsDialog(DataTransformDialog):
         self,
         operation: ToolProvenanceOperation,
     ) -> None:
+        if isinstance(operation, DropScalarCoordsOperation):
+            for name in operation.names:
+                if name not in self._remove_coord_items:
+                    raise ValueError(f"Scalar coordinate {name!r} is not available")
+            for name, item in self._remove_coord_items.items():
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if name in operation.names
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+            self._mode_tabs.setCurrentIndex(2)
+            return
         if isinstance(
             operation,
             AffineCoordOperation,

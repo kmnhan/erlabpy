@@ -62,6 +62,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AssignScalarCoordOperation,
+    DropScalarCoordsOperation,
     ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
     IselOperation,
@@ -4757,6 +4758,82 @@ def test_batch_affine_coord_offset_uses_each_scalar_coordinate(
             xarray.testing.assert_identical(
                 manager.get_imagetool(index).slicer_area._data.rename(None),
                 operation.apply(data).rename(None),
+            )
+
+
+def test_batch_remove_scalar_coords(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = _batch_data("scan0").assign_coords(hv=21.2, label="scan0", keep=True)
+    data1 = _batch_data("scan1", offset=100.0).assign_coords(
+        hv=np.nan, label="scan1", keep=False
+    )
+    operation = DropScalarCoordsOperation(names=("hv", "label"))
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+        dialog = imagetool_dialogs.AssignCoordsDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        qtbot.addWidget(dialog)
+        dialog.restore_transform_operation(operation)
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        assert manager.ntools == 2
+        for index, data in enumerate((data0, data1)):
+            win = manager.get_imagetool(index)
+            xarray.testing.assert_identical(
+                win.slicer_area._data,
+                data.reset_coords(list(operation.names), drop=True),
+            )
+            assert win.provenance_spec is not None
+            assert [
+                item
+                for item in win.provenance_spec.operations
+                if isinstance(item, DropScalarCoordsOperation)
+            ] == [operation]
+
+
+@pytest.mark.parametrize("nonscalar", [False, True])
+def test_batch_remove_scalar_coords_invalid_target_aborts_all_unchanged(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    nonscalar: bool,
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    data0 = _batch_data("scan0").assign_coords(hv=21.2, label="scan0")
+    data1 = _batch_data("scan1", offset=100.0).assign_coords(label="scan1")
+    if nonscalar:
+        data1 = data1.assign_coords(hv=("x", [21.2, 40.0, 50.0]))
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+        dialog = imagetool_dialogs.AssignCoordsDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        qtbot.addWidget(dialog)
+        dialog.restore_transform_operation(
+            DropScalarCoordsOperation(names=("hv", "label"))
+        )
+
+        assert not manager.apply_batch_transform_dialog(dialog, "replace")
+        assert messages
+        for index, data in enumerate((data0, data1)):
+            xarray.testing.assert_identical(
+                manager.get_imagetool(index).slicer_area._data,
+                data,
             )
 
 
