@@ -1106,6 +1106,8 @@ def test_angle_calculator_overlay_history_does_not_recalculate_coverage(
     win = angle_calculator
     win.show()
     qtbot.wait(100)
+    # Finish startup redraws before measuring updates caused by overlay edits.
+    qtbot.wait_until(lambda: not win._redraw_timer.isActive())
     calls = []
     for curve in (*win.scan_curves, win.cut_curve):
         monkeypatch.setattr(
