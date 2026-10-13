@@ -2061,6 +2061,10 @@ class _WorkspaceController:
             from erlab.interactive.explorer._tabbed_explorer import DataExplorerState
 
             model_type = DataExplorerState
+        elif key == "angle_calculator":
+            from erlab.interactive.angle_calculator._state import AngleCalculatorState
+
+            model_type = AngleCalculatorState
         elif key == "ptable":
             from erlab.interactive.ptable._window import PeriodicTableState
 

@@ -4,6 +4,9 @@
 .. automodule:: erlab.interactive
 ```
 
+Use {func}`erlab.interactive.angle_calculator` to open the {ref}`guide-angle-calculator`.
+The calculator's calculation and state classes are private implementation details.
+
 (interactive-tool-authoring-api)=
 
 ## Interactive-tool authoring API

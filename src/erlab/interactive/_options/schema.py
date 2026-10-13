@@ -200,6 +200,56 @@ class KToolOptions(BaseModel):
     )
 
 
+class AngleCalculatorOptions(BaseModel):
+    """Initial geometry and control visibility for Angle calculator windows."""
+
+    show_laser_arpes_controls: bool = Field(
+        default=False,
+        title="Laser ARPES mode",
+        description=(
+            "Show the sample work function, sample escape limit, and low-energy "
+            "correction controls in the Angle calculator. Low energy correction "
+            "assumes a parallel capacitor model between the sample and the analyzer."
+        ),
+    )
+
+    configuration: int = Field(
+        default=3,
+        title="Configuration",
+        description="Default slit orientation and deflector mode.",
+        ge=1,
+        le=4,
+        json_schema_extra=_workspace_extra(
+            ui_type="list",
+            ui_choices=[
+                {
+                    "label": (
+                        f"Configuration {int(configuration)} ({configuration.name})"
+                    ),
+                    "value": int(configuration),
+                }
+                for configuration in erlab.constants.AxesConfiguration
+            ],
+        ),
+    )
+    analyzer_work_function: float = Field(
+        default=4.3,
+        title="Analyzer work function",
+        description="Default energy from the analyzer Fermi level to vacuum.",
+        ge=0,
+        le=100,
+        json_schema_extra=_workspace_extra(ui_step=0.01, ui_suffix="eV"),
+    )
+    photon_energy: float = Field(
+        default=90.0,
+        title="Photon energy",
+        description="Default photon energy for new Angle calculator windows.",
+        ge=0.001,
+        le=1000,
+        json_schema_extra=_workspace_extra(ui_step=1.0, ui_suffix="eV"),
+    )
+
+
 class DaskOptions(BaseModel):
     """Dask-related options."""
 
@@ -581,6 +631,11 @@ class AppOptions(BaseModel):
         default_factory=KToolOptions,
         title="ktool",
         description="Momentum conversion tool defaults.",
+    )
+    angle_calculator: AngleCalculatorOptions = Field(
+        default_factory=AngleCalculatorOptions,
+        title="Angle calculator",
+        description="Defaults for new Angle calculator windows.",
     )
     figure: FigureOptions = Field(
         default_factory=FigureOptions,

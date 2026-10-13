@@ -347,6 +347,14 @@ class ImageToolManager(_ImageToolManagerBase):
                 icon_name="drive-harddisk",
                 factory=self._create_explorer_window,
             ),
+            "angle_calculator": _StandaloneAppSpec(
+                key="angle_calculator",
+                menu="apps",
+                text="Angle calculator",
+                tooltip="Show the angle calculator window",
+                icon_name="accessories-calculator",
+                factory=self._create_angle_calculator_window,
+            ),
             "ptable": _StandaloneAppSpec(
                 key="ptable",
                 menu="apps",
@@ -556,6 +564,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self.store_action.setToolTip("Store selected data with IPython")
 
         self.explorer_action = self._create_standalone_app_action("explorer")
+        self.angle_calculator_action = self._create_standalone_app_action(
+            "angle_calculator"
+        )
         self.ptable_action = self._create_standalone_app_action("ptable")
 
         self.concat_action = QtWidgets.QAction("Concatenate", self)
@@ -767,6 +778,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._apps_menu_action = self.apps_menu.menuAction()
         self.apps_menu.setObjectName("manager_apps_menu")
         self.apps_menu.addAction(self.ptable_action)
+        self.apps_menu.addAction(self.angle_calculator_action)
 
         self.extensions_menu = self._extensions.create_menu(self.menu_bar)
 
@@ -3098,6 +3110,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def show_explorer(self) -> None:
         self._actions_controller.show_explorer()
+
+    def show_angle_calculator(self) -> None:
+        self._actions_controller.show_angle_calculator()
 
     def show_ptable(self) -> None:
         self._actions_controller.show_ptable()

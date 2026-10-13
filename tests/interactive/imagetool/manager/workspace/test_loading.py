@@ -4888,3 +4888,125 @@ def test_manager_workspace_load_visible_windows_stays_clean_after_events(
             QtWidgets.QApplication.processEvents()
 
         assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_roundtrip_angle_calculator(qtbot, manager_context, tmp_path):
+    options = erlab.interactive.options.model
+    options.angle_calculator.show_laser_arpes_controls = False
+    erlab.interactive.options.model = options
+    with manager_context() as manager:
+        overrides = {
+            "angle_calculator/configuration": 4,
+            "angle_calculator/photon_energy": 40.0,
+            "angle_calculator/analyzer_work_function": 4.5,
+        }
+        manager._set_workspace_option_overrides(overrides)
+        manager.show_angle_calculator()
+        angle_calculator = manager.angle_calculator_window
+        qtbot.wait_until(angle_calculator.isVisible)
+        state = angle_calculator.workspace_state_payload()
+        state["geometry"]["photon_energy"] = 21.2
+        state["geometry"]["sample_work_function"] = 4.7
+        state["geometry"]["low_energy_correction"] = True
+        state["cutoff_visible"] = True
+        state["overlays"]["pockets"] = [
+            {
+                "uid": "workspace-pocket",
+                "point_group": "3m",
+                "symmetry_angle": 17.0,
+                "center": [0.1, -0.05],
+                "radii": [0.08, 0.04],
+                "rotation": 35.0,
+                "visible": True,
+                "symmetry": True,
+                "color": "#e69f00",
+            }
+        ]
+        lattice_fields = {
+            "lattice_a": 4.123456789,
+            "lattice_b": 5.234567891,
+            "lattice_c": 7.345678912,
+            "lattice_alpha": 80.123456789,
+            "lattice_beta": 95.234567891,
+            "lattice_gamma": 110.345678912,
+            "lattice_rotation": 17.123456789,
+            "centering": "I",
+        }
+        state.update(lattice_fields)
+        image = QtGui.QImage(3, 2, QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtGui.QColor("red"))
+        image_buffer = QtCore.QBuffer()
+        image_buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        assert image.save(image_buffer, "PNG")
+        state["overlays"]["image"] = {
+            "png_base64": bytes(image_buffer.data().toBase64()).decode("ascii"),
+            "center": [0.2, -0.1],
+            "width": 0.8,
+            "opacity": 0.6,
+            "visible": True,
+            "name": "reference.png",
+        }
+        angle_calculator.restore_workspace_state(state)
+        # Keep ranges fixed while the restored axis labels change the plot layout.
+        for plot in (angle_calculator.momentum_plot, angle_calculator.angle_plot):
+            plot.setAspectLocked(False)
+        expected = angle_calculator.workspace_state_payload()
+        path = tmp_path / "angle_calculator.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        manifest = workspace_format._workspace_manifest_from_attrs(
+            workspace_arrays._read_workspace_root_attrs_h5py(path)
+        )
+        saved = manifest["standalone_apps"]["apps"]["angle_calculator"]
+        # The window manager can adjust the frame position while saving.
+        assert {
+            key: value for key, value in saved.items() if key != "window_state"
+        } == {key: value for key, value in expected.items() if key != "window_state"}
+        assert saved["window_state"]["visible"]
+        manager._close_standalone_app("angle_calculator")
+        manager._set_workspace_option_overrides({})
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        restored = manager.angle_calculator_window
+        assert manager.workspace_option_overrides() == overrides
+        qtbot.wait_until(restored.isVisible)
+        actual = restored.workspace_state_payload()
+        assert actual["geometry"] == expected["geometry"]
+        assert actual["geometry"]["sample_work_function"] == 4.7
+        assert actual["geometry"]["low_energy_correction"]
+        assert actual["cutoff_visible"] == expected["cutoff_visible"]
+        assert actual["cutoff_visible"]
+        assert restored.correction_check.isChecked()
+        assert restored.cutoff_check.isChecked()
+        assert restored.inputs["sample_work_function"].isHidden()
+        assert restored.correction_check.isHidden()
+        assert restored.cutoff_check.isHidden()
+        assert not restored._laser_arpes_summary.isHidden()
+        assert actual["overlays"]["pockets"] == expected["overlays"]["pockets"]
+        for field, value in lattice_fields.items():
+            assert actual[field] == expected[field] == value
+        assert actual["overlays"]["image"] == expected["overlays"]["image"]
+        assert not restored.undoable
+        assert not restored.redoable
+        restored.inputs["photon_energy"].setValue(22.2)
+        restored._flush_pending_history_write()
+        manager._workspace_controller._mark_workspace_clean()
+        restored.undo()
+        assert restored.inputs["photon_energy"].value() == 21.2
+        qtbot.wait_until(lambda: manager.is_workspace_modified)
+        manager._workspace_controller._mark_workspace_clean()
+        restored.redo()
+        assert restored.inputs["photon_energy"].value() == 22.2
+        qtbot.wait_until(lambda: manager.is_workspace_modified)
+        assert manager._workspace_state.layout_modified
+
+
+def test_manager_workspace_validates_angle_calculator_state(manager_context):
+    with manager_context() as manager:
+        validate = manager._workspace_controller._validated_standalone_app_state
+        assert validate("angle_calculator", {"geometry": "invalid"}) is None
+        assert validate("angle_calculator", {}) is not None

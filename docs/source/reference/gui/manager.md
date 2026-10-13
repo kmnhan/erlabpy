@@ -215,6 +215,13 @@ spreadsheet metadata.
 For supported general file formats and standalone launch paths, see
 {ref}`guide-data-explorer`.
 
+### Angle calculator
+
+Open the calculator from {menuselection}`Apps --> Angle calculator`.
+Use it to compare angular coverage with Brillouin-zone sections from a three-dimensional
+lattice, model pockets, and a reference image. The Manager reuses the calculator window
+and saves its state in the workspace. See {ref}`guide-angle-calculator`.
+
 ### Periodic Table
 
 Open the periodic table from {menuselection}`Apps --> Periodic Table` or {kbd}`Ctrl+Shift+P`.

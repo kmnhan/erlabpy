@@ -27,6 +27,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._dask import DaskMenu
     from erlab.interactive._options.schema import AppOptions
+    from erlab.interactive.angle_calculator._window import AngleCalculatorWindow
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._acquisition_context import (
@@ -513,6 +514,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return typing.cast("_TabbedExplorer", widget)
 
     @property
+    def angle_calculator_window(self) -> AngleCalculatorWindow:
+        widget = self._standalone_app_windows.get("angle_calculator")
+        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
+            raise AttributeError("Angle calculator window is not initialized.")
+        return typing.cast("AngleCalculatorWindow", widget)
+
+    @property
     def ptable_window(self) -> PeriodicTableWindow:
         widget = self._standalone_app_windows.get("ptable")
         if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
@@ -646,6 +654,11 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             extensions_by_name,
             apply_explorer=False,
         )
+
+    def _create_angle_calculator_window(self) -> QtWidgets.QWidget:
+        from erlab.interactive.angle_calculator._window import AngleCalculatorWindow
+
+        return AngleCalculatorWindow(options=self.effective_interactive_options)
 
     def _create_ptable_window(self) -> QtWidgets.QWidget:
         from erlab.interactive.ptable import PeriodicTableWindow
