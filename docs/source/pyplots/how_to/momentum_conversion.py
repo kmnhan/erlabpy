@@ -7,7 +7,7 @@ from erlab.io.exampledata import generate_data_angles, generate_hvdep_cuts
 def convert_angle_resolved_data() -> None:
     data = generate_data_angles(shape=(200, 60, 300), assign_attributes=True, seed=1).T
     data.kspace.set_normal(alpha=0.0, beta=0.0, delta=30.0)
-    data.kspace.work_function = 4.5
+    data.kspace.analyzer_work_function = 4.5
     angle_map = data.qsel(eV=-0.3)
     automatic_grid_map = data.kspace.convert().transpose("eV", "ky", "kx").qsel(eV=-0.3)
     specified_grid_map = (

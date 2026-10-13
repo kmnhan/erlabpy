@@ -64,7 +64,7 @@ class _TutorialLoader(LoaderBase):
     ] = {
         "configuration": 1,
         "sample_temp": 20.0,
-        "sample_workfunction": 4.5,
+        "analyzer_work_function": 4.5,
         "angle_resolution": 0.1,
     }
 

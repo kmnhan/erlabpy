@@ -293,8 +293,8 @@ def generate_data_angles(
     Erange
         Binding energy range in electronvolts, by default (-0.45, 0.12)
     hv
-        The photon energy in eV. Note that the sample work function is assumed to be 4.5
-        eV, by default 50.0.
+        The photon energy in eV, by default 50.0. The analyzer work function is
+        assumed to be 4.5 eV.
     configuration
         The experimental configuration, by default ``Type1``.
     temp
@@ -350,7 +350,7 @@ def generate_data_angles(
         ``delta``, and ``hv`` coordinates. Deflector configurations also include scalar
         ``chi``. A dimension whose requested size is one is removed. When
         `assign_attributes` is `True`, the result includes the experimental
-        configuration, sample temperature, and work function.
+        configuration, sample temperature, and analyzer work function.
 
     """
     try:
@@ -532,7 +532,9 @@ def generate_data_angles(
 
     if assign_attributes:
         out = out.assign_attrs(
-            configuration=int(configuration), sample_temp=temp, sample_workfunction=4.5
+            configuration=int(configuration),
+            sample_temp=temp,
+            analyzer_work_function=4.5,
         )
         if not np.allclose(normal_values, 0.0) or delta_offset != 0.0:
             out.attrs["delta_offset"] = delta_offset
@@ -583,6 +585,10 @@ def generate_data_dirac(
 
     .. versionadded:: 3.21.0
 
+    .. versionchanged:: 3.28.0
+        With ``assign_attributes=True``, store the work function in the
+        ``analyzer_work_function`` attribute instead of ``sample_workfunction``.
+
     Parameters
     ----------
     shape
@@ -594,7 +600,7 @@ def generate_data_dirac(
     Erange
         Binding energy range in electronvolts, by default (-0.45, 0.12).
     hv
-        The photon energy in eV. The sample work function is assumed to be 4.5 eV.
+        The photon energy in eV. The analyzer work function is assumed to be 4.5 eV.
     configuration
         The experimental configuration, by default ``Type1``.
     temp
@@ -756,7 +762,7 @@ def generate_data_dirac(
         out = out.assign_attrs(
             configuration=int(configuration),
             sample_temp=temp,
-            sample_workfunction=4.5,
+            analyzer_work_function=4.5,
             dirac_velocity=dirac_velocity,
             curvature=curvature,
             dirac_gap=gap,

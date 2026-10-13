@@ -9651,6 +9651,10 @@ def test_manager_ktool_output_itool_nests_under_tool(
 
         child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
+        source_before = parent_tool.slicer_area.data.copy(deep=True)
+        child._normal_emission_spins["alpha"].setValue(1.5)
+        child._normal_emission_spins["beta"].setValue(-2.0)
+        child._offset_spins["wf"].setValue(4.8)
         child.show_converted()
 
         child_node = manager._child_node(child_uid)
@@ -9665,8 +9669,20 @@ def test_manager_ktool_output_itool_nests_under_tool(
         assert output_node.provenance_spec is not None
         xr.testing.assert_identical(fetch(output_uid), child._itool.slicer_area.data)
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
-        assert ".kspace.set_normal(" in copied
-        assert "_kconv = " in copied
+        assert ".copy(" not in copied
+        assert ".ktool(" not in copied
+        source = source_before.copy(deep=True)
+        namespace = _exec_generated_code(copied, {"angle_data": source})
+        result = namespace[output_node.provenance_spec.active_name]
+        assert isinstance(result, xr.DataArray)
+        assert result is not source
+        xr.testing.assert_identical(result, child._itool.slicer_area.data)
+        expected_source = source_before.copy(deep=True)
+        expected_source.kspace.set_normal(1.5, -2.0, delta=0.0)
+        expected_source.kspace.analyzer_work_function = 4.8
+        xr.testing.assert_identical(source, expected_source)
+        xr.testing.assert_equal(source, source_before)
+        xr.testing.assert_identical(parent_tool.slicer_area.data, source_before)
 
         replaced = anglemap.copy(deep=True)
         replaced.data = np.asarray(replaced.data) + 1.0
@@ -9697,6 +9713,7 @@ def test_manager_ktool_output_itool_nests_under_tool(
         qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
         qtbot.wait_until(lambda: output_node.source_state == "fresh", timeout=5000)
         xr.testing.assert_identical(fetch(output_uid), child._converted_output())
+        xr.testing.assert_identical(parent_tool.slicer_area.data, replaced2)
 
 
 def test_manager_ktool_output_itool_marks_stale_without_recomputing(

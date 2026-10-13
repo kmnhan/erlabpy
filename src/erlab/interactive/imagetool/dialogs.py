@@ -1612,7 +1612,7 @@ class KspaceConversionDialog(DataTransformDialog):
         wf_spin.setSingleStep(0.01)
         wf_spin.setDecimals(4)
         wf_spin.setSuffix(self._OFFSET_UNITS["wf"])
-        wf_spin.setToolTip("Work function of the system.")
+        wf_spin.setToolTip("Analyzer work function in eV.")
         wf_spin.setValue(_kspace_conversion.kspace_work_function(self._control_data))
         wf_spin.valueChanged.connect(self._update_memory_estimate)
         self._offset_spins["wf"] = wf_spin

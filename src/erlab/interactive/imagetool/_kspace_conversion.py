@@ -39,7 +39,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 _MISSING_WORK_FUNCTION_WARNING_RE = (
-    r"^Work function not found in data attributes, assuming 4\.5 eV$"
+    r"^Analyzer work function not found in data attributes, assuming 4\.5 eV$"
 )
 _MISSING_INNER_POTENTIAL_WARNING_RE = (
     r"^Inner potential not found in data attributes, assuming 10 eV$"
@@ -249,7 +249,7 @@ def initial_normal_emission_from_slicer_area(
 
 def kspace_work_function(data: xr.DataArray) -> float:
     with ignore_missing_kspace_parameter_warnings():
-        return float(data.kspace.work_function)
+        return float(data.kspace.analyzer_work_function)
 
 
 def kspace_inner_potential(data: xr.DataArray) -> float:
@@ -639,13 +639,13 @@ def apply_kspace_parameters(
             data.kspace.inner_potential = inner_potential
 
     with ignore_missing_kspace_parameter_warnings():
-        current_wf = source_data.kspace.work_function
+        current_wf = source_data.kspace.analyzer_work_function
     if (
         force_work_function
-        or "sample_workfunction" not in source_data.attrs
+        or "analyzer_work_function" not in source_data.attrs
         or not np.isclose(work_function, current_wf)
     ):
-        data.kspace.work_function = work_function
+        data.kspace.analyzer_work_function = work_function
     return data
 
 
@@ -725,15 +725,23 @@ def kspace_conversion_operations(
     if configured_data.kspace._has_hv and inner_potential is not None:
         with ignore_missing_kspace_parameter_warnings():
             current_v0 = configured_data.kspace.inner_potential
-        if force_scalars or not np.isclose(inner_potential, current_v0):
+        if (
+            force_scalars
+            or "inner_potential" not in configured_data.attrs
+            or not np.isclose(inner_potential, current_v0)
+        ):
             operations.append(
                 KspaceInnerPotentialOperation(inner_potential=float(inner_potential))
             )
             focuses.append(_FOCUS_INNER_POTENTIAL)
 
     with ignore_missing_kspace_parameter_warnings():
-        current_wf = configured_data.kspace.work_function
-    if force_scalars or not np.isclose(work_function, current_wf):
+        current_wf = configured_data.kspace.analyzer_work_function
+    if (
+        force_scalars
+        or "analyzer_work_function" not in configured_data.attrs
+        or not np.isclose(work_function, current_wf)
+    ):
         operations.append(
             KspaceWorkFunctionOperation(work_function=float(work_function))
         )

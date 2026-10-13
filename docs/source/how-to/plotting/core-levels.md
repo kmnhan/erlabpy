@@ -31,7 +31,8 @@ eplt.plot_core_levels(
 
 Use `binding_energy_sign="positive"` for a conventional positive XPS binding-energy
 axis. For a kinetic-energy axis, use `energy="kinetic"` and supply the measured photon
-energy with `hv`. Also supply `work_function` when it is needed for the conversion.
+energy with `hv`. Also supply the analyzer work function with `work_function` when it is
+needed for the conversion.
 
 The marked energies are tabulated reference values. Confirm each assignment from the
 measured peak shape and the known sample composition. Chemical shifts, charging, and

@@ -35,7 +35,12 @@ def _find_group_for_key(dt: xr.DataTree, name: str) -> xr.DataTree | None:
 
 
 class SSRL52Loader(LoaderBase):
-    """Load ARPES data from SSRL Beamline 5-2."""
+    """Load ARPES data from SSRL Beamline 5-2.
+
+    .. versionchanged:: 3.28.0
+        Map ``WorkFunction`` to the ``analyzer_work_function`` attribute instead of
+        ``sample_workfunction``.
+    """
 
     name = "ssrl52"
     description = "SSRL Beamline 5-2"
@@ -55,7 +60,7 @@ class SSRL52Loader(LoaderBase):
         "z": "Z",
         "hv": ["energy", "photon_energy"],
         "sample_temp": ["TB", "sample_stage_temperature"],
-        "sample_workfunction": "WorkFunction",
+        "analyzer_work_function": "WorkFunction",
     }
 
     coordinate_attrs = (
@@ -276,7 +281,7 @@ class SSRL52Loader(LoaderBase):
 
         # Convert to binding energy
         if (
-            "sample_workfunction" in data.attrs
+            "analyzer_work_function" in data.attrs
             and "eV" in data.dims
             # Keep this reduction on NumPy. Xarray can dispatch floating-point
             # reductions to Numbagg, which starts an uncached Numba/LLVM compilation
@@ -285,7 +290,7 @@ class SSRL52Loader(LoaderBase):
             and np.nanmin(data["eV"].values) > 0
         ):
             data = data.assign_coords(
-                eV=data["eV"] - float(data["hv"]) + data.attrs["sample_workfunction"]
+                eV=data["eV"] - float(data["hv"]) + data.attrs["analyzer_work_function"]
             )
 
         return data

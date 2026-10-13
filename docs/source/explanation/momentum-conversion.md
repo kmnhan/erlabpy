@@ -14,7 +14,7 @@ trigonometric geometry without a small-angle approximation.
 | `configuration` | Selects the mapping functions and assigns the analyzer-slit direction to `kx` or `ky` |
 | `alpha` and `beta` | Supply the measured angular coordinates |
 | `xi`, `chi`, and angular offsets | Set the sample orientation and normal emission position; the `delta` offset rotates the in-plane momentum axes |
-| `eV`, `hv`, and `sample_workfunction` | Determine $E_k=h\nu-\Phi+E_b$ and the photoelectron momentum magnitude |
+| `eV`, `hv`, and `analyzer_work_function` | Determine $E_k=h\nu-\Phi_A+E_b$ and the photoelectron momentum magnitude |
 | `alpha_scale` and `beta_scale` | Multiply the stored `alpha` and `beta` coordinates before evaluation |
 | `inner_potential` | Enters the free-electron final-state expression for `kz` in hν-dependent scans; it does not affect fixed-hν in-plane conversion |
 

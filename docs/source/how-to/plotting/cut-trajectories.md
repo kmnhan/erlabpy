@@ -4,7 +4,7 @@
 
 Use a cut with calculated momentum coordinates to show its trajectory on a converted
 constant energy surface. Start with angle-resolved `data` that has the required
-experimental configuration, work function, and normal-emission position.
+experimental configuration, analyzer work function, and normal-emission position.
 
 ## Python
 
@@ -60,7 +60,7 @@ Start with the same angle-resolved `data` used in the Python procedure:
    set {guilabel}`Result Placement` to {guilabel}`Open Child Window`.
 3. In the original ImageTool, choose {menuselection}`Edit --> Convert to kspace…`.
    Configure the conversion and open the result as a child window.
-4. Convert the angular-cut child. Re-enter the same configuration, work function,
+4. Convert the angular-cut child. Re-enter the same configuration, analyzer work function,
    normal-emission offsets, bounds, and resolution. Open the result as another child
    window.
 5. Add the converted volume and converted cut in {guilabel}`Sources`. Give them the
