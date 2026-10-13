@@ -727,7 +727,7 @@ def test_open_multiple_files_reports_incompatible_mixed_extensions(
     ],
 ) -> None:
     critical_calls: list[tuple[typing.Any, ...]] = []
-    paths = [tmp_path / "first.pxt", tmp_path / "second.txt"]
+    paths = [tmp_path / "first.pxt", tmp_path / "second.unsupported"]
 
     monkeypatch.setattr(
         QtWidgets.QMessageBox,
@@ -742,7 +742,7 @@ def test_open_multiple_files_reports_incompatible_mixed_extensions(
     message = critical_calls[0][2]
     assert "all selected file types" in message
     assert "'.pxt'" in message
-    assert "'.txt'" in message
+    assert "'.unsupported'" in message
 
 
 def test_open_multiple_files_dropped_itws_error_does_not_fall_through_to_loaders(

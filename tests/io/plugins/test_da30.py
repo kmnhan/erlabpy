@@ -88,12 +88,16 @@ def expected_dir(data_dir):
         (7, "f0007.h5"),
         ("f0008.txt", "f0008.h5"),
         (8, "f0008.h5"),
+        ("f0009.txt", "f0009.h5"),
+        (9, "f0009.h5"),
+        ("f0010.txt", "f0010.h5"),
+        (10, "f0010.h5"),
     ],
 )
 def test_load(expected_dir, args, expected) -> None:
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
-    if expected == "f0005.h5":
+    if expected in {"f0005.h5", "f0009.h5"}:
         xr.testing.assert_identical(
             loaded, xr.load_datatree(expected_dir / expected, engine="h5netcdf")
         )

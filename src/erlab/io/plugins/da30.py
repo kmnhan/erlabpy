@@ -212,6 +212,12 @@ def load_txt(
             if sep:
                 metadata[name][key.strip()] = _parse_value(value.strip())
 
+    reserved_names: set[str] = set()
+    if name_map is not None:
+        reserved_names.update(name_map)
+        for aliases in name_map.values():
+            reserved_names.update((aliases,) if isinstance(aliases, str) else aliases)
+
     try:
         num_regions = int(metadata["Info"]["Number of Regions"])
         with filename.open("rb") as stream:
@@ -223,6 +229,7 @@ def load_txt(
                     stream=stream,
                     data_locations=data_locations,
                     without_values=without_values,
+                    reserved_names=reserved_names,
                 )
                 for region in range(1, num_regions + 1)
             ]
@@ -231,37 +238,13 @@ def load_txt(
 
     if not out:
         raise ValueError(f"{filename}: no regions declared")
-    reserved_names: set[str] = set()
-    if name_map is not None:
-        reserved_names.update(name_map)
-        for aliases in name_map.values():
-            reserved_names.update((aliases,) if isinstance(aliases, str) else aliases)
-    for payloads in out:
-        if "Data" not in payloads or "Signal" not in payloads:
-            continue
-        spectrum, signal = payloads["Data"], payloads["Signal"]
-        signal_name = str(signal.attrs.get("Signal names", "Signal"))
-        if (
-            signal_name
-            and signal_name not in spectrum.coords
-            and signal_name != spectrum.name
-            and signal_name not in reserved_names
-            and all(
-                dim in spectrum.dims
-                and signal.sizes[dim] == spectrum.sizes[dim]
-                and np.allclose(signal[dim], spectrum[dim], rtol=1e-12, atol=1e-12)
-                for dim in signal.dims
-            )
-        ):
-            payloads["Data"] = spectrum.assign_coords(
-                {signal_name: (signal.dims, signal.data)}
-            )
-            del payloads["Signal"]
-
     if len(out) == 1 and len(out[0]) == 1:
         return next(iter(out[0].values()))
     # Region names are normally unique. Use numbered nodes if they cannot be paths.
-    names = [str(next(iter(payloads.values())).name) for payloads in out]
+    names = [
+        str(metadata[f"Region {region}"]["Region Name"])
+        for region in range(1, num_regions + 1)
+    ]
     use_names = len(set(names)) == len(names) and all(
         name and "/" not in name and name not in {".", ".."} for name in names
     )
@@ -282,25 +265,24 @@ def _load_txt_region(
     stream: typing.BinaryIO,
     data_locations: dict[str, tuple[int, int]],
     without_values: bool,
+    reserved_names: set[str],
 ) -> dict[str, xr.DataArray]:
     header = metadata[f"Region {region}"]
-    attrs = dict(metadata["Info"])
-    attrs.update(
-        (key, value)
-        for key, value in header.items()
-        if not key.startswith("Dimension ")
-    )
+    attrs = {}
     for prefix in (
         "Info",
         "Run Mode Information",
         "User Interface Information",
+        "Manipulator",
+        "Monochromator",
     ):
         attrs.update(metadata.get(f"{prefix} {region}", {}))
+    attrs.pop("Region Name", None)
     run_mode = sections.get(f"Run Mode Information {region}", [])
     if any("=" not in line for line in run_mode):
         attrs["Run Mode Information"] = "\n".join(run_mode)
 
-    out = {}
+    out: dict[str, xr.DataArray] = {}
     for kind in ("Data", "Signal"):
         data_sections = [
             name
@@ -322,10 +304,15 @@ def _load_txt_region(
                 raise ValueError(f"[{region}]: expected one to three dimensions")
             stacked = len(axis_keys) == 3
         else:
-            if header.get("Number of signals") != 1:
+            num_signals = int(header["Number of signals"])
+            if num_signals < 1:
                 raise ValueError(
-                    f"[{region}]: multiple external signals are not supported"
+                    f"[{region}]: invalid number of signals: {num_signals}"
                 )
+            names = str(header.get("Signal names", "Signal"))
+            signal_names = names.split() if num_signals > 1 else [names]
+            if len(signal_names) != num_signals:
+                raise ValueError(f"[{region}]: signal names do not match their count")
             axis_keys = [("Signal unit", "Signal steps", "Signal scale [0]")]
             stacked = any(":" in name for name in data_sections)
             if stacked:
@@ -363,11 +350,16 @@ def _load_txt_region(
                 f"found {len(data_sections)}"
             )
 
-        if without_values:
-            values = np.zeros(tuple(reversed(sizes)), dtype=np.float64)
+        shape = tuple(reversed(sizes))
+        if kind == "Signal":
+            shape = (*shape[:-1], num_signals, shape[-1])
+            ncolumns = num_signals
         else:
-            values = np.empty(tuple(reversed(sizes)), dtype=np.float64)
-            ncolumns = sizes[1] if kind == "Data" and len(sizes) > 1 else 1
+            ncolumns = sizes[1] if len(sizes) > 1 else 1
+        if without_values:
+            values = np.zeros(shape, dtype=np.float64)
+        else:
+            values = np.empty(shape, dtype=np.float64)
             for frame, name in enumerate(data_sections):
                 offset, count = data_locations[name]
                 stream.seek(offset)
@@ -389,13 +381,56 @@ def _load_txt_region(
                 target[...] = table[:, 1:].T.reshape(target.shape)
                 del table
 
-        out[kind] = xr.DataArray(
-            values,
-            dims=dims[::-1],
-            coords=coords,
-            name=str(header["Region Name"]),
-            attrs=attrs,
-        )
+        if kind == "Data":
+            out[kind] = xr.DataArray(
+                values,
+                dims=dims[::-1],
+                coords=coords,
+                name=str(header["Region Name"]),
+                attrs=attrs,
+            )
+        else:
+            for index, signal_name in enumerate(signal_names):
+                if index == 0:
+                    signal_scale = coords[dims[0]]
+                else:
+                    scale_key = f"Signal scale [{index}]"
+                    signal_scale = np.asarray(
+                        str(header[scale_key]).split(), dtype=np.float64
+                    )
+                    if signal_scale.size != sizes[0]:
+                        raise ValueError(
+                            f"[{region}]: {scale_key} does not match its size"
+                        )
+                key = "Signal" if num_signals == 1 else f"Signal {index + 1}"
+                signal = xr.DataArray(
+                    values[..., index, :],
+                    dims=dims[::-1],
+                    coords=coords | {dims[0]: signal_scale},
+                    name=f"{header['Region Name']}_{signal_name}",
+                    attrs=attrs,
+                )
+                spectrum = out.get("Data")
+                if (
+                    spectrum is not None
+                    and signal_name
+                    and signal_name not in spectrum.coords
+                    and signal_name != spectrum.name
+                    and signal_name not in reserved_names
+                    and all(
+                        dim in spectrum.dims
+                        and signal.sizes[dim] == spectrum.sizes[dim]
+                        and np.allclose(
+                            signal[dim], spectrum[dim], rtol=1e-12, atol=1e-12
+                        )
+                        for dim in signal.dims
+                    )
+                ):
+                    out["Data"] = spectrum.assign_coords(
+                        {signal_name: (signal.dims, signal.data)}
+                    )
+                else:
+                    out[key] = signal
 
     if not out:
         raise ValueError(f"[{region}]: no Data or Signal sections found")
