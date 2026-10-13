@@ -78,21 +78,20 @@ experimental configuration and normal emission angles.
 Store the measured normal emission position and analyzer work function, then convert:
 
 ```python
-conversion_input = data.copy()
-conversion_input.kspace.set_normal(
+data.kspace.set_normal(
     alpha=alpha_normal,
     beta=beta_normal,
     delta=azimuthal_offset,
 )
-conversion_input.kspace.analyzer_work_function = analyzer_work_function
+data.kspace.analyzer_work_function = analyzer_work_function
 
-converted = conversion_input.kspace.convert()
+converted = data.kspace.convert()
 ```
 
 The optional Jacobian correction is enabled with `jacobian=True`:
 
 ```python
-converted_corrected = conversion_input.kspace.convert(jacobian=True)
+converted_corrected = data.kspace.convert(jacobian=True)
 ```
 
 See {ref}`explanation-kspace-jacobian` for more information.
@@ -106,15 +105,20 @@ To control the output grid, supply momentum bounds and a target step through the
 `resolution` argument:
 
 ```python
-converted = conversion_input.kspace.convert(
+converted = data.kspace.convert(
     bounds={"kx": (-0.5, 0.5), "ky": (-0.5, 0.5)},
     resolution={"kx": 0.01, "ky": 0.01},
 )
 ```
 
-The final step can differ slightly from the target because the grid contains an integer
-number of intervals between both bounds. Pass explicit momentum coordinate arrays when
-the target values must be exact.
+Alternatively, pass explicit momentum coordinate arrays for each axis:
+
+```python
+converted = data.kspace.convert(
+    kx=np.linspace(-0.5, 0.5, 101),
+    ky=np.linspace(-0.5, 0.5, 101),
+)
+```
 
 ```{eval-rst}
 .. plot:: how_to/momentum_conversion.py convert_angle_resolved_data
@@ -140,13 +144,12 @@ configuration and energy parameters:
 ```python
 import numpy as np
 
-conversion_input = data.copy()
-conversion_input.kspace.set_normal(
+data.kspace.set_normal(
     alpha=alpha_normal,
     beta=beta_normal,
     delta=azimuthal_offset,
 )
-conversion_input.kspace.analyzer_work_function = analyzer_work_function
+data.kspace.analyzer_work_function = analyzer_work_function
 ```
 
 Define the target grid once. Pass the coordinate arrays to each conversion:
@@ -155,7 +158,7 @@ Define the target grid once. Pass the coordinate arrays to each conversion:
 target_kx = np.linspace(-0.5, 0.5, 101)
 target_ky = np.linspace(-0.5, 0.5, 101)
 
-converted = conversion_input.kspace.convert(
+converted = data.kspace.convert(
     kx=target_kx,
     ky=target_ky,
 )
@@ -203,9 +206,9 @@ Composer steps.
 The cut keeps its measured dimensions and intensity values. The added `kx` and `ky`
 coordinates describe its path through the converted constant energy surface.
 
-Use the same experimental configuration, analyzer work function, and normal emission position
-for `cut_with_momentum` and `converted_map`. Otherwise, the cut trajectory and surface
-use different conversion parameters. See
+Use the same experimental configuration, analyzer work function, and normal emission
+position for `cut_with_momentum` and `converted_map`. Otherwise, the cut trajectory
+and surface use different conversion parameters. See
 {meth}`xarray.DataArray.kspace.convert_coords` for the returned coordinates. See
 {doc}`momentum conversion
 <../../explanation/momentum-conversion>` for the difference between adding momentum
@@ -223,9 +226,8 @@ normal emission angles, analyzer work function, and inner potential before conve
 Set the inner potential, then convert the data:
 
 ```python
-conversion_input = data.copy()
-conversion_input.kspace.inner_potential = inner_potential
-converted = conversion_input.kspace.convert()
+data.kspace.inner_potential = inner_potential
+converted = data.kspace.convert()
 ```
 
 Use an `inner_potential` that is consistent with the measured $k_z$ periodicity and the

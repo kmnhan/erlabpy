@@ -13,15 +13,16 @@ description: Conduct, teach, and automate reproducible ARPES analysis with ERLab
   the minimum missing physical input when they do not.
 - Inspect data, execute the notebook from a clean kernel, inspect the rendered results,
   and correct invalid analysis before delivery.
-- Keep the loaded data unchanged. Assign each calibration or transformation to a new,
-  semantic variable.
-- Put all input paths, physical parameters, fit choices, and calibration values in
-  visible cells. Do not rely on hidden kernel or GUI state.
+- Preserve measured intensity and coordinates on source data. Set accepted
+  momentum-conversion parameters directly on the working DataArray. Assign transformed
+  or converted results to new semantic variables.
+- Put all input paths, physical parameters, and fit choices in visible cells. Do not
+  rely on hidden kernel or GUI state.
 - Use public ERLabPy and xarray-lmfit APIs in copied or generated code.
-- Treat a static normal-emission estimate as a candidate, regardless of agent
-  confidence. For publication or quantitative momentum conversion, require an approved
-  calibration. If none exists, open ImageTool or KTool for the user and wait for the
-  accepted values before momentum conversion.
+- Treat a static normal emission estimate as a candidate, regardless of agent
+  confidence. For publication or quantitative momentum conversion, require accepted
+  normal emission settings. If none exist, open ImageTool or KTool for the user and wait
+  for the accepted values before momentum conversion.
 
 ## Coordinate compatible skills
 
@@ -34,9 +35,9 @@ workflow guidance or create separate analysis pipelines.
 - Keep one notebook as the primary reproducible artifact unless the user requests a
   different split.
 - Use one visible configuration and provenance section for all analysis stages.
-- Load each raw input once. Pass semantic notebook variables between calibration,
+- Load each raw input once. Pass semantic notebook variables between energy referencing,
   conversion, fitting, and plotting stages.
-- Apply the calibration and physical decision rules in this skill to ARPES decisions.
+- Apply the physical decision rules in this skill to ARPES decisions.
   Use auxiliary skills only for their specialized mechanics. Follow user and
   higher-priority instructions when they require a different choice.
 - Execute and inspect the combined notebook as one document. Do not validate isolated
@@ -84,7 +85,7 @@ analysis notebook executable when no optional Qt binding is installed.
 
 1. State the objective, requested outputs, assumptions, and success criteria.
 2. Record package versions, input paths, loader settings, and physical parameters.
-3. Load the data once and keep an unchanged raw-data variable.
+3. Load the data once and preserve its measured intensity and coordinates.
 4. Inspect `dims`, `coords`, `attrs`, units, coordinate order, monotonicity, finite
    values, and sampling. Plot representative raw slices. For weak or anisotropic data,
    also prepare energy-averaged, coordinate-aware smoothed, normalized, and derivative
@@ -104,11 +105,11 @@ analysis notebook executable when no optional Qt binding is installed.
    [references/publication-plotting.md](references/publication-plotting.md) only when
    the task includes constant-energy maps, figure construction, fit overlays, or
    figure export.
-9. Summarize results, uncertainties, calibration provenance, failed checks, and
+9. Summarize results, uncertainties, parameter sources, failed checks, and
    limitations next to the relevant outputs.
 
-Skip an inapplicable stage explicitly. Do not silently assume that the energy or
-momentum axes are calibrated.
+Skip an inapplicable stage explicitly. Do not silently assume that the energy scale or
+momentum-conversion parameters are correct.
 
 ## Notebook requirements
 
@@ -120,7 +121,7 @@ momentum axes are calibrated.
   parameters instead of hiding them.
 - Save final figures from explicit figure objects. Record the output paths.
 - Execute once from a clean kernel. Repeat only when randomness, in-place mutation,
-  calibration-file writes, or other rerun-sensitive behavior is present.
+  parameter-file writes, or other rerun-sensitive behavior is present.
 
 ### Reproducibility acceptance gate
 
@@ -129,7 +130,7 @@ points at a separate analysis. Before delivery, inspect its code cells and rejec
 notebook unless all of the following are true:
 
 - The notebook visibly loads the raw experimental files and authoritative metadata,
-  defines every physical calibration, performs every substantive transformation and
+  defines every physical parameter, performs every substantive transformation and
   fit, constructs each final figure from explicit figure objects, and saves the stated
   numerical products.
 - Paths, scan groups, accepted GUI-derived values, fit windows, smoothing widths,
@@ -152,12 +153,12 @@ available only in an external script or pre-rendered artifact.
 
 ## Decision rules
 
-- Prefer an approved reference calibration over inference from sample data.
+- Prefer accepted reference parameters over inference from sample data.
 - Reuse one `(alpha_normal, beta_normal)` pair for all photon energies in one unchanged
-  sample alignment. Do not fit independent normal-emission offsets by photon energy.
+  sample alignment. Do not fit independent normal emission offsets by photon energy.
 - Do not transfer offsets across an alignment change, even when the sample name and
   motor readbacks appear similar.
-- Treat implicit zero offsets as defaults, not measured normal-emission values.
+- Treat implicit zero offsets as defaults, not measured normal emission values.
 - Do not infer an angle-dependent Fermi correction from sample bands.
 - For `gold.poly`, use reliable `sample_temp` metadata. Use
   `use_step_edge=True` when that temperature is missing or unreliable, and supply a
@@ -165,12 +166,12 @@ available only in an external script or pre-rendered artifact.
 - Use `adaptive=True` when one verified outer energy range contains the reference edge
   for every EDC but a large edge shift or nearby spectral features make one fixed fit
   range unreliable.
-- Do not use symmetrized data to justify a normal-emission calibration.
+- Do not use symmetrized data to justify a normal emission position.
 - Do not use intensity maxima or apparent brightness symmetry to locate normal
   emission. Matrix elements can suppress one side of the same contour.
 - Exclude analyzer-acceptance boundaries and detector masks from derivatives,
   correlations, and center estimates. The center of a circular acceptance mask is not
-  the sample normal-emission angle.
+  the sample normal emission angle.
 - Compare photon energies only through identified corresponding features. Bulk bands
   can change with out-of-plane momentum, and matrix elements can reveal different
   bands. Do not align complete images or all detected ridges as if they were one band.
@@ -197,7 +198,7 @@ available only in an external script or pre-rendered artifact.
 - Use `ftool` when 1D or sequence fits need visual initialization or propagation.
 - Use Figure Composer when visual figure construction is useful.
 - Make KTool or ImageTool a required user handoff for publication or quantitative
-  momentum conversion when no approved normal-emission calibration exists. Do this
+  momentum conversion when no accepted normal emission settings exist. Do this
   even when the agent considers one static-image candidate obvious. Open the tool, tell
   the user what to select, and wait for the displayed angles or copied code.
 - Reproduce every accepted GUI operation with explicit notebook code. Do not deliver a

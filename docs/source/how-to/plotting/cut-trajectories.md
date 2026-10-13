@@ -60,9 +60,9 @@ Start with the same angle-resolved `data` used in the Python procedure:
    set {guilabel}`Result Placement` to {guilabel}`Open Child Window`.
 3. In the original ImageTool, choose {menuselection}`Edit --> Convert to kspace…`.
    Configure the conversion and open the result as a child window.
-4. Convert the angular-cut child. Re-enter the same configuration, analyzer work function,
-   normal-emission offsets, bounds, and resolution. Open the result as another child
-   window.
+4. Convert the angular cut. Re-enter the same configuration, analyzer work
+   function, normal-emission offsets, bounds, and resolution. Open the result as another
+   child window. Alternatively, use the provenance list to copy and paste the conversion settings.
 5. Add the converted volume and converted cut in {guilabel}`Sources`. Give them the
    aliases `converted` and `converted_cut`.
 6. Select each source in {guilabel}`Sources`. Enable the `eV` selection row, select
