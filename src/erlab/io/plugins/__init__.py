@@ -17,6 +17,7 @@ loader.
    da30
    erpes
    esm
+   espresso
    hers
    i05
    kriss
