@@ -3928,6 +3928,49 @@ def test_manager_new_imagetool_uses_workspace_options(
         assert tool.array_slicer.display_value_abs_limit == 12.0
 
 
+def test_manager_new_ktool_uses_current_workspace_options(
+    qtbot,
+    anglemap,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    from erlab.interactive.kspace import KspaceTool
+
+    fields = ("a", "b", "c", "alpha", "beta", "gamma")
+    defaults = erlab.interactive.options.model.ktool.bz
+    default_values = tuple(getattr(defaults, f"default_{name}") for name in fields)
+    with manager_context() as manager:
+        assert manager._data_ingress.receive_data([anglemap], {}, show=False) == [True]
+        parent = manager.get_imagetool(0)
+        children: list[tuple[KspaceTool, tuple[float, ...]]] = []
+
+        for values in (
+            (4.12, 5.23, 6.34, 80.0, 95.0, 110.0),
+            (7.89, 8.12, 9.23, 85.0, 100.0, 115.0),
+            default_values,
+        ):
+            manager._set_workspace_option_overrides(
+                {}
+                if values == default_values
+                else {
+                    f"ktool/bz/default_{name}": value
+                    for name, value in zip(fields, values, strict=True)
+                }
+            )
+            parent.slicer_area.open_in_ktool()
+            child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[-1]
+            child = manager.get_childtool(child_uid)
+            assert isinstance(child, KspaceTool)
+            children.append((child, values))
+
+            for tool, expected in children:
+                assert (
+                    tuple(getattr(tool, f"{name}_spin").value() for name in fields)
+                    == expected
+                )
+
+
 def test_manager_figure_generated_code_uses_workspace_stylesheets(
     qtbot,
     manager_context: Callable[
