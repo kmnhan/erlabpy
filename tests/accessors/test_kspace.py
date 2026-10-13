@@ -34,9 +34,209 @@ def density_map():
 
 
 @pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("scaled", [False, True])
+def test_convert_jacobian_density_and_raw_angle_scales(
+    density_map, configuration, scaled
+):
+    data = density_map
+    data.attrs["configuration"] = configuration.value
+    if scaled:
+        data.kspace.angle_scales = {"alpha": 1.2, "beta": 0.8}
+    x, y = [-0.4, 0.0, 0.3], [-0.2, 0.0, 0.25]
+    original = data.copy(deep=True)
+    result = data.kspace.convert_coords(jacobian=True)
+    a, b = np.deg2rad(data.kspace._alpha), np.deg2rad(data.kspace._beta)
+    radius = erlab.constants.rel_kconv * np.sqrt(
+        data.hv - data.kspace.work_function + data.eV
+    )
+    if configuration == AxesConfiguration.Type1:
+        forward = radius**2 * np.cos(a) ** 2 * np.cos(b)
+    elif configuration == AxesConfiguration.Type2:
+        forward = radius**2 * np.cos(b) * np.cos(a) ** 2
+    else:
+        r = np.hypot(a, b)
+        forward = radius**2 * np.cos(r) * xarray.apply_ufunc(np.sinc, r / np.pi)
+    expected = 1 / (
+        forward * (np.pi / 180) ** 2 * data.kspace.alpha_scale * data.kspace.beta_scale
+    )
+    np.testing.assert_allclose(result, expected.transpose(*result.dims), rtol=2e-7)
+    assert result.name == data.name
+    assert result.attrs == data.attrs
+    xarray.testing.assert_identical(data, original)
+    xarray.testing.assert_identical(
+        data.kspace.convert(kx=x, ky=y, jacobian=True),
+        result.kspace.convert(kx=x, ky=y),
+    )
+
+
+@pytest.mark.parametrize("jacobian", [False, True])
+def test_convert_jacobian_grid_independence_and_singletons(density_map, jacobian):
+    common = [-0.2, 0.0, 0.2]
+    coarse = density_map.kspace.convert(kx=common, ky=common, jacobian=jacobian)
+    fine = density_map.kspace.convert(
+        kx=[-0.8, -0.2, -0.17, 0.0, 0.05, 0.2, 0.7],
+        ky=common[::-1],
+        jacobian=jacobian,
+    )
+    xarray.testing.assert_identical(fine.sel(kx=common, ky=common), coarse)
+    single = density_map.kspace.convert(kx=[0.0], ky=[0.0], jacobian=jacobian)
+    xarray.testing.assert_identical(single, coarse.sel(kx=[0.0], ky=[0.0]))
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
 @pytest.mark.parametrize("energy_axis", [False, True])
-def test_convert_hv_maps_recovers_measured_points(
+def test_convert_jacobian_cut_density(density_map, configuration, energy_axis):
+    data = density_map.sel(beta=0)
+    if not energy_axis:
+        data = data.isel(eV=0)
+    data.attrs["configuration"] = configuration.value
+    data.kspace.alpha_scale = 1.3
+    momentum = np.array([-0.4, 0.0, 0.3])
+    result = data.kspace.convert_coords(jacobian=True)
+    radius = erlab.constants.rel_kconv * np.sqrt(
+        data.hv - data.kspace.work_function + data.eV
+    )
+    expected = 1 / (radius * np.cos(np.deg2rad(data.alpha * 1.3)) * np.pi / 180 * 1.3)
+    np.testing.assert_allclose(result, expected.transpose(*result.dims), rtol=2e-7)
+    xarray.testing.assert_identical(
+        data.kspace.convert(**{data.kspace.slit_axis: momentum}, jacobian=True),
+        result.kspace.convert(**{data.kspace.slit_axis: momentum}),
+    )
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+def test_convert_jacobian_composition_keeps_curved_cut_coordinates(
+    density_map, configuration
+):
+    data = density_map.isel(beta=-3, eV=0).copy(deep=True)
+    data.attrs["configuration"] = configuration.value
+    data.kspace.offsets["delta"] = 17
+    data = data.assign_coords(xi=9.0)
+    coords = {data.kspace.slit_axis: [-0.1, 0.0, 0.1]}
+    result = data.kspace.convert(**coords, jacobian=True)
+    measured = data.kspace.convert_coords(jacobian=True)
+    xarray.testing.assert_identical(result, measured.kspace.convert(**coords))
+    assert result[data.kspace.other_axis].dims == result.dims
+    assert np.ptp(result[data.kspace.other_axis].values) > 0
+
+
+def test_convert_jacobian_lazy_extra_dimensions(density_map):
+    data = density_map.expand_dims(repeat=[0, 1]).transpose(
+        "eV", "repeat", "beta", "alpha"
+    )
+    kwargs = {"kx": [-0.2, 0.0, 0.2], "ky": [-0.1, 0.0, 0.1], "jacobian": True}
+    expected = data.kspace.convert(**kwargs)
+    lazy = data.chunk({"repeat": 1}).kspace.convert(**kwargs)
+    assert lazy.chunks is not None
+    xarray.testing.assert_identical(lazy.compute(), expected)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("energy_axis", [False, True])
+def test_convert_jacobian_hv_density_and_grid_independence(
     density_map, configuration, energy_axis
+):
+    data = (
+        density_map.sel(beta=0)
+        .drop_vars("hv")
+        .reindex(eV=[-10.0, -5.0, 0.0], fill_value=1.0)
+        .expand_dims(hv=np.linspace(22, 28, 101))
+    )
+    if not energy_axis:
+        data = data.sel(eV=0.0)
+    data.attrs["configuration"] = configuration.value
+    data.kspace.inner_potential = 10.0
+    data.kspace.alpha_scale = 1.2
+    slit = data.kspace.slit_axis
+    coords = {slit: [-0.2, 0.0, 0.2], "kz": [2.81, 2.87, 2.91]}
+    corrected = data.kspace.convert_coords(jacobian=True)
+    radius = erlab.constants.rel_kconv * np.sqrt(
+        data.hv - data.kspace.work_function + data.eV
+    )
+    expected = 1 / (radius * np.cos(np.deg2rad(data.alpha * 1.2)) * np.pi / 180 * 1.2)
+    np.testing.assert_allclose(
+        corrected, expected.transpose(*corrected.dims), rtol=2e-7
+    )
+    result = data.kspace.convert(**coords, jacobian=True)
+    xarray.testing.assert_identical(result, corrected.kspace.convert(**coords))
+    expanded = data.kspace.convert(
+        **{slit: [-0.3, -0.2, 0.0, 0.2, 0.4], "kz": [2.8, 2.81, 2.87, 2.91, 2.95]},
+        jacobian=True,
+    )
+    xarray.testing.assert_identical(expanded.sel(coords), result)
+
+    changed_potential = data.copy(deep=True)
+    changed_potential.kspace.inner_potential = 20.0
+    changed = changed_potential.kspace.convert_coords(jacobian=True)
+    np.testing.assert_array_equal(changed.values, corrected.values)
+    assert not np.allclose(changed.kz, corrected.kz)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+def test_convert_coords_jacobian_hv_binding_energy_dependence(configuration):
+    data = xarray.DataArray(
+        np.ones((3, 3, 2)),
+        dims=("alpha", "hv", "eV"),
+        coords={
+            "alpha": [-20.0, 0.0, 20.0],
+            "hv": [6.0, 6.5, 8.0],
+            "eV": [-1.0, 0.0],
+            "beta": 0.0,
+            "xi": 0.0,
+            "chi": 0.0,
+        },
+        attrs={
+            "configuration": configuration.value,
+            "sample_workfunction": 4.3,
+            "inner_potential": 10.0,
+        },
+    )
+    corrected = data.kspace.convert_coords(jacobian=True)
+    expected_ratio = np.sqrt((data.hv - 4.3) / (data.hv - 4.3 - 1.0))
+    np.testing.assert_allclose(
+        corrected.sel(alpha=0.0, eV=-1.0) / corrected.sel(alpha=0.0, eV=0.0),
+        expected_ratio,
+        rtol=2e-7,
+    )
+    lazy = data.chunk({"hv": 1}).kspace.convert_coords(jacobian=True)
+    assert lazy.chunks is not None
+    xarray.testing.assert_identical(lazy.compute(), corrected)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("energy_axis", [False, True])
+def test_convert_coords_jacobian_hv_maps_match_energy_slices(
+    density_map, configuration, energy_axis
+):
+    data = density_map.drop_vars("hv").expand_dims(hv=[22.0, 24.0, 26.0])
+    if not energy_axis:
+        data = data.sel(eV=0.0)
+    data.attrs["configuration"] = configuration.value
+    data.kspace.inner_potential = 10.0
+    data.kspace.angle_scales = {"alpha": 1.1, "beta": 0.9}
+    data.kspace.offsets["delta"] = 17.0
+    data = data.assign_coords(xi=5.0, chi=-3.0)
+    original = data.copy(deep=True)
+    corrected = data.kspace.convert_coords(jacobian=True)
+    for photon_energy in data.hv.values:
+        fixed = data.sel(hv=photon_energy).kspace.convert_coords(jacobian=True)
+        xarray.testing.assert_allclose(
+            corrected.sel(hv=photon_energy).drop_vars("kz"), fixed
+        )
+    lazy = data.chunk({"hv": 1}).kspace.convert_coords(jacobian=True)
+    xarray.testing.assert_identical(lazy.compute(), corrected)
+    xarray.testing.assert_allclose(
+        data.isel(hv=[2, 0]).kspace.convert_coords(jacobian=True),
+        corrected.isel(hv=[2, 0]),
+    )
+    xarray.testing.assert_identical(data, original)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("energy_axis", [False, True])
+@pytest.mark.parametrize("jacobian", [False, True])
+def test_convert_hv_maps_recovers_measured_points(
+    density_map, configuration, energy_axis, jacobian
 ):
     data = density_map.drop_vars("hv").expand_dims(hv=[22.0, 24.0, 26.0])
     data = data.copy(
@@ -51,12 +251,12 @@ def test_convert_hv_maps_recovers_measured_points(
     data.kspace.angle_scales = {"alpha": 1.1, "beta": 0.9}
     data.kspace.offsets["delta"] = 17.0
     data = data.assign_coords(xi=5.0, chi=-3.0)
-    measured = data.kspace.convert_coords()
+    measured = data.kspace.convert_coords(jacobian=jacobian)
     point = measured.isel(alpha=12, beta=15).sel(hv=24.0)
     if energy_axis:
         point = point.sel(eV=0.0)
     targets = {axis: [point[axis].item()] for axis in ("kx", "ky", "kz")}
-    result = data.kspace.convert(**targets)
+    result = data.kspace.convert(**targets, jacobian=jacobian)
     assert data.kspace.momentum_axes == ("kx", "ky", "kz")
     assert dict(result.sizes) == {
         "kx": 1,
@@ -71,7 +271,9 @@ def test_convert_hv_maps_recovers_measured_points(
     xarray.testing.assert_identical(result, measured.kspace.convert(**targets))
     reordered = data.isel(alpha=slice(None, None, -1), hv=slice(None, None, -1))
     xarray.testing.assert_allclose(
-        reordered.transpose(*reversed(data.dims)).kspace.convert(**targets),
+        reordered.transpose(*reversed(data.dims)).kspace.convert(
+            **targets, jacobian=jacobian
+        ),
         result,
     )
     expected_kz = erlab.analysis.kspace.kz_func(
@@ -128,15 +330,16 @@ def test_convert_hv_maps_lazy_batch_dimensions(density_map):
     )
     data.kspace.inner_potential = 10.0
     targets = {"kx": [-0.2, 0.0, 0.2], "ky": [-0.1, 0.0], "kz": [2.7, 2.8, 2.9]}
-    expected = data.kspace.convert(**targets)
+    expected = data.kspace.convert(**targets, jacobian=True)
     assert expected.notnull().any()
-    lazy = data.chunk({"repeat": 1}).kspace.convert(**targets)
+    lazy = data.chunk({"repeat": 1}).kspace.convert(**targets, jacobian=True)
     assert lazy.chunks is not None
     xarray.testing.assert_identical(lazy.compute(), expected)
     expanded = data.kspace.convert(
         kx=[-0.3, -0.2, 0.0, 0.1, 0.2],
         ky=targets["ky"],
         kz=[2.7, 2.75, 2.8, 2.9],
+        jacobian=True,
     )
     xarray.testing.assert_identical(expanded.sel(targets), expected)
 
@@ -161,10 +364,159 @@ def test_convert_single_photon_energy_dimension(
         )
     targets = {axis: [-0.1, 0.0, 0.1] for axis in data.kspace.momentum_axes}
     with pytest.warns(RuntimeWarning, match="not uniform"):
-        result = data.kspace.convert(**targets)
-    expected = data.sel(hv=24.0).kspace.convert(**targets)
+        result = data.kspace.convert(**targets, jacobian=True)
+    expected = data.sel(hv=24.0).kspace.convert(**targets, jacobian=True)
     assert result.sizes["hv"] == 1
     xarray.testing.assert_allclose(result.sel(hv=24.0), expected)
+
+
+def test_convert_jacobian_masks_unreachable_points(density_map):
+    result = density_map.kspace.convert(kx=[0.0, 5.0], ky=[0.0, 5.0], jacobian=True)
+    assert np.isfinite(result.sel(kx=0.0, ky=0.0)).all()
+    assert np.isnan(result.sel(kx=5.0)).all()
+    assert np.isnan(result.sel(ky=5.0)).all()
+
+
+def test_convert_jacobian_integrated_density(density_map):
+    data = density_map.sel(beta=0, eV=0)
+    radius = erlab.constants.rel_kconv * np.sqrt(data.hv - data.kspace.work_function)
+    limit = float(radius * np.sin(np.deg2rad(60)))
+    errors = []
+    for count in (31, 301):
+        source = data.interp(alpha=np.linspace(-60, 60, count))
+        # Refine the source samples; output refinement alone has an error floor.
+        edges = np.linspace(-limit, limit, 4001)
+        centers = 0.5 * (edges[1:] + edges[:-1])
+        density = source.kspace.convert(kx=centers, jacobian=True)
+        integral = float((density * np.diff(edges)).sum())
+        errors.append(abs(integral / 120 - 1))
+    assert errors[1] < errors[0] / 10
+    assert errors[1] < 1e-5
+
+
+def test_convert_without_jacobian_skips_derivatives(density_map, monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Jacobian evaluation must be opt-in")
+
+    monkeypatch.setattr(
+        erlab.analysis.kspace, "_forward_jacobian_determinant", unexpected
+    )
+    xarray.testing.assert_identical(
+        density_map.kspace.convert_coords(),
+        density_map.kspace.convert_coords(jacobian=False),
+    )
+    kwargs = {"kx": [-0.2, 0.0, 0.2], "ky": [-0.1, 0.0, 0.1]}
+    xarray.testing.assert_identical(
+        density_map.kspace.convert(**kwargs),
+        density_map.kspace.convert(**kwargs, jacobian=False),
+    )
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.int64])
+def test_convert_coords_jacobian_precision_lazy_and_kinetic_labels(density_map, dtype):
+    data = (
+        density_map.astype(dtype)
+        .expand_dims(repeat=["a", "b"])
+        .transpose("eV", "repeat", "beta", "alpha")
+    )
+    original = data.copy(deep=True)
+    expected = data.kspace.convert_coords(jacobian=True)
+    assert expected.dtype == np.float64
+    lazy = data.chunk({"repeat": 1}).kspace.convert_coords(jacobian=True)
+    assert lazy.chunks is not None
+    xarray.testing.assert_identical(lazy.compute(), expected)
+    xarray.testing.assert_identical(data, original)
+    kinetic = data.assign_coords(eV=data.eV + data.hv - data.kspace.work_function)
+    with pytest.warns(UserWarning, match="kinetic energy"):
+        result = kinetic.kspace.convert_coords(jacobian=True)
+    xarray.testing.assert_identical(result.eV, kinetic.eV)
+    xarray.testing.assert_allclose(result.assign_coords(eV=data.eV), expected)
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+def test_convert_coords_jacobian_hv_matches_fixed_energy_slices(
+    density_map, configuration
+):
+    data = (
+        density_map.sel(beta=0)
+        .drop_vars(["hv", "beta"])
+        .expand_dims(hv=np.linspace(22, 28, 7), repeat=["first", "second"])
+    )
+    data = data.assign_coords(
+        beta=12
+        + 1.3 * (data.hv - 24)
+        + 0.7 * data.eV
+        + xarray.DataArray([0.0, 0.5], dims="repeat")
+    )
+    data.kspace.inner_potential = 10
+    data.kspace.angle_scales = {"alpha": 1.1, "beta": 0.9}
+    data.kspace.offsets["delta"] = 17.0
+    data.attrs["configuration"] = configuration.value
+    result = data.kspace.convert_coords(jacobian=True)
+    if configuration == AxesConfiguration.Type1:
+        a, b = np.deg2rad(data.alpha * 1.1), np.deg2rad(data.beta * 0.9)
+        delta = np.deg2rad(17.0)
+        radius = erlab.constants.rel_kconv * np.sqrt(data.hv - 4.3 + data.eV)
+        derivative = (
+            radius
+            * (np.cos(delta) * np.cos(a) + np.sin(delta) * np.sin(b) * np.sin(a))
+            * np.pi
+            / 180
+            * 1.1
+        )
+        np.testing.assert_allclose(
+            result, (1 / abs(derivative)).transpose(*result.dims), rtol=2e-7
+        )
+    for photon_energy in data.hv.values:
+        fixed = data.sel(hv=photon_energy).kspace.convert_coords(jacobian=True)
+        xarray.testing.assert_allclose(
+            result.sel(hv=photon_energy).drop_vars("kz"), fixed
+        )
+    reversed_data = data.isel(hv=slice(None, None, -1))
+    xarray.testing.assert_allclose(
+        reversed_data.kspace.convert_coords(jacobian=True),
+        result.isel(hv=slice(None, None, -1)),
+    )
+    sparse = data.isel(hv=[0, 2, 3, 6])
+    xarray.testing.assert_allclose(
+        sparse.kspace.convert_coords(jacobian=True), result.sel(hv=sparse.hv)
+    )
+    changed_neighbors = data.assign_coords(
+        beta=data.beta + 3 * (data.hv - 24)
+    ).kspace.convert_coords(jacobian=True)
+    xarray.testing.assert_allclose(changed_neighbors.sel(hv=24), result.sel(hv=24))
+
+
+def test_convert_coords_jacobian_uses_complete_forward_map(density_map, monkeypatch):
+    original_factory = erlab.analysis.kspace.get_kconv_forward
+    original = density_map.kspace.convert_coords(jacobian=True)
+
+    def corrected_factory(configuration):
+        forward = original_factory(configuration)
+
+        def corrected(*args, **kwargs):
+            x, y = forward(*args, **kwargs)
+            factor = 1 + 0.2 * (x * x + y * y)
+            return factor * x, factor * y
+
+        return corrected
+
+    monkeypatch.setattr(erlab.analysis.kspace, "get_kconv_forward", corrected_factory)
+    result = density_map.kspace.convert_coords(jacobian=True)
+    r2 = original.kx**2 + original.ky**2
+    np.testing.assert_allclose(result.kx, original.kx * (1 + 0.2 * r2), rtol=2e-12)
+    np.testing.assert_allclose(result.ky, original.ky * (1 + 0.2 * r2), rtol=2e-12)
+    expected = original / ((1 + 0.2 * r2) * (1 + 0.6 * r2))
+    np.testing.assert_allclose(result, expected.transpose(*result.dims), rtol=2e-7)
+
+
+def test_convert_coords_jacobian_masks_singular_source_points(density_map):
+    data = density_map.sel(beta=0).interp(
+        alpha=[-90, -20, 0, 20, 90], kwargs={"fill_value": "extrapolate"}
+    )
+    result = data.kspace.convert_coords(jacobian=True)
+    assert np.isnan(result.sel(alpha=[-90, 90])).all()
+    assert np.isfinite(result.sel(alpha=[-20, 0, 20])).all()
 
 
 @pytest.fixture(scope="module")
@@ -1280,6 +1632,22 @@ def test_missing_sample_work_function_has_no_fallback(attrs):
     with pytest.raises(IncompleteDataError, match="sample_work_function"):
         _ = data.kspace.sample_work_function
     assert data.attrs == attrs
+
+
+@pytest.mark.parametrize("method", ["convert", "convert_coords"])
+@pytest.mark.parametrize("jacobian", [False, True])
+def test_work_function_migration_preserves_conversion(density_map, method, jacobian):
+    legacy = density_map.copy(deep=True)
+    canonical = density_map.copy(deep=True)
+    canonical.kspace.analyzer_work_function = legacy.kspace.work_function
+    canonical.attrs["sample_workfunction"] = 12.0  # The canonical value takes priority.
+    canonical.kspace.sample_work_function = 100.0  # Unused by current conversion.
+    original = canonical.copy(deep=True)
+    expected = getattr(legacy.kspace, method)(jacobian=jacobian)
+    result = getattr(canonical.kspace, method)(jacobian=jacobian)
+    xarray.testing.assert_equal(result, expected)
+    xarray.testing.assert_identical(canonical, original)
+    assert result.kspace.sample_work_function == 100.0
 
 
 def test_kspace_set_existing_configuration(anglemap):

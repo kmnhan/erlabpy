@@ -1436,23 +1436,75 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             momentum_coords.get("kz") if self._has_hv else None,
         )
 
+    def _source_jacobian_determinant(self) -> xr.DataArray:
+        """Differentiate measured angles at fixed photon and binding energies."""
+        alpha, beta, hv = self._raw_alpha, self._raw_beta, self._hv
+        binding_energy = self._source_binding_energy()
+        axes: tuple[typing.Literal["kx", "ky"], ...]
+        if self._has_beta_axis:
+            axes = ("kx", "ky")
+            coordinates, parameters = (alpha, beta), (hv, binding_energy)
+        else:
+            # Auxiliary beta coordinates are held fixed for each angular cut.
+            axes = (self.slit_axis,)
+            coordinates, parameters = (alpha,), (beta, hv, binding_energy)
+
+        def forward(
+            alpha: np.ndarray,
+            beta: np.ndarray,
+            hv: np.ndarray,
+            binding_energy: np.ndarray,
+        ) -> np.ndarray:
+            momentum = self._forward_coords(alpha, beta, hv, binding_energy)
+            return np.stack(np.broadcast_arrays(*(momentum[axis] for axis in axes)))
+
+        broadcasted = xr.broadcast(
+            *(value.reset_coords(drop=True) for value in (*coordinates, *parameters))
+        )
+        n_source = len(coordinates)
+        determinant = erlab.analysis.kspace._forward_jacobian_determinant(
+            forward,
+            tuple(value.values for value in broadcasted[:n_source]),
+            parameters=tuple(value.values for value in broadcasted[n_source:]),
+            initial_step=(0.1,) * n_source,
+        )
+        return xr.DataArray(
+            determinant, dims=broadcasted[0].dims, coords=broadcasted[0].coords
+        )
+
+    def _jacobian_corrected_data(self) -> xr.DataArray:
+        """Divide measured intensity by the forward determinant before interpolation."""
+        return xr.apply_ufunc(
+            np.divide,
+            self._obj,
+            self._source_jacobian_determinant(),
+            dask="allowed",
+            keep_attrs=True,
+        ).transpose(*self._obj.dims)
+
     @_only_angles
-    def convert_coords(self) -> xr.DataArray:
+    def convert_coords(self, *, jacobian: bool = False) -> xr.DataArray:
         """Convert coordinates to momentum space.
 
         Assign exact momentum coordinates without interpolating the intensity.
 
+        Parameters
+        ----------
+        jacobian
+            If ``True``, applies Jacobian correction to the intensity.
+
         Returns
         -------
         xarray.DataArray
-            A new array with the same dimensions, coordinate sampling, intensity values,
-            name, and attributes as the input. The applicable ``kx`` and ``ky``
-            coordinates are added. For photon-energy-dependent data, ``kz`` is also
-            added. All units for momentum are in Å⁻¹. The momentum coordinates can
-            depend on more than one measured dimension. The input is not modified.
+            A new array with the same dimensions, coordinate sampling, name, and
+            attributes as the input. The applicable ``kx`` and ``ky`` coordinates
+            are added. For photon-energy-dependent data, ``kz`` is also added.
+            All units for momentum are in Å⁻¹. The momentum coordinates can depend
+            on more than one measured dimension. The input is not modified.
         """
         self._check_kinetic_energy(context="converting coordinates to momentum space")
-        return self._obj.assign_coords(self._get_transformed_coords())
+        data = self._jacobian_corrected_data() if jacobian else self._obj
+        return data.assign_coords(self._get_transformed_coords())
 
     @_only_angles
     def _coord_for_conversion(self, name: Hashable) -> xr.DataArray:
@@ -1476,6 +1528,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         *,
         method: str = "linear",
         silent: bool = True,
+        jacobian: bool = False,
         **coords,
     ) -> xr.DataArray:
         """Convert to momentum space.
@@ -1500,6 +1553,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             ``'linear'`` will result in slower performance.
         silent
             If ``False``, print progress messages during the conversion.
+        jacobian
+            If ``True``, applies Jacobian correction to the intensity following the
+            change of coordinate measure described in :cite:t:`Gauthier2021` and
+            :cite:t:`Miao2026`. Derivatives are calculated numerically using fixed
+            finite differences with Richardson extrapolation at the original measured
+            coordinates, independent of source and target grid spacing.
         **coords
             Explicit one-dimensional target coordinates, in Å⁻¹, supplied as ``kx``,
             ``ky``, or ``kz``. An explicit coordinate overrides ``bounds`` and
@@ -1515,10 +1574,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             replaced by the momentum axis parallel to the analyzer slit. For angular
             maps, ``alpha`` and ``beta`` are replaced by ``kx`` and ``ky``. For
             photon-energy-dependent cuts, ``alpha`` and ``hv`` are replaced by the
-            slit-parallel momentum axis and ``kz``. The ``eV`` dimension is retained and
-            uses binding energy. The data name and attributes are preserved, and the
-            interpolated values use a floating dtype. Points outside the measured
-            angular coverage contain missing values. The input is not modified.
+            slit-parallel momentum axis and ``kz``. Photon-energy-dependent angular maps
+            replace ``alpha``, ``beta``, and ``hv`` with ``kx``, ``ky``, and ``kz``. The
+            ``eV`` dimension is retained and uses binding energy. The data name and
+            attributes are preserved, and the interpolated values use a floating dtype.
+            Points outside the measured angular coverage contain missing values. The
+            input is not modified.
 
         Notes
         -----
@@ -1645,7 +1706,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             [typing.cast("tuple[str, ...]", target_dict[d].dims) for d in input_dims]
         )
 
-        source = self._obj
+        source = self._jacobian_corrected_data() if jacobian else self._obj
         out = xr.apply_ufunc(
             _wrap_interpn,
             source.assign_coords(eV=self._binding_energy),

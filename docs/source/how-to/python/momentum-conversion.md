@@ -89,6 +89,14 @@ conversion_input.kspace.analyzer_work_function = analyzer_work_function
 converted = conversion_input.kspace.convert()
 ```
 
+The optional Jacobian correction is enabled with `jacobian=True`:
+
+```python
+converted_corrected = conversion_input.kspace.convert(jacobian=True)
+```
+
+See {ref}`explanation-kspace-jacobian` for more information.
+
 `alpha_normal` and `beta_normal` are the data coordinates that correspond to normal
 emission. Use {ref}`how-to-python-change-configuration` first when a variable-geometry
 endstation acquired the measurement in a different configuration from the loader

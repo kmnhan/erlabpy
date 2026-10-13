@@ -12,6 +12,78 @@ from erlab.constants import AxesConfiguration
 kinetic = np.array([1.0, 2.0, 3.0])
 
 
+def test_forward_jacobian_boundaries_invalid_and_grid_independence():
+    def forward(x):
+        return np.array([np.where((x >= 0) & (x <= 1), np.exp(x), np.nan)])
+
+    common = np.array([0.0, 0.13, 0.9, 1.0])
+
+    def evaluate(points):
+        return erlab.analysis.kspace._forward_jacobian_determinant(
+            forward, (points,), initial_step=(0.1,)
+        )
+
+    coarse = evaluate(common)
+    np.testing.assert_allclose(coarse, np.exp(common), rtol=2e-7)
+    for points in (common[::-1], np.sort(np.r_[common, np.linspace(-0.5, 1.5, 37)])):
+        result = evaluate(points)
+        for point, value in zip(common, coarse, strict=True):
+            np.testing.assert_array_equal(result[points == point], value)
+        assert np.isnan(result[(points < 0) | (points > 1)]).all()
+    # Check scalar and vector evaluations to floating-point precision.
+    np.testing.assert_allclose(evaluate([0.13]), coarse[1:2], rtol=5e-13)
+
+
+def test_forward_jacobian_composed_map_parameters_and_sample_order():
+    def forward(x, y, energy):
+        radial = 1 + 0.2 * (x * x + y * y)
+        return energy * np.array([radial * x, radial * y])
+
+    x = np.linspace(-0.4, 0.4, 17001)
+    y = x[::-1] * 0.5
+    energy = np.linspace(1, 20, x.size)
+
+    def evaluate(x, y, energy):
+        return erlab.analysis.kspace._forward_jacobian_determinant(
+            forward, (x, y), parameters=(energy,), initial_step=(0.1, 0.1)
+        )
+
+    result = evaluate(x, y, energy)
+    r2 = x * x + y * y
+    np.testing.assert_allclose(
+        result, energy**2 * (1 + 0.2 * r2) * (1 + 0.6 * r2), rtol=2e-7
+    )
+    np.testing.assert_array_equal(
+        evaluate(x[::-1], y[::-1], energy[::-1]), result[::-1]
+    )
+    np.testing.assert_array_equal(evaluate(x[-1:], y[-1:], energy[-1:]), result[-1:])
+
+
+@pytest.mark.parametrize("slope", [0.0, 1e-12])
+def test_forward_jacobian_rejects_singular_maps(slope):
+    def forward(x, y):
+        return np.array([x + y, x + (1 + slope) * y])
+
+    result = erlab.analysis.kspace._forward_jacobian_determinant(
+        forward, (np.array([0.2, 0.4]), np.array([0.3, 0.5])), initial_step=(0.1, 0.1)
+    )
+    assert np.isnan(result).all()
+
+
+def test_forward_jacobian_rejects_non_square_map():
+    with pytest.raises(ValueError, match="must be square"):
+        erlab.analysis.kspace._forward_jacobian_determinant(
+            lambda x: np.array([x, x]), ([0.0, 1.0],), initial_step=(0.1,)
+        )
+
+
+def test_forward_jacobian_rejects_unconverged_derivative():
+    result = erlab.analysis.kspace._forward_jacobian_determinant(
+        lambda x: np.array([np.cbrt(x)]), ([0.0],), initial_step=(0.1,)
+    )
+    assert np.isnan(result).all()
+
+
 def _manual_monotonic_interp(
     source_coord: np.ndarray, source_values: np.ndarray, target_coord: np.ndarray
 ) -> np.ndarray:

@@ -163,6 +163,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
                 "resolution": None,
                 "method": "linear",
                 "silent": True,
+                "jacobian": False,
             },
         ),
     )
@@ -170,6 +171,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
     resolution: dict[str, float] | None = None
     method: str = "linear"
     silent: bool = True
+    jacobian: bool = False
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -182,6 +184,8 @@ class KspaceConvertOperation(ToolProvenanceOperation):
             kwargs["method"] = self.method
         if not self.silent:
             kwargs["silent"] = self.silent
+        if self.jacobian:
+            kwargs["jacobian"] = True
         return kwargs
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
@@ -190,6 +194,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
             resolution=self.resolution,
             method=self.method,
             silent=self.silent,
+            jacobian=self.jacobian,
         )
 
     def derivation_label(self) -> str:

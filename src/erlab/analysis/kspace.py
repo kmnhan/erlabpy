@@ -42,6 +42,165 @@ _EXACT_CUT_METADATA_HINT = (
 )
 
 
+@numba.njit(cache=True)
+def _validated_jacobian_determinant(
+    matrix: npt.NDArray[np.float64],
+    errors: npt.NDArray[np.float64],
+    valid: npt.NDArray[np.bool_],
+) -> npt.NDArray[np.float64]:
+    """Return reliable determinants from columns with shape (angles, momenta, ...)."""
+    sample_shape = valid.shape
+    ndim = matrix.shape[0]
+    matrix = matrix.reshape(ndim, ndim, valid.size)
+    errors = errors.reshape(ndim, ndim, valid.size)
+    valid = valid.ravel()
+    result = np.full(valid.size, np.nan)
+    for point in range(valid.size):
+        if not valid[point]:
+            continue
+        if ndim == 1:
+            determinant = abs(matrix[0, 0, point])
+            error = errors[0, 0, point]
+        else:
+            a, c = matrix[0, 0, point], matrix[0, 1, point]
+            b, d = matrix[1, 0, point], matrix[1, 1, point]
+            ea, ec = errors[0, 0, point], errors[0, 1, point]
+            eb, ed = errors[1, 0, point], errors[1, 1, point]
+            determinant = abs(a * d - b * c)
+            # Bound the error in each product of det(J) = ad - bc.
+            error = (
+                abs(d) * ea
+                + abs(a) * ed
+                + ea * ed
+                + abs(c) * eb
+                + abs(b) * ec
+                + eb * ec
+            )
+        if np.isfinite(determinant) and determinant > 0 and error <= 1e-5 * determinant:
+            result[point] = determinant
+    return result.reshape(sample_shape)
+
+
+@numba.njit(cache=True)
+def _accumulate_central_difference(
+    positive: npt.NDArray[np.float64],
+    negative: npt.NDArray[np.float64],
+    spacing: float,
+    level: int,
+    derivative: npt.NDArray[np.float64],
+    error: npt.NDArray[np.float64],
+    roundoff: npt.NDArray[np.float64],
+) -> None:
+    """Accumulate one of three central differences into a Jacobian column.
+
+    Arrays have shape (momentum components, ...). For central differences
+    D0, D1, D2 at h, h/2, h/4, Richardson extrapolation gives
+    (D0 - 20 D1 + 64 D2) / 45. The error estimate uses (D0 - 5 D1 + 4 D2) / 45.
+    """
+    positive, negative = positive.ravel(), negative.ravel()
+    derivative, error, roundoff = derivative.ravel(), error.ravel(), roundoff.ravel()
+    derivative_weight = (1.0, -20.0, 64.0)[level] / 45
+    error_weight = (1.0, -5.0, 4.0)[level] / 45
+    for index in range(positive.size):
+        plus, minus = positive[index], negative[index]
+        central = (plus - minus) / (2 * spacing)
+        derivative[index] += derivative_weight * central
+        error[index] += error_weight * central
+        # Allow rounding in both the differences and their weighted sum.
+        roundoff[index] += (
+            2 * np.finfo(np.float64).eps * (abs(plus) + abs(minus)) / spacing
+        )
+        if level == 2:
+            error[index] = abs(error[index]) + roundoff[index]
+
+
+def _one_sided_jacobian_column(
+    forward: Callable[..., npt.NDArray[np.float64]],
+    values: tuple[npt.NDArray[np.float64], ...],
+    base: npt.NDArray[np.float64],
+    axis: int,
+    step: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Use fourth-order one-sided differences when a central probe is invalid."""
+    estimates = []
+    roundoff = np.zeros_like(base)
+    for spacing in (step / 4, step / 8):
+        numerator = -25 * base
+        magnitude = 25 * np.abs(base)
+        for offset, weight in enumerate((48, -36, 16, -3), start=1):
+            shifted = list(values)
+            shifted[axis] = values[axis] + offset * spacing
+            sample = forward(*shifted)
+            numerator += weight * sample
+            magnitude += abs(weight) * np.abs(sample)
+        estimates.append(numerator / (12 * spacing))
+        roundoff += np.finfo(float).eps * magnitude / (12 * np.abs(spacing))
+    coarse, fine = estimates
+    return (16 * fine - coarse) / 15, np.abs(fine - coarse) / 15 + roundoff
+
+
+def _forward_jacobian_determinant(
+    forward: Callable[..., npt.NDArray[np.float64]],
+    coordinates: tuple[npt.ArrayLike, ...],
+    *,
+    parameters: tuple[npt.ArrayLike, ...] = (),
+    initial_step: tuple[float, ...],
+) -> npt.NDArray[np.float64]:
+    """Differentiate one or two angles with fixed finite differences.
+
+    ``forward(*coordinates, *parameters)`` returns momentum components on its first
+    axis. All other axes broadcast pointwise. Only ``coordinates`` are differentiated;
+    ``parameters`` stay fixed. Steps use source coordinate units, independent of grid
+    sampling. Three central differences at steps h, h/2, and h/4 give a sixth-order
+    Richardson estimate. Invalid or unresolved determinants are returned as NaN.
+    """
+    ndim = len(coordinates)
+    if ndim not in (1, 2) or len(initial_step) != ndim:
+        raise ValueError("Supply one initial step for each of one or two angles.")
+    values = np.broadcast_arrays(
+        *(np.asarray(value, dtype=np.float64) for value in (*coordinates, *parameters))
+    )
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        base = np.asarray(forward(*values), dtype=np.float64)
+        if base.shape != (ndim, *values[0].shape):
+            raise ValueError("The forward coordinate Jacobian must be square.")
+
+        valid = np.asarray(np.isfinite(base).all(axis=0))
+        # Store columns first, followed by momentum components and source dimensions.
+        matrix = np.zeros((ndim, *base.shape))
+        errors = np.zeros_like(matrix)
+        for axis, step in enumerate(initial_step):
+            derivative, error = matrix[axis], errors[axis]
+            roundoff = np.zeros(base.shape)
+            for level, spacing in enumerate((step, step / 2, step / 4)):
+                plus, minus = list(values), list(values)
+                plus[axis], minus[axis] = (
+                    values[axis] + spacing,
+                    values[axis] - spacing,
+                )
+                fplus, fminus = forward(*plus), forward(*minus)
+                if level == 0:
+                    plus_valid = np.asarray(np.isfinite(fplus).all(axis=0))
+                    minus_valid = np.asarray(np.isfinite(fminus).all(axis=0))
+                _accumulate_central_difference(
+                    fplus, fminus, spacing, level, derivative, error, roundoff
+                )
+
+            boundary = valid & ~(plus_valid & minus_valid)
+            if np.any(boundary):
+                derivative[:, boundary], error[:, boundary] = (
+                    _one_sided_jacobian_column(
+                        forward,
+                        tuple(value[boundary] for value in values),
+                        base[:, boundary],
+                        axis,
+                        np.where(plus_valid[boundary], step, -step),
+                    )
+                )
+
+        return _validated_jacobian_determinant(matrix, errors, valid)
+
+
 class InvalidConfigurationError(ValueError):
     """Raised when a momentum-conversion routine receives an invalid configuration."""
 

@@ -2334,26 +2334,63 @@ def test_kspace_set_normal_operation_round_trip_and_code() -> None:
         assert namespace["data"].kspace.offsets[key] == pytest.approx(value)
 
 
-def test_kspace_convert_operation_round_trip_and_code() -> None:
+@pytest.mark.parametrize("jacobian", [False, True])
+@pytest.mark.parametrize("photon_energy_scan", [False, True])
+def test_kspace_convert_operation_round_trip_and_code(
+    jacobian, photon_energy_scan
+) -> None:
     data = _kspace_data()
+    bounds = {"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)}
+    if photon_energy_scan:
+        data = data.sel(beta=0.0).drop_vars("hv").expand_dims(hv=[20.0, 22.0, 24.0])
+        bounds = {"kx": (-0.02, 0.02), "kz": (2.65, 2.69)}
+    resolution = dict.fromkeys(bounds, 0.02)
     operation = KspaceConvertOperation(
-        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
-        resolution={"kx": 0.02, "ky": 0.02},
+        bounds=bounds, resolution=resolution, jacobian=jacobian
     )
-    expected = data.kspace.convert(
-        bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
-        resolution={"kx": 0.02, "ky": 0.02},
-        silent=True,
-    )
+    if photon_energy_scan and jacobian:
+        radius = erlab.constants.rel_kconv * np.sqrt(data.hv - 4.5 + data.eV)
+        angular_density = data / (radius * np.cos(np.deg2rad(data.alpha)) * np.pi / 180)
+        expected = angular_density.kspace.convert(
+            bounds=bounds, resolution=resolution, silent=True
+        )
+    else:
+        expected = data.kspace.convert(
+            bounds=bounds, resolution=resolution, silent=True, jacobian=jacobian
+        )
 
     parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
 
     assert parsed == operation
     xr.testing.assert_allclose(parsed.apply(data), expected)
     code = parsed.replay_code("data", output_name="result")
-    assert "result = data.kspace.convert(" in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xr.testing.assert_allclose(namespace["result"], expected)
+
+    legacy = operation.model_dump(mode="json")
+    legacy.pop("jacobian")
+    assert parse_tool_provenance_operation(legacy).jacobian is False
+
+
+def test_kspace_jacobian_console_capture():
+    data = _kspace_data()
+    kwargs = {
+        "bounds": {"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
+        "resolution": {"kx": 0.02, "ky": 0.02},
+        "jacobian": True,
+    }
+    operation = operation_from_console_call(
+        ConsoleCall(
+            accessor_path=("kspace", "convert"),
+            args=(),
+            kwargs=kwargs,
+            display_code="data.kspace.convert(**kwargs)",
+            has_extra_tracked_inputs=False,
+        )
+    )
+    assert isinstance(operation, KspaceConvertOperation)
+    assert operation.jacobian
+    xr.testing.assert_identical(operation.apply(data), data.kspace.convert(**kwargs))
 
 
 @pytest.mark.parametrize(

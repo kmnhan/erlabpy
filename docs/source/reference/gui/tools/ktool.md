@@ -63,6 +63,9 @@ Clicking {guilabel}`Copy to clipboard` will copy the code for conversion to the
 clipboard, including any selected configuration change and momentum-conversion
 settings.
 
+Enable {guilabel}`Jacobian correction` to convert intensity per recorded angle to
+intensity per momentum interval or area. See {ref}`explanation-kspace-jacobian`.
+
 {guilabel}`Open in ImageTool` performs a full conversion. When `ktool` was opened from
 an ImageTool in the manager, the converted data opens as a child row under `ktool`;
 outside the manager, it opens as a normal standalone ImageTool window.
