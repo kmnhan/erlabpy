@@ -239,14 +239,36 @@ def get_bz_edge(
     else:
         raise ValueError("Shape of `basis` must be (N, N) where N = 2 or 3.")
 
-    if not reciprocal:
-        basis = to_reciprocal(basis)
-
     if extend is None:
         extend = (1,) * ndim
 
+    point_basis = np.array(basis, dtype=float, copy=True)
+    if ndim == 2:
+        # Gauss reduction keeps the same lattice and puts all Voronoi neighbors
+        # in the 3-by-3 grid. Keep `basis` unchanged for the requested repetitions.
+        while True:
+            lengths_sq = np.einsum("ij,ij->i", point_basis, point_basis)
+            if not np.isfinite(lengths_sq).all() or np.any(lengths_sq <= 0.0):
+                raise ValueError(
+                    "The 2D lattice vectors must be finite and linearly independent."
+                )
+            if lengths_sq[0] > lengths_sq[1]:
+                point_basis = point_basis[::-1].copy()
+                lengths_sq = lengths_sq[::-1]
+            multiple = np.rint(np.dot(point_basis[0], point_basis[1]) / lengths_sq[0])
+            if multiple == 0.0:
+                break
+            point_basis[1] -= multiple * point_basis[0]
+
+    if not reciprocal:
+        # Reduce before inversion to limit cancellation for oblique real bases.
+        basis = to_reciprocal(basis)
+        point_basis = to_reciprocal(point_basis) if ndim == 2 else basis
+
     points = (
-        np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=(0, 0))
+        np.tensordot(
+            point_basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=(0, 0)
+        )
         .reshape((ndim, 3**ndim))
         .T
     )
@@ -274,6 +296,9 @@ def get_bz_edge(
 
     for line in lines:
         for i in range(line.shape[0] - 1):
+            if ndim == 2 and np.allclose(line[i], line[i + 1]):
+                # Roundoff can split one corner into two coincident vertices.
+                continue
             if not any(
                 np.allclose(line[i : i + 2], line_new)
                 or np.allclose(line[i : i + 2], np.flipud(line_new))
@@ -559,6 +584,39 @@ def _deduplicate_and_exclude(points, bounds, tolerance):
     return deduplicated[mask]
 
 
+def _surface_bz_translation_bounds(
+    bvec: npt.NDArray[np.floating],
+    surface: npt.NDArray[np.floating],
+    *,
+    pad_cells: int,
+) -> tuple[npt.NDArray[np.integer], npt.NDArray[np.integer]]:
+    """Bound all nearest lattice points, including for a skew reciprocal basis."""
+    points = np.reshape(surface, (-1, 3))
+    points = points[np.isfinite(points).all(axis=-1)]
+    if not len(points):
+        return np.zeros(3, dtype=int), np.full(3, -1, dtype=int)
+
+    inverse = np.linalg.inv(bvec)
+    frac = points @ inverse
+    # Rounded fractional coordinates give a lattice point at distance R. The
+    # nearest point is no farther away, so Cauchy-Schwarz bounds its fractional
+    # coordinate offset by R times each corresponding inverse-basis column norm.
+    # A fixed number of fractional cells cannot provide this bound for skew bases.
+    radius = np.linalg.norm((frac - np.rint(frac)) @ bvec, axis=-1)
+    radius += 8.0 * np.finfo(float).eps * np.maximum(1.0, radius)
+    reach = radius[:, None] * np.linalg.norm(inverse, axis=0)
+    reach += 8.0 * np.finfo(float).eps * np.maximum(1.0, np.abs(frac))
+    lo = np.minimum(
+        np.floor(frac.min(axis=0)) - pad_cells,
+        np.ceil((frac - reach).min(axis=0)),
+    ).astype(int)
+    hi = np.maximum(
+        np.ceil(frac.max(axis=0)) + pad_cells,
+        np.floor((frac + reach).max(axis=0)),
+    ).astype(int)
+    return lo, hi
+
+
 def _surface_bz_translation_grid(
     bvec: npt.NDArray[np.floating],
     surface: npt.NDArray[np.floating],
@@ -588,9 +646,7 @@ def _surface_bz_translation_grid(
     ndarray
         Reciprocal-lattice translation vectors with shape ``(nshift, 3)``.
     """
-    frac = np.linalg.solve(bvec.T, np.reshape(surface, (-1, 3)).T).T
-    lo = np.floor(np.nanmin(frac, axis=0)).astype(int) - pad_cells
-    hi = np.ceil(np.nanmax(frac, axis=0)).astype(int) + pad_cells
+    lo, hi = _surface_bz_translation_bounds(bvec, surface, pad_cells=pad_cells)
     grid = np.stack(
         np.meshgrid(
             np.arange(lo[0], hi[0] + 1, dtype=int),
@@ -601,6 +657,45 @@ def _surface_bz_translation_grid(
         axis=-1,
     )
     return grid.reshape(-1, 3) @ bvec
+
+
+def _surface_bz_cells(
+    bvec: npt.NDArray[np.floating],
+    surface: npt.NDArray[np.floating],
+    *,
+    pad_cells: int = 1,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.integer]]:
+    """Return reciprocal translations and nearest-cell indices for a surface.
+
+    The owner array has shape ``surface.shape[:-1]``. Invalid points have owner
+    ``-1``. Ties select the first translation in grid order. A wholly invalid
+    surface returns an empty translation array with shape ``(0, 3)``.
+    """
+    import scipy.spatial
+
+    surface = np.asarray(surface, dtype=float)
+    finite = np.isfinite(surface).all(axis=-1)
+    owner = np.full(surface.shape[:-1], -1, dtype=int)
+    if not finite.any():
+        return np.empty((0, 3)), owner
+
+    surface = np.where(finite[..., None], surface, np.nan)
+    shifts = _surface_bz_translation_grid(bvec, surface, pad_cells=pad_cells)
+    tree = scipy.spatial.cKDTree(shifts)
+    points = surface[finite]
+    distances, nearest = tree.query(points, k=2)
+    point_owner = nearest[:, 0]
+    # Keep the first translation at exact cell boundaries, as with argmin.
+    # Otherwise tree traversal can alternate owners along a bisector surface.
+    tie_tolerance = 8.0 * np.finfo(float).eps * np.maximum(1.0, distances[:, 0])
+    tied = distances[:, 1] - distances[:, 0] <= tie_tolerance
+    if tied.any():
+        candidates = tree.query_ball_point(
+            points[tied], distances[tied, 0] + tie_tolerance[tied]
+        )
+        point_owner[tied] = [min(indices) for indices in candidates]
+    owner[finite] = point_owner
+    return shifts, owner
 
 
 def _surface_bz_active_pair_bounds(
@@ -1051,17 +1146,18 @@ def get_surface_bz(
 
     import contourpy
 
+    shifts, owner = _surface_bz_cells(bvec, surface, pad_cells=pad_cells)
+    finite = owner >= 0
+    if not finite.any():
+        if return_midpoints:
+            return [], np.empty((0, 2)), np.empty((0, 2))
+        return [], np.empty((0, 2))
+    surface = np.where(finite[..., None], surface, np.nan)
+
     tol = 10 * eps
     step_x = float(np.nanmedian(np.abs(np.diff(plot_x)))) if plot_x.size > 1 else 0.0
     step_y = float(np.nanmedian(np.abs(np.diff(plot_y)))) if plot_y.size > 1 else 0.0
     snap_tol = float(np.hypot(step_x, step_y))
-    shifts = _surface_bz_translation_grid(bvec, surface, pad_cells=pad_cells)
-    surface_sq = np.sum(surface * surface, axis=-1)
-    shift_sq = np.sum(shifts * shifts, axis=1)[:, None, None]
-    dist_sq = shift_sq - 2.0 * np.tensordot(shifts, surface, axes=([1], [2]))
-    dist_sq += surface_sq[None, ...]
-    owner = np.argmin(dist_sq, axis=0)
-
     lines: list[npt.NDArray[np.floating]] = []
     line_pairs: list[tuple[int, int]] = []
     seen_signatures: set[bytes] = set()
@@ -1069,6 +1165,8 @@ def get_surface_bz(
     for (i, j), (row_min, row_max, col_min, col_max) in _surface_bz_active_pair_bounds(
         owner
     ).items():
+        if i < 0:
+            continue
         r0 = max(row_min - 1, 0)
         r1 = min(row_max + 2, owner.shape[0])
         c0 = max(col_min - 1, 0)
@@ -1076,7 +1174,11 @@ def get_surface_bz(
 
         local_owner = owner[r0:r1, c0:c1]
         local_mask = (local_owner == i) | (local_owner == j)
-        delta = dist_sq[i, r0:r1, c0:c1] - dist_sq[j, r0:r1, c0:c1]
+        delta = (
+            np.dot(shifts[i], shifts[i])
+            - np.dot(shifts[j], shifts[j])
+            - 2.0 * np.einsum("k,ijk->ij", shifts[i] - shifts[j], surface[r0:r1, c0:c1])
+        )
         contours = contourpy.contour_generator(
             x=plot_x[c0:c1],
             y=plot_y[r0:r1],
