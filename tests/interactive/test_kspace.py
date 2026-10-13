@@ -169,6 +169,147 @@ def test_ktool_work_function_migration_persistence_and_code(
     xr.testing.assert_identical(namespace["data_kconv"], result)
 
 
+@pytest.mark.parametrize("photon_energy_scan", [False, True])
+def test_ktool_jacobian_preview_output_history_and_persistence(
+    qtbot, anglemap, monkeypatch, tmp_path, photon_energy_scan
+):
+    data = (
+        generate_hvdep_cuts((8, 10, 7), hvrange=(20.0, 30.0), noise=False)
+        if photon_energy_scan
+        else anglemap.isel(eV=0).copy(deep=True)
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    win.show()
+    assert not win.jacobian_check.isChecked()
+    uncorrected = win.get_data()[1]
+    preview_key = win._preview_memory_estimate_key(
+        win._preview_angle_data(), win.bounds, win.resolution
+    )
+    output_key = win._output_memory_estimate_key(win.bounds, win.resolution)
+    estimate = win._conversion_estimate(win._prepared_output_data())
+
+    win.jacobian_check.setChecked(True)
+    qtbot.wait_until(lambda: win.undoable)
+    win.undo()
+    assert not win.jacobian_check.isChecked()
+    win.redo()
+    assert win.jacobian_check.isChecked()
+    angular, preview = win.get_data()
+    expected = angular.kspace.convert(
+        bounds=win.bounds, resolution=win.resolution, jacobian=True
+    )
+    xr.testing.assert_identical(preview, expected)
+    assert not np.allclose(preview, uncorrected, equal_nan=True)
+    assert preview_key != win._preview_memory_estimate_key(
+        angular, win.bounds, win.resolution
+    )
+    assert output_key != win._output_memory_estimate_key(win.bounds, win.resolution)
+    corrected_estimate = win._conversion_estimate(win._prepared_output_data())
+    assert corrected_estimate.final_bytes == estimate.final_bytes
+    assert corrected_estimate.peak_bytes > estimate.peak_bytes
+
+    converted = win._converted_output()
+    namespace = _exec_generated_code(win.copy_code(), data=data.copy(deep=True))
+    xr.testing.assert_identical(namespace["data_kconv"], converted)
+    launched = []
+    monkeypatch.setattr(
+        win, "_launch_output_imagetool", lambda data, **kwargs: launched.append(data)
+    )
+    win.show_converted()
+    xr.testing.assert_identical(launched[0], converted)
+
+    saved = tmp_path / "jacobian.h5"
+    win.to_file(saved)
+    restored = erlab.interactive.utils.ToolWindow.from_file(saved)
+    _add_hidden_tool(qtbot, restored)
+    assert restored.jacobian_check.isChecked()
+    xr.testing.assert_identical(restored._converted_output(), converted)
+    legacy = restored.tool_status.model_dump()
+    legacy.pop("jacobian")
+    restored.tool_status = restored.StateModel.model_validate(legacy)
+    assert not restored.jacobian_check.isChecked()
+
+
+@pytest.mark.parametrize("accept", [False, True])
+def test_kspace_conversion_dialog_jacobian_accept_cancel(
+    qtbot, anglemap, accept_dialog, accept, monkeypatch
+):
+    data = anglemap.isel(eV=0).copy(deep=True)
+    win = _add_hidden_tool(qtbot, erlab.interactive.itool(data, execute=False))
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+    dialog.launch_mode_combo.setCurrentIndex(
+        dialog.launch_mode_combo.findData("replace")
+    )
+    dialog.jacobian_check.setChecked(True)
+    operations = dialog.source_operations()
+    assert isinstance(operations[-1], KspaceConvertOperation)
+    assert operations[-1].jacobian
+    expected = dialog.process_data(data)
+    monkeypatch.setattr(dialog, "_copy_data_name", lambda: "data")
+    namespace = _exec_generated_code(dialog.make_code(), data=data.copy(deep=True))
+    xr.testing.assert_identical(namespace["data_kconv"], expected)
+    accept_dialog(
+        dialog.exec, accept_call=(lambda d: d.accept() if accept else d.reject())
+    )
+    xr.testing.assert_identical(win.slicer_area.data, expected if accept else data)
+
+
+def test_kspace_conversion_dialog_jacobian_seed_restore_and_batch(qtbot, anglemap):
+    data = anglemap.isel(eV=0).copy(deep=True)
+    win = _add_hidden_tool(qtbot, erlab.interactive.itool(data, execute=False))
+    child = _add_hidden_tool(qtbot, ktool(data, execute=False))
+    child.jacobian_check.setChecked(True)
+    win.slicer_area.add_tool_window(child)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+    assert dialog.jacobian_check.isChecked()
+    operations = dialog.source_operations()
+    dialog.jacobian_check.setChecked(False)
+    dialog.restore_transform_operations(operations)
+    assert dialog.jacobian_check.isChecked()
+    second = data * 2
+    xr.testing.assert_identical(
+        dialog.source_spec_for_data(second).apply(second),
+        dialog.process_data(data) * 2,
+    )
+    legacy = [
+        op.model_copy(update={"jacobian": False})
+        if isinstance(op, KspaceConvertOperation)
+        else op
+        for op in operations
+    ]
+    dialog.restore_transform_operations(legacy)
+    assert not dialog.jacobian_check.isChecked()
+
+
+@pytest.mark.parametrize("configuration", list(AxesConfiguration))
+@pytest.mark.parametrize("jacobian", [False, True])
+@pytest.mark.parametrize("photon_energies", [[24.0], [22.0, 24.0, 26.0]])
+@pytest.mark.filterwarnings("ignore:Dimension.*not uniform:RuntimeWarning")
+def test_kspace_conversion_estimate_hv_maps(
+    anglemap, configuration, jacobian, photon_energies
+):
+    data = _make_ktool_data(anglemap, configuration, {"xi": 0.0, "chi": 0.0})
+    data = data.drop_vars("hv").expand_dims(hv=photon_energies)
+    data.kspace.inner_potential = 10.0
+    bounds = {"kx": (-0.1, 0.1), "ky": (-0.1, 0.1)}
+    if len(photon_energies) > 1:
+        bounds["kz"] = (2.7, 2.9)
+    resolution = dict.fromkeys(bounds, 0.1)
+    estimate = _kspace_conversion.estimate_kspace_conversion(
+        data,
+        bounds=bounds,
+        resolution=resolution,
+        jacobian=jacobian,
+        memory=_memory_budget(),
+    )
+    result = data.kspace.convert(bounds, resolution, jacobian=jacobian)
+    assert estimate.output_sizes == dict(result.sizes)
+    assert estimate.total_points == result.size
+    assert estimate.final_bytes == result.size * 8
+    assert set(estimate.input_dims) == {"alpha", "beta", "hv", "eV"}
+
+
 def _set_input_coordinates(dialog, values: dict[str, float]) -> None:
     prefix = dialog.objectName().removesuffix("Dialog")
     for name, value in values.items():
@@ -3576,6 +3717,10 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
     assert not _missing_kspace_parameter_warnings(caught)
     assert win._offset_spins["wf"].value() == pytest.approx(4.5)
     assert win._offset_spins["V0"].value() == pytest.approx(10.0)
+    win.jacobian_check.setChecked(True)
+    qtbot.wait_until(lambda: win.undoable)
+    win.undo()
+    win.redo()
     code = win.copy_code()
     with warnings.catch_warnings(record=True) as copied_warnings:
         warnings.simplefilter("always")

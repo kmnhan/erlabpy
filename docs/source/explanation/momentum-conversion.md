@@ -89,7 +89,7 @@ conversion.
 
 | Operation | Sampling and dimensions |
 | --- | --- |
-| {meth}`~erlab.accessors.kspace.MomentumAccessor.convert_coords` | Keeps measured dimensions and intensity values; adds momentum coordinates that can depend on several dimensions |
+| {meth}`~erlab.accessors.kspace.MomentumAccessor.convert_coords` | Keeps measured dimensions; adds momentum coordinates that can depend on several dimensions; intensity values are unchanged unless `jacobian=True` |
 | {meth}`~erlab.accessors.kspace.MomentumAccessor.convert` | Creates momentum dimensions and interpolates intensity onto a regular grid |
 
 | Grid input | Effect |
@@ -100,6 +100,37 @@ conversion.
 | `angle_resolution` | Supplies the angular term in the automatic in-plane target-step estimate when no target step or coordinate array is given; the estimate also uses the minimum kinetic energy, the largest absolute scaled angle, and the applicable angle-scale factor |
 
 See also {ref}`how-to-python-convert-common-grid` and {ref}`how-to-python-convert-coordinates-only`.
+
+(explanation-kspace-jacobian)=
+
+## Jacobian correction
+
+Jacobian correction rescales intensity to account for the change from angular to
+momentum coordinates. See {cite:t}`Gauthier2021` and {cite:t}`Miao2026` for the physical
+background.
+
+With `jacobian=True`, ERLabPy divides each measured intensity value by the absolute
+forward Jacobian of its angle-to-momentum mapping:
+
+- For a single angle-energy cut, the factor is the derivative of the slit-parallel momentum (`kx`
+  or `ky`, set by the configuration) with respect to `alpha`.
+- For a map across two angles, the factor is the determinant of the derivatives of (`kx`, `ky`)
+  with respect to (`alpha`, `beta`).
+
+The derivatives are calculated numerically with respect to the stored angles in degrees.
+They include angle scales and offsets, with binding energy and photon energy held fixed.
+The calculation is independent of source and target grid spacing. Zero, nonfinite, or
+numerically unresolved factors give `NaN` intensity values.
+
+Both conversion functions {meth}`xarray.DataArray.kspace.convert_coords` and
+{meth}`xarray.DataArray.kspace.convert` applies the correction at the measured points
+when `jacobian=True` is set.
+
+For hν-dependent scans, the same angular correction is applied separately at each photon
+energy. It does not include an additional $h\nu$-to-$k_z$ Jacobian factor. This is
+because photon-energy scans are often accompanied by intensity changes that include beam
+intensity variations, high-order contamination, cross-section changes, and other effects
+that are not included in the simple free-electron final state model.
 
 ## hν–dependent scans
 

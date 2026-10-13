@@ -1387,6 +1387,12 @@ class KspaceConversionDialog(DataTransformDialog):
         self.normal_emission_group.setLayout(QtWidgets.QFormLayout())
         self.layout_.addRow(self.normal_emission_group)
 
+        self.jacobian_check = QtWidgets.QCheckBox("Jacobian correction")
+        self.jacobian_check.setObjectName("jacobian_check")
+        self.jacobian_check.setToolTip(_kspace_conversion.JACOBIAN_CORRECTION_TOOLTIP)
+        self.jacobian_check.toggled.connect(self._update_memory_estimate)
+        self.layout_.addRow(self.jacobian_check)
+
         self.bounds_supergroup = QtWidgets.QGroupBox("Bounds")
         self.bounds_supergroup.setCheckable(True)
         self.bounds_supergroup.setChecked(False)
@@ -1742,6 +1748,7 @@ class KspaceConversionDialog(DataTransformDialog):
                         self._bound_spins[name].setValue(value)
 
         self.resolution_supergroup.setChecked(ktool.resolution_supergroup.isChecked())
+        self.jacobian_check.setChecked(ktool.jacobian_check.isChecked())
         if ktool.resolution is not None:
             for axis, value in ktool.resolution.items():
                 if axis in self._resolution_spins:
@@ -1881,6 +1888,7 @@ class KspaceConversionDialog(DataTransformDialog):
             self._conversion_input_for_data(data),
             bounds=self.bounds,
             resolution=self.resolution,
+            jacobian=self.jacobian_check.isChecked(),
         )
 
     def _set_memory_estimate(
@@ -1995,6 +2003,7 @@ class KspaceConversionDialog(DataTransformDialog):
             resolution=self.resolution,
             force_scalars=True,
             input_coordinates=self._input_coordinates_for_data(source_data),
+            jacobian=self.jacobian_check.isChecked(),
         )
 
     def source_operations(
@@ -2122,6 +2131,7 @@ class KspaceConversionDialog(DataTransformDialog):
             ):
                 bounds = operation.bounds
                 resolution = operation.resolution
+                self.jacobian_check.setChecked(operation.jacobian)
 
         if normal is not None:
             self._normal_delta = delta

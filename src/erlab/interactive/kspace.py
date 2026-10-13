@@ -201,6 +201,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.open_btn.setObjectName("ktoolOpenInImageToolButton")
         self.label_5.setObjectName("ktoolEnergyCenterLabel")
         self.label_6.setObjectName("ktoolEnergyBinsLabel")
+        self.jacobian_check.setToolTip(_kspace_conversion.JACOBIAN_CORRECTION_TOOLTIP)
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
         self.images: tuple[
@@ -486,6 +487,7 @@ class KspaceTool(KspaceToolGUI):
         bounds: dict[str, float]
         resolution_enabled: bool
         resolution: dict[str, float]
+        jacobian: bool = False
         bz_enabled: bool
         lattice_params: tuple[float, float, float, float, float, float]
         rot: float
@@ -684,6 +686,7 @@ class KspaceTool(KspaceToolGUI):
             bounds={k: spin.value() for k, spin in self._bound_spins.items()},
             resolution_enabled=self.resolution_supergroup.isChecked(),
             resolution={k: spin.value() for k, spin in self._resolution_spins.items()},
+            jacobian=self.jacobian_check.isChecked(),
             bz_enabled=self.bz_group.isChecked(),
             lattice_params=erlab.lattice.avec2abc(self._avec),
             rot=self.rot_spin.value(),
@@ -764,6 +767,8 @@ class KspaceTool(KspaceToolGUI):
         self.resolution_supergroup.blockSignals(True)
         self.resolution_supergroup.setChecked(status.resolution_enabled)
         self.resolution_supergroup.blockSignals(False)
+        with QtCore.QSignalBlocker(self.jacobian_check):
+            self.jacobian_check.setChecked(status.jacobian)
         for k, v in status.resolution.items():
             if k not in self._resolution_spins:
                 continue
@@ -1064,6 +1069,7 @@ class KspaceTool(KspaceToolGUI):
 
         self.bounds_supergroup.toggled.connect(self.queue_update)
         self.resolution_supergroup.toggled.connect(self.queue_update)
+        self.jacobian_check.toggled.connect(self.queue_update)
         self.preview_symmetry_group.toggled.connect(self.queue_update)
         self.preview_symmetry_fold_spin.valueChanged.connect(self.queue_update)
 
@@ -1630,6 +1636,7 @@ class KspaceTool(KspaceToolGUI):
             self._mapping_token(bounds, momentum_axes),
             self.resolution_supergroup.isChecked(),
             self._mapping_token(resolution, momentum_axes),
+            self.jacobian_check.isChecked(),
         )
 
     def _output_memory_estimate_key(
@@ -1655,6 +1662,7 @@ class KspaceTool(KspaceToolGUI):
             self._mapping_token(bounds, momentum_axes),
             self.resolution_supergroup.isChecked(),
             self._mapping_token(resolution, momentum_axes),
+            self.jacobian_check.isChecked(),
         )
 
     def _preview_conversion_estimate(
@@ -1678,6 +1686,7 @@ class KspaceTool(KspaceToolGUI):
             data,
             bounds=bounds,
             resolution=resolution,
+            jacobian=self.jacobian_check.isChecked(),
         )
         self._preview_memory_estimate_key_value = key
         self._preview_memory_estimate = estimate
@@ -1708,6 +1717,7 @@ class KspaceTool(KspaceToolGUI):
             data,
             bounds=bounds,
             resolution=resolution,
+            jacobian=self.jacobian_check.isChecked(),
         )
         self._output_memory_estimate_key_value = key
         self._output_memory_estimate = estimate
@@ -1786,6 +1796,7 @@ class KspaceTool(KspaceToolGUI):
             data,
             bounds=self.bounds,
             resolution=self.resolution,
+            jacobian=self.jacobian_check.isChecked(),
         )
         self._set_memory_estimate(estimate, preview=preview)
         return estimate
@@ -1826,7 +1837,11 @@ class KspaceTool(KspaceToolGUI):
     def _converted_output(self) -> xr.DataArray:
         data = self._prepared_output_data()
         self._validate_conversion_memory(data)
-        return data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
+        return data.kspace.convert(
+            bounds=self.bounds,
+            resolution=self.resolution,
+            jacobian=self.jacobian_check.isChecked(),
+        )
 
     @QtCore.Slot()
     def show_converted(self) -> None:
@@ -1841,6 +1856,7 @@ class KspaceTool(KspaceToolGUI):
             data_kconv = data.kspace.convert(
                 bounds=self.bounds,
                 resolution=self.resolution,
+                jacobian=self.jacobian_check.isChecked(),
             )
 
         tool = self._launch_output_imagetool(
@@ -1889,6 +1905,7 @@ class KspaceTool(KspaceToolGUI):
             resolution=self.resolution,
             force_scalars=False,
             input_coordinates=self.input_coordinates,
+            jacobian=self.jacobian_check.isChecked(),
         )
 
     def _copy_assign_target(
@@ -2107,7 +2124,10 @@ class KspaceTool(KspaceToolGUI):
         if not estimate.is_safe:
             raise _kspace_conversion.KspaceConversionMemoryError(estimate)
         return data_ang.kspace.convert(
-            bounds=self.bounds, resolution=self.resolution, silent=True
+            bounds=self.bounds,
+            resolution=self.resolution,
+            silent=True,
+            jacobian=self.jacobian_check.isChecked(),
         )
 
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:

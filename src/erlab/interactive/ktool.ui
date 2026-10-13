@@ -98,6 +98,13 @@
          </widget>
         </item>
         <item>
+         <widget class="QCheckBox" name="jacobian_check">
+          <property name="text">
+           <string>Jacobian correction</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QGroupBox" name="bounds_supergroup">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Preferred" vsizetype="Preferred">

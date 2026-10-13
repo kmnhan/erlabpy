@@ -41,6 +41,11 @@ if typing.TYPE_CHECKING:
 _MISSING_WORK_FUNCTION_WARNING_RE = (
     r"^Analyzer work function not found in data attributes, assuming 4\.5 eV$"
 )
+JACOBIAN_CORRECTION_TOOLTIP = (
+    "Convert intensity per recorded angle to intensity per momentum interval. "
+    "For photon-energy scans, apply the angular correction at each photon energy. "
+    "This assumes density values and does not correct detector acceptance or flux."
+)
 _MISSING_INNER_POTENTIAL_WARNING_RE = (
     r"^Inner potential not found in data attributes, assuming 10 eV$"
 )
@@ -409,6 +414,7 @@ def estimate_kspace_conversion(
     *,
     bounds: dict[str, tuple[float, float]] | None = None,
     resolution: dict[str, float] | None = None,
+    jacobian: bool = False,
     memory: KspaceMemoryBudget | None = None,
 ) -> KspaceConversionEstimate:
     """Estimate interactive momentum-conversion allocation size without converting."""
@@ -462,6 +468,14 @@ def estimate_kspace_conversion(
     total_points = math.prod(output_sizes.values()) if output_sizes else 1
     final_bytes = int(total_points * np.dtype(np.float64).itemsize)
     peak_bytes = int(final_bytes * (len(input_dims) + 3))
+    if jacobian:
+        n_axes = sum(axis != "kz" for axis in momentum_axes)
+        source_bytes = int(data.size * np.dtype(np.float64).itemsize)
+        # Include source casts, weighting, derivative/error matrices, and the
+        # roundoff accumulators and forward-map temporaries kept at one time.
+        peak_bytes += (data.ndim + 4) * source_bytes + source_bytes * (
+            4 * n_axes**2 + 12 * n_axes + 8
+        )
     return KspaceConversionEstimate(
         input_dims=input_dims,
         output_dims=output_dims,
@@ -481,12 +495,14 @@ def validate_kspace_conversion_memory(
     *,
     bounds: dict[str, tuple[float, float]] | None,
     resolution: dict[str, float] | None,
+    jacobian: bool = False,
 ) -> KspaceConversionEstimate:
     """Return an estimate or raise if the interactive conversion is unsafe."""
     estimate = estimate_kspace_conversion(
         data,
         bounds=bounds,
         resolution=resolution,
+        jacobian=jacobian,
     )
     if not estimate.is_safe:
         raise KspaceConversionMemoryError(estimate)
@@ -661,6 +677,7 @@ def kspace_conversion_operations(
     alpha_scale: float | None = None,
     beta_scale: float | None = None,
     input_coordinates: Mapping[str, float] | None = None,
+    jacobian: bool = False,
 ) -> tuple[ToolProvenanceOperation, ...]:
     operations: list[ToolProvenanceOperation] = []
     focuses: list[str] = []
@@ -759,7 +776,9 @@ def kspace_conversion_operations(
         )
     )
     focuses.append(_FOCUS_NORMAL)
-    operations.append(KspaceConvertOperation(bounds=bounds, resolution=resolution))
+    operations.append(
+        KspaceConvertOperation(bounds=bounds, resolution=resolution, jacobian=jacobian)
+    )
     focuses.append(_FOCUS_CONVERT)
     return stamp_operation_group(
         operations,
