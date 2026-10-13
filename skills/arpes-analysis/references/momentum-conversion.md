@@ -1,13 +1,13 @@
 # Momentum conversion and normal emission
 
-Calibrate the energy axis before this workflow. Keep normal-emission choices and all
+Calibrate the energy axis before this workflow. Keep normal emission choices and all
 geometry values in visible notebook cells.
 
 ## Contents
 
 - [Check prerequisites](#check-prerequisites)
 - [Group scans by sample alignment](#group-scans-by-sample-alignment)
-- [Use an existing calibration](#use-an-existing-calibration)
+- [Reuse parameters for other scans](#reuse-parameters-for-other-scans)
 - [Compare photon energies safely](#compare-photon-energies-safely)
 - [Infer normal emission visually](#infer-normal-emission-visually)
 - [Recognize underdetermined data](#recognize-underdetermined-data)
@@ -20,7 +20,7 @@ Inspect:
 
 - the experimental `configuration`;
 - swept and scalar angle coordinates;
-- photon energy, work function, and inner potential when applicable;
+- photon energy, analyzer work function, and inner potential when applicable;
 - angle-coordinate units and monotonicity;
 - angle-scale compensation factors;
 - explicit offset attributes and any reference dataset;
@@ -39,7 +39,7 @@ Use the user's stated metadata authority. Record the original coordinate, replac
 value, and source. Do not replace a swept coordinate with one scalar value.
 
 `data.kspace.offsets` returns zero for missing offset attributes. Check the attributes
-before treating zero as a calibration:
+before treating zero as a stored normal emission setting:
 
 ```python
 offsets = dict(data.kspace.offsets)
@@ -50,7 +50,7 @@ An empty `stored_offset_keys` set means that the displayed zeros are defaults.
 
 ## Group scans by sample alignment
 
-Build an alignment table before selecting a normal-emission calibration. Include:
+Build an alignment table before selecting normal emission settings. Include:
 
 - the sample, cleavage, and termination;
 - file identifier and acquisition order;
@@ -69,35 +69,32 @@ Prefer a reference map
 acquired immediately before or after the scan series. Do not use a later map when the
 log says that the angle changed in between.
 
-## Use an existing calibration
+## Reuse parameters for other scans
 
-Prefer a user-approved calibration acquired in a compatible geometry. Transfer its
-normal-emission angles, azimuth, and angle-scale factors with the public accessor:
+Prefer user-approved normal emission settings from a compatible geometry. Transfer the
+normal emission angles, azimuth, and angle-scale factors with the public accessor:
 
 ```python
-data_for_conversion = energy_corrected_data.copy(deep=False)
-data_for_conversion.attrs = energy_corrected_data.attrs.copy()
-data_for_conversion.kspace.set_normal_like(reference_data)
+energy_corrected_data.kspace.set_normal_like(reference_data)
 ```
 
 Verify that the reference and target use compatible configurations and angle meanings.
 Do not copy a raw offset dictionary between incompatible configurations.
 
 Search saved KTool code, a saved workspace, or the notebook for an approved `set_normal`
-operation before inferring new values. Report that source directly. Do not describe a
-recovered human calibration as an agent visual deduction. A cursor position alone is not
-an approved calibration unless its purpose is documented or the user confirms it.
+operation before inferring new values. Report that source directly. Do not describe
+recovered user settings as an agent visual deduction. A cursor position alone is not
+an accepted normal emission position unless its purpose is documented or the user
+confirms it.
 
-When the normal-emission angles are already approved, set them directly:
+When the normal emission angles are already approved, set them directly:
 
 ```python
 alpha_normal = 1.2
 beta_normal = -0.4
 azimuth_offset = 30.0
 
-data_for_conversion = energy_corrected_data.copy(deep=False)
-data_for_conversion.attrs = energy_corrected_data.attrs.copy()
-data_for_conversion.kspace.set_normal(
+energy_corrected_data.kspace.set_normal(
     alpha_normal,
     beta_normal,
     delta=azimuth_offset,
@@ -110,7 +107,7 @@ Use `set_normal`. Do not derive offset signs by hand.
 
 For one unchanged sample alignment, a feature at fixed in-plane momentum changes its
 emission angle as photon energy changes. Corresponding contours can contract or expand
-about the common normal-emission angle. Use this as supporting geometry evidence.
+about the common normal emission angle. Use this as supporting geometry evidence.
 
 Compare only a feature that can be identified as the same branch or contour at both
 photon energies. Use energy averaging, smoothing, and a raw-data check for each view.
@@ -128,9 +125,10 @@ underdetermined and use the interactive user-confirmation workflow.
 
 ## Infer normal emission visually
 
-Use visual inference to propose a KTool starting position when no approved calibration
-exists and the data contains enough physical information. Do not treat agent confidence
-as approval for publication or quantitative momentum conversion.
+Use visual inference to propose a KTool starting position when no accepted
+normal emission settings exist and the data contains enough physical information. Do
+not treat agent confidence as approval for publication or quantitative momentum
+conversion.
 
 1. Plot several raw angle-space constant-energy slices or representative projections.
 2. Use the same axis directions, color normalization, and aspect for all slices.
@@ -189,30 +187,30 @@ Request user input instead of selecting a value when:
 - several symmetry centers are plausible;
 - matrix-element asymmetry hides the expected center;
 - magnetic or other symmetry-breaking behavior invalidates the assumed symmetry;
-- configuration, work function, photon energy, or required scalar angles are missing;
+- configuration, analyzer work function, photon energy, or required scalar angles
+  are missing;
 - the Brillouin-zone orientation is unknown and materially changes the conclusion.
 
 For publication or quantitative momentum conversion, also request user confirmation
-when no approved calibration exists, even if the agent sees only one candidate.
+when no accepted normal emission settings exist, even if the agent sees only one
+candidate.
 
 Retain the diagnostic cells and candidate figure. Show the user the proposed values and
 the source of the ambiguity. Resume the notebook after confirmation.
 
 ## Apply and validate the conversion
 
-Apply the accepted values to a new variable, then convert:
+Set the accepted conversion parameters directly on the working data, then convert:
 
 ```python
-data_for_conversion = energy_corrected_data.copy(deep=False)
-data_for_conversion.attrs = energy_corrected_data.attrs.copy()
-data_for_conversion.kspace.set_normal(
+energy_corrected_data.kspace.set_normal(
     alpha_normal,
     beta_normal,
     delta=azimuth_offset,
 )
-data_for_conversion.kspace.work_function = work_function
+energy_corrected_data.kspace.analyzer_work_function = analyzer_work_function
 
-momentum_data = data_for_conversion.kspace.convert(
+momentum_data = energy_corrected_data.kspace.convert(
     bounds=momentum_bounds,
     resolution=momentum_resolution,
 )
@@ -223,7 +221,7 @@ explicitly for the final notebook when consistent grids matter across datasets.
 
 Validate:
 
-- the converted zero lies at the accepted normal-emission position;
+- the converted zero lies at the accepted normal emission position;
 - several energies give a consistent center and orientation;
 - the converted range and resolution are plausible for the kinetic energy;
 - expected symmetry points agree with a verified Brillouin-zone overlay;
@@ -248,7 +246,7 @@ eplt.plot_in_plane_bz(
 
 ## Use KTool for user confirmation
 
-Use KTool as the acceptance step when no approved normal-emission calibration exists.
+Use KTool as the acceptance step when no accepted normal emission settings exist.
 Use ImageTool first when linked raw and processed views help the user select the region:
 
 ```python
