@@ -1,3 +1,37 @@
+## Unreleased
+
+### ✨ Features
+
+- **interactive:** add Angle Calculator ([19d9bf0](https://github.com/kmnhan/erlabpy/commit/19d9bf0e911cfb579211a860285d59f037d48e98))
+
+  Adds a new Angle Calculator application for planning ARPES experiments. Angle Calculator visualizes angular and photon energy coverage in momentum space. Users can import Fermi surface images from calculations to visualize where a feature will appear in angle space, or draw arbitrary elliptical pockets in momentum space which will be mapped to angle space. These image and pocket overlays are also available in `ktool`.
+
+- **kspace:** add optional Jacobian correction ([b057ca4](https://github.com/kmnhan/erlabpy/commit/b057ca439965105745b9e8750b6022096c1d70bb))
+
+  Implements Jacobian intensity correction for when converting from angles to momentum coordinates.
+
+- **io.plugins:** add support for SES `.txt` files (#606) ([6701e27](https://github.com/kmnhan/erlabpy/commit/6701e27dde43e28a6c39c41db6cedf9af59a83a0))
+
+  Adds SES `.txt` file loading capabilities to the `da30` loader.
+
+  Also adds the `espresso` data loader plugin for the HiSOR BL9B ESPRESSO endstation.
+
+### 🐞 Bug Fixes
+
+- **manager:** use current workspace defaults when opening `ktool` ([4b9c15b](https://github.com/kmnhan/erlabpy/commit/4b9c15b4fa0601ef1faa0cd002b913eba56f28ab))
+
+  Fixes an issue where the current workspace preferences were not applied to newly opened `ktool` windows.
+
+- **goldtool:** prevent macOS crashes (#600) ([ece9173](https://github.com/kmnhan/erlabpy/commit/ece9173801deab5cadb0e6f07f0a200049cd552c))
+
+  Prevents a possible stack overflow during initial Numba compilation triggered by fitting on macOS.
+
+### ♻️ Code Refactor
+
+- **kspace:** separate analyzer and sample work functions ([bea6d31](https://github.com/kmnhan/erlabpy/commit/bea6d31c36563b593ec03347917d8796a312c2d0))
+
+  The work function is now stored separately for the analyzer and sample. The work function setter attribute was called `sample_workfunction` which was misleading; the work function used for kinetic energy conversion is now stored in `analyzer_work_function`.
+
 ## v3.27.3 (2026-09-12)
 
 ### 🐞 Bug Fixes
