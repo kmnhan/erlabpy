@@ -24,13 +24,24 @@ class IncompleteDataError(ValueError):
     coordinates.
     """
 
-    def __init__(self, kind: typing.Literal["attr", "coord"], name: str) -> None:
-        super().__init__(self._make_message(kind, name))
+    def __init__(
+        self,
+        kind: typing.Literal["attr", "coord"],
+        name: str,
+        *,
+        context: str = "momentum conversion",
+    ) -> None:
+        super().__init__(self._make_message(kind, name, context=context))
 
     @staticmethod
-    def _make_message(kind: typing.Literal["attr", "coord"], name: str) -> str:
+    def _make_message(
+        kind: typing.Literal["attr", "coord"],
+        name: str,
+        *,
+        context: str = "momentum conversion",
+    ) -> str:
         kind_str = "Attribute" if kind == "attr" else "Coordinate"
-        return f"{kind_str} '{name}' is required for momentum conversion."
+        return f"{kind_str} '{name}' is required for {context}."
 
 
 def _validate_angle_scale(value: float, name: str) -> float:
@@ -476,37 +487,70 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         self._obj.attrs["inner_potential"] = float(value)
 
     @property
-    def work_function(self) -> float:
-        """Work function of the system in eV.
+    def analyzer_work_function(self) -> float:
+        """Analyzer work function in eV, used for kinetic-to-binding-energy conversion.
 
-        Here, the work function here refers to the work function of the entire system in
-        electrical contact with the sample, which determines the Fermi level.
+        Reads the ``analyzer_work_function`` data attribute. If it is absent, reads the
+        legacy ``sample_workfunction`` attribute as the analyzer work function. If
+        neither attribute is present, issues a warning and assumes 4.5 eV.
 
-        The work function is stored in the ``sample_workfunction`` attribute of the
-        data. If not found, a warning is issued and a default value of 4.5 eV is
-        assumed.
-
-        Note
-        ----
-        This property provides a setter method that takes a float value and sets the
-        data attribute accordingly.
+        Setting this property writes the ``analyzer_work_function`` attribute.
 
         Example
         -------
-        >>> data.kspace.work_function = 4.5
-        >>> data.kspace.work_function
+        >>> data.kspace.analyzer_work_function = 4.5
+        >>> data.kspace.analyzer_work_function
         4.5
         """
+        if "analyzer_work_function" in self._obj.attrs:
+            return float(self._obj.attrs["analyzer_work_function"])
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
         erlab.utils.misc.emit_user_level_warning(
-            "Work function not found in data attributes, assuming 4.5 eV"
+            "Analyzer work function not found in data attributes, assuming 4.5 eV"
         )
         return 4.5
 
+    @analyzer_work_function.setter
+    def analyzer_work_function(self, value: float) -> None:
+        self._obj.attrs["analyzer_work_function"] = float(value)
+
+    @property
+    def sample_work_function(self) -> float:
+        """Sample surface work function in eV.
+
+        Read or set the ``sample_work_function`` data attribute, which is optional
+        metadata that is unused. This value is independent of
+        :attr:`analyzer_work_function`. In the future, this value may be used in
+        momentum conversion that assumes an effective bias voltage between the sample
+        and analyzer due to the work function difference.
+
+        Example
+        -------
+        >>> data.kspace.sample_work_function = 4.8
+        >>> data.kspace.sample_work_function
+        4.8
+        """
+        if "sample_work_function" not in self._obj.attrs:
+            raise IncompleteDataError(
+                "attr",
+                "sample_work_function",
+                context="reading the sample work function",
+            )
+        return float(self._obj.attrs["sample_work_function"])
+
+    @sample_work_function.setter
+    def sample_work_function(self, value: float) -> None:
+        self._obj.attrs["sample_work_function"] = float(value)
+
+    @property
+    def work_function(self) -> float:
+        """Shorthand for :attr:`analyzer_work_function`."""
+        return self.analyzer_work_function
+
     @work_function.setter
     def work_function(self, value: float) -> None:
-        self._obj.attrs["sample_workfunction"] = float(value)
+        self.analyzer_work_function = value
 
     @property
     def angle_resolution(self) -> float:
@@ -719,7 +763,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                     "binding energy."
                 )
             # eV values are kinetic, transform to binding energy
-            binding = self._obj.eV - self._hv + self.work_function
+            binding = self._obj.eV - self._hv + self.analyzer_work_function
             erlab.utils.misc.emit_user_level_warning(
                 "The energy axis seems to be in terms of kinetic energy, "
                 "attempting conversion to binding energy."
@@ -729,7 +773,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def _kinetic_energy(self) -> xr.DataArray:
-        return self._hv - self.work_function + self._binding_energy
+        return self._hv - self.analyzer_work_function + self._binding_energy
 
     @staticmethod
     def _finite_minmax(values: np.ndarray) -> tuple[float, float]:
@@ -783,10 +827,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         msg = (
             f"Nonphysical kinetic energy detected while {context}: "
             f"min(E_k)={min_kinetic:.3f} eV <= 0. "
-            f"E_k = hv - sample_workfunction + eV (binding). "
+            f"E_k = hv - analyzer_work_function + eV (binding). "
             f"Current ranges: hv=[{hv_min:.3f}, {hv_max:.3f}] eV, "
             f"eV=[{e_min:.3f}, {e_max:.3f}] eV, "
-            f"sample_workfunction={self.work_function:.3f} eV."
+            f"analyzer_work_function={self.analyzer_work_function:.3f} eV."
         )
         if raise_on_violation:
             raise ValueError(msg)
@@ -1315,7 +1359,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 kyval,
                 kzval,
                 self.inner_potential,
-                self.work_function,
+                self.analyzer_work_function,
                 self._binding_energy,
             )
 
@@ -1440,7 +1484,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
             data.kspace.offsets = {"delta": 0.1, "xi": 0.0, "beta": 0.3}
 
-            data.kspace.work_function = 4.3
+            data.kspace.analyzer_work_function = 4.3
 
             data.kspace.inner_potential = 12.0
 
@@ -1743,7 +1787,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
 
         # Get kinetic energies for the given photon energy
-        kinetic = hv - self.work_function + self._obj.eV
+        kinetic = hv - self.analyzer_work_function + self._obj.eV
         self._check_kinetic_energy(
             context="calculating kz from photon energy",
             kinetic_energy=kinetic,

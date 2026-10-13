@@ -78,6 +78,9 @@ def test_generate_data_angles() -> None:
 
     assert data.attrs["sample_temp"] == 20.0
     assert data.attrs["configuration"] == 1
+    assert data.attrs["analyzer_work_function"] == 4.5
+    assert "sample_workfunction" not in data.attrs
+    assert "sample_work_function" not in data.attrs
 
 
 def test_generate_data_angles_geometry() -> None:
@@ -95,7 +98,12 @@ def test_generate_data_angles_geometry() -> None:
         "xi": -2.0,
         "beta": -1.5,
     }
-    np.testing.assert_allclose(data.kspace._forward_func(2.0, -1.5), 0.0, atol=1e-14)
+    normal = (
+        data.isel(alpha=0, beta=0)
+        .assign_coords(alpha=2.0, beta=-1.5)
+        .kspace.convert_coords()
+    )
+    np.testing.assert_allclose([normal.kx, normal.ky], 0.0, atol=1e-14)
 
 
 def test_generate_data_angles_geometry_defaults_are_compatible() -> None:

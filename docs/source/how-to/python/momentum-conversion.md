@@ -75,7 +75,7 @@ and set the `configuration` attribute explicitly. See
 Use this guide after the data follows {ref}`data-conventions` and after you set the
 experimental configuration and normal emission angles.
 
-Store the measured normal emission position and work function, then convert:
+Store the measured normal emission position and analyzer work function, then convert:
 
 ```python
 conversion_input = data.copy()
@@ -84,7 +84,7 @@ conversion_input.kspace.set_normal(
     beta=beta_normal,
     delta=azimuthal_offset,
 )
-conversion_input.kspace.work_function = work_function
+conversion_input.kspace.analyzer_work_function = analyzer_work_function
 
 converted = conversion_input.kspace.convert()
 ```
@@ -138,7 +138,7 @@ conversion_input.kspace.set_normal(
     beta=beta_normal,
     delta=azimuthal_offset,
 )
-conversion_input.kspace.work_function = work_function
+conversion_input.kspace.analyzer_work_function = analyzer_work_function
 ```
 
 Define the target grid once. Pass the coordinate arrays to each conversion:
@@ -195,7 +195,7 @@ Composer steps.
 The cut keeps its measured dimensions and intensity values. The added `kx` and `ky`
 coordinates describe its path through the converted constant energy surface.
 
-Use the same experimental configuration, work function, and normal emission position
+Use the same experimental configuration, analyzer work function, and normal emission position
 for `cut_with_momentum` and `converted_map`. Otherwise, the cut trajectory and surface
 use different conversion parameters. See
 {meth}`xarray.DataArray.kspace.convert_coords` for the returned coordinates. See
@@ -210,7 +210,7 @@ interpolating intensity with {meth}`convert <xarray.DataArray.kspace.convert>`.
 
 Use this guide when `data` contains an $h\nu$–dependent scan with the coordinates and
 attributes listed in {ref}`data-conventions`. Set the experimental configuration,
-normal emission angles, work function, and inner potential before conversion.
+normal emission angles, analyzer work function, and inner potential before conversion.
 
 Set the inner potential, then convert the data:
 
@@ -267,7 +267,7 @@ Composer steps.
    :alt: Converted constant energy surface with calculated kz values for three photon energies
 ```
 
-The lines use the stored geometry, work function, and inner potential. They are
+The lines use the stored geometry, analyzer work function, and inner potential. They are
 calculated coordinates. They do not show measured intensity at a new photon energy.
 
 See {meth}`xarray.DataArray.kspace.hv_to_kz` for accepted photon energies. See

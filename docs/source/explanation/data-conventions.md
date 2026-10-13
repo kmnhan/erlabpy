@@ -26,7 +26,8 @@ names.
 | `hv` | Coordinate | eV | Photon energy |
 | `sample_temp` | Coordinate or attribute | K | Sample temperature |
 | `configuration` | Attribute | — | Experimental geometry, stored as 1–4 |
-| `sample_workfunction` | Attribute | eV | System work function used to convert binding energy to kinetic energy |
+| `analyzer_work_function` | Attribute | eV | Analyzer work function used to convert between binding and kinetic energy |
+| `sample_work_function` | Attribute | eV | Optional sample surface work function; independent of the analyzer value |
 | `angle_resolution` | Attribute | deg | Angular resolution for the default momentum step estimate |
 | `inner_potential` | Attribute | eV | Inner potential for out-of-plane momentum conversion |
 | `alpha_scale`, `beta_scale` | Attributes | — | Optional compensation for known angle coordinate scale errors |
@@ -43,6 +44,21 @@ applies these rules:
 | Multiple values for `hv` | `eV` must already be in binding energy |
 
 Incorrect values can produce a wrong momentum scale or a nonphysical kinetic energy.
+
+## Work functions
+
+Set the analyzer work function with {attr}`data.kspace.analyzer_work_function
+<xarray.DataArray.kspace.analyzer_work_function>`. Momentum conversion uses this value
+in $E_k=h\nu-\Phi_A+E_b$, where occupied states have negative $E_b$.
+
+Store a known sample surface work function separately with
+{attr}`data.kspace.sample_work_function <xarray.DataArray.kspace.sample_work_function>`.
+This metadata is optional and has no effect as of now.
+
+```python
+data.kspace.analyzer_work_function = 4.5
+data.kspace.sample_work_function = 4.8  # Only when the sample value is known.
+```
 
 (nomenclature)=
 

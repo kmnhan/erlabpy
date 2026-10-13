@@ -283,7 +283,7 @@ def _kspace_data() -> xr.DataArray:
         attrs={
             "configuration": int(erlab.constants.AxesConfiguration.Type1),
             "inner_potential": 10.0,
-            "sample_workfunction": 4.5,
+            "analyzer_work_function": 4.5,
         },
         name="anglemap",
     )
@@ -1750,11 +1750,11 @@ def test_statement_operation_replay_code_mutates_working_copy() -> None:
     code = operation.replay_code("data", output_name="result", source_name="data")
 
     assert "result = data.copy(deep=False)" in code
-    assert "result.kspace.work_function = 4.2" in code
+    assert "result.kspace.analyzer_work_function = 4.2" in code
     assert "sample_workfunction" not in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True), "np": np})
-    assert namespace["result"].kspace.work_function == pytest.approx(4.2)
-    assert namespace["data"].kspace.work_function == pytest.approx(4.5)
+    assert namespace["result"].kspace.analyzer_work_function == pytest.approx(4.2)
+    assert namespace["data"].kspace.analyzer_work_function == pytest.approx(4.5)
 
 
 def test_statement_operation_derivation_entry_omits_same_name_noop() -> None:
@@ -1780,13 +1780,13 @@ def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
     code = typing.cast("str", spec.display_code())
 
     assert ".copy(deep=False)" not in code
-    assert "data.kspace.work_function = 4.2" in code
+    assert "data.kspace.analyzer_work_function = 4.2" in code
     assert "data.kspace.set_normal(" in code
     assert "derived = data.kspace.convert(" in code
     working_data = data.copy(deep=True)
     namespace = _exec_generated_code(code, {"data": working_data})
     expected = working_data
-    expected.kspace.work_function = 4.2
+    expected.kspace.analyzer_work_function = 4.2
     expected.kspace.set_normal(alpha=1.5, beta=-0.5, delta=2.0)
     expected = expected.kspace.convert(
         bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
@@ -1794,13 +1794,13 @@ def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
         silent=True,
     )
     xr.testing.assert_allclose(namespace["derived"], expected)
-    assert namespace["data"].kspace.work_function == pytest.approx(4.2)
-    assert data.kspace.work_function == pytest.approx(4.5)
+    assert namespace["data"].kspace.analyzer_work_function == pytest.approx(4.2)
+    assert data.kspace.analyzer_work_function == pytest.approx(4.5)
 
     replay_source = data.copy(deep=True)
     replayed = replay_script_provenance(spec, {"data": replay_source})
     xr.testing.assert_allclose(replayed, expected)
-    assert replay_source.kspace.work_function == pytest.approx(4.5)
+    assert replay_source.kspace.analyzer_work_function == pytest.approx(4.5)
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata(
@@ -2278,7 +2278,7 @@ def test_kspace_configuration_operation_round_trip_and_code() -> None:
     [
         (
             KspaceWorkFunctionOperation(work_function=4.2),
-            "sample_workfunction",
+            "analyzer_work_function",
             4.2,
         ),
         (
@@ -2302,8 +2302,8 @@ def test_kspace_scalar_statement_operations_round_trip_and_code(
     assert data.attrs[attr_name] != pytest.approx(expected)
     code = parsed.replay_code("data", output_name="result")
     assert "result = data.copy(deep=False)" in code
-    if attr_name == "sample_workfunction":
-        assert "result.kspace.work_function =" in code
+    if attr_name == "analyzer_work_function":
+        assert "result.kspace.analyzer_work_function =" in code
         assert "result.attrs" not in code
     else:
         assert "result.kspace.inner_potential =" in code

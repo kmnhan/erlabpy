@@ -461,7 +461,13 @@ class LoaderBase(metaclass=_Loader):
         and informative summary. See existing loaders for examples.
 
         """
-        excluded = {"eV", "alpha", "sample_workfunction"}
+        excluded = {
+            "eV",
+            "alpha",
+            "analyzer_work_function",
+            "sample_work_function",
+            "sample_workfunction",
+        }
         return {k: k for k in self.name_map if k not in excluded}
 
     @property

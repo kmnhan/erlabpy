@@ -45,7 +45,7 @@ ax.legend()
    :alt: Converted constant energy surface with calculated kz values for three photon energies
 ```
 
-The curves use the stored geometry, work function, and inner potential. They do not
+The curves use the stored geometry, analyzer work function, and inner potential. They do not
 show measured intensity at a new photon energy.
 
 ## Figure Composer

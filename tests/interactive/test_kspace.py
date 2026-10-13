@@ -53,7 +53,7 @@ def _exec_generated_code(code: str, **namespace_items: object) -> dict[str, obje
 
 
 _MISSING_KSPACE_PARAMETER_WARNINGS = {
-    "Work function not found in data attributes, assuming 4.5 eV",
+    "Analyzer work function not found in data attributes, assuming 4.5 eV",
     "Inner potential not found in data attributes, assuming 10 eV",
 }
 _GIB = 1024**3
@@ -130,6 +130,43 @@ def _add_hidden_tool(qtbot, widget):
     qtbot.addWidget(widget)
     widget.hide()
     return widget
+
+
+@pytest.mark.parametrize("legacy_attribute", [False, True])
+@pytest.mark.parametrize("legacy_state", [False, True])
+def test_ktool_work_function_migration_persistence_and_code(
+    qtbot, anglemap, tmp_path, legacy_attribute, legacy_state
+):
+    data = anglemap.isel(eV=0).copy(deep=True)
+    data.attrs.pop("analyzer_work_function", None)
+    data.attrs["sample_workfunction"] = 4.1
+    if not legacy_attribute:
+        data.kspace.analyzer_work_function = 4.7
+    data.kspace.sample_work_function = 5.2
+    expected_work_function = 4.1 if legacy_attribute else 4.7
+    win = _add_hidden_tool(qtbot, ktool(data, execute=False))
+    assert win._offset_spins["wf"].value() == pytest.approx(expected_work_function)
+
+    state = win.tool_status.model_dump()
+    assert "source_work_function" not in state
+    if legacy_state:
+        state["source_work_function"] = state.pop("source_analyzer_work_function")
+    win.tool_status = win.StateModel.model_validate(state)
+    assert (
+        win._source_input_data.kspace.analyzer_work_function == expected_work_function
+    )
+    assert win._source_input_data.kspace.sample_work_function == 5.2
+
+    path = tmp_path / "work-functions.h5"
+    win.to_file(path)
+    restored = _add_hidden_tool(
+        qtbot, erlab.interactive.utils.ToolWindow.from_file(path)
+    )
+    result = restored._converted_output()
+    assert result.attrs["analyzer_work_function"] == expected_work_function
+    assert result.attrs["sample_work_function"] == 5.2
+    namespace = _exec_generated_code(restored.copy_code(), data=data.copy(deep=True))
+    xr.testing.assert_identical(namespace["data_kconv"], result)
 
 
 def _set_input_coordinates(dialog, values: dict[str, float]) -> None:
@@ -3528,6 +3565,7 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
     data = data.copy(deep=True)
     data.attrs.pop("sample_workfunction", None)
+    data.attrs.pop("analyzer_work_function", None)
     data.attrs.pop("inner_potential", None)
 
     with warnings.catch_warnings(record=True) as caught:
@@ -3539,8 +3577,11 @@ def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
     assert win._offset_spins["wf"].value() == pytest.approx(4.5)
     assert win._offset_spins["V0"].value() == pytest.approx(10.0)
     code = win.copy_code()
-    assert ".kspace.work_function =" not in code
-    assert ".kspace.inner_potential =" not in code
+    with warnings.catch_warnings(record=True) as copied_warnings:
+        warnings.simplefilter("always")
+        namespace = _exec_generated_code(code, data=data.copy(deep=True))
+    assert not _missing_kspace_parameter_warnings(copied_warnings)
+    xr.testing.assert_identical(namespace["data_kconv"], win._converted_output())
 
     original_attrs = win.data.attrs.copy()
     updated = data.copy(deep=True)

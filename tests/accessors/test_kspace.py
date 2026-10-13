@@ -1,5 +1,6 @@
 import functools
 import re
+import warnings
 
 import numpy as np
 import pytest
@@ -1064,11 +1065,12 @@ def test_kconv_missing_attr(missing_attr, anglemap):
 def test_missing_kspace_parameter_accessors_warn(anglemap) -> None:
     data = anglemap.copy(deep=True)
     data.attrs.pop("sample_workfunction", None)
+    data.attrs.pop("analyzer_work_function", None)
     data.attrs.pop("inner_potential", None)
 
     with pytest.warns(
         UserWarning,
-        match=r"Work function not found in data attributes, assuming 4\.5 eV",
+        match=r"Analyzer work function not found in data attributes, assuming 4\.5 eV",
     ):
         assert data.kspace.work_function == pytest.approx(4.5)
 
@@ -1077,6 +1079,55 @@ def test_missing_kspace_parameter_accessors_warn(anglemap) -> None:
         match=r"Inner potential not found in data attributes, assuming 10 eV",
     ):
         assert data.kspace.inner_potential == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("property_name", ["analyzer_work_function", "work_function"])
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ({"sample_workfunction": "4.1"}, 4.1),
+        ({"analyzer_work_function": "4.7", "sample_work_function": 4.9}, 4.7),
+        ({"analyzer_work_function": 4.7, "sample_workfunction": 3.2}, 4.7),
+    ],
+)
+def test_analyzer_work_function_reads_are_compatible_and_nonmutating(
+    property_name, attrs, expected
+):
+    data = xarray.DataArray([1.0], attrs=attrs.copy())
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert getattr(data.kspace, property_name) == expected
+    assert not caught
+    assert data.attrs == attrs
+
+
+@pytest.mark.parametrize("property_name", ["analyzer_work_function", "work_function"])
+def test_analyzer_work_function_default_does_not_use_sample_value(property_name):
+    data = xarray.DataArray([1.0], attrs={"sample_work_function": 5.2})
+    with pytest.warns(UserWarning, match="Analyzer work function not found"):
+        assert getattr(data.kspace, property_name) == 4.5
+    assert data.attrs == {"sample_work_function": 5.2}
+
+
+@pytest.mark.parametrize("property_name", ["analyzer_work_function", "work_function"])
+def test_work_function_setters_keep_analyzer_and_sample_independent(property_name):
+    data = xarray.DataArray([1.0])
+    data.kspace.sample_work_function = np.float64(4.9)
+    setattr(data.kspace, property_name, np.float64(4.2))
+    assert data.attrs == {"sample_work_function": 4.9, "analyzer_work_function": 4.2}
+    assert data.kspace.sample_work_function == 4.9
+    assert data.kspace.analyzer_work_function == data.kspace.work_function == 4.2
+    assert all(type(value) is float for value in data.attrs.values())
+
+
+@pytest.mark.parametrize(
+    "attrs", [{}, {"sample_workfunction": 4.1}, {"analyzer_work_function": 4.7}]
+)
+def test_missing_sample_work_function_has_no_fallback(attrs):
+    data = xarray.DataArray([1.0], attrs=attrs.copy())
+    with pytest.raises(IncompleteDataError, match="sample_work_function"):
+        _ = data.kspace.sample_work_function
+    assert data.attrs == attrs
 
 
 def test_kspace_set_existing_configuration(anglemap):

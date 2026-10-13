@@ -89,13 +89,13 @@ class KspaceWorkFunctionOperation(_MutatingKspaceOperation):
     work_function: float
 
     def derivation_label(self) -> str:
-        return f"Set work function({self.work_function:g} eV)"
+        return f"Set analyzer work function({self.work_function:g} eV)"
 
     def _apply_kspace_statement(self, data: xr.DataArray) -> None:
-        data.kspace.work_function = self.work_function
+        data.kspace.analyzer_work_function = self.work_function
 
     def _kspace_statement_code(self, output_name: str) -> str:
-        return f"{output_name}.kspace.work_function = {self.work_function!r}"
+        return f"{output_name}.kspace.analyzer_work_function = {self.work_function!r}"
 
 
 class KspaceInnerPotentialOperation(_MutatingKspaceOperation):

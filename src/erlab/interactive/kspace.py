@@ -474,7 +474,12 @@ class KspaceTool(KspaceToolGUI):
         source_input_coordinates: dict[str, float | None] = pydantic.Field(
             default_factory=dict
         )
-        source_work_function: float | None = None
+        source_analyzer_work_function: float | None = pydantic.Field(
+            default=None,
+            validation_alias=pydantic.AliasChoices(
+                "source_analyzer_work_function", "source_work_function"
+            ),
+        )
         source_inner_potential: float | None = None
         angle_scales: dict[str, float] = pydantic.Field(default_factory=dict)
         bounds_enabled: bool
@@ -666,12 +671,11 @@ class KspaceTool(KspaceToolGUI):
                     configuration=self._source_configuration,
                 )
             ),
-            source_work_function=_kspace_conversion.kspace_work_function(
-                self._source_input_data
+            source_analyzer_work_function=self._source_input_data.attrs.get(
+                "analyzer_work_function",
+                self._source_input_data.attrs.get("sample_workfunction"),
             ),
-            source_inner_potential=_kspace_conversion.kspace_inner_potential(
-                self._source_input_data
-            ),
+            source_inner_potential=self._source_input_data.attrs.get("inner_potential"),
             angle_scales={
                 k: round(spin.value(), spin.decimals())
                 for k, spin in self._angle_scale_spins.items()
@@ -845,8 +849,19 @@ class KspaceTool(KspaceToolGUI):
 
         source_data = source_data.copy(deep=False)
         source_data.attrs = dict(source_data.attrs)
-        if status.source_work_function is not None:
-            source_data.attrs["sample_workfunction"] = status.source_work_function
+        if status.source_analyzer_work_function is not None:
+            # Preserve the original source key so copied code includes its migration.
+            if (
+                "analyzer_work_function" not in source_data.attrs
+                and "sample_workfunction" in source_data.attrs
+            ):
+                source_data.attrs["sample_workfunction"] = (
+                    status.source_analyzer_work_function
+                )
+            else:
+                source_data.kspace.analyzer_work_function = (
+                    status.source_analyzer_work_function
+                )
         if status.source_inner_potential is not None:
             source_data.attrs["inner_potential"] = status.source_inner_potential
 
@@ -1211,7 +1226,7 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setSingleStep(0.01)
         self._offset_spins["wf"].setDecimals(4)
         self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS["wf"])
-        self._offset_spins["wf"].setToolTip("Work function of the system.")
+        self._offset_spins["wf"].setToolTip("Analyzer work function in eV.")
         self._offset_spins["wf"].setValue(
             _kspace_conversion.kspace_work_function(self.data)
         )
@@ -1383,12 +1398,11 @@ class KspaceTool(KspaceToolGUI):
                         configuration=source_configuration,
                     )
                 ),
-                "source_work_function": _kspace_conversion.kspace_work_function(
-                    parsed_new_data
+                "source_analyzer_work_function": parsed_new_data.attrs.get(
+                    "analyzer_work_function",
+                    parsed_new_data.attrs.get("sample_workfunction"),
                 ),
-                "source_inner_potential": _kspace_conversion.kspace_inner_potential(
-                    parsed_new_data
-                ),
+                "source_inner_potential": parsed_new_data.attrs.get("inner_potential"),
             },
         )
         new_data = self._validate_data_input(

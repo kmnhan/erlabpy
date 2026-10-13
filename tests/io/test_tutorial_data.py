@@ -89,7 +89,7 @@ def test_tutorial_loader_and_registry_cleanup(tutorial_files) -> None:
         assert loaded.dims == ("alpha", "beta", "eV")
         np.testing.assert_allclose(loaded.eV[[0, -1]], (45.05, 45.62))
         assert loaded.attrs["sample_temp"] == 20.0
-        assert loaded.attrs["sample_workfunction"] == 4.5
+        assert loaded.attrs["analyzer_work_function"] == 4.5
         assert loaded.attrs["angle_resolution"] == 0.1
         assert dict(loaded.kspace.offsets) == {
             "delta": 0.0,
@@ -98,9 +98,12 @@ def test_tutorial_loader_and_registry_cleanup(tutorial_files) -> None:
         }
         corrected = loaded.assign_coords(eV=loaded.eV - 45.5)
         corrected.kspace.set_normal(2.0, -1.5, delta=-4.0)
-        np.testing.assert_allclose(
-            corrected.kspace._forward_func(2.0, -1.5), 0.0, atol=1e-14
+        normal = (
+            corrected.isel(alpha=0, beta=0)
+            .assign_coords(alpha=2.0, beta=-1.5)
+            .kspace.convert_coords()
         )
+        np.testing.assert_allclose([normal.kx, normal.ky], 0.0, atol=1e-14)
 
     assert registry._loaders == previous_loaders
     assert registry._alias_mapping == previous_aliases

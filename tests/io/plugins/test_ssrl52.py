@@ -39,9 +39,11 @@ def test_load(expected_dir, args, expected, chunks) -> None:
     if chunks is not None:
         assert loaded.chunks is not None
 
-    xr.testing.assert_identical(
-        loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
+    reference = xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
+    reference.attrs["analyzer_work_function"] = reference.attrs.pop(
+        "sample_workfunction"
     )
+    xr.testing.assert_identical(loaded, reference)
 
 
 def test_load_legacy_compat_avoids_xarray_reduction(
@@ -61,10 +63,11 @@ def test_load_legacy_compat_avoids_xarray_reduction(
         patch.setattr(xr.DataArray, "min", unexpected_xarray_reduction)
         loaded = erlab.io.load(legacy_file)
 
-    xr.testing.assert_identical(
-        loaded,
-        xr.load_dataarray(expected_dir / "f_0002.h5", engine="h5netcdf"),
+    reference = xr.load_dataarray(expected_dir / "f_0002.h5", engine="h5netcdf")
+    reference.attrs["analyzer_work_function"] = reference.attrs.pop(
+        "sample_workfunction"
     )
+    xr.testing.assert_identical(loaded, reference)
 
 
 def test_summarize(data_dir) -> None:
