@@ -1569,6 +1569,139 @@ def _commit_spin_text(spin: erlab.interactive.utils.BetterSpinBox, text: str) ->
     spin.editingFinishedEvent()
 
 
+@pytest.mark.parametrize(
+    ("options", "value", "numeric_text"),
+    [
+        ({}, 12.34567, "12.346"),
+        ({"significant": True}, 12.34567, "12.3"),
+        ({"integer": True}, 12, "12"),
+        ({"scientific": True}, 12.34567, "1.235e+1"),
+        ({"exact_float": True}, 12.34567, "12.34567"),
+        ({"exact_float": True, "scientific": True}, 12.34567, "1.234567e+1"),
+    ],
+)
+@pytest.mark.parametrize("suffix", ["°", " eV"])
+def test_better_spinbox_suffix_format_and_parse(
+    qtbot, options, value, numeric_text, suffix
+):
+    spin = erlab.interactive.utils.BetterSpinBox(
+        **options, value=value, prefix="x=", suffix=suffix
+    )
+    qtbot.addWidget(spin)
+
+    rendered = "x=" + numeric_text + suffix
+    assert spin.text() == rendered
+    assert spin.lineEdit().text() == rendered
+    assert spin.valueFromText(rendered) == float(numeric_text)
+    assert spin.valueFromText(numeric_text) == float(numeric_text)
+    assert spin.value() == value
+
+
+@pytest.mark.parametrize("exact_float", [False, True])
+@pytest.mark.parametrize("with_suffix", [False, True])
+def test_better_spinbox_suffix_keyboard_commit(qtbot, exact_float, with_suffix):
+    spin = erlab.interactive.utils.BetterSpinBox(
+        suffix=" eV", exact_float=exact_float, trim="0"
+    )
+    qtbot.addWidget(spin)
+    spin.show()
+    line = spin.lineEdit()
+    literal = "1.23456789012345"
+    if with_suffix:
+        line.setText(literal + " eV")
+    else:
+        line.selectAll()
+        qtbot.keyClicks(line, literal)
+    qtbot.keyClick(line, QtCore.Qt.Key.Key_Return)
+
+    assert spin.value() == float(literal)
+    assert spin.text() == (literal if exact_float else "1.235") + " eV"
+    assert line.text() == spin.text()
+    spin.stepBy(1)
+    assert spin.value() == float(literal) + spin.singleStep()
+    assert spin.valueFromText(spin.text()) == (
+        spin.value() if exact_float else round(spin.value(), spin.decimals())
+    )
+
+
+def test_better_spinbox_suffix_changes_width_without_changing_value(qtbot):
+    spin = erlab.interactive.utils.BetterSpinBox(
+        minimum=-180, maximum=180, value=1.23456789
+    )
+    qtbot.addWidget(spin)
+    width = spin.minimumWidth()
+    value = spin.value()
+
+    spin.setSuffix(" eV")
+    assert spin.suffix() == " eV"
+    assert spin.text().endswith(" eV")
+    assert spin.minimumWidth() > width
+    assert spin.value() == value
+
+    spin.setSuffix("")
+    assert spin.suffix() == ""
+    assert spin.minimumWidth() == width
+    assert spin.value() == value
+
+
+def test_better_spinbox_width_measurement_leaves_no_child_spinboxes(qtbot):
+    spin = erlab.interactive.utils.BetterSpinBox(minimum=-180, maximum=180)
+    qtbot.addWidget(spin)
+    spin.setSuffix("°")
+    spin.setDecimals(4)
+
+    assert spin.findChildren(QtWidgets.QAbstractSpinBox) == []
+
+
+@pytest.mark.parametrize("entered", [False, True])
+def test_better_spinbox_unchanged_commit_preserves_full_value(qtbot, entered):
+    value = 12.346
+    spin = erlab.interactive.utils.BetterSpinBox(
+        significant=True, decimals=4, value=0 if entered else value, suffix=" eV"
+    )
+    qtbot.addWidget(spin)
+    if entered:
+        _commit_spin_text(spin, str(value))
+    assert spin.text() == "12.35 eV"
+    assert spin.value() == value
+
+    spin.editingFinishedEvent()
+    assert spin.value() == value
+    assert spin.text() == "12.35 eV"
+
+
+@pytest.mark.parametrize("exact_float", [False, True])
+def test_better_spinbox_interpret_text_commits_pending_value(qtbot, exact_float):
+    spin = erlab.interactive.utils.BetterSpinBox(
+        significant=True, decimals=4, value=1.0, suffix=" eV", exact_float=exact_float
+    )
+    qtbot.addWidget(spin)
+    spin.lineEdit().setText("12.346")
+
+    spin.interpretText()
+
+    assert spin.value() == 12.346
+    assert spin.text() == ("12.346" if exact_float else "12.35") + " eV"
+    spin.interpretText()
+    assert spin.value() == 12.346
+
+
+@pytest.mark.parametrize("exact_float", [False, True])
+@pytest.mark.parametrize("text", ["invalid", "", "1e", "-5"])
+def test_better_spinbox_interpret_text_corrects_invalid_input(qtbot, exact_float, text):
+    spin = erlab.interactive.utils.BetterSpinBox(
+        value=1.25, minimum=0, suffix=" eV", exact_float=exact_float, trim="0"
+    )
+    qtbot.addWidget(spin)
+    spin.lineEdit().setText(text)
+
+    spin.interpretText()
+
+    assert spin.value() == 1.25
+    assert spin.lineEdit().text() == spin.text()
+    assert spin.valueFromText(spin.text()) == 1.25
+
+
 def test_better_spinbox_exact_float_preserves_user_literal(qtbot) -> None:
     spin = erlab.interactive.utils.BetterSpinBox(decimals=3, exact_float=True, trim="0")
     qtbot.addWidget(spin)

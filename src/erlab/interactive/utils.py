@@ -1940,6 +1940,11 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         shortest round-tripping float representation.
     value
         Initial value of the spinbox.
+    prefix, suffix
+        Text displayed before and after the value.
+
+        .. versionadded:: 3.28.0
+           The ``suffix`` parameter.
 
     """
 
@@ -1959,6 +1964,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         exact_float: bool = False,
         value: float = 0.0,
         prefix: str = "",
+        suffix: str = "",
         trim: typing.Literal["k", ".", "0", "-"] = "k",
         **kwargs,
     ) -> None:
@@ -1977,6 +1983,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
         self._prefix = prefix
+        self._suffix = suffix
         self._trim = trim
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
@@ -2014,6 +2021,15 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def prefix(self) -> str:
         return self._prefix
+
+    @QtCore.Slot(str)
+    def setSuffix(self, suffix: str) -> None:
+        self._suffix = suffix
+        self._updateWidth()
+        self.setValue(self.value())
+
+    def suffix(self) -> str:
+        return self._suffix
 
     @QtCore.Slot(int)
     def setDecimals(self, decimals: int) -> None:
@@ -2079,36 +2095,40 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         if (not self._only_int) or (not np.isfinite(value)):
             if self._is_scientific:
                 if self._exact_float and not self._only_int:
-                    return self.prefix() + np.format_float_scientific(
+                    text = np.format_float_scientific(
                         value,
                         unique=True,
                         trim=self._trim,
                         exp_digits=1,
                     )
-                return self.prefix() + np.format_float_scientific(
-                    value,
-                    precision=self.decimals(),
-                    unique=False,
-                    trim=self._trim,
-                    exp_digits=1,
-                )
-            if self._exact_float and not self._only_int:
-                return self.prefix() + np.format_float_positional(
+                else:
+                    text = np.format_float_scientific(
+                        value,
+                        precision=self.decimals(),
+                        unique=False,
+                        trim=self._trim,
+                        exp_digits=1,
+                    )
+            elif self._exact_float and not self._only_int:
+                text = np.format_float_positional(
                     value,
                     unique=True,
                     trim=self._trim,
                 )
-            return self.prefix() + np.format_float_positional(
-                value,
-                precision=self.decimals(),
-                unique=False,
-                fractional=not self._decimal_significant,
-                trim=self._trim,
-            )
-        return self.prefix() + str(int(value))
+            else:
+                text = np.format_float_positional(
+                    value,
+                    precision=self.decimals(),
+                    unique=False,
+                    fractional=not self._decimal_significant,
+                    trim=self._trim,
+                )
+        else:
+            text = str(int(value))
+        return self.prefix() + text + self.suffix()
 
     def valueFromText(self, text: str):
-        text = text[len(self.prefix()) :]
+        text = text.removeprefix(self.prefix()).removesuffix(self.suffix())
         if text == "":
             return np.nan
         if self._only_int:
@@ -2195,10 +2215,19 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         # will be forced to its previous state anyway
         return (ret, strn, pos)
 
+    def interpretText(self) -> None:
+        super().interpretText()
+        if self.hasAcceptableInput():
+            self.editingFinishedEvent()
+        else:
+            self.setValue(self.value())
+
     def editingFinishedEvent(self) -> None:
         line = self.lineEdit()
         if line is not None:
             text = line.text()
+            if text == self.text():
+                return
             try:
                 value = self.valueFromText(text)
             except ValueError:
@@ -2213,6 +2242,11 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                 and value <= self.maximum()
             ):
                 self._lastvalue, self._value = self._value, value
+                text = (
+                    self.prefix()
+                    + text.removeprefix(self.prefix()).removesuffix(self.suffix())
+                    + self.suffix()
+                )
                 self._exact_text = text
                 self.valueChanged.emit(self.value())
                 line.setText(text)
@@ -2250,6 +2284,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         )
         spin.setDisabled(True)
         spin.setVisible(False)
+        spin.setParent(None)
         spin.deleteLater()
         return w
 
