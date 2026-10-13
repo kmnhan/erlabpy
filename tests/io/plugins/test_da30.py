@@ -80,6 +80,10 @@ def expected_dir(data_dir):
         (3, "f0003.h5"),
         ("f0004.txt", "f0004.h5"),
         (4, "f0004.h5"),
+        (
+            {"identifier": "f0004.txt", "load_kwargs": {"without_values": True}},
+            "f0004.h5",
+        ),
         ("f0005.txt", "f0005.h5"),
         (5, "f0005.h5"),
         ("f0006.txt", "f0006.h5"),
@@ -104,6 +108,8 @@ def test_load(expected_dir, args, expected) -> None:
         return
 
     expected_darr = xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
+    if isinstance(args, dict) and args.get("load_kwargs", {}).get("without_values"):
+        expected_darr = xr.zeros_like(expected_darr)
 
     xr.testing.assert_equal(loaded, expected_darr)
     assert loaded.name == expected_darr.name

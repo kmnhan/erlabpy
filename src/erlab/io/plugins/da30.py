@@ -196,10 +196,6 @@ def load_txt(
                 offset, count = data_locations[section]
                 data_locations[section] = (offset, count + 1)
             elif line:
-                if not section:
-                    raise ValueError(
-                        f"{filename}: content before the first SES section"
-                    )
                 sections[section].append(line.decode("utf-8").strip())
 
     metadata: dict[str, dict[str, typing.Any]] = {}
@@ -213,31 +209,25 @@ def load_txt(
                 metadata[name][key.strip()] = _parse_value(value.strip())
 
     reserved_names: set[str] = set()
-    if name_map is not None:
-        reserved_names.update(name_map)
-        for aliases in name_map.values():
-            reserved_names.update((aliases,) if isinstance(aliases, str) else aliases)
+    for name, aliases in (name_map or {}).items():
+        reserved_names.add(name)
+        reserved_names.update((aliases,) if isinstance(aliases, str) else aliases)
 
-    try:
-        num_regions = int(metadata["Info"]["Number of Regions"])
-        with filename.open("rb") as stream:
-            out = [
-                _load_txt_region(
-                    sections,
-                    metadata,
-                    region,
-                    stream=stream,
-                    data_locations=data_locations,
-                    without_values=without_values,
-                    reserved_names=reserved_names,
-                )
-                for region in range(1, num_regions + 1)
-            ]
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"{filename}: invalid SES text file: {exc}") from exc
+    num_regions = int(metadata["Info"]["Number of Regions"])
+    with filename.open("rb") as stream:
+        out = [
+            _load_txt_region(
+                sections,
+                metadata,
+                region,
+                stream=stream,
+                data_locations=data_locations,
+                without_values=without_values,
+                reserved_names=reserved_names,
+            )
+            for region in range(1, num_regions + 1)
+        ]
 
-    if not out:
-        raise ValueError(f"{filename}: no regions declared")
     if len(out) == 1 and len(out[0]) == 1:
         return next(iter(out[0].values()))
     # Region names are normally unique. Use numbered nodes if they cannot be paths.
@@ -300,19 +290,11 @@ def _load_txt_region(
                 axis_keys.append(
                     (f"{prefix} name", f"{prefix} size", f"{prefix} scale")
                 )
-            if not axis_keys or "Dimension 4 size" in header:
-                raise ValueError(f"[{region}]: expected one to three dimensions")
             stacked = len(axis_keys) == 3
         else:
             num_signals = int(header["Number of signals"])
-            if num_signals < 1:
-                raise ValueError(
-                    f"[{region}]: invalid number of signals: {num_signals}"
-                )
-            names = str(header.get("Signal names", "Signal"))
+            names = str(header["Signal names"])
             signal_names = names.split() if num_signals > 1 else [names]
-            if len(signal_names) != num_signals:
-                raise ValueError(f"[{region}]: signal names do not match their count")
             axis_keys = [("Signal unit", "Signal steps", "Signal scale [0]")]
             stacked = any(":" in name for name in data_sections)
             if stacked:
@@ -325,18 +307,8 @@ def _load_txt_region(
         coords = {}
         for name_key, size_key, scale_key in axis_keys:
             size = int(header[size_key])
-            if size < 1:
-                raise ValueError(f"[{region}]: invalid {size_key}: {size}")
-            name = str(header.get(name_key, "")) or size_key.rsplit(" ", 1)[0]
-            scale = str(header.get(scale_key, ""))
-            if scale:
-                coord = np.asarray(scale.split(), dtype=np.float64)
-            elif scale_key == "Dimension 3 scale":
-                coord = np.arange(size, dtype=np.float64)
-            else:
-                raise ValueError(f"[{region}]: missing {scale_key}")
-            if coord.size != size:
-                raise ValueError(f"[{region}]: {scale_key} does not match its size")
+            name = str(header[name_key])
+            coord = np.asarray(str(header[scale_key]).split(), dtype=np.float64)
             if name in coords:
                 raise ValueError(f"[{region}]: duplicate dimension name {name!r}")
             dims.append(name)
@@ -344,11 +316,6 @@ def _load_txt_region(
             coords[name] = coord
 
         nframes = sizes[-1] if stacked else 1
-        if len(data_sections) != nframes:
-            raise ValueError(
-                f"[{region}]: expected {nframes} {kind} sections, "
-                f"found {len(data_sections)}"
-            )
 
         shape = tuple(reversed(sizes))
         if kind == "Signal":
@@ -360,7 +327,7 @@ def _load_txt_region(
             values = np.zeros(shape, dtype=np.float64)
         else:
             values = np.empty(shape, dtype=np.float64)
-            for frame, name in enumerate(data_sections):
+            for frame, name in zip(range(nframes), data_sections, strict=True):
                 offset, count = data_locations[name]
                 stream.seek(offset)
                 table = np.loadtxt(
@@ -390,7 +357,9 @@ def _load_txt_region(
                 attrs=attrs,
             )
         else:
-            for index, signal_name in enumerate(signal_names):
+            for index, signal_name in zip(
+                range(num_signals), signal_names, strict=True
+            ):
                 if index == 0:
                     signal_scale = coords[dims[0]]
                 else:
@@ -398,10 +367,6 @@ def _load_txt_region(
                     signal_scale = np.asarray(
                         str(header[scale_key]).split(), dtype=np.float64
                     )
-                    if signal_scale.size != sizes[0]:
-                        raise ValueError(
-                            f"[{region}]: {scale_key} does not match its size"
-                        )
                 key = "Signal" if num_signals == 1 else f"Signal {index + 1}"
                 signal = xr.DataArray(
                     values[..., index, :],
@@ -432,8 +397,6 @@ def _load_txt_region(
                 else:
                     out[key] = signal
 
-    if not out:
-        raise ValueError(f"[{region}]: no Data or Signal sections found")
     return out
 
 
