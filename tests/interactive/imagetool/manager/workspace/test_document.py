@@ -575,7 +575,7 @@ def test_manager_sync(
         assert win1.slicer_area.main_image.getViewBox().viewRange() == [[2, 3], [1, 2]]
 
 
-def test_manager_link_action_links_colors(
+def test_manager_link_selected_links_colors(
     qtbot,
     test_data,
     manager_context: Callable[
@@ -590,7 +590,7 @@ def test_manager_link_action_links_colors(
 
         select_tools(manager, [0, 1])
         qtbot.wait_until(lambda: manager.link_action.isEnabled())
-        manager.link_action.trigger()
+        manager.link_selected()
 
         proxy = manager.get_imagetool(0).slicer_area._linking_proxy
         assert proxy is not None

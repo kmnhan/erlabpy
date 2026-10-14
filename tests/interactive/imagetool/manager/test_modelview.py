@@ -4956,6 +4956,7 @@ def test_manager_file_loads_with_loader_extensions(
 
 def test_manager_hover_tooltip(
     qtbot,
+    accept_dialog,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -5026,22 +5027,18 @@ def test_manager_hover_tooltip(
         assert handled
         assert_nonempty_tooltip(text)
 
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            accept_call=lambda dialog: dialog.reject(),
         )
-        click_tree_view_pos(view, link_rect.center())
         assert manager.get_imagetool(0).slicer_area.is_linked
         assert manager.get_imagetool(1).slicer_area.is_linked
         assert manager.get_imagetool(2).slicer_area.is_linked
 
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            accept_call=lambda dialog: dialog.unlink_button.click(),
         )
-        click_tree_view_pos(view, link_rect.center())
         assert not manager.get_imagetool(0).slicer_area.is_linked
         assert manager.get_imagetool(1).slicer_area.is_linked
         assert manager.get_imagetool(2).slicer_area.is_linked
