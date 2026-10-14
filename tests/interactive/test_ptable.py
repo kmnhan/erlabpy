@@ -11,10 +11,10 @@ import xraydb
 from qtpy import QtCore, QtGui, QtTest, QtWidgets
 
 import erlab
-import erlab.interactive.ptable.__main__
-import erlab.interactive.ptable._window
 from erlab.interactive import ptable as launch_ptable
 from erlab.interactive.ptable import PeriodicTableWindow
+from erlab.interactive.ptable import __main__ as ptable_main
+from erlab.interactive.ptable import _window as ptable_window
 from erlab.interactive.ptable._inspector import CompactElementChip, RichTextHeaderView
 from erlab.interactive.ptable._metadata import (
     CATEGORY_COLORS,
@@ -69,7 +69,7 @@ def isolate_ptable_settings(monkeypatch, tmp_path) -> None:
         return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
 
     monkeypatch.setattr(
-        erlab.interactive.ptable._window,
+        ptable_window,
         "_get_ptable_settings",
         _test_settings,
     )
@@ -3555,7 +3555,7 @@ def test_ptable_search_popup_completion_helpers_respect_focus_state(
 
 
 def test_ptable_search_popup_widget_helpers_emit_indexes(qtbot) -> None:
-    popup = erlab.interactive.ptable._window._SearchPopup()
+    popup = ptable_window._SearchPopup()
     qtbot.addWidget(popup)
     reference_list = QtWidgets.QListWidget()
     qtbot.addWidget(reference_list)
@@ -4055,11 +4055,11 @@ def test_ptable_module_main(monkeypatch) -> None:
     called: list[bool] = []
 
     monkeypatch.setattr(
-        erlab.interactive.ptable.__main__,
+        ptable_main,
         "ptable",
         lambda: called.append(True),
     )
 
-    erlab.interactive.ptable.__main__.main()
+    ptable_main.main()
 
     assert called == [True]
