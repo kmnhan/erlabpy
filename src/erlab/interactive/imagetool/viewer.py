@@ -28,6 +28,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.extensions._api import _registered_script_capability_status
 from erlab.interactive import _shortcut_sequences
+from erlab.interactive._options.runtime import (
+    effective_cursor_colors,
+    initialize_plot_defaults,
+)
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
@@ -226,7 +230,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def COLORS(self) -> tuple[QtGui.QColor, ...]:
         r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
-        return tuple(QtGui.QColor(c) for c in self._options_model.colors.cursors)
+        return tuple(
+            QtGui.QColor(c)
+            for c in effective_cursor_colors(self._options_model.colors.cursors)
+        )
 
     TWIN_COLORS: tuple[QtGui.QColor, ...] = (
         pg.mkColor("#ffa500"),
@@ -306,6 +313,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         _workspace_load_profiler: typing.Any = None,
     ) -> None:
         super().__init__(parent)
+        initialize_plot_defaults()
         self._options_model = options_model or erlab.interactive.options.model
         self.qapp = typing.cast(
             "QtWidgets.QApplication", QtWidgets.QApplication.instance()
@@ -418,9 +426,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
         )
+        plot_background = pg.getConfigOption("background")
+        splitter_color = (
+            "transparent"
+            if plot_background is None
+            else pg.mkColor(plot_background).name(QtGui.QColor.NameFormat.HexArgb)
+        )
         for s in self._splitters:
             s.setHandleWidth(4)
-            s.setStyleSheet("QSplitter::handle{background: #222222;}")
+            s.setStyleSheet(f"QSplitter::handle{{background: {splitter_color};}}")
 
         layout.addWidget(self._splitters[0])
         for i, j in ((0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (4, 6)):

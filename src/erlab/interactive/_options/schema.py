@@ -71,6 +71,25 @@ __all__ = [
 
 WorkspaceCompressionMode = typing.Literal["none", "blosclz3", "zstd1"]
 
+_DEFAULT_CURSOR_COLORS = (
+    "#cccccc",
+    "#ffff00",
+    "#ff00ff",
+    "#00ffff",
+    "#008000",
+    "#ff0000",
+    "#0000ff",
+)
+_LIGHT_CURSOR_COLORS = (
+    "#707070",
+    "#c4a04d",
+    "#b875ad",
+    "#4f9da8",
+    "#72a06a",
+    "#d57870",
+    "#6f91bb",
+)
+
 
 def normalize_workspace_compression_mode(value: typing.Any) -> typing.Any:
     """Return the canonical workspace compression mode for legacy values."""
@@ -442,6 +461,14 @@ class ColorMapOptions(BaseModel):
 class ColorOptions(BaseModel):
     """Top-level grouping of color-related options."""
 
+    plot_light_mode: bool = Field(
+        default=False,
+        title="Light plot background",
+        description=(
+            "Use white plot backgrounds and black axes and text. "
+            "Restart the application for changes to take effect."
+        ),
+    )
     cmap: ColorMapOptions = Field(default_factory=ColorMapOptions, title="Colormap")
     max_rendered_abs_value: float = Field(
         default=1e30,
@@ -456,17 +483,13 @@ class ColorOptions(BaseModel):
         json_schema_extra=_workspace_extra(ui_step=1e30),
     )
     cursors: list[str] = Field(
-        default=[
-            "#cccccc",
-            "#ffff00",
-            "#ff00ff",
-            "#00ffff",
-            "#008000",
-            "#ff0000",
-            "#0000ff",
-        ],
+        default=list(_DEFAULT_CURSOR_COLORS),
         title="Cursor colors",
-        description="Base list of colors used for different cursors in the ImageTool.",
+        description=(
+            "Base list of colors used for different cursors in the ImageTool. "
+            "The default set uses darker alternatives in light mode. "
+            "Custom sets keep their colors."
+        ),
         json_schema_extra=_workspace_extra(ui_type="colorlist"),
     )
 

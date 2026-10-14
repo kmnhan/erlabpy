@@ -25,6 +25,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive import _shortcut_sequences
+from erlab.interactive._options.runtime import initialize_plot_defaults
 from erlab.interactive.explorer._loaders import (
     BUILTIN_EXPLORER_LOADERS,
     _BuiltinExplorerLoader,
@@ -901,6 +902,7 @@ class _DataPreviewWidget(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
+        light_mode = initialize_plot_defaults()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -928,6 +930,8 @@ class _DataPreviewWidget(QtWidgets.QWidget):
 
         self._image = erlab.interactive.utils.xImageItem()
         self._plotdata = pg.PlotDataItem()
+        if light_mode:
+            self._plotdata.setPen(pg.getConfigOption("foreground"))
 
         self._axes = pg.PlotItem(
             axisItems={

@@ -13,6 +13,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 from erlab.interactive._momentum_overlays import _geometry
 from erlab.interactive._momentum_overlays._editor import MomentumOverlayEditor
+from erlab.interactive._options.runtime import initialize_plot_defaults
 from erlab.interactive._qt_state import qt_window_state, restore_qt_window_state
 from erlab.interactive._stateful_window import StatefulWindow
 from erlab.interactive.angle_calculator import _calculation as calc
@@ -43,6 +44,7 @@ class AngleCalculatorWindow(StatefulWindow[AngleCalculatorSettings]):
         options: AppOptions | None = None,
     ) -> None:
         super().__init__(parent)
+        initialize_plot_defaults()
         self._qapp = QtWidgets.QApplication.instance()
         self.setWindowTitle("Angle calculator")
         self.resize(1380, 820)

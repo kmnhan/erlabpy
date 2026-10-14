@@ -25,6 +25,7 @@ from erlab.interactive._options.parameters import (
     StylesheetListWidget,
     TrustedFoldersWidget,
 )
+from erlab.interactive._options.runtime import initialize_plot_defaults
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive._widgets import _Separator
 
@@ -402,6 +403,7 @@ class OptionDialog(QtWidgets.QDialog):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
+        initialize_plot_defaults()
         self.setObjectName("settingsDialog")
         self.setWindowTitle("Settings")
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)

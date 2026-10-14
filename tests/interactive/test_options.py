@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import typing
 
+import numpy as np
 import pydantic
+import pyqtgraph as pg
 import pytest
+import xarray as xr
 from qtpy import QtCore, QtWidgets
 
+import erlab.interactive._options.runtime as options_runtime
 import erlab.interactive._options.ui as options_ui
 from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
 from erlab.interactive._options import OptionDialog, options
@@ -34,6 +41,7 @@ from erlab.interactive._options.schema import (
 )
 from erlab.interactive.angle_calculator._window import AngleCalculatorWindow
 from erlab.interactive.colors import ColorMapComboBox
+from erlab.interactive.imagetool import ImageTool
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +58,226 @@ def dialog(qtbot):
     dlg = OptionDialog()
     qtbot.addWidget(dlg)
     return dlg
+
+
+@pytest.fixture
+def fresh_plot_defaults(monkeypatch):
+    previous = {
+        name: pg.getConfigOption(name)
+        for name in ("background", "foreground", "antialias")
+    }
+    monkeypatch.setattr(options_runtime, "_plot_light_mode", None)
+    try:
+        yield
+    finally:
+        pg.setConfigOptions(**previous)
+
+
+@pytest.mark.parametrize("light_mode", [False, True])
+def test_plot_defaults_apply_once(fresh_plot_defaults, light_mode):
+    host_colors = {"background": (20, 30, 40), "foreground": (180, 190, 200)}
+    pg.setConfigOptions(**host_colors, antialias=True)
+    options["colors/plot_light_mode"] = light_mode
+
+    assert options_runtime.initialize_plot_defaults() is light_mode
+    expected = {"background": "w", "foreground": "k"} if light_mode else host_colors
+    assert {name: pg.getConfigOption(name) for name in expected} == expected
+    assert pg.getConfigOption("antialias") is True
+
+    options["colors/plot_light_mode"] = not light_mode
+    assert options_runtime.initialize_plot_defaults() is light_mode
+    assert {name: pg.getConfigOption(name) for name in expected} == expected
+
+    # A host can deliberately change its settings after ERLab initialization.
+    pg.setConfigOptions(**host_colors)
+    assert options_runtime.initialize_plot_defaults() is light_mode
+    assert {name: pg.getConfigOption(name) for name in host_colors} == host_colors
+
+
+def test_plot_defaults_import_preserves_host_configuration(tmp_path):
+    options["colors/plot_light_mode"] = True
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import pyqtgraph as pg\n"
+            "pg.setConfigOptions(background='b', foreground='y')\n"
+            "import erlab.interactive.utils\n"
+            "import erlab.interactive._options.runtime as runtime\n"
+            "assert runtime._plot_light_mode is None\n"
+            "assert pg.getConfigOption('background') == 'b'\n"
+            "assert pg.getConfigOption('foreground') == 'y'\n",
+        ],
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("light_mode", [False, True])
+def test_light_plot_settings_save_revert_and_reset_require_restart(
+    qtbot, fresh_plot_defaults, light_mode
+):
+    options["colors/plot_light_mode"] = light_mode
+    dlg = OptionDialog()
+    qtbot.addWidget(dlg)
+    control = typing.cast(
+        "QtWidgets.QCheckBox",
+        _control(dlg, "user", "colors/plot_light_mode", QtWidgets.QCheckBox),
+    )
+    active_colors = {
+        name: pg.getConfigOption(name) for name in ("background", "foreground")
+    }
+
+    control.setChecked(not light_mode)
+    assert OptionManager().model.colors.plot_light_mode is not light_mode
+    assert options_runtime.initialize_plot_defaults() is light_mode
+    assert {name: pg.getConfigOption(name) for name in active_colors} == active_colors
+
+    # New windows in this process still use the startup preference.
+    win = ImageTool(np.arange(30).reshape(5, 6))
+    qtbot.addWidget(win)
+    assert win.slicer_area.cursor_colors[0].name() == (
+        "#707070" if light_mode else "#cccccc"
+    )
+    assert {name: pg.getConfigOption(name) for name in active_colors} == active_colors
+
+    dlg.revert_changes()
+    assert options.model.colors.plot_light_mode is light_mode
+    _button(dlg, "user", "colors/plot_light_mode").click()
+    assert options.model.colors.plot_light_mode is False
+    dlg.restore()
+    assert options.model.colors.plot_light_mode is False
+    assert {name: pg.getConfigOption(name) for name in active_colors} == active_colors
+
+
+def test_light_plot_setting_has_no_workspace_override(qtbot):
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dlg = OptionDialog(manager)
+    qtbot.addWidget(dlg)
+
+    assert "colors/plot_light_mode" in option_paths()
+    assert "colors/plot_light_mode" not in workspace_overridable_option_paths()
+    assert ("user", "colors/plot_light_mode") in dlg._rows
+    assert ("workspace", "colors/plot_light_mode") not in dlg._rows
+
+
+@pytest.mark.parametrize(
+    "kind", ["imagetool", "angle", "tool", "analysis", "preview", "qapp"]
+)
+def test_direct_gui_startup_applies_light_plot_defaults(
+    qtbot, fresh_plot_defaults, kind
+):
+    from erlab.interactive.explorer._base_explorer import _DataPreviewWidget
+    from erlab.interactive.utils import AnalysisWidgetBase, ToolWindow, setup_qapp
+
+    options["colors/plot_light_mode"] = True
+    if kind == "imagetool":
+        widget = ImageTool(np.arange(30).reshape(5, 6))
+    elif kind == "angle":
+        widget = AngleCalculatorWindow()
+    elif kind == "tool":
+        widget = ToolWindow()
+    elif kind == "analysis":
+        widget = AnalysisWidgetBase()
+    elif kind == "preview":
+        widget = _DataPreviewWidget()
+        assert widget._plotdata.opts["pen"].color().name() == "#000000"
+    else:
+        with setup_qapp(execute=False):
+            widget = pg.PlotWidget()
+    qtbot.addWidget(widget)
+
+    assert pg.getConfigOption("background") == "w"
+    assert pg.getConfigOption("foreground") == "k"
+    plots = widget.findChildren(pg.GraphicsView)
+    if isinstance(widget, pg.GraphicsView):
+        plots.append(widget)
+    for plot in plots:
+        assert plot.backgroundBrush().color().name() == "#ffffff"
+
+
+def test_manager_startup_applies_light_plot_defaults(
+    manager_context, fresh_plot_defaults
+):
+    options["colors/plot_light_mode"] = True
+    with manager_context():
+        assert options_runtime.initialize_plot_defaults() is True
+        assert pg.getConfigOption("background") == "w"
+        assert pg.getConfigOption("foreground") == "k"
+
+
+@pytest.mark.parametrize("light_mode", [False, True])
+def test_fermi_edge_neutral_items_follow_plot_mode(
+    qtbot, fresh_plot_defaults, light_mode
+):
+    from erlab.interactive.fermiedge import GoldTool, ResolutionTool
+
+    options["colors/plot_light_mode"] = light_mode
+    data = xr.DataArray(
+        np.arange(30).reshape(5, 6),
+        dims=("alpha", "eV"),
+        coords={"alpha": np.linspace(-1, 1, 5), "eV": np.linspace(-0.03, 0.03, 6)},
+    )
+    gold = GoldTool(data)
+    qtbot.addWidget(gold)
+    assert all(
+        pg.mkPen(curve.opts["pen"]).color().name()
+        == ("#000000" if light_mode else "#c8c8c8")
+        for curve in gold.polycurves
+    )
+    resolution = ResolutionTool(data)
+    qtbot.addWidget(resolution)
+    color = resolution.edc_curve.opts["brush"].color()
+    assert color.name() == ("#000000" if light_mode else "#ffffff")
+    assert color.alpha() == 200
+
+
+@pytest.mark.parametrize("light_mode", [False, True])
+@pytest.mark.parametrize("custom_palette", [False, True])
+def test_imagetool_cursor_palette_uses_active_plot_mode(
+    qtbot, fresh_plot_defaults, light_mode, custom_palette
+):
+    options["colors/plot_light_mode"] = light_mode
+    saved_palette = AppOptions().colors.cursors
+    if custom_palette:
+        saved_palette[1] = "#123456"
+        options["colors/cursors"] = saved_palette
+    win = ImageTool(np.arange(30).reshape(5, 6))
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    for _ in range(len(saved_palette) - 1):
+        area.add_cursor()
+    palette = [color.name() for color in area.cursor_colors]
+
+    if light_mode and not custom_palette:
+        assert palette[0] == "#707070"
+        assert all(a != b for a, b in zip(palette, saved_palette, strict=True))
+    else:
+        assert palette == saved_palette
+    assert options.model.colors.cursors == saved_palette
+    for plot in area.axes:
+        if not plot.is_image:
+            assert [
+                item.opts["pen"].color().name() for item in plot.slicer_data_items
+            ] == (palette)
+
+
+def test_light_mode_preserves_restored_cursor_colors(qtbot, fresh_plot_defaults):
+    options["colors/plot_light_mode"] = True
+    win = ImageTool(np.arange(30).reshape(5, 6))
+    qtbot.addWidget(win)
+    state = win.slicer_area.state
+    state["cursor_colors"] = ["#cccccc"]
+
+    restored = ImageTool(np.arange(30).reshape(5, 6), state=state)
+    qtbot.addWidget(restored)
+    assert restored.slicer_area.cursor_colors[0].name() == "#cccccc"
+    restored.slicer_area.add_cursor()
+    assert restored.slicer_area.cursor_colors[1].name() == "#c4a04d"
 
 
 class _WorkspaceManagerStub(QtWidgets.QWidget):

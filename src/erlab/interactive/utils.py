@@ -77,6 +77,7 @@ from erlab.interactive._code_trust._ui import (
     create_code_trust_banner,
 )
 from erlab.interactive._file_loaders import BUILTIN_FILE_LOADER_SPECS
+from erlab.interactive._options.runtime import initialize_plot_defaults
 from erlab.interactive._plot_state import ToolPlotStateRegistry
 from erlab.interactive._stateful_window import StatefulWindow
 from erlab.interactive._widgets import _Separator
@@ -673,6 +674,7 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
             qapp = QtWidgets.QApplication(sys.argv)
             qapp.setStyle("Fusion")
 
+        initialize_plot_defaults()
         is_ipython: bool = False
 
         if execute is None:
@@ -3507,6 +3509,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         restore_defer = _TOOL_WINDOW_RESTORE_DEFER.get()
+
+        initialize_plot_defaults()
 
         self._tool_root_widget = QtWidgets.QWidget(self)
         self._tool_root_layout = QtWidgets.QVBoxLayout(self._tool_root_widget)
@@ -6686,6 +6690,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         cut_to_data: typing.Literal["in", "out", "both", "none"] = "none",
         **kwargs,
     ) -> None:
+        initialize_plot_defaults()
         super().__init__(**kwargs)
         if orientation == "horizontal":
             self.is_vertical = False

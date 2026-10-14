@@ -20,6 +20,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._options.runtime import initialize_plot_defaults
 
 if typing.TYPE_CHECKING:
     import joblib
@@ -588,6 +589,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self.errorbars = [pg.ErrorBarItem(pen=pg.mkPen(color="red")) for _ in range(2)]
         self.polycurves = [pg.PlotDataItem() for _ in range(2)]
+        if initialize_plot_defaults():
+            for curve in self.polycurves:
+                curve.setPen(pg.getConfigOption("foreground"))
         for i in range(2):
             self.axes[i].addItem(self.scatterplots[i])
             self.axes[i].addItem(self.errorbars[i])
@@ -1971,10 +1975,14 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.image.setDataArray(self.data)
         self.plot0.addItem(self.image)
 
+        edc_color = pg.mkColor(
+            pg.getConfigOption("foreground") if initialize_plot_defaults() else "w"
+        )
+        edc_color.setAlpha(200)
         self.edc_curve = pg.ScatterPlotItem(
             size=3,
             pen=pg.mkPen(None),
-            brush=pg.mkBrush(255, 255, 255, 200),
+            brush=pg.mkBrush(edc_color),
             pxMode=True,
         )
         self.plot1.addItem(self.edc_curve)
