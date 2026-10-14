@@ -51,10 +51,12 @@ if typing.TYPE_CHECKING:
 from tests.interactive.imagetool.manager.workspace._support import (
     _AddedTimeChildTool,
     _compute_first_value,
+    _current_workspace_manifest,
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
     _edit_current_workspace_payload_attrs,
     _open_external_lazy_hdf5_imagetool_data,
+    _publish_workspace_manifest,
     _request_workspace_save_and_wait,
     _request_workspace_save_as_and_wait,
     _workspace_test_file_spec,
@@ -62,6 +64,57 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _WorkspaceSweepFigureTool,
     add_source_childtool,
 )
+
+
+@pytest.mark.parametrize(
+    ("invalid_revision", "error_type", "error_message"),
+    [
+        (42, TypeError, "Workspace current revision ID must be a string"),
+        (
+            "missing-revision",
+            ValueError,
+            "Workspace current provenance revision is missing",
+        ),
+    ],
+)
+def test_workspace_invalid_current_revision_preserves_previous_document(
+    qtbot,
+    tmp_path,
+    test_data,
+    manager_context,
+    invalid_revision,
+    error_type,
+    error_message,
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(root, show=False)
+        node = manager._node_for_target(index)
+        revision_id = node.revision_id_for_role("source")
+        uid = node.uid
+        path = tmp_path / "invalid-current-revision.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        manifest = _current_workspace_manifest(path)
+        manifest["nodes"][0]["current_revision_id"] = invalid_revision
+        _publish_workspace_manifest(path, manifest)
+
+        with pytest.raises(
+            ValueError, match="No workspace windows could be loaded"
+        ) as exc:
+            manager._workspace_controller.loading._load_workspace_file(
+                path, replace=True, associate=True, mark_dirty=False, select=False
+            )
+        assert isinstance(exc.value.__cause__, error_type)
+        assert str(exc.value.__cause__) == error_message
+        assert manager.ntools == 1
+        restored = manager._node_for_target(index)
+        assert restored.uid == uid
+        assert restored.current_revision_id == revision_id
+        xr.testing.assert_identical(restored.data_for_role("source"), test_data)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(revision_id).compute(), test_data
+        )
 
 
 def test_manager_save_updates_pending_linked_partner_state(

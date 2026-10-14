@@ -107,6 +107,229 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     assert restored.attrs["nested"]["value"] == 1
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"revision_id": "a/b"}, "Invalid provenance revision ID"),
+        ({"revision_id": "\x00"}, "Invalid provenance revision ID"),
+        ({"revision_id": ".."}, "Invalid provenance revision ID"),
+        (
+            {"data": xr.DataArray([1]), "provider": lambda: xr.DataArray([2])},
+            "Supply revision data or a lazy provider",
+        ),
+        ({"source_file": "source.itws"}, "requires a file and a group path"),
+        (
+            {"source_path": "/objects/revision-source"},
+            "requires a file and a group path",
+        ),
+        (
+            {"source_file": "source.itws", "source_path": "/objects/revision-source"},
+            "requires a lazy provider",
+        ),
+        (
+            {"input_revisions": [("data", "first"), ("data", "second")]},
+            "must be unique",
+        ),
+        ({"input_revisions": {"": "source"}}, "require a name and revision ID"),
+        ({"input_revisions": {"data": ""}}, "require a name and revision ID"),
+    ],
+)
+def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
+    kwargs, message
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    with pytest.raises(ValueError, match=message):
+        registry.add(**kwargs)
+    assert registry.revision_ids == frozenset()
+
+
+def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x", attrs={"nested": {"value": 1}})
+    calls = []
+
+    def read_checkpoint() -> xr.DataArray:
+        calls.append("original")
+        return data
+
+    revision_id = registry.add(provider=read_checkpoint)
+    assert registry.has_data(revision_id)
+    assert not calls
+    resolved = registry.resolve_data(revision_id)
+    resolved.values[:] = -1
+    resolved.attrs["nested"]["value"] = 2
+    xr.testing.assert_identical(registry.resolve_data(revision_id), data)
+    assert calls == ["original"]
+
+    registry.bind_checkpoint_source(revision_id, "original.itws", "/checkpoint")
+    xr.testing.assert_identical(registry.resolve_data(revision_id), data)
+    assert calls == ["original"]
+
+    replacement = data + 10
+
+    def read_replacement() -> xr.DataArray:
+        calls.append("replacement")
+        return replacement
+
+    registry.bind_checkpoint_source(
+        revision_id, "saved.itws", "/saved-checkpoint", provider=read_replacement
+    )
+    assert calls == ["original"]
+    xr.testing.assert_identical(registry.resolve_data(revision_id), replacement)
+    assert calls == ["original", "replacement"]
+    checkpoint = registry.get(revision_id).checkpoint
+    assert (checkpoint.source_file, checkpoint.source_path) == (
+        "saved.itws",
+        "/saved-checkpoint",
+    )
+
+    invalid_id = registry.add(provider=lambda: np.arange(2))
+    with pytest.raises(TypeError, match="must provide a DataArray"):
+        registry.resolve_data(invalid_id)
+
+
+@pytest.mark.parametrize(
+    ("entries", "error", "message"),
+    [
+        ({}, TypeError, "must be a list"),
+        ([None], TypeError, "must be an object"),
+        ([{}], ValueError, "has no ID"),
+        ([{"revision_id": 2}], ValueError, "has no ID"),
+        (
+            [{"revision_id": "source", "checkpoint_object_id": "other"}],
+            ValueError,
+            "not canonical",
+        ),
+        (
+            [{"revision_id": "source", "input_revisions": []}],
+            TypeError,
+            "must map names",
+        ),
+        (
+            [{"revision_id": "source", "input_revisions": {"data": 2}}],
+            TypeError,
+            "must map names",
+        ),
+        (
+            [{"revision_id": "source", "primary_revision_id": []}],
+            TypeError,
+            "primary reference",
+        ),
+        ([{"revision_id": "source", "source_owner_uid": 2}], TypeError, "source owner"),
+        (
+            [{"revision_id": "source", "provenance_spec": {"kind": "unknown"}}],
+            ValueError,
+            None,
+        ),
+    ],
+)
+def test_revision_restore_rejects_malformed_metadata_without_reading_data(
+    entries, error, message, monkeypatch
+) -> None:
+    def forbid_checkpoint_read(*args):
+        pytest.fail("metadata validation must not read revision checkpoints")
+
+    monkeypatch.setattr(
+        workspace_revisions, "_read_revision_checkpoint", forbid_checkpoint_read
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("revision_id") == "source":
+                entry.setdefault("checkpoint_object_id", "revision-source")
+    registry = _ProvenanceRevisionStore()
+    with pytest.raises(error, match=message):
+        workspace_revisions.restore_revision_store(
+            registry, {"provenance_revisions": entries}, "missing.itws"
+        )
+    assert registry.revision_ids == frozenset()
+
+
+def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
+    registry = _ProvenanceRevisionStore()
+    recipe = script(
+        ScriptCodeOperation(label="Derived", code="derived = data + 1"),
+        start_label="Unavailable data",
+        script_inputs=(ScriptInput(name="data", revision_id="missing-source"),),
+    )
+    revision_id = registry.add(
+        spec=recipe,
+        input_revisions={"data": "missing-source", "other": "missing-source"},
+        primary_revision_id="missing-prior",
+    )
+    records = registry.reachable([revision_id])
+    manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(registry, record)
+            for record in records
+        ]
+    }
+    assert workspace_revisions.revision_object_writes(registry, records) == ()
+    restored = _ProvenanceRevisionStore()
+    workspace_revisions.restore_revision_store(restored, manifest, "missing.itws")
+    workspace_revisions.restore_revision_store(restored, manifest, "missing.itws")
+    workspace_revisions.bind_saved_revision_sources(restored, manifest, "saved.itws")
+    workspace_revisions.bind_saved_revision_sources(
+        restored,
+        {
+            "provenance_revisions": [
+                {"revision_id": "missing", "checkpoint_object_id": "revision-missing"}
+            ]
+        },
+        "saved.itws",
+    )
+    assert restored.revision_ids == frozenset({revision_id})
+    assert restored.get(revision_id).provenance_spec == recipe
+    assert restored.get(revision_id).input_revisions == (
+        ("data", "missing-source"),
+        ("other", "missing-source"),
+    )
+    assert not restored.has_data(revision_id)
+    with pytest.raises(ValueError, match="has no data checkpoint"):
+        restored.resolve_data(revision_id)
+    with pytest.raises(ValueError, match="without a data checkpoint"):
+        restored.bind_checkpoint_source(revision_id, "saved.itws", "/checkpoint")
+    with pytest.raises(
+        ValueError, match="Legacy replay source revision has no checkpoint"
+    ):
+        restored.normalize_provenance(
+            full_data(), replay_source_revision_id=revision_id
+        )
+
+
+@pytest.mark.parametrize(
+    "attrs_payload",
+    [
+        None,
+        1,
+        [None],
+        {_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR: "invalid JSON"},
+    ],
+)
+def test_saved_provenance_rejects_missing_or_invalid_metadata(attrs_payload) -> None:
+    node = SimpleNamespace(is_imagetool=True, provenance_spec=full_data())
+    assert not workspace_revisions.saved_provenance_matches_node(node, attrs_payload)
+
+
+def test_saved_provenance_matches_encoded_attrs_and_recipe_changes() -> None:
+    from erlab.interactive.imagetool.manager._workspace import _format
+
+    recipe = full_data(IselOperation(kwargs={"x": 1}))
+    node = SimpleNamespace(is_imagetool=True, provenance_spec=recipe)
+    attrs = {
+        _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR: recipe.model_dump_json()
+    }
+    assert workspace_revisions.saved_provenance_matches_node(node, attrs)
+    assert workspace_revisions.saved_provenance_matches_node(
+        node, _format._workspace_manifest_attrs(attrs)
+    )
+    node.provenance_spec = full_data()
+    assert not workspace_revisions.saved_provenance_matches_node(node, attrs)
+    node.provenance_spec = None
+    assert workspace_revisions.saved_provenance_matches_node(node, {})
+    node.is_imagetool = False
+    assert workspace_revisions.saved_provenance_matches_node(node, None)
+
+
 def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
     tmp_path, monkeypatch
 ) -> None:

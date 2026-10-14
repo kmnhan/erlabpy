@@ -469,6 +469,62 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
         assert reads == 1
 
 
+def test_workspace_save_normalizes_existing_legacy_seed_once(
+    qtbot, tmp_path, test_data, manager_context
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True)
+        index = manager.add_imagetool(root, show=False)
+        node = manager._node_for_target(index)
+        path = tmp_path / "legacy-live-seed.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        adopt_workspace_path(manager, path)
+        object_id = _current_workspace_manifest(path)["nodes"][0]["payload_object_id"]
+
+        # A node from an older session can still carry the raw seed before save.
+        node.set_displayed_provenance(
+            script(
+                ScriptCodeOperation(label="Add", code="derived = data + 1"),
+                start_label="Legacy source",
+                active_name="derived",
+            ),
+            advance_snapshot=False,
+        )
+        node._replay_source_data = test_data.copy(deep=True)
+        manager._workspace_controller.saving._save_workspace_document(path)
+
+        spec = node.provenance_spec
+        seed_id = spec.script_inputs[0].revision_id
+        assert seed_id is not None
+        assert node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id).compute(), test_data
+        )
+        xr.testing.assert_identical(node.data_for_role("source"), test_data + 1)
+        manifest = _current_workspace_manifest(path)
+        assert manifest["nodes"][0]["payload_object_id"] == object_id
+        saved_spec = json.loads(
+            _current_workspace_payload_attrs(path)[
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
+            ]
+        )
+        assert saved_spec == spec.model_dump(mode="json")
+        revision_ids = manager._provenance_revisions.revision_ids
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert manager._provenance_revisions.revision_ids == revision_ids
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager._node_for_target(0)
+        assert restored.provenance_spec.script_inputs[0].revision_id == seed_id
+        assert restored.pending_workspace_memory_payload is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id).compute(), test_data
+        )
+
+
 def test_manager_workspace_standalone_app_only_save_updates_root_manifest_only(
     qtbot,
     monkeypatch,
