@@ -1996,6 +1996,73 @@ def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
     ]
 
 
+def test_manager_open_style_directory_action_creates_and_opens_folder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    opened: list[pathlib.Path] = []
+    monkeypatch.setattr(erlab.utils.misc, "open_in_file_manager", opened.append)
+
+    with manager_context() as manager:
+        base_path = tmp_path / "app-data"
+        style_dir = base_path / "stylelib"
+        monkeypatch.setattr(
+            erlab.interactive._stylesheets, "_app_data_directory", lambda: base_path
+        )
+        action = action_map_by_object_name(manager.help_menu)[
+            "manager_open_style_folder_action"
+        ]
+        assert action is manager.open_style_folder_action
+        actions = manager.help_menu.actions()
+        assert (
+            actions.index(action) == actions.index(manager.open_log_folder_action) + 1
+        )
+        assert not style_dir.exists()
+
+        action.trigger()
+
+        assert style_dir.is_dir()
+        assert opened == [style_dir]
+
+        action.trigger()
+
+        assert opened == [style_dir, style_dir]
+
+
+def test_manager_open_style_directory_action_reports_creation_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    opened: list[pathlib.Path] = []
+    warnings: list[tuple[object, str]] = []
+    monkeypatch.setattr(erlab.utils.misc, "open_in_file_manager", opened.append)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda parent, title, text: warnings.append((parent, text)),
+    )
+
+    with manager_context() as manager:
+        base_path = tmp_path / "app-data"
+        base_path.write_text("blocks directory creation")
+        monkeypatch.setattr(
+            erlab.interactive._stylesheets, "_app_data_directory", lambda: base_path
+        )
+
+        manager.open_style_folder_action.trigger()
+
+        assert len(warnings) == 1
+        assert warnings[0][0] is manager
+        assert str(base_path / "stylelib") in warnings[0][1]
+        assert not opened
+
+
 def test_manager_tutorial_action_replaces_empty_untitled_manager(
     monkeypatch,
     manager_context: Callable[
