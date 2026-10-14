@@ -1220,6 +1220,58 @@ class FigureOperationEditor(QtWidgets.QWidget):
             label_widget.setToolTip(row_tooltip)
         return row_widget
 
+    def add_axis_inversion_controls(
+        self,
+        operation: FigureOperationState,
+        page: QtWidgets.QWidget,
+        layout: QtWidgets.QFormLayout,
+        *,
+        object_name_prefix: str,
+    ) -> None:
+        controls: list[tuple[str, QtWidgets.QWidget, str]] = []
+        for label, attr in (("x", "invert_x"), ("y", "invert_y")):
+            value = getattr(operation, attr)
+            getter: Callable[[FigureOperationState], bool | None] = (
+                (lambda target: target.invert_x)
+                if attr == "invert_x"
+                else (lambda target: target.invert_y)
+            )
+            mixed = self.batch_is_mixed(operation, getter)
+            check = QtWidgets.QCheckBox(page)
+            self.mark_control(check)
+            check.setTristate(True)
+            check.setCheckState(
+                QtCore.Qt.CheckState.PartiallyChecked
+                if value is None or mixed
+                else QtCore.Qt.CheckState.Checked
+                if value
+                else QtCore.Qt.CheckState.Unchecked
+            )
+            self.connect_signal(
+                check,
+                check.stateChanged,
+                lambda state, attr=attr: self.request_update(
+                    **{
+                        attr: None
+                        if QtCore.Qt.CheckState(state)
+                        == QtCore.Qt.CheckState.PartiallyChecked
+                        else QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.Checked
+                    }
+                ),
+            )
+            check.setObjectName(f"{object_name_prefix}Invert{label.upper()}Check")
+            controls.append(
+                (
+                    label,
+                    check,
+                    f"Invert the plotted {label} axis. "
+                    "A partial check preserves the plot direction.",
+                )
+            )
+        self.add_compound_form_row(
+            layout, "Invert", controls, "Invert the plotted x/y axes after plotting."
+        )
+
     @staticmethod
     def _input_error_key(widget: QtWidgets.QWidget) -> str:
         if not erlab.interactive.utils.qt_is_valid(widget):

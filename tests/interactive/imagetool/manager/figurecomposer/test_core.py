@@ -12,7 +12,7 @@ import matplotlib.text
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
@@ -1563,3 +1563,180 @@ def test_figure_composer_generated_code_skips_disabled_operations(qtbot) -> None
     code = tool.generated_code()
 
     assert "must not run" not in code
+
+
+@pytest.mark.parametrize(
+    ("operation", "prefix"),
+    [
+        pytest.param(
+            FigureOperationState.plot_array(label="image", source="data"),
+            "figureComposerPlotArray",
+            id="image",
+        ),
+        pytest.param(
+            FigureOperationState.plot_slices(label="slices", sources=("data",)),
+            "figureComposerPlotSlices",
+            id="slices",
+        ),
+        pytest.param(
+            FigureOperationState.line(label="line", source="data"),
+            "figureComposerLine",
+            id="line",
+        ),
+    ],
+)
+def test_figure_composer_axis_inversion_controls(qtbot, operation, prefix) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("y", "x"),
+        coords={"y": np.arange(3.0), "x": np.arange(3.0)},
+    )
+    if operation.kind == FigureOperationKind.LINE:
+        data = data.isel(y=0, drop=True)
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(
+                operation,
+                operation.model_copy(update={"operation_id": "other"}),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0,))
+    tool.operation_editor.select_section("view")
+    for axis in ("X", "Y"):
+        check = tool.operation_editor.current_page.findChild(
+            QtWidgets.QCheckBox, f"{prefix}Invert{axis}Check"
+        )
+        assert check is not None
+        assert check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    tool._document.replace_operations(
+        tuple(
+            target.model_copy(update={"invert_x": x, "invert_y": y})
+            for target, x, y in (
+                (tool.tool_status.operations[0], False, True),
+                (tool.tool_status.operations[1], True, False),
+            )
+        )
+    )
+    _select_operation_rows(tool, (0, 1))
+    tool.operation_editor.select_section("view")
+    for axis in ("X", "Y"):
+        check = tool.operation_editor.current_page.findChild(
+            QtWidgets.QCheckBox, f"{prefix}Invert{axis}Check"
+        )
+        assert check is not None
+        assert check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+        for state, expected in (
+            (QtCore.Qt.CheckState.Unchecked, False),
+            (QtCore.Qt.CheckState.Checked, True),
+            (QtCore.Qt.CheckState.PartiallyChecked, None),
+        ):
+            check.setCheckState(state)
+            assert all(
+                getattr(target, f"invert_{axis.lower()}") is expected
+                for target in tool.tool_status.operations
+            )
+
+
+def test_figure_composer_axis_inversion_recipe_round_trip() -> None:
+    recipe = FigureRecipeState(
+        operations=tuple(
+            operation.model_copy(update={"invert_x": x, "invert_y": y})
+            for operation, x, y in (
+                (
+                    FigureOperationState.plot_array(label="image", source="data"),
+                    True,
+                    False,
+                ),
+                (
+                    FigureOperationState.plot_slices(label="slices", sources=("data",)),
+                    False,
+                    None,
+                ),
+                (FigureOperationState.line(label="line", source="data"), None, True),
+            )
+        )
+    )
+    restored = FigureRecipeState.model_validate_json(recipe.model_dump_json())
+    assert restored == recipe
+
+
+@pytest.mark.parametrize("kind", ["plot_array", "plot_slices", "line"])
+def test_figure_composer_unset_inversion_preserves_limits(qtbot, kind) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("y", "x"),
+        coords={"y": np.arange(3.0), "x": np.arange(3.0)},
+    )
+    if kind == "line":
+        data = data.isel(y=0, drop=True)
+        operation = FigureOperationState.line(label="line", source="data")
+    elif kind == "plot_slices":
+        operation = FigureOperationState.plot_slices(label="slices", sources=("data",))
+    else:
+        operation = FigureOperationState.plot_array(label="image", source="data")
+    legacy_operation = operation.model_dump()
+    legacy_operation.pop("invert_x")
+    legacy_operation.pop("invert_y")
+    legacy_operation.update(xlim=(2.0, 0.0), ylim=(2.0, 0.0), crop=False)
+    operation = FigureOperationState.model_validate(legacy_operation)
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool.figure.axes[0].get_xlim() == pytest.approx((2.0, 0.0))
+    assert tool.figure.axes[0].get_ylim() == pytest.approx((2.0, 0.0))
+
+    namespace = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    axis = namespace["axs"][0, 0]
+    assert axis.get_xlim() == pytest.approx((2.0, 0.0))
+    assert axis.get_ylim() == pytest.approx((2.0, 0.0))
+
+
+@pytest.mark.parametrize("inverted", [False, True])
+def test_figure_composer_inversion_shared_axes_expression(qtbot, inverted) -> None:
+    data = xr.DataArray(
+        np.arange(36.0).reshape(4, 3, 3),
+        dims=("eV", "y", "x"),
+        coords={"eV": np.arange(4.0), "y": np.arange(3.0), "x": np.arange(3.0)},
+    )
+    operation = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("data",),
+        axes=FigureAxesSelectionState(expression="axs[:, :]"),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0, 2.0, 3.0),
+    ).model_copy(update={"invert_x": inverted, "invert_y": inverted, "crop": False})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=2, sharex=True, sharey=True),
+            sources=(FigureSourceState(name="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert len(tool.figure.axes) == 4
+    for axis in tool.figure.axes:
+        assert bool(axis.xaxis_inverted()) is inverted
+        assert bool(axis.yaxis_inverted()) is inverted
+
+    namespace = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    for axis in namespace["axs"].flat:
+        assert bool(axis.xaxis_inverted()) is inverted
+        assert bool(axis.yaxis_inverted()) is inverted

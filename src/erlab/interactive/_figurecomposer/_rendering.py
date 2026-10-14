@@ -44,11 +44,21 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._model._state import (
         FigureAxesSelectionState,
         FigureGridSpecGridState,
+        FigureOperationState,
     )
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 _OPERATION_ID_ATTR = "_erlab_figure_composer_operation_id"
+
+
+def _apply_axis_inversion(
+    axis: matplotlib.axes.Axes, operation: FigureOperationState
+) -> None:
+    if operation.invert_x is not None:
+        axis.xaxis.set_inverted(operation.invert_x)
+    if operation.invert_y is not None:
+        axis.yaxis.set_inverted(operation.invert_y)
 
 
 def _tag_operation_artist(artist: matplotlib.artist.Artist, operation_id: str) -> None:

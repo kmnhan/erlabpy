@@ -8,7 +8,11 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
+from erlab.interactive._figurecomposer._code import (
+    _axes_code,
+    _axis_inversion_code_lines,
+    _maybe_squeeze_drop_code,
+)
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
@@ -37,7 +41,10 @@ from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
 )
-from erlab.interactive._figurecomposer._rendering import _axes_from_selection
+from erlab.interactive._figurecomposer._rendering import (
+    _apply_axis_inversion,
+    _axes_from_selection,
+)
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
@@ -263,6 +270,7 @@ def _render_plot_array(
         ax=typing.cast("matplotlib.axes.Axes", axis),
         **_plot_array_kwargs(operation),
     )
+    _apply_axis_inversion(typing.cast("matplotlib.axes.Axes", axis), operation)
     if image is not None:
         tagged_image = typing.cast("typing.Any", image)
         tagged_image._figure_composer_operation_id = operation.operation_id
@@ -308,13 +316,14 @@ def _plot_array_code_lines(
     if data_code is None:
         return []
     kwargs = _plot_array_code_kwargs(operation)
-    kwargs["ax"] = _RawCode(
-        _axes_code(tool._document, operation.axes, for_plot_slices=False)
-    )
+    axis_code = _axes_code(tool._document, operation.axes, for_plot_slices=False)
+    kwargs["ax"] = _RawCode(axis_code)
     kwargs_text = _code_kwargs(kwargs)
     if kwargs_text:
-        return [f"eplt.plot_array({data_code}, {kwargs_text})"]
-    return [f"eplt.plot_array({data_code})"]
+        lines = [f"eplt.plot_array({data_code}, {kwargs_text})"]
+    else:
+        lines = [f"eplt.plot_array({data_code})"]
+    return [*lines, *_axis_inversion_code_lines(operation, axis_name=axis_code)]
 
 
 def _required_imports(
@@ -550,6 +559,9 @@ def _build_plot_array_view_page(
     )
 
     crop_mixed = editor.batch_is_mixed(operation, lambda target: target.crop)
+    editor.add_axis_inversion_controls(
+        operation, page, layout, object_name_prefix="figureComposerPlotArray"
+    )
     crop_check = editor.check_box(
         operation.crop,
         lambda checked: editor.request_update(crop=checked),

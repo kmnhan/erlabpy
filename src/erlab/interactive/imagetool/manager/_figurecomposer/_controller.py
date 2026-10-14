@@ -101,10 +101,14 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                 first_operation = source_operations[0]
                 plot_array_updates = {
                     "transpose": first_operation.transpose,
+                    "invert_x": first_operation.invert_x,
+                    "invert_y": first_operation.invert_y,
                     "xlim": first_operation.xlim,
                     "ylim": first_operation.ylim,
                     "crop": first_operation.crop,
-                    "axis": first_operation.axis,
+                    "axis": "image"
+                    if first_operation.aspect == "equal"
+                    else first_operation.axis,
                     "colorbar": first_operation.colorbar,
                     "hide_colorbar_ticks": first_operation.hide_colorbar_ticks,
                     "annotate": first_operation.annotate,

@@ -41,7 +41,19 @@ if typing.TYPE_CHECKING:
         FigureAxesSelectionState,
         FigureDataSelectionState,
         FigureGridSpecGridState,
+        FigureOperationState,
     )
+
+
+def _axis_inversion_code_lines(
+    operation: FigureOperationState, *, axis_name: str = "ax"
+) -> list[str]:
+    lines: list[str] = []
+    if operation.invert_x is not None:
+        lines.append(f"{axis_name}.xaxis.set_inverted({operation.invert_x!r})")
+    if operation.invert_y is not None:
+        lines.append(f"{axis_name}.yaxis.set_inverted({operation.invert_y!r})")
+    return lines
 
 
 def _invalid_gridspec_axes_error(invalid_axes: tuple[str, ...]) -> str:

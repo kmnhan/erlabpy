@@ -305,6 +305,8 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
                     "autoRange": (True, True),
                     "viewRange": ((0.0, 1.0), (0.0, 1.0)),
                     "aspectLocked": False,
+                    "xInverted": False,
+                    "yInverted": False,
                 }
             ),
         )

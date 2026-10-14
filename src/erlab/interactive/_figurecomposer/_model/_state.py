@@ -593,6 +593,8 @@ class FigureOperationState(pydantic.BaseModel):
     slice_width: float | None = None
     slice_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     transpose: bool = False
+    invert_x: bool | None = None
+    invert_y: bool | None = None
     xlim: FigureLimit | None = None
     ylim: FigureLimit | None = None
     crop: bool = True

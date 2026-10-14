@@ -2,6 +2,7 @@ import types
 import typing
 
 import numpy as np
+import pytest
 import xarray as xr
 
 import erlab.interactive._stylesheets
@@ -220,6 +221,48 @@ def test_manager_figure_image_target_helpers_cover_plot_slices_edges(
     assert combined[0].kind == FigureOperationKind.PLOT_SLICES
     assert combined[0].sources == ("first", "second")
     assert combined[0].order == "F"
+
+
+@pytest.mark.parametrize("equal_aspect", [False, True])
+def test_manager_combined_image_steps_preserve_direction_and_aspect(
+    qtbot, equal_aspect
+) -> None:
+    data = xr.DataArray(
+        np.arange(27.0).reshape(3, 3, 3),
+        dims=("alpha", "eV", "beta"),
+        coords={dim: np.arange(3.0) for dim in ("alpha", "eV", "beta")},
+    )
+    tools = [
+        erlab.interactive.itool(data, manager=False, execute=False) for _ in range(2)
+    ]
+    for tool in tools:
+        qtbot.addWidget(tool)
+        viewbox = tool.slicer_area.main_image.getViewBox()
+        viewbox.invertX(True)
+        viewbox.setAspectLocked(equal_aspect)
+    controller = typing.cast(
+        "_FigureComposerWorkflowController",
+        types.SimpleNamespace(
+            _host=types.SimpleNamespace(get_imagetool=lambda target: tools[target])
+        ),
+    )
+
+    operations = (
+        _FigureComposerWorkflowController._figure_operations_from_image_targets(
+            controller, (0, 1), ("first", "second")
+        )
+    )
+
+    assert operations is not None
+    assert len(operations) == 1
+    operation = operations[0]
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.invert_x is True
+    assert operation.invert_y is False
+    assert operation.axis == ("image" if equal_aspect else "auto")
+    assert "aspect" not in operation.extra_kwargs
+    for tool in tools:
+        tool.close()
 
 
 def test_manager_bz_overlay_ignores_converted_output_without_ktool_parent() -> None:

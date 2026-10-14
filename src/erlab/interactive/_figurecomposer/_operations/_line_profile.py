@@ -11,6 +11,7 @@ import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import (
     _axes_code,
     _axes_sequence_code,
+    _axis_inversion_code_lines,
     _maybe_squeeze_drop_code,
     _needs_squeeze_drop,
     _selection_code,
@@ -78,6 +79,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     OperationSpec,
 )
 from erlab.interactive._figurecomposer._rendering import (
+    _apply_axis_inversion,
     _axes_from_selection,
     _iter_axes,
 )
@@ -488,6 +490,9 @@ def _build_line_editor(
         "x: values on x, coordinate on y.",
     )
     _add_line_limit_controls(editor, operation, view_page, view_layout)
+    editor.add_axis_inversion_controls(
+        operation, view_page, view_layout, object_name_prefix="figureComposerLine"
+    )
 
     editor.add_form_section(
         style_layout,
@@ -1271,6 +1276,7 @@ def _apply_line_axes_limits(
         _set_axis_xlim(axis, operation.xlim)
     if operation.ylim is not None:
         _set_axis_ylim(axis, operation.ylim)
+    _apply_axis_inversion(axis, operation)
 
 
 def _set_axis_xlim(axis: matplotlib.axes.Axes, limit: FigureLimit) -> None:
@@ -1673,6 +1679,7 @@ def _regular_line_code(
     )
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
+    lines.extend(f"    {line}" for line in _axis_inversion_code_lines(operation))
     return lines
 
 
@@ -1717,6 +1724,7 @@ def _regular_line_single_axis_code(
     )
     if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
         lines.append(axes_limits_code)
+    lines.extend(_axis_inversion_code_lines(operation, axis_name=axis_code))
     return lines
 
 
@@ -1926,6 +1934,7 @@ def _one_profile_per_axis_code(
     )
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
+    lines.extend(f"    {line}" for line in _axis_inversion_code_lines(operation))
     return lines
 
 
@@ -1966,6 +1975,7 @@ def _one_axis_many_profiles_code(
     )
     if axes_limits_code := _line_axes_limits_code(operation, axis_name=axis_code):
         lines.append(axes_limits_code)
+    lines.extend(_axis_inversion_code_lines(operation, axis_name=axis_code))
     return lines
 
 

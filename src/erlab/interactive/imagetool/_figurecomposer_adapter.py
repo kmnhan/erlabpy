@@ -187,6 +187,8 @@ def _operation_updates(
         "transpose",
         "xlim",
         "ylim",
+        "invert_x",
+        "invert_y",
         "crop",
         "same_limits",
         "axis",
@@ -661,7 +663,7 @@ class _PlotOperationBuilder:
     def plot_slices_kwargs(
         self, dim_order_plot: list[Hashable]
     ) -> dict[str, typing.Any]:
-        plot_kwargs: dict[str, typing.Any] = {}
+        plot_kwargs: dict[str, typing.Any] = self.axis_inversion_updates()
         plot_dims = list(dim_order_plot)
         if plot_dims[0] != self.source.axis_dims[0]:
             plot_kwargs["transpose"] = True
@@ -671,10 +673,20 @@ class _PlotOperationBuilder:
                 plot_kwargs["xlim"] = (float(value.start), float(value.stop))
             elif dim == plot_dims[1]:
                 plot_kwargs["ylim"] = (float(value.start), float(value.stop))
-        if self.source.vb.state["aspectLocked"]:
+        if self.source.vb.state["aspectLocked"] is not False:
             plot_kwargs["axis"] = "image"
         plot_kwargs.update(self.colormap_kwargs())
         return plot_kwargs
+
+    def axis_inversion_updates(self) -> dict[str, bool]:
+        inverted = (
+            bool(self.source.vb.state["xInverted"]),
+            bool(self.source.vb.state["yInverted"]),
+        )
+        if not self.source.is_image and self.source.axis_dims[0] is None:
+            # Composer profiles place the coordinate on x, including vertical cuts.
+            inverted = inverted[::-1]
+        return {"invert_x": inverted[0], "invert_y": inverted[1]}
 
     def colormap_kwargs(self) -> dict[str, typing.Any]:
         properties = self.slicer_area.colormap_properties.copy()
@@ -866,8 +878,7 @@ class _PlotOperationBuilder:
     ) -> FigureOperationState:
         updates = _operation_updates(self.plot_slices_kwargs(dim_order_plot)) or {}
         extra_kwargs = dict(updates.pop("extra_kwargs", {}))
-        if updates.pop("axis", None) == "image":
-            extra_kwargs.setdefault("aspect", "equal")
+        updates["aspect"] = "equal" if updates.pop("axis", None) == "image" else "auto"
         for key in (
             "same_limits",
             "show_all_labels",
@@ -902,6 +913,7 @@ class _PlotOperationBuilder:
         )
         style_updates = {
             "line_normalize": normalize,
+            **self.axis_inversion_updates(),
             **self.line_style_updates(),
             **self.line_limit_updates(x_dim),
         }
