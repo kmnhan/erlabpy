@@ -903,6 +903,9 @@ def shift(
     The shift is applied using :func:`scipy.ndimage.shift`, which uses spline
     interpolation. By default, the spline is of order 1 (linear interpolation).
 
+    .. versionchanged:: 3.28.0
+        Non-index coordinates on the shift array are ignored.
+
     Parameters
     ----------
     darr
@@ -912,7 +915,8 @@ def shift(
         increasing coordinate values. If
         :code:`shift` is a DataArray, different shifts can be applied to different
         coordinates. The dimensions of :code:`shift` must be a subset of the dimensions
-        of `darr`. For more information, see the note below. If :code:`shift` is a
+        of `darr`. Non-index coordinates on :code:`shift` are ignored. For more
+        information, see the note below. If :code:`shift` is a
         `float`, the same shift is applied to all values along dimension `along`. This
         is equivalent to providing a 0-dimensional DataArray.
     along
@@ -979,6 +983,7 @@ def shift(
     _validate_shift_inputs(darr, shift, along, assume_sorted=assume_sorted)
     if not isinstance(shift, xr.DataArray):
         shift = xr.DataArray(shift)
+    shift = shift.reset_coords(drop=True)
     shift = _align_shift_indexes(darr, shift)
 
     # Sort along the target dimension

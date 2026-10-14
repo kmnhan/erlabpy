@@ -791,6 +791,9 @@ def correct_with_edge(
 ) -> xr.DataArray:
     """Corrects the given data array `darr` with the given values or fit result.
 
+    .. versionchanged:: 3.28.0
+        Non-index coordinates on the evaluated edge array are ignored.
+
     Parameters
     ----------
     darr

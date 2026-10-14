@@ -196,9 +196,14 @@ def broadcast_args(func: Callable) -> Callable:
     shape, and only passes pure NumPy arrays to the decorated function.
 
     If the decorated function returns a NumPy array with the same shape as the
-    broadcasted DataArray arguments, a new DataArray will be created with the same
-    coordinates and dimensions as the broadcasted DataArray. In this case, the
-    attributes will be taken from the first DataArray that appears in the arguments.
+    broadcasted DataArray arguments, a new unnamed DataArray will be created. Its
+    dimensions and dimension coordinates come from all DataArray arguments. Other
+    coordinates and attributes come from the first broadcasted DataArray. Positional
+    arguments precede keyword arguments when selecting this reference array. The same
+    rules apply to each array in a tuple result.
+
+    .. versionchanged:: 3.28.0
+        Dask outputs use the same coordinates and attributes as eager outputs.
 
     This is useful when working with functions that only accept pure NumPy arrays, or
     always returns a NumPy array, such as numba jit-compiled functions.
@@ -269,16 +274,22 @@ def broadcast_args(func: Callable) -> Callable:
 
         result = xr.apply_ufunc(
             _apply_ufunc,
-            *broadcast_params.values(),
-            keep_attrs=True,
+            *(value.variable for value in broadcast_params.values()),
             dask="parallelized",
             output_core_dims=output_core_dims,
             output_dtypes=output_dtypes,
         )
 
-        if isinstance(result, tuple):
-            return tuple(value.rename(None) for value in result)
-        return result.rename(None)
+        outputs = tuple(
+            xr.DataArray(
+                value.data,
+                coords=broadcast_ref.coords,
+                dims=broadcast_ref.dims,
+                attrs=broadcast_ref.attrs,
+            ).rename(None)
+            for value in (result if isinstance(result, tuple) else (result,))
+        )
+        return outputs if isinstance(result, tuple) else outputs[0]
 
     return _wrapper
 

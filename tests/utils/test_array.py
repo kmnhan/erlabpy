@@ -214,6 +214,134 @@ def test_broadcast_args_wrap_result_leaves_non_arrays_unchanged() -> None:
     assert _broadcast_args_wrap_result("sentinel", ref) == "sentinel"
 
 
+@pytest.mark.parametrize(
+    "chunks", [(False, False), (True, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("keyword", [False, True])
+@pytest.mark.parametrize("tuple_output", [False, True])
+def test_broadcast_args_reference_coordinates(chunks, keyword, tuple_output) -> None:
+    @broadcast_args
+    def testfunc(x, y):
+        if tuple_output:
+            return x + y, x - y
+        return x + y
+
+    first = xr.DataArray(
+        [1.0, 2.0],
+        dims="x",
+        coords={
+            "x": [0, 1],
+            "first_aux": ("x", [10, 20]),
+            "shared_aux": ("x", [30, 40]),
+            "first_scalar": 5,
+            "shared_scalar": 6,
+        },
+        attrs={"source": "first"},
+        name="first",
+    )
+    second = xr.DataArray(
+        [3.0, 4.0, 5.0],
+        dims="y",
+        coords={
+            "y": [2, 3, 4],
+            "later_aux": ("y", [50, 60, 70]),
+            "shared_aux": ("y", [80, 90, 100]),
+            "later_scalar": 7,
+            "shared_scalar": 8,
+        },
+        attrs={"source": "second"},
+        name="second",
+    )
+    if chunks[0]:
+        first = first.chunk({"x": 1})
+    if chunks[1]:
+        second = second.chunk({"y": 2})
+
+    result = testfunc(first, y=second) if keyword else testfunc(first, second)
+    assert isinstance(result, tuple) == tuple_output
+    outputs = result if tuple_output else (result,)
+    assert len(outputs) == (2 if tuple_output else 1)
+    expected_values = (
+        np.array([[4.0, 5.0, 6.0], [5.0, 6.0, 7.0]]),
+        np.array([[-2.0, -3.0, -4.0], [-1.0, -2.0, -3.0]]),
+    )
+    for output, values in zip(outputs, expected_values, strict=False):
+        assert isinstance(output.data, da.Array) == any(chunks)
+        xr.testing.assert_identical(
+            output.compute(),
+            xr.DataArray(
+                values,
+                dims=("x", "y"),
+                coords={**first.coords, "y": second["y"]},
+                attrs={"source": "first"},
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "chunks", [(False, False), (True, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("scalar_first", [False, True])
+def test_broadcast_args_scalar_reference_coordinates(chunks, scalar_first) -> None:
+    @broadcast_args
+    def testfunc(*, x, y):
+        return x + y
+
+    vector = xr.DataArray(
+        [1.0, 2.0],
+        dims="x",
+        coords={"x": [0, 1], "vector_aux": ("x", [10, 20]), "shared": 3},
+        attrs={"source": "vector"},
+        name="vector",
+    )
+    scalar = xr.DataArray(
+        4.0,
+        coords={"scalar_aux": 5, "shared": 6},
+        attrs={"source": "scalar"},
+        name="scalar",
+    )
+    first, second = (scalar, vector) if scalar_first else (vector, scalar)
+    if chunks[0]:
+        first = first.copy(data=da.from_array(first.data, chunks="auto"))
+    if chunks[1]:
+        second = second.copy(data=da.from_array(second.data, chunks="auto"))
+    output = testfunc(x=first, y=second)
+
+    assert isinstance(output.data, da.Array) == any(chunks)
+    xr.testing.assert_identical(
+        output.compute(),
+        xr.DataArray(
+            [5.0, 6.0],
+            dims="x",
+            coords={**first.coords, "x": vector["x"]},
+            attrs=first.attrs,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "chunks", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_broadcast_args_aligns_dimension_indexes(chunks) -> None:
+    @broadcast_args
+    def testfunc(x, y):
+        return x + y
+
+    first = xr.DataArray([1.0, 2.0], dims="x", coords={"x": [0, 1]})
+    second = xr.DataArray([3.0, 4.0], dims="x", coords={"x": [1, 2]})
+    if chunks[0]:
+        first = first.chunk({"x": 1})
+    if chunks[1]:
+        second = second.chunk({"x": 1})
+    output = testfunc(first, second)
+
+    assert isinstance(output.data, da.Array) == any(chunks)
+    xr.testing.assert_identical(
+        output.compute(),
+        xr.DataArray([np.nan, 5.0, np.nan], dims="x", coords={"x": [0, 1, 2]}),
+    )
+
+
 def test_broadcast_args_infer_output_metadata_rejects_invalid_outputs() -> None:
     ref = xr.DataArray(np.zeros((2, 3)), dims=("x", "y"))
 

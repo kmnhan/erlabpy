@@ -130,6 +130,12 @@ def _apply_ufunc_1d(
     **kwargs: float | xr.DataArray,
 ) -> npt.NDArray[np.float64] | xr.DataArray:
     """Apply a 1D function over `x` while broadcasting DataArray parameters."""
+    kwargs = {
+        name: value.reset_coords(drop=True)
+        if isinstance(value, xr.DataArray)
+        else value
+        for name, value in kwargs.items()
+    }
     dataarray_kwargs = {
         name: value for name, value in kwargs.items() if isinstance(value, xr.DataArray)
     }
@@ -516,6 +522,11 @@ def fermi_dirac_broad(
     resolution
         The resolution of the Gaussian kernel in eV. Note that this is the FWHM of the
         Gaussian kernel, not the standard deviation.
+
+    .. versionchanged:: 3.28.0
+       DataArray parameters retain indexed coordinates for alignment and broadcasting.
+       Their non-index coordinates are ignored. Non-index output coordinates and
+       attributes come from DataArray `x`.
     """
     return _apply_ufunc_1d(
         x,
@@ -589,6 +600,9 @@ def fermi_dirac_linbkg_broad(
 
         I(x) = \left[ b_0 + b_1 x + \frac{d_0 - b_0 + (d_1 - b_1) x} {1 +
         e^{(x-x_0)/k_B T}} \right] \otimes \text{g}(\sigma)
+
+    .. versionchanged:: 3.28.0
+       DataArray parameter coordinates follow :func:`fermi_dirac_broad`.
 
     """
     return _apply_ufunc_1d(
@@ -689,7 +703,13 @@ def tll(
     const_bkg
         A constant background to add to the broadened TLL function.
 
+    .. versionchanged:: 3.28.0
+       Non-index coordinates on DataArray parameters are ignored, including those
+       on `const_bkg`.
+
     """
+    if isinstance(const_bkg, xr.DataArray):
+        const_bkg = const_bkg.reset_coords(drop=True)
     return (
         _apply_ufunc_1d(
             x,
@@ -951,6 +971,9 @@ def sc_spectral_function(
     resolution
         The broadening in eV. Note that this is the FWHM of the Gaussian kernel, not the
         standard deviation.
+
+    .. versionchanged:: 3.28.0
+       DataArray parameter coordinates follow :func:`fermi_dirac_broad`.
     """
     return _apply_ufunc_1d(
         x,

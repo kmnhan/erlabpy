@@ -786,6 +786,45 @@ def test_correct_with_edge_accepts_scalar_callable(
     xr.testing.assert_identical(actual, expected)
 
 
+@pytest.mark.parametrize("shift_coords", [False, True])
+def test_correct_with_edge_ignores_auxiliary_fit_coordinates(
+    shift_coords: bool,
+) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("beta", "alpha", "eV"),
+        coords={
+            "beta": [10.0, 20.0],
+            "alpha": [-1.0, 0.0, 1.0],
+            "eV": [0.0, 1.0, 2.0, 3.0],
+            "sample_temp": 10.0,
+            "sample_position": ("beta", [1.0, 2.0]),
+        },
+        name="intensity",
+        attrs={"sample": "test"},
+    )
+    clean_fit = xr.Dataset(
+        {
+            "modelfit_coefficients": xr.DataArray(
+                [[1.0, 1.0], [-1.0, 1.0]],
+                dims=("beta", "param"),
+                coords={"beta": data.beta, "param": ["c0", "c1"]},
+            )
+        }
+    )
+    fit = clean_fit.assign_coords(
+        sample_temp=20.0,
+        sample_position=("beta", [3.0, 4.0]),
+        fit_source="reference",
+        fit_position=("beta", [5.0, 6.0]),
+    )
+
+    expected = correct_with_edge(data, clean_fit, shift_coords=shift_coords)
+    actual = correct_with_edge(data, fit, shift_coords=shift_coords)
+
+    xr.testing.assert_identical(actual, expected)
+
+
 @pytest.mark.parametrize("wrapper", [poly, spline])
 def test_edge_model_wrapper_rejects_return_edge_with_correct(wrapper) -> None:
     data = xr.DataArray(np.ones((2, 2)), dims=("eV", "alpha"), coords={"eV": [0, 1]})

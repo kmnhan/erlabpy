@@ -486,6 +486,10 @@ def mask_with_radius(
 
     If different radii are given for ``kx`` and ``ky``, the region will be elliptic.
 
+    .. versionchanged:: 3.28.0
+        Non-index coordinates from the region parameters are ignored. Non-index
+        output coordinates come from the input data.
+
     Parameters
     ----------
     radius
@@ -546,7 +550,9 @@ def mask_with_radius(
     Dimensions without coordinates: x, y
 
     """
-    mask = _spherical_mask(darr, radius, boundary=boundary, **sel_kw)
+    mask = _spherical_mask(darr, radius, boundary=boundary, **sel_kw).reset_coords(
+        drop=True
+    )
     if invert:
         mask = mask.copy(data=~mask.data)
     return darr.where(mask, drop=drop)
