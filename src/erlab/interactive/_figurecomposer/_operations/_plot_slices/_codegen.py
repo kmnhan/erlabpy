@@ -6,7 +6,12 @@ import typing
 
 import erlab
 import erlab.utils._code
-from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
+from erlab.interactive._figurecomposer._code import (
+    _axes_code,
+    _axes_sequence_code,
+    _axis_inversion_code_lines,
+    _maybe_squeeze_drop_code,
+)
 from erlab.interactive._figurecomposer._labels import (
     label_coord_placeholder_name,
     label_field_names,
@@ -637,13 +642,21 @@ def _plot_slices_code_lines(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     if _plot_slices_uses_transformed_line_maps(tool, operation):
-        return _plot_slices_transformed_code_lines(tool, operation)
-    operation = _normalized_selection_operation(tool._document, operation)
-    code = _plot_slices_code(tool, operation)
-    if code is None:
-        return []
-    color_lines = _plot_slices_line_color_code_lines(tool, operation)
-    return [*color_lines, code]
+        lines = _plot_slices_transformed_code_lines(tool, operation)
+    else:
+        operation = _normalized_selection_operation(tool._document, operation)
+        code = _plot_slices_code(tool, operation)
+        if code is None:
+            return []
+        color_lines = _plot_slices_line_color_code_lines(tool, operation)
+        lines = [*color_lines, code]
+    if inversion_lines := _axis_inversion_code_lines(operation):
+        axes_code = _axes_sequence_code(tool._document, operation.axes)
+        if operation.axes.expression:
+            axes_code = f"np.asarray({axes_code}, dtype=object).flat"
+        lines.append(f"for ax in {axes_code}:")
+        lines.extend(f"    {line}" for line in inversion_lines)
+    return lines
 
 
 def _plot_slices_code_kwargs(

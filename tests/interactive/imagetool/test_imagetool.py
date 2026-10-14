@@ -2157,6 +2157,154 @@ def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("cursor_count", [1, 2])
+@pytest.mark.parametrize(
+    ("invert_x", "invert_y", "equal_aspect", "descending", "transpose", "crop"),
+    [
+        (False, False, False, False, False, False),
+        (True, False, False, False, False, False),
+        (False, True, True, False, False, True),
+        (True, True, True, False, True, True),
+        (False, False, True, True, True, True),
+        (True, False, True, True, False, True),
+        (False, True, False, True, True, False),
+        (True, True, False, True, False, False),
+    ],
+)
+def test_figure_composer_image_preserves_axis_direction_and_aspect(
+    qtbot, cursor_count, invert_x, invert_y, equal_aspect, descending, transpose, crop
+) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    from erlab.interactive._figurecomposer import (
+        FigureAxesSelectionState,
+        FigureComposerTool,
+        FigureSourceState,
+        FigureSubplotsState,
+    )
+    from erlab.interactive._figurecomposer._rendering import _render_into_figure
+
+    data = _TEST_DATA["3D"].copy()
+    if descending:
+        data = data.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    if cursor_count == 2:
+        area.add_cursor()
+        area.set_value(axis=2, value=1.0, cursor=0)
+        area.set_value(axis=2, value=3.0, cursor=1)
+    if transpose:
+        area.transpose_main_image()
+    image_plot = area.main_image
+    image_plot.getViewBox().setAspectLocked(equal_aspect)
+    if crop:
+        image_plot.getViewBox().setRange(
+            xRange=(1.0, 3.0), yRange=(1.0, 3.0), padding=0.0
+        )
+    image_plot.getViewBox().invertX(invert_x)
+    image_plot.getViewBox().invertY(invert_y)
+
+    operation = build_figure_composer_operation(image_plot, source_name="data")
+    assert operation.invert_x is invert_x
+    assert operation.invert_y is invert_y
+    assert operation.crop is (cursor_count == 2)
+    if cursor_count == 1:
+        assert operation.aspect == ("equal" if equal_aspect else "auto")
+        assert "aspect" not in operation.extra_kwargs
+    else:
+        assert operation.axis == ("image" if equal_aspect else "auto")
+    if crop:
+        assert operation.xlim is not None
+        assert operation.ylim is not None
+    operation = operation.model_copy(
+        update={
+            "crop": crop,
+            "axes": FigureAxesSelectionState(
+                axes=tuple((0, col) for col in range(cursor_count))
+            ),
+        }
+    )
+
+    source = area._tool_source_parent_data()
+    composer = FigureComposerTool.from_sources(
+        {"data": source},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        setup=FigureSubplotsState(ncols=cursor_count),
+        primary_source="data",
+    )
+    qtbot.addWidget(composer)
+    rendered = Figure()
+    _render_into_figure(composer, rendered, sync_visible=False)
+    assert composer._operation_render_errors == {}
+    namespace = {"data": source}
+    exec(composer.generated_code(), namespace)  # noqa: S102
+    try:
+        for figure in (rendered, namespace["fig"]):
+            assert len(figure.axes) == cursor_count
+            for axis in figure.axes:
+                assert axis.xaxis_inverted() == invert_x
+                assert axis.yaxis_inverted() == invert_y
+                assert axis.get_aspect() == (1.0 if equal_aspect else "auto")
+                assert np.asarray(axis.images[0].get_array()).size > 0
+    finally:
+        plt.close(namespace["fig"])
+        composer.close()
+        win.close()
+
+
+@pytest.mark.parametrize("profile_index", [0, 1])
+@pytest.mark.parametrize(
+    ("invert_x", "invert_y"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_figure_composer_profile_preserves_coordinate_direction(
+    qtbot, profile_index, invert_x, invert_y
+) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
+    from erlab.interactive._figurecomposer._rendering import _render_into_figure
+
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+    profile = win.slicer_area.profiles[profile_index]
+    profile.getViewBox().invertX(invert_x)
+    profile.getViewBox().invertY(invert_y)
+    expected_x, expected_y = (
+        (invert_y, invert_x) if profile.axis_dims[0] is None else (invert_x, invert_y)
+    )
+    operation = build_figure_composer_operation(profile, source_name="data")
+    assert operation.invert_x is expected_x
+    assert operation.invert_y is expected_y
+    source = win.slicer_area._tool_source_parent_data()
+    composer = FigureComposerTool.from_sources(
+        {"data": source},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(composer)
+    rendered = Figure()
+    _render_into_figure(composer, rendered, sync_visible=False)
+    assert composer._operation_render_errors == {}
+    namespace = {"data": source}
+    exec(composer.generated_code(), namespace)  # noqa: S102
+    try:
+        for figure in (rendered, namespace["fig"]):
+            axis = figure.axes[0]
+            assert axis.xaxis_inverted() == expected_x
+            assert axis.yaxis_inverted() == expected_y
+            assert axis.lines[0].get_xdata().size > 0
+    finally:
+        plt.close(namespace["fig"])
+        composer.close()
+        win.close()
+
+
 def test_figure_composer_operation_updates_keep_independent_state() -> None:
     updates = _operation_updates(
         {

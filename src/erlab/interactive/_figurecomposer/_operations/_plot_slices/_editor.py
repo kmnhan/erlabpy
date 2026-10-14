@@ -605,6 +605,9 @@ def _build_plot_slices_editor(
     )
 
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
+    editor.add_axis_inversion_controls(
+        operation, view_page, view_layout, object_name_prefix="figureComposerPlotSlices"
+    )
     for label, attr in (("x", "xlim"), ("y", "ylim")):
         text, mixed = editor.batch_text(
             operation,

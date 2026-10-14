@@ -21,6 +21,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _PlotSlicesPanelKey,
 )
 from erlab.interactive._figurecomposer._rendering import (
+    _apply_axis_inversion,
     _axes_from_selection,
     _iter_axes,
 )
@@ -83,6 +84,8 @@ def _render_plot_slices(
         panel_keys,
         mappable_ids_before,
     )
+    for axis in axes_tuple:
+        _apply_axis_inversion(axis, operation)
 
 
 def _axis_mappables(axis: object) -> tuple[object, ...]:
