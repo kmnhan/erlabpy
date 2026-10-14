@@ -20,7 +20,7 @@ already been saved.
 Use the sidebar to switch between setting groups:
 
 - {guilabel}`Visualization` controls default colormap, gamma, cursor colors, and
-  related display defaults.
+  related display defaults, including {guilabel}`Light plot background`.
 - {guilabel}`I/O` controls the default loader and the default folder used by
   manager file dialogs and new Data Explorer windows.
 - {guilabel}`ktool` controls defaults for newly opened momentum-conversion tools.

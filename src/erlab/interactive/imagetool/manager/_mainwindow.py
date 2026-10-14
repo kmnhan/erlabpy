@@ -16,6 +16,7 @@ import erlab.interactive.imagetool.slicer
 from erlab.interactive import _shortcut_sequences
 from erlab.interactive._code_trust._ui import create_code_trust_banner
 from erlab.interactive._dask import DaskMenu
+from erlab.interactive._options.runtime import initialize_plot_defaults
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
@@ -237,6 +238,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def __init__(self) -> None:
         self._manager_layout_tracking_enabled = False
         super().__init__()
+        initialize_plot_defaults()
 
         # Initialize warning notifications
         self._warning_emitter = _WarningEmitter(self)
