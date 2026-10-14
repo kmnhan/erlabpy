@@ -82,6 +82,12 @@ windows. Top-level ImageTools show an index and optional data name. A row produc
 another row appears below its source. Selecting a row fills the right pane with its
 details, recorded steps, and preview.
 
+The primary input history forms the main sequence of recorded steps. Other inputs
+appear below the operation that uses them. {guilabel}`Open Input` opens recorded input
+data. Reverting a main step restores its saved data when available and drops later
+steps. Editing an earlier step repeats the later operations. Input labels show the
+current ImageTool index, a source file name, {guilabel}`Saved`, or {guilabel}`Missing`.
+
 The toolbar and row context menu provide these actions:
 
 - {guilabel}`Show`, {guilabel}`Hide`, and {guilabel}`Remove` control the selected
@@ -108,7 +114,8 @@ The toolbar and row context menu provide these actions:
 - {guilabel}`New Empty Figure` creates a Figure Composer window without data sources or
   recipe steps.
 - {guilabel}`Add to Figure…` creates or updates a Figure Composer figure.
-- {guilabel}`Reload Data` reloads file-backed data and repeats its recorded operations.
+- {guilabel}`Reload Data` resolves current sources and repeats the recorded operations.
+  Inputs captured by {guilabel}`Replace Current` retain their recorded data.
   The action reports missing files or inputs when replay is not possible. Stored Python
   remains paused until you review an unverified workspace.
 - {guilabel}`Edit Note` and {guilabel}`Copy Note` manage the plain-text note stored with
@@ -155,7 +162,8 @@ ImageTool transformation dialogs use {guilabel}`Result Placement`:
 - {guilabel}`Open Child Window` preserves the source and records a child result.
 - {guilabel}`Open Top-Level Window` preserves the source but creates an independent
   top-level row.
-- {guilabel}`Replace Current` replaces the data in the active ImageTool.
+- {guilabel}`Replace Current` replaces the data in the active ImageTool and retains
+  the earlier data and recorded steps in its history.
 
 (imagetool-manager-workspace-properties)=
 
