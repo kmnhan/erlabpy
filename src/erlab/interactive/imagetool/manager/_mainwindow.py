@@ -701,6 +701,10 @@ class ImageToolManager(_ImageToolManagerBase):
         self.open_log_folder_action = QtWidgets.QAction("Open Log Directory", self)
         self.open_log_folder_action.triggered.connect(self.open_log_directory)
 
+        self.open_style_folder_action = QtWidgets.QAction("Open Style Directory", self)
+        self.open_style_folder_action.setObjectName("manager_open_style_folder_action")
+        self.open_style_folder_action.triggered.connect(self.open_style_directory)
+
         # Populate menu bar
         self.file_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
@@ -802,6 +806,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.help_menu.addAction(report_issue_action)
         self.help_menu.addSeparator()
         self.help_menu.addAction(self.open_log_folder_action)
+        self.help_menu.addAction(self.open_style_folder_action)
 
         # Initialize sidebar buttons linked to actions
         self.open_button = erlab.interactive.utils.IconActionButton(
@@ -2318,6 +2323,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def open_log_directory(self) -> None:
         self._widgets_controller.open_log_directory()
+
+    def open_style_directory(self) -> None:
+        self._widgets_controller.open_style_directory()
 
     def _parse_progressbar(self, message: str) -> None:
         self._widgets_controller._parse_progressbar(message)
