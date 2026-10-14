@@ -21,6 +21,7 @@ import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._dependency as manager_dependency
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
@@ -36,7 +37,10 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
-from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
+from erlab.interactive.imagetool.manager._dialogs import (
+    _LinkSettingsDialog,
+    _NameFilterDialog,
+)
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._metadata import _ManagerDetailsRefreshQueue
 from erlab.interactive.imagetool.manager._modelview import (
@@ -1013,9 +1017,99 @@ def test_link_selected_aligns_to_current_child_imagetool(
         assert not target.slicer_area.undoable
 
 
+def test_link_action_color_linking_is_opt_in(qtbot, manager_context) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tools = []
+        for gamma in (1.0, 2.0):
+            tool = itool(
+                xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y")),
+                manager=False,
+                execute=False,
+            )
+            tool.slicer_area.set_colormap(gamma=gamma)
+            manager.add_imagetool(tool, show=False)
+            tools.append(tool)
+
+        select_tools(manager, [0, 1])
+        manager.link_action.trigger()
+        proxy = tools[0].slicer_area._linking_proxy
+        assert proxy is not None
+        assert proxy.link_colors is False
+        assert all(
+            not node.workspace_link_colors
+            for node in manager._tool_graph.nodes.values()
+        )
+        tools[0].slicer_area.set_colormap(gamma=3.0)
+        assert tools[1].slicer_area._colormap_properties["gamma"] == 2.0
+        tools[0].slicer_area.set_index(0, 3)
+        assert tools[1].slicer_area.array_slicer.get_index(0, 0) == 3
+
+        select_tools(manager, [0, 1])
+        manager.link_selected(deselect=False)
+        assert tools[0].slicer_area._linking_proxy.link_colors is True
+        tools[0].slicer_area.set_colormap(gamma=4.0)
+        assert tools[1].slicer_area._colormap_properties["gamma"] == 4.0
+
+
+def test_link_settings_support_live_proxy_without_workspace_group(
+    qtbot, accept_dialog, tmp_path, manager_context
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tools = []
+        for _ in range(2):
+            tool = itool(
+                xr.DataArray(np.zeros((5, 5)), dims=("x", "y")),
+                manager=False,
+                execute=False,
+            )
+            manager.add_imagetool(tool, show=False)
+            tools.append(tool)
+        proxy = imagetool_viewer_linking.SlicerLinkProxy(
+            *(tool.slicer_area for tool in tools), link_colors=False
+        )
+        manager._link_registry.append(proxy)
+        node = manager._tool_graph.root_wrappers[0]
+        manager._workspace_controller.saving._save_workspace_document(
+            tmp_path / "live-link-settings.itws"
+        )
+        view = manager.tree_view
+        index = view._model._row_index(0)
+        option = view._delegate._option_for_index(view, index)
+        _, _, link_rect, _ = view._delegate._compute_icons_info(option, node)
+        assert link_rect is not None
+        badge = view._delegate._badge_at(option, index, link_rect.center())
+        assert badge is not None
+
+        def _enable_colors(dialog):
+            assert isinstance(dialog, _LinkSettingsDialog)
+            assert not dialog.link_colors_check.isChecked()
+            dialog.link_colors_check.setChecked(True)
+
+        accept_dialog(
+            lambda: view._handle_badge_click(index, badge),
+            pre_call=_enable_colors,
+        )
+        assert proxy.link_colors is True
+        assert all(
+            member.workspace_link_key is None
+            and member.uid in manager._workspace_state.dirty_state
+            for member in manager._tool_graph.nodes.values()
+        )
+        link_metadata = (
+            manager._workspace_controller.saving._workspace_link_metadata_by_uid()
+        )
+        assert set(link_metadata) == set(manager._tool_graph.nodes)
+        assert {enabled for _, enabled in link_metadata.values()} == {True}
+        tools[0].slicer_area.set_colormap(gamma=2.0)
+        assert tools[1].slicer_area._colormap_properties["gamma"] == 2.0
+
+
 def test_linked_child_imagetool_badge_is_interactive(
     qtbot,
     monkeypatch,
+    accept_dialog,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -1116,21 +1210,68 @@ def test_linked_child_imagetool_badge_is_interactive(
         link_color = manager.color_for_workspace_link_key(link_key)
         assert link_color.rgba() in delegate._link_icon_cache
 
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+        child.slicer_area.set_colormap(gamma=2.0)
+        peer_gammas = [
+            tool.slicer_area._colormap_properties["gamma"] for tool in tools[1:]
+        ]
+
+        def _enable_colors(dialog):
+            assert isinstance(dialog, _LinkSettingsDialog)
+            assert not dialog.link_colors_check.isChecked()
+            dialog.link_colors_check.setChecked(True)
+
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            pre_call=_enable_colors,
+            accept_call=lambda dialog: dialog.reject(),
         )
-        click_tree_view_pos(view, link_rect.center())
+        proxy = child.slicer_area._linking_proxy
+        assert proxy is not None
+        assert proxy.link_colors is False
+        assert child_node.workspace_link_colors is False
         assert child.slicer_area.is_linked
         assert all(tool.slicer_area.is_linked for tool in tools[1:])
 
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            pre_call=_enable_colors,
         )
-        click_tree_view_pos(view, link_rect.center())
+        assert child.slicer_area._linking_proxy is proxy
+        assert child_node.workspace_link_key == link_key
+        assert proxy.link_colors is True
+        for target in (1, 2, child_uid):
+            member = manager._node_for_target(target)
+            assert member.workspace_link_colors is True
+        assert [
+            tool.slicer_area._colormap_properties["gamma"] for tool in tools[1:]
+        ] == peer_gammas
+        child.slicer_area.set_colormap(gamma=3.0)
+        assert all(
+            tool.slicer_area._colormap_properties["gamma"] == 3.0 for tool in tools[1:]
+        )
+
+        def _disable_colors(dialog):
+            assert dialog.link_colors_check.isChecked()
+            dialog.link_colors_check.setChecked(False)
+
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            pre_call=_disable_colors,
+        )
+        assert proxy.link_colors is False
+        assert all(
+            not manager._node_for_target(target).workspace_link_colors
+            for target in (1, 2, child_uid)
+        )
+        child.slicer_area.set_colormap(gamma=4.0)
+        assert all(
+            tool.slicer_area._colormap_properties["gamma"] == 3.0 for tool in tools[1:]
+        )
+
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            accept_call=lambda dialog: dialog.unlink_button.click(),
+        )
         assert not child.slicer_area.is_linked
         assert not child_node.workspace_linked
         assert all(tool.slicer_area.is_linked for tool in tools[1:])
@@ -4815,6 +4956,7 @@ def test_manager_file_loads_with_loader_extensions(
 
 def test_manager_hover_tooltip(
     qtbot,
+    accept_dialog,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -4885,22 +5027,18 @@ def test_manager_hover_tooltip(
         assert handled
         assert_nonempty_tooltip(text)
 
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            accept_call=lambda dialog: dialog.reject(),
         )
-        click_tree_view_pos(view, link_rect.center())
         assert manager.get_imagetool(0).slicer_area.is_linked
         assert manager.get_imagetool(1).slicer_area.is_linked
         assert manager.get_imagetool(2).slicer_area.is_linked
 
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        accept_dialog(
+            lambda: click_tree_view_pos(view, link_rect.center()),
+            accept_call=lambda dialog: dialog.unlink_button.click(),
         )
-        click_tree_view_pos(view, link_rect.center())
         assert not manager.get_imagetool(0).slicer_area.is_linked
         assert manager.get_imagetool(1).slicer_area.is_linked
         assert manager.get_imagetool(2).slicer_area.is_linked

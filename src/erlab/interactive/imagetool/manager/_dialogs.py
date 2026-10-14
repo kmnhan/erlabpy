@@ -28,6 +28,45 @@ from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
 
 _BatchDialogType = type[imagetool_dialogs._DataManipulationDialog]
 
+
+class _LinkSettingsDialog(QtWidgets.QDialog):
+    def __init__(self, link_colors: bool, parent: QtWidgets.QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Link Settings")
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.unlink_requested = False
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.link_colors_check = QtWidgets.QCheckBox("Link color settings", self)
+        self.link_colors_check.setChecked(link_colors)
+        self.link_colors_check.setToolTip(
+            "Share subsequent changes to the colormap, gamma, contrast, and intensity "
+            "limits with all ImageTools in this group."
+        )
+        layout.addWidget(self.link_colors_check)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.unlink_button = typing.cast(
+            "QtWidgets.QPushButton",
+            buttons.addButton(
+                "Unlink This Window",
+                QtWidgets.QDialogButtonBox.ButtonRole.DestructiveRole,
+            ),
+        )
+        self.unlink_button.clicked.connect(self._unlink)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _unlink(self) -> None:
+        self.unlink_requested = True
+        self.accept()
+
+
 _BATCH_OPERATION_CATEGORIES: tuple[tuple[str, tuple[_BatchDialogType, ...]], ...] = (
     (
         "Coordinates",

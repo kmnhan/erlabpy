@@ -531,7 +531,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self.link_action.setShortcut(
             QtGui.QKeySequence(_shortcut_sequences.MANAGER_LINK_WINDOWS)
         )
-        self.link_action.setToolTip("Link selected windows")
+        self.link_action.setToolTip(
+            "Link selected windows. Color settings remain independent."
+        )
 
         self.unlink_action = QtWidgets.QAction("Unlink", self)
         self.unlink_action.triggered.connect(self._unlink_selected_from_action)
@@ -2969,7 +2971,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     @QtCore.Slot()
     def _link_selected_from_action(self) -> None:
-        self.link_selected()
+        self.link_selected(link_colors=False)
 
     def unlink_selected(self, deselect: bool = True) -> None:
         self._actions_controller.unlink_selected(deselect=deselect)
