@@ -135,6 +135,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     CoarsenOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
+    DropScalarCoordsOperation,
     ExtensionRoutineOperation,
     FillNaOperation,
     GaussianFilterOperation,
@@ -581,6 +582,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
         AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0]),
         AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        DropScalarCoordsOperation(names=("temperature",)),
         AssignCoord1DOperation(
             coord_name="temperature",
             dim="x",
@@ -2153,6 +2155,74 @@ def test_tool_provenance_assign_scalar_coord_operation() -> None:
     xr.testing.assert_identical(
         namespace["derived"], data.assign_coords(temperature=21.5)
     )
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("temperature",),
+        ("temperature", "label", "invalid", "when"),
+        (7, ("metadata", "run"), "|label|"),
+    ],
+)
+def test_tool_provenance_drop_scalar_coords_operation(names) -> None:
+    data = _base_data().assign_coords(
+        {
+            "temperature": 21.5,
+            "label": "scan",
+            "invalid": np.nan,
+            "when": np.datetime64("2026-10-13", "ns"),
+            "varying": ("x", np.arange(3)),
+            7: 42,
+            ("metadata", "run"): "reference",
+            "|label|": "test",
+        }
+    )
+    original = data.copy(deep=True)
+    expected = data.reset_coords(list(names), drop=True)
+    operation = DropScalarCoordsOperation(names=names)
+
+    xr.testing.assert_identical(operation.apply(data), expected)
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+    xr.testing.assert_identical(parsed.apply(data), expected)
+
+    spec = full_data(operation)
+    parsed_spec = parse_tool_provenance_spec(json.loads(spec.model_dump_json()))
+    assert parsed_spec is not None
+    xr.testing.assert_identical(parsed_spec.apply(data), expected)
+
+    entry = operation.derivation_entry()
+    assert entry.copyable
+    assert entry.code is not None
+    namespace = _exec_generated_code(entry.code, {"derived": data})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    code = spec.to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    assert any(call.endswith(".reset_coords") for call in _generated_call_names(code))
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], expected)
+    xr.testing.assert_identical(data, original)
+
+
+@pytest.mark.parametrize("name", ["missing", "x", "varying"])
+def test_tool_provenance_drop_scalar_coords_rejects_invalid_coordinates(name) -> None:
+    data = _base_data().assign_coords(
+        temperature=21.5,
+        varying=("x", np.arange(3)),
+    )
+    original = data.copy(deep=True)
+    operation = DropScalarCoordsOperation(names=("temperature", name))
+
+    with pytest.raises(ValueError, match=r"not present|must be scalar"):
+        operation.apply(data)
+    xr.testing.assert_identical(data, original)
+
+
+def test_tool_provenance_drop_scalar_coords_requires_names() -> None:
+    with pytest.raises(ValidationError):
+        DropScalarCoordsOperation(names=())
 
 
 def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:

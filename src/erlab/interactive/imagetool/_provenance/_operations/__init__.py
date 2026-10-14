@@ -30,6 +30,7 @@ from erlab.interactive.imagetool._provenance._operations._coordinates import (
     AssignCoord1DOperation,
     AssignCoordsOperation,
     AssignScalarCoordOperation,
+    DropScalarCoordsOperation,
     RenameDimsCoordsOperation,
     SwapDimsOperation,
 )
@@ -77,6 +78,7 @@ __all__ = (
     "CoarsenOperation",
     "CorrectWithEdgeOperation",
     "DivideByCoordOperation",
+    "DropScalarCoordsOperation",
     "ExtensionRoutineOperation",
     "FillNaOperation",
     "GaussianFilterOperation",

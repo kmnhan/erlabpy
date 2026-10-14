@@ -85,6 +85,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     BoxcarFilterOperation,
     CoarsenOperation,
     DivideByCoordOperation,
+    DropScalarCoordsOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
     InterpolationOperation,
@@ -13415,6 +13416,124 @@ def test_itool_assign_coords_add_scalar(qtbot, accept_dialog) -> None:
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     assert win.slicer_area._data.coords["temperature"].dims == ()
     assert float(win.slicer_area._data.temperature) == pytest.approx(21.5)
+
+
+def test_itool_assign_coords_remove_scalars(qtbot, accept_dialog) -> None:
+    data = _restore_dialog_data().assign_coords(
+        hv=21.2,
+        label="scan",
+        invalid=np.nan,
+        enabled=True,
+        when=np.datetime64("2026-10-13", "ns"),
+        elapsed=np.timedelta64(1, "s"),
+    )
+    original = data.copy(deep=True)
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    names = ("hv", "label", "invalid", "enabled", "when", "elapsed")
+
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        assert set(dialog._remove_coord_items) == set(names)
+        dialog._mode_tabs.setCurrentIndex(2)
+        apply_button = dialog.buttonBox.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert apply_button is not None
+        assert not apply_button.isEnabled()
+        assert not dialog._selected_remove_coords
+
+        for name in names:
+            dialog._remove_coord_items[name].setCheckState(QtCore.Qt.CheckState.Checked)
+        assert apply_button.isEnabled()
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+        xr.testing.assert_identical(
+            _exec_data_fragment(data, dialog.make_code()),
+            data.reset_coords(list(names), drop=True),
+        )
+        xr.testing.assert_identical(win.slicer_area._data, original)
+
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
+
+    expected = data.reset_coords(list(names), drop=True)
+    xr.testing.assert_identical(win.slicer_area._data, expected)
+    xr.testing.assert_identical(data, original)
+    assert win.provenance_spec is not None
+    recorded = [
+        operation
+        for operation in win.provenance_spec.operations
+        if isinstance(operation, DropScalarCoordsOperation)
+    ]
+    assert len(recorded) == 1
+    assert set(recorded[0].names) == set(names)
+    xr.testing.assert_identical(win.provenance_spec.apply(data), expected)
+
+
+def test_assign_coords_remove_cancel_and_restore(qtbot) -> None:
+    data = _restore_dialog_data().assign_coords(hv=21.2, label="scan")
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = AssignCoordsDialog(win.slicer_area, provenance_edit_mode=True)
+    qtbot.addWidget(dialog)
+
+    dialog._mode_tabs.setCurrentIndex(2)
+    apply_button = dialog.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+    assert apply_button is not None
+    assert not apply_button.isEnabled()
+    dialog._remove_coord_items["hv"].setCheckState(QtCore.Qt.CheckState.Checked)
+    assert apply_button.isEnabled()
+    dialog._remove_coord_items["hv"].setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert not apply_button.isEnabled()
+    dialog._mode_tabs.setCurrentIndex(0)
+    assert apply_button.isEnabled()
+    dialog._mode_tabs.setCurrentIndex(2)
+    assert not apply_button.isEnabled()
+    dialog._remove_coord_items["hv"].setCheckState(QtCore.Qt.CheckState.Checked)
+    operation = DropScalarCoordsOperation(names=("label",))
+    dialog.restore_transform_operation(operation)
+    assert dialog._mode_tabs.currentIndex() == 2
+    assert dialog.source_transform_operation() == operation
+    assert (
+        dialog._remove_coord_items["hv"].checkState() == QtCore.Qt.CheckState.Unchecked
+    )
+
+    for name in ("missing", "temperature", "x"):
+        with pytest.raises(ValueError, match="is not available"):
+            dialog.restore_transform_operation(DropScalarCoordsOperation(names=(name,)))
+
+    dialog.reject()
+    xr.testing.assert_identical(win.slicer_area._data, data)
+
+
+def test_assign_coords_remove_empty_selection_and_tab_switch(
+    qtbot, monkeypatch
+) -> None:
+    data = _restore_dialog_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = AssignCoordsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args),
+    )
+
+    dialog._mode_tabs.setCurrentIndex(2)
+    assert not dialog._remove_coord_items
+    assert dialog._remove_coord_table.isHidden()
+    apply_button = dialog.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+    assert apply_button is not None
+    assert not apply_button.isEnabled()
+    dialog.accept()
+    assert len(warnings) == 1
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+    xr.testing.assert_identical(win.slicer_area._data, data)
+
+    for index in (0, 1):
+        dialog._mode_tabs.setCurrentIndex(index)
+        assert apply_button.isEnabled()
 
 
 def test_itool_assign_coords_add_1d_numeric(qtbot, accept_dialog) -> None:
