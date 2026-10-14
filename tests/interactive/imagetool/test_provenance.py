@@ -582,6 +582,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
         AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0]),
         AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        DropScalarCoordsOperation(names=("temperature",)),
         AssignCoord1DOperation(
             coord_name="temperature",
             dim="x",
