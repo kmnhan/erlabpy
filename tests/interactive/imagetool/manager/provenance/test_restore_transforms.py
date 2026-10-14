@@ -471,7 +471,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         )
         selected_namespace = _exec_generated_code(
             clipboard.text(),
-            {"derived": data.copy(deep=True)},
+            {"data": data.copy(deep=True)},
         )
         assert clipboard.mimeData().hasFormat(
             manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME
@@ -488,7 +488,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         trigger_menu_action(menu, manager._metadata_copy_selected_action)
         selected_namespace = _exec_generated_code(
             clipboard.text(),
-            {"derived": data.copy(deep=True)},
+            {"data": data.copy(deep=True)},
         )
         selected_result = selected_namespace["derived"]
         assert isinstance(selected_result, xr.DataArray)
