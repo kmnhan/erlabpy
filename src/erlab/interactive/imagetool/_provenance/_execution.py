@@ -834,6 +834,8 @@ def rebuild_script_provenance(
     authorize: ExecutionAuthorizer | None = None,
     _input_provenance_resolver: InputProvenanceResolver | None = None,
     _preflighted: bool = False,
+    _record_input_revision: Callable[[xr.DataArray, ScriptInput], ScriptInput]
+    | None = None,
 ) -> tuple[xr.DataArray, typing.Any]:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
@@ -867,6 +869,7 @@ def rebuild_script_provenance(
         extension_loader_executor=extension_loader_executor,
         _input_provenance_resolver=resolve_input_provenance,
         _preflighted=True,
+        _record_input_revision=_record_input_revision,
     )
     rebuilt_spec = parsed.model_copy(update={"script_inputs": rebuilt_inputs})
     graph = compile_replay_graph(
@@ -903,6 +906,8 @@ def rebuild_script_inputs(
     authorize: ExecutionAuthorizer | None = None,
     _input_provenance_resolver: InputProvenanceResolver | None = None,
     _preflighted: bool = False,
+    _record_input_revision: Callable[[xr.DataArray, ScriptInput], ScriptInput]
+    | None = None,
 ) -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
     """Resolve named inputs and refresh their durable source snapshots.
 
@@ -1002,16 +1007,22 @@ def rebuild_script_inputs(
                 authorize=authorize,
                 _input_provenance_resolver=resolve_input_provenance,
                 _preflighted=True,
+                _record_input_revision=_record_input_revision,
             )
         data_by_name[script_input.name] = data
+        refreshed_input = script_input.model_copy(
+            update={
+                "node_uid": None,
+                "node_snapshot_token": None,
+                "revision_id": None,
+                "source_spec": None,
+                "provenance_spec": rebuilt_spec.model_dump(mode="json"),
+            }
+        )
         refreshed_inputs.append(
-            script_input.model_copy(
-                update={
-                    "node_uid": None,
-                    "node_snapshot_token": None,
-                    "provenance_spec": rebuilt_spec.model_dump(mode="json"),
-                }
-            )
+            refreshed_input
+            if _record_input_revision is None
+            else _record_input_revision(data, refreshed_input)
         )
 
     return data_by_name, tuple(refreshed_inputs)

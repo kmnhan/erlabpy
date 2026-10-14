@@ -36,6 +36,7 @@ from erlab.interactive.imagetool._provenance._model import (
     strip_partial_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
     _METADATA_DERIVATION_CODE_ROLE,
@@ -622,22 +623,14 @@ class _DetailsPanelController:
         *,
         include_history: bool,
     ) -> str:
-        node_uid = script_input.node_uid
-        if node_uid is not None:
-            graph = self._manager._tool_graph
-            node = graph.nodes.get(node_uid)
-            if node is not None:
-                return (
-                    f"Use {script_input.name} from "
-                    f"{self._script_input_current_node_label(node)}"
-                )
-            label = f"Missing source for {script_input.name}"
-            if include_history and script_input.label != script_input.name:
-                label += f" (recorded as {script_input.label})"
-            return label
-        if script_input.label == script_input.name:
-            return f"Use {script_input.name}"
-        return f"Use {script_input.name} from {script_input.label}"
+        label = script_input_source_label(
+            self._manager,
+            script_input,
+            retained_input_resolver=(
+                self._manager._lineage_controller._has_recorded_script_input
+            ),
+        )
+        return f"Use {script_input.name} from {label}"
 
     @staticmethod
     def _script_input_for_row(
@@ -1400,6 +1393,29 @@ class _DetailsPanelController:
             if include_row_actions
             else ()
         )
+        open_input_action = None
+        if len(target_rows) == 1:
+            row = target_rows[0][1]
+            ref = row.replay_ref
+            if ref is not None and ref.kind == "script_input":
+                enabled, reason = (
+                    self._manager._provenance_edit_controller.can_open_input_row(row)
+                )
+                open_input_action = QtGui.QAction("Open Input", menu)
+                open_input_action.setData("open_input")
+                open_input_action.setEnabled(enabled)
+                open_input_action.setToolTip(reason)
+                open_input_action.triggered.connect(
+                    lambda _checked=False, selected_row=row: (
+                        self._manager._provenance_edit_controller.open_input_row(
+                            selected_row
+                        )
+                    )
+                )
+                menu.addAction(open_input_action)
+                if enabled:
+                    menu.setDefaultAction(open_input_action)
+                menu.addSeparator()
         edit_enabled, edit_reason = (
             self._manager._provenance_edit_controller.can_edit_rows(target_rows)
         )
@@ -1421,7 +1437,9 @@ class _DetailsPanelController:
         self._manager._metadata_delete_step_action.setEnabled(delete_enabled)
         self._manager._metadata_delete_step_action.setToolTip(delete_reason)
         menu.addAction(self._manager._metadata_edit_step_action)
-        if edit_enabled:
+        if edit_enabled and (
+            open_input_action is None or not open_input_action.isEnabled()
+        ):
             menu.setDefaultAction(self._manager._metadata_edit_step_action)
         menu.addAction(self._manager._metadata_reorder_steps_action)
         menu.addAction(self._manager._metadata_revert_step_action)

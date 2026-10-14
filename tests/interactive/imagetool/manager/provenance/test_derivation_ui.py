@@ -14,6 +14,7 @@ import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._source_labels as manager_source_labels
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._execution import (
@@ -3043,3 +3044,225 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
             tool.slicer_area._data.rename(None),
             data.qsel.mean("x").rename(None),
         )
+
+
+def test_source_label_tracks_live_uid_after_reindex(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(test_data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, index=7)
+        node = manager._tool_graph.root_wrappers[7]
+        source = ScriptInput(name="data", label="ImageTool 99", node_uid=node.uid)
+        panel = manager._details_panel
+        assert manager_source_labels.script_input_source_label(manager, source) == (
+            "ImageTool 7"
+        )
+        assert panel._script_input_row_label(source, include_history=True) == (
+            "Use data from ImageTool 7"
+        )
+        manager.reindex()
+        assert manager_source_labels.script_input_source_label(manager, source) == (
+            "ImageTool 0"
+        )
+        assert panel._script_input_row_label(source, include_history=True) == (
+            "Use data from ImageTool 0"
+        )
+        manager.remove_imagetool(0)
+        assert manager_source_labels.script_input_source_label(manager, source) == (
+            "Missing"
+        )
+        assert panel._script_input_row_label(source, include_history=True) == (
+            "Use data from Missing"
+        )
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_source_label_closed_input_retention(retained: bool) -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    source = ScriptInput(name="shift", label="ImageTool 42", node_uid="closed")
+    resolved = []
+
+    def retained_input(item: ScriptInput) -> bool:
+        resolved.append(item)
+        return retained
+
+    assert manager_source_labels.script_input_source_label(
+        manager, source, retained_input_resolver=retained_input
+    ) == ("Saved" if retained else "Missing")
+    assert resolved == [source]
+
+
+@pytest.mark.parametrize("node_uid", [None, "closed"])
+def test_source_label_nested_recorded_file_without_disk_access(
+    node_uid: str | None, monkeypatch
+) -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    file_spec = _manager_replay_file_spec(pathlib.Path("/absent/source/scan.h5"))
+    nested = script(
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="raw", provenance_spec=file_spec.model_dump(mode="json")),
+        ),
+    )
+    source = ScriptInput(
+        name="data",
+        label="ImageTool 42",
+        node_uid=node_uid,
+        provenance_spec=nested.model_dump(mode="json"),
+    )
+
+    def unexpected_disk_access(*args, **kwargs):
+        pytest.fail("Source label resolution must not inspect the filesystem")
+
+    monkeypatch.setattr(pathlib.Path, "exists", unexpected_disk_access)
+    assert (
+        manager_source_labels.script_input_source_label(
+            manager, source, retained_input_resolver=lambda item: True
+        )
+        == "scan.h5"
+    )
+
+
+def test_source_label_recursive_payload_cycle() -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    payload: dict[str, typing.Any] = {"script_inputs": []}
+    payload["script_inputs"].append({"provenance_spec": payload})
+    source = ScriptInput(name="data", label="ImageTool 42").model_copy(
+        update={"provenance_spec": payload}
+    )
+    assert manager_source_labels.script_input_source_label(manager, source) == "Missing"
+
+
+def test_source_label_live_managed_tool() -> None:
+    node = types.SimpleNamespace(
+        is_imagetool=False, type_badge_text="FitTool", name="fit"
+    )
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"live": node})
+    )
+    source = ScriptInput(name="data", label="Old FitTool title", node_uid="live")
+    assert manager_source_labels.script_input_source_label(manager, source) == "FitTool"
+    node.is_imagetool = True
+    assert manager_source_labels.script_input_source_label(manager, source) == (
+        "ImageTool child"
+    )
+
+
+@pytest.mark.parametrize("include_history", [False, True])
+@pytest.mark.parametrize("retained", [False, True])
+def test_details_closed_source_label_has_no_historical_number(
+    include_history: bool, retained: bool
+) -> None:
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={}),
+        _lineage_controller=types.SimpleNamespace(
+            _has_recorded_script_input=lambda item: retained
+        ),
+    )
+    panel = manager_details_panel._DetailsPanelController(manager)
+    source = ScriptInput(name="shift", label="ImageTool 42", node_uid="closed")
+    assert panel._script_input_row_label(source, include_history=include_history) == (
+        f"Use shift from {'Saved' if retained else 'Missing'}"
+    )
+    source = source.model_copy(
+        update={
+            "node_uid": None,
+            "provenance_spec": _manager_replay_file_spec(
+                pathlib.Path("/recorded/shift.h5")
+            ).model_dump(mode="json"),
+        }
+    )
+    assert panel._script_input_row_label(source, include_history=include_history) == (
+        "Use shift from shift.h5"
+    )
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_details_source_menu_opens_exact_selected_input(qtbot, available: bool) -> None:
+    tree = QtWidgets.QTreeWidget()
+    qtbot.addWidget(tree)
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["Source"]))
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Use data from Saved", None, False),
+        replay_ref=_ProvenanceStepRef("script_input", script_input_index=0),
+    )
+    checked = []
+    opened = []
+
+    def can_open_input(selected):
+        checked.append(selected)
+        return available, "" if available else "The exact input is unavailable."
+
+    controller = types.SimpleNamespace(
+        can_open_input_row=can_open_input,
+        open_input_row=opened.append,
+        can_edit_rows=lambda rows: (False, ""),
+        can_revert_rows=lambda rows: (False, ""),
+        can_delete_rows=lambda rows: (False, ""),
+        can_reorder_steps=lambda: (False, ""),
+        can_paste_steps=lambda steps: (False, ""),
+    )
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=tree,
+        _provenance_edit_controller=controller,
+        _selected_derivation_target_rows=lambda: (("owner", row),),
+        _selected_derivation_code=lambda: None,
+        _metadata_full_code_available=False,
+    )
+    for name in (
+        "edit_step",
+        "reorder_steps",
+        "revert_step",
+        "delete_step",
+        "copy_selected",
+        "paste_steps",
+        "copy_full",
+    ):
+        setattr(manager, f"_metadata_{name}_action", QtGui.QAction(name, tree))
+    panel = manager_details_panel._DetailsPanelController(manager)
+    menu = panel._build_metadata_derivation_menu()
+    assert menu is not None
+    action = next(action for action in menu.actions() if action.data() == "open_input")
+    assert action.isEnabled() is available
+    assert checked == [row]
+    if available:
+        assert menu.defaultAction() is action
+        action.trigger()
+        assert opened == [row]
+    else:
+        assert action.toolTip() == "The exact input is unavailable."
+        assert not opened
+
+
+@pytest.mark.parametrize("primary", [None, "shift"])
+@pytest.mark.parametrize("retained", [False, True])
+def test_source_label_generic_merge_uses_only_primary_file(primary, retained) -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    inputs = tuple(
+        ScriptInput(
+            name=name,
+            provenance_spec=_manager_replay_file_spec(
+                pathlib.Path(f"/recorded/{name}.h5")
+            ).model_dump(mode="json"),
+        )
+        for name in ("data", "shift")
+    )
+    spec = script(
+        start_label="Merge",
+        active_name="result",
+        script_inputs=inputs,
+        primary_input=primary,
+    )
+    source = ScriptInput(name="result", provenance_spec=spec.model_dump(mode="json"))
+    label = manager_source_labels.script_input_source_label(
+        manager, source, retained_input_resolver=lambda item: retained
+    )
+    assert label == ("shift.h5" if primary else "Saved" if retained else "Missing")

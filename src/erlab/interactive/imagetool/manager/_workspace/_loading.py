@@ -986,16 +986,47 @@ class _WorkspaceLoader:
                         uid,
                         exc_info=True,
                     )
-            replay_source_pending = (
-                _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
-                and pending_workspace_memory_payload is not None
-            )
-            replay_source_data = None
+            if parsed_provenance_spec is None:
+                saved_itool_spec = ds.attrs.get(
+                    _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR
+                )
+                if saved_itool_spec is not None:
+                    with contextlib.suppress(TypeError, ValueError):
+                        parsed_provenance_spec = parse_provenance_spec(
+                            json.loads(saved_itool_spec)
+                        )
+            seed_id = None
             if (
                 _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
-                and not replay_source_pending
+                and workspace_revisions.requires_legacy_replay_source(
+                    parsed_provenance_spec
+                )
             ):
-                replay_source_data = self._workspace_replay_source_data(ds, uid=uid)
+                if pending_workspace_memory_payload is not None:
+                    path, group = pending_workspace_memory_payload
+                    seed_id = self._manager._provenance_revisions.add(
+                        provider=functools.partial(
+                            workspace_revisions.read_legacy_replay_source,
+                            str(path),
+                            group,
+                        )
+                    )
+                else:
+                    source_data = self._workspace_replay_source_data(ds, uid=uid)
+                    if source_data is not None:
+                        seed_id = self._manager._provenance_revisions.add(source_data)
+            parsed_provenance_spec = (
+                self._manager._provenance_revisions.normalize_provenance(
+                    parsed_provenance_spec, replay_source_revision_id=seed_id
+                )
+            )
+            if parsed_provenance_spec is not None:
+                ds = ds.copy(deep=False)
+                saved_spec = json.dumps(parsed_provenance_spec.model_dump(mode="json"))
+                ds.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = (
+                    saved_spec
+                )
+                ds.attrs[_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR] = saved_spec
             saved_uid = self._workspace_saved_uid_from_dataset(ds)
             kwargs: dict[str, typing.Any] = {
                 "uid": (
@@ -1010,8 +1041,6 @@ class _WorkspaceLoader:
                 "created_time": ds.attrs.get("manager_node_added_at"),
                 "note": ds.attrs.get("manager_node_note"),
                 "provenance_spec": parsed_provenance_spec,
-                "replay_source_data": replay_source_data,
-                "replay_source_pending": replay_source_pending,
                 "source_spec": parsed_source_spec,
                 "source_binding": (
                     parsed_source_binding if parsed_source_spec is None else None

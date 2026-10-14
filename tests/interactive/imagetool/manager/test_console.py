@@ -4038,7 +4038,7 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         assert load_count == 1
 
 
-def test_manager_reload_script_inputs_missing_parent_without_source_noops(
+def test_manager_reload_script_inputs_missing_parent_uses_captured_input(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -4077,6 +4077,12 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
         )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         original = manager.get_imagetool(2).slicer_area.data.copy()
+        wrapper = manager._tool_graph.root_wrappers[2]
+        missing_input = wrapper.provenance_spec.script_inputs[1]
+        assert missing_input.revision_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(missing_input.revision_id), data1
+        )
 
         manager.remove_imagetool(1)
         manager.tree_view.deselect_all()
@@ -4085,10 +4091,11 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
 
         assert manager.reload_action.isVisible()
         assert manager.reload_action.isEnabled()
+        assert manager._lineage_controller._node_can_reload_script_inputs(wrapper)
         manager.reload_selected()
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
-        assert unavailable_reasons
+        assert not unavailable_reasons
         assert not errors
 
 
@@ -4230,19 +4237,19 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert load_source is not None
         replay_call = load_source.replay_call
         assert replay_call is not None
-        no_replay_call_input = types.SimpleNamespace(
+        no_replay_call_input = ScriptInput(
             name="no_replay_call",
             node_uid=None,
             label="No replay call",
-            uses_owner_replay_source=False,
-            parsed_provenance_spec=lambda: file_spec.model_copy(
+            provenance_spec=file_spec.model_copy(
                 update={
                     "kind": "script",
+                    "active_name": "derived",
                     "file_load_source": load_source.model_copy(
                         update={"replay_call": None}
                     ),
                 }
-            ),
+            ).model_dump(mode="json"),
         )
         assert manager._lineage_controller._script_input_unavailable_reason(
             no_replay_call_input
@@ -4393,6 +4400,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert tooltip is not None
         assert "Recorded source files found" in tooltip
 
+        child_revision = manager._provenance_revisions.add(data0, file_spec)
         fake_child = types.SimpleNamespace(
             uid="1 child-node",
             provenance_spec=file_spec,
@@ -4404,6 +4412,8 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             snapshot_token_for_role=lambda _role: child_marker,
             provenance_for_role=lambda _role: file_spec,
             type_badge_text="tool",
+            data_for_role=lambda _role: data0,
+            revision_id_for_role=lambda _role: child_revision,
         )
         script_input = manager._lineage_controller._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")
@@ -4712,7 +4722,7 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         assert rebuilt_spec.script_inputs[0].parsed_provenance_spec() == file_spec
 
 
-def test_manager_reload_raw_self_replacement_unavailable(
+def test_manager_reload_raw_self_replacement_uses_captured_input(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -4739,16 +4749,25 @@ def test_manager_reload_raw_self_replacement_unavailable(
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
         wrapper = manager._tool_graph.root_wrappers[0]
+        captured = wrapper.provenance_spec.script_inputs[0]
+        assert captured.revision_id is not None
+        assert captured.provenance_spec is None
+        assert captured.node_uid is None
+        assert captured.node_snapshot_token is None
+        assert wrapper.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id), data
+        )
         manager.tree_view.deselect_all()
         select_tools(manager, [0])
         manager._update_actions()
-        assert not manager._lineage_controller._node_can_reload_script_inputs(wrapper)
+        assert manager._lineage_controller._node_can_reload_script_inputs(wrapper)
         assert manager.reload_action.isVisible()
         assert manager.reload_action.isEnabled()
 
         manager.reload_selected()
 
-        assert unavailable_reasons
+        assert not unavailable_reasons
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
 

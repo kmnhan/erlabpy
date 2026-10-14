@@ -325,13 +325,6 @@ class _WorkspaceSaver:
             ds.attrs.pop("manager_node_note", None)
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
-        if kind == "imagetool" and persistence.replay_source_data is not None:
-            ds = ds.copy(deep=False)
-            blob_name = _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME
-            ds[blob_name] = erlab.interactive.utils._tool_data_to_blob(
-                persistence.replay_source_data,
-                blob_name,
-            )
         if kind == "imagetool" and provenance_spec is not None:
             ds.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
                 provenance_spec.model_dump(mode="json")
@@ -614,6 +607,7 @@ class _WorkspaceSaver:
         | None = None,
     ) -> dict[str, typing.Any]:
         if script_snapshot is None:
+            workspace_revisions.normalize_workspace_nodes(self._manager)
             script_snapshot = self._workspace_script_snapshot()
         requirements, scripts, source_keys = script_snapshot
         manifest = workspace_format._workspace_manifest_payload(
@@ -873,6 +867,9 @@ class _WorkspaceSaver:
             attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
                 provenance_spec.model_dump(mode="json")
             )
+            attrs[_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR] = attrs[
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
+            ]
 
         if isinstance(node, _ImageToolWrapper):
             if node.source_input_ndim is None:
@@ -1155,6 +1152,7 @@ class _WorkspaceSaver:
             )
         }
 
+        workspace_revisions.normalize_workspace_nodes(self._manager)
         script_snapshot = self._workspace_script_snapshot()
         manifest = self._workspace_manifest(script_snapshot=script_snapshot)
         _requirements, scripts, source_keys = script_snapshot
@@ -1237,6 +1235,9 @@ class _WorkspaceSaver:
                 or uid in dirty_state
                 or uid in dirty_data
                 or has_saved_input_provenance
+                or not workspace_revisions.saved_provenance_matches_node(
+                    node, attrs_payload
+                )
             )
             if needs_current_attrs:
                 pending_attrs = (

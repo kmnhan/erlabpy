@@ -11,8 +11,13 @@ from dataclasses import dataclass, replace
 import xarray as xr
 
 from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
+    ScriptInput,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
+)
+from erlab.interactive.imagetool._provenance._trust import (
+    script_replay_source_input_names,
 )
 
 if typing.TYPE_CHECKING:
@@ -32,7 +37,7 @@ class _ProvenanceRevision:
     provenance_spec: ToolProvenanceSpec | None
     input_revisions: tuple[tuple[str, str], ...] = ()
     primary_revision_id: str | None = None
-    replay_source_revision_id: str | None = None
+    source_owner_uid: str | None = None
     checkpoint: _RevisionCheckpoint | None = None
 
     @property
@@ -64,6 +69,33 @@ def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
     return frozenset(ids)
 
 
+def requires_legacy_replay_source(spec: ToolProvenanceSpec | None) -> bool:
+    if spec is None:
+        return False
+    if spec.kind in {"full_data", "public_data", "selection"}:
+        return True
+    if spec.kind != "script":
+        return False
+    if spec.script_inputs:
+        return any(
+            item.node_uid is None
+            and item.node_snapshot_token is not None
+            and item.revision_id is None
+            for item in spec.script_inputs
+        )
+    return bool(script_replay_source_input_names(spec))
+
+
+def _script_input_revision_ids(inputs: Iterable[ScriptInput]) -> frozenset[str]:
+    ids: set[str] = set()
+    for item in inputs:
+        if item.revision_id is not None:
+            ids.add(item.revision_id)
+        ids.update(_spec_revision_ids(item.parsed_provenance_spec()))
+        ids.update(_spec_revision_ids(item.parsed_source_spec()))
+    return frozenset(ids)
+
+
 class _ProvenanceRevisionStore:
     def __init__(self) -> None:
         self._records: dict[str, _ProvenanceRevision] = {}
@@ -79,12 +111,11 @@ class _ProvenanceRevisionStore:
         *,
         input_revisions: Mapping[str, str] | Iterable[tuple[str, str]] = (),
         primary_revision_id: str | None = None,
-        replay_source_revision_id: str | None = None,
+        source_owner_uid: str | None = None,
         revision_id: str | None = None,
         provider: Callable[[], xr.DataArray] | None = None,
         source_file: str | None = None,
         source_path: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
     ) -> str:
         revision_id = revision_id or uuid.uuid4().hex
         if (
@@ -100,9 +131,7 @@ class _ProvenanceRevisionStore:
             raise ValueError("Supply revision data or a lazy provider, not both")
         if (source_file is None) != (source_path is None):
             raise ValueError("Checkpoint source requires a file and a group path")
-        if spec is not None and provenance_spec is not None:
-            raise ValueError("Supply only one revision provenance spec")
-        parsed_spec = parse_tool_provenance_spec(spec or provenance_spec)
+        parsed_spec = parse_tool_provenance_spec(spec)
         checkpoint = None
         if data is not None:
             self._data[revision_id] = data.copy(deep=True)
@@ -130,10 +159,14 @@ class _ProvenanceRevisionStore:
             ),
             input_revisions=inputs,
             primary_revision_id=primary_revision_id,
-            replay_source_revision_id=replay_source_revision_id,
+            source_owner_uid=source_owner_uid,
             checkpoint=checkpoint,
         )
         return revision_id
+
+    @property
+    def revision_ids(self) -> frozenset[str]:
+        return frozenset(self._records)
 
     def get(self, revision_id: str) -> _ProvenanceRevision | None:
         record = self._records.get(revision_id)
@@ -165,13 +198,13 @@ class _ProvenanceRevisionStore:
                 continue
             record = self._records.get(revision_id)
             if record is None:
-                raise KeyError(f"Missing provenance revision {revision_id!r}")
+                # Keep unavailable references in recipes and named input metadata.
+                # Their missing checkpoints cannot block retention of known data.
+                continue
             visited.add(revision_id)
             pending.extend(ref for _, ref in record.input_revisions)
             if record.primary_revision_id is not None:
                 pending.append(record.primary_revision_id)
-            if record.replay_source_revision_id is not None:
-                pending.append(record.replay_source_revision_id)
             pending.extend(_spec_revision_ids(record.provenance_spec))
         return tuple(
             replace(
@@ -209,6 +242,8 @@ class _ProvenanceRevisionStore:
                 source_path=source_path,
             ),
         )
+        if provider is not None:
+            self._data.pop(revision_id, None)
 
     def discard_unreachable(self, revision_ids: Iterable[str]) -> None:
         retained = {record.revision_id for record in self.reachable(revision_ids)}
@@ -217,37 +252,91 @@ class _ProvenanceRevisionStore:
         }
         self._data = {key: data for key, data in self._data.items() if key in retained}
 
-    def freeze_legacy_inputs(
+    def normalize_provenance(
         self,
         spec: ToolProvenanceSpec | None,
-        data: xr.DataArray | None = None,
         *,
-        provider: Callable[[], xr.DataArray] | None = None,
         replay_source_revision_id: str | None = None,
     ) -> ToolProvenanceSpec | None:
         if spec is None:
             return None
-        inputs = tuple(
-            item
-            for item in spec.script_inputs
-            if item.uses_owner_replay_source and item.revision_id is None
-        )
-        if not inputs:
-            return spec
-        if replay_source_revision_id is None:
-            if data is None and provider is None:
-                return spec
-            replay_source_revision_id = self.add(data, provider=provider)
-        elif not self.has_data(replay_source_revision_id):
+        if replay_source_revision_id is not None and not self.has_data(
+            replay_source_revision_id
+        ):
             raise ValueError("Legacy replay source revision has no checkpoint")
-        return spec.model_copy(
-            update={
-                "script_inputs": tuple(
-                    item.model_copy(update={"revision_id": replay_source_revision_id})
-                    if item in inputs
-                    else item
-                    for item in spec.script_inputs
+        inputs = []
+        for item in spec.script_inputs:
+            updates: dict[str, typing.Any] = {}
+            nested = item.parsed_provenance_spec()
+            if nested is not None:
+                normalized = self.normalize_provenance(nested)
+                updates["provenance_spec"] = (
+                    None if normalized is None else normalized.model_dump(mode="json")
                 )
-            },
-            deep=True,
-        )
+            if item.node_uid is None and item.node_snapshot_token is not None:
+                updates["node_snapshot_token"] = None
+                updates["follow_source"] = False
+                if item.revision_id is None and replay_source_revision_id is not None:
+                    updates["revision_id"] = replay_source_revision_id
+            inputs.append(
+                item.model_copy(update=updates, deep=True) if updates else item
+            )
+        if replay_source_revision_id is not None and spec.kind in {
+            "full_data",
+            "public_data",
+            "selection",
+        }:
+            if spec.is_live_source:
+                steps = ReplayStep.from_source_spec(spec)
+            else:
+                source_start = ToolProvenanceSpec(kind=spec.kind)
+                policy: typing.Literal["current", "restored"] = (
+                    "current" if spec.kind == "full_data" else "restored"
+                )
+                steps = (
+                    *ReplayStep.from_source_spec(source_start),
+                    *(
+                        ReplayStep(
+                            operation=operation,
+                            input_policy=policy if operation.live_applicable else None,
+                            context_names=(
+                                ("data", "derived", "parent_data")
+                                if operation.op == "script_code"
+                                else ()
+                            ),
+                        )
+                        for operation in spec.operations
+                    ),
+                )
+            return ToolProvenanceSpec.model_validate(
+                {
+                    "kind": "script",
+                    "start_label": "Saved",
+                    "active_name": "derived" if steps else "data",
+                    "primary_input": "data",
+                    "script_inputs": (
+                        ScriptInput(
+                            name="data",
+                            label="Saved",
+                            revision_id=replay_source_revision_id,
+                            follow_source=False,
+                        ),
+                    ),
+                    "steps": steps,
+                }
+            )
+        if (
+            replay_source_revision_id is not None
+            and spec.kind == "script"
+            and not inputs
+        ):
+            inputs.extend(
+                ScriptInput(
+                    name=name,
+                    label="Saved",
+                    revision_id=replay_source_revision_id,
+                    follow_source=False,
+                )
+                for name in script_replay_source_input_names(spec)
+            )
+        return spec.model_copy(update={"script_inputs": tuple(inputs)}, deep=True)

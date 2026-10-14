@@ -76,6 +76,9 @@ from erlab.interactive.imagetool.manager._widgets import (
 from erlab.interactive.imagetool.manager._workspace._controller import (
     _WorkspaceController,
 )
+from erlab.interactive.imagetool.manager._workspace._revisions import (
+    retained_revision_ids,
+)
 from erlab.interactive.imagetool.manager._workspace._state import _ManagerWorkspaceState
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -1433,6 +1436,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self._figure_workflows._refresh_figure_source_controls()
         if release_workspace_accesses and self._workspace_state.loading_depth == 0:
             self._workspace_controller._release_unused_imported_workspace_accesses()
+        if refresh_dependents and self._workspace_state.loading_depth == 0:
+            self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1752,6 +1757,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self._figure_workflows._refresh_figure_source_controls()
         wrapper.deleteLater()
         release_workspace_accesses_for_removed_nodes()
+        if self._workspace_state.loading_depth == 0:
+            self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
         return True
 
     @QtCore.Slot(int)
@@ -3226,7 +3233,6 @@ class ImageToolManager(_ImageToolManagerBase):
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -3246,7 +3252,6 @@ class ImageToolManager(_ImageToolManagerBase):
             source_state=source_state,
             output_id=output_id,
             replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,
@@ -3327,7 +3332,6 @@ class ImageToolManager(_ImageToolManagerBase):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         index: int | None = None,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
@@ -3388,7 +3392,6 @@ class ImageToolManager(_ImageToolManagerBase):
             source_auto_update=source_auto_update,
             source_state=source_state,
             replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,

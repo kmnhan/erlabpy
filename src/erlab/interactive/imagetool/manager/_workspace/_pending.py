@@ -858,7 +858,6 @@ class _PendingWorkspacePayloads:
                 ),
                 output_id=kwargs.get("output_id"),
                 replay_source_data=kwargs.get("replay_source_data"),
-                replay_source_pending=bool(kwargs.get("replay_source_pending", False)),
                 snapshot_token=kwargs.get("snapshot_token"),
                 source_snapshot_token=kwargs.get("source_snapshot_token"),
                 created_time=kwargs.get("created_time"),
@@ -915,7 +914,6 @@ class _PendingWorkspacePayloads:
                 root_kwargs.get("source_state", "fresh"),
             ),
             replay_source_data=root_kwargs.get("replay_source_data"),
-            replay_source_pending=bool(root_kwargs.get("replay_source_pending", False)),
             snapshot_token=root_kwargs.get("snapshot_token"),
             source_snapshot_token=root_kwargs.get("source_snapshot_token"),
             created_time=root_kwargs.get("created_time"),
@@ -992,9 +990,6 @@ class _PendingWorkspacePayloads:
                         data = ds[_persistence_constants.ITOOL_DATA_NAME].rename(name)
                         node.slicer_area.set_data(data, auto_compute=False)
                         node.slicer_area.state = state
-                    node._restore_replay_source_data(
-                        self._loader._workspace_replay_source_data(ds, uid=node.uid)
-                    )
                     node.clear_pending_workspace_payload()
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)

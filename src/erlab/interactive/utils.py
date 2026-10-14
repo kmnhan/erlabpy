@@ -4580,17 +4580,18 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             if action == "cancel":
                 return None
             if action == "update":
-                node.set_output_binding(
-                    output_id,
-                    auto_update=node.source_auto_update,
-                    state=output_source_state,
-                )
+                node.revision_id_for_role("source")
+                with node._suspend_snapshot_updates():
+                    node.set_output_binding(
+                        output_id,
+                        auto_update=node.source_auto_update,
+                        state=output_source_state,
+                    )
                 node._replace_imagetool_data(
                     data,
                     provenance_spec,
                     state=output_source_state,
                     propagate_descendants=True,
-                    replay_source_data=None,
                 )
                 manager.show_childtool(existing_target)
                 return manager.get_imagetool(existing_target)

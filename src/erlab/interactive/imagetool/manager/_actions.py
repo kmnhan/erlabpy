@@ -345,6 +345,7 @@ class _ActionsController:
         provenance_spec = persistence.provenance_spec
         snapshot_token = node.snapshot_token
         source_snapshot_token = node.source_snapshot_token
+        current_revision_id = node.current_revision_id
         note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
@@ -365,6 +366,7 @@ class _ActionsController:
                 note=note,
             )
         wrapper = self._manager._tool_graph.root_wrappers[new_index]
+        wrapper.restore_current_revision_id(current_revision_id)
         wrapper._recent_geometry = recent_geometry
         self._manager._tool_graph.replace_child_references(
             wrapper.uid, childtool_indices, childtools
@@ -862,6 +864,7 @@ class _ActionsController:
                 replay_source_data,
             ) in plan:
                 if launch_mode == "replace":
+                    node.revision_id_for_role("source")
                     if replace_provenance is not None:
                         if replace_kind == "source":
                             node.set_source_binding(
@@ -875,6 +878,7 @@ class _ActionsController:
                                 replay_source_data=replay_source_data,
                             )
                     slicer_area.replace_source_data(processed, emit_edited=True)
+                    node.revision_id_for_role("source")
                     continue
 
                 itool_kw = dialog._itool_kwargs(processed, slicer_area)
@@ -1124,7 +1128,9 @@ class _ActionsController:
                         note=node.note,
                     )
 
-            uid_map[node.uid] = self._manager._node_for_target(new_target).uid
+            duplicated_node = self._manager._node_for_target(new_target)
+            duplicated_node.restore_current_revision_id(node.current_revision_id)
+            uid_map[node.uid] = duplicated_node.uid
             for child_uid in tuple(node._childtool_indices):
                 self._duplicate_subtree(
                     child_uid,
@@ -1861,7 +1867,6 @@ class _ActionsController:
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -1906,7 +1911,6 @@ class _ActionsController:
             source_state=source_state,
             output_id=output_id,
             replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,

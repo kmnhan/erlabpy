@@ -552,6 +552,30 @@ def test_trusting_legacy_pending_fit_payload_completes_manifest_before_save(
         )
         manifest = manager._workspace_controller.saving._workspace_manifest()
         manifest["schema_version"] = 4
+        manifest.pop("provenance_revisions", None)
+        for entry in manifest["nodes"]:
+            entry.pop("current_revision_id", None)
+
+        def _remove_new_revision_refs(payload) -> None:
+            if isinstance(payload, dict):
+                payload.pop("revision_id", None)
+                for value in payload.values():
+                    _remove_new_revision_refs(value)
+            elif isinstance(payload, list):
+                for value in payload:
+                    _remove_new_revision_refs(value)
+
+        for payload_node in tree.subtree:
+            for attr in (
+                _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR,
+                _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+                _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+            ):
+                if attr in payload_node.attrs:
+                    payload = json.loads(payload_node.attrs[attr])
+                    _remove_new_revision_refs(payload)
+                    payload_node.attrs[attr] = json.dumps(payload)
         tree.attrs["imagetool_workspace_schema_version"] = 4
         tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
             manifest
@@ -2080,6 +2104,11 @@ def test_signed_workspace_runs_locally_edited_provenance_without_review(
         manager._workspace_controller._set_workspace_code_trust(signed)
 
         node = manager._node_for_target(0)
+        candidate = manager._provenance_revisions.normalize_provenance(
+            candidate,
+            replay_source_revision_id=node.provenance_spec.script_inputs[0].revision_id,
+        )
+        assert candidate is not None
         manager._provenance_edit_controller._validate_and_replace(
             node,
             "display",
@@ -2125,17 +2154,24 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
         )
 
         second_node = manager._node_for_target(1)
+        shared_candidate = manager._provenance_revisions.normalize_provenance(
+            shared,
+            replay_source_revision_id=second_node.provenance_spec.script_inputs[
+                0
+            ].revision_id,
+        )
+        assert shared_candidate is not None
         manager._provenance_edit_controller._validate_and_replace(
             second_node,
             "display",
-            shared,
+            shared_candidate,
         )
 
         assert not document_trust_is_trusted(manager._workspace_state.code_trust)
         assert manager.code_trust_banner.isVisible()
         xr.testing.assert_identical(second_node.current_public_data(), source + 1)
         runtime_entries = provenance_code_trust_entries(
-            shared,
+            shared_candidate,
             location_prefix="runtime",
         )
         assert second.slicer_area._stored_code_authorizer is not None
@@ -2147,13 +2183,23 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
             ScriptCodeOperation(label="First local", code="derived = derived + 3")
         )
         first_node = manager._node_for_target(0)
+        first_local = manager._provenance_revisions.normalize_provenance(
+            first_local,
+            replay_source_revision_id=first_node.provenance_spec.script_inputs[
+                0
+            ].revision_id,
+        )
+        assert first_local is not None
         manager._provenance_edit_controller._validate_and_replace(
             first_node,
             "display",
             first_local,
         )
 
-        assert document_trust_has_trusted_lineage(manager._workspace_state.code_trust)
+        assert not document_trust_has_trusted_lineage(
+            manager._workspace_state.code_trust
+        )
+        assert manager.code_trust_banner.isVisible()
         xr.testing.assert_identical(first_node.current_public_data(), source + 3)
 
 

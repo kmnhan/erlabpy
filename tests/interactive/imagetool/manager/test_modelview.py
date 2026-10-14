@@ -338,19 +338,16 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
     graph = types.SimpleNamespace(nodes={"dependent": node})
     tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
     ref_scans = 0
-    original_refs = manager_dependency.script_input_dependency_refs
+    original_refs = manager_dependency.script_inputs_dependency_refs
 
-    def _record_refs(spec, *, owner_replay_source_available: bool = False):
+    def _record_refs(script_inputs):
         nonlocal ref_scans
         ref_scans += 1
-        return original_refs(
-            spec,
-            owner_replay_source_available=owner_replay_source_available,
-        )
+        return original_refs(script_inputs)
 
     monkeypatch.setattr(
         manager_dependency,
-        "script_input_dependency_refs",
+        "script_inputs_dependency_refs",
         _record_refs,
     )
 

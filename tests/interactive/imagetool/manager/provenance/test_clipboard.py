@@ -1817,6 +1817,10 @@ def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
 
     with manager_context() as manager:
         manager._workspace_controller.local_code_edit = _authorize_local_edit
+        unrelated_revision = manager._provenance_revisions.add(shift_data + 100)
+        portable_shift = portable_shift.model_copy(
+            update={"revision_id": unrelated_revision}
+        )
         tool = itool(data, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
         index = manager.add_imagetool(tool, show=False)

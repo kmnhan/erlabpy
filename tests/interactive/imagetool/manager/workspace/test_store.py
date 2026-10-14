@@ -7,6 +7,7 @@ import json
 import shutil
 import threading
 import typing
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
@@ -14,12 +15,18 @@ import pytest
 import xarray as xr
 
 from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     full_data,
+    public_data,
     script,
+    selection,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    ScriptCodeOperation,
+)
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import (
@@ -37,7 +44,7 @@ if typing.TYPE_CHECKING:
 
 def _manifest(*object_ids: str) -> dict[str, object]:
     return {
-        "schema_version": 6,
+        "schema_version": _persistence_constants.WORKSPACE_SCHEMA_VERSION,
         "nodes": [
             {
                 "uid": f"node-{index}",
@@ -212,6 +219,139 @@ def test_workspace_trust_covers_historical_revision_recipes() -> None:
     assert workspace_code_trust_manifest(manifest).canonical_bytes() != baseline
 
 
+def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
+    tmp_path,
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x", name="source")
+    revision_id = registry.add(data, source_owner_uid="owner")
+    records = registry.reachable([revision_id])
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record) for record in records
+    ]
+    original = tmp_path / "original.itws"
+    destination = tmp_path / "destination.itws"
+    with workspace_store.WorkspaceStore(original, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest,
+                objects=workspace_revisions.revision_object_writes(registry, records),
+            ),
+            compression_mode="none",
+        )
+        workspace_revisions.bind_saved_revision_sources(registry, manifest, original)
+        assert revision_id not in registry._data
+        xr.testing.assert_identical(registry.resolve_data(revision_id).compute(), data)
+        assert revision_id in registry._data
+        with workspace_store.WorkspaceStore(destination, create=True) as target:
+            workspace_storage._write_workspace_generation(
+                target,
+                workspace_storage._WorkspaceGenerationPlan(
+                    manifest=manifest,
+                    objects=workspace_revisions.revision_object_writes(
+                        registry, registry.reachable([revision_id])
+                    ),
+                ),
+                compression_mode="none",
+            )
+            workspace_revisions.bind_saved_revision_sources(
+                registry, manifest, destination
+            )
+            assert revision_id not in registry._data
+    original.unlink()
+    xr.testing.assert_identical(registry.resolve_data(revision_id).compute(), data)
+    restored = _ProvenanceRevisionStore()
+    workspace_revisions.restore_revision_store(restored, manifest, destination)
+    assert restored.get(revision_id).source_owner_uid == "owner"
+
+
+def test_revision_retention_preserves_unavailable_input_references() -> None:
+    registry = _ProvenanceRevisionStore()
+    current = registry.add(
+        xr.DataArray([1.0], dims="x"),
+        input_revisions={"unavailable": "missing-input"},
+        primary_revision_id="missing-prior",
+    )
+    records = registry.reachable([current])
+    assert len(records) == 1
+    assert records[0].input_revisions == (("unavailable", "missing-input"),)
+    assert records[0].primary_revision_id == "missing-prior"
+    registry.discard_unreachable([current])
+    assert registry.has_data(current)
+    assert not registry.has_data("missing-input")
+    with pytest.raises(KeyError, match="missing-input"):
+        registry.resolve_data("missing-input")
+
+
+def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0], dims="x")
+    current, displayed, stale, nested_id, tool_id = [
+        registry.add(data) for _ in range(5)
+    ]
+    nested = script(
+        start_label="Nested",
+        active_name="derived",
+        seed_code="derived = inner",
+        script_inputs=(ScriptInput(name="inner", revision_id=nested_id),),
+    )
+    node = SimpleNamespace(
+        _current_revision_id=current,
+        _revision_ids_by_role={
+            "source": ("stale-source", stale),
+            "displayed": ("live-display", displayed),
+        },
+        snapshot_token_for_role=lambda role: {
+            "source": "live-source",
+            "displayed": "live-display",
+        }[role],
+        passive_displayed_provenance_spec=None,
+        source_spec=None,
+        tool_script_inputs=(
+            ScriptInput(
+                name="outer",
+                revision_id=tool_id,
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+    )
+    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"tool": node}))
+    retained = workspace_revisions.retained_revision_ids(manager)
+    assert retained == {current, displayed, nested_id, tool_id}
+    registry.discard_unreachable(retained)
+    assert stale not in registry
+
+
+@pytest.mark.parametrize("factory", [full_data, public_data, selection])
+def test_revision_normalizes_legacy_source_kind_with_stored_python(factory) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    source_id = registry.add(data)
+    code = "derived = derived + 1"
+    legacy = factory(ScriptCodeOperation(label="Legacy", code=code))
+    normalized = registry.normalize_provenance(
+        legacy, replay_source_revision_id=source_id
+    )
+    assert normalized is not None
+    assert normalized.kind == "script"
+    assert normalized.script_inputs[0].revision_id == source_id
+    assert normalized.steps[-1].operation.code == code
+    from erlab.interactive._code_trust import (
+        issue_execution_capability,
+        new_document_trust,
+    )
+
+    def _authorize(entries):
+        return issue_execution_capability(new_document_trust(), entries)[1]
+
+    xr.testing.assert_identical(
+        replay_script_provenance(normalized, {"data": data}, authorize=_authorize),
+        data + 1,
+    )
+
+
 def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None:
     registry = _ProvenanceRevisionStore()
     nested_snapshot = "unknown-nested-owner"
@@ -239,7 +379,8 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
         reads += 1
         return xr.DataArray([1.0, 2.0], dims="x")
 
-    frozen = registry.freeze_legacy_inputs(spec, provider=_read_immutable_legacy_seed)
+    seed_id = registry.add(provider=_read_immutable_legacy_seed)
+    frozen = registry.normalize_provenance(spec, replay_source_revision_id=seed_id)
     assert frozen is not None
     assert reads == 0
     seed_id = frozen.script_inputs[0].revision_id
@@ -248,10 +389,11 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
     inner = frozen.script_inputs[0].parsed_provenance_spec()
     assert inner is not None
     assert inner.script_inputs[0].revision_id is None
+    assert inner.script_inputs[0].node_snapshot_token is None
+    assert frozen.script_inputs[0].node_snapshot_token is None
     result = registry.add(
         xr.DataArray([10.0, 20.0], dims="x"),
         frozen,
-        replay_source_revision_id=seed_id,
     )
     assert {record.revision_id for record in registry.reachable([result])} == {
         result,
@@ -262,7 +404,71 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
     record = registry.get(result)
     assert record is not None
     entry = workspace_revisions.revision_manifest_entry(record)
-    assert entry["replay_source_revision_id"] == seed_id
+    assert entry["provenance_spec"]["script_inputs"][0]["revision_id"] == seed_id
+    assert "replay_source_revision_id" not in entry
+    manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(record)
+            for record in registry.reachable([result])
+        ]
+    }
+    workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
+    assert registry.get(result).input_revisions == ()
+
+
+@pytest.mark.parametrize(
+    "operation", [None, IselOperation(kwargs={"x": slice(1, None)})]
+)
+def test_provenance_revision_normalizes_live_source_to_exact_named_input(
+    operation,
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0, 3.0], dims="x", coords={"x": [2.0, 4.0, 8.0]})
+    seed_id = registry.add(data)
+    legacy = full_data() if operation is None else full_data(operation)
+    normalized = registry.normalize_provenance(
+        legacy, replay_source_revision_id=seed_id
+    )
+    assert normalized is not None
+    assert normalized.primary_input == "data"
+    assert normalized.script_inputs[0].revision_id == seed_id
+    assert normalized.script_inputs[0].node_snapshot_token is None
+    expected = data if operation is None else data.isel(x=slice(1, None))
+    xr.testing.assert_identical(
+        replay_script_provenance(normalized, {"data": data}), expected
+    )
+    assert registry.normalize_provenance(normalized) == normalized
+
+
+def test_provenance_revision_names_implicit_script_source() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed_id = registry.add(data)
+    legacy = script(
+        start_label="Legacy source",
+        seed_code="derived = data + 1",
+        active_name="derived",
+    )
+    normalized = registry.normalize_provenance(
+        legacy, replay_source_revision_id=seed_id
+    )
+    assert normalized is not None
+    assert normalized.seed_code == legacy.seed_code
+    assert [(item.name, item.revision_id) for item in normalized.script_inputs] == [
+        ("data", seed_id)
+    ]
+    from erlab.interactive._code_trust import (
+        issue_execution_capability,
+        new_document_trust,
+    )
+
+    def _authorize(entries):
+        return issue_execution_capability(new_document_trust(), entries)[1]
+
+    xr.testing.assert_identical(
+        replay_script_provenance(normalized, {"data": data}, authorize=_authorize),
+        data + 1,
+    )
 
 
 def test_workspace_file_access_retry_contract(
@@ -479,7 +685,7 @@ def test_workspace_compaction_allows_missing_optional_extension_source(
     path = tmp_path / "workspace.itws"
     source_hash = "a" * 64
     manifest = {
-        "schema_version": 6,
+        "schema_version": _persistence_constants.WORKSPACE_SCHEMA_VERSION,
         "nodes": [],
         "embedded_extension_sources": [
             {

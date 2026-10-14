@@ -394,6 +394,11 @@ class _WorkspaceController:
         """Authorize one explicit local edit and commit lineage on success."""
         state = self._manager._workspace_state
         previous = state.code_trust
+        previous_revision_ids = self._manager._provenance_revisions.revision_ids
+        node_paths = {
+            uid: self.saving._workspace_node_path(uid)
+            for uid in self._manager._tool_graph.nodes
+        }
         resolved_execution_entries = tuple(
             execution_entries() if callable(execution_entries) else execution_entries
         )
@@ -436,12 +441,29 @@ class _WorkspaceController:
                     exc_info=True,
                 )
                 return
+            prior_entries = (
+                () if previous_manifest is None else previous_manifest.entries
+            )
+            captured_entries = workspace_trust.captured_revision_code_trust_entries(
+                self._manager,
+                previous_revision_ids=previous_revision_ids,
+                node_paths=node_paths,
+                previous_entries=prior_entries,
+                edited_entries=resolved_edited_entries,
+                previous_trust=previous,
+            )
+            publication_entries = (*resolved_edited_entries, *captured_entries)
+            _prospective, publication_capability = issue_local_edit_capability(
+                previous,
+                (*resolved_execution_entries, *captured_entries),
+                edited_entries=publication_entries,
+            )
             committed = commit_local_edit_trust(
                 previous,
-                capability,
-                () if previous_manifest is None else previous_manifest.entries,
+                publication_capability,
+                prior_entries,
                 manifest.entries,
-                edited_entries=resolved_edited_entries,
+                edited_entries=publication_entries,
                 document_manifest=manifest,
             )
             if committed != previous:

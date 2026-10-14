@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._dependency as manager_dependency
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
@@ -31,6 +32,8 @@ from erlab.interactive.imagetool._provenance._model import (
     _ProvenanceDisplayRow,
     full_data,
     script,
+    script_input_dependency_refs,
+    script_inputs_dependency_refs,
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
@@ -2927,8 +2930,14 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
             data_role="source",
         )
         assert data_input.node_uid is None
-        assert data_input.node_snapshot_token == data_node.snapshot_token_for_role(
-            "source"
+        assert data_input.revision_id is not None
+        assert not data_input.follow_source
+        assert data_input.node_snapshot_token is None
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(data_input.revision_id).rename(
+                None
+            ),
+            data.rename(None),
         )
         spec = script(
             ScriptCodeOperation(label="Add inputs", code="result = data + shift"),
@@ -2946,8 +2955,9 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
         data_node.replace_with_detached_data(
             data + shift,
             spec,
-            replay_source_data=data,
+            replay_source_data=None,
         )
+        assert data_node.replay_source_data is None
         assert {
             ref.node_uid
             for ref in manager._lineage_controller._dependency_refs_for_uid(
@@ -2972,9 +2982,8 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
             item.name: item for item in data_node.provenance_spec.script_inputs
         }["data"]
         assert refreshed_data_input.node_uid is None
-        assert (
-            refreshed_data_input.node_snapshot_token == data_input.node_snapshot_token
-        )
+        assert refreshed_data_input.node_snapshot_token is None
+        assert refreshed_data_input.revision_id == data_input.revision_id
 
 
 def test_detached_derived_input_ignores_frozen_fallback_dependencies(
@@ -3016,7 +3025,19 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
         derived_node.replace_with_detached_data(
             derived + shift,
             replacement_spec,
-            replay_source_data=derived,
+            replay_source_data=None,
+        )
+        captured = replacement_spec.script_inputs[0]
+        assert captured.revision_id is not None
+        assert not captured.follow_source
+        assert captured.node_uid is None
+        assert captured.node_snapshot_token is None
+        assert derived_node.replay_source_data is None
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(captured.revision_id).rename(
+                None
+            ),
+            derived.rename(None),
         )
 
         assert {
@@ -3033,18 +3054,6 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
             derived_node.uid, source_node.uid
         )
 
-        derived_node._restore_replay_source_data(None)
-        assert derived_node.uid in manager._dependency_tracker.dependent_uids(
-            source_node.uid
-        )
-        assert {
-            ref.node_uid
-            for ref in manager._lineage_controller._dependency_refs_for_uid(
-                derived_node.uid
-            )
-        } == {source_node.uid, shift_node.uid}
-        assert manager.dependency_status_for_uid(derived_node.uid) == "changed"
-        derived_node._restore_replay_source_data(derived)
         assert derived_node.uid not in manager._dependency_tracker.dependent_uids(
             source_node.uid
         )
@@ -3071,7 +3080,7 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
         assert manager.dependency_status_for_uid(derived_node.uid) == "current"
 
 
-def test_detached_replacement_validates_owner_snapshot_before_mutation(
+def test_detached_replacement_uses_captured_revision_without_owner_seed(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -3097,15 +3106,24 @@ def test_detached_replacement_validates_owner_snapshot_before_mutation(
             script_inputs=(detached,),
         )
 
-        with pytest.raises(ValueError, match="no recorded reload source"):
-            node.replace_with_detached_data(
-                data + 1,
-                spec,
-                replay_source_data=None,
-            )
+        node.replace_with_detached_data(
+            data + 1,
+            spec,
+            replay_source_data=None,
+        )
 
-        xr.testing.assert_identical(node.current_public_data().rename(None), data)
-        assert node.provenance_spec is None
+        assert node.replay_source_data is None
+        assert detached.revision_id is not None
+        assert not detached.follow_source
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(detached.revision_id),
+            data,
+        )
+        xr.testing.assert_equal(node.current_public_data().rename(None), data + 1)
+        assert node.provenance_spec == spec
+        assert manager._lineage_controller._node_can_reload_script_inputs(node)
+        assert node.reload_source_data()
+        xr.testing.assert_equal(node.current_public_data().rename(None), data + 1)
 
 
 def test_detached_replacement_rejects_indirect_input_cycle(
@@ -6248,3 +6266,99 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
             .qsel.mean("alpha")
             .rename(None),
         )
+
+
+@pytest.mark.parametrize("is_imagetool", [False, True])
+@pytest.mark.parametrize(
+    "binding", ["live", "revision", "fallback", "following_revision"]
+)
+def test_dependency_tracker_uses_one_input_resolution_path(
+    is_imagetool: bool, binding: str
+) -> None:
+    recorded_revision = "old"
+    nested = ScriptInput(
+        name="nested", node_uid="fallback", node_snapshot_token=recorded_revision
+    )
+    fallback = script(
+        start_label="Nested input", active_name="result", script_inputs=(nested,)
+    )
+    source = ScriptInput(
+        name="data",
+        node_uid="direct" if binding == "live" else None,
+        revision_id="captured"
+        if binding in {"revision", "following_revision"}
+        else None,
+        follow_source=binding != "revision",
+        node_snapshot_token="old" if binding == "live" else None,
+        provenance_spec=fallback.model_dump(mode="json"),
+    )
+    spec = script(
+        start_label="Use input", active_name="result", script_inputs=(source,)
+    )
+    node = types.SimpleNamespace(
+        is_imagetool=is_imagetool,
+        provenance_spec=spec,
+        tool_script_inputs=() if is_imagetool else (source,),
+        provenance_revision=0,
+    )
+    graph = types.SimpleNamespace(nodes={"owner": node})
+    tracker = manager_dependency._ManagerDependencyTracker(graph)
+    expected = {
+        "live": ["direct"],
+        "revision": [],
+        "fallback": ["fallback"],
+        "following_revision": ["fallback"],
+    }[binding]
+    assert [ref.node_uid for ref in tracker.refs_for_uid("owner")] == expected
+    assert [ref.node_uid for ref in script_input_dependency_refs(spec)] == expected
+    assert tracker.status_for_uid("owner") == ("missing" if expected else None)
+    if expected:
+        parent = types.SimpleNamespace(snapshot_token_for_role=lambda role: "old")
+        graph.nodes[expected[0]] = parent
+        tracker.note_uid(expected[0])
+        assert tracker.status_for_uid("owner") == "current"
+        parent.snapshot_token_for_role = lambda role: "new"
+        tracker.note_uid(expected[0])
+        assert tracker.status_for_uid("owner") == "changed"
+
+
+def test_script_input_dependency_refs_cycles_and_capture_boundaries() -> None:
+    payload: dict[str, typing.Any] = {"script_inputs": []}
+    cycle = {"name": "cycle", "provenance_spec": payload}
+    payload["script_inputs"].extend(
+        [cycle, {"name": "live", "node_uid": "source", "data_role": "source"}]
+    )
+    root = ScriptInput(name="data").model_copy(update={"provenance_spec": payload})
+    refs = script_inputs_dependency_refs((root,))
+    assert [(ref.node_uid, ref.data_role) for ref in refs] == [("source", "source")]
+    assert not script_inputs_dependency_refs(
+        (root.model_copy(update={"revision_id": "retained", "follow_source": False}),)
+    )
+    direct = root.model_copy(update={"node_uid": "direct", "revision_id": "retained"})
+    assert [ref.node_uid for ref in script_inputs_dependency_refs((direct,))] == [
+        "direct"
+    ]
+    assert not script_inputs_dependency_refs(
+        (direct.model_copy(update={"follow_source": False}),)
+    )
+
+
+def test_dependency_cycle_detection_ignores_immutable_fallback() -> None:
+    tracker = manager_dependency._ManagerDependencyTracker(
+        types.SimpleNamespace(nodes={})
+    )
+    fallback = script(
+        start_label="Use owner",
+        active_name="result",
+        script_inputs=(ScriptInput(name="owner", node_uid="owner"),),
+    )
+    source = ScriptInput(name="data", provenance_spec=fallback.model_dump(mode="json"))
+    assert tracker.would_create_script_input_cycle("owner", (source,))
+    assert not tracker.would_create_script_input_cycle(
+        "owner",
+        (
+            source.model_copy(
+                update={"revision_id": "retained", "follow_source": False}
+            ),
+        ),
+    )

@@ -15,6 +15,7 @@ from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_manifest,
     document_path_is_trusted,
+    issue_complete_execution_capability,
     relocate_manifest_entries,
 )
 from erlab.interactive._code_trust._payloads import store_code_payload_entries
@@ -27,7 +28,10 @@ from erlab.interactive.imagetool._provenance._trust import provenance_code_trust
 
 if typing.TYPE_CHECKING:
     import os
+    from collections.abc import Iterable
 
+    from erlab.interactive._code_trust._api import _DocumentTrust
+    from erlab.interactive._code_trust._core import CodeTrustEntry
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.utils import ToolWindow
 
@@ -279,6 +283,60 @@ def current_workspace_code_trust_manifest(
                 )
             )
     return create_manifest(*_MANIFEST_ID, entries)
+
+
+def captured_revision_code_trust_entries(
+    manager: ImageToolManager,
+    *,
+    previous_revision_ids: frozenset[str],
+    node_paths: Mapping[str, str],
+    previous_entries: Iterable[CodeTrustEntry],
+    edited_entries: Iterable[CodeTrustEntry],
+    previous_trust: _DocumentTrust,
+) -> tuple[CodeTrustEntry, ...]:
+    def _owner(location: str) -> str | None:
+        candidates = [
+            (len(path), uid)
+            for uid, path in node_paths.items()
+            if location.startswith(f"{path}/")
+        ]
+        return max(candidates)[1] if candidates else None
+
+    authored: dict[str, set[bytes]] = {}
+    for entry in edited_entries:
+        owner = _owner(entry.location)
+        if owner is not None:
+            authored.setdefault(owner, set()).add(entry.execution_identity())
+    approved = {owner: set(identities) for owner, identities in authored.items()}
+    for entry in previous_entries:
+        owner = _owner(entry.location)
+        if owner not in approved:
+            continue
+        _trust, capability = issue_complete_execution_capability(
+            previous_trust, (entry,)
+        )
+        if capability is not None:
+            approved[typing.cast("str", owner)].add(entry.execution_identity())
+    entries = []
+    for record in manager._provenance_revisions.reachable(
+        workspace_revisions.retained_revision_ids(manager)
+    ):
+        if (
+            record.revision_id in previous_revision_ids
+            or record.source_owner_uid not in approved
+            or record.provenance_spec is None
+        ):
+            continue
+        allowed = approved[typing.cast("str", record.source_owner_uid)]
+        entries.extend(
+            entry
+            for entry in provenance_code_trust_entries(
+                record.provenance_spec,
+                location_prefix=f"revisions/{record.revision_id}/provenance",
+            )
+            if entry.execution_identity() in allowed
+        )
+    return tuple(entries)
 
 
 def inspect_pending_workspace_code_payloads(manager: ImageToolManager) -> None:

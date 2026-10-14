@@ -1980,11 +1980,19 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         xr.testing.assert_identical(replacement_payloads[-1], expected)
 
         node = manager._tool_graph.root_wrappers[0]
-        assert node.replay_source_data is not None
-        xr.testing.assert_identical(node.replay_source_data, replacement)
+        assert node.replay_source_data is None
         provenance = node.displayed_provenance_spec
         assert provenance is not None
-        xr.testing.assert_identical(provenance.apply(node.replay_source_data), actual)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                provenance.script_inputs[0].revision_id
+            ),
+            replacement,
+        )
+        replayed, _spec = manager._provenance_edit_controller._replay_candidate_result(
+            node, "display", provenance
+        )
+        xr.testing.assert_identical(replayed, actual)
 
         incompatible = xr.DataArray(
             np.arange(16.0).reshape(4, 4),
@@ -1995,7 +2003,12 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         with pytest.raises(ValueError, match="angle"):
             replace_data(0, incompatible)
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, before)
-        xr.testing.assert_identical(node.replay_source_data, replacement)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                provenance.script_inputs[0].revision_id
+            ),
+            replacement,
+        )
 
 
 def test_metadata_editor_rejects_unreplayable_live_provenance_atomically(
@@ -2080,11 +2093,19 @@ def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
         assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
         xr.testing.assert_identical(tool.slicer_area.displayed_data, replaced_expected)
         node = manager._tool_graph.root_wrappers[index]
-        assert node.replay_source_data is not None
-        xr.testing.assert_identical(node.replay_source_data, replacement)
+        assert node.replay_source_data is None
         assert node.displayed_provenance_spec is not None
         xr.testing.assert_identical(
-            node.displayed_provenance_spec.apply(node.replay_source_data),
+            manager._provenance_revisions.resolve_data(
+                node.displayed_provenance_spec.script_inputs[0].revision_id
+            ),
+            replacement,
+        )
+        replayed, _spec = manager._provenance_edit_controller._replay_candidate_result(
+            node, "display", node.displayed_provenance_spec
+        )
+        xr.testing.assert_identical(
+            replayed,
             replaced_expected,
         )
 
@@ -2499,7 +2520,10 @@ def test_live_replacement_preserves_explicit_assignment_when_source_matches(
         )
         node = manager._tool_graph.root_wrappers[0]
         assert node.displayed_provenance_spec is not None
-        assert node.replay_source_data is not None
+        assert node.replay_source_data is None
+        assert manager._provenance_revisions.has_data(
+            node.displayed_provenance_spec.script_inputs[0].revision_id
+        )
 
 
 def test_acquisition_context_can_copy_selected_coordinates_and_attributes(
@@ -9451,7 +9475,6 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         source_node = manager._node_for_target(0)
         shift_node = manager._node_for_target(1)
-        detached_token = source_node.source_snapshot_token
 
         top_level = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
         qtbot.addWidget(top_level)
@@ -9512,10 +9535,17 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         )
         assert [item.name for item in replaced_spec.script_inputs] == ["data", "shift"]
         assert replaced_spec.script_inputs[0].node_uid is None
-        assert replaced_spec.script_inputs[0].node_snapshot_token == detached_token
+        assert replaced_spec.script_inputs[0].node_snapshot_token is None
+        assert replaced_spec.script_inputs[0].revision_id is not None
+        assert not replaced_spec.script_inputs[0].follow_source
         assert replaced_spec.script_inputs[1].node_uid == shift_node.uid
-        assert source_node.replay_source_data is not None
-        xr.testing.assert_identical(source_node.replay_source_data, data)
+        assert source_node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                replaced_spec.script_inputs[0].revision_id
+            ),
+            data,
+        )
         xr.testing.assert_identical(
             fetch(0), erlab.analysis.transform.shift(data, -shift, along="eV")
         )
@@ -9548,10 +9578,19 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         restored_spec = source_node.provenance_spec
         assert restored_spec is not None
         assert restored_spec.script_inputs[0].node_uid is None
-        assert restored_spec.script_inputs[0].node_snapshot_token == detached_token
+        assert restored_spec.script_inputs[0].node_snapshot_token is None
+        assert (
+            restored_spec.script_inputs[0].revision_id
+            == replaced_spec.script_inputs[0].revision_id
+        )
         assert restored_spec.script_inputs[1].node_uid == shift_node.uid
-        assert source_node.replay_source_data is not None
-        xr.testing.assert_identical(source_node.replay_source_data, data)
+        assert source_node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                restored_spec.script_inputs[0].revision_id
+            ),
+            data,
+        )
 
         restored_shift = updated_shift + 0.05
         with qtbot.wait_signal(manager._sigDataReplaced):

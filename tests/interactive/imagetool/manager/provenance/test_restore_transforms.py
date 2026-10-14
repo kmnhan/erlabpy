@@ -4,6 +4,7 @@ import typing
 from collections.abc import Callable
 
 import numpy as np
+import pytest
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
@@ -13,6 +14,11 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ToolProvenanceSpec,
+    full_data,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    NormalizeOperation,
+    ShiftFromInputOperation,
 )
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from tests.interactive.imagetool.manager.helpers import (
@@ -25,6 +31,215 @@ from tests.interactive.imagetool.manager.helpers import (
     set_transform_launch_mode,
     trigger_menu_action,
 )
+from tests.interactive.imagetool.manager.provenance._common import (
+    _authorize_local_edit,
+    _manager_replay_file_spec,
+)
+
+
+def test_manager_mixed_revert_restores_checkpoint_and_rebuilds_legacy_recipe(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 16.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    operation = NormalizeOperation(dims=("x",))
+    paths = [tmp_path / "recorded.nc", tmp_path / "legacy.nc"]
+    for path in paths:
+        data.to_netcdf(path, engine="h5netcdf")
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        recorded = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(paths[0]),
+            show=False,
+        )
+        node = manager._node_for_target(recorded)
+        node.replace_with_detached_data(
+            operation.apply(data),
+            _manager_replay_file_spec(paths[0], operation),
+            replay_source_data=None,
+        )
+        legacy = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                operation.apply(data), _in_manager=True
+            ),
+            provenance_spec=_manager_replay_file_spec(paths[1], operation),
+            show=False,
+        )
+        for path in paths:
+            (data + 100).to_netcdf(path, engine="h5netcdf", mode="w")
+        legacy_node = manager._node_for_target(legacy)
+        controller = manager._provenance_edit_controller
+        monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda _title, error: (_ for _ in ()).throw(error),
+        )
+        select_tools(manager, [recorded, legacy])
+        controller._apply_multiple_rows(
+            [
+                (node.uid, node.derivation_display_rows[0]),
+                (legacy_node.uid, legacy_node.derivation_display_rows[0]),
+            ],
+            action="revert",
+        )
+        xr.testing.assert_identical(node.data_for_role("source"), data)
+        xr.testing.assert_identical(legacy_node.data_for_role("source"), data + 100)
+
+
+@pytest.mark.parametrize("lifecycle", ["original", "duplicate", "promote"])
+def test_manager_repeated_shift_restores_primary_checkpoints_after_sources_close(
+    qtbot, monkeypatch, manager_context, lifecycle
+) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 16.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+        name="sample",
+    )
+    correction = xr.DataArray([0.0, 0.05, -0.05], dims="x", coords={"x": np.arange(3)})
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        if lifecycle == "promote":
+            target = manager.add_imagetool_child(
+                erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+                target,
+                show=False,
+            )
+        auxiliary = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(correction, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        operation = NormalizeOperation(dims=("x",))
+        normalized = operation.apply(data)
+        node.replace_with_detached_data(
+            normalized, full_data(operation), replay_source_data=data
+        )
+        normalized_revision = node.current_revision_id
+        for _ in range(2):
+            current = node.data_for_role("source")
+            spec = manager._multi_input_operation_provenance(
+                (target, auxiliary),
+                operation=ShiftFromInputOperation(along="eV", negate=False),
+                active_name="shifted",
+                start_label="Shift ImageTool data",
+                detached_input_uid=node.uid,
+                data_role="source",
+                input_names=("data", "shift"),
+                primary_input="data",
+                input_bindings={"shift": "shift"},
+            )
+            shifted = erlab.analysis.transform.shift(current, correction, along="eV")
+            node.replace_with_detached_data(shifted, spec, replay_source_data=current)
+        manager._remove_imagetool(auxiliary)
+        if lifecycle == "duplicate":
+            original = target
+            target = manager.duplicate_imagetool(target)
+            manager._remove_imagetool(original)
+            node = manager._node_for_target(target)
+        elif lifecycle == "promote":
+            target = manager.promote_child_imagetool(node.uid)
+            node = manager._node_for_target(target)
+        manager._metadata_node_uid = node.uid
+        controller = manager._provenance_edit_controller
+        monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_authorize_provenance_execution",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("exact restoration must not execute provenance")
+            ),
+        )
+        row = next(
+            row
+            for row in node.derivation_display_rows
+            if row.revision_id == normalized_revision
+        )
+        assert controller.can_revert_row(row) == (True, "")
+        controller.revert_row(row)
+        xr.testing.assert_identical(node.data_for_role("source"), normalized)
+        assert node.current_revision_id == normalized_revision
+        assert all(
+            not isinstance(step.operation, ShiftFromInputOperation)
+            for step in node.provenance_spec.steps
+        )
+        for index in tuple(manager._tool_graph.root_wrappers):
+            manager._remove_imagetool(index)
+        assert manager._provenance_revisions.revision_ids == frozenset()
+
+
+def test_manager_recorded_input_edit_uses_captured_data_and_open_input_is_independent(
+    qtbot, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(3, 5),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": np.linspace(-0.2, 0.2, 5)},
+    )
+    correction = xr.DataArray([0.0, 0.05, -0.05], dims="x", coords={"x": np.arange(3)})
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        auxiliary = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(correction, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        spec = manager._multi_input_operation_provenance(
+            (target, auxiliary),
+            operation=ShiftFromInputOperation(along="eV", negate=False),
+            active_name="shifted",
+            start_label="Shift ImageTool data",
+            detached_input_uid=node.uid,
+            data_role="source",
+            input_names=("data", "shift"),
+            primary_input="data",
+            input_bindings={"shift": "shift"},
+        )
+        expected = erlab.analysis.transform.shift(data, correction, along="eV")
+        node.replace_with_detached_data(expected, spec, replay_source_data=data)
+        parent = manager._node_for_target(auxiliary)
+        parent.replace_with_detached_data(
+            correction + 0.1, None, replay_source_data=None
+        )
+        parent._set_source_state("stale")
+        pinned_input = spec.script_inputs[1].model_copy(update={"follow_source": False})
+        plan = manager._lineage_controller._input_resolution_plan(
+            (pinned_input,), target_node_uid=node.uid, force_live_reload=True
+        )
+        assert plan.unavailable_reason is None
+        assert plan.actions == ()
+        controller = manager._provenance_edit_controller
+        replayed, _ = controller._replay_candidate_result(node, "display", spec)
+        xr.testing.assert_identical(replayed, expected)
+        manager._metadata_node_uid = node.uid
+        row = node.derivation_display_rows[-1].materialized_children()[0]
+        assert not row.on_primary_chain
+        assert not controller.can_revert_row(row)[0]
+        assert controller.can_open_input_row(row) == (True, "")
+        previous_count = manager.ntools
+        controller.open_input_row(row)
+        assert manager.ntools == previous_count + 1
+        opened = manager._node_for_target(manager._tool_graph.next_index - 1)
+        xr.testing.assert_identical(opened.current_public_data(), correction)
+        opened.slicer_area.data.values[:] = 100.0
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                spec.script_inputs[1].revision_id
+            ),
+            correction,
+        )
 
 
 def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
@@ -547,7 +762,9 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         detached = manager._tool_graph.root_wrappers[1]
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
-        assert detached.replay_source_data is not None
+        assert detached.replay_source_data is None
+        seed_revision = detached.provenance_spec.script_inputs[0].revision_id
+        assert manager._provenance_revisions.has_data(seed_revision)
         detached_tool = manager.get_imagetool(1)
         detached_derivation_before = detached.provenance_spec.derivation_code()
 
@@ -590,7 +807,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         select_tools(manager, [1])
         manager._update_info()
         detached_derivation = metadata_derivation_texts(manager)
-        assert detached_derivation[0] == "Start from current parent ImageTool data"
+        assert detached_derivation[0] == "Use data from Saved"
         assert len(detached_derivation) == 3
         assert "Aggregate" in detached_derivation[1]
         assert "Aggregate" in detached_derivation[2]
@@ -601,11 +818,8 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         ]
         assert duplicated_detached.source_spec is None
         assert duplicated_detached.provenance_spec == detached.provenance_spec
-        assert duplicated_detached.replay_source_data is not None
-        xr.testing.assert_identical(
-            duplicated_detached.replay_source_data,
-            detached.replay_source_data,
-        )
+        assert duplicated_detached.replay_source_data is None
+        assert duplicated_detached.current_revision_id == detached.current_revision_id
         xr.testing.assert_identical(
             manager.get_imagetool(duplicated_detached_index).slicer_area._data.rename(
                 None

@@ -7,13 +7,16 @@ import json
 import typing
 from collections.abc import Mapping
 
+import erlab
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevision,
     _ProvenanceRevisionStore,
+    _script_input_revision_ids,
     _spec_revision_ids,
+    requires_legacy_replay_source,
 )
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import _format as workspace_format
@@ -29,15 +32,22 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 
 def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
     ids: set[str] = set()
     for node in manager._tool_graph.nodes.values():
-        if node.current_revision_id is not None:
-            ids.add(node.current_revision_id)
+        if node._current_revision_id is not None:
+            ids.add(node._current_revision_id)
+        ids.update(
+            revision_id
+            for role, (token, revision_id) in node._revision_ids_by_role.items()
+            if token == node.snapshot_token_for_role(role)
+        )
         ids.update(_spec_revision_ids(node.passive_displayed_provenance_spec))
         ids.update(_spec_revision_ids(node.source_spec))
+        ids.update(_script_input_revision_ids(node.tool_script_inputs))
     return frozenset(ids)
 
 
@@ -54,7 +64,7 @@ def revision_manifest_entry(record: _ProvenanceRevision) -> dict[str, typing.Any
         ),
         "input_revisions": dict(record.input_revisions),
         "primary_revision_id": record.primary_revision_id,
-        "replay_source_revision_id": record.replay_source_revision_id,
+        "source_owner_uid": record.source_owner_uid,
     }
 
 
@@ -107,6 +117,58 @@ def _read_revision_checkpoint(path: str, group: str) -> xr.DataArray:
         json.loads(dataset.attrs["revision_data_name"])
     )
     return data
+
+
+def read_legacy_replay_source(path: str, group: str) -> xr.DataArray:
+    with workspace_arrays.open_workspace_dataset(path, group, chunks={}) as dataset:
+        dataset = workspace_format._restore_workspace_dataset_attrs(dataset)
+        return erlab.interactive.utils._tool_data_from_blob(
+            dataset[_persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME]
+        )
+
+
+def normalize_workspace_nodes(manager: ImageToolManager) -> None:
+    for node in manager._tool_graph.nodes.values():
+        if not node.is_imagetool:
+            continue
+        spec = node.provenance_spec
+        seed_id = None
+        if requires_legacy_replay_source(spec) and node.replay_source_data is not None:
+            seed_id = manager._provenance_revisions.add(node.replay_source_data)
+        normalized = manager._provenance_revisions.normalize_provenance(
+            spec, replay_source_revision_id=seed_id
+        )
+        if normalized != spec or seed_id is not None:
+            node.adopt_normalized_provenance(normalized)
+        if (
+            node.imagetool is not None
+            and node._current_revision_id is not None
+            and node.current_revision_id is None
+        ):
+            node.revision_id_for_role("source")
+
+
+def saved_provenance_matches_node(
+    node: _ManagedWindowNode, attrs_payload: object
+) -> bool:
+    if not node.is_imagetool:
+        return True
+    if attrs_payload is None:
+        return False
+    try:
+        attrs = (
+            workspace_format._restore_workspace_manifest_attrs(attrs_payload)
+            if isinstance(attrs_payload, list)
+            else attrs_payload
+        )
+        if not isinstance(attrs, Mapping):
+            return False
+        raw = attrs.get(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR)
+        saved = parse_tool_provenance_spec(json.loads(raw)) if raw is not None else None
+    except (TypeError, ValueError):
+        return False
+    else:
+        return saved == node.provenance_spec
 
 
 def bind_saved_revision_sources(
@@ -164,13 +226,25 @@ def restore_revision_store(
             raise TypeError(
                 "Workspace revision primary reference must be a revision ID"
             )
-        spec = parse_tool_provenance_spec(entry.get("provenance_spec"))
-        replay_source = entry.get("replay_source_revision_id")
-        if replay_source is not None and not isinstance(replay_source, str):
-            raise TypeError("Workspace revision replay source must be a revision ID")
+        source_owner_uid = entry.get("source_owner_uid")
+        if source_owner_uid is not None and not isinstance(source_owner_uid, str):
+            raise TypeError("Workspace revision source owner must be a node UID")
+        spec = store.normalize_provenance(
+            parse_tool_provenance_spec(entry.get("provenance_spec"))
+        )
+        inputs = dict(inputs)
         existing = store.get(revision_id)
         if existing is not None:
-            if revision_manifest_entry(existing) != dict(entry):
+            if revision_manifest_entry(existing) != {
+                "revision_id": revision_id,
+                "checkpoint_object_id": checkpoint_id,
+                "provenance_spec": None
+                if spec is None
+                else spec.model_dump(mode="json"),
+                "input_revisions": inputs,
+                "primary_revision_id": primary,
+                "source_owner_uid": source_owner_uid,
+            }:
                 raise ValueError("Conflicting workspace provenance revision ID")
             continue
         store.add(
@@ -178,7 +252,7 @@ def restore_revision_store(
             revision_id=revision_id,
             input_revisions=inputs,
             primary_revision_id=primary,
-            replay_source_revision_id=replay_source,
+            source_owner_uid=source_owner_uid,
             provider=provider,
             source_file=str(path) if source_path is not None else None,
             source_path=source_path,

@@ -6725,6 +6725,74 @@ def test_recipe_primary_display_keeps_replay_and_copied_code(tmp_path) -> None:
     xr.testing.assert_identical(namespace["shifted"], expected)
 
 
+@pytest.mark.parametrize("with_fallback", [False, True])
+def test_selected_primary_display_does_not_claim_raw_revision(tmp_path, with_fallback):
+    raw = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"), name="scan")
+    source_spec = selection(IselOperation(kwargs={"x": slice(0, 2)}))
+    fallback = None
+    if with_fallback:
+        path = tmp_path / "source.nc"
+        raw.to_netcdf(path)
+        fallback = file_load(
+            start_label="Load data",
+            seed_code=f"import xarray\nderived = xarray.load_dataarray({str(path)!r})",
+            file_load_source=_file_replay_source(path),
+        ).append_replay_stage(source_spec)
+    primary_input = ScriptInput(
+        name="data",
+        node_uid="owner",
+        revision_id="raw-revision",
+        source_spec=source_spec,
+        provenance_spec=fallback,
+    )
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average selection",
+        active_name="average",
+        script_inputs=(primary_input,),
+        primary_input="data",
+    )
+    rows = spec.display_rows()
+
+    assert all(row.revision_id != "raw-revision" for row in rows)
+    assert all(row.on_primary_chain for row in rows)
+    graph = compile_replay_graph(
+        spec,
+        live_input_resolver=(
+            None if with_fallback else lambda item: (source_spec.apply(raw), item)
+        ),
+    )
+    expected = raw.isel(x=slice(0, 2)).mean("y")
+    xr.testing.assert_identical(execute_replay_graph(graph), expected)
+    assert expected.sizes["x"] != raw.sizes["x"]
+    if with_fallback:
+        code = spec.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {})
+        xr.testing.assert_identical(namespace["average"], expected)
+    for identity_spec in (None, full_data()):
+        identity_input = primary_input.model_copy(
+            update={
+                "source_spec": (
+                    None
+                    if identity_spec is None
+                    else identity_spec.model_dump(mode="json")
+                ),
+                "provenance_spec": None,
+            }
+        )
+        identity_recipe = spec.model_copy(update={"script_inputs": (identity_input,)})
+        assert identity_recipe.display_rows()[0].revision_id == "raw-revision"
+    public_input = primary_input.model_copy(
+        update={
+            "source_spec": public_data().model_dump(mode="json"),
+            "provenance_spec": None,
+        }
+    )
+    public_recipe = spec.model_copy(update={"script_inputs": (public_input,)})
+    assert public_recipe.display_rows()[0].revision_id is None
+
+
 def test_display_graph_distinguishes_input_revisions() -> None:
     spec = script(
         ScriptCodeOperation(label="Sum", code="derived = a + b + c"),
@@ -7043,16 +7111,16 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
     source_input = ScriptInput(name="data_0", data_role="source")
     assert source_input.model_dump(mode="json")["data_role"] == "source"
     node_marker = "snapshot"
-    assert not ScriptInput(name="data_0").uses_owner_replay_source
-    assert not ScriptInput(
-        name="data_0",
-        node_uid="node",
-        node_snapshot_token=node_marker,
-    ).uses_owner_replay_source
-    assert ScriptInput(
-        name="data_0",
-        node_snapshot_token=node_marker,
-    ).uses_owner_replay_source
+    assert ScriptInput(name="data_0").revision_id is None
+    revision_input = ScriptInput(name="data_0", revision_id="source-revision")
+    assert (
+        ScriptInput.model_validate_json(revision_input.model_dump_json())
+        == revision_input
+    )
+    with pytest.raises(ValidationError, match="nonempty string"):
+        ScriptInput(name="data_0", revision_id=" ")
+    with pytest.raises(ValidationError, match="nonempty string"):
+        ScriptInput(name="data_0", revision_id=0)
 
     assert ScriptInputDependencyRef(
         "data_0", "ImageTool 0", "node", node_marker

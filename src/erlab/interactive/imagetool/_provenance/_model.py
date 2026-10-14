@@ -2525,15 +2525,15 @@ class FileLoadSource(pydantic.BaseModel):
 class ScriptInput(pydantic.BaseModel):
     """Named input captured by script or multi-tool provenance.
 
-    ``name`` is the immutable replay variable, ``label`` is the historical display
-    label, ``node_uid`` and ``node_snapshot_token`` identify the live manager input
-    that was used, ``data_role`` selects its durable source or displayed view, and
+    ``name`` is the immutable replay variable, ``label`` describes the recorded input,
+    and ``node_uid`` and ``node_snapshot_token`` identify its optional live binding.
+    ``follow_source`` selects current source data during reload; false retains the
+    recorded revision. ``data_role`` selects its durable source or displayed view, and
     ``source_spec`` stores an optional immutable transform applied to raw live manager
     data or to a display-only external placeholder. ``provenance_spec`` stores a
     complete resolved-input fallback, so replay does not apply ``source_spec`` to it
-    again. ``revision_id`` identifies the captured Manager revision, including the
-    owning ImageTool's stored replay source. When omitted, ``label`` defaults to
-    ``name``.
+    again. ``revision_id`` identifies captured data independently of its window.
+    When omitted, ``label`` defaults to ``name``.
     """
 
     name: str
@@ -2543,6 +2543,10 @@ class ScriptInput(pydantic.BaseModel):
     revision_id: str | None = pydantic.Field(
         default=None,
         exclude_if=lambda value: value is None,
+    )
+    follow_source: bool = pydantic.Field(
+        default=True,
+        exclude_if=lambda value: value,
     )
     data_role: ScriptInputDataRole = pydantic.Field(
         default="displayed",
@@ -2649,11 +2653,6 @@ class ScriptInput(pydantic.BaseModel):
     def parsed_source_spec(self) -> ToolProvenanceSpec | None:
         """Parse the relative transform applied to the live input value."""
         return require_live_source_spec(parse_tool_provenance_spec(self.source_spec))
-
-    @property
-    def uses_owner_replay_source(self) -> bool:
-        """Whether this input uses its owning ImageTool's stored replay source."""
-        return self.node_uid is None and self.node_snapshot_token is not None
 
     def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
         """Parse the current serialized snapshot.
@@ -3916,6 +3915,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 script_input = self.script_inputs[index]
                 child_path = (*_script_input_path, index)
                 on_primary_chain = primary and _on_primary_chain
+                source_spec = script_input.parsed_source_spec()
+                revision_id = (
+                    script_input.revision_id
+                    if source_spec is None
+                    or (source_spec.kind == "full_data" and not source_spec.operations)
+                    else None
+                )
 
                 def load_children() -> tuple[_ProvenanceDisplayRow, ...]:
                     nested = script_input.parsed_provenance_spec()
@@ -3928,7 +3934,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         _script_input_path=child_path,
                         _on_primary_chain=on_primary_chain,
                     )
-                    if nested_rows and script_input.revision_id is not None:
+                    if nested_rows and revision_id is not None:
                         final_index = next(
                             index
                             for index in range(len(nested_rows) - 1, -1, -1)
@@ -3937,7 +3943,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         )
                         nested_rows[final_index] = replace(
                             nested_rows[final_index],
-                            revision_id=script_input.revision_id,
+                            revision_id=revision_id,
                         )
                     return tuple(nested_rows)
 
@@ -3966,7 +3972,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     children=children,
                     script_input_path=_script_input_path,
                     on_primary_chain=on_primary_chain,
-                    revision_id=script_input.revision_id,
+                    revision_id=revision_id,
                     _children_factory=children_factory,
                 )
 
@@ -4109,39 +4115,45 @@ def iter_operation_refs(
 def script_inputs_dependency_refs(
     script_inputs: Sequence[ScriptInput],
 ) -> tuple[ScriptInputDependencyRef, ...]:
-    """Return live manager dependency references stored in named inputs."""
-    return tuple(
-        ScriptInputDependencyRef(
-            name=script_input.name,
-            label=script_input.label,
-            node_uid=script_input.node_uid,
-            node_snapshot_token=script_input.node_snapshot_token,
-            data_role=script_input.data_role,
-        )
-        for script_input in script_inputs
-        if script_input.node_uid
+    """Return the live dependencies selected by named input resolution."""
+    refs: list[ScriptInputDependencyRef] = []
+    pending: list[ScriptInput | Mapping[str, typing.Any]] = list(
+        reversed(script_inputs)
     )
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        script_input = (
+            item if isinstance(item, ScriptInput) else ScriptInput.model_validate(item)
+        )
+        if not script_input.follow_source:
+            continue
+        if script_input.node_uid:
+            refs.append(
+                ScriptInputDependencyRef(
+                    name=script_input.name,
+                    label=script_input.label,
+                    node_uid=script_input.node_uid,
+                    node_snapshot_token=script_input.node_snapshot_token,
+                    data_role=script_input.data_role,
+                )
+            )
+            continue
+        fallback = script_input.provenance_spec
+        if fallback is not None:
+            pending.extend(reversed(fallback.get("script_inputs", ())))
+    return tuple(refs)
 
 
 def script_input_dependency_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-    *,
-    owner_replay_source_available: bool = False,
 ) -> tuple[ScriptInputDependencyRef, ...]:
-    """Return all manager dependency references stored in a provenance spec."""
+    """Return live dependency references selected by a provenance spec."""
     spec = parse_tool_provenance_spec(value)
-    if spec is None:
-        return ()
-
-    refs: list[ScriptInputDependencyRef] = []
-    for script_input in spec.script_inputs:
-        if owner_replay_source_available and script_input.uses_owner_replay_source:
-            continue
-        refs.extend(script_inputs_dependency_refs((script_input,)))
-        nested = script_input.parsed_provenance_spec()
-        if nested is not None:
-            refs.extend(script_input_dependency_refs(nested))
-    return tuple(refs)
+    return () if spec is None else script_inputs_dependency_refs(spec.script_inputs)
 
 
 def rebase_script_inputs_node_uids(

@@ -55,6 +55,8 @@ from erlab.interactive.imagetool._load_source import (
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import requires_legacy_replay_source
+from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 
 if typing.TYPE_CHECKING:
@@ -417,7 +419,6 @@ class _ManagedWindowNode(QtCore.QObject):
         source_state: _source_state_type = "fresh",
         output_id: str | None = None,
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -451,14 +452,9 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_spec: ToolProvenanceSpec | None = None
         self._source_binding: ImageToolSelectionSourceBinding | None = None
         self._provenance_spec: ToolProvenanceSpec | None = None
-        if replay_source_data is not None and replay_source_pending:
-            raise ValueError(
-                "Replay source data cannot be both materialized and pending"
-            )
         self._replay_source_data = (
             None if replay_source_data is None else replay_source_data.copy(deep=False)
         )
-        self._replay_source_pending = bool(replay_source_pending)
         self._workspace_reference_datasets: dict[
             tuple[pathlib.Path, str], xr.Dataset
         ] = {}
@@ -558,8 +554,6 @@ class _ManagedWindowNode(QtCore.QObject):
                     replay_source_data=replay_source_data,
                 )
         finally:
-            if replay_source_pending:
-                self._replay_source_pending = True
             self._suspend_snapshot_token_updates = False
 
     @property
@@ -2144,6 +2138,13 @@ class _ManagedWindowNode(QtCore.QObject):
                 revision_id,
             )
 
+    def adopt_normalized_provenance(
+        self, provenance_spec: ToolProvenanceSpec | None
+    ) -> None:
+        """Adopt canonical loaded provenance without changing the recorded data."""
+        self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
+        self._replay_source_data = None
+
     def revision_id_for_role(self, data_role: ScriptInputDataRole) -> str:
         """Capture an exact input independently of this window's lifetime."""
         token = self.snapshot_token_for_role(data_role)
@@ -2157,39 +2158,17 @@ class _ManagedWindowNode(QtCore.QObject):
                 return source[1]
         spec = self.provenance_for_role(data_role)
         replay_source_revision_id = None
-        if spec is not None and (
-            spec.kind in {"full_data", "public_data", "selection"}
-            or (
-                spec.kind == "script"
-                and (
-                    not spec.script_inputs
-                    or any(
-                        item.uses_owner_replay_source and item.revision_id is None
-                        for item in spec.script_inputs
-                    )
-                )
-            )
-        ):
-            previous = (
-                None
-                if self._current_revision_id is None
-                else self.manager._provenance_revisions.get(self._current_revision_id)
-            )
-            replay_source_revision_id = (
-                None if previous is None else previous.replay_source_revision_id
-            )
-            if replay_source_revision_id is None:
-                seed = self.resolved_replay_source_data()
-                if seed is not None:
-                    replay_source_revision_id = self.manager._provenance_revisions.add(
-                        seed
-                    )
-            spec = self.manager._provenance_revisions.freeze_legacy_inputs(
+        if requires_legacy_replay_source(spec):
+            seed = self.resolved_replay_source_data()
+            if seed is not None:
+                replay_source_revision_id = self.manager._provenance_revisions.add(seed)
+            spec = self.manager._provenance_revisions.normalize_provenance(
                 spec, replay_source_revision_id=replay_source_revision_id
             )
         revision_id = self.manager._provenance_revisions.add(
             self.data_for_role(data_role),
             spec,
+            source_owner_uid=self.uid,
             input_revisions={
                 item.name: item.revision_id
                 for item in (() if spec is None else spec.script_inputs)
@@ -2198,7 +2177,6 @@ class _ManagedWindowNode(QtCore.QObject):
             primary_revision_id=(
                 self._current_revision_id if data_role == "source" else None
             ),
-            replay_source_revision_id=replay_source_revision_id,
         )
         self._revision_ids_by_role[data_role] = (token, revision_id)
         if data_role == "source":
@@ -2253,27 +2231,17 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def has_replay_source(self) -> bool:
         """Whether replay source data is materialized or saved for deferred loading."""
-        return (
-            self._replay_source_data is not None
-            or self._replay_source_pending
-            or (
-                isinstance(self, _ImageToolWrapper)
-                and self.watched
-                and self._provenance_spec is None
-                and (
-                    self.imagetool is not None
-                    or self.pending_workspace_payload is not None
-                )
+        return self._replay_source_data is not None or (
+            isinstance(self, _ImageToolWrapper)
+            and self.watched
+            and self._provenance_spec is None
+            and (
+                self.imagetool is not None or self.pending_workspace_payload is not None
             )
         )
 
     def resolved_replay_source_data(self) -> xr.DataArray | None:
         """Return the original seed available for replay or detached output."""
-        if (
-            self._replay_source_pending
-            and not self.materialize_pending_workspace_payload()
-        ):
-            return None
         if self._replay_source_data is not None:
             return self._replay_source_data
         if self.parent_uid is not None and self.source_spec is not None:
@@ -2297,14 +2265,6 @@ class _ManagedWindowNode(QtCore.QObject):
             data, _state = self.slicer_area.persistence_data_and_state()
             return self._finalize_script_input_data(data)
         return None
-
-    def _restore_replay_source_data(self, data: xr.DataArray | None) -> None:
-        """Restore the deferred replay seed without changing node revision state."""
-        source_was_available = self.has_replay_source
-        self._replay_source_data = None if data is None else data.copy(deep=False)
-        self._replay_source_pending = False
-        if source_was_available != self.has_replay_source:
-            self._invalidate_provenance_caches(invalidate_derivation=False)
 
     def _advance_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
@@ -2413,18 +2373,31 @@ class _ManagedWindowNode(QtCore.QObject):
             return self._derivation_display_rows_cache[1]
 
         source_spec = self.source_spec
+        source_label_resolver = functools.partial(
+            script_input_source_label,
+            self.manager,
+            retained_input_resolver=functools.partial(
+                self.manager._lineage_controller._has_recorded_script_input,
+            ),
+        )
         if self.parent_uid is not None and source_spec is not None:
             rows: list[_ProvenanceDisplayRow] = []
             parent = self.manager._parent_node(self)
             parent_provenance = parent.passive_displayed_provenance_spec
             if parent_provenance is not None:
-                rows.extend(parent_provenance.display_rows(_lazy_script_inputs=True))
+                rows.extend(
+                    parent_provenance.display_rows(
+                        _lazy_script_inputs=True,
+                        source_label_resolver=source_label_resolver,
+                    )
+                )
             source_spec = self.displayed_source_spec
             if source_spec is not None:
                 rows.extend(
                     source_spec.display_rows(
                         scope="source",
                         _lazy_script_inputs=True,
+                        source_label_resolver=source_label_resolver,
                     )
                 )
         else:
@@ -2432,7 +2405,10 @@ class _ManagedWindowNode(QtCore.QObject):
             rows = (
                 []
                 if provenance_spec is None
-                else provenance_spec.display_rows(_lazy_script_inputs=True)
+                else provenance_spec.display_rows(
+                    _lazy_script_inputs=True,
+                    source_label_resolver=source_label_resolver,
+                )
             )
         cached_rows = tuple(rows)
         self._derivation_display_rows_cache = (cache_key, cached_rows)
@@ -2456,11 +2432,15 @@ class _ManagedWindowNode(QtCore.QObject):
             if self.imagetool is not None
             else 0
         )
-        generation = (self._derivation_display_rows_generation, filter_revision)
+        generation = (
+            self._derivation_display_rows_generation,
+            filter_revision,
+            self.manager._tool_graph.structure_generation,
+        )
         if self.parent_uid is None or self.source_spec is None:
             return generation
 
-        generations = [generation]
+        generations: list[tuple[int, ...]] = [generation]
         seen_uids = {self.uid}
         node = self.manager._parent_node(self)
         while True:
@@ -2587,7 +2567,6 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.manager._parent_node(self).current_source_data()
             )
         self._replay_source_data = None
-        self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
         self._mark_provenance_changed()
         self._source_binding = None if self._source_spec is not None else source_binding
@@ -2645,7 +2624,6 @@ class _ManagedWindowNode(QtCore.QObject):
         self._mark_provenance_changed()
         self._source_binding = None
         self._replay_source_data = None
-        self._replay_source_pending = False
         self._source_auto_update = bool(auto_update)
         self._output_id = output_id
         if provenance_spec is not None:
@@ -2669,18 +2647,34 @@ class _ManagedWindowNode(QtCore.QObject):
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
+        provenance_spec = self._normalize_detached_provenance(
+            provenance_spec, replay_source_data
+        )
         self._source_spec = None
         self._mark_provenance_changed()
         self._source_binding = None
         self._source_auto_update = False
         self._output_id = None
         self.set_displayed_provenance(provenance_spec)
-        self._replay_source_data = (
-            None if replay_source_data is None else replay_source_data.copy(deep=False)
-        )
-        self._replay_source_pending = False
+        self._replay_source_data = None
         self._set_source_state("fresh")
         self.manager._mark_node_state_dirty(self.uid)
+
+    def _normalize_detached_provenance(
+        self,
+        provenance_spec: ToolProvenanceSpec | None,
+        replay_source_data: xr.DataArray | None,
+    ) -> ToolProvenanceSpec | None:
+        store = self.manager._provenance_revisions
+        seed_id = None
+        if requires_legacy_replay_source(provenance_spec):
+            if replay_source_data is not None:
+                seed_id = store.add(replay_source_data)
+            elif self._replay_source_data is not None:
+                seed_id = store.add(self._replay_source_data)
+        return store.normalize_provenance(
+            provenance_spec, replay_source_revision_id=seed_id
+        )
 
     def _materialized_source_spec(
         self, parent_data: xr.DataArray
@@ -2740,7 +2734,6 @@ class _ManagedWindowNode(QtCore.QObject):
         *,
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
-        replay_source_data: xr.DataArray | None,
         preserve_filter: bool = False,
         detach_source_binding: bool = False,
     ) -> None:
@@ -2773,10 +2766,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._source_auto_update = False
             self._output_id = None
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
-        self._replay_source_data = (
-            None if replay_source_data is None else replay_source_data.copy(deep=False)
-        )
-        self._replay_source_pending = False
+        self._replay_source_data = None
         self._advance_snapshot_token(defer_refresh=not propagate_descendants)
         self.revision_id_for_role("source")
         self._set_source_state(state)
@@ -2801,10 +2791,12 @@ class _ManagedWindowNode(QtCore.QObject):
         replay_source_data: xr.DataArray | None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
+        provenance_spec = self._normalize_detached_provenance(
+            provenance_spec, replay_source_data
+        )
         self.manager._lineage_controller._validate_detached_replacement(
             self,
             provenance_spec,
-            replay_source_data,
         )
         self._replace_imagetool_data(
             data,
@@ -2812,7 +2804,6 @@ class _ManagedWindowNode(QtCore.QObject):
             state="fresh",
             propagate_descendants=propagate_descendants,
             preserve_filter=preserve_filter,
-            replay_source_data=replay_source_data,
             detach_source_binding=True,
         )
 
@@ -3172,7 +3163,6 @@ class _ManagedWindowNode(QtCore.QObject):
                     resolved,
                     provenance_spec,
                     propagate_descendants=True,
-                    replay_source_data=None,
                     preserve_filter=True,
                 )
             except Exception:
@@ -3237,7 +3227,6 @@ class _ManagedWindowNode(QtCore.QObject):
                         resolved,
                         provenance_spec,
                         propagate_descendants=False,
-                        replay_source_data=None,
                         preserve_filter=True,
                     )
                 except Exception:
@@ -3318,7 +3307,6 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -3356,7 +3344,6 @@ class _ImageToolWrapper(_ManagedWindowNode):
             source_auto_update=source_auto_update,
             source_state=source_state,
             replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,
