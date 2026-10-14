@@ -1812,6 +1812,164 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
         assert manager.dependency_status_for_uid(target_node.uid) == "current"
 
 
+def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = (
+        _provenance_paste_test_data("sample")
+        .rename(y="eV")
+        .assign_coords(x=[0.0, 0.2, 1.0])
+    )
+    offsets = xr.DataArray(
+        [0.0, 0.05, -0.05], dims="x", coords={"x": data.x}, name="offsets"
+    )
+    primary_spec = script(
+        RestoreNonuniformDimsOperation(),
+        AverageOperation(dims=("z",)),
+        start_label="Use sample data",
+        seed_code="prepared = sample",
+        active_name="prepared",
+    )
+    auxiliary_spec = script(
+        RestoreNonuniformDimsOperation(),
+        ScriptCodeOperation(
+            label="Scale correction", code="correction = correction * 2"
+        ),
+        start_label="Use measured offsets",
+        seed_code="correction = offsets",
+        active_name="correction",
+    )
+    prepared = data.qsel.mean("z")
+    correction = offsets * 2
+
+    def fail_paste(_title, error, **_kwargs):
+        raise error
+
+    with manager_context() as manager:
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_failed",
+            fail_paste,
+        )
+        primary = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(prepared, _in_manager=True),
+            show=False,
+            provenance_spec=primary_spec,
+        )
+        auxiliary = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(correction, _in_manager=True),
+            show=False,
+            provenance_spec=auxiliary_spec,
+        )
+        auxiliary_node = manager._node_for_target(auxiliary)
+        bound_spec = manager._multi_input_operation_provenance(
+            (primary, auxiliary),
+            operation=ShiftFromInputOperation(along="eV", negate=False),
+            active_name="shifted",
+            start_label="Shift sample data",
+            data_role="source",
+            input_names=("prepared", "correction"),
+            primary_input="prepared",
+            input_bindings={"shift": "correction"},
+        )
+        captured_revision = auxiliary_node.current_revision_id
+        assert captured_revision is not None
+        bound_spec = bound_spec.model_copy(
+            update={
+                "script_inputs": tuple(
+                    item.model_copy(update={"follow_source": False})
+                    if item.name == "correction"
+                    else item
+                    for item in bound_spec.script_inputs
+                )
+            }
+        )
+        expected = erlab.analysis.transform.shift(prepared, correction, along="eV")
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            primary,
+            show=False,
+            provenance_spec=bound_spec,
+            source_state="fresh",
+        )
+        auxiliary_node.replace_with_detached_data(
+            correction + 0.5, full_data(), replay_source_data=correction
+        )
+        assert auxiliary_node.current_revision_id != captured_revision
+        manager._remove_imagetool(auxiliary)
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        for path, namespace, output_name, result in (
+            ((0,), {"sample": data}, "prepared", prepared),
+            ((1,), {"offsets": offsets}, "correction", correction),
+            ((), {"prepared": prepared, "correction": correction}, "shifted", expected),
+        ):
+            rows = []
+            for index in range(manager.metadata_derivation_list.conceptual_count()):
+                item = manager.metadata_derivation_list.conceptual_item(index)
+                assert item is not None
+                row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+                if (
+                    isinstance(row, _ProvenanceDisplayRow)
+                    and row.script_input_path == path
+                    and row.replay_ref is not None
+                    and row.replay_ref.kind == "operation"
+                ):
+                    rows.append(index)
+            assert rows
+            select_metadata_rows(manager, rows)
+            manager._copy_selected_derivation_code()
+            code = clipboard.text()
+            copied = _exec_generated_code(code, namespace)
+            xr.testing.assert_identical(copied[output_name], result)
+            assert "restore_image_tool_dimensions" not in code
+            assert ".copy(" not in code
+            assert not any(
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name)
+                and isinstance(statement.value, ast.Name)
+                and statement.targets[0].id == statement.value.id
+                for statement in ast.walk(ast.parse(code))
+            )
+
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert payload is not None
+        assert payload.primary_input == "prepared"
+        assert payload.steps[0].input_bindings == {"shift": "correction"}
+        assert payload.script_inputs[0].revision_id == captured_revision
+        assert not payload.script_inputs[0].follow_source
+
+        target_data = prepared + 100.0
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(target_data, _in_manager=True),
+            show=False,
+        )
+        select_tools(manager, [target])
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+        target_node = manager._node_for_target(target)
+        xr.testing.assert_identical(
+            target_node.data_for_role("source"),
+            erlab.analysis.transform.shift(target_data, correction, along="eV"),
+        )
+        target_spec = target_node.provenance_spec
+        assert target_spec is not None
+        target_correction = next(
+            item for item in target_spec.script_inputs if item.name == "correction"
+        )
+        assert target_correction.revision_id == captured_revision
+        assert not target_correction.follow_source
+
+
 def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
     tmp_path: pathlib.Path,
     manager_context: Callable[
