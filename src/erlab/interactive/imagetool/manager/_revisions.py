@@ -147,10 +147,11 @@ class _ProvenanceRevisionStore:
         parsed_spec = parse_tool_provenance_spec(spec)
         checkpoint = None
         if data is not None:
-            self._data[revision_id] = data.copy(deep=True)
+            protected = data.copy(deep=True)
+            self._data[revision_id] = protected
 
             def provider() -> xr.DataArray:
-                return self._data[revision_id].copy(deep=True)
+                return protected.copy(deep=True)
 
         if provider is not None:
             checkpoint = _RevisionCheckpoint(provider, source_file, source_path)

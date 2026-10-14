@@ -99,6 +99,12 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     assert registry.has_data(first)
     with pytest.raises(ValueError, match="already exists"):
         registry.add(data, revision_id=first)
+    rollback = registry.copy()
+    registry.discard_unreachable(())
+    checkpoint = rollback.get(first).checkpoint
+    restored = checkpoint.provider()
+    np.testing.assert_array_equal(restored.values, np.arange(4.0))
+    assert restored.attrs["nested"]["value"] == 1
 
 
 def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
