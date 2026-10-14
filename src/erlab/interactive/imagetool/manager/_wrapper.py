@@ -525,6 +525,8 @@ class _ManagedWindowNode(QtCore.QObject):
             if source_snapshot_token
             else self._snapshot_token
         )
+        self._current_revision_id: str | None = None
+        self._revision_ids_by_role: dict[ScriptInputDataRole, tuple[str, str]] = {}
         self._note = _coerce_note(note)
         self._suspend_snapshot_token_updates = True
 
@@ -2120,6 +2122,89 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.source_snapshot_token
         return self.snapshot_token
 
+    @property
+    def current_revision_id(self) -> str | None:
+        """Return the retained revision of the current source data, if captured."""
+        cached = self._revision_ids_by_role.get("source")
+        if cached is None or cached[0] != self.source_snapshot_token:
+            return None
+        return self._current_revision_id
+
+    @current_revision_id.setter
+    def current_revision_id(self, revision_id: str | None) -> None:
+        self.restore_current_revision_id(revision_id)
+
+    def restore_current_revision_id(self, revision_id: str | None) -> None:
+        """Bind a saved checkpoint without reading its data or running its recipe."""
+        self._current_revision_id = revision_id
+        self._revision_ids_by_role.clear()
+        if revision_id is not None:
+            self._revision_ids_by_role["source"] = (
+                self.source_snapshot_token,
+                revision_id,
+            )
+
+    def revision_id_for_role(self, data_role: ScriptInputDataRole) -> str:
+        """Capture an exact input independently of this window's lifetime."""
+        token = self.snapshot_token_for_role(data_role)
+        cached = self._revision_ids_by_role.get(data_role)
+        if cached is not None and cached[0] == token:
+            return cached[1]
+        if data_role == "displayed" and token == self.source_snapshot_token:
+            source = self._revision_ids_by_role.get("source")
+            if source is not None and source[0] == token:
+                self._revision_ids_by_role[data_role] = source
+                return source[1]
+        spec = self.provenance_for_role(data_role)
+        replay_source_revision_id = None
+        if spec is not None and (
+            spec.kind in {"full_data", "public_data", "selection"}
+            or (
+                spec.kind == "script"
+                and (
+                    not spec.script_inputs
+                    or any(
+                        item.uses_owner_replay_source and item.revision_id is None
+                        for item in spec.script_inputs
+                    )
+                )
+            )
+        ):
+            previous = (
+                None
+                if self._current_revision_id is None
+                else self.manager._provenance_revisions.get(self._current_revision_id)
+            )
+            replay_source_revision_id = (
+                None if previous is None else previous.replay_source_revision_id
+            )
+            if replay_source_revision_id is None:
+                seed = self.resolved_replay_source_data()
+                if seed is not None:
+                    replay_source_revision_id = self.manager._provenance_revisions.add(
+                        seed
+                    )
+            spec = self.manager._provenance_revisions.freeze_legacy_inputs(
+                spec, replay_source_revision_id=replay_source_revision_id
+            )
+        revision_id = self.manager._provenance_revisions.add(
+            self.data_for_role(data_role),
+            spec,
+            input_revisions={
+                item.name: item.revision_id
+                for item in (() if spec is None else spec.script_inputs)
+                if item.revision_id is not None
+            },
+            primary_revision_id=(
+                self._current_revision_id if data_role == "source" else None
+            ),
+            replay_source_revision_id=replay_source_revision_id,
+        )
+        self._revision_ids_by_role[data_role] = (token, revision_id)
+        if data_role == "source":
+            self._current_revision_id = revision_id
+        return revision_id
+
     def provenance_for_role(
         self, data_role: ScriptInputDataRole
     ) -> ToolProvenanceSpec | None:
@@ -2659,6 +2744,7 @@ class _ManagedWindowNode(QtCore.QObject):
         preserve_filter: bool = False,
         detach_source_binding: bool = False,
     ) -> None:
+        self.revision_id_for_role("source")
         accepted_filter_operation = None
         filtered = None
         if preserve_filter and self.imagetool is not None:
@@ -2692,6 +2778,7 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         self._replay_source_pending = False
         self._advance_snapshot_token(defer_refresh=not propagate_descendants)
+        self.revision_id_for_role("source")
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
         if propagate_descendants:

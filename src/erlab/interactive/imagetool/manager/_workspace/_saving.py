@@ -20,6 +20,7 @@ from qtpy import QtCore
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive import _persistence_constants, _qt_state
@@ -561,6 +562,8 @@ class _WorkspaceSaver:
                 "parent_uid": node.parent_uid,
                 "display_name": node.display_text,
             }
+            if node.current_revision_id is not None:
+                entry["current_revision_id"] = node.current_revision_id
             if node.is_imagetool:
                 # Distinguishes embedded data from lazy file-backed/dask payloads.
                 entry["data_backing"] = node.persistence_data_backing()[0]
@@ -630,6 +633,12 @@ class _WorkspaceSaver:
         manifest["embedded_extension_sources"] = scripts.source_manifest_value(
             source_keys
         )
+        manifest["provenance_revisions"] = [
+            workspace_revisions.revision_manifest_entry(record)
+            for record in self._manager._provenance_revisions.reachable(
+                workspace_revisions.retained_revision_ids(self._manager)
+            )
+        ]
         return manifest
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
@@ -1316,6 +1325,13 @@ class _WorkspaceSaver:
             final_entries.append(entry)
 
         manifest["nodes"] = final_entries
+        for item in workspace_revisions.revision_object_writes(
+            self._manager._provenance_revisions,
+            self._manager._provenance_revisions.reachable(
+                workspace_revisions.retained_revision_ids(self._manager)
+            ),
+        ):
+            object_writes[item.object_id] = item
         node_object_ids = {
             str(entry["payload_object_id"])
             for entry in final_entries

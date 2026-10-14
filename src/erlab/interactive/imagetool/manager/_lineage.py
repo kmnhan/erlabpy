@@ -495,6 +495,7 @@ class _LineageController:
             None if source_spec is None else source_spec.model_dump(mode="json")
         )
         input_name = self._script_input_name_for_node(node) if name is None else name
+        revision_id = node.revision_id_for_role(data_role)
         if isinstance(node, _ImageToolWrapper):
             label = f"ImageTool {node.index}"
         else:
@@ -511,6 +512,7 @@ class _LineageController:
                 name=input_name,
                 label=label,
                 node_snapshot_token=node.snapshot_token_for_role(data_role),
+                revision_id=revision_id,
                 data_role=data_role,
                 source_spec=source_payload,
                 provenance_spec=provenance_spec,
@@ -520,6 +522,7 @@ class _LineageController:
             label=label,
             node_uid=node.uid,
             node_snapshot_token=node.snapshot_token_for_role(data_role),
+            revision_id=revision_id,
             data_role=data_role,
             source_spec=source_payload,
             provenance_spec=provenance_spec,
@@ -655,7 +658,12 @@ class _LineageController:
         *,
         target_node_uid: str | None = None,
         allow_owner_replay_source: bool = True,
+        prefer_recorded_revision: bool = False,
     ) -> tuple[xr.DataArray, ScriptInput] | None:
+        if prefer_recorded_revision or script_input.uses_owner_replay_source:
+            recorded = self._resolve_recorded_script_input(script_input)
+            if recorded is not None:
+                return recorded
         if allow_owner_replay_source and script_input.uses_owner_replay_source:
             owner = self._manager._tool_graph.nodes.get(target_node_uid or "")
             if owner is not None:
@@ -675,6 +683,8 @@ class _LineageController:
             script_input, target_node_uid=target_node_uid
         )
         if node is None:
+            if script_input.parsed_provenance_spec() is None:
+                return self._resolve_recorded_script_input(script_input)
             return None
         owner_node = self._manager._tool_graph.nodes.get(target_node_uid or "")
         data = node.data_for_role(script_input.data_role, owner_node=owner_node)
@@ -691,12 +701,53 @@ class _LineageController:
             data_role=script_input.data_role,
         )
 
+    def _resolve_recorded_script_input(
+        self, script_input: ScriptInput
+    ) -> tuple[xr.DataArray, ScriptInput] | None:
+        revision_id = script_input.revision_id
+        if revision_id is None or not self._manager._provenance_revisions.has_data(
+            revision_id
+        ):
+            return None
+        data = self._manager._provenance_revisions.resolve_data(revision_id)
+        source_spec = script_input.parsed_source_spec()
+        if source_spec is not None:
+            data = self._apply_provenance(
+                source_spec,
+                data,
+                reason="resolve this recorded input",
+            )
+        return data, script_input
+
+    def _has_recorded_script_input(
+        self,
+        script_input: ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> bool:
+        if script_input.revision_id is not None:
+            return self._manager._provenance_revisions.has_data(
+                script_input.revision_id
+            )
+        if not script_input.uses_owner_replay_source:
+            return False
+        owner_uid = target_node_uid or self._manager._metadata_node_uid
+        owner = self._manager._tool_graph.nodes.get(owner_uid or "")
+        spec = None if owner is None else owner.provenance_spec
+        return (
+            owner is not None
+            and owner.has_replay_source
+            and spec is not None
+            and script_input in spec.script_inputs
+        )
+
     def _live_input_resolver(
         self,
         *,
         target_node_uid: str | None = None,
         live_uids: frozenset[str] | None = None,
         owner_replay_inputs: Sequence[ScriptInput] = (),
+        prefer_recorded_revisions: bool = False,
     ) -> LiveInputResolver | None:
         owner_replay_input_ids = {
             id(item) for item in owner_replay_inputs if item.uses_owner_replay_source
@@ -707,11 +758,23 @@ class _LineageController:
                     item,
                     target_node_uid=target_node_uid,
                     allow_owner_replay_source=id(item) in owner_replay_input_ids,
+                    prefer_recorded_revision=prefer_recorded_revisions,
                 )
                 if (
                     live_uids is None
                     or item.node_uid in live_uids
                     or id(item) in owner_replay_input_ids
+                    or (
+                        item.revision_id is not None
+                        and self._manager._provenance_revisions.has_data(
+                            item.revision_id
+                        )
+                        and (
+                            prefer_recorded_revisions
+                            or item.uses_owner_replay_source
+                            or item.provenance_spec is None
+                        )
+                    )
                 )
                 else None
             )
@@ -750,7 +813,17 @@ class _LineageController:
 
             def resolve(item: ScriptInput):
                 if (
-                    self._live_script_input_node(item, target_node_uid=target_uid)
+                    (
+                        item.revision_id is not None
+                        and self._manager._provenance_revisions.has_data(
+                            item.revision_id
+                        )
+                        and (
+                            item.uses_owner_replay_source
+                            or item.provenance_spec is None
+                        )
+                    )
+                    or self._live_script_input_node(item, target_node_uid=target_uid)
                     is not None
                     or item.node_uid in live_uids
                     or (
@@ -907,6 +980,23 @@ class _LineageController:
             depth: int,
             use_owner_replay_source: bool,
         ) -> str | None:
+            if (
+                script_input.revision_id is not None
+                and self._manager._provenance_revisions.has_data(
+                    script_input.revision_id
+                )
+                and (
+                    script_input.uses_owner_replay_source
+                    or (
+                        script_input.provenance_spec is None
+                        and self._manager._tool_graph.nodes.get(
+                            script_input.node_uid or ""
+                        )
+                        is None
+                    )
+                )
+            ):
+                return None
             source_uid = script_input.node_uid
             if use_owner_replay_source and script_input.uses_owner_replay_source:
                 owner = self._manager._tool_graph.nodes.get(target_uid or "")
@@ -1235,7 +1325,14 @@ class _LineageController:
         script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
+        prefer_recorded_revisions: bool = False,
     ) -> str | None:
+        if (
+            prefer_recorded_revisions
+            and script_input.revision_id is not None
+            and self._manager._provenance_revisions.has_data(script_input.revision_id)
+        ):
+            return None
         return self._input_resolution_plan(
             (script_input,), target_node_uid=target_node_uid
         ).unavailable_reason
@@ -1246,10 +1343,12 @@ class _LineageController:
         *,
         target_node_uid: str | None = None,
         authorization: object | None = None,
+        prefer_recorded_revisions: bool = False,
     ) -> _ScriptRebuildResult:
         resolve_live = self._live_input_resolver(
             target_node_uid=target_node_uid,
             owner_replay_inputs=spec.script_inputs,
+            prefer_recorded_revisions=prefer_recorded_revisions,
         )
 
         def authorize(entries):

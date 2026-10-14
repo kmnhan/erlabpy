@@ -23,6 +23,7 @@ import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
@@ -2012,6 +2013,15 @@ class _WorkspaceLoader:
                     pending_workspace_tool_payload=pending_payload,
                     reserved_uids=reserved_uids,
                 )
+            revision_id = entry.get("current_revision_id")
+            if revision_id is not None:
+                if not isinstance(revision_id, str):
+                    raise TypeError("Workspace current revision ID must be a string")
+                if revision_id not in self._manager._provenance_revisions:
+                    raise ValueError("Workspace current provenance revision is missing")
+                self._manager._node_for_target(target).restore_current_revision_id(
+                    revision_id
+                )
             for child_path in child_paths[path]:
                 _load_path_or_warn(child_path, target)
             return target
@@ -2067,6 +2077,11 @@ class _WorkspaceLoader:
             else None
         )
         extension_scripts_changed = False
+        previous_revisions = self._manager._provenance_revisions.copy()
+        previous_revision_bindings = {
+            uid: node.current_revision_id
+            for uid, node in self._manager._tool_graph.nodes.items()
+        }
         with (
             maybe_guard,
             erlab.interactive.utils.wait_dialog(
@@ -2082,6 +2097,9 @@ class _WorkspaceLoader:
                         self._manager._workspace_state.advance_document_identity()
                         self._manager.remove_all_tools()
                         self._controller._drain_workspace_restore_events()
+                workspace_revisions.restore_revision_store(
+                    self._manager._provenance_revisions, manifest, fname
+                )
                 reserved_uids = self._reserve_workspace_uids(
                     manifest,
                     incoming_extension_state,
@@ -2123,6 +2141,7 @@ class _WorkspaceLoader:
                     with profiler.stage("ui catch-up"):
                         self._controller._drain_workspace_restore_events()
             except Exception:
+                self._manager._provenance_revisions = previous_revisions
                 if backup is not None:
                     try:
                         self._restore_replaced_workspace_backup(backup)
@@ -2132,6 +2151,10 @@ class _WorkspaceLoader:
                     self._manager._workspace_state.extension_scripts.replace(
                         previous_import_scripts
                     )
+                for uid, revision_id in previous_revision_bindings.items():
+                    node = self._manager._tool_graph.nodes.get(uid)
+                    if node is not None:
+                        node.restore_current_revision_id(revision_id)
                 raise
             finally:
                 if backup is not None:

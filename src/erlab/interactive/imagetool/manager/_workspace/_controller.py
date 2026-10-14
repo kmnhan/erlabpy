@@ -20,6 +20,7 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
@@ -1255,6 +1256,9 @@ class _WorkspaceController:
         manifest: Mapping[str, typing.Any],
     ) -> None:
         """Apply one committed generation to live manager references."""
+        workspace_revisions.bind_saved_revision_sources(
+            self._manager._provenance_revisions, manifest, workspace_path
+        )
         self._commit_saved_tool_data_references(snapshot)
         store = self._workspace_store
         if store is not None and not store.closed:

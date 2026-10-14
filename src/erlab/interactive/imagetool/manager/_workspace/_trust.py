@@ -10,6 +10,7 @@ from collections.abc import Mapping
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_manifest,
@@ -31,7 +32,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.utils import ToolWindow
 
 WORKSPACE_CODE_TRUST_DOMAIN = "erlab.workspace"
-WORKSPACE_CODE_TRUST_POLICY_VERSION = 7
+WORKSPACE_CODE_TRUST_POLICY_VERSION = 8
 _MANIFEST_ID = (WORKSPACE_CODE_TRUST_DOMAIN, WORKSPACE_CODE_TRUST_POLICY_VERSION)
 
 
@@ -214,6 +215,16 @@ def workspace_code_trust_manifest(
                 else (_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,)
             ),
         )
+    for entry in workspace_manifest.get("provenance_revisions", ()):
+        if not isinstance(entry, Mapping):
+            raise TypeError("Workspace provenance revision must be an object")
+        spec = parse_tool_provenance_spec(entry.get("provenance_spec"))
+        if spec is not None:
+            entries.extend(
+                provenance_code_trust_entries(
+                    spec, location_prefix=f"revisions/{entry['revision_id']}/provenance"
+                )
+            )
     return create_manifest(*_MANIFEST_ID, entries)
 
 
@@ -257,6 +268,16 @@ def current_workspace_code_trust_manifest(
                 else ()
             ),
         )
+    for record in manager._provenance_revisions.reachable(
+        workspace_revisions.retained_revision_ids(manager)
+    ):
+        if record.provenance_spec is not None:
+            entries.extend(
+                provenance_code_trust_entries(
+                    record.provenance_spec,
+                    location_prefix=f"revisions/{record.revision_id}/provenance",
+                )
+            )
     return create_manifest(*_MANIFEST_ID, entries)
 
 

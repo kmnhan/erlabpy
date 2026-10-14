@@ -35,7 +35,7 @@ ITOOL_PROVENANCE_SPEC_ATTR = "itool_provenance_spec"
 CODE_PAYLOAD_ENTRIES_ATTR = "erlab_code_trust_payload_entries"
 
 # Workspace document formats and legacy transactions.
-WORKSPACE_SCHEMA_VERSION = 6
+WORKSPACE_SCHEMA_VERSION = 7
 WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
 WORKSPACE_LEGACY_TEMP_GROUP_PREFIXES = ("__itws_pending_", "__itws_backup_")

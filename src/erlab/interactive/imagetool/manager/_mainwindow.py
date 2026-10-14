@@ -58,6 +58,7 @@ from erlab.interactive.imagetool.manager._registry import (
     reserve_manager_record,
     unregister_manager_record,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._widgets import (
     _LINKER_COLORS,
@@ -301,6 +302,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self._workspace_state = _ManagerWorkspaceState()
+        self._provenance_revisions = _ProvenanceRevisionStore()
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
         self._retired_windows: dict[int, QtWidgets.QWidget] = {}

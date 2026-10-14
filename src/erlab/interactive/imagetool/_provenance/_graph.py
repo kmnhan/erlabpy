@@ -993,12 +993,13 @@ def _add_external_input_node(
             f"External provenance input {script_input.name!r} conflicts with a replay "
             "global"
         )
-    has_stable_identity = script_input.node_snapshot_token is not None
+    input_revision = script_input.revision_id or script_input.node_snapshot_token
+    has_stable_identity = input_revision is not None
     identity = (
         (
             script_input.node_uid,
             script_input.data_role,
-            script_input.node_snapshot_token,
+            input_revision,
         )
         if has_stable_identity
         else uuid.uuid4().hex
@@ -1173,15 +1174,19 @@ def _compile_spec(
                     and (resolved := live_input_resolver(script_input)) is not None
                 ):
                     live_data, resolved_input = resolved
-                    if resolved_input.node_snapshot_token is not None:
+                    if (
+                        resolved_input.revision_id is not None
+                        or resolved_input.node_snapshot_token is not None
+                    ):
                         source_spec = resolved_input.parsed_source_spec()
                         live_key = _canonical_key(
                             "live_input",
                             {
                                 "node_uid": resolved_input.node_uid,
                                 "data_role": resolved_input.data_role,
-                                "node_snapshot_token": (
-                                    resolved_input.node_snapshot_token
+                                "revision_id": (
+                                    resolved_input.revision_id
+                                    or resolved_input.node_snapshot_token
                                 ),
                                 "source_spec": (
                                     None

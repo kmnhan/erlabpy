@@ -41,6 +41,7 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
@@ -262,6 +263,51 @@ def test_manager_workspace_layout_only_save_updates_root_manifest_only(
             manifest["manager_layout"]
             == manager._workspace_controller.saving._workspace_layout_snapshot()
         )
+
+
+def test_manager_workspace_restores_revision_history_without_recipe_execution(
+    qtbot, tmp_path, test_data, manager_context, monkeypatch
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(root, show=False)
+        node = manager._node_for_target(index)
+        first = node.revision_id_for_role("source")
+        expected_first = manager._provenance_revisions.resolve_data(first)
+        second = manager._provenance_revisions.add(
+            test_data + 10, full_data(), primary_revision_id=first
+        )
+        node.restore_current_revision_id(second)
+        orphan = manager._provenance_revisions.add(test_data + 99)
+        path = tmp_path / "history.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        manifest = _current_workspace_manifest(path)
+        assert manifest["nodes"][0]["current_revision_id"] == second
+        assert {entry["revision_id"] for entry in manifest["provenance_revisions"]} == {
+            first,
+            second,
+        }
+        assert orphan not in {
+            entry["revision_id"] for entry in manifest["provenance_revisions"]
+        }
+
+        def _forbid_replay(*args, **kwargs):
+            raise AssertionError("workspace load executed provenance")
+
+        monkeypatch.setattr(manager, "_apply_provenance", _forbid_replay)
+        manager._provenance_revisions = type(manager._provenance_revisions)()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager._node_for_target(0)
+        assert restored.current_revision_id == second
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(first).compute(), expected_first
+        )
+        records = manager._provenance_revisions.reachable([second])
+        assert len(records) == 2
+        assert all(record.checkpoint.source_file == str(path) for record in records)
 
 
 def test_manager_workspace_standalone_app_only_save_updates_root_manifest_only(
@@ -701,7 +747,8 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         _workspace_state=types.SimpleNamespace(
             extension_scripts=scripts,
             schema_version=0,
-        )
+        ),
+        _provenance_revisions=_ProvenanceRevisionStore(),
     )
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
@@ -745,7 +792,10 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         ("later.py", later_hash),
     }
     assert rebound == [{"/legacy/imagetool": "payload"}]
-    assert manager._workspace_state.schema_version == 6
+    assert (
+        manager._workspace_state.schema_version
+        == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+    )
 
 
 def test_workspace_save_and_compaction_route_save_as_only_documents() -> None:
@@ -2926,9 +2976,15 @@ def test_manager_workspace_generation_save_open_replaces_and_binds_path(
         assert not manager.is_workspace_modified
 
         attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-        assert attrs["imagetool_workspace_schema_version"] == 6
+        assert (
+            attrs["imagetool_workspace_schema_version"]
+            == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+        )
         manifest = workspace_format._workspace_manifest_from_attrs(attrs)
-        assert manifest["schema_version"] == 6
+        assert (
+            manifest["schema_version"]
+            == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+        )
         assert {node["uid"] for node in manifest["nodes"]} >= {
             manager._tool_graph.root_wrappers[0].uid,
             child_uid,

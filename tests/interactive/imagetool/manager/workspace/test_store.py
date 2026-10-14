@@ -14,9 +14,22 @@ import pytest
 import xarray as xr
 
 from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    full_data,
+    script,
+)
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
+from erlab.interactive.imagetool.manager._workspace import (
+    _revisions as workspace_revisions,
+)
 from erlab.interactive.imagetool.manager._workspace import _storage as workspace_storage
 from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
+from erlab.interactive.imagetool.manager._workspace._trust import (
+    workspace_code_trust_manifest,
+)
 
 if typing.TYPE_CHECKING:
     import pathlib
@@ -37,6 +50,219 @@ def _manifest(*object_ids: str) -> dict[str, object]:
         ],
         "root_order": list(range(len(object_ids))),
     }
+
+
+def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(np.arange(4.0), dims="x", attrs={"nested": {"value": 1}})
+    first = registry.add(data, full_data())
+    second = registry.add(data + 10, full_data())
+    nested = script(
+        ScriptCodeOperation(label="Nested", code="derived = other + 1"),
+        start_label="Nested inputs",
+        script_inputs=(ScriptInput(name="other", revision_id=second),),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Outer", code="derived = inner + 1"),
+        start_label="Outer inputs",
+        script_inputs=(
+            ScriptInput(name="inner", provenance_spec=nested.model_dump(mode="json")),
+        ),
+    )
+    third = registry.add(data + 20, spec, primary_revision_id=first)
+    orphan = registry.add(data + 99)
+    data.values[:] = -1
+    data.attrs["nested"]["value"] = 2
+    resolved = registry.resolve_data(first)
+    np.testing.assert_array_equal(resolved.values, np.arange(4.0))
+    assert resolved.attrs["nested"]["value"] == 1
+    resolved.values[:] = -2
+    np.testing.assert_array_equal(registry.resolve_data(first), np.arange(4.0))
+    assert {record.revision_id for record in registry.reachable([third])} == {
+        first,
+        second,
+        third,
+    }
+    assert orphan not in {record.revision_id for record in registry.reachable([third])}
+    registry.discard_unreachable([third])
+    assert orphan not in registry
+    assert registry.get("missing") is None
+    assert registry.has_data(first)
+    with pytest.raises(ValueError, match="already exists"):
+        registry.add(data, revision_id=first)
+
+
+def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
+    tmp_path, monkeypatch
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"private coordinate": ("x", [1.0, 2.0])},
+        name="original",
+        attrs={"nested": {"value": [1, 2]}},
+    )
+    first = registry.add(data, full_data())
+    second = registry.add(data + 10, primary_revision_id=first)
+    records = registry.reachable([second])
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record) for record in records
+    ]
+    path = tmp_path / "revisions.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest,
+                objects=workspace_revisions.revision_object_writes(registry, records),
+            ),
+            compression_mode="none",
+        )
+        restored = _ProvenanceRevisionStore()
+        original_open = workspace_arrays.open_workspace_dataset
+
+        def _forbid_open(*args, **kwargs):
+            raise AssertionError("restoration read a checkpoint")
+
+        monkeypatch.setattr(workspace_arrays, "open_workspace_dataset", _forbid_open)
+        workspace_revisions.restore_revision_store(restored, manifest, path)
+        assert restored.has_data(first)
+        writes = workspace_revisions.revision_object_writes(
+            restored, restored.reachable([second])
+        )
+        assert all(
+            item.dataset is None and item.source_file == str(path) for item in writes
+        )
+        monkeypatch.setattr(workspace_arrays, "open_workspace_dataset", original_open)
+        xr.testing.assert_identical(restored.resolve_data(first).compute(), data)
+        assert store.manifest_revision_object_ids(manifest) == {
+            record.checkpoint_object_id for record in records
+        }
+        assert store.collect_garbage(max_objects=10) == 0
+        with store.read_session() as h5_file:
+            assert all(
+                store.object_path(record.checkpoint_object_id) in h5_file
+                for record in records
+            )
+        saved = store.current_generation().manifest
+        assert saved["provenance_revisions"] == manifest["provenance_revisions"]
+        destination = tmp_path / "copy.itws"
+        with workspace_store.WorkspaceStore(destination, create=True) as copy_store:
+            workspace_storage._write_workspace_generation(
+                copy_store,
+                workspace_storage._WorkspaceGenerationPlan(
+                    manifest=manifest, objects=writes
+                ),
+                compression_mode="none",
+            )
+            copy_registry = _ProvenanceRevisionStore()
+            workspace_revisions.restore_revision_store(
+                copy_registry, manifest, destination
+            )
+            xr.testing.assert_identical(
+                copy_registry.resolve_data(first).compute(), data
+            )
+            old_checkpoint_reader = workspace_revisions._read_revision_checkpoint
+
+            def _read_only_new_location(path, group):
+                assert path == str(destination)
+                return old_checkpoint_reader(path, group)
+
+            monkeypatch.setattr(
+                workspace_revisions,
+                "_read_revision_checkpoint",
+                _read_only_new_location,
+            )
+            workspace_revisions.bind_saved_revision_sources(
+                restored, manifest, destination
+            )
+            xr.testing.assert_identical(
+                restored.resolve_data(second).compute(), data + 10
+            )
+        workspace_storage._compact_workspace_store(store)
+        xr.testing.assert_identical(restored.resolve_data(first).compute(), data)
+        with store.read_session() as h5_file:
+            assert all(
+                store.object_path(record.checkpoint_object_id) in h5_file
+                for record in records
+            )
+
+
+def test_workspace_trust_covers_historical_revision_recipes() -> None:
+    registry = _ProvenanceRevisionStore()
+    recipe = script(
+        ScriptCodeOperation(label="Historic", code="derived = data + 1"),
+        start_label="Historic source",
+    )
+    first = registry.add(spec=recipe)
+    second = registry.add(primary_revision_id=first)
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record)
+        for record in registry.reachable([second])
+    ]
+    baseline = workspace_code_trust_manifest(manifest).canonical_bytes()
+    assert b"revisions/" in baseline
+    manifest["provenance_revisions"][0]["provenance_spec"] = script(
+        ScriptCodeOperation(label="Changed", code="derived = data + 2"),
+        start_label="Changed source",
+    ).model_dump(mode="json")
+    assert workspace_code_trust_manifest(manifest).canonical_bytes() != baseline
+
+
+def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None:
+    registry = _ProvenanceRevisionStore()
+    nested_snapshot = "unknown-nested-owner"
+    owner_snapshot = "known-owner"
+    nested = script(
+        ScriptCodeOperation(label="Inner", code="derived = inner + 1"),
+        start_label="Inner source",
+        script_inputs=(ScriptInput(name="inner", node_snapshot_token=nested_snapshot),),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Outer", code="derived = outer + 1"),
+        start_label="Outer source",
+        script_inputs=(
+            ScriptInput(
+                name="outer",
+                node_snapshot_token=owner_snapshot,
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+    )
+    reads = 0
+
+    def _read_immutable_legacy_seed() -> xr.DataArray:
+        nonlocal reads
+        reads += 1
+        return xr.DataArray([1.0, 2.0], dims="x")
+
+    frozen = registry.freeze_legacy_inputs(spec, provider=_read_immutable_legacy_seed)
+    assert frozen is not None
+    assert reads == 0
+    seed_id = frozen.script_inputs[0].revision_id
+    assert seed_id is not None
+    assert spec.script_inputs[0].revision_id is None
+    inner = frozen.script_inputs[0].parsed_provenance_spec()
+    assert inner is not None
+    assert inner.script_inputs[0].revision_id is None
+    result = registry.add(
+        xr.DataArray([10.0, 20.0], dims="x"),
+        frozen,
+        replay_source_revision_id=seed_id,
+    )
+    assert {record.revision_id for record in registry.reachable([result])} == {
+        result,
+        seed_id,
+    }
+    np.testing.assert_array_equal(registry.resolve_data(seed_id), [1.0, 2.0])
+    assert reads == 1
+    record = registry.get(result)
+    assert record is not None
+    entry = workspace_revisions.revision_manifest_entry(record)
+    assert entry["replay_source_revision_id"] == seed_id
 
 
 def test_workspace_file_access_retry_contract(

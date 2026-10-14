@@ -1040,6 +1040,7 @@ class DataTransformDialog(_DataManipulationDialog):
                     and target is not None
                     and manager._is_imagetool_target(target)
                 ):
+                    manager._node_for_target(target).revision_id_for_role("source")
                     self._rewrite_target_provenance(
                         target,
                         detached_provenance_spec,
@@ -1047,6 +1048,12 @@ class DataTransformDialog(_DataManipulationDialog):
                 else:
                     self._set_current_tool_provenance(detached_provenance_spec)
                 self.slicer_area.replace_source_data(processed, emit_edited=True)
+                if (
+                    manager is not None
+                    and target is not None
+                    and manager._is_imagetool_target(target)
+                ):
+                    manager._node_for_target(target).revision_id_for_role("source")
             else:
                 itool_kw = self._itool_kwargs(processed)
                 if self.launch_mode == "nest":

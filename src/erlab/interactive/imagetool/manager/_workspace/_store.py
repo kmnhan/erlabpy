@@ -1369,9 +1369,29 @@ class WorkspaceStore:
     @classmethod
     def manifest_object_ids(cls, manifest: Mapping[str, typing.Any]) -> frozenset[str]:
         """Return all immutable object IDs referenced by a manifest."""
-        return cls.manifest_node_object_ids(
-            manifest
-        ) | cls.manifest_extension_object_ids(manifest)
+        return (
+            cls.manifest_node_object_ids(manifest)
+            | cls.manifest_extension_object_ids(manifest)
+            | cls.manifest_revision_object_ids(manifest)
+        )
+
+    @classmethod
+    def manifest_revision_object_ids(
+        cls, manifest: Mapping[str, typing.Any]
+    ) -> frozenset[str]:
+        entries = manifest.get("provenance_revisions", ())
+        if not isinstance(entries, list):
+            return frozenset()
+        ids = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            object_id = entry.get("checkpoint_object_id")
+            revision_id = entry.get("revision_id")
+            if isinstance(revision_id, str) and object_id == f"revision-{revision_id}":
+                cls.object_path(object_id)
+                ids.add(object_id)
+        return frozenset(ids)
 
     def collect_garbage(
         self,

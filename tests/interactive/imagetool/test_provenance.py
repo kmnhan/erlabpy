@@ -61,7 +61,11 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_script_provenance,
     script_provenance_replayable,
 )
-from erlab.interactive.imagetool._provenance._graph import ReplayGraph, ReplayGraphError
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraph,
+    ReplayGraphError,
+    compile_replay_graph,
+)
 from erlab.interactive.imagetool._provenance._model import (
     _OPERATION_TYPES,
     ConsoleCall,
@@ -112,6 +116,7 @@ from erlab.interactive.imagetool._provenance._model import (
     parse_tool_provenance_spec,
     public_data,
     rebase_script_input_node_uids,
+    recipe,
     replay_input_name,
     require_live_source_spec,
     restamp_operation_groups,
@@ -162,6 +167,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     SelectCoordOperation,
     SelOperation,
+    ShiftFromInputOperation,
     ShiftOperation,
     SliceAlongPathOperation,
     SortByOperation,
@@ -6356,6 +6362,10 @@ def test_script_provenance_supports_named_console_inputs() -> None:
         "Subtract console inputs",
     ]
     rows = spec.display_rows()
+    assert not rows[1].on_primary_chain
+    assert not rows[1].children[0].on_primary_chain
+    assert not rows[1].children[1].on_primary_chain
+    assert rows[3].on_primary_chain
     assert rows[1].children[0].entry.label == "Load left"
     assert rows[1].children[0].replay_ref == _ProvenanceStepRef("start")
     assert rows[1].children[0].script_input_path == (0,)
@@ -6543,6 +6553,230 @@ def test_lazy_script_input_rows_materialize_children_once(monkeypatch) -> None:
     assert children
     assert input_row.materialized_children() is children
     assert parse_calls == 1
+
+
+def test_recipe_display_keeps_primary_history_and_lazy_auxiliary(monkeypatch) -> None:
+    primary = _file_provenance_spec().append_operations(AverageOperation(dims=("x",)))
+    auxiliary = script(
+        start_label="Load shift",
+        seed_code="shift = data",
+        active_name="shift",
+        script_inputs=(ScriptInput(name="data", label="Old shift label"),),
+    )
+    spec = recipe(
+        ReplayStep(
+            operation=ShiftFromInputOperation(along="y"),
+            input_bindings={"shift": "shift"},
+        ),
+        start_label="Shift data",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="primary", provenance_spec=primary, revision_id="primary-r"
+            ),
+            ScriptInput(name="shift", provenance_spec=auxiliary, revision_id="shift-r"),
+        ),
+        primary_input="primary",
+    )
+    parsed_inputs = []
+    original_parse = ScriptInput.parsed_provenance_spec
+
+    def record_parse(script_input):
+        parsed_inputs.append(script_input.name)
+        return original_parse(script_input)
+
+    monkeypatch.setattr(ScriptInput, "parsed_provenance_spec", record_parse)
+    rows = spec.display_rows(
+        _lazy_script_inputs=True, source_label_resolver=lambda _: "Saved"
+    )
+
+    assert parsed_inputs == ["primary"]
+    assert len(rows) == 3
+    assert rows[0].edit_ref == _ProvenanceStepRef("file_load")
+    assert rows[0].script_input_path == (0,)
+    assert rows[1].edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+    assert rows[1].script_input_path == (0,)
+    assert rows[1].revision_id == "primary-r"
+    assert all(row.on_primary_chain for row in rows)
+    assert rows[2].edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+    assert rows[2].script_input_path == ()
+    input_row = rows[2].children[0]
+    assert input_row.replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    assert not input_row.on_primary_chain
+    assert input_row.revision_id == "shift-r"
+    children = input_row.materialized_children()
+    assert parsed_inputs == ["primary", "shift"]
+    assert all(not row.on_primary_chain for row in children)
+    assert all(row.script_input_path == (1,) for row in children)
+    assert children[1].entry.label == "Use data from Saved"
+    assert input_row.materialized_children() is children
+
+
+def test_recipe_display_source_rows_and_nested_revision_paths() -> None:
+    inner = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average data",
+        active_name="average",
+        script_inputs=(ScriptInput(name="raw", revision_id="raw-r"),),
+        primary_input="raw",
+    )
+    outer = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average again",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="average", provenance_spec=inner, revision_id="average-r"),
+        ),
+        primary_input="average",
+    )
+    rows = outer.display_rows(source_label_resolver=lambda _: "Missing")
+
+    assert len(rows) == 3
+    assert rows[0].entry.label == "Missing"
+    assert rows[0].replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=0
+    )
+    assert rows[0].script_input_path == (0,)
+    assert rows[0].revision_id == "raw-r"
+    assert rows[1].script_input_path == (0,)
+    assert rows[1].revision_id == "average-r"
+    assert rows[2].script_input_path == ()
+    assert all(row.on_primary_chain for row in rows)
+    source_rows = inner.display_rows(source_label_resolver=lambda _: "ImageTool 7")
+    assert source_rows[0].entry.label == "Use raw from ImageTool 7"
+    assert source_rows[0].on_primary_chain
+
+
+def test_display_primary_checkpoint_skips_generic_input_branches() -> None:
+    nested = script(
+        start_label="Start",
+        seed_code="derived = raw",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="raw"),),
+    )
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average",
+        active_name="average",
+        script_inputs=(
+            ScriptInput(name="derived", provenance_spec=nested, revision_id="r"),
+        ),
+        primary_input="derived",
+    )
+
+    rows = spec.display_rows()
+
+    assert rows[0].on_primary_chain
+    assert rows[0].revision_id == "r"
+    assert not rows[1].on_primary_chain
+    assert rows[1].revision_id is None
+    assert rows[2].on_primary_chain
+
+
+def test_recipe_primary_display_keeps_replay_and_copied_code(tmp_path) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(2, 3, 2),
+        dims=("y", "x", "z"),
+        coords={"y": [0, 1], "x": [0.0, 1.0, 2.0]},
+        name="scan",
+    )
+    shift = xr.DataArray([0.0, 1.0], dims="y", coords={"y": [0, 1]})
+    data_path = tmp_path / "data.nc"
+    shift_path = tmp_path / "shift.nc"
+    data.to_netcdf(data_path)
+    shift.to_netcdf(shift_path)
+    primary = file_load(
+        start_label="Load data",
+        seed_code=f"import xarray\nderived = xarray.load_dataarray({str(data_path)!r})",
+        file_load_source=_file_replay_source(data_path),
+    ).append_operations(AverageOperation(dims=("z",)))
+    auxiliary = file_load(
+        start_label="Load shift",
+        seed_code=(
+            f"import xarray\nderived = xarray.load_dataarray({str(shift_path)!r})"
+        ),
+        file_load_source=_file_replay_source(shift_path),
+    )
+    operation = ShiftFromInputOperation(along="x")
+    spec = recipe(
+        ReplayStep(operation=operation, input_bindings={"shift": "shift"}),
+        start_label="Shift data",
+        active_name="shifted",
+        script_inputs=(
+            ScriptInput(name="scan", provenance_spec=primary, revision_id="scan-r"),
+            ScriptInput(name="shift", provenance_spec=auxiliary, revision_id="shift-r"),
+        ),
+        primary_input="scan",
+    )
+    rows = spec.display_rows(source_label_resolver=lambda _: "Saved")
+    code = spec.display_code()
+    expected = operation.apply_with_inputs(
+        primary.operations[0].apply(data), {"shift": shift}
+    )
+
+    assert rows[0].edit_ref == _ProvenanceStepRef("file_load")
+    assert rows[1].revision_id == "scan-r"
+    assert not rows[2].children[0].children[0].on_primary_chain
+    xr.testing.assert_identical(replay_script_provenance(spec, {}), expected)
+    assert code is not None
+    namespace = _exec_generated_code(code, {})
+    xr.testing.assert_identical(namespace["shifted"], expected)
+
+
+def test_display_graph_distinguishes_input_revisions() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Sum", code="derived = a + b + c"),
+        start_label="Start",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="a", node_uid="owner", revision_id="first"),
+            ScriptInput(name="b", node_uid="owner", revision_id="first"),
+            ScriptInput(name="c", node_uid="owner", revision_id="second"),
+        ),
+    )
+
+    graph = compile_replay_graph(spec, display=True)
+
+    assert len([node for node in graph.nodes if node.kind == "external_input"]) == 2
+    code = spec.display_code()
+    assert code is not None
+    source = xr.DataArray([1.0, 2.0], dims=("x",))
+    other = xr.DataArray([3.0, 4.0], dims=("x",))
+    namespace = _exec_generated_code(code, {"a": source, "c": other})
+    xr.testing.assert_identical(namespace["derived"], source + source + other)
+
+
+def test_replay_cache_uses_resolved_input_revision() -> None:
+    legacy_snapshot = "legacy-token"
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average input",
+        active_name="average",
+        script_inputs=(
+            ScriptInput(
+                name="data", node_uid="owner", node_snapshot_token=legacy_snapshot
+            ),
+        ),
+        primary_input="data",
+    )
+    replay_cache = {}
+    for revision, offset in (("first", 0.0), ("second", 10.0)):
+        data = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("x", "y")) + offset
+        resolved_input = spec.script_inputs[0].model_copy(
+            update={"revision_id": revision}
+        )
+        graph = compile_replay_graph(
+            spec,
+            live_input_resolver=lambda _, data=data, resolved_input=resolved_input: (
+                data,
+                resolved_input,
+            ),
+        )
+        xr.testing.assert_identical(
+            execute_replay_graph(graph, cache=replay_cache), data.mean("x")
+        )
 
 
 def test_script_input_dependency_refs_recurse_and_rebase() -> None:
