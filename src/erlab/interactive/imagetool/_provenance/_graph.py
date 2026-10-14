@@ -1423,7 +1423,7 @@ def _compile_spec(
             if primary_key is None:  # pragma: no cover - model validation guard.
                 raise ReplayGraphError("Primary replay input is unavailable")
             script_current_key = relay_key(primary_key)
-            current_name = active_name
+            current_name = parsed.primary_input
             current_bindings = bind_name(current_name, script_current_key)
         elif parsed.seed_code:
             seed_code = parsed.seed_code
@@ -2024,12 +2024,16 @@ def _semantic_emitted_step_count(graph: ReplayGraph) -> int:
 def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
     """Return shared bindings that need independent script-owned arrays.
 
-    Runtime replay gives every script binding its own deep copy. Emitted code preserves
-    that ownership wherever two bindings share the same value or a value-producing
-    graph ancestor. Setup nodes are excluded because sharing import/setup code does not
-    imply sharing an array.
+    Runtime replay gives every script binding its own deep copy. Emitted code
+    preserves that ownership wherever two bindings share the same value or a
+    value-producing graph ancestor. Setup nodes are excluded because sharing
+    import/setup code does not imply sharing an array. Display code uses notebook
+    inputs directly; only arrays produced by the graph need independent bindings.
     """
     node_by_key = {node.key: node for node in graph.nodes}
+    direct_input_kinds = {"caller_input"}
+    if graph.display:
+        direct_input_kinds.add("external_input")
     bindings = [
         (node.key, input_name, input_key)
         for node in graph.nodes
@@ -2037,7 +2041,8 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
         for input_name, input_key in typing.cast(
             "tuple[tuple[str, str], ...]", node.payload["bindings"]
         )
-        if node_by_key[input_key].kind != "caller_input"
+        if node_by_key[_emitted_node_key(graph, node_by_key, input_key)].kind
+        not in direct_input_kinds
     ]
     ancestors_by_key: dict[str, frozenset[str]] = {}
 
@@ -2592,11 +2597,29 @@ def _inline_simple_name_aliases(code: str) -> str:
             return receiver_root_name(node.value)
         return None
 
-    def receiver_load_count(stmt: ast.stmt, target_name: str) -> int:
+    def inline_load_count(stmt: ast.stmt, target_name: str) -> int:
         if not isinstance(stmt, ast.Assign):
             return 0
         load_count = _statement_load_count(stmt, target_name)
         if receiver_root_name(stmt.value) == target_name:
+            return load_count
+        first_value = stmt.value
+        while isinstance(first_value, ast.BinOp | ast.UnaryOp):
+            first_value = (
+                first_value.left
+                if isinstance(first_value, ast.BinOp)
+                else first_value.operand
+            )
+        if (
+            load_count == 1
+            and isinstance(first_value, ast.Call)
+            and isinstance(first_value.func, ast.Attribute)
+            and isinstance(first_value.func.value, ast.Name)
+            and first_value.func.value.id in _REPLAY_FRAMEWORK_IMPORTS
+            and first_value.args
+            and isinstance(first_value.args[0], ast.Name)
+            and first_value.args[0].id == target_name
+        ):
             return load_count
         return 0
 
@@ -2632,7 +2655,8 @@ def _inline_simple_name_aliases(code: str) -> str:
                 use_statement = module.body[use_idx]
                 use_has_prior_call = (
                     isinstance(use_statement, ast.Assign)
-                    and receiver_root_name(use_statement.value) != target_name
+                    and inline_load_count(use_statement, target_name)
+                    != _statement_load_count(use_statement, target_name)
                     and any(
                         isinstance(node, ast.Call)
                         for node in ast.walk(use_statement.value)
@@ -2706,7 +2730,7 @@ def _inline_simple_name_aliases(code: str) -> str:
             rewrite_statements = module.body[idx + 1 : rewrite_end + 1]
             if any(
                 _statement_load_count(item, target_name)
-                != receiver_load_count(item, target_name)
+                != inline_load_count(item, target_name)
                 for item in rewrite_statements
             ):
                 continue
@@ -3780,7 +3804,9 @@ def emit_replay_code(
                 input_names.add(input_name)
                 input_value_name = names[input_key]
                 binding = (node.key, input_name, input_key)
-                if protected_graph or binding in copied_script_bindings:
+                if (protected_graph and not graph.display) or (
+                    binding in copied_script_bindings
+                ):
                     generated_input_name = copied_binding_name(input_name)
                     append_code(
                         f"{generated_input_name} = {input_value_name}.copy(deep=True)"
@@ -4039,6 +4065,50 @@ def emit_replay_code(
             cleaned_body,
         )
         if part
+    )
+
+
+def selected_steps_code(
+    steps: Sequence[ReplayStep],
+    *,
+    input_name: str,
+    output_name: str,
+    input_alias: str | None = None,
+) -> str:
+    """Emit selected operations with explicit notebook input variables."""
+    if input_alias is not None and input_alias != input_name:
+        steps = (
+            steps[0].model_copy(
+                update={"context_names": (input_alias, *steps[0].context_names)}
+            ),
+            *steps[1:],
+        )
+    input_names = dict.fromkeys(
+        (input_name, *(name for step in steps for name in step.input_bindings.values()))
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Apply selected provenance steps",
+        active_name=output_name,
+        primary_input=input_name,
+        script_inputs=tuple(ScriptInput(name=name) for name in input_names),
+        steps=tuple(steps),
+    )
+    caller_names, _ = _validate_script_provenance(
+        spec, allow_external_names=True, strict_replay_code=False
+    )
+    caller_names -= _REPLAY_FRAMEWORK_IMPORTS.keys()
+    if caller_names:
+        spec = spec.model_copy(
+            update={
+                "script_inputs": (
+                    *spec.script_inputs,
+                    *(ScriptInput(name=name) for name in sorted(caller_names)),
+                )
+            }
+        )
+    return emit_replay_code(
+        compile_replay_graph(spec, display=True), output_name=output_name
     )
 
 

@@ -55,6 +55,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     compile_replay_graph,
     emit_replay_code,
     script_inputs_code,
+    selected_steps_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -1850,7 +1851,7 @@ def test_display_graph_rejects_reserved_external_input_name() -> None:
     assert spec.display_code() is None
 
 
-def test_display_graph_does_not_mutate_external_input() -> None:
+def test_display_graph_keeps_explicit_input_mutation() -> None:
     data = xr.DataArray([1.0, 2.0], dims="x")
     original = data.copy(deep=True)
     spec = script(
@@ -1863,6 +1864,12 @@ def test_display_graph_does_not_mutate_external_input() -> None:
         script_inputs=(ScriptInput(name="data"),),
     )
 
+    replayed = replay_script_provenance(
+        spec, {"data": data}, authorize=_authorize_execution
+    )
+    xr.testing.assert_identical(replayed, original + 1.0)
+    xr.testing.assert_identical(data, original)
+
     code = emit_replay_code(
         compile_replay_graph(spec, display=True),
         output_name="result",
@@ -1870,7 +1877,8 @@ def test_display_graph_does_not_mutate_external_input() -> None:
     namespace = _exec_generated_code(code, {"data": data})
 
     xr.testing.assert_identical(namespace["result"], original + 1.0)
-    xr.testing.assert_identical(data, original)
+    assert namespace["result"] is data
+    assert ".copy(" not in code
 
 
 def test_rebuild_cache_separates_detached_recorded_inputs(
@@ -6336,3 +6344,91 @@ def test_display_code_omits_alias_after_mutating_operation() -> None:
 
     assert "result = data" not in code
     assert namespace["data"].kspace.work_function == 4.4
+
+
+@pytest.mark.parametrize("input_alias", [None, "derived"])
+def test_selected_steps_code_preserves_script_inputs_and_function_scope(
+    input_alias: str | None,
+) -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"), name="scan")
+    reference = source + 1.0
+    receiver = input_alias or "data"
+    steps = (
+        ReplayStep(
+            operation=ScriptCodeOperation(
+                label="Normalize against reference",
+                code=(
+                    "def normalize():\n"
+                    f"    return {receiver} / reference\n"
+                    "result = normalize()"
+                ),
+            )
+        ),
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+    )
+
+    code = selected_steps_code(
+        steps, input_name="data", output_name="result", input_alias=input_alias
+    )
+    namespace = {"data": source, "reference": reference}
+    exec(code, namespace)  # noqa: S102
+
+    xr.testing.assert_identical(
+        namespace["result"], (source / reference).qsel.mean("x")
+    )
+    assert ".copy(" not in code
+
+
+def test_selected_steps_code_preserves_input_named_like_output() -> None:
+    source = xr.DataArray([8.0])
+    reference = xr.DataArray([2.0])
+    code = selected_steps_code(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Divide by reference", code="derived = data / derived"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    namespace = {"data": source, "derived": reference}
+    exec(code, namespace)  # noqa: S102
+
+    xr.testing.assert_identical(namespace["derived"], source / reference)
+    assert ".copy(" not in code
+
+
+@pytest.mark.parametrize(
+    "expression", ["np.add(trigger.value, derived)", "trigger.value + np.abs(derived)"]
+)
+def test_selected_steps_code_preserves_input_before_effectful_property(
+    expression: str,
+) -> None:
+    source = xr.DataArray([2.0])
+    namespace = {"data": source, "np": np}
+
+    class Trigger:
+        @property
+        def value(self) -> float:
+            namespace["data"] = xr.DataArray([100.0])
+            return 1.0
+
+    namespace["trigger"] = Trigger()
+    code = selected_steps_code(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Read input after property", code=f"derived = {expression}"
+                )
+            ),
+        ),
+        input_name="data",
+        input_alias="derived",
+        output_name="derived",
+    )
+    exec(code, namespace)  # noqa: S102
+
+    xr.testing.assert_identical(namespace["derived"], source + 1.0)
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([100.0]))

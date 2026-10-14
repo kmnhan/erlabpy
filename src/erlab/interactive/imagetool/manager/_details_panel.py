@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import html
+import itertools
 import json
 import logging
 import traceback
@@ -20,6 +21,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     compile_replay_graph,
     emit_replay_code,
     script_inputs_code,
+    selected_steps_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
@@ -27,7 +29,9 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
+    _direct_replay_source_name,
     _ProvenanceDisplayRow,
+    _ProvenanceStepRef,
     parse_tool_provenance_operation,
     strip_partial_operation_groups,
 )
@@ -1214,48 +1218,67 @@ class _DetailsPanelController:
         return sorted(items, key=display_order)
 
     def _selected_derivation_code(self) -> str | None:
-        codes: list[str] = []
-        for item in self._manager._selected_derivation_items():
-            if not bool(item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE)):
-                continue
-            code = typing.cast(
-                "str | None", item.data(0, _METADATA_DERIVATION_CODE_ROLE)
+        chunks: list[str] = []
+        for (_uid, spec, _scope, _path), group in itertools.groupby(
+            self._selected_derivation_steps(),
+            key=lambda entry: (
+                entry[0],
+                entry[1],
+                entry[2].scope,
+                entry[2].script_input_path,
+            ),
+        ):
+            rows = tuple(group)
+            prefix = spec._prefix_before_ref(
+                typing.cast("_ProvenanceStepRef", rows[0][2].replay_ref)
             )
+            source_name = (
+                _direct_replay_source_name(prefix) if not prefix.operations else None
+            )
+            input_name = source_name or prefix.active_name or "data"
+            output_name = (
+                spec._prefix_through_ref(
+                    typing.cast("_ProvenanceStepRef", rows[-1][2].replay_ref)
+                ).active_name
+                or "derived"
+            )
+            try:
+                code = selected_steps_code(
+                    tuple(step for _uid, _spec, _row, step in rows),
+                    input_name=input_name,
+                    output_name=output_name,
+                    input_alias=prefix.active_name if source_name is not None else None,
+                )
+            except ReplayGraphError:
+                return None
             if code:
-                codes.append(code)
-        if not codes:
-            return None
-        return "\n".join(codes)
+                chunks.append(code)
+        return "\n".join(chunks) or None
 
-    def _selected_derivation_step_payload(
+    def _selected_derivation_steps(
         self,
-    ) -> _ProvenanceStepsClipboardPayload | None:
-        if self._manager._metadata_node_uid is None:
-            return None
-        node = self._manager._tool_graph.nodes.get(self._manager._metadata_node_uid)
-        if node is None:
-            return None
-
-        steps: list[ReplayStep] = []
-        step_specs: list[ToolProvenanceSpec] = []
-        script_active_names: list[str] = []
+    ) -> list[tuple[str, ToolProvenanceSpec, _ProvenanceDisplayRow, ReplayStep]]:
+        selected = []
         for item in self._manager._selected_derivation_items():
-            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-            if not isinstance(
-                row,
-                _ProvenanceDisplayRow,
+            if not item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE) or not item.data(
+                0, _METADATA_DERIVATION_CODE_ROLE
             ):
                 continue
+            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            if not isinstance(row, _ProvenanceDisplayRow):
+                continue
+            uid = self._manager._metadata_node_uid
+            targets = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
+            if targets:
+                uid, row = targets[0]
             ref = row.replay_ref
-            if ref is None or ref.kind != "operation":
+            if ref is None or ref.kind != "operation" or uid is None:
                 continue
-            if not bool(item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE)):
-                continue
-            if not item.data(0, _METADATA_DERIVATION_CODE_ROLE):
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None:
                 continue
             spec = self._manager._provenance_edit_controller._display_spec_for_row(
-                node,
-                row,
+                node, row
             )
             if spec is None:
                 continue
@@ -1263,10 +1286,21 @@ class _DetailsPanelController:
             if operation is None:
                 continue
             step = (
-                spec.steps[ref.operation_index]
-                if spec.kind == "script" and ref.operation_index is not None
+                spec.steps[typing.cast("int", ref.operation_index)]
+                if spec.kind in {"script", "file"}
                 else ReplayStep(operation=operation)
             )
+            selected.append((uid, spec, row, step))
+        return selected
+
+    def _selected_derivation_step_payload(
+        self,
+    ) -> _ProvenanceStepsClipboardPayload | None:
+        steps: list[ReplayStep] = []
+        step_specs: list[ToolProvenanceSpec] = []
+        script_active_names: list[str] = []
+        for _uid, spec, _row, step in self._selected_derivation_steps():
+            operation = step.operation
             if isinstance(operation, ScriptCodeOperation):
                 if not operation.copyable or not operation.code:
                     continue

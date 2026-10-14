@@ -1,3 +1,4 @@
+import ast
 import json
 import pathlib
 import types
@@ -46,6 +47,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceConvertOperation,
     KspaceSetNormalOperation,
     KspaceWorkFunctionOperation,
+    RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
     SortByOperation,
@@ -303,6 +305,7 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         _tool_graph=types.SimpleNamespace(nodes={"node": object()}),
         _selected_derivation_items=lambda: selected_items,
         _provenance_edit_controller=edit_controller,
+        _manager_record=types.SimpleNamespace(internal_id="manager"),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -343,6 +346,19 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
 
     selected_items = [item(bound_row_a), item(bound_row_b)]
     assert controller._selected_derivation_step_payload() is None
+
+    common_item = item(bound_row_a)
+    common_item.setData(
+        0,
+        manager_details_panel._METADATA_DERIVATION_TARGET_ROWS_ROLE,
+        (("node", bound_row_a),),
+    )
+    selected_items = [common_item]
+    manager._metadata_node_uid = None
+    payload = controller._selected_derivation_step_payload()
+    assert payload is not None
+    assert payload.steps == (bound_step,)
+    assert payload.primary_input == "data"
 
 
 def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
@@ -1473,7 +1489,7 @@ def test_manager_copy_paste_structured_provenance_steps(
         )
         copied_namespace = _exec_generated_code(
             clipboard.text(),
-            {"derived": dest_data.copy(deep=True)},
+            {"data": dest_data.copy(deep=True)},
         )
         copied_result = copied_namespace["derived"]
         assert isinstance(copied_result, xr.DataArray)
@@ -1526,8 +1542,106 @@ def test_manager_copy_paste_structured_provenance_steps(
         xr.testing.assert_identical(dest_tool.slicer_area._data, before)
 
 
+def test_manager_copied_steps_use_public_code_and_keep_exact_replay(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data().assign_coords(x=[0.0, 0.2, 1.0])
+    operations = (
+        RestoreNonuniformDimsOperation(),
+        AverageOperation(dims=("z",)),
+    )
+    spec = script(
+        *operations,
+        start_label="Start from notebook data",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    expected = operations[1].apply(data)
+
+    with manager_context() as manager:
+        tool = itool(expected, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        select_tools(manager, [index])
+        manager._update_info()
+        select_metadata_rows(manager, [1, 2])
+        manager._copy_selected_derivation_code()
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        code = clipboard.text()
+        copied = _exec_generated_code(code, {"data": data})
+        xr.testing.assert_identical(copied["derived"], expected)
+        assert "restore_image_tool_dimensions" not in code
+        assert ".copy(" not in code
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert payload is not None
+        assert payload.operations == operations
+        replay_spec = script(
+            start_label="Replay copied steps",
+            seed_code="derived = data",
+            active_name=payload.active_name,
+            steps=payload.steps,
+        )
+        internal = erlab.utils.array._make_dims_uniform(data)
+        xr.testing.assert_identical(
+            replay_script_provenance(
+                replay_spec, {"data": internal}, authorize=_authorize_execution
+            ),
+            expected,
+        )
+
+        select_metadata_rows(manager, [1])
+        assert manager._selected_derivation_code() is None
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert not manager._metadata_copy_selected_action.isEnabled()
+
+
+@pytest.mark.parametrize("selected_rows", [(1,), (1, 2)])
+def test_manager_copied_partial_script_steps_keep_selected_output(
+    selected_rows: tuple[int, ...],
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data() - 12.0
+    spec = script(
+        ScriptCodeOperation(
+            label="Offset magnitude", code="derived = np.abs(derived) + 1"
+        ),
+        AverageOperation(dims=("z",)),
+        ScriptCodeOperation(label="Scale result", code="result = derived * 2"),
+        start_label="Use notebook data",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
+        select_tools(manager, [index])
+        manager._update_info()
+        select_metadata_rows(manager, selected_rows)
+        code = manager._selected_derivation_code()
+        assert code is not None
+        copied = _exec_generated_code(code, {"data": data, "np": np})
+        expected = np.abs(data) + 1
+        if len(selected_rows) > 1:
+            expected = expected.qsel.mean("z")
+        xr.testing.assert_identical(copied["derived"], expected)
+        assert "result" not in copied
+        assert ".copy(" not in code
+        assert len(ast.parse(code).body) == 1
+
+
+@pytest.mark.parametrize("shift_name", ["shift", "offsets", "derived"])
 def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
     qtbot,
+    shift_name: str,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -1561,9 +1675,9 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
             active_name="shifted",
             start_label="Shift ImageTool data",
             data_role="source",
-            input_names=("data", "shift"),
+            input_names=("data", shift_name),
             primary_input="data",
-            input_bindings={"shift": "shift"},
+            input_bindings={"shift": shift_name},
         )
         source_expected = erlab.analysis.transform.shift(
             source_data, -shift_data, along="eV"
@@ -1616,9 +1730,9 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
         assert isinstance(payload.steps[0].operation, ShiftFromInputOperation)
         assert payload.steps[0].operation.negate is True
         assert payload.steps[0].operation.along == "eV"
-        assert payload.steps[0].input_bindings == {"shift": "shift"}
+        assert payload.steps[0].input_bindings == {"shift": shift_name}
         assert payload.primary_input == "data"
-        assert [item.name for item in payload.script_inputs] == ["shift"]
+        assert [item.name for item in payload.script_inputs] == [shift_name]
         assert payload.source_manager_id == manager._manager_record.internal_id
         assert not payload.contains_script
         assert not any(
@@ -1628,14 +1742,14 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
         copied = _exec_generated_code(
             QtWidgets.QApplication.clipboard().text(),
             {
-                "derived": target_data.copy(deep=True),
-                "shift": shift_data.copy(deep=True),
+                "data": target_data.copy(deep=True),
+                shift_name: shift_data.copy(deep=True),
             },
         )
         target_expected = erlab.analysis.transform.shift(
             target_data, -shift_data, along="eV"
         )
-        xr.testing.assert_identical(copied["derived"], target_expected)
+        xr.testing.assert_identical(copied["shifted"], target_expected)
 
         manager.tree_view.clearSelection()
         select_tools(manager, [target_index])
@@ -1649,7 +1763,7 @@ def test_manager_copy_paste_bound_shift_steps_keeps_live_dependency(
         assert isinstance(target_spec.steps[0].operation, ShiftFromInputOperation)
         assert target_spec.steps[0].operation.negate is True
         assert target_spec.steps[0].operation.along == "eV"
-        assert target_spec.steps[0].input_bindings == {"shift": "shift"}
+        assert target_spec.steps[0].input_bindings == {"shift": shift_name}
         assert [item.node_uid for item in target_spec.script_inputs] == [
             None,
             shift_node.uid,
@@ -2405,6 +2519,10 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         assert payload is not None
         assert payload.operations == script_operations
         assert payload.contains_script
+        copied = _exec_generated_code(
+            QtWidgets.QApplication.clipboard().text(), {"data": data}
+        )
+        xr.testing.assert_identical(copied["result"], script_data)
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
