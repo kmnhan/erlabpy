@@ -1701,6 +1701,17 @@ class _WidgetsController:
         """Open the log directory in the system file explorer."""
         erlab.utils.misc.open_in_file_manager(get_log_file_path().parent)
 
+    def open_style_directory(self) -> None:
+        """Open the custom style directory in the system file explorer."""
+        try:
+            style_dir = erlab.interactive._stylesheets.user_stylesheet_directory()
+        except RuntimeError as exc:
+            QtWidgets.QMessageBox.warning(
+                self._manager, "Stylesheet folder unavailable", str(exc)
+            )
+            return
+        erlab.utils.misc.open_in_file_manager(style_dir)
+
     def _parse_progressbar(self, message: str):
         """Parse and display a progress bar from a log message."""
         title_part, _, info_part = message.split("|", 2)
