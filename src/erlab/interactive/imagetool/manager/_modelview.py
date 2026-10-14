@@ -881,17 +881,25 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         ):
             return None
         proxy = None if node.imagetool is None else node.slicer_area._linking_proxy
+        color_status = (
+            "on"
+            if self.manager._actions_controller._link_colors_for_node(node)
+            else "off"
+        )
+        settings_tooltip = (
+            f"Color linking: {color_status}. Click to edit link settings."
+        )
         if proxy is not None:
             linker_index = self.manager.linker_index(proxy)
             return _RowBadge(
                 "link",
                 link_rect,
-                f"Linked (#{linker_index}). Click to unlink this window.",
+                f"Linked (#{linker_index}). {settings_tooltip}",
             )
         return _RowBadge(
             "link",
             link_rect,
-            "Linked. Click to unlink this window.",
+            f"Linked. {settings_tooltip}",
         )
 
     def _badge_at(
@@ -2102,14 +2110,16 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                     self._show_dask_badge_menu(child_node, badge.rect)
             case "link":
                 if isinstance(node, _ImageToolWrapper):
-                    self._unlink_badge_target(node)
+                    self._model.manager._actions_controller.show_link_settings(node)
                 elif isinstance(node, str):
                     try:
                         child_node = self._model.manager._child_node(node)
                     except KeyError:
                         return
                     if child_node.is_imagetool:
-                        self._unlink_badge_target(child_node)
+                        self._model.manager._actions_controller.show_link_settings(
+                            child_node
+                        )
             case "watched":
                 if isinstance(node, _ImageToolWrapper):
                     self._show_watched_badge_menu(node, badge.rect)
@@ -2151,27 +2161,6 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         if viewport is None:
             return
         tool._dask_menu.popup(viewport.mapToGlobal(badge_rect.bottomLeft()))
-
-    def _unlink_badge_target(
-        self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> None:
-        """Confirm and unlink only the ImageTool represented by ``node``."""
-        if (
-            QtWidgets.QMessageBox.question(
-                self._model.manager,
-                "Unlink ImageTool?",
-                "Unlink this ImageTool from linked cursor and color updates?",
-                QtWidgets.QMessageBox.StandardButton.Yes
-                | QtWidgets.QMessageBox.StandardButton.Cancel,
-                QtWidgets.QMessageBox.StandardButton.Cancel,
-            )
-            != QtWidgets.QMessageBox.StandardButton.Yes
-        ):
-            return
-
-        manager = self._model.manager
-        manager._actions_controller.unlink_imagetool_nodes((node,))
-        self.refresh(node.index if isinstance(node, _ImageToolWrapper) else node.uid)
 
     def _show_watched_badge_menu(
         self, wrapper: _ImageToolWrapper, badge_rect: QtCore.QRect

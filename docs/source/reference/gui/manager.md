@@ -91,7 +91,8 @@ The toolbar and row context menu provide these actions:
 - {guilabel}`Arrange Selected Windows…` places selected windows in a grid.
 - {guilabel}`Reset Index` renumbers top-level ImageTools from zero.
 - {guilabel}`Link` and {guilabel}`Unlink` control shared cursors, slices, bins, and plot
-  layout proportions.
+  layout proportions. {guilabel}`Link` leaves color settings independent by default.
+  Notebook and API calls keep color linking enabled by default.
 - {guilabel}`Offload to Workspace` replaces in-memory data with a Dask-backed array from
   the saved workspace. {menuselection}`Dask --> Load Into Memory` in ImageTool reverses
   this operation.
@@ -115,13 +116,24 @@ The toolbar and row context menu provide these actions:
 
 Tree badges describe live state:
 
-- A colored badge identifies linked ImageTools.
+- A colored badge identifies linked ImageTools. Its tooltip reports whether color
+  linking is on or off. Click the badge to open {guilabel}`Link Settings`. The
+  {guilabel}`Link color settings` checkbox enables or disables color linking for the
+  whole group. Select {guilabel}`OK` to apply the choice to subsequent changes without
+  replacing current color settings, or {guilabel}`Cancel` to keep the previous choice.
+  {guilabel}`Unlink This Window` removes only that window from the group. A saved
+  workspace preserves each group's color linking setting.
 - The Dask icon identifies chunked arrays.
 - A variable-name badge identifies a watched notebook variable.
 - {guilabel}`Stale`, {guilabel}`Unavailable`, and {guilabel}`Auto` describe update state
   for child results.
 - {guilabel}`Changed` and {guilabel}`Missing` describe results that depend on several
   live ImageTools.
+
+```{versionchanged} 3.28.0
+Manager's {guilabel}`Link` action leaves color linking off by default. The link badge
+opens settings for the group.
+```
 
 Enable {menuselection}`View --> Preview on Hover` to show row previews while moving the
 pointer over the tree.

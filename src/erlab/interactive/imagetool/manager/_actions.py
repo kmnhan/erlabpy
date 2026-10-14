@@ -34,6 +34,7 @@ from erlab.interactive.imagetool.manager._dependency import _combine_source_stat
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
     _ConcatDialog,
+    _LinkSettingsDialog,
     _RenameDialog,
     _StoreDialog,
     _WeightedFtoolDialog,
@@ -408,6 +409,67 @@ class _ActionsController:
         self._manager.link_imagetools(*targets, link_colors=link_colors)
         if deselect:
             self._manager.tree_view.deselect_all()
+
+    @staticmethod
+    def _link_colors_for_node(node: _ImageToolWrapper | _ManagedWindowNode) -> bool:
+        if node.workspace_link_key is not None:
+            return node.workspace_link_colors
+        proxy = None if node.imagetool is None else node.slicer_area._linking_proxy
+        return proxy is not None and proxy.link_colors
+
+    def _set_link_colors_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode, enabled: bool
+    ) -> None:
+        """Set color linking for the whole group without loading pending windows."""
+        proxy = None if node.imagetool is None else node.slicer_area._linking_proxy
+        link_keys: set[str] = set()
+        if node.workspace_link_key is not None:
+            link_keys.add(node.workspace_link_key)
+        if proxy is not None:
+            for slicer in proxy.children:
+                member = self._manager.node_from_slicer_area(slicer)
+                if member is not None and member.workspace_link_key is not None:
+                    link_keys.add(member.workspace_link_key)
+
+        members = [
+            member
+            for member in self._manager._tool_graph.nodes.values()
+            if member.is_imagetool
+            and (
+                member.workspace_link_key in link_keys
+                or (
+                    proxy is not None
+                    and member.imagetool is not None
+                    and member.slicer_area._linking_proxy is proxy
+                )
+            )
+        ]
+        for member in members:
+            member_proxy = (
+                None if member.imagetool is None else member.slicer_area._linking_proxy
+            )
+            if member_proxy is not None:
+                member_proxy.link_colors = enabled
+            if member.workspace_link_key is not None:
+                member.set_workspace_link_state(
+                    member.workspace_link_key, link_colors=enabled
+                )
+            self._manager._mark_node_state_dirty(member.uid)
+        self._manager._sigReloadLinkers.emit()
+
+    def show_link_settings(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
+        link_colors = self._link_colors_for_node(node)
+        dialog = _LinkSettingsDialog(link_colors, self._manager)
+        result = dialog.exec()
+        unlink_requested = dialog.unlink_requested
+        enabled = dialog.link_colors_check.isChecked()
+        dialog.deleteLater()
+        if result != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        if unlink_requested:
+            self.unlink_imagetool_nodes((node,))
+        elif enabled != link_colors:
+            self._set_link_colors_for_node(node, enabled)
 
     def _prune_workspace_link_groups(
         self, link_keys: Iterable[str], dirty_uids: set[str]

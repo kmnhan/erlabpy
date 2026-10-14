@@ -242,6 +242,7 @@ def test_manager_workspace_restore_hidden_memory_link_group_keeps_payload_pendin
 def test_manager_workspace_pending_child_link_badge_unlinks_without_materializing(
     qtbot,
     monkeypatch,
+    accept_dialog,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -310,18 +311,106 @@ def test_manager_workspace_pending_child_link_badge_unlinks_without_materializin
             "_materialize_pending_workspace_payload",
             _fail_materialize_pending_payload,
         )
-        monkeypatch.setattr(
-            QtWidgets.QMessageBox,
-            "question",
-            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        accept_dialog(
+            lambda: view._handle_badge_click(child_index, badge),
+            accept_call=lambda dialog: dialog.unlink_button.click(),
         )
-        view._handle_badge_click(child_index, badge)
 
         assert all(node.imagetool is None for node in child_nodes)
         assert all(
             node.pending_workspace_memory_payload is not None for node in child_nodes
         )
         assert all(not node.workspace_linked for node in child_nodes)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_manager_workspace_link_settings_preserve_pending_group(
+    qtbot, monkeypatch, accept_dialog, tmp_path, manager_context, enabled
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for offset in (0.0, 100.0, 200.0):
+            tool = itool(
+                xr.DataArray(
+                    np.arange(offset, offset + 25).reshape(5, 5), dims=("x", "y")
+                ),
+                manager=False,
+                execute=False,
+            )
+            manager.add_imagetool(tool, show=False)
+            tool.hide()
+        manager.link_imagetools(0, 1, 2, link_colors=not enabled)
+        fname = tmp_path / "pending-link-settings.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        nodes = [manager._tool_graph.root_wrappers[index] for index in range(3)]
+        assert all(node.imagetool is None for node in nodes)
+        pending = manager._workspace_controller.loading.pending
+        original_materialize = pending._materialize_pending_workspace_payload
+        materialized = []
+
+        def _record_materialize(node):
+            materialized.append(node.uid)
+            return original_materialize(node)
+
+        monkeypatch.setattr(
+            manager._workspace_controller.loading.pending,
+            "_materialize_pending_workspace_payload",
+            _record_materialize,
+        )
+
+        def _set_colors(dialog):
+            assert dialog.link_colors_check.isChecked() is (not enabled)
+            dialog.link_colors_check.setChecked(enabled)
+
+        accept_dialog(
+            lambda: manager._actions_controller.show_link_settings(nodes[1]),
+            pre_call=_set_colors,
+        )
+        assert materialized == []
+        assert all(node.imagetool is None for node in nodes)
+        assert all(node.workspace_link_colors is enabled for node in nodes)
+        assert all(node.uid in manager._workspace_state.dirty_state for node in nodes)
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        assert materialized == []
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        nodes = [manager._tool_graph.root_wrappers[index] for index in range(3)]
+        assert all(node.workspace_link_colors is enabled for node in nodes)
+        assert all(node.imagetool is None for node in nodes)
+        source = manager.get_imagetool(0).slicer_area
+        target = manager.get_imagetool(1).slicer_area
+        assert source._linking_proxy.link_colors is enabled
+        initial_gamma = target._colormap_properties["gamma"]
+        source.set_colormap(gamma=2.0)
+        assert target._colormap_properties["gamma"] == (
+            2.0 if enabled else initial_gamma
+        )
+        assert nodes[2].imagetool is None
+
+        def _invert_colors(dialog):
+            assert dialog.link_colors_check.isChecked() is enabled
+            dialog.link_colors_check.setChecked(not enabled)
+
+        proxy = source._linking_proxy
+        previous_gamma = target._colormap_properties["gamma"]
+        accept_dialog(
+            lambda: manager._actions_controller.show_link_settings(nodes[2]),
+            pre_call=_invert_colors,
+        )
+        assert source._linking_proxy is proxy
+        assert proxy.link_colors is (not enabled)
+        assert all(node.workspace_link_colors is (not enabled) for node in nodes)
+        assert nodes[2].imagetool is None
+        source.set_colormap(gamma=3.0)
+        assert target._colormap_properties["gamma"] == (
+            previous_gamma if enabled else 3.0
+        )
+        assert nodes[2].imagetool is None
 
 
 def test_manager_workspace_mixed_pending_link_badge_uses_group_color(
