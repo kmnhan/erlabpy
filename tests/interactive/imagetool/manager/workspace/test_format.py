@@ -1198,7 +1198,9 @@ def test_workspace_immutable_generation_helpers_filter_invalid_manifest_entries(
     assert workspace_format._workspace_schema_uses_immutable_generations(5)
     assert workspace_format._workspace_schema_uses_immutable_generations(6)
     assert not workspace_format._workspace_schema_uses_immutable_generations(4)
-    assert not workspace_format._workspace_schema_uses_immutable_generations(7)
+    assert not workspace_format._workspace_schema_uses_immutable_generations(
+        _persistence_constants.WORKSPACE_SCHEMA_VERSION + 1
+    )
 
 
 def test_workspace_manifest_attrs_reject_invalid_entries(caplog) -> None:

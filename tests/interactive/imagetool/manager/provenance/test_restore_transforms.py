@@ -13,12 +13,14 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     ToolProvenanceSpec,
     full_data,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     ShiftFromInputOperation,
+    ShiftOperation,
 )
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from tests.interactive.imagetool.manager.helpers import (
@@ -35,6 +37,31 @@ from tests.interactive.imagetool.manager.provenance._common import (
     _authorize_local_edit,
     _manager_replay_file_spec,
 )
+
+
+def test_recorded_resolved_input_with_nan_parameters_applies_transform_once(
+    manager_context,
+) -> None:
+    data = xr.DataArray(np.arange(5.0), dims="x", coords={"x": np.arange(5.0)})
+    source_spec = full_data(ShiftOperation(shift=1.0, along="x"))
+    resolved = source_spec.apply(data)
+    with manager_context() as manager:
+        store = manager._provenance_revisions
+        raw_id = store.add(data)
+        recipe = store.normalize_provenance(
+            source_spec, replay_source_revision_id=raw_id
+        )
+        revision_id = store.add(resolved, recipe)
+        source = ScriptInput(
+            name="data",
+            revision_id=revision_id,
+            source_spec=source_spec,
+            provenance_spec=json.loads(json.dumps(recipe.model_dump(mode="json"))),
+        )
+        recorded, _source = manager._lineage_controller._resolve_recorded_script_input(
+            source
+        )
+        xr.testing.assert_identical(recorded, resolved)
 
 
 def test_manager_mixed_revert_restores_checkpoint_and_rebuilds_legacy_recipe(

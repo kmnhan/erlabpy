@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import typing
 import uuid
 from collections.abc import Mapping
@@ -16,6 +17,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
 )
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import (
     script_replay_source_input_names,
 )
@@ -67,6 +69,17 @@ def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
 
     _visit(spec.model_dump(mode="python"))
     return frozenset(ids)
+
+
+def _same_provenance(
+    left: ToolProvenanceSpec | None, right: ToolProvenanceSpec | None
+) -> bool:
+    """Compare recorded recipes, including serialized NaN operation values."""
+    return json.dumps(
+        None if left is None else left.model_dump(mode="json"), sort_keys=True
+    ) == json.dumps(
+        None if right is None else right.model_dump(mode="json"), sort_keys=True
+    )
 
 
 def requires_legacy_replay_source(spec: ToolProvenanceSpec | None) -> bool:
@@ -301,7 +314,7 @@ class _ProvenanceRevisionStore:
                             input_policy=policy if operation.live_applicable else None,
                             context_names=(
                                 ("data", "derived", "parent_data")
-                                if operation.op == "script_code"
+                                if isinstance(operation, ScriptCodeOperation)
                                 else ()
                             ),
                         )

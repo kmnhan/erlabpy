@@ -82,6 +82,7 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
 from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
     _ProvenanceReorderDialog,
 )
+from erlab.interactive.imagetool.manager._revisions import _same_provenance
 from erlab.interactive.imagetool.manager._widgets import (
     _TrustedProvenanceReplayCancelled,
 )
@@ -225,7 +226,7 @@ class _ProvenanceEditController:
                 break
             recorded_spec = record.provenance_spec
             if store.has_data(revision_id) and (
-                recorded_spec == candidate
+                _same_provenance(recorded_spec, candidate)
                 or (
                     recorded_spec is None
                     and candidate.kind in {"full_data", "public_data", "selection"}

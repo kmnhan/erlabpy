@@ -73,6 +73,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemModel,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -6884,6 +6885,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._provenance_revisions = _ProvenanceRevisionStore()
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self._extensions = types.SimpleNamespace(
@@ -6905,6 +6907,10 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             )
             self._lineage_controller = types.SimpleNamespace(
                 _parent_source_data_for_uid=self._parent_source_data_for_uid,
+                _has_recorded_script_input=lambda item: (
+                    item.revision_id is not None
+                    and self._provenance_revisions.has_data(item.revision_id)
+                ),
                 _propagate_source_state_from_uid=(
                     self._propagate_source_state_from_uid
                 ),

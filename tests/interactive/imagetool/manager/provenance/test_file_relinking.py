@@ -2034,14 +2034,16 @@ def test_manager_provenance_edit_controller_error_paths(
     )
     monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
     monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
-    monkeypatch.setattr(controller, "_display_spec_for_row", lambda _node, _row: None)
+    monkeypatch.setattr(
+        controller, "_display_spec_for_row", lambda _node, _row, **_kwargs: None
+    )
     controller.revert_row(row)
     assert len(failed) == 1
 
     monkeypatch.setattr(
         controller,
         "_display_spec_for_row",
-        lambda _node, _row: full_data(),
+        lambda _node, _row, **_kwargs: full_data(),
     )
     monkeypatch.setattr(
         controller,

@@ -50,6 +50,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _NODE_UID_ROLE,
     _ImageToolWrapperItemDelegate,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     child_status_badge,
@@ -143,73 +144,46 @@ def test_multi_input_script_provenance_rejects_mismatched_input_names() -> None:
         )
 
 
-def test_resolve_owner_replay_input_applies_source_spec() -> None:
+def test_resolve_captured_input_applies_source_spec() -> None:
     data = xr.DataArray(np.arange(4), dims="x")
     source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
-    snapshot_token = str(object())
+    store = _ProvenanceRevisionStore()
     script_input = ScriptInput(
         name="data",
-        node_snapshot_token=snapshot_token,
+        revision_id=store.add(data),
+        follow_source=False,
         source_spec=source_spec.model_dump(mode="json"),
     )
     manager = types.SimpleNamespace(
+        _provenance_revisions=store,
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(run_operation=None)
+        ),
+        _workspace_controller=types.SimpleNamespace(
+            issue_code_execution_capability=lambda *_args, **_kwargs: (
+                _authorize_execution(())
+            )
         ),
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = manager_lineage._LineageController(manager)
-
-    assert (
-        controller._resolve_live_script_input_for_reload(
-            script_input, target_node_uid="owner"
-        )
-        is None
-    )
-
-    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
-        resolved_replay_source_data=lambda: None
-    )
-    assert (
-        controller._resolve_live_script_input_for_reload(
-            script_input, target_node_uid="owner"
-        )
-        is None
-    )
-
-    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
-        resolved_replay_source_data=lambda: data
-    )
-    resolved = controller._resolve_live_script_input_for_reload(
-        script_input, target_node_uid="owner"
-    )
-
+    resolved = controller._resolve_live_script_input_for_reload(script_input)
     assert resolved is not None
     resolved_data, resolved_input = resolved
     xr.testing.assert_identical(resolved_data, source_spec.apply(data))
     assert resolved_input is script_input
+    missing = script_input.model_copy(update={"revision_id": "missing"})
+    assert controller._resolve_live_script_input_for_reload(missing) is None
 
 
-def test_input_plan_rejects_invalid_owner_replay_inputs() -> None:
-    owner_input = ScriptInput(name="data", node_snapshot_token=str(object()))
+def test_input_plan_rejects_missing_captured_input() -> None:
     manager = types.SimpleNamespace(
-        _tool_graph=types.SimpleNamespace(
-            nodes={"owner": types.SimpleNamespace(has_replay_source=True)}
-        )
+        _provenance_revisions=_ProvenanceRevisionStore(),
+        _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = manager_lineage._LineageController(manager)
-
-    plan = controller._input_resolution_plan(
-        (owner_input, owner_input.model_copy(update={"name": "other"})),
-        target_node_uid="owner",
-    )
-    assert (
-        plan.unavailable_reason
-        == "A result can use only one stored replay-source input."
-    )
-
-    manager._tool_graph.nodes["owner"].has_replay_source = False
-    plan = controller._input_resolution_plan((owner_input,), target_node_uid="owner")
+    captured = ScriptInput(name="data", revision_id="missing", follow_source=False)
+    plan = controller._input_resolution_plan((captured,), target_node_uid="owner")
     assert plan.unavailable_reason == "data has no recorded reload source."
 
 
@@ -249,22 +223,33 @@ def test_open_script_input_plan_rejects_invalid_replay() -> None:
     )
 
 
-def test_validate_detached_replacement_rejects_multiple_owner_replay_inputs() -> None:
-    controller = manager_lineage._LineageController(types.SimpleNamespace())
+def test_detached_replacement_accepts_multiple_captured_inputs() -> None:
+    store = _ProvenanceRevisionStore()
+    graph = types.SimpleNamespace(nodes={})
+    manager = types.SimpleNamespace(
+        _provenance_revisions=store,
+        _tool_graph=graph,
+        _dependency_tracker=manager_dependency._ManagerDependencyTracker(graph),
+    )
+    controller = manager_lineage._LineageController(manager)
+    inputs = tuple(
+        ScriptInput(
+            name=name, revision_id=store.add(xr.DataArray([value])), follow_source=False
+        )
+        for name, value in (("data", 1), ("other", 2))
+    )
     spec = script(
         ScriptCodeOperation(label="Combine inputs", code="result = data + other"),
         start_label="Combine inputs",
         active_name="result",
-        script_inputs=(
-            ScriptInput(name="data", node_snapshot_token=str(object())),
-            ScriptInput(name="other", node_snapshot_token=str(object())),
-        ),
+        script_inputs=inputs,
     )
-
-    with pytest.raises(ValueError, match="only one stored replay-source input"):
-        controller._validate_detached_replacement(
-            types.SimpleNamespace(uid="owner"), spec, xr.DataArray([1])
-        )
+    controller._validate_detached_replacement(types.SimpleNamespace(uid="owner"), spec)
+    plan = controller._input_resolution_plan(inputs, target_node_uid="owner")
+    assert plan.unavailable_reason is None
+    assert not plan.actions
+    resolved = [controller._resolve_recorded_script_input(item)[0] for item in inputs]
+    xr.testing.assert_equal(resolved[0] + resolved[1], xr.DataArray([3]))
 
 
 def test_pending_reload_reports_unreplayable_script() -> None:
@@ -1534,7 +1519,7 @@ def test_input_resolution_plan_classifies_each_live_fallback_once(
     )
 
     assert plan.unavailable_reason is None
-    assert calls == {"recorded": 1, "live": 2}
+    assert calls == {"live": 2}
 
 
 def test_pending_script_reload_rejects_missing_recorded_input() -> None:
@@ -1566,12 +1551,16 @@ def test_pending_script_reload_rejects_missing_recorded_input() -> None:
     assert "no recorded reload source" in reason
 
 
-def test_pending_script_reload_accepts_owner_replay_source() -> None:
+def test_pending_script_reload_accepts_captured_revision() -> None:
+    store = _ProvenanceRevisionStore()
+    revision_id = store.add(xr.DataArray([1.0]))
     spec = script(
         start_label="Copy stored input",
         seed_code="result = data",
         active_name="result",
-        script_inputs=(ScriptInput(name="data", node_snapshot_token=str(object())),),
+        script_inputs=(
+            ScriptInput(name="data", revision_id=revision_id, follow_source=False),
+        ),
     )
     node = types.SimpleNamespace(
         uid="pending",
@@ -1580,9 +1569,9 @@ def test_pending_script_reload_accepts_owner_replay_source() -> None:
         imagetool=None,
         pending_workspace_memory_payload=object(),
         provenance_spec=spec,
-        has_replay_source=True,
     )
     manager = types.SimpleNamespace(
+        _provenance_revisions=store,
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None,
             capability_status=lambda *_args, **_kwargs: None,
@@ -5993,8 +5982,15 @@ def test_manager_promote_live_child_retains_replay_source(
 
         promoted_index = manager.promote_child_imagetool(child_uid)
         promoted = manager._tool_graph.root_wrappers[promoted_index]
-        assert promoted.replay_source_data is not None
-        xr.testing.assert_identical(promoted.replay_source_data, expected_source)
+        assert promoted.replay_source_data is None
+        assert promoted.provenance_spec is not None
+        captured = promoted.provenance_spec.script_inputs[0]
+        assert captured.revision_id is not None
+        assert not captured.follow_source
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id),
+            expected_source,
+        )
 
         select_tools(manager, [promoted_index])
         manager._update_info(uid=promoted.uid)
@@ -6055,7 +6051,7 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
         manager._update_info()
         derivation = metadata_derivation_texts(manager)
         assert derivation == [
-            "Start from current parent ImageTool data",
+            "Use data from Saved",
             'Aggregate(dims=("x",), func="mean")',
         ]
 

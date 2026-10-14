@@ -316,8 +316,8 @@ def captured_revision_code_trust_entries(
             previous_trust, (entry,)
         )
         if capability is not None:
-            approved[typing.cast("str", owner)].add(entry.execution_identity())
-    entries = []
+            approved[owner].add(entry.execution_identity())
+    entries: list[CodeTrustEntry] = []
     for record in manager._provenance_revisions.reachable(
         workspace_revisions.retained_revision_ids(manager)
     ):
@@ -327,7 +327,7 @@ def captured_revision_code_trust_entries(
             or record.provenance_spec is None
         ):
             continue
-        allowed = approved[typing.cast("str", record.source_owner_uid)]
+        allowed = approved[record.source_owner_uid]
         entries.extend(
             entry
             for entry in provenance_code_trust_entries(

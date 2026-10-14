@@ -17,6 +17,7 @@ import xarray as xr
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
 from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
     ScriptInput,
     full_data,
     public_data,
@@ -26,6 +27,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
     ScriptCodeOperation,
+    ShiftFromInputOperation,
 )
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
@@ -115,7 +117,8 @@ def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
     records = registry.reachable([second])
     manifest = _manifest()
     manifest["provenance_revisions"] = [
-        workspace_revisions.revision_manifest_entry(record) for record in records
+        workspace_revisions.revision_manifest_entry(registry, record)
+        for record in records
     ]
     path = tmp_path / "revisions.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
@@ -207,7 +210,7 @@ def test_workspace_trust_covers_historical_revision_recipes() -> None:
     second = registry.add(primary_revision_id=first)
     manifest = _manifest()
     manifest["provenance_revisions"] = [
-        workspace_revisions.revision_manifest_entry(record)
+        workspace_revisions.revision_manifest_entry(registry, record)
         for record in registry.reachable([second])
     ]
     baseline = workspace_code_trust_manifest(manifest).canonical_bytes()
@@ -219,6 +222,54 @@ def test_workspace_trust_covers_historical_revision_recipes() -> None:
     assert workspace_code_trust_manifest(manifest).canonical_bytes() != baseline
 
 
+def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None:
+    registry = _ProvenanceRevisionStore()
+    owner_snapshot = "old-owner"
+    spec = script(
+        start_label="Shift",
+        active_name="shifted",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data", revision_id="source", node_snapshot_token=owner_snapshot
+            ),
+            ScriptInput(name="shift", revision_id="shift-source"),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ShiftFromInputOperation(along="x"),
+                input_bindings={"shift": "shift"},
+            ),
+        ),
+    )
+
+    def _forbid_checkpoint_read() -> xr.DataArray:
+        raise AssertionError("metadata normalization read immutable data")
+
+    revision_id = registry.add(
+        spec=spec,
+        provider=_forbid_checkpoint_read,
+        input_revisions={"data": "source", "shift": "shift-source"},
+        primary_revision_id="prior",
+        source_owner_uid="owner",
+    )
+    record = registry.get(revision_id)
+    entry = workspace_revisions.revision_manifest_entry(registry, record)
+    assert entry["provenance_spec"]["script_inputs"][0]["node_snapshot_token"] is None
+    manifest = json.loads(json.dumps({"provenance_revisions": [entry]}))
+    workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
+    assert registry.get(revision_id).checkpoint.provider is _forbid_checkpoint_read
+    assert registry.get(revision_id).provenance_spec == spec
+
+    manifest["provenance_revisions"][0]["provenance_spec"]["steps"][0]["operation"][
+        "cval"
+    ] = 0.0
+    with pytest.raises(
+        ValueError, match="Conflicting workspace provenance revision ID"
+    ):
+        workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
+
+
 def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
     tmp_path,
 ) -> None:
@@ -228,7 +279,8 @@ def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
     records = registry.reachable([revision_id])
     manifest = _manifest()
     manifest["provenance_revisions"] = [
-        workspace_revisions.revision_manifest_entry(record) for record in records
+        workspace_revisions.revision_manifest_entry(registry, record)
+        for record in records
     ]
     original = tmp_path / "original.itws"
     destination = tmp_path / "destination.itws"
@@ -403,12 +455,12 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
     assert reads == 1
     record = registry.get(result)
     assert record is not None
-    entry = workspace_revisions.revision_manifest_entry(record)
+    entry = workspace_revisions.revision_manifest_entry(registry, record)
     assert entry["provenance_spec"]["script_inputs"][0]["revision_id"] == seed_id
     assert "replay_source_revision_id" not in entry
     manifest = {
         "provenance_revisions": [
-            workspace_revisions.revision_manifest_entry(record)
+            workspace_revisions.revision_manifest_entry(registry, record)
             for record in registry.reachable([result])
         ]
     }

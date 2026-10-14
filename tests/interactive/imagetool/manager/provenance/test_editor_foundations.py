@@ -1472,7 +1472,12 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
         source_spec=source_spec,
         source_display_spec=source_spec,
     )
-    child.manager = types.SimpleNamespace(_parent_node=lambda _node: parent)
+    child.manager = types.SimpleNamespace(
+        _parent_node=lambda _node: parent,
+        _lineage_controller=types.SimpleNamespace(
+            _has_recorded_script_input=lambda _item: False
+        ),
+    )
     child.derivation_display_rows_cache_key = (
         manager_wrapper._ManagedWindowNode.derivation_display_rows_cache_key.fget(child)
     )
@@ -1493,7 +1498,10 @@ def test_manager_derivation_cache_key_supports_deep_lineages() -> None:
             raise RuntimeError("root node has no parent")
         return nodes[node.parent_uid]
 
-    manager = types.SimpleNamespace(_parent_node=parent_node)
+    manager = types.SimpleNamespace(
+        _parent_node=parent_node,
+        _tool_graph=types.SimpleNamespace(structure_generation=0),
+    )
     parent_uid: str | None = None
     for generation in range(1_200):
         uid = str(generation)
@@ -1504,9 +1512,9 @@ def test_manager_derivation_cache_key_supports_deep_lineages() -> None:
         raise RuntimeError("deep lineage was not constructed")
     cache_key = nodes[parent_uid]._derivation_display_rows_lineage_generation
 
-    assert len(cache_key) == 2_400
+    assert len(cache_key) == 2_401
     assert cache_key[:4] == (0, 0, 1, 0)
-    assert cache_key[-4:] == (1_198, 0, 1_199, 0)
+    assert cache_key[-5:] == (1_198, 0, 1_199, 0, 0)
 
 
 def test_manager_derivation_cache_key_rejects_lineage_cycles() -> None:
@@ -1517,7 +1525,10 @@ def test_manager_derivation_cache_key_rejects_lineage_cycles() -> None:
             raise RuntimeError("root node has no parent")
         return nodes[node.parent_uid]
 
-    manager = types.SimpleNamespace(_parent_node=parent_node)
+    manager = types.SimpleNamespace(
+        _parent_node=parent_node,
+        _tool_graph=types.SimpleNamespace(structure_generation=0),
+    )
     nodes["first"] = _LineageKeyNode(manager, "first", "second", 0)
     nodes["second"] = _LineageKeyNode(manager, "second", "first", 0)
 

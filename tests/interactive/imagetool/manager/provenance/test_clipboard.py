@@ -803,15 +803,28 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     )
     derivation_list = manager_widgets._MetadataDerivationListWidget()
     qtbot.addWidget(derivation_list)
-    source_node = types.SimpleNamespace(
-        uid="n16",
-        parent_uid=None,
-        is_imagetool=True,
-        name="3 V",
-        type_badge_text=None,
-        _childtool_indices=[],
-    )
     current_path = [(4,)]
+
+    class LabelSource(manager_wrapper._ImageToolWrapper):
+        def __init__(self) -> None:
+            QtCore.QObject.__init__(self)
+            self.uid = "n16"
+            self.parent_uid = None
+            self._childtool_indices = []
+
+        @property
+        def is_imagetool(self) -> bool:
+            return True
+
+        @property
+        def name(self) -> str:
+            return "3 V"
+
+        @property
+        def index(self) -> int:
+            return current_path[0][0]
+
+    source_node = LabelSource()
     graph = types.SimpleNamespace(
         nodes={"n16": source_node},
         structure_generation=0,
@@ -827,7 +840,8 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
         _lineage_controller=types.SimpleNamespace(
-            _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec)
+            _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
+            _has_recorded_script_input=lambda _input: False,
         ),
     )
     controller = manager_details_panel._DetailsPanelController(
@@ -847,7 +861,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
 
     input_item = derivation_list.topLevelItem(1)
     assert input_item is not None
-    assert input_item.text(0) == "Use data_10 from ImageTool 4: 3 V"
+    assert input_item.text(0) == "Use data_10 from ImageTool 4"
     assert "ImageTool 10" not in input_item.text(0)
 
     graph.structure_generation += 1
@@ -859,7 +873,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     updated_input_item = derivation_list.topLevelItem(1)
     assert updated_input_item is not None
     assert updated_input_item is not input_item
-    assert updated_input_item.text(0) == "Use data_10 from ImageTool 7.1: 3 V"
+    assert updated_input_item.text(0) == "Use data_10 from ImageTool 7"
 
 
 def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None:
@@ -889,7 +903,8 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
         _lineage_controller=types.SimpleNamespace(
-            _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec)
+            _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
+            _has_recorded_script_input=lambda _input: False,
         ),
     )
     controller = manager_details_panel._DetailsPanelController(
@@ -909,7 +924,7 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
 
     input_item = derivation_list.topLevelItem(1)
     assert input_item is not None
-    assert input_item.text(0) == "Missing source for data_10"
+    assert input_item.text(0) == "Missing"
     assert "ImageTool 10" not in input_item.text(0)
 
 
@@ -976,7 +991,15 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
         derivation_display_rows=spec.display_rows(),
     )
     controller = manager_details_panel._DetailsPanelController(
-        typing.cast("typing.Any", types.SimpleNamespace())
+        typing.cast(
+            "typing.Any",
+            types.SimpleNamespace(
+                _tool_graph=types.SimpleNamespace(nodes={}),
+                _lineage_controller=types.SimpleNamespace(
+                    _has_recorded_script_input=lambda _input: False
+                ),
+            ),
+        )
     )
 
     details = controller._unavailable_replay_code_details(
@@ -984,7 +1007,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
     )
 
     assert "Run opaque code" in details
-    assert "Use data_3 from ImageTool 3: D10cu" not in details
+    assert "Missing" not in details
 
 
 def test_manager_derivation_context_menu_ignores_empty_space(

@@ -1848,8 +1848,13 @@ def test_manager_detached_watched_provenance_reorder_uses_retained_source(
             for operation in root.provenance_spec.operations
         ] == ["second", "first"]
         assert root.slicer_area._data.attrs["order"] == "first"
-        assert root.replay_source_data is not None
-        xr.testing.assert_identical(root.replay_source_data, source)
+        assert root.replay_source_data is None
+        assert root.provenance_spec is not None
+        seed_id = root.provenance_spec.script_inputs[0].revision_id
+        assert seed_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id), source
+        )
 
 
 def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
@@ -1902,8 +1907,13 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
             (AssignAttrsOperation(attrs={"pasted": True}),),
         )
 
-        assert root.replay_source_data is not None
-        xr.testing.assert_identical(root.replay_source_data, source)
+        assert root.replay_source_data is None
+        assert root.provenance_spec is not None
+        seed_id = root.provenance_spec.script_inputs[0].revision_id
+        assert seed_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id), source
+        )
         assert root.provenance_spec is not None
         xr.testing.assert_identical(
             manager._provenance_edit_controller._replay_candidate(
@@ -3064,23 +3074,17 @@ def test_source_label_tracks_live_uid_after_reindex(
         assert manager_source_labels.script_input_source_label(manager, source) == (
             "ImageTool 7"
         )
-        assert panel._script_input_row_label(source, include_history=True) == (
-            "Use data from ImageTool 7"
-        )
+        assert panel._script_input_row_label(source) == ("Use data from ImageTool 7")
         manager.reindex()
         assert manager_source_labels.script_input_source_label(manager, source) == (
             "ImageTool 0"
         )
-        assert panel._script_input_row_label(source, include_history=True) == (
-            "Use data from ImageTool 0"
-        )
+        assert panel._script_input_row_label(source) == ("Use data from ImageTool 0")
         manager.remove_imagetool(0)
         assert manager_source_labels.script_input_source_label(manager, source) == (
             "Missing"
         )
-        assert panel._script_input_row_label(source, include_history=True) == (
-            "Use data from Missing"
-        )
+        assert panel._script_input_row_label(source) == ("Missing")
 
 
 @pytest.mark.parametrize("retained", [False, True])
@@ -3156,11 +3160,8 @@ def test_source_label_live_managed_tool() -> None:
     )
 
 
-@pytest.mark.parametrize("include_history", [False, True])
 @pytest.mark.parametrize("retained", [False, True])
-def test_details_closed_source_label_has_no_historical_number(
-    include_history: bool, retained: bool
-) -> None:
+def test_details_closed_source_label_has_no_historical_number(retained: bool) -> None:
     manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={}),
         _lineage_controller=types.SimpleNamespace(
@@ -3169,8 +3170,8 @@ def test_details_closed_source_label_has_no_historical_number(
     )
     panel = manager_details_panel._DetailsPanelController(manager)
     source = ScriptInput(name="shift", label="ImageTool 42", node_uid="closed")
-    assert panel._script_input_row_label(source, include_history=include_history) == (
-        f"Use shift from {'Saved' if retained else 'Missing'}"
+    assert panel._script_input_row_label(source) == (
+        "Use shift from Saved" if retained else "Missing"
     )
     source = source.model_copy(
         update={
@@ -3180,9 +3181,7 @@ def test_details_closed_source_label_has_no_historical_number(
             ).model_dump(mode="json"),
         }
     )
-    assert panel._script_input_row_label(source, include_history=include_history) == (
-        "Use shift from shift.h5"
-    )
+    assert panel._script_input_row_label(source) == ("Use shift from shift.h5")
 
 
 @pytest.mark.parametrize("available", [False, True])

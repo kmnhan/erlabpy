@@ -32,6 +32,7 @@ from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 _register_local_callable_loader(xr.load_dataarray)
 
@@ -251,7 +252,11 @@ def _fake_edit_controller(
             raise RuntimeError("missing parent")
         return parent
 
+    revisions = _ProvenanceRevisionStore()
     lineage_controller = types.SimpleNamespace(
+        _has_recorded_script_input=lambda item: (
+            item.revision_id is not None and revisions.has_data(item.revision_id)
+        ),
         _script_input_unavailable_reason=(
             script_input_unavailable_reason
             if script_input_unavailable_reason is not None
@@ -271,6 +276,7 @@ def _fake_edit_controller(
     )
     manager = types.SimpleNamespace(
         _metadata_node_uid=metadata_uid,
+        _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
         _selected_imagetool_targets=lambda: selected_targets,
         _node_for_target=lambda target: graph_nodes[target],
@@ -332,6 +338,9 @@ def _fake_edit_node(
         _derivation_display_rows_generation=0,
         _derivation_display_rows_lineage_generation=(0,),
         provenance_revision=0,
+        current_revision_id=None,
+        revision_id_for_role=lambda _role: None,
+        _suspend_snapshot_updates=contextlib.nullcontext,
         replay_source_data=None,
         has_replay_source=False,
         source_spec=source_spec,

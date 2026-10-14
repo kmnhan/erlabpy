@@ -2158,7 +2158,12 @@ class _ManagedWindowNode(QtCore.QObject):
                 return source[1]
         spec = self.provenance_for_role(data_role)
         replay_source_revision_id = None
-        if requires_legacy_replay_source(spec):
+        watched_source = (
+            isinstance(self, _ImageToolWrapper)
+            and self.watched
+            and self._provenance_spec is None
+        )
+        if requires_legacy_replay_source(spec) and not watched_source:
             seed = self.resolved_replay_source_data()
             if seed is not None:
                 replay_source_revision_id = self.manager._provenance_revisions.add(seed)

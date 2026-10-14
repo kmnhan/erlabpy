@@ -47,6 +47,7 @@ from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperat
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import _same_provenance
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
@@ -670,7 +671,15 @@ class _LineageController:
             return None
         data = self._manager._provenance_revisions.resolve_data(revision_id)
         source_spec = script_input.parsed_source_spec()
-        if source_spec is not None:
+        record = self._manager._provenance_revisions.get(revision_id)
+        owns_resolved_input = (
+            record is not None
+            and record.provenance_spec is not None
+            and _same_provenance(
+                record.provenance_spec, script_input.parsed_provenance_spec()
+            )
+        )
+        if source_spec is not None and not owns_resolved_input:
             data = self._apply_provenance(
                 source_spec,
                 data,
@@ -910,7 +919,13 @@ class _LineageController:
                 )
                 and (
                     not script_input.follow_source
-                    or script_input.provenance_spec is None
+                    or (
+                        script_input.provenance_spec is None
+                        and self._manager._tool_graph.nodes.get(
+                            script_input.node_uid or ""
+                        )
+                        is None
+                    )
                 )
             ):
                 return None

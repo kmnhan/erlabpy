@@ -854,6 +854,7 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
         source_store.publish(current_manifest)
 
         manager = types.SimpleNamespace(
+            _provenance_revisions=_ProvenanceRevisionStore(),
             _workspace_state=types.SimpleNamespace(
                 dirty_data=set(),
                 dirty_added=set(),

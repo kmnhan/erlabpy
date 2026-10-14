@@ -620,8 +620,6 @@ class _DetailsPanelController:
     def _script_input_row_label(
         self,
         script_input: ScriptInput,
-        *,
-        include_history: bool,
     ) -> str:
         label = script_input_source_label(
             self._manager,
@@ -630,7 +628,9 @@ class _DetailsPanelController:
                 self._manager._lineage_controller._has_recorded_script_input
             ),
         )
-        return f"Use {script_input.name} from {label}"
+        return (
+            "Missing" if label == "Missing" else f"Use {script_input.name} from {label}"
+        )
 
     @staticmethod
     def _script_input_for_row(
@@ -663,14 +663,11 @@ class _DetailsPanelController:
         self,
         row: _ProvenanceDisplayRow,
         spec: ToolProvenanceSpec | None,
-        *,
-        include_history: bool,
     ) -> _ProvenanceDisplayRow:
         children = tuple(
             self._current_derivation_display_row(
                 child,
                 spec,
-                include_history=include_history,
             )
             for child in row.children
         )
@@ -680,7 +677,6 @@ class _DetailsPanelController:
             if script_input is None
             else self._script_input_row_label(
                 script_input,
-                include_history=include_history,
             )
         )
         if label is None and children == row.children:
@@ -691,8 +687,6 @@ class _DetailsPanelController:
     def _current_derivation_display_rows(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        *,
-        include_history: bool = False,
     ) -> list[_ProvenanceDisplayRow]:
         spec = node.passive_displayed_provenance_spec
         rows = getattr(node, "derivation_display_rows", None)
@@ -705,7 +699,6 @@ class _DetailsPanelController:
             self._current_derivation_display_row(
                 row,
                 spec,
-                include_history=include_history,
             )
             for row in rows
         ]
@@ -853,7 +846,6 @@ class _DetailsPanelController:
                     self._current_derivation_display_row(
                         child_row,
                         node.passive_displayed_provenance_spec,
-                        include_history=False,
                     )
                     for child_row in target_row.materialized_children()
                 )
@@ -877,7 +869,6 @@ class _DetailsPanelController:
             current_row = self._current_derivation_display_row(
                 child_row,
                 self._metadata_derivation_spec,
-                include_history=False,
             )
             child_item = self._metadata_derivation_item(current_row)
             item.addChild(child_item)
@@ -1539,7 +1530,7 @@ class _DetailsPanelController:
             getattr(node, "displayed_provenance_spec", None)
         )
         rows = self._flatten_derivation_rows(
-            self._current_derivation_display_rows(node, include_history=True)
+            self._current_derivation_display_rows(node)
         )
         for row in rows[1:]:
             entry = row.entry
@@ -1577,7 +1568,6 @@ class _DetailsPanelController:
                 " ".join(
                     self._script_input_row_label(
                         script_input,
-                        include_history=True,
                     ).split()
                 )
             )

@@ -2888,7 +2888,6 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             operation,
             emit_edited=True,
         )
-        detached_token = manager._tool_graph.root_wrappers[0].source_snapshot_token
 
         compatible_child = typing.cast(
             "erlab.interactive.imagetool.ImageTool",
@@ -2965,14 +2964,19 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             source.node_snapshot_token
             for source in replacement_provenance.script_inputs
         ] == [
-            detached_token,
+            None,
             manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
         assert replacement_provenance.script_inputs[
             0
         ].parsed_provenance_spec() == to_replay_provenance_spec(old_root_provenance)
-        assert replacement_wrapper.replay_source_data is not None
-        xr.testing.assert_identical(replacement_wrapper.replay_source_data, data0)
+        captured = replacement_provenance.script_inputs[0]
+        assert captured.revision_id is not None
+        assert not captured.follow_source
+        assert replacement_wrapper.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id), data0
+        )
 
         updated_data1 = data1 + 5.0
         manager.get_imagetool(1).slicer_area.replace_source_data(updated_data1)
@@ -3895,7 +3899,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]
         assert all(line.strip() for line in details["Inputs"].splitlines())
-        assert "recorded source file found" in details["Inputs"]
+        assert "data_1: right.nc" in details["Inputs"]
 
         manager.reload_selected()
 

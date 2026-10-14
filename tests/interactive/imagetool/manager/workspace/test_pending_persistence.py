@@ -1154,20 +1154,26 @@ def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
 
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
-        assert wrapper.has_replay_source
-        assert wrapper.replay_source_data is None
+        source_revision = wrapper.provenance_spec.script_inputs[0].revision_id
+        assert source_revision is not None
+        assert manager._provenance_revisions.has_data(source_revision)
         select_tools(manager, [0])
         manager._update_info(uid=wrapper.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
         manager.get_imagetool(0)
-        assert wrapper.replay_source_data is not None
-        xr.testing.assert_identical(wrapper.replay_source_data, source)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(source_revision).compute(),
+            source,
+        )
 
         duplicate_index = typing.cast("int", manager.duplicate_imagetool(0))
         duplicate = manager._tool_graph.root_wrappers[duplicate_index]
-        assert duplicate.replay_source_data is not None
-        xr.testing.assert_identical(duplicate.replay_source_data, source)
+        assert duplicate.provenance_spec.script_inputs[0].revision_id == source_revision
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(source_revision).compute(),
+            source,
+        )
 
 
 def test_generation_save_copies_pending_tools_without_construction(
@@ -1549,6 +1555,12 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
         )
 
         xr.testing.assert_identical(child.tool_window.tool_data, resolved)
+        assert child.tool_window.script_inputs[0].parsed_source_spec() == source_spec
+        assert manager._lineage_controller._refresh_tool_inputs(
+            child_uid,
+            allow_recorded=True,
+        )
+        xr.testing.assert_identical(child.tool_window.tool_data, resolved)
 
 
 def test_legacy_toolwindow_input_provenance_binds_live_parent(
@@ -1832,25 +1844,25 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
         root_node = manager._tool_graph.root_wrappers[0]
         assert child_node.pending_workspace_memory_payload is not None
         assert root_node.pending_workspace_memory_payload is not None
-        assert root_node.replay_source_data is None
-        assert root_node.has_replay_source
+        source_revision = root_node.provenance_spec.script_inputs[0].revision_id
+        assert source_revision is not None
+        assert manager._provenance_revisions.has_data(source_revision)
 
         with monkeypatch.context() as patch:
             patch.setattr(
                 root_node, "materialize_pending_workspace_payload", lambda: False
             )
-            with pytest.raises(RuntimeError, match="saved replay source"):
-                manager.promote_child_imagetool(child_uid)
-        assert child_uid in manager._tool_graph.nodes
-        assert manager._child_node(child_uid).parent_uid == root_node.uid
-
-        promoted_index = manager.promote_child_imagetool(child_uid)
+            promoted_index = manager.promote_child_imagetool(child_uid)
+        assert root_node.pending_workspace_memory_payload is not None
         promoted = manager.get_imagetool(promoted_index).slicer_area
         promoted_node = manager._tool_graph.root_wrappers[promoted_index]
 
         assert promoted_node.pending_workspace_memory_payload is None
         xr.testing.assert_identical(promoted._data, child_data)
-        xr.testing.assert_identical(promoted_node.replay_source_data, replay_source)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(source_revision).compute(),
+            replay_source,
+        )
         assert promoted_node.provenance_spec is not None
         select_tools(manager, [promoted_index])
         manager._update_info(uid=promoted_node.uid)

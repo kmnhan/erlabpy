@@ -6899,7 +6899,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
 
     assert [
         ref.node_uid for ref in script_inputs_dependency_refs(spec.script_inputs)
-    ] == ["old-extra"]
+    ] == ["old-left", "old-right", "old-extra"]
 
     refs = script_input_dependency_refs(spec)
     assert [

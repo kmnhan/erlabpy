@@ -628,7 +628,9 @@ class _WorkspaceSaver:
             source_keys
         )
         manifest["provenance_revisions"] = [
-            workspace_revisions.revision_manifest_entry(record)
+            workspace_revisions.revision_manifest_entry(
+                self._manager._provenance_revisions, record
+            )
             for record in self._manager._provenance_revisions.reachable(
                 workspace_revisions.retained_revision_ids(self._manager)
             )

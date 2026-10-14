@@ -1453,9 +1453,11 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
         duplicated = manager.duplicate_imagetool(0)
         assert isinstance(duplicated, int)
         duplicated_wrapper = manager._tool_graph.root_wrappers[duplicated]
-        assert duplicated_wrapper.replay_source_data is not None
+        assert duplicated_wrapper.replay_source_data is None
         xr.testing.assert_identical(
-            duplicated_wrapper.replay_source_data,
+            manager._provenance_revisions.resolve_data(
+                duplicated_wrapper.provenance_spec.script_inputs[0].revision_id
+            ),
             replay_source,
         )
 
@@ -1539,19 +1541,16 @@ def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup
 
 def test_manager_dependency_summary_coalesces_matching_input_name_and_label() -> None:
     """Avoid repeating an input's name when its label is identical."""
-    ref = types.SimpleNamespace(
+    source = ScriptInput(
         name="data",
         label="data",
         node_uid="closed-parent",
-        node_snapshot_token=None,
-        data_role="displayed",
     )
     manager = types.SimpleNamespace(
-        _dependency_tracker=types.SimpleNamespace(refs_for_uid=lambda _uid: (ref,)),
-        _tool_graph=types.SimpleNamespace(nodes={}),
+        _tool_graph=types.SimpleNamespace(
+            nodes={"derived": types.SimpleNamespace(tool_script_inputs=(source,))}
+        ),
     )
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
 
-    assert controller.dependency_input_summary_for_uid("derived") == (
-        "data (parent no longer open)"
-    )
+    assert controller.dependency_input_summary_for_uid("derived") == ("data: Missing")

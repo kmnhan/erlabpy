@@ -52,6 +52,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
@@ -3717,6 +3718,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
+        _provenance_revisions=_ProvenanceRevisionStore(),
         _bulk_remove_depth=0,
         _cancel_managed_node_change=canceled_node_change_uids.append,
         _mark_removed_subtree_dirty=lambda _uid: None,

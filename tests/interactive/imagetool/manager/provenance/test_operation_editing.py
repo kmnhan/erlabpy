@@ -390,7 +390,17 @@ def test_manager_bound_step_paste_builds_the_required_provenance_kind(
         node,
         (ScriptCodeOperation(label="Use auxiliary", code="derived = auxiliary"),),
         active_name="derived",
-        script_inputs=(ScriptInput(name="auxiliary"),),
+        script_inputs=(
+            ScriptInput(
+                name="auxiliary",
+                provenance_spec=_manager_replay_file_spec(
+                    pathlib.Path("auxiliary.h5")
+                ).model_dump(mode="json"),
+                revision_id=controller._manager._provenance_revisions.add(
+                    xr.DataArray([1.0], dims="x")
+                ),
+            ),
+        ),
     )
     assert pasted[-1].primary_input == "data"
     assert tuple(item.name for item in pasted[-1].script_inputs) == (
@@ -2990,9 +3000,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         parent_uid="parent",
         source_display_spec=selection(),
     )
-    replaced: list[
-        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None, bool]
-    ] = []
+    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool, bool]] = []
     source_bindings: list[
         tuple[
             ToolProvenanceSpec,
@@ -3007,7 +3015,6 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         spec,
         *,
         propagate_descendants,
-        replay_source_data,
         preserve_filter,
     ) -> None:
         replaced.append(
@@ -3015,7 +3022,6 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
                 data,
                 spec,
                 propagate_descendants,
-                replay_source_data,
                 preserve_filter,
             )
         )
@@ -3054,7 +3060,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             parent_data=parent_data,
         ),
     )
-    assert replaced[-1][2:] == (True, None, True)
+    assert replaced[-1][2:] == (True, True)
 
     with pytest.raises(RuntimeError, match="Live provenance"):
         controller._replay_candidate_result(

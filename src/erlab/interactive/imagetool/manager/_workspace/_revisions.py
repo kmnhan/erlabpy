@@ -51,17 +51,16 @@ def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
     return frozenset(ids)
 
 
-def revision_manifest_entry(record: _ProvenanceRevision) -> dict[str, typing.Any]:
+def revision_manifest_entry(
+    store: _ProvenanceRevisionStore, record: _ProvenanceRevision
+) -> dict[str, typing.Any]:
+    spec = store.normalize_provenance(record.provenance_spec)
     return {
         "revision_id": record.revision_id,
         "checkpoint_object_id": (
             record.checkpoint_object_id if record.checkpoint is not None else None
         ),
-        "provenance_spec": (
-            None
-            if record.provenance_spec is None
-            else record.provenance_spec.model_dump(mode="json")
-        ),
+        "provenance_spec": (None if spec is None else spec.model_dump(mode="json")),
         "input_revisions": dict(record.input_revisions),
         "primary_revision_id": record.primary_revision_id,
         "source_owner_uid": record.source_owner_uid,
@@ -235,7 +234,8 @@ def restore_revision_store(
         inputs = dict(inputs)
         existing = store.get(revision_id)
         if existing is not None:
-            if revision_manifest_entry(existing) != {
+            existing_metadata = revision_manifest_entry(store, existing)
+            loaded_metadata = {
                 "revision_id": revision_id,
                 "checkpoint_object_id": checkpoint_id,
                 "provenance_spec": None
@@ -244,7 +244,11 @@ def restore_revision_store(
                 "input_revisions": inputs,
                 "primary_revision_id": primary,
                 "source_owner_uid": source_owner_uid,
-            }:
+            }
+            # Serialized NaN operation values compare equal across JSON decoding.
+            if json.dumps(existing_metadata, sort_keys=True) != json.dumps(
+                loaded_metadata, sort_keys=True
+            ):
                 raise ValueError("Conflicting workspace provenance revision ID")
             continue
         store.add(

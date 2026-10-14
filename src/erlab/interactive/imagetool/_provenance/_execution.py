@@ -1015,7 +1015,6 @@ def rebuild_script_inputs(
                 "node_uid": None,
                 "node_snapshot_token": None,
                 "revision_id": None,
-                "source_spec": None,
                 "provenance_spec": rebuilt_spec.model_dump(mode="json"),
             }
         )

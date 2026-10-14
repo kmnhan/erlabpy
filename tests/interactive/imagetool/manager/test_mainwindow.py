@@ -2432,7 +2432,13 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
         assert manager._metadata_editor.apply_edits({0: edits})
 
         node = manager._tool_graph.root_wrappers[0]
-        xr.testing.assert_identical(node.replay_source_data, source)
+        assert node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                node.provenance_spec.script_inputs[0].revision_id
+            ),
+            source,
+        )
         select_tools(manager, [0])
         manager._update_info(uid=node.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
@@ -2449,9 +2455,14 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
 
         restored = manager._tool_graph.root_wrappers[0]
         assert restored.watched
-        assert restored.has_replay_source
-        xr.testing.assert_identical(restored.resolved_replay_source_data(), source)
+        assert not restored.has_replay_source
         assert restored.provenance_spec is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                restored.provenance_spec.script_inputs[0].revision_id
+            ),
+            source,
+        )
         xr.testing.assert_identical(
             manager._provenance_edit_controller._replay_candidate(
                 restored, "display", restored.provenance_spec
@@ -2873,7 +2884,7 @@ def test_metadata_editor_supports_paste_and_per_row_values(
             dialog._apply()
         assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
 
-        for index, temperature, sample, source in (
+        for index, temperature, sample, _source in (
             (0, 30.0, "A", data0),
             (1, 35.0, "A", data1),
         ):
@@ -2884,7 +2895,12 @@ def test_metadata_editor_supports_paste_and_per_row_values(
                 index
             ].displayed_provenance_spec
             assert provenance is not None
-            xr.testing.assert_identical(provenance.apply(source), actual)
+            replayed, _spec = (
+                manager._provenance_edit_controller._replay_candidate_result(
+                    manager._node_for_target(index), "display", provenance
+                )
+            )
+            xr.testing.assert_identical(replayed, actual)
 
 
 def test_metadata_editor_fill_series_rejects_boolean_columns(
@@ -4042,23 +4058,20 @@ def test_details_panel_update_info_uses_default_child_preview_aspect_ratio() -> 
 def test_details_panel_script_input_labels_omit_redundant_history() -> None:
     manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={}),
+        _lineage_controller=types.SimpleNamespace(
+            _has_recorded_script_input=lambda _item: False
+        ),
     )
     controller = _DetailsPanelController(
         typing.cast("manager_mainwindow.ImageToolManager", manager)
     )
 
-    assert (
-        controller._script_input_row_label(
-            ScriptInput(name="source"), include_history=False
-        )
-        == "Use source"
-    )
+    assert controller._script_input_row_label(ScriptInput(name="source")) == "Missing"
     assert (
         controller._script_input_row_label(
             ScriptInput(name="source", node_uid="missing"),
-            include_history=True,
         )
-        == "Missing source for source"
+        == "Missing"
     )
 
 
@@ -9450,6 +9463,7 @@ def test_manager_shift_dialog_reports_stale_and_failed_results(
 def test_manager_shift_dialog_result_placements_and_cycle_preflight(
     qtbot,
     monkeypatch,
+    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -9564,13 +9578,15 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         )
         assert manager.dependency_status_for_uid(source_node.uid) == "current"
 
-        tree = manager._workspace_controller.saving._to_datatree()
-        manager.remove_all_tools()
-        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-        for workspace_node in tree.values():
-            manager._workspace_controller.loading._load_workspace_node(
-                typing.cast("xr.DataTree", workspace_node)
-            )
+        workspace_path = tmp_path / "shift-history.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         source_node = manager._node_for_target(0)
