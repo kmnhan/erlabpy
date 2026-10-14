@@ -232,11 +232,15 @@ jobs:
             qt-api: "pyqt6"
           - python-version: "3.14"
             qt-api: "pyqt6"
+          - python-version: "3.15"
+            qt-api: "pyqt6"
           - python-version: "3.11"
             qt-api: "pyside6"
           - python-version: "3.13"
             qt-api: "pyside6"
           - python-version: "3.14"
+            qt-api: "pyside6"
+          - python-version: "3.15"
             qt-api: "pyside6"
     steps:
       - uses: actions/checkout@v7
