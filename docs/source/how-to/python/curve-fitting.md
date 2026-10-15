@@ -95,7 +95,7 @@ eplt.plot_fit(
 )
 ```
 
-Names are the keys of `fit_results.eval_components()`.
+Names are the keys of `lmfit_result.eval_components()`.
 
 (how-to-python-fit-spectra-across-coordinate)=
 
