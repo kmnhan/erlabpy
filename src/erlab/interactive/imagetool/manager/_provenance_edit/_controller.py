@@ -157,6 +157,7 @@ class _ProvenanceCandidate:
     spec: ToolProvenanceSpec
     active_filter_ref: _ProvenanceStepRef | None = None
     recorded_revision: _BoundProvenanceRevision | None = None
+    retain_active_filter: bool = True
 
 
 class _ProvenanceReplayFailure(RuntimeError):
@@ -246,27 +247,6 @@ class _ProvenanceEditController:
                     pass
             revision_id = record.primary_revision_id
         return None
-
-    def _restore_recorded_revision(
-        self,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        record: _BoundProvenanceRevision,
-        *,
-        data: xr.DataArray | None = None,
-    ) -> None:
-        store = self._manager._provenance_revisions
-        if not node.materialize_pending_workspace_payload():
-            raise RuntimeError("Could not read this ImageTool from the workspace.")
-        if data is None:
-            data = store.resolve_data(record.revision_id)
-        erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
-        node.replace_with_detached_data(
-            data,
-            record.provenance_spec,
-            replay_source_data=None,
-        )
-        node.restore_current_revision_id(record.revision_id)
-        self._manager._update_info(uid=node.uid)
 
     def can_open_input_row(self, row: _ProvenanceDisplayRow | None) -> tuple[bool, str]:
         node = self._metadata_node()
@@ -1491,8 +1471,7 @@ class _ProvenanceEditController:
         if recorded is not None:
             try:
                 sessions = self._row_sessions(((node.uid, row),))
-                self._validate_and_replace_multiple(
-                    sessions,
+                self._apply_candidates(
                     (
                         _ProvenanceCandidate(
                             node=node,
@@ -1502,6 +1481,7 @@ class _ProvenanceEditController:
                         ),
                     ),
                     where="validating the provenance revert target",
+                    sessions=sessions,
                 )
             except _TrustedProvenanceReplayCancelled:
                 return
@@ -1877,26 +1857,26 @@ class _ProvenanceEditController:
                 action=action,
                 replacements=replacements,
             )
-            self._validate_and_replace_multiple(
-                sessions,
+            self._apply_candidates(
                 candidates,
                 where=(
                     "validating the edited provenance step"
                     if action == "edit"
                     else f"validating the provenance {action} target"
                 ),
+                sessions=sessions,
             )
         except _TrustedProvenanceReplayCancelled:
             return
         except Exception as exc:
             self._show_failed(title, exc)
 
-    def _validate_and_replace_multiple(
+    def _apply_candidates(
         self,
-        sessions: Sequence[_ProvenanceRowSession],
         candidates: Sequence[_ProvenanceCandidate],
         *,
         where: str,
+        sessions: Sequence[_ProvenanceRowSession] = (),
     ) -> None:
         with (
             self._manager._extensions.execution.capture_replay_sources()
@@ -1930,6 +1910,10 @@ class _ProvenanceEditController:
                 for candidate in candidates:
                     record = candidate.recorded_revision
                     if record is not None:
+                        if not candidate.node.materialize_pending_workspace_payload():
+                            raise RuntimeError(
+                                "Could not read this ImageTool from the workspace."
+                            )
                         data = self._manager._provenance_revisions.resolve_data(
                             record.revision_id
                         )
@@ -1952,13 +1936,17 @@ class _ProvenanceEditController:
                             candidate.node,
                             candidate.scope,
                             candidate.spec,
-                            where=f"{where} for {candidate.node.display_text}",
+                            where=(
+                                f"{where} for {candidate.node.display_text}"
+                                if len(candidates) > 1
+                                else where
+                            ),
                             authorization=authorization,
+                            retain_active_filter=candidate.retain_active_filter,
                             active_filter_ref=candidate.active_filter_ref,
                         )
                     )
-                stale_reason = self._row_sessions_current(sessions)
-                if stale_reason:
+                if sessions and (stale_reason := self._row_sessions_current(sessions)):
                     self._show_unavailable(stale_reason)
                     raise _TrustedProvenanceReplayCancelled
                 publication.require_current_for_publication()
@@ -1966,7 +1954,8 @@ class _ProvenanceEditController:
                     for edit in edits:
                         self._apply_validated_edit(edit)
                     publication.publish()
-        self._manager._sigDataReplaced.emit()
+        if sessions:
+            self._manager._sigDataReplaced.emit()
 
     def _approved_recorded_revision_entries(
         self, candidates: Sequence[_ProvenanceCandidate]
@@ -3118,32 +3107,17 @@ class _ProvenanceEditController:
         where: str = "validating the provenance change",
         retain_active_filter: bool = True,
     ) -> None:
-        with (
-            self._manager._extensions.execution.capture_replay_sources()
-        ) as publication:
-            entries, edited_entries = self._provenance_local_edit_entries(
-                node,
-                scope,
-                candidate,
-            )
-            with self._manager._workspace_controller.local_code_edit(
-                entries,
-                edited_entries=edited_entries,
-                focus_on_block=True,
-            ) as authorization:
-                if entries and authorization is None:
-                    raise _TrustedProvenanceReplayCancelled
-                edit = self._validated_edit(
-                    node,
-                    scope,
-                    candidate,
-                    where=where,
-                    authorization=authorization,
+        self._apply_candidates(
+            (
+                _ProvenanceCandidate(
+                    node=node,
+                    scope=scope,
+                    spec=candidate,
                     retain_active_filter=retain_active_filter,
-                )
-                publication.require_current_for_publication()
-                self._apply_validated_edit(edit)
-                publication.publish()
+                ),
+            ),
+            where=where,
+        )
 
     def _provenance_local_edit_entries(
         self,
@@ -3336,9 +3310,13 @@ class _ProvenanceEditController:
 
     def _apply_validated_edit(self, edit: _ValidatedProvenanceEdit) -> None:
         if edit.recorded_revision is not None:
-            self._restore_recorded_revision(
-                edit.node, edit.recorded_revision, data=edit.data
+            edit.node.replace_with_detached_data(
+                edit.data,
+                edit.recorded_revision.provenance_spec,
+                replay_source_data=None,
             )
+            edit.node.restore_current_revision_id(edit.recorded_revision.revision_id)
+            self._manager._update_info(uid=edit.node.uid)
             return
         self._replace_node_data(
             edit.node,

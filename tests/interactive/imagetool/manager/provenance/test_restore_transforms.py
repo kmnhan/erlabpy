@@ -19,6 +19,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
     NormalizeOperation,
     ShiftFromInputOperation,
     ShiftOperation,
@@ -118,6 +119,63 @@ def test_manager_mixed_revert_restores_checkpoint_and_rebuilds_legacy_recipe(
         )
         xr.testing.assert_identical(node.data_for_role("source"), data)
         xr.testing.assert_identical(legacy_node.data_for_role("source"), data + 100)
+
+
+def test_manager_checkpoint_batch_materializes_all_targets_before_restoring(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    with manager_context() as manager:
+        nodes = []
+        target_rows = []
+        for _ in range(2):
+            index = manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+                provenance_spec=_manager_replay_file_spec(path),
+                show=False,
+            )
+            node = manager._node_for_target(index)
+            normalize = NormalizeOperation(dims=("x",))
+            node.replace_with_detached_data(
+                normalize.apply(data),
+                _manager_replay_file_spec(path, normalize),
+                replay_source_data=None,
+            )
+            node.revision_id_for_role("source")
+            node.replace_with_detached_data(
+                data + 10,
+                _manager_replay_file_spec(
+                    path, normalize, AssignAttrsOperation(attrs={"current": True})
+                ),
+                replay_source_data=None,
+            )
+            nodes.append(node)
+            row = next(
+                row
+                for row in node.derivation_display_rows
+                if row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+                and row.replay_ref.operation_index == 0
+            )
+            target_rows.append((node.uid, row))
+        editor = manager._provenance_edit_controller
+        monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+        failures = []
+        monkeypatch.setattr(editor, "_show_failed", lambda *args: failures.append(args))
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            nodes[1], "materialize_pending_workspace_payload", lambda: False
+        )
+        select_tools(manager, [node.index for node in nodes])
+        manager._update_info()
+
+        editor.revert_rows(target_rows)
+
+        assert len(failures) == 1
+        for node in nodes:
+            xr.testing.assert_identical(node.current_source_data(), data + 10)
 
 
 @pytest.mark.parametrize("lifecycle", ["original", "duplicate", "promote"])

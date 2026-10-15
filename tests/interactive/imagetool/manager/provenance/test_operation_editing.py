@@ -684,10 +684,10 @@ def test_manager_multi_provenance_grouped_edit_revert_and_delete(
     ] = []
 
     def capture_candidates(
-        _sessions: typing.Any,
         candidates: typing.Any,
         *,
         where: str,
+        sessions: typing.Any,
     ) -> None:
         captured.append((where, tuple(candidates)))
 
@@ -699,7 +699,7 @@ def test_manager_multi_provenance_grouped_edit_revert_and_delete(
     )
     monkeypatch.setattr(
         controller,
-        "_validate_and_replace_multiple",
+        "_apply_candidates",
         capture_candidates,
     )
 
@@ -1053,9 +1053,11 @@ def test_manager_multi_provenance_trust_and_preflight_failures_change_no_target(
         *,
         where: str,
         authorization: object | None,
+        retain_active_filter: bool,
         active_filter_ref: _ProvenanceStepRef | None,
     ) -> typing.Any:
         del active_filter_ref
+        assert retain_active_filter
         assert authorization is authorization_token
         validation_calls.append(node.uid)
         if node.uid == "second":
@@ -1139,7 +1141,7 @@ def test_manager_multi_provenance_rejects_stale_edit_and_cancel(
     monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
     monkeypatch.setattr(
         controller,
-        "_validate_and_replace_multiple",
+        "_apply_candidates",
         lambda *_args, **_kwargs: pytest.fail(
             "a stale or canceled edit must not apply"
         ),
