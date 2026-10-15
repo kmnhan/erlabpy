@@ -314,6 +314,20 @@ def _validate_active_name(value: typing.Any) -> str | None:
     return value
 
 
+def _symbol_table_dependencies(table: symtable.SymbolTable) -> set[str]:
+    """Return names read outside a scope, including its nested scopes."""
+    dependencies = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_referenced()
+        and (symbol.is_global() or symbol.is_free())
+        and (table.get_type() != "function" or symbol.get_name() != table.get_name())
+    }
+    for child in table.get_children():
+        dependencies.update(_symbol_table_dependencies(child))
+    return dependencies
+
+
 class _CurrentScopeNameCounter(ast.NodeVisitor):
     def __init__(
         self,

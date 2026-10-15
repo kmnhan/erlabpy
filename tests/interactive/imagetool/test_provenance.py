@@ -6614,6 +6614,158 @@ def test_recipe_display_keeps_primary_history_and_lazy_auxiliary(monkeypatch) ->
     assert input_row.materialized_children() is children
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "result = data / reference",
+        "result = data / globals()['reference']",
+        "def normalize():\n    return data / reference\nresult = normalize()",
+    ],
+)
+def test_python_step_display_preserves_its_declared_input_namespace(code) -> None:
+    reference_spec = full_data(AverageOperation(dims=("x",))).to_replay_spec()
+    spec = script(
+        ScriptCodeOperation(label="Normalize", code=code),
+        start_label="Normalize data",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data", revision_id="data-r"),
+            ScriptInput(
+                name="reference",
+                node_uid="reference-tool",
+                provenance_spec=reference_spec,
+                revision_id="reference-r",
+            ),
+        ),
+    )
+    restored = ToolProvenanceSpec.model_validate_json(spec.model_dump_json())
+    rows = restored.display_rows(_lazy_script_inputs=True)
+    assert len(rows) == 2
+    reference_row = rows[1].children[0]
+    assert reference_row.replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    assert reference_row.revision_id == "reference-r"
+    assert not reference_row.on_primary_chain
+    assert reference_row.children == ()
+    nested = reference_row.materialized_children()
+    assert nested
+    assert all(row.script_input_path == (1,) for row in nested)
+
+
+def test_primary_history_preserves_inputs_not_bound_to_a_visible_step() -> None:
+    spec = script(
+        AssignAttrsOperation(attrs={"normalized": True}),
+        start_label="Normalize inputs",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="reference")),
+    )
+    rows = spec.display_rows()
+    assert [row.replay_ref for row in rows] == [
+        _ProvenanceStepRef("script_input", script_input_index=0),
+        _ProvenanceStepRef("script_input", script_input_index=1),
+        _ProvenanceStepRef("operation", operation_index=0),
+    ]
+    assert rows[0].on_primary_chain
+    assert not rows[1].on_primary_chain
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    without_step = spec._replace_operation_range_ref(rows[2].replay_ref, 0, 1, ())
+    prefix = spec._prefix_before_ref(rows[2].replay_ref)
+    for candidate in (without_step, prefix):
+        assert [item.name for item in candidate.script_inputs] == ["data"]
+        assert candidate.active_name == "data"
+        actual = replay_script_provenance(
+            candidate,
+            {"data": data},
+            authorize=_authorize_execution,
+        )
+        xr.testing.assert_identical(actual, data)
+
+
+def test_python_input_retention_is_shared_by_prefix_and_step_replacement() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Normalize", code="result = data / reference"),
+        AssignAttrsOperation(attrs={"normalized": True}),
+        start_label="Normalize data",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="reference")),
+    )
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    prefix = spec._prefix_through_ref(ref)
+    replaced = spec._replace_operation_range_ref(
+        _ProvenanceStepRef("operation", operation_index=1), 1, 2, ()
+    )
+    assert prefix.script_inputs == replaced.script_inputs == spec.script_inputs
+    assert prefix.display_rows()[1].children[0].replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    no_python = spec._replace_operation_range_ref(ref, 0, 1, ())
+    assert [item.name for item in no_python.script_inputs] == ["data"]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("result = data + 1", ()),
+        ("def identity(reference):\n    return reference\nresult = identity(data)", ()),
+        (
+            "def normalize(value=reference):\n"
+            "    return data / value\nresult = normalize()",
+            ("reference",),
+        ),
+        (
+            "def normalize():\n    return data / reference\nresult = normalize()",
+            ("reference",),
+        ),
+        ("result = data / globals()['reference']", ("reference", "unused")),
+    ],
+)
+def test_python_history_attaches_inputs_at_the_step_that_reads_them(code, expected):
+    spec = script(
+        ScriptCodeOperation(label="Compute", code=code),
+        start_label="Use data",
+        active_name="result",
+        primary_input="data",
+        script_inputs=tuple(
+            ScriptInput(name=name) for name in ("data", "reference", "unused")
+        ),
+    )
+    operation_row = next(row for row in spec.display_rows() if row.edit_ref is not None)
+    assert (
+        tuple(
+            spec.script_inputs[row.replay_ref.script_input_index].name
+            for row in operation_row.children
+        )
+        == expected
+    )
+    prefix = spec._prefix_through_ref(operation_row.replay_ref)
+    assert prefix.script_inputs == spec.script_inputs
+
+
+def test_python_history_keeps_an_input_named_like_the_module_scope() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Add input", code="result = data + top"),
+        start_label="Use inputs",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="top")),
+    )
+    row = spec.display_rows()[1]
+    assert row.children[0].replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            spec, {"data": data, "top": data + 1}, authorize=_authorize_execution
+        ),
+        data * 2 + 1,
+    )
+
+
 def test_recipe_display_source_rows_and_nested_revision_paths() -> None:
     inner = recipe(
         ReplayStep(operation=AverageOperation(dims=("x",))),

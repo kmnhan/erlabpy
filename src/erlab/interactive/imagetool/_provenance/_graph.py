@@ -37,6 +37,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _simplify_display_code,
     _statement_load_count,
     _statement_store_count,
+    _symbol_table_dependencies,
     _validate_script_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
@@ -385,20 +386,6 @@ def _statement_scope_names(stmt: ast.stmt) -> _CurrentScopeNames:
     names = _CurrentScopeNames()
     names.visit(stmt)
     return names
-
-
-def _symbol_table_dependencies(table: symtable.SymbolTable) -> set[str]:
-    """Return names that a nested scope resolves outside itself."""
-    dependencies = {
-        symbol.get_name()
-        for symbol in table.get_symbols()
-        if symbol.is_referenced()
-        and (symbol.is_global() or symbol.is_free())
-        and symbol.get_name() != table.get_name()
-    }
-    for child in table.get_children():
-        dependencies.update(_symbol_table_dependencies(child))
-    return dependencies
 
 
 def _script_function_dependencies(code: str) -> dict[tuple[str, int], set[str]]:

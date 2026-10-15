@@ -124,6 +124,7 @@ import importlib
 import inspect
 import json
 import keyword
+import symtable
 import typing
 import uuid
 from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
@@ -147,6 +148,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _migrate_legacy_nonuniform_restore_code,
     _receiver_path,
     _script_codes_output_name,
+    _symbol_table_dependencies,
     _validate_active_name,
 )
 
@@ -3279,21 +3281,46 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         steps = list(self.steps)
         steps[start:stop] = replacement_steps
         updates: dict[str, typing.Any] = {"steps": tuple(steps)}
-        if (
-            self.kind == "script"
-            and self.primary_input is not None
-            and not any(_operation_is(step.operation, "script_code") for step in steps)
-        ):
-            input_names = {
-                self.primary_input,
-                *(name for step in steps for name in step.input_bindings.values()),
-            }
-            updates["script_inputs"] = tuple(
-                item for item in self.script_inputs if item.name in input_names
-            )
+        if self.kind == "script" and self.primary_input is not None:
+            updates["script_inputs"] = self._script_inputs_for_steps(steps)
             if not steps:
                 updates["active_name"] = self.primary_input
         return self.model_copy(update=updates)
+
+    def _step_input_names(self, step: ReplayStep) -> tuple[str, ...]:
+        if not _operation_is(step.operation, "script_code"):
+            return tuple(dict.fromkeys(step.input_bindings.values()))
+        declared = tuple(item.name for item in self.script_inputs)
+        code = getattr(step.operation, "code", None)
+        if code is None:
+            return declared
+        try:
+            module = ast.parse(code, mode="exec")
+            names = _symbol_table_dependencies(
+                symtable.symtable(code, "<ImageTool provenance inputs>", "exec")
+            )
+        except SyntaxError:
+            return declared
+        if names & {"globals", "locals", "vars", "eval", "exec", "__import__"} or any(
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "*" for alias in node.names)
+            for node in ast.walk(module)
+        ):
+            return declared
+        return tuple(name for name in declared if name in names)
+
+    def _script_inputs_for_steps(
+        self, steps: Sequence[ReplayStep]
+    ) -> tuple[ScriptInput, ...]:
+        if self.primary_input is None or any(
+            _operation_is(step.operation, "script_code") for step in steps
+        ):
+            return self.script_inputs
+        input_names = {
+            self.primary_input,
+            *(name for step in steps for name in self._step_input_names(step)),
+        }
+        return tuple(item for item in self.script_inputs if item.name in input_names)
 
     @staticmethod
     def _operation_is_reorderable(operation: ToolProvenanceOperation) -> bool:
@@ -3558,18 +3585,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     def _prefix_with_steps(self, steps: Sequence[ReplayStep]) -> ToolProvenanceSpec:
         """Return a replay prefix with the name produced by its final step."""
         updates: dict[str, typing.Any] = {"steps": tuple(steps)}
-        if (
-            self.kind == "script"
-            and self.primary_input is not None
-            and not any(_operation_is(step.operation, "script_code") for step in steps)
-        ):
-            input_names = {
-                self.primary_input,
-                *(name for step in steps for name in step.input_bindings.values()),
-            }
-            updates["script_inputs"] = tuple(
-                item for item in self.script_inputs if item.name in input_names
-            )
+        if self.kind == "script" and self.primary_input is not None:
+            updates["script_inputs"] = self._script_inputs_for_steps(steps)
         if len(steps) == len(self.steps):
             return self.model_copy(update=updates)
         if self.kind == "script":
@@ -3976,6 +3993,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     _children_factory=children_factory,
                 )
 
+            displayed_operations = self._streamlined_operation_refs(
+                "full_data", self.operations
+            )
             if self.primary_input is not None:
                 primary_index = next(
                     index
@@ -3984,6 +4004,17 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
                 primary_row = input_row(primary_index, primary=True)
                 rows = list(primary_row.children) or [primary_row]
+                attached_inputs = {
+                    name
+                    for operation_index, _operation in displayed_operations
+                    for name in self._step_input_names(self.steps[operation_index])
+                }
+                rows.extend(
+                    input_row(index, primary=False)
+                    for index, item in enumerate(self.script_inputs)
+                    if item.name != self.primary_input
+                    and item.name not in attached_inputs
+                )
             else:
                 rows.extend(
                     input_row(index, primary=False)
@@ -3993,13 +4024,15 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             input_indices = {
                 item.name: index for index, item in enumerate(self.script_inputs)
             }
-            for operation_index, operation in self._streamlined_operation_refs(
-                "full_data", self.operations
-            ):
-                auxiliary_indices = dict.fromkeys(
-                    input_indices[name]
-                    for name in self.steps[operation_index].input_bindings.values()
-                    if name != self.primary_input
+            for operation_index, operation in displayed_operations:
+                auxiliary_indices = (
+                    dict.fromkeys(
+                        input_indices[name]
+                        for name in self._step_input_names(self.steps[operation_index])
+                        if name != self.primary_input
+                    )
+                    if self.primary_input is not None
+                    else {}
                 )
                 rows.append(
                     _ProvenanceDisplayRow(
