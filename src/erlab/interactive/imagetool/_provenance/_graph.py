@@ -35,6 +35,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _CodeBindingEffects,
     _CurrentScopeNames,
     _expression_starts_with_name,
+    _incoming_binding_names,
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
     _script_codes_output_name,
@@ -339,9 +340,7 @@ def _validate_script_code_names(
     analysis = analysis or _parse_replay_code(code)
     external_names: set[str] = set()
 
-    def require(
-        name: str, state: _BindingState, visiting: set[str] | None = None
-    ) -> _BindingState:
+    def require_binding(name: str, state: _BindingState) -> _BindingState:
         if name not in state.available:
             if name not in state.deleted and (
                 external_name_candidates is None or name in external_name_candidates
@@ -352,6 +351,12 @@ def _validate_script_code_names(
                 raise ReplayGraphError(
                     f"Script provenance references unresolved name {name!r}"
                 )
+        return state
+
+    def require(
+        name: str, state: _BindingState, visiting: set[str] | None = None
+    ) -> _BindingState:
+        state = require_binding(name, state)
         deps = state.functions.get(name)
         if not deps:
             return state
@@ -366,7 +371,9 @@ def _validate_script_code_names(
         return state
 
     effects = _CodeBindingEffects(
-        read=require, functions=_script_function_dependencies(code, analysis=analysis)
+        read=require,
+        require_binding=require_binding,
+        functions=_script_function_dependencies(code, analysis=analysis),
     )
     final = effects.block(
         analysis.module.body,
@@ -403,14 +410,14 @@ def _simple_name_assignment(code: str) -> tuple[str, str] | None:
     return None
 
 
-def _name_value_is_live(
+def _name_binding_is_needed(
     codes: Sequence[str], name: str, *, code_analyzer: _CodeAnalyzer | None = None
 ) -> bool:
-    """Return whether later code reads the current value before replacing it."""
+    """Return whether later code needs an incoming binding before replacing it."""
     analyzer = code_analyzer or _CodeAnalyzer()
     for code in codes:
         analysis = _parse_replay_code(code, analyzer=analyzer)
-        if name in analysis.incoming_reads:
+        if name in analysis.incoming_reads or name in analysis.incoming_bindings:
             return True
         if name in analysis.definite_writes:
             return False
@@ -1188,7 +1195,7 @@ def _compile_spec(
                 seed_assignment = _simple_name_assignment(pending_codes[0])
                 if seed_assignment is not None:
                     seed_name, _source_name = seed_assignment
-                    if not _name_value_is_live(
+                    if not _name_binding_is_needed(
                         pending_codes[1:], seed_name, code_analyzer=code_analyzer
                     ):
                         del pending_codes[0]
@@ -1941,6 +1948,8 @@ def _inline_adjacent_replay_assignments(
             if target.id in protected_names:
                 continue
             next_stmt = module.body[idx + 1]
+            if target.id in _incoming_binding_names(module.body[idx + 1 :]):
+                continue
             if not isinstance(
                 next_stmt, ast.Assign
             ) or not _expression_starts_with_name(next_stmt.value, target.id):
@@ -2020,6 +2029,8 @@ def _inline_single_use_replay_names(
                 continue
             target_name = statement.targets[0].id
             source_name = statement.value.id
+            if target_name in _incoming_binding_names(module.body[idx + 1 :]):
+                continue
             later_loads = [
                 later_idx
                 for later_idx, later in enumerate(module.body[idx + 1 :], start=idx + 1)
@@ -2496,6 +2507,8 @@ def _inline_simple_name_aliases(
                 continue
 
             later_statements = module.body[idx + 1 :]
+            if target_name in _incoming_binding_names(later_statements):
+                continue
             load_indices = [
                 later_idx
                 for later_idx, later_stmt in enumerate(
@@ -2734,7 +2747,9 @@ def _remove_unused_generated_copies(code: str, names: set[str]) -> str:
         later_code = ast.unparse(
             ast.Module(body=module.body[index + 1 :], type_ignores=[])
         )
-        if _code_uses_name(later_code, target_name):
+        if _code_uses_name(later_code, target_name) or target_name in (
+            _incoming_binding_names(module.body[index + 1 :])
+        ):
             retained.append(statement)
             continue
         changed = True
@@ -3746,7 +3761,7 @@ def emit_replay_code(
                     and not opaque_namespace
                     and input_name not in required_public_bindings
                     and not any(_code_has_scoped_definition(code) for code in codes)
-                    and not _name_value_is_live(
+                    and not _name_binding_is_needed(
                         codes, input_name, code_analyzer=code_analyzer
                     )
                 ):
@@ -4207,8 +4222,8 @@ def selected_provenance_code(
                 else logical_namespace.get(item.name, current_binding(item.name))
             )
         logical_namespace.update(explicit_bindings)
-        required_reads = set(inherited_reads)
-        direct_reads: set[str] = set()
+        required_names = set(inherited_reads)
+        direct_names: set[str] = set()
         possible_writes: set[str] = set()
         replaced_names: set[str] = set()
         opaque_namespace = False
@@ -4222,10 +4237,10 @@ def selected_provenance_code(
         )
         for code in codes:
             analysis = _parse_replay_code(code, analyzer=code_analyzer)
-            direct_reads.update(analysis.loads)
+            direct_names.update(analysis.loads | analysis.incoming_bindings)
             possible_writes.update(analysis.writes)
             replaced_names.update(analysis.definite_writes)
-            required_reads.update(analysis.deferred_reads)
+            required_names.update(analysis.deferred_reads)
             opaque_namespace |= analysis.opaque
         # A conditional write can retain the incoming value even without a direct
         # read. Publish that value from the primary namespace, not an unrelated scope.
@@ -4235,14 +4250,14 @@ def selected_provenance_code(
             if (binding := logical_namespace.get(name)) is not None
             and binding.available
         }
-        required_reads.update(retained_names)
-        required_reads.update(
+        required_names.update(retained_names)
+        required_names.update(
             name
-            for name in direct_reads
-            if _name_value_is_live(codes, name, code_analyzer=code_analyzer)
+            for name in direct_names
+            if _name_binding_is_needed(codes, name, code_analyzer=code_analyzer)
         )
         restores: list[tuple[str, str]] = []
-        for name in sorted(required_reads - explicit_bindings.keys()):
+        for name in sorted(required_names - explicit_bindings.keys()):
             binding = logical_namespace.get(name)
             if binding is None:
                 if name in inherited_reads and name in physical_namespace:
@@ -4253,14 +4268,14 @@ def selected_provenance_code(
                 continue
             if not binding.available or current_binding(name) != binding:
                 restores.append((name, binding_name(binding, public_name=name)))
-        needed_inputs = required_reads | {
+        needed_inputs = required_names | {
             name for step in spec.steps for name in step.input_bindings.values()
         }
         if opaque_namespace:
             needed_inputs.update(explicit_bindings)
         if spec.primary_input is not None and any(
             getattr(step.operation, "op", None) != "script_code"
-            or bool(set(step.context_names) & required_reads)
+            or bool(set(step.context_names) & required_names)
             for step in spec.steps
         ):
             needed_inputs.add(spec.primary_input)

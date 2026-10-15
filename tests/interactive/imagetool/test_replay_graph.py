@@ -20,8 +20,10 @@ from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name,
     _code_uses_name_any_scope,
+    _CodeAnalyzer,
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
+    _simplify_display_code,
 )
 from erlab.interactive.imagetool._provenance._execution import (
     execute_replay_graph,
@@ -40,11 +42,14 @@ from erlab.interactive.imagetool._provenance._graph import (
     _file_seed_code_parts,
     _group_framework_imports,
     _import_binding_targets,
+    _inline_adjacent_replay_assignments,
+    _inline_simple_name_aliases,
     _inline_single_use_replay_names,
     _is_future_import,
     _leading_top_level_imports,
     _operation_replay_code,
     _remove_noop_assignments,
+    _remove_unused_generated_copies,
     _replace_ast_names,
     _script_function_dependencies,
     _script_seed_file_load_parts,
@@ -7200,6 +7205,209 @@ def test_selected_notebook_scopes_preserve_bindings_across_bare_annotations() ->
     assert "saved_input" not in code
 
 
+@pytest.mark.parametrize("flag", [None, False, True])
+@pytest.mark.parametrize("binding", ["logical", "primary", "auxiliary", "caller"])
+def test_selected_notebook_scopes_restore_bindings_needed_by_deletion(
+    binding: str, flag: bool | None
+) -> None:
+    def scope(code, input_name, output_name, links, script_inputs=()):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+                script_inputs=script_inputs,
+            ),
+            links,
+        )
+
+    target = {"primary": "sample", "auxiliary": "reference"}.get(binding, "saved")
+    deletion = f"del {target}"
+    if flag is not None:
+        deletion = f"if flag:\n    {deletion}"
+    primary_input = "sample" if binding == "primary" else "prepared"
+    links = {primary_input: 0, "correction": 1}
+    if binding == "auxiliary":
+        links["reference"] = 1
+    code = selected_provenance_code(
+        (
+            scope("saved = data + 1\nprepared = data + 1", "data", "prepared", {}),
+            scope("del saved\ncorrection = offsets * 0", "offsets", "correction", {}),
+            scope(
+                f"{deletion}\nresult = correction + 1",
+                primary_input,
+                "result",
+                links,
+                (ScriptInput(name="saved", revision_id="caller-saved"),)
+                if binding == "caller"
+                else (),
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    inputs = {"data": source, "offsets": source + 100, "flag": flag}
+    if binding == "caller":
+        inputs["saved"] = source + 1000
+    namespace = _exec_generated_code(code, inputs)
+
+    xr.testing.assert_identical(namespace["result"], source * 0 + 1)
+    if flag is False:
+        expected = (
+            source * 0
+            if binding == "auxiliary"
+            else source + (1000 if binding == "caller" else 1)
+        )
+        xr.testing.assert_identical(namespace[target], expected)
+    else:
+        assert target not in namespace
+    captures = [
+        statement
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id.endswith("_input")
+    ]
+    assert len(captures) == (1 if binding in {"logical", "caller"} else 0)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize("deletion", ["del saved", "if flag:\n    del saved"])
+@pytest.mark.parametrize("primary_scope", [False, True])
+def test_selected_notebook_scopes_reject_deletion_of_known_missing_bindings(
+    deletion: str, primary_scope: bool
+) -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare",
+                    code="saved = data + 1\ndel saved\nprepared = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Delete", code=f"{deletion}\nresult = prepared + 1"
+                )
+            ),
+        ),
+        input_name="prepared",
+        output_name="result",
+    )
+    with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+        selected_provenance_code(
+            (
+                SelectedProvenanceScope(producer, {}),
+                SelectedProvenanceScope(
+                    consumer, {"prepared": 0} if primary_scope else {}
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize("seed", [False, True])
+def test_selected_code_keeps_explicit_alias_needed_by_deletion(seed: bool) -> None:
+    steps = (
+        ReplayStep(
+            operation=ScriptCodeOperation(
+                label="Delete alias", code="del saved\nresult = data + 1"
+            )
+        ),
+    )
+    spec = (
+        script(
+            start_label="Use alias",
+            active_name="result",
+            seed_code="saved = data",
+            steps=steps,
+        )
+        if seed
+        else selected_steps_spec(
+            steps, input_name="data", output_name="result", input_alias="saved"
+        )
+    )
+    code = selected_provenance_code((SelectedProvenanceScope(spec, {}),))
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert "saved" not in namespace
+    assert ".copy(" not in code
+    assert "_input" not in code
+
+
+@pytest.mark.parametrize("read_alias", [False, True])
+@pytest.mark.parametrize("cleanup", ["adjacent", "single", "simple", "copy", "display"])
+def test_generated_code_cleanup_keeps_bindings_needed_by_deletion(
+    cleanup: str, read_alias: bool
+) -> None:
+    alias = "_itool_replay_0"
+    expression = alias if read_alias else "data"
+    code = f"{alias} = data\nresult = {expression} + 1\ndel {alias}"
+    if cleanup == "copy":
+        cleaned = _remove_unused_generated_copies(code, {alias})
+    elif cleanup == "display":
+        cleaned = _simplify_display_code(code, inline_targets={alias})
+    else:
+        cleaned = {
+            "adjacent": _inline_adjacent_replay_assignments,
+            "single": _inline_single_use_replay_names,
+            "simple": _inline_simple_name_aliases,
+        }[cleanup](code)
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(cleaned, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert alias not in namespace
+
+
+def test_script_name_validation_deletes_function_without_reading_dependencies() -> None:
+    code = "def unused():\n    return missing\ndel unused\nresult = data + 1"
+    available = {"data"}
+    dependencies: dict[str, set[str]] = {}
+    callers = _validate_script_code_names(code, available, dependencies)
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert not callers
+    assert "unused" not in available
+    assert not dependencies
+
+
+def test_code_analysis_separates_deletion_presence_from_value_reads() -> None:
+    code = "del saved\nsaved = data + 1\ndel saved\nresult = data + 1"
+    analysis = _CodeAnalyzer()(code)
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": source, "saved": source + 10})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert analysis.incoming_bindings == {"saved"}
+    assert analysis.incoming_reads == {"data"}
+    assert not _code_uses_name(code, "saved")
+    assert _code_uses_name_any_scope(code, "saved")
+    assert not _code_uses_name_any_scope("def cleanup():\n    del era", "era")
+
+
+def test_trusted_script_replay_initializes_implicit_alias_needed_by_deletion() -> None:
+    spec = script(
+        start_label="Delete alias",
+        active_name="result",
+        seed_code="del era\nresult = xr.DataArray([1.0, 2.0], dims='x')",
+    )
+    graph = compile_replay_graph(spec, trusted_user_code=True)
+    result = execute_replay_graph(graph, authorize=_authorize_execution)
+
+    xr.testing.assert_identical(result, xr.DataArray([1.0, 2.0], dims="x"))
+
+
 @pytest.mark.parametrize(
     ("body", "flag", "increment"),
     [
@@ -7450,6 +7658,10 @@ def test_selected_notebook_scopes_do_not_retain_deleted_conditional_bindings(
             {"prepared": 0},
         ),
     ]
+    if recovery in {"delete_conditional", "branch_delete"}:
+        with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+            selected_provenance_code(scopes)
+        return
     code = selected_provenance_code(scopes)
     source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
     inputs = {"data": source, "offsets": source + 100, "flag": flag}

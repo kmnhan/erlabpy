@@ -601,10 +601,13 @@ class _CodeBindingEffects:
         self,
         *,
         read: Callable[[str, _BindingState], _BindingState] | None = None,
+        require_binding: Callable[[str, _BindingState], _BindingState] | None = None,
         functions: Mapping[tuple[str, int], set[str]] | None = None,
     ) -> None:
         self.incoming_reads: set[str] = set()
+        self.incoming_bindings: set[str] = set()
         self._read_callback = read
+        self._require_binding_callback = require_binding
         self._functions = functions or {}
 
     def _read(self, name: str, state: _BindingState) -> _BindingState:
@@ -703,8 +706,10 @@ class _CodeBindingEffects:
     ) -> _BindingState:
         if isinstance(target, ast.Name):
             if delete:
-                if self._read_callback is not None:
-                    state = self._read_callback(target.id, state)
+                if target.id not in state.replaced:
+                    self.incoming_bindings.add(target.id)
+                if self._require_binding_callback is not None:
+                    state = self._require_binding_callback(target.id, state)
                 return self._delete(state, (target.id,))
             return self._bind(state, (target.id,))
         if isinstance(target, ast.Tuple | ast.List | ast.Starred):
@@ -907,11 +912,19 @@ class _CodeAnalysis(typing.NamedTuple):
     writes: frozenset[str]
     deletions: frozenset[str]
     incoming_reads: frozenset[str]
+    incoming_bindings: frozenset[str]
     definite_writes: frozenset[str]
     definite_bindings: frozenset[str]
     deferred_reads: frozenset[str]
     referenced_names: frozenset[str]
     opaque: bool
+
+
+def _incoming_binding_names(statements: Sequence[ast.stmt]) -> set[str]:
+    """Return incoming bindings needed without reading their values."""
+    effects = _CodeBindingEffects()
+    effects.block(statements)
+    return effects.incoming_bindings
 
 
 class _CodeAnalyzer:
@@ -935,6 +948,7 @@ class _CodeAnalyzer:
                 frozenset(names.writes),
                 final.deleted,
                 frozenset(effects.incoming_reads),
+                frozenset(effects.incoming_bindings),
                 final.replaced,
                 final.bound,
                 frozenset().union(
@@ -1546,6 +1560,7 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
                 isinstance(target_expr, ast.Name)
                 and target_expr.id in inline_targets
                 and isinstance(stmt.value, ast.Name)
+                and target_expr.id not in _incoming_binding_names(body[idx + 1 :])
                 and not any(
                     _statement_load_count(later, target_expr.id) > 0
                     for later in body[idx + 1 :]
@@ -1687,12 +1702,12 @@ def _code_uses_name(code: str, name: str) -> bool:
 
 
 def _code_uses_name_any_scope(code: str, name: str) -> bool:
-    """Return whether code loads a name at module or nested scope."""
+    """Return whether code reads a name or needs its incoming module binding."""
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return False
-    return any(
+    return name in _incoming_binding_names(module.body) or any(
         isinstance(node, ast.Name)
         and node.id == name
         and isinstance(node.ctx, ast.Load)
