@@ -1593,6 +1593,161 @@ def test_manager_provenance_reorder_requires_available_replay(
         assert manager._metadata_reorder_steps_action.isEnabled()
 
 
+@pytest.mark.parametrize("action", ["revert", "delete", "edit", "reorder"])
+@pytest.mark.parametrize("source_change", ["close", "replace"])
+def test_history_actions_use_captured_inputs_after_source_changes(
+    qtbot, accept_dialog, monkeypatch, tmp_path, manager_context, action, source_change
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    source_file = tmp_path / "source.h5"
+    data.to_netcdf(source_file, engine="h5netcdf")
+    with manager_context() as manager:
+        source_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(source_file),
+            show=False,
+        )
+        source = manager._node_for_target(source_index)
+        binding = manager._lineage_controller._script_input_for_node(
+            source, name="data", data_role="source"
+        )
+        spec = script(
+            AssignAttrsOperation(attrs={"order": "first"}),
+            AssignAttrsOperation(attrs={"order": "second"}),
+            start_label="Use recorded data",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(binding,),
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                data.assign_attrs(order="second"), _in_manager=True
+            ),
+            provenance_spec=spec,
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        select_tools(manager, [target])
+        manager._update_info()
+        controller = manager._provenance_edit_controller
+
+        def change_source():
+            if source_change == "close":
+                manager.remove_imagetool(source_index)
+                source_file.unlink()
+            else:
+                source.slicer_area.replace_source_data(data + 100, emit_edited=True)
+            select_tools(manager, [target])
+            manager._update_info()
+            assert controller._dependency_snapshot_tokens(spec) == ()
+
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda title, exc: pytest.fail(f"{title}: {exc}"),
+        )
+        monkeypatch.setattr(controller, "_show_unavailable", pytest.fail)
+        if action == "reorder":
+
+            def apply_reorder(dialog):
+                change_source()
+                assert dialog.current_view.move_current(1)
+                dialog.apply_button.click()
+
+            accept_dialog(controller.open_reorder_dialog, accept_call=apply_reorder)
+        else:
+            change_source()
+            rows = [
+                row
+                for row in node.derivation_display_rows
+                if row.script_input_path == ()
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+            ]
+            if action == "revert":
+                assert controller.can_revert_row(rows[0])[0]
+                monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+                controller.revert_rows(((node.uid, rows[0]),))
+            elif action == "delete":
+                assert controller.can_delete_row(rows[1])[0]
+                controller.delete_rows(((node.uid, rows[1]),))
+            else:
+                assert controller.can_edit_row(rows[1])[0]
+                monkeypatch.setattr(
+                    controller,
+                    "_edited_native_operations",
+                    lambda *_args, **_kwargs: (
+                        AssignAttrsOperation(attrs={"order": "edited"}),
+                    ),
+                )
+                controller.edit_rows(((node.uid, rows[1]),))
+        expected = data.assign_attrs(order="edited" if action == "edit" else "first")
+        xr.testing.assert_identical(node.current_source_data(), expected)
+        assert node.provenance_spec.script_inputs[0].revision_id == binding.revision_id
+        if source_change == "close":
+            assert manager._lineage_controller._node_reload_unavailable_reason(node)
+
+
+def test_history_replay_plan_resolves_nested_captured_inputs(
+    qtbot, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    source_file = tmp_path / "source.h5"
+    data.to_netcdf(source_file, engine="h5netcdf")
+    with manager_context() as manager:
+        source_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(source_file),
+            show=False,
+        )
+        lineage = manager._lineage_controller
+        binding = lineage._script_input_for_node(
+            manager._node_for_target(source_index), name="raw", data_role="source"
+        )
+        nested = script(
+            start_label="Use saved input",
+            active_name="raw",
+            primary_input="raw",
+            script_inputs=(binding,),
+        )
+        outer = ScriptInput(name="data", provenance_spec=nested)
+        spec = script(
+            AssignAttrsOperation(attrs={"first": True}),
+            AssignAttrsOperation(attrs={"second": True}),
+            start_label="Use nested input",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(outer,),
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=spec,
+            show=False,
+        )
+        manager.remove_imagetool(source_index)
+        source_file.unlink()
+        select_tools(manager, [target])
+        manager._update_info()
+        node = manager._node_for_target(target)
+        controller = manager._provenance_edit_controller
+        assert controller.can_reorder_steps() == (True, "")
+        assert controller._dependency_snapshot_tokens(spec) == ()
+        assert (
+            lineage._script_input_unavailable_reason(
+                outer, target_node_uid=node.uid, prefer_recorded_revisions=True
+            )
+            is None
+        )
+        assert (
+            lineage._script_input_unavailable_reason(outer, target_node_uid=node.uid)
+            is not None
+        )
+        result = controller._replay_candidate_result(node, "display", spec)
+        xr.testing.assert_identical(
+            result.data, data.assign_attrs(first=True, second=True)
+        )
+
+
 def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1953,6 +2108,7 @@ def test_manager_provenance_reorder_session_rejects_each_stale_input(
         _tool_graph=types.SimpleNamespace(nodes={"node": node, "parent": parent}),
         _parent_node=lambda _node: parent,
     )
+    manager._lineage_controller = manager_lineage._LineageController(manager)
     controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
     sections = spec._reorder_sections()
     session = _ProvenanceReorderSession(

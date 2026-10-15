@@ -3,7 +3,7 @@ import json
 import pathlib
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import lmfit
 import numpy as np
@@ -23,12 +23,14 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ReplayStep,
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     file_load,
     full_data,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
+from erlab.interactive.imagetool.manager._lineage import _InputResolutionPlan
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
@@ -256,15 +258,29 @@ def _fake_edit_controller(
         return parent
 
     revisions = _ProvenanceRevisionStore()
+
+    def input_resolution_plan(
+        inputs: Sequence[ScriptInput],
+        *,
+        target_node_uid: str | None = None,
+        **kwargs: typing.Any,
+    ) -> _InputResolutionPlan:
+        reason = (
+            None
+            if script_input_unavailable_reason is None
+            else script_input_unavailable_reason(
+                inputs, target_node_uid=target_node_uid, **kwargs
+            )
+        )
+        return _InputResolutionPlan(
+            target_node_uid, tuple(inputs), (), frozenset(), reason
+        )
+
     lineage_controller = types.SimpleNamespace(
         _has_recorded_script_input=lambda item: (
             item.revision_id is not None and revisions.has_data(item.revision_id)
         ),
-        _script_input_unavailable_reason=(
-            script_input_unavailable_reason
-            if script_input_unavailable_reason is not None
-            else lambda *_args, **_kwargs: None
-        ),
+        _input_resolution_plan=input_resolution_plan,
         _rebuild_script_provenance=lambda spec, **_kwargs: _ProvenanceReplayResult(
             data=xr.DataArray([1.0], dims=("x",)),
             provenance_spec=spec,

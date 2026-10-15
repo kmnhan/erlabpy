@@ -4147,6 +4147,8 @@ def iter_operation_refs(
 
 def script_inputs_dependency_refs(
     script_inputs: Sequence[ScriptInput],
+    *,
+    resolved_input: Callable[[ScriptInput], bool] | None = None,
 ) -> tuple[ScriptInputDependencyRef, ...]:
     """Return the live dependencies selected by named input resolution."""
     refs: list[ScriptInputDependencyRef] = []
@@ -4162,7 +4164,9 @@ def script_inputs_dependency_refs(
         script_input = (
             item if isinstance(item, ScriptInput) else ScriptInput.model_validate(item)
         )
-        if not script_input.follow_source:
+        if not script_input.follow_source or (
+            resolved_input is not None and resolved_input(script_input)
+        ):
             continue
         if script_input.node_uid:
             refs.append(
@@ -4183,10 +4187,18 @@ def script_inputs_dependency_refs(
 
 def script_input_dependency_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    resolved_input: Callable[[ScriptInput], bool] | None = None,
 ) -> tuple[ScriptInputDependencyRef, ...]:
     """Return live dependency references selected by a provenance spec."""
     spec = parse_tool_provenance_spec(value)
-    return () if spec is None else script_inputs_dependency_refs(spec.script_inputs)
+    return (
+        ()
+        if spec is None
+        else script_inputs_dependency_refs(
+            spec.script_inputs, resolved_input=resolved_input
+        )
+    )
 
 
 def rebase_script_inputs_node_uids(

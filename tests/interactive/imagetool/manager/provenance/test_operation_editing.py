@@ -3362,7 +3362,7 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
     for row in rows:
         if row.replay_ref is not None:
             prefix = spec._prefix_through_ref(row.replay_ref)
-            assert controller._script_spec_replayable_for_node(node, prefix), (
+            assert controller._script_replay_unavailable_reason(node, prefix) is None, (
                 f"{case_name} row {row.replay_ref!r} has a non-replayable prefix"
             )
         if row.edit_ref is None:
@@ -3396,8 +3396,8 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
             block_ref.stop,
             (),
         )
-        should_be_deletable = controller._script_spec_replayable_for_node(
-            node,
-            deletion_candidate,
+        should_be_deletable = (
+            controller._script_replay_unavailable_reason(node, deletion_candidate)
+            is None
         )
         assert controller.can_delete_row(row)[0] is should_be_deletable

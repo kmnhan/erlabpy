@@ -6745,6 +6745,38 @@ def test_python_history_attaches_inputs_at_the_step_that_reads_them(code, expect
     assert prefix.script_inputs == spec.script_inputs
 
 
+def test_history_dependency_refs_skip_resolved_input_subtrees() -> None:
+    nested = script(
+        start_label="Nested input",
+        active_name="raw",
+        primary_input="raw",
+        script_inputs=(
+            ScriptInput(name="raw", node_uid="closed-source", revision_id="saved"),
+        ),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Combine", code="result = data + extra"),
+        start_label="Combine inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="data", node_uid="changed-source", revision_id="saved"),
+            ScriptInput(name="extra", provenance_spec=nested),
+            ScriptInput(name="live", node_uid="live-source"),
+        ),
+    )
+    assert [ref.node_uid for ref in script_input_dependency_refs(spec)] == [
+        "changed-source",
+        "closed-source",
+        "live-source",
+    ]
+    assert [
+        ref.node_uid
+        for ref in script_input_dependency_refs(
+            spec, resolved_input=lambda item: item.revision_id == "saved"
+        )
+    ] == ["live-source"]
+
+
 def test_python_history_keeps_an_input_named_like_the_module_scope() -> None:
     spec = script(
         ScriptCodeOperation(label="Add input", code="result = data + top"),

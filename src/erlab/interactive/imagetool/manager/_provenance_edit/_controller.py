@@ -332,7 +332,10 @@ class _ProvenanceEditController:
             ]
         ] = []
         seen: set[tuple[str, typing.Literal["source", "displayed"]]] = set()
-        for ref in script_input_dependency_refs(spec):
+        for ref in script_input_dependency_refs(
+            spec,
+            resolved_input=self._manager._lineage_controller._has_recorded_script_input,
+        ):
             key = (ref.node_uid, ref.data_role)
             if key in seen:
                 continue
@@ -401,25 +404,7 @@ class _ProvenanceEditController:
             return None
 
         if spec.kind == "script":
-            external_input_names = set(script_replay_source_input_names(spec))
-            if not script_provenance_replayable(
-                spec,
-                external_input_names=external_input_names or None,
-                allow_code=True,
-            ):
-                return "This provenance contains recorded code that cannot be replayed."
-            if external_input_names and not node.has_replay_source:
-                return "The original replay source is no longer available."
-            for script_input in spec.script_inputs:
-                reason = (
-                    self._manager._lineage_controller._script_input_unavailable_reason(
-                        script_input,
-                        target_node_uid=node.uid,
-                    )
-                )
-                if reason is not None:
-                    return reason
-            return None
+            return self._script_replay_unavailable_reason(node, spec)
 
         external_input_names = {"data", "derived", "parent_data"}
         for operation in spec.operations:
@@ -447,20 +432,14 @@ class _ProvenanceEditController:
             return "This live provenance no longer has its parent source data."
         return None
 
-    def _script_spec_replayable_for_node(
+    def _script_replay_unavailable_reason(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         spec: ToolProvenanceSpec,
-    ) -> bool:
+    ) -> str | None:
         external_input_names = set(script_replay_source_input_names(spec))
         if external_input_names and not node.has_replay_source:
-            return False
-        if external_input_names:
-            return script_provenance_replayable(
-                spec,
-                external_input_names=external_input_names,
-                allow_code=True,
-            )
+            return "The original replay source is no longer available."
 
         def resolve_recorded(script_input: ScriptInput):
             if (
@@ -472,9 +451,18 @@ class _ProvenanceEditController:
                 return typing.cast("xr.DataArray", None), script_input
             return None
 
-        return script_provenance_replayable(
-            spec, allow_code=True, live_input_resolver=resolve_recorded
-        )
+        if not script_provenance_replayable(
+            spec,
+            external_input_names=external_input_names or None,
+            allow_code=True,
+            live_input_resolver=resolve_recorded,
+        ):
+            return "This provenance contains recorded code that cannot be replayed."
+        return self._manager._lineage_controller._input_resolution_plan(
+            spec.script_inputs,
+            target_node_uid=node.uid,
+            prefer_recorded_revisions=True,
+        ).unavailable_reason
 
     def can_reorder_steps(self) -> tuple[bool, str]:
         node = self._metadata_node()
@@ -1048,7 +1036,7 @@ class _ProvenanceEditController:
                 )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
-            if not self._script_spec_replayable_for_node(node, candidate):
+            if self._script_replay_unavailable_reason(node, candidate) is not None:
                 return False, "Deleting this script step would make replay invalid."
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
@@ -1150,7 +1138,7 @@ class _ProvenanceEditController:
                 return True, ""
         if spec.kind == "script":
             input_spec = spec._prefix_before_ref(row.edit_ref)
-            if not self._script_spec_replayable_for_node(node, input_spec):
+            if self._script_replay_unavailable_reason(node, input_spec) is not None:
                 return False, "This script step cannot be replayed."
         active_filter_ref = self._active_filter_ref(node, spec)
         if (
@@ -1245,18 +1233,8 @@ class _ProvenanceEditController:
         if candidate == spec and not row.script_input_path:
             return False, "Already at this provenance step."
         if spec.kind == "script":
-            if not self._script_spec_replayable_for_node(node, candidate):
-                return False, "This script step cannot be replayed."
-            if not all(
-                self._manager._lineage_controller._script_input_unavailable_reason(
-                    script_input,
-                    target_node_uid=node.uid,
-                )
-                is None
-                for script_input in candidate.script_inputs
-            ):
-                return False, "This script step has unavailable inputs."
-            return True, ""
+            reason = self._script_replay_unavailable_reason(node, candidate)
+            return reason is None, reason or ""
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
                 return True, ""

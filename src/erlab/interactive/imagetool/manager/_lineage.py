@@ -750,6 +750,7 @@ class _LineageController:
         allow_recorded: bool = True,
         force_live_reload: bool = False,
         reload_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
+        prefer_recorded_revisions: bool = False,
     ) -> _InputResolutionPlan:
         root_inputs = tuple(script_inputs)
         actions: list[_InputResolutionAction] = []
@@ -773,7 +774,11 @@ class _LineageController:
                         and self._manager._provenance_revisions.has_data(
                             item.revision_id
                         )
-                        and (not item.follow_source or item.provenance_spec is None)
+                        and (
+                            prefer_recorded_revisions
+                            or not item.follow_source
+                            or item.provenance_spec is None
+                        )
                     )
                     or (
                         item.follow_source
@@ -922,7 +927,8 @@ class _LineageController:
                     script_input.revision_id
                 )
                 and (
-                    not script_input.follow_source
+                    prefer_recorded_revisions
+                    or not script_input.follow_source
                     or (
                         script_input.provenance_spec is None
                         and self._manager._tool_graph.nodes.get(
@@ -1239,14 +1245,10 @@ class _LineageController:
         target_node_uid: str | None = None,
         prefer_recorded_revisions: bool = False,
     ) -> str | None:
-        if (
-            prefer_recorded_revisions
-            and script_input.revision_id is not None
-            and self._manager._provenance_revisions.has_data(script_input.revision_id)
-        ):
-            return None
         return self._input_resolution_plan(
-            (script_input,), target_node_uid=target_node_uid
+            (script_input,),
+            target_node_uid=target_node_uid,
+            prefer_recorded_revisions=prefer_recorded_revisions,
         ).unavailable_reason
 
     def _rebuild_script_provenance(
