@@ -103,6 +103,148 @@ def _composed_reorder_file_spec(file_path: pathlib.Path) -> ToolProvenanceSpec:
 
 
 @pytest.mark.parametrize(
+    "overwrite",
+    [
+        None,
+        "raw globals",
+        "globals()['derived'] = offsets",
+        "locals()['derived'] = offsets",
+        "exec('derived = offsets')",
+    ],
+)
+def test_manager_copy_selected_scopes_preserves_notebook_namespace(
+    overwrite: str | None,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    raw_globals = overwrite == "raw globals"
+    opaque = overwrite is not None and not raw_globals
+    data = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+    auxiliary = script(
+        ScriptCodeOperation(
+            label="Prepare correction",
+            code=(
+                "data = offsets * 10\nnormalize = data * 0\n"
+                "correction = normalize - normalize"
+                if raw_globals
+                else (
+                    "derived = offsets * 10\ncorrection = derived - derived"
+                    if overwrite is None
+                    else f"{overwrite}\ncorrection = offsets * 2"
+                )
+            ),
+        ),
+        start_label="Use offsets",
+        active_name="correction",
+        primary_input="offsets",
+        script_inputs=(ScriptInput(name="offsets"),),
+    )
+    spec = script(
+        start_label="Prepare sample",
+        active_name="derived",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(
+                name="correction", provenance_spec=auxiliary.model_dump(mode="json")
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample",
+                    code=(
+                        "def normalize():\n    return data + 1\nderived = data + 1"
+                        if raw_globals
+                        else (
+                            "def normalize():\n"
+                            "    return derived + 1\n"
+                            "derived = normalize()"
+                            if overwrite is None
+                            else "derived = data + 1"
+                        )
+                    ),
+                ),
+                context_names=() if raw_globals else ("derived",),
+            ),
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Apply correction",
+                    code=(
+                        "derived = normalize() + correction"
+                        if raw_globals
+                        else (
+                            "derived = normalize() * 2 + correction"
+                            if overwrite is None
+                            else "derived = derived + correction"
+                        )
+                    ),
+                )
+            ),
+            *(
+                (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Update main globals",
+                            code="data = data + 5\nderived = normalize()",
+                        )
+                    ),
+                )
+                if raw_globals
+                else ()
+            ),
+        ),
+    )
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            show=False,
+            provenance_spec=spec,
+        )
+        select_tools(manager, [index])
+        manager._update_info()
+        selected = []
+        for row_index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(row_index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if (
+                isinstance(row, _ProvenanceDisplayRow)
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+            ):
+                selected.append(row_index)
+        assert len(selected) == (4 if raw_globals else 3)
+        select_metadata_rows(manager, selected)
+        code = manager._selected_derivation_code()
+        menu = manager._details_panel._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_copy_selected_action.isEnabled() is not opaque
+        if opaque:
+            assert code is None
+            select_metadata_rows(manager, [selected[-1]])
+            code = manager._selected_derivation_code()
+            menu = manager._details_panel._build_metadata_derivation_menu()
+            assert menu is not None
+            assert manager._metadata_copy_selected_action.isEnabled()
+            assert code is not None
+            namespace = {"offsets": offsets}
+            exec(code, namespace)  # noqa: S102
+            xr.testing.assert_identical(namespace["correction"], offsets * 2)
+            return
+        assert code is not None
+        namespace = {"data": data, "offsets": offsets}
+        exec(code, namespace)  # noqa: S102
+        xr.testing.assert_identical(
+            namespace["derived"], data + 6 if raw_globals else (data + 2) * 2
+        )
+        assert ".copy(" not in code
+        assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize(
     "operation",
     [
         AssignCoordsOperation(coord_name="x", values=np.linspace(-1.0, 1.0, 500)),

@@ -145,6 +145,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _TUPLE_MARKER,
     _dynamic_nonuniform_restore_replay_code,
     _expression_receiver_code,
+    _has_opaque_namespace_access,
     _migrate_legacy_nonuniform_restore_code,
     _receiver_path,
     _script_codes_output_name,
@@ -3301,11 +3302,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             )
         except SyntaxError:
             return declared
-        if names & {"globals", "locals", "vars", "eval", "exec", "__import__"} or any(
-            isinstance(node, ast.ImportFrom)
-            and any(alias.name == "*" for alias in node.names)
-            for node in ast.walk(module)
-        ):
+        if _has_opaque_namespace_access(module):
             return declared
         return tuple(name for name in declared if name in names)
 

@@ -328,6 +328,64 @@ def _symbol_table_dependencies(table: symtable.SymbolTable) -> set[str]:
     return dependencies
 
 
+_OPAQUE_NAMESPACE_NAMES = {
+    "globals",
+    "locals",
+    "vars",
+    "eval",
+    "exec",
+    "__import__",
+    "__builtins__",
+}
+_OPAQUE_NAMESPACE_ATTRIBUTES = {
+    "__dict__",
+    "__globals__",
+    "__closure__",
+    "__defaults__",
+    "__kwdefaults__",
+}
+
+
+def _has_opaque_namespace_access(module: ast.AST) -> bool:
+    """Detect explicit access to Python namespace capabilities.
+
+    A scope that creates these capabilities can export them through arbitrary aliases
+    or callables. Composed notebook code must therefore retain this scope as an opaque
+    boundary instead of trying to infer the resulting Python objects.
+    """
+    return any(
+        (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in _OPAQUE_NAMESPACE_NAMES
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any(alias.name == "builtins" for alias in node.names)
+        )
+        or (
+            isinstance(node, ast.ImportFrom)
+            and (
+                node.module == "builtins"
+                or any(alias.name == "*" for alias in node.names)
+            )
+        )
+        or (
+            isinstance(node, ast.Attribute)
+            and node.attr in _OPAQUE_NAMESPACE_ATTRIBUTES
+        )
+        or (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _OPAQUE_NAMESPACE_ATTRIBUTES
+        )
+        for node in ast.walk(module)
+    )
+
+
 class _CurrentScopeNameCounter(ast.NodeVisitor):
     def __init__(
         self,
