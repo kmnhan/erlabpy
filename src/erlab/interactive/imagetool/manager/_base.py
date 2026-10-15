@@ -472,7 +472,15 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return output
 
     def _selected_figure_source_targets(self) -> list[int | str]:
-        return list(self._selected_imagetool_targets())
+        targets = list(self._selected_imagetool_targets())
+        targets.extend(
+            uid
+            for uid in self.tree_view.selected_childtool_uids
+            if uid not in targets
+            and (node := self._tool_graph.nodes.get(uid)) is not None
+            and self._figure_workflows._figure_node_is_source(node)
+        )
+        return targets
 
     def _selected_promotable_child_imagetool_uid(self) -> str | None:
         child_imagetool_uids = [

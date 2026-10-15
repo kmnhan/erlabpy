@@ -573,3 +573,164 @@ def test_review_clears_trust_warning_after_all_code_is_removed(
 
     assert document_trust_has_trusted_lineage(tool._document_trust)
     assert tool._code_trust_banner.isHidden()
+
+
+def test_registered_source_trust_and_namespace_requests(monkeypatch) -> None:
+    import dataclasses
+    import types
+
+    from matplotlib.figure import Figure
+
+    from erlab.interactive._code_trust import create_entry
+    from erlab.interactive._figurecomposer import _sources
+    from erlab.interactive._figurecomposer._operations._registry import source_requests
+    from erlab.interactive._figurecomposer._trust import figure_source_entries
+
+    @dataclasses.dataclass(frozen=True)
+    class SpectrumPayload:
+        value: float
+
+    payload = SpectrumPayload(3.0)
+    entry = create_entry("test.spectrum", "figure/sources/spectrum", "evaluate()", {})
+    calls = []
+    monkeypatch.setattr(_sources, "_SOURCE_SPECS", dict(_sources._SOURCE_SPECS))
+    _sources.register_source_spec(
+        _sources.SourceSpec(
+            kind="test-spectrum",
+            payload_type=SpectrumPayload,
+            duplicate=lambda value: value,
+            encode=lambda value: _sources.EncodedSourcePayload({"value": value.value}),
+            decode=lambda encoded: SpectrumPayload(encoded.metadata["value"]),
+            safe_value=lambda value: value.value,
+            materialize=lambda value: calls.append(value) or value.value * 2,
+            trust_entries=lambda value, alias, location: (entry,),
+        )
+    )
+    operation = FigureOperationState.custom(label="Spectrum", code="ax.plot(spectrum)")
+    recipe = FigureRecipeState(operations=(operation,))
+    entries = figure_operation_execution_entries(
+        recipe,
+        0,
+        location_prefix="figure",
+        source_payloads={"spectrum": payload},
+    )
+    assert entry in entries
+    assert figure_source_entries({"spectrum": payload}, location_prefix="figure") == (
+        entry,
+    )
+    assert calls == []
+    requests = source_requests(operation, ("spectrum", "unused"))
+    assert len(requests) == 1
+    assert requests[0].alias == "spectrum"
+    assert requests[0].evaluate
+
+    source_values = []
+
+    def source_value(alias, *, evaluate=False):
+        source_values.append((alias, evaluate))
+        return _sources.source_spec_for_payload(payload).materialize(payload)
+
+    tool = types.SimpleNamespace(
+        _source_value=source_value, source_kind_names=lambda _kind: ()
+    )
+    figure = Figure()
+    axes = np.asarray([[figure.add_subplot()]])
+    namespace = figurecomposer_rendering._source_namespace(
+        tool,
+        figure,
+        axes,
+        source_requests=requests,
+    )
+    assert namespace["spectrum"] == 6.0
+    assert source_values == [("spectrum", True)]
+    assert calls == [payload]
+    assert "unused" not in namespace
+
+
+def test_custom_code_dynamic_array_access_does_not_materialize_unused_fit(
+    qtbot, monkeypatch
+) -> None:
+    from lmfit.models import LinearModel
+
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive._figurecomposer._sources import ArraySourcePayload
+
+    signal = xr.DataArray(np.arange(7.0), dims="x", coords={"x": np.arange(7.0)})
+    result = signal.xlm.modelfit("x", model=LinearModel())
+    snapshot = FigureFitSourceSnapshot.from_dataset(result)
+
+    def blocked_decode(_self):
+        raise AssertionError("Unused fits must not reconstruct their models")
+
+    monkeypatch.setattr(FigureFitSourceSnapshot, "result_dataset", blocked_decode)
+    tool = FigureComposerTool.from_source_payloads(
+        {
+            "signal": ArraySourcePayload(signal),
+            "missing": ArraySourcePayload(None),
+            "unused_fit": snapshot,
+        },
+        sources=(
+            FigureSourceState(name="signal"),
+            FigureSourceState(name="missing"),
+            FigureSourceState(name="unused_fit", kind="fit"),
+        ),
+        operations=(
+            FigureOperationState.custom(
+                label="Dynamic array", code="ax.plot(globals()['signal'])"
+            ),
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert not tool._operation_render_errors
+    assert len(tool.figure.axes[0].lines) == 1
+    np.testing.assert_array_equal(tool.figure.axes[0].lines[0].get_ydata(), signal)
+
+
+def test_operation_source_requirements_and_type_compatibility() -> None:
+    import types
+
+    from erlab.interactive._figurecomposer._operations._registry import (
+        source_names_compatible,
+        source_requests,
+    )
+
+    states = {
+        "array": FigureSourceState(name="array"),
+        "fit": FigureSourceState(name="fit", kind="fit"),
+    }
+    context = types.SimpleNamespace(
+        source_names=lambda: tuple(states),
+        source_by_name=lambda: states,
+    )
+    native = FigureOperationState.fit_plot(source="fit")
+    assert source_names_compatible(context, native)
+    assert not source_names_compatible(
+        context, native.model_copy(update={"sources": ("array",)})
+    )
+    assert not source_requests(native, states)[0].evaluate
+    for options in (
+        {"fit_numpoints": 51},
+        {"fit_sigma": 0.95},
+        {"show_components": True},
+    ):
+        assert source_requests(native.model_copy(update=options), states)[0].evaluate
+    custom = FigureOperationState.custom(label="Custom", code="print(array, fit)")
+    assert source_names_compatible(context, custom)
+    assert all(request.evaluate for request in source_requests(custom, states))
+
+
+def test_source_dependencies_default_to_common_declared_sources() -> None:
+    from erlab.interactive._figurecomposer._model._operation_metadata import (
+        declared_operation_source_names,
+    )
+    from erlab.interactive._figurecomposer._model._state import FigureOperationKind
+
+    operation = FigureOperationState(
+        kind=FigureOperationKind.SET_PALETTE,
+        label="Future source operation",
+        sources=("spectrum", "other", "spectrum"),
+    )
+    assert declared_operation_source_names(operation) == ("spectrum", "other")

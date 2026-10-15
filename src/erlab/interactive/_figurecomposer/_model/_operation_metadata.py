@@ -55,11 +55,6 @@ def declared_operation_source_names(
     operation: FigureOperationState,
 ) -> tuple[str, ...]:
     """Return data sources explicitly selected by an operation's controls."""
-    if operation.kind in {
-        FigureOperationKind.PLOT_ARRAY,
-        FigureOperationKind.PLOT_SLICES,
-    }:
-        return _unique_source_names(operation.sources)
     if operation.kind == FigureOperationKind.LINE:
         if len(operation.map_selections) > 1:
             return _unique_source_names(
@@ -83,7 +78,7 @@ def declared_operation_source_names(
         return _unique_source_names(
             value.source for value in values if value is not None
         )
-    return ()
+    return _unique_source_names(operation.sources)
 
 
 def recipe_operation_source_names(

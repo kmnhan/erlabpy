@@ -1940,6 +1940,107 @@ def test_empty_fit_dataset_blob_roundtrip_has_no_private_coord_data() -> None:
     xr.testing.assert_identical(restored, empty)
 
 
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("prefix", ["", "peak_"])
+def test_fit_dataset_blob_restores_multipeak_components(nested, prefix) -> None:
+    model = erlab.analysis.fit.models.MultiPeakModel(
+        2, fd=True, convolve=True, name="saved peaks", prefix=prefix
+    )
+    if nested:
+        model = lmfit.models.ConstantModel(prefix="constant_") + (
+            model + lmfit.models.LinearModel(prefix="linear_")
+        )
+    params = model.make_params()
+    for name, value in {
+        "p0_center": -0.2,
+        "p1_center": -0.6,
+        "p0_height": 2.0,
+        "p1_height": 1.0,
+        "p0_width": 0.1,
+        "p1_width": 0.15,
+        "temp": 30.0,
+        "resolution": 0.03,
+    }.items():
+        params[prefix + name].set(value=value)
+    xvals = np.linspace(-1.0, 0.3, 81)
+    result = model.fit(model.eval(params=params, x=xvals), params=params, x=xvals)
+    original_components = result.eval_components(x=xvals)
+    dataset = xr.Dataset(
+        {"spectrum_modelfit_results": xr.DataArray([[result, result]], dims=("a", "b"))}
+    )
+
+    restored = erlab.interactive.utils._deserialize_fit_dataset_blob(
+        erlab.interactive.utils._serialize_fit_dataset_blob(dataset)
+    )
+
+    assert restored.spectrum_modelfit_results.shape == (1, 2)
+    for restored_result in restored.spectrum_modelfit_results.values.flat:
+        components = restored_result.eval_components(x=xvals)
+        assert components.keys() == original_components.keys()
+        for name in components:
+            np.testing.assert_allclose(components[name], original_components[name])
+        np.testing.assert_allclose(restored_result.eval(x=xvals), result.eval(x=xvals))
+        assert restored_result.params.valuesdict() == result.params.valuesdict()
+        for name, parameter in result.params.items():
+            loaded_parameter = restored_result.params[name]
+            assert loaded_parameter.min == parameter.min
+            assert loaded_parameter.max == parameter.max
+            assert loaded_parameter.expr == parameter.expr
+            assert loaded_parameter.vary == parameter.vary
+        for original, loaded in zip(
+            result.model.components, restored_result.model.components, strict=True
+        ):
+            assert loaded.name == original.name
+            assert loaded.prefix == original.prefix
+            assert loaded.param_hints == original.param_hints
+            if isinstance(original, erlab.analysis.fit.models.MultiPeakModel):
+                assert type(loaded) is erlab.analysis.fit.models.MultiPeakModel
+
+
+def test_fit_dataset_blob_skips_missing_results_and_other_model_subclasses(
+    monkeypatch,
+) -> None:
+    import xarray_lmfit
+
+    class CustomModel(lmfit.Model):
+        pass
+
+    multipeak = erlab.analysis.fit.models.MultiPeakModel(
+        fd=False, convolve=False, background="none"
+    )
+    custom = CustomModel(multipeak.func)
+    result = lmfit.model.ModelResult(custom, custom.make_params())
+    generic_result = lmfit.model.ModelResult(
+        lmfit.Model(multipeak.func), multipeak.make_params()
+    )
+    recognized_model = lmfit.Model(multipeak.func, name="saved", prefix="saved_")
+    recognized_result = lmfit.model.ModelResult(
+        recognized_model, recognized_model.make_params()
+    )
+    original_state = recognized_model.__dict__.copy()
+    dataset = xr.Dataset(
+        {
+            "modelfit_results": xr.DataArray(
+                [[None, np.nan], ["missing", result]], dims=("a", "b")
+            ),
+            "unrelated": xr.DataArray(generic_result),
+            "other_modelfit_results": xr.DataArray(recognized_result),
+        }
+    )
+    monkeypatch.setattr(xarray_lmfit, "load_fit", lambda *args, **kwargs: dataset)
+
+    restored = erlab.interactive.utils._deserialize_fit_dataset_blob([])
+
+    assert restored.modelfit_results.values[0, 0] is None
+    assert np.isnan(restored.modelfit_results.values[0, 1])
+    assert restored.modelfit_results.values[1, 0] == "missing"
+    assert type(restored.modelfit_results.values[1, 1].model) is CustomModel
+    assert type(restored.unrelated.item().model) is lmfit.Model
+    assert restored.other_modelfit_results.item().model is recognized_model
+    assert type(recognized_model) is erlab.analysis.fit.models.MultiPeakModel
+    assert recognized_model.__dict__ == original_state
+
+
 def test_lmfit_erlab_callable_warning_filter_reemits_unrelated_warning() -> None:
     import erlab.analysis.fit.models
     from erlab.interactive._fit1d import _load_lmfit_for_ftool_restore

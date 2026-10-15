@@ -1,6 +1,7 @@
 __all__ = [
     "CenteredInversePowerNorm",
     "CenteredPowerNorm",
+    "FitArtists",
     "InversePowerNorm",
     "TwoSlopeInversePowerNorm",
     "TwoSlopePowerNorm",
@@ -25,6 +26,7 @@ __all__ = [
     "plot_array_2d",
     "plot_bz",
     "plot_core_levels",
+    "plot_fit",
     "plot_hex_bz",
     "plot_in_plane_bz",
     "plot_out_of_plane_bz",
@@ -75,6 +77,7 @@ from .colors import (
     proportional_colorbar,
     unify_clim,
 )
+from .fitting import FitArtists, plot_fit
 from .general import (
     clean_labels,
     fermiline,

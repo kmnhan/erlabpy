@@ -28,10 +28,11 @@ import typing
 
 from erlab.interactive._figurecomposer._model._operation_metadata import (
     operation_uses_axes,
+    recipe_operation_source_names,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from matplotlib.figure import Figure
 
@@ -56,6 +57,27 @@ class AddStepActionSpec:
 
 
 @dataclasses.dataclass(frozen=True)
+class SourceRequest:
+    """Execution requirement for an alias declared by the operation.
+
+    Source requests can change evaluation requirements. Aliases must use the
+    operation's declared source fields so dependency tracking stays complete.
+    """
+
+    alias: str
+    evaluate: bool = False
+
+
+def _default_source_requests(
+    operation: FigureOperationState, available_names: Iterable[str]
+) -> tuple[SourceRequest, ...]:
+    return tuple(
+        SourceRequest(name)
+        for name in recipe_operation_source_names(operation, available_names)
+    )
+
+
+@dataclasses.dataclass(frozen=True)
 class OperationSpec:
     kind: FigureOperationKind
     add_actions: Sequence[AddStepActionSpec]
@@ -73,6 +95,10 @@ class OperationSpec:
         [FigureComposerTool, FigureOperationState, Figure, typing.Any], None
     ]
     code_lines: Callable[[FigureComposerTool, FigureOperationState], list[str]]
+    accepted_source_kinds: tuple[str, ...] | None = ("array",)
+    source_requests: Callable[
+        [FigureOperationState, Iterable[str]], tuple[SourceRequest, ...]
+    ] = _default_source_requests
     uses_axes: Callable[[FigureOperationState], bool] = dataclasses.field(
         default=operation_uses_axes
     )
@@ -82,6 +108,12 @@ class OperationSpec:
     loaded_operation: Callable[[FigureOperationState], FigureOperationState] = (
         dataclasses.field(default=lambda operation: operation)
     )
+    reconcile_sources: Callable[
+        [FigureRecipeContext, FigureOperationState], FigureOperationState
+    ] = dataclasses.field(default=lambda _context, operation: operation)
+    input_error_applies: Callable[
+        [FigureRecipeContext, FigureOperationState, str], bool
+    ] = dataclasses.field(default=lambda _context, _operation, _key: True)
 
 
 def _empty_source_editor(

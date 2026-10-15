@@ -1822,7 +1822,7 @@ def _plot_source_move(
     source_name: str,
     offset: typing.Literal[-1, 1],
 ) -> None:
-    available_sources = set(editor.context.source_names())
+    available_sources = set(editor.context.array_source_names())
 
     def update_operation(
         _index: int, target: FigureOperationState
@@ -1864,7 +1864,7 @@ def _plot_source_order_matches(
     editable = editor.editable_operations()
     if len(editable) <= 1:
         return True
-    available_sources = set(editor.context.source_names())
+    available_sources = set(editor.context.array_source_names())
     expected = tuple(
         source
         for source in _plot_slices_selection_sources(operation)
@@ -1884,7 +1884,7 @@ def _plot_source_order_matches(
 def _plot_source_row_names(
     editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[str, ...]:
-    source_names = editor.context.source_names()
+    source_names = editor.context.array_source_names()
     selected_sources = tuple(
         source
         for source in _plot_slices_selection_sources(operation)
@@ -2032,7 +2032,7 @@ def _build_source_editor(
     selected_sources = tuple(
         source
         for source in _plot_slices_selection_sources(operation)
-        if source in editor.context.source_names()
+        if source in editor.context.array_source_names()
     )
     order_controls_enabled = _plot_source_order_matches(editor, operation)
     if row_names:

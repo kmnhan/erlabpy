@@ -74,7 +74,7 @@ if typing.TYPE_CHECKING:
 
 
 def _create_plot_array_operation(tool: FigureComposerTool) -> FigureOperationState:
-    source_names = tool._document.source_names()
+    source_names = tool._document.array_source_names()
     first_source = (
         source_names[0] if source_names else tool._document.recipe.primary_source
     )
@@ -206,7 +206,7 @@ def _build_source_editor(
 ) -> None:
     source_mixed = editor.batch_is_mixed(operation, _primary_source)
     source_combo = editor.source_combo(
-        editor.context.source_names(),
+        editor.context.array_source_names(),
         None if source_mixed else _primary_source(operation),
         lambda source: _update_current_source(editor, source),
         parent=editor.source_controls,

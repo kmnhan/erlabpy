@@ -2167,6 +2167,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "plot_array",
         "plot_slices",
         "line",
+        "fit_plot",
         "bz_overlay",
         "photon_energy_overlay",
         "method:erlab",

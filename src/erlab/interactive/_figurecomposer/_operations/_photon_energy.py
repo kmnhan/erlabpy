@@ -476,12 +476,16 @@ def _editor_sections(
 
 
 def _seed_source(tool: FigureComposerTool) -> str | None:
+    source_names = tuple(tool._document.array_source_names())
     current = tool._current_operation()
     if current is not None:
-        sources = tool._selected_sources_for_operation(current[1])
+        sources = tuple(
+            name
+            for name in tool._selected_sources_for_operation(current[1])
+            if name in source_names
+        )
         if sources:
             return sources[0]
-    source_names = tuple(tool._document.source_names())
     if tool._document.recipe.primary_source in source_names:
         return tool._document.recipe.primary_source
     return source_names[0] if source_names else None
@@ -538,7 +542,7 @@ def _build_source_editor(
         operation, lambda target: target.hv_overlay_source
     )
     source_combo = editor.source_combo(
-        editor.context.source_names(),
+        editor.context.array_source_names(),
         None if source_mixed else operation.hv_overlay_source,
         lambda source: editor.request_update_rebuild(hv_overlay_source=source),
         parent=editor.source_controls,

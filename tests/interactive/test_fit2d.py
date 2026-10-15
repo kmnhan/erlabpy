@@ -18,6 +18,7 @@ import pyqtgraph as pg
 import pytest
 import scipy.interpolate
 import xarray as xr
+import xarray_lmfit
 from qtpy import QtCore, QtWidgets
 
 import erlab
@@ -58,12 +59,321 @@ def _make_1d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("x",), coords={"x": x}, name="spec")
 
 
+def test_fit2d_figure_snapshot_refreshes_pinned_slice_without_moving_cursor(
+    qtbot,
+) -> None:
+    spectra = _make_2d_data()
+    sigma = xr.full_like(spectra, 0.1)
+    tool = erlab.interactive.ftool(
+        spectra,
+        uncertainty=sigma,
+        data_name="spectra",
+        uncertainty_name="sigma",
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    tool._data_name_full = "spectra"
+    assert tool.add_to_figure_action in tool.main_plot.vb.menu.actions()
+    assert not tool.add_to_figure_action.isEnabled()
+    assert tool.findChild(QtWidgets.QPushButton, "ftoolAddFitToFigure") is None
+    selected = tool.figure_fit_selection()
+    fit_data = tool._fit_data()
+    job = tool._fit_job()
+    result = fit_data.xlm.modelfit(
+        "x", model=tool._model, params=tool._params, weights=tool._fit_weights()
+    ).load()
+    tool._set_fit_ds(tool._fit_result_for_job(result, job), 0.0)
+    assert tool.add_to_figure_action.isEnabled()
+    original = tool.figure_fit_source_snapshot()
+    tool._set_current_index((selected["index"] + 1) % len(tool._result_ds_full))
+    current = tool._current_idx
+    assert not tool._fit_is_current
+    assert not tool.add_to_figure_action.isEnabled()
+    assert tool.has_figure_fit_source(selected)
+    refreshed = tool.figure_fit_source_snapshot(selected)
+    assert tool._current_idx == current
+    xr.testing.assert_identical(refreshed.native_dataset, original.native_dataset)
+    assert not tool.has_figure_fit_source({**selected, "coordinate": -12345.0})
+    provenance = original.provenance_spec
+    assert provenance is not None
+    code = provenance["steps"][-1]["operation"]["code"]
+    namespace = {
+        "era": erlab.analysis,
+        "spectra": tool._data_full,
+        "sigma": sigma,
+        "model": tool._model,
+    }
+    exec(code, namespace)  # noqa: S102
+    assert namespace["result"].modelfit_results.size == 1
+    xr.testing.assert_identical(
+        namespace["result"].modelfit_data, original.native_dataset.modelfit_data
+    )
+    xr.testing.assert_identical(
+        namespace["result"].modelfit_weights,
+        original.native_dataset.modelfit_weights,
+    )
+
+
+@pytest.mark.parametrize("max_nfev", [0, 2])
+def test_fit2d_capped_fit_source_and_generated_code(qtbot, max_nfev) -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        np.stack([2 * x + 3, 4 * x + 5]),
+        dims=("y", "x"),
+        coords={"y": [10, 20], "x": x},
+        name="spectra",
+    )
+    model = lmfit.models.PolynomialModel(degree=1)
+    tool = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(c0=0, c1=0),
+        data_name="spectra",
+        model_name="model",
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    tool.nfev_spin.setValue(max_nfev)
+    tool._set_current_index(0)
+    first_selection = tool.figure_fit_selection()
+    for index in range(2):
+        tool._set_current_index(index)
+        assert tool._run_fit()
+        qtbot.waitUntil(lambda: tool._fit_thread is None, timeout=10000)
+        result_ds = tool._last_result_ds
+        assert result_ds is not None
+        result = result_ds.modelfit_results.item()
+        assert result.success == (not max_nfev)
+        assert result.aborted == bool(max_nfev)
+        assert tool.has_figure_fit_source() == (not max_nfev)
+        assert tool.add_to_figure_action.isEnabled() == (not max_nfev)
+        provenance = json.loads(result_ds.attrs["__figure_fit_provenance__"])
+        namespace = {"spectra": data, "model": model}
+        exec(provenance["steps"][-1]["operation"]["code"], namespace)  # noqa: S102
+        captured = namespace["result"].load()
+        captured_result = captured.modelfit_results.item()
+        assert captured_result.success == result.success
+        assert captured_result.aborted == result.aborted
+        assert captured_result.nfev == result.nfev
+        xr.testing.assert_identical(
+            captured.modelfit_best_fit, result_ds.modelfit_best_fit
+        )
+
+    assert tool.has_figure_fit_source(first_selection) == (not max_nfev)
+    namespace = {"spectra": data, "model": model, "xr": xr}
+    exec(  # noqa: S102
+        f"{tool._build_full_copy_prelude(warn=False)}\n"
+        f"replayed = {tool._full_fit_expression()}",
+        namespace,
+    )
+    replayed = namespace["replayed"].load()
+    assert all(
+        result.success == (not max_nfev) for result in replayed.modelfit_results.values
+    )
+    assert all(
+        result.aborted == bool(max_nfev) for result in replayed.modelfit_results.values
+    )
+
+    if max_nfev:
+        with pytest.raises(ValueError, match="completed fit"):
+            tool.figure_fit_source_snapshot(first_selection)
+        first_result_ds = tool._result_ds_full[0]
+        first_result = first_result_ds.modelfit_results.item()
+        assert np.isnan(first_result_ds.modelfit_best_fit).all()
+        # A pinned unsuccessful fit remains usable if it has a saved finite curve.
+        tool._result_ds_full[0] = first_result_ds.assign(
+            modelfit_best_fit=("x", model.eval(params=first_result.params, x=x))
+        )
+        assert tool.has_figure_fit_source(first_selection)
+        assert not tool.has_figure_fit_source()
+        snapshot = tool.figure_fit_source_snapshot(first_selection)
+        assert np.isfinite(snapshot.native_dataset.modelfit_best_fit).any()
+        tool._set_current_index(0)
+        assert tool.has_figure_fit_source()
+
+
+@pytest.mark.parametrize("weighting", ["uncertainty", "weights"])
+@pytest.mark.parametrize("vary_ranges", [False, True])
+def test_fit2d_effective_normalization_replays_mixed_slices(
+    qtbot, weighting, vary_ranges
+) -> None:
+    x = np.arange(-3.0, 4.0)
+    offsets = [0.0, 1.0e-10, 3.0, -3.0]
+    data = xr.DataArray(
+        np.stack([2 * x + offset for offset in offsets]),
+        dims=("y", "x"),
+        coords={"y": [10, 20, 30, 40], "x": x},
+        name="spectra",
+    )
+    data[:, [0, -1]] += 100.0
+    sigma = xr.DataArray(np.linspace(0.1, 0.2, x.size), dims="x", coords={"x": x})
+    model = lmfit.models.PolynomialModel(degree=1)
+    tool = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
+        uncertainty=sigma if weighting == "uncertainty" else None,
+        data_name="spectra",
+        model_name="model",
+        uncertainty_name="sigma",
+        execute=False,
+    )
+    qtbot.addWidget(tool)
+    if weighting == "weights":
+        tool._set_direct_weights(1 / sigma, weights_name="weights")
+    tool.normalize_check.setChecked(True)
+    tool.timeout_spin.setValue(30.0)
+    fitted_slices = []
+    for index, offset in enumerate(offsets):
+        tool._set_current_index(index)
+        bound = 2.0 if vary_ranges and index == 0 else 1.0
+        tool.domain_min_spin.setValue(-bound)
+        tool.domain_max_spin.setValue(bound)
+        copied_code = tool.copy_code_1d()
+        assert tool._run_fit()
+        qtbot.waitUntil(lambda: tool._fit_thread is None, timeout=10000)
+        fitted = tool._last_result_ds
+        assert fitted is not None
+        assert tool.has_figure_fit_source()
+        fitted = fitted.drop_vars(
+            [tool._FIT_RANGE_MIN_COORD, tool._FIT_RANGE_MAX_COORD]
+        )
+        factor = 1.0 if np.isclose(offset, 0.0) else offset
+        expected_data = data.isel(y=index).sel(x=slice(-bound, bound)) / factor
+        xr.testing.assert_allclose(
+            fitted.modelfit_data, expected_data.rename("modelfit_data")
+        )
+        np.testing.assert_allclose(
+            fitted.modelfit_results.item().weights,
+            abs(factor) / sigma.sel(x=expected_data.x),
+        )
+        snapshot = tool.figure_fit_source_snapshot()
+        assert snapshot.provenance_spec is not None
+        captured_code = snapshot.provenance_spec["steps"][-1]["operation"]["code"]
+        for code in (copied_code, captured_code):
+            namespace = {
+                "spectra": data,
+                "model": model,
+                "sigma": sigma,
+                "weights": 1 / sigma,
+            }
+            exec(code, namespace)  # noqa: S102
+            replayed = namespace["result"].load()
+            xr.testing.assert_identical(replayed.modelfit_data, fitted.modelfit_data)
+            xr.testing.assert_identical(
+                replayed.modelfit_weights, fitted.modelfit_weights
+            )
+            xr.testing.assert_allclose(
+                replayed.modelfit_best_fit, fitted.modelfit_best_fit
+            )
+        fitted_slices.append(fitted)
+
+    namespace = {
+        "spectra": data,
+        "model": model,
+        "sigma": sigma,
+        "weights": 1 / sigma,
+        "xr": xr,
+    }
+    exec(tool.copy_code(), namespace)  # noqa: S102
+    replayed = namespace["result"].load()
+    for index, fitted in enumerate(fitted_slices):
+        replayed_slice = replayed.isel(y=index).sel(x=fitted.x)
+        np.testing.assert_allclose(replayed_slice.modelfit_data, fitted.modelfit_data)
+        np.testing.assert_allclose(
+            replayed_slice.modelfit_best_fit, fitted.modelfit_best_fit
+        )
+        np.testing.assert_allclose(
+            replayed_slice.modelfit_results.item().weights,
+            fitted.modelfit_results.item().weights,
+        )
+
+
 def _make_2d_data() -> xr.DataArray:
     x = np.linspace(-1.0, 1.0, 5)
     y = np.linspace(0.0, 2.0, 3)
     xx, yy = np.meshgrid(x, y, indexing="xy")
     data = np.exp(-(xx**2)) * (1.0 + 0.1 * yy)
     return xr.DataArray(data, dims=("y", "x"), coords={"y": y, "x": x}, name="map")
+
+
+def test_fit2d_pinned_figure_refresh_keeps_each_recorded_range_and_normalization(
+    qtbot,
+    tmp_path,
+) -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        np.stack([2 * x + 3, 4 * x + 5]),
+        dims=("slice", "x"),
+        coords={"slice": [10, 20], "x": x},
+    )
+    model = lmfit.models.LinearModel()
+    tool = erlab.interactive.ftool(
+        data, model=model, uncertainty=xr.full_like(data, 0.1), execute=False
+    )
+    qtbot.addWidget(tool)
+    tool._set_current_index(0)
+    tool.domain_min_spin.setValue(-0.8)
+    tool.domain_max_spin.setValue(0.8)
+    tool.normalize_check.setChecked(True)
+    first_selection = tool.figure_fit_selection()
+    first_result = (
+        tool._fit_data()
+        .xlm.modelfit(
+            "x", model=tool._model, params=tool._params, weights=tool._fit_weights()
+        )
+        .load()
+    )
+    tool._set_fit_ds(tool._fit_result_for_job(first_result, tool._fit_job()), 0.0)
+    first_snapshot = tool.figure_fit_source_snapshot()
+    tool._set_current_index(1)
+    tool.domain_min_spin.setValue(-0.4)
+    tool.domain_max_spin.setValue(0.4)
+    tool.normalize_check.setChecked(False)
+    second_result = (
+        tool._fit_data()
+        .xlm.modelfit(
+            "x", model=tool._model, params=tool._params, weights=tool._fit_weights()
+        )
+        .load()
+    )
+    tool._set_fit_ds(tool._fit_result_for_job(second_result, tool._fit_job()), 0.0)
+    assert tool.has_figure_fit_source(first_selection)
+    refreshed = tool.figure_fit_source_snapshot(first_selection)
+    assert tool._current_idx == 1
+    assert not tool.normalize_check.isChecked()
+    xr.testing.assert_identical(refreshed.native_dataset, first_snapshot.native_dataset)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    qtbot.addWidget(restored)
+    assert restored.has_figure_fit_source(first_selection)
+    xr.testing.assert_identical(
+        restored.figure_fit_source_snapshot(first_selection).native_dataset,
+        first_snapshot.native_dataset,
+    )
+    stacked_result = tool._concat_fit_results(
+        [result for result in tool._result_ds_full if result is not None],
+        dim=tool._y_dim_name,
+    )
+    fit_path = tmp_path / "completed-fit-stack.h5"
+    xarray_lmfit.save_fit(stacked_result, fit_path)
+    reopened = erlab.interactive.ftool(xarray_lmfit.load_fit(fit_path), execute=False)
+    qtbot.addWidget(reopened)
+    assert reopened.has_figure_fit_source(first_selection)
+    reopened_snapshot = reopened.figure_fit_source_snapshot(first_selection)
+    # Reopening cropped data makes its original range the full input range, so
+    # ftool removes the redundant internal range coordinates.
+    range_coords = (tool._FIT_RANGE_MIN_COORD, tool._FIT_RANGE_MAX_COORD)
+    xr.testing.assert_identical(
+        reopened_snapshot.native_dataset.drop_vars(range_coords, errors="ignore"),
+        first_snapshot.native_dataset.drop_vars(range_coords, errors="ignore"),
+    )
+    assert (
+        reopened.figure_fit_source_snapshot(first_selection).provenance_spec
+        == first_snapshot.provenance_spec
+    )
+    reopened.normalize_check.setChecked(True)
+    assert not reopened.has_figure_fit_source()
+    assert reopened.has_figure_fit_source(first_selection)
 
 
 def _make_linear_fit2d_tool(
@@ -1096,7 +1406,11 @@ def test_fit2d_update_inputs_preserves_state_and_refit(
     win.y_min_spin.setValue(1)
     win.y_max_spin.setValue(2)
     win.refit_on_source_update_check.setChecked(False)
-    win._last_result_ds = xr.Dataset()
+    win._last_result_ds = (
+        win._fit_data()
+        .xlm.modelfit(win._coord_name, model=win._model, params=win._params)
+        .load()
+    )
 
     called: list[bool] = []
     monkeypatch.setattr(win, "_run_fit", lambda: called.append(True) or True)
@@ -1111,7 +1425,11 @@ def test_fit2d_update_inputs_preserves_state_and_refit(
     assert win._fit_is_current is False
     assert not called
 
-    win._last_result_ds = xr.Dataset()
+    win._last_result_ds = (
+        win._fit_data()
+        .xlm.modelfit(win._coord_name, model=win._model, params=win._params)
+        .load()
+    )
     win.refit_on_source_update_check.setChecked(True)
     newer_data = new_data.copy(deep=True)
     newer_data.data = np.asarray(newer_data.data) * 1.05
@@ -1268,16 +1586,22 @@ def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None
     assert isinstance(win, Fit2DTool)
 
     initial_receivers = signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+    old_action = win.add_to_figure_action
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
     win.update_inputs({"data": updated})
+    assert win.add_to_figure_action is not old_action
+    assert win.add_to_figure_action in win.main_plot.vb.menu.actions()
     assert (
         signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
         == initial_receivers
     )
 
+    old_action = win.add_to_figure_action
     win._do_transpose()
+    assert win.add_to_figure_action is not old_action
+    assert win.add_to_figure_action in win.main_plot.vb.menu.actions()
     assert (
         signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
         == initial_receivers
@@ -1435,7 +1759,11 @@ def test_fit2d_apply_inputs_auto_refit_after_waiting_cancelled_thread(
         on_error=lambda _message: None,
         job=win._fit_job(),
     )
-    win._last_result_ds = xr.Dataset()
+    win._last_result_ds = (
+        win._fit_data()
+        .xlm.modelfit(win._coord_name, model=win._model, params=win._params)
+        .load()
+    )
     win.refit_on_source_update_check.setChecked(True)
 
     started: list[bool] = []
@@ -3011,10 +3339,9 @@ def test_fit2d_full_copy_fit_data_name_with_domain_and_normalization(qtbot) -> N
     result_name = win._full_copy_fit_data_name("data", lines=lines)
 
     assert result_name == "data_crop_norm"
-    assert len(lines) == 2
-    assert lines[0].startswith("data_crop = data.sel(")
-    assert ".isel(" in lines[0]
-    assert lines[1] == 'data_crop_norm = data_crop / data_crop.mean("x")'
+    namespace = _exec_generated_code("\n".join(lines), data=data)
+    expected = data.sel(x=slice(-0.5, 0.5))
+    xr.testing.assert_identical(namespace[result_name], expected / expected.mean("x"))
     assert win._full_copy_fit_data_name("data") == "data_crop_norm"
 
 
@@ -6091,16 +6418,9 @@ def test_fit2d_refresh_contents_from_index_updates(qtbot) -> None:
     win._params_full[idx] = win._params.copy()
     win._params_from_coord_full[idx] = {"p0_center": "temp"}
 
-    class _Result:
-        nfev = 1
-        redchi = 1.0
-        rsquared = None
-        aic = 1.0
-        bic = 2.0
-
-    win._result_ds_full[idx] = xr.Dataset(
-        {"modelfit_results": xr.DataArray(_Result(), dims=())}
-    )
+    win._result_ds_full[idx] = win._data.xlm.modelfit(
+        "x", model=win._model, params=win._params
+    ).load()
     win._refresh_contents_from_index()
     assert win._params["p0_center"].value == pytest.approx(300.0)
 

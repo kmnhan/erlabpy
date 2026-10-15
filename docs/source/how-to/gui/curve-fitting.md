@@ -32,6 +32,21 @@ store the result with {func}`xarray_lmfit.save_fit`.
 Use {ref}`how-to-gui-fit-stack-with-ftool` for a stack of curves and
 {ref}`how-to-gui-reopen-saved-fit` to continue work from a saved result.
 
+(how-to-gui-plot-fit)=
+
+## Adding a completed fit to a figure
+
+1. Right-click the main fit plot and choose {guilabel}`Add Fit to Figure`.
+2. In Manager, choose a new figure or select an existing figure and target axes.
+3. Select the {guilabel}`Fit plot` step in Figure Composer to set the data markers,
+   fit line, measurement error bars, and confidence band.
+
+Weighted fits include error bar color, width, cap, and spacing controls. In
+{guilabel}`Components`, select a component to edit its line and confidence-band
+styles, including separate legend labels. Use {guilabel}`Line kwargs` or
+{guilabel}`Extra kwargs` for other Matplotlib properties. The adjacent {guilabel}`Docs`
+button opens the relevant Matplotlib reference.
+
 (how-to-gui-weighted-fit)=
 
 ## Fitting with standard uncertainties

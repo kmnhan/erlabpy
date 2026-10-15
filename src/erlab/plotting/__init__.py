@@ -44,6 +44,7 @@ directly.
    bz
    colors
    erplot
+   fitting
    general
    plot3d
 

@@ -33,6 +33,7 @@ from erlab.interactive._figurecomposer._seeding import (
     bz_overlay_operation_from_ktool,
     bz_overlay_operation_from_momentum_data,
 )
+from erlab.interactive._figurecomposer._sources import ArraySourcePayload
 from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
 from ._common import (
@@ -1314,6 +1315,44 @@ def test_figure_composer_photon_energy_overlay_seed_fallbacks(qtbot) -> None:
     assert figurecomposer_photon_energy._seed_binding_energy(line_tool) is None
 
 
+@pytest.mark.parametrize("with_array", [False, True])
+def test_photon_energy_overlay_add_step_skips_selected_fit(qtbot, with_array) -> None:
+    from lmfit.models import LinearModel
+
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+
+    signal = xr.DataArray(np.arange(7.0), dims="x", coords={"x": np.arange(7.0)})
+    snapshot = FigureFitSourceSnapshot.from_dataset(
+        signal.xlm.modelfit("x", model=LinearModel())
+    )
+    payloads: dict[str, object] = {"fit": snapshot}
+    sources = [FigureSourceState(name="fit", kind="fit")]
+    if with_array:
+        payloads["hvdep_kconv"] = ArraySourcePayload(_photon_energy_source())
+        sources.append(FigureSourceState(name="hvdep_kconv"))
+    tool = FigureComposerTool.from_source_payloads(
+        payloads,
+        sources=tuple(sources),
+        operations=(FigureOperationState.fit_plot(source="fit"),),
+        primary_source="fit",
+    )
+    qtbot.addWidget(tool)
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+
+    action = next(
+        action
+        for action in tool.operation_panel.add_step_menu.actions()
+        if action.data() == FigureOperationKind.PHOTON_ENERGY_OVERLAY.value
+    )
+    action.trigger()
+
+    operation = tool.tool_status.operations[-1]
+    assert operation.kind == FigureOperationKind.PHOTON_ENERGY_OVERLAY
+    assert operation.hv_overlay_source == ("hvdep_kconv" if with_array else None)
+
+
 def test_figure_composer_photon_energy_overlay_tracks_source_ownership(
     qtbot,
 ) -> None:
@@ -1349,10 +1388,12 @@ def test_figure_composer_photon_energy_overlay_tracks_source_ownership(
     source_tool.operation_panel.copy_button.click()
     payload = source_tool._clipboard_step_payload()
     assert payload is not None
-    _operations, sources, source_data, selection_base_data = payload
+    _operations, sources, source_payloads = payload
     assert [source.name for source in sources] == ["hvdep_kconv"]
-    xr.testing.assert_identical(source_data["hvdep_kconv"], data)
-    assert selection_base_data == {}
+    captured = source_payloads["hvdep_kconv"]
+    assert isinstance(captured, ArraySourcePayload)
+    xr.testing.assert_identical(captured.data, data)
+    assert captured.selection_base is None
 
     destination._paste_operations_from_clipboard()
 

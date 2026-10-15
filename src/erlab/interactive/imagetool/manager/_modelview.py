@@ -1562,7 +1562,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 if child_node is None:
                     internal_move_valid = False
                     continue
-                if child_node.is_imagetool and child_node.uid not in source_uids:
+                if (
+                    self.manager._figure_workflows._figure_node_is_source(child_node)
+                    and child_node.uid not in source_uids
+                ):
                     source_uids.append(child_node.uid)
                 parent_index = self.parent(idx)
                 if not parent_index.isValid():

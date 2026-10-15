@@ -320,7 +320,7 @@ def _plot_source_combo(
         combo.addItem(f"No {_plot_axis_label(axis)} DataArray", None)
     elif current is None:
         combo.addItem(f"Choose {_plot_axis_label(axis)} DataArray", None)
-    source_names = editor.context.source_names()
+    source_names = editor.context.array_source_names()
     for source in source_names:
         combo.addItem(editor.source_display_name(source), source)
         combo.setItemData(
@@ -655,7 +655,7 @@ def _update_current_plot_data_mode(editor: FigureOperationEditor, mode: str) -> 
     ) -> FigureOperationState:
         updates: dict[str, typing.Any] = {"method_plot_data_mode": mode}
         if mode == "from_data" and operation.method_plot_y is None:
-            source_names = editor.context.source_names()
+            source_names = editor.context.array_source_names()
             if source_names:
                 updates["method_plot_y"] = _default_plot_value_state(
                     editor.context.source_data, source_names[0]

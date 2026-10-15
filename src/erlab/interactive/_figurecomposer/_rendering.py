@@ -31,10 +31,7 @@ from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_shared_axes_targets,
     _gridspec_valid_axes_ids,
 )
-from erlab.interactive._figurecomposer._model._sources import (
-    _public_source_data,
-    _valid_source_variable,
-)
+from erlab.interactive._figurecomposer._model._sources import _valid_source_variable
 from erlab.interactive._figurecomposer._trust import figure_operation_execution_entries
 
 if typing.TYPE_CHECKING:
@@ -46,6 +43,7 @@ if typing.TYPE_CHECKING:
         FigureGridSpecGridState,
         FigureOperationState,
     )
+    from erlab.interactive._figurecomposer._operations._base import SourceRequest
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -309,6 +307,8 @@ def _source_namespace(
     tool: FigureComposerTool,
     fig: Figure,
     axs: np.ndarray | dict[str, matplotlib.axes.Axes],
+    *,
+    source_requests: tuple[SourceRequest, ...] = (),
 ) -> dict[str, typing.Any]:
     first_axis = next(iter(axs.values()), None) if isinstance(axs, dict) else axs[0, 0]
     namespace: dict[str, typing.Any] = {
@@ -319,8 +319,14 @@ def _source_namespace(
         "xr": xr,
         "eplt": eplt,
     }
-    for name, data in tool._document.source_data.items():
-        namespace[_valid_source_variable(name)] = _public_source_data(data)
+    # Array variables also support dynamic access from custom Python steps.
+    # Executable payloads are only materialized through explicit requests below.
+    for name in tool.source_kind_names("array"):
+        namespace[_valid_source_variable(name)] = tool._source_value(name)
+    for request in source_requests:
+        namespace[_valid_source_variable(request.alias)] = tool._source_value(
+            request.alias, evaluate=request.evaluate
+        )
     return namespace
 
 
@@ -394,7 +400,8 @@ def _operation_will_render(tool: FigureComposerTool, operation: typing.Any) -> b
         return False
     spec = _registry.spec_for(operation.kind)
     return not (
-        spec.has_invalid_target(tool._document, operation)
+        not _registry.source_names_compatible(tool._document, operation)
+        or spec.has_invalid_target(tool._document, operation)
         or tool.operation_editor.has_input_error(operation)
     )
 
@@ -428,6 +435,7 @@ def _render_into_figure(
                 tool._document.recipe,
                 operation_index,
                 location_prefix="figure",
+                source_payloads=tool.source_payloads(),
             )
             capability = (
                 tool._issue_code_execution_capability(entries) if entries else None

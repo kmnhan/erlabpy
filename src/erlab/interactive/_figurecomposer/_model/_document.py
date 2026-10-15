@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import types
 import typing
 import uuid
 import weakref
@@ -37,6 +38,11 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureSourceState,
     FigureSubplotsState,
 )
+from erlab.interactive._figurecomposer._sources import (
+    ArraySourcePayload,
+    duplicate_source_payload,
+    source_payload_kind,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -48,6 +54,9 @@ if typing.TYPE_CHECKING:
         FigureOperationState,
         FigureRecipeState,
     )
+
+
+_PayloadT = typing.TypeVar("_PayloadT")
 
 
 class FigureSourceAddResult(typing.NamedTuple):
@@ -90,7 +99,18 @@ class FigureRecipeContext(typing.Protocol):
     def recipe(self) -> FigureRecipeState: ...
 
     @property
+    def source_payloads(self) -> Mapping[str, object]: ...
+
+    def source_kind_names(self, kind: str) -> tuple[str, ...]: ...
+
+    def source_payload(
+        self, name: str, payload_type: type[_PayloadT]
+    ) -> _PayloadT | None: ...
+
+    @property
     def source_data(self) -> Mapping[str, xr.DataArray]: ...
+
+    def array_source_names(self) -> tuple[str, ...]: ...
 
     def source_names(self) -> tuple[str, ...]: ...
 
@@ -126,6 +146,7 @@ class FigureDocument:
         *,
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
+        source_payloads: Mapping[str, object] | None = None,
         changed_callback: Callable[[bool, bool], None] | None = None,
     ) -> None:
         self._changed_callback: Callable[[bool, bool], None] | None = None
@@ -138,10 +159,14 @@ class FigureDocument:
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
         self._validate_operation_id_sequence(self._recipe.operations)
-        self._source_data: dict[str, xr.DataArray]
-        self._source_selection_base_data: dict[str, xr.DataArray]
-        self.replace_source_payloads(
-            source_data or {}, source_selection_base_data or {}
+        self._source_payloads: dict[str, object] = {}
+        self.replace_payloads(
+            source_payloads
+            if source_payloads is not None
+            else self._array_payloads(
+                source_data or {},
+                source_selection_base_data or {},
+            )
         )
         self.set_changed_callback(changed_callback)
 
@@ -155,14 +180,39 @@ class FigureDocument:
         return self._recipe.model_copy(deep=True)
 
     @property
+    def source_payloads(self) -> Mapping[str, object]:
+        """Captured sources indexed by their recipe aliases."""
+        return types.MappingProxyType(self._source_payloads)
+
+    def source_payload(
+        self, name: str, payload_type: type[_PayloadT]
+    ) -> _PayloadT | None:
+        """Return a payload only when it has the requested runtime type."""
+        payload = self._source_payloads.get(name)
+        return payload if isinstance(payload, payload_type) else None
+
+    @property
     def source_data(self) -> Mapping[str, xr.DataArray]:
-        """Effective source payloads used by figure operations."""
-        return self._source_data
+        """Effective arrays derived from the common source store."""
+        return types.MappingProxyType(
+            {
+                name: payload.data
+                for name, payload in self._source_payloads.items()
+                if isinstance(payload, ArraySourcePayload) and payload.data is not None
+            }
+        )
 
     @property
     def source_selection_base_data(self) -> Mapping[str, xr.DataArray]:
-        """Unselected parent payloads used to replay source selections."""
-        return self._source_selection_base_data
+        """Unselected parents derived from array payloads."""
+        return types.MappingProxyType(
+            {
+                name: payload.selection_base
+                for name, payload in self._source_payloads.items()
+                if isinstance(payload, ArraySourcePayload)
+                and payload.selection_base is not None
+            }
+        )
 
     @property
     def source_revision(self) -> int:
@@ -226,9 +276,7 @@ class FigureDocument:
         self,
         *,
         recipe: FigureRecipeState | None = None,
-        source_payloads: (
-            tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]] | None
-        ) = None,
+        source_payloads: Mapping[str, object] | None = None,
     ) -> tuple[bool, bool]:
         """Commit validated document state and send one change notification."""
         updated_recipe = (
@@ -240,19 +288,10 @@ class FigureDocument:
         source_payloads_changed = source_payloads is not None
         if not recipe_changed and not source_payloads_changed:
             return False, False
-
-        updated_source_data: dict[str, xr.DataArray] | None = None
-        updated_selection_base_data: dict[str, xr.DataArray] | None = None
-        if source_payloads is not None:
-            source_data, selection_base_data = source_payloads
-            updated_source_data = dict(source_data)
-            updated_selection_base_data = dict(selection_base_data)
-
         if updated_recipe is not None:
             self._recipe = updated_recipe
-        if updated_source_data is not None and updated_selection_base_data is not None:
-            self._source_data = updated_source_data
-            self._source_selection_base_data = updated_selection_base_data
+        if source_payloads is not None:
+            self._source_payloads = dict(source_payloads)
             self._source_revision += 1
         self._notify_changed(
             recipe_changed=recipe_changed,
@@ -262,16 +301,57 @@ class FigureDocument:
 
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""
-        recipe_changed, _source_payloads_changed = self._commit(recipe=recipe)
-        return recipe_changed
+        return self._commit(recipe=recipe)[0]
+
+    def replace_payloads(self, source_payloads: Mapping[str, object]) -> None:
+        """Replace all captured source payloads."""
+        self._commit(source_payloads=source_payloads)
+
+    def replace_recipe_and_payloads(
+        self, recipe: FigureRecipeState, source_payloads: Mapping[str, object]
+    ) -> None:
+        """Replace recipe and changed payloads in one atomic commit."""
+        self._commit(
+            recipe=recipe,
+            source_payloads=None
+            if self._mapping_values_are_identical(self.source_payloads, source_payloads)
+            else source_payloads,
+        )
+
+    def _array_payloads(
+        self,
+        source_data: Mapping[str, xr.DataArray],
+        selection_base_data: Mapping[str, xr.DataArray],
+        *,
+        additional: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        payloads = {
+            name: payload
+            for name, payload in self._source_payloads.items()
+            if not isinstance(payload, ArraySourcePayload)
+        }
+        for name in dict.fromkeys((*source_data, *selection_base_data)):
+            current = self.source_payload(name, ArraySourcePayload)
+            data = source_data.get(name)
+            base = selection_base_data.get(name)
+            payloads[name] = (
+                current
+                if current is not None
+                and current.data is data
+                and current.selection_base is base
+                else ArraySourcePayload(data, base)
+            )
+        if additional is not None:
+            payloads.update(additional)
+        return payloads
 
     def replace_source_payloads(
         self,
         source_data: Mapping[str, xr.DataArray],
         selection_base_data: Mapping[str, xr.DataArray],
     ) -> None:
-        """Replace effective and selection-base source payloads together."""
-        self._commit(source_payloads=(source_data, selection_base_data))
+        """Replace array payloads through the array selection adapter."""
+        self.replace_payloads(self._array_payloads(source_data, selection_base_data))
 
     def replace_recipe_and_source_payloads(
         self,
@@ -279,30 +359,16 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray],
         selection_base_data: Mapping[str, xr.DataArray],
     ) -> None:
-        """Replace changed recipe and source payloads in one atomic commit.
-
-        Source mappings that contain the current payload objects do not advance the
-        source revision. Call :meth:`touch_source_payloads` after changing one of
-        those payload objects in place.
-        """
-        source_payloads = None
-        if not (
-            self._mapping_values_are_identical(self._source_data, source_data)
-            and self._mapping_values_are_identical(
-                self._source_selection_base_data,
-                selection_base_data,
-            )
-        ):
-            source_payloads = (source_data, selection_base_data)
-        self._commit(
-            recipe=recipe,
-            source_payloads=source_payloads,
+        """Replace array selection payloads and the recipe atomically."""
+        self.replace_recipe_and_payloads(
+            recipe,
+            self._array_payloads(source_data, selection_base_data),
         )
 
     @staticmethod
     def _mapping_values_are_identical(
-        current: Mapping[str, xr.DataArray],
-        candidate: Mapping[str, xr.DataArray],
+        current: Mapping[str, object],
+        candidate: Mapping[str, object],
     ) -> bool:
         """Return whether two mappings contain the same payload objects."""
         return len(current) == len(candidate) and all(
@@ -392,9 +458,26 @@ class FigureDocument:
         if len(set(operation_ids)) != len(operation_ids):
             raise ValueError("operation IDs must be unique")
 
+    def source_kind_names(self, kind: str) -> tuple[str, ...]:
+        """Return aliases whose source states have the requested type."""
+        names = tuple(
+            source.name for source in self.recipe.sources if source.kind == kind
+        )
+        return names or tuple(
+            name
+            for name, payload in self.source_payloads.items()
+            if source_payload_kind(payload) == kind
+        )
+
+    def array_source_names(self) -> tuple[str, ...]:
+        """Return aliases usable by ordinary array operations."""
+        return tuple(
+            source.name for source in self.recipe.sources if source.kind == "array"
+        ) or tuple(self.source_data)
+
     def source_names(self) -> tuple[str, ...]:
         names = tuple(source.name for source in self.recipe.sources)
-        return names or tuple(self.source_data)
+        return names or tuple(self.source_payloads)
 
     def source_by_name(self) -> dict[str, FigureSourceState]:
         return {source.name: source for source in self.recipe.sources}
@@ -407,7 +490,7 @@ class FigureDocument:
             return error
         if alias != current and (
             alias in {source.name for source in self.recipe.sources}
-            or alias in self.source_data
+            or alias in self.source_payloads
         ):
             return f"Source alias {alias!r} is already in use."
         return None
@@ -498,6 +581,9 @@ class FigureDocument:
                     for field in (
                         "node_uid",
                         "node_snapshot_token",
+                        "provider_id",
+                        "provider_selection",
+                        "use_node_data",
                         "data_role",
                         "provenance_spec",
                     )
@@ -689,55 +775,49 @@ class FigureDocument:
         index: int,
         operations: Sequence[FigureOperationState],
         sources: Sequence[FigureSourceState],
-        source_data: Mapping[str, xr.DataArray],
-        selection_base_data: Mapping[str, xr.DataArray],
+        source_data: Mapping[str, xr.DataArray] | None = None,
+        selection_base_data: Mapping[str, xr.DataArray] | None = None,
         *,
         preserve_existing: bool = False,
+        source_payloads: Mapping[str, object] | None = None,
     ) -> FigureOperationPasteResult:
         """Insert copied operations and source dependencies as one transaction."""
         if index < 0 or index > len(self.recipe.operations):
             raise IndexError("operation insertion index out of range")
-
+        incoming = dict(source_payloads or {})
+        if source_payloads is None:
+            for name in (source_data or {}).keys() | (selection_base_data or {}).keys():
+                incoming[name] = ArraySourcePayload(
+                    (source_data or {}).get(name), (selection_base_data or {}).get(name)
+                )
         existing_source_names = {source.name for source in self.recipe.sources}
-        reserved_source_names = set(existing_source_names)
-        reserved_source_names.update(self.source_data)
-        unique_sources: list[FigureSourceState] = []
-        seen_sources: set[str] = set()
-        for source in sources:
-            if source.name in seen_sources:
-                continue
-            seen_sources.add(source.name)
-            unique_sources.append(source)
-
+        reserved = existing_source_names | set(self.source_payloads)
+        unique_sources = tuple({source.name: source for source in sources}.values())
         rename_map: dict[str, str] = {}
         for source in unique_sources:
-            if preserve_existing and source.name in reserved_source_names:
+            if preserve_existing and source.name in reserved:
                 rename_map[source.name] = source.name
                 continue
-            pasted_name = source.name
-            if pasted_name in reserved_source_names:
-                stem = f"{source.name}_copy"
-                pasted_name = stem
-                suffix = 2
-                while pasted_name in reserved_source_names:
-                    pasted_name = f"{stem}_{suffix}"
-                    suffix += 1
-            reserved_source_names.add(pasted_name)
-            rename_map[source.name] = pasted_name
-
+            alias = source.name
+            if alias in reserved:
+                alias = self._source_copy_alias(source.name, reserved)
+            reserved.add(alias)
+            rename_map[source.name] = alias
         source_list = list(self.recipe.sources)
-        renamed_source_data: dict[str, xr.DataArray] = {}
+        payloads = dict(self.source_payloads)
+        source_data_changed = False
         for source in unique_sources:
-            pasted_name = rename_map[source.name]
-            renamed_source = self.source_with_renamed_references(source, rename_map)
-            if pasted_name not in existing_source_names:
-                source_list.append(renamed_source)
-                existing_source_names.add(pasted_name)
-            if source.name in source_data and (
-                pasted_name not in self.source_data or not preserve_existing
+            alias = rename_map[source.name]
+            if alias not in existing_source_names:
+                source_list.append(
+                    self.source_with_renamed_references(source, rename_map)
+                )
+                existing_source_names.add(alias)
+            if source.name in incoming and (
+                not preserve_existing or alias not in payloads
             ):
-                renamed_source_data[pasted_name] = source_data[source.name]
-
+                payloads[alias] = duplicate_source_payload(incoming[source.name])
+                source_data_changed = True
         copied_operations = self._operation_copies(
             tuple(
                 rename_operation_sources(operation, rename_map)
@@ -747,34 +827,18 @@ class FigureDocument:
         self._validate_new_operation_ids(copied_operations)
         operation_list = list(self.recipe.operations)
         operation_list[index:index] = copied_operations
-
-        renamed_selection_base_data: dict[str, xr.DataArray] = {}
-        for source_name, data in selection_base_data.items():
-            pasted_name = rename_map.get(source_name, source_name)
-            if pasted_name not in existing_source_names:
-                continue
-            if preserve_existing and pasted_name in self.source_selection_base_data:
-                continue
-            renamed_selection_base_data[pasted_name] = data
-        updated_source_data = dict(self.source_data)
-        updated_source_data.update(renamed_source_data)
-        updated_selection_base_data = dict(self.source_selection_base_data)
-        updated_selection_base_data.update(renamed_selection_base_data)
-        updated_recipe = self.recipe.model_copy(
-            update={
-                "sources": tuple(source_list),
-                "operations": tuple(operation_list),
-            }
-        )
-
-        self.replace_recipe_and_source_payloads(
-            updated_recipe,
-            updated_source_data,
-            updated_selection_base_data,
+        self.replace_recipe_and_payloads(
+            self.recipe.model_copy(
+                update={
+                    "sources": tuple(source_list),
+                    "operations": tuple(operation_list),
+                }
+            ),
+            payloads,
         )
         return FigureOperationPasteResult(
             tuple(operation.operation_id for operation in copied_operations),
-            bool(renamed_source_data or renamed_selection_base_data),
+            source_data_changed,
         )
 
     def reorder_operations(self, ordered_ids: Sequence[str]) -> bool:
@@ -1008,12 +1072,9 @@ class FigureDocument:
             rename_operation_sources(operation, rename_map)
             for operation in self.recipe.operations
         )
-        source_data = {
-            rename_map.get(name, name): data for name, data in self.source_data.items()
-        }
-        selection_base_data = {
-            rename_map.get(name, name): data
-            for name, data in self.source_selection_base_data.items()
+        source_payloads = {
+            rename_map.get(name, name): payload
+            for name, payload in self.source_payloads.items()
         }
         updates: dict[str, typing.Any] = {
             "sources": sources,
@@ -1022,10 +1083,8 @@ class FigureDocument:
         if self.recipe.primary_source == old_name:
             updates["primary_source"] = new_name
 
-        self.replace_recipe_and_source_payloads(
-            self.recipe.model_copy(update=updates),
-            source_data,
-            selection_base_data,
+        self.replace_recipe_and_payloads(
+            self.recipe.model_copy(update=updates), source_payloads
         )
         return True
 
@@ -1040,28 +1099,20 @@ class FigureDocument:
         if not indices:
             return ()
         sources = list(self.recipe.sources)
-        source_data = dict(self.source_data)
-        selection_base_data = dict(self.source_selection_base_data)
-        reserved = {source.name for source in sources}
-        reserved.update(source_data)
+        payloads = dict(self.source_payloads)
+        reserved = {source.name for source in sources} | set(payloads)
         duplicates: list[FigureSourceState] = []
         for index in indices:
             source = sources[index]
             alias = self._source_copy_alias(source.name, reserved)
             duplicates.append(self.source_with_name(source, alias))
-            if source.name in source_data:
-                source_data[alias] = source_data[source.name].copy(deep=False)
-            if source.name in selection_base_data:
-                selection_base_data[alias] = selection_base_data[source.name].copy(
-                    deep=False
-                )
+            if source.name in payloads:
+                payloads[alias] = duplicate_source_payload(payloads[source.name])
         insert_index = max(indices) + 1
         sources[insert_index:insert_index] = duplicates
 
-        self.replace_recipe_and_source_payloads(
-            self.recipe.model_copy(update={"sources": tuple(sources)}),
-            source_data,
-            selection_base_data,
+        self.replace_recipe_and_payloads(
+            self.recipe.model_copy(update={"sources": tuple(sources)}), payloads
         )
         return tuple(source.name for source in duplicates)
 
@@ -1179,15 +1230,13 @@ class FigureDocument:
         updates: dict[str, typing.Any] = {"sources": tuple(sources)}
         if self.recipe.primary_source in removed:
             updates["primary_source"] = sources[0].name
-        source_data = dict(self.source_data)
-        selection_base_data = dict(self.source_selection_base_data)
-        for name in removed:
-            source_data.pop(name, None)
-            selection_base_data.pop(name, None)
-        self.replace_recipe_and_source_payloads(
-            self.recipe.model_copy(update=updates),
-            source_data,
-            selection_base_data,
+        payloads = {
+            name: payload
+            for name, payload in self.source_payloads.items()
+            if name not in removed
+        }
+        self.replace_recipe_and_payloads(
+            self.recipe.model_copy(update=updates), payloads
         )
         return tuple(removed)
 
@@ -1379,6 +1428,130 @@ class FigureDocument:
             )
         return replacement, self.source_data_from_selection(data, replacement)
 
+    def add_source_payloads(
+        self,
+        sources: Sequence[FigureSourceState],
+        source_payloads: Mapping[str, object],
+        *,
+        replace_existing: bool = False,
+    ) -> FigureSourceAddResult:
+        """Add or refresh captured payloads through the common source store."""
+        array_sources = tuple(
+            source
+            for source in sources
+            if isinstance(
+                payload := source_payloads.get(source.name), ArraySourcePayload
+            )
+            and payload.selection_base is None
+        )
+        if not array_sources:
+            return self._add_source_payloads(
+                sources, source_payloads, replace_existing=replace_existing
+            )
+        array_names = {source.name for source in array_sources}
+        other_sources = tuple(
+            source for source in sources if source.name not in array_names
+        )
+        with self.mutation_transaction():
+            array_result = self.add_sources(
+                array_sources,
+                {
+                    name: payload.data
+                    for name, payload in source_payloads.items()
+                    if name in array_names
+                    and isinstance(payload, ArraySourcePayload)
+                    and payload.data is not None
+                },
+            )
+            other_result = self._add_source_payloads(
+                other_sources, source_payloads, replace_existing=replace_existing
+            )
+        order = {source.name: index for index, source in enumerate(sources)}
+
+        def combined(
+            left: tuple[tuple[str, str], ...], right: tuple[tuple[str, str], ...]
+        ) -> tuple[tuple[str, str], ...]:
+            return tuple(sorted((*left, *right), key=lambda item: order[item[0]]))
+
+        return FigureSourceAddResult(
+            combined(array_result.added, other_result.added),
+            combined(array_result.updated, other_result.updated),
+            combined(array_result.skipped, other_result.skipped),
+        )
+
+    def _add_source_payloads(
+        self,
+        sources: Sequence[FigureSourceState],
+        source_payloads: Mapping[str, object],
+        *,
+        replace_existing: bool = False,
+    ) -> FigureSourceAddResult:
+        existing = self.source_by_name()
+        payloads = dict(self.source_payloads)
+        added: list[tuple[str, str]] = []
+        updated: list[tuple[str, str]] = []
+        skipped: list[tuple[str, str]] = []
+        for source in sources:
+            payload = source_payloads.get(source.name)
+            if payload is None or source_payload_kind(payload) != source.kind:
+                skipped.append(
+                    (source.name, f"{source.name} (source data is unavailable)")
+                )
+                continue
+            matched = next(
+                (
+                    candidate
+                    for candidate in existing.values()
+                    if candidate.kind == source.kind
+                    and (
+                        (replace_existing and candidate.name == source.name)
+                        or (
+                            source.node_uid is not None
+                            and candidate.node_uid == source.node_uid
+                            and candidate.provider_id == source.provider_id
+                            and candidate.provider_selection
+                            == source.provider_selection
+                        )
+                    )
+                ),
+                None,
+            )
+            alias = (
+                matched.name
+                if matched is not None
+                else _source_unique_name(source.name, set(existing) | set(payloads))
+            )
+            existing[alias] = self.source_with_name(source, alias)
+            payloads[alias] = payload
+            (updated if matched is not None else added).append((source.name, alias))
+        if added or updated:
+            updates: dict[str, typing.Any] = {"sources": tuple(existing.values())}
+            if not self.recipe.sources:
+                updates["primary_source"] = next(iter(existing))
+            self.replace_recipe_and_payloads(
+                self.recipe.model_copy(update=updates), payloads
+            )
+        return FigureSourceAddResult(tuple(added), tuple(updated), tuple(skipped))
+
+    def update_source_payloads(
+        self, source_payloads: Mapping[str, object]
+    ) -> FigureSourceUpdateResult:
+        """Refresh existing payloads without source-specific lifecycle branches."""
+        payloads = dict(self.source_payloads)
+        updated: list[str] = []
+        skipped: list[tuple[str, str]] = []
+        source_by_name = self.source_by_name()
+        for name, payload in source_payloads.items():
+            source = source_by_name.get(name)
+            if source is None or source_payload_kind(payload) != source.kind:
+                skipped.append((name, f"{name} (source type does not match)"))
+                continue
+            payloads[name] = payload
+            updated.append(name)
+        if updated:
+            self.replace_payloads(payloads)
+        return FigureSourceUpdateResult(tuple(updated), tuple(skipped))
+
     def add_sources(
         self,
         sources: Sequence[FigureSourceState],
@@ -1395,7 +1568,7 @@ class FigureDocument:
             source = incoming_source
             incoming_name = incoming_source.name
             data = source_data.get(incoming_name)
-            if data is None:
+            if source.kind != "array" or data is None:
                 skipped.append(
                     (incoming_name, f"{incoming_name} (source data is unavailable)")
                 )
@@ -1404,7 +1577,10 @@ class FigureDocument:
                 [
                     candidate
                     for candidate in existing.values()
-                    if candidate.node_uid == source.node_uid
+                    if candidate.kind == "array"
+                    and candidate.node_uid == source.node_uid
+                    and candidate.provider_id == source.provider_id
+                    and candidate.provider_selection == source.provider_selection
                 ]
                 if source.node_uid is not None
                 else []
@@ -1510,6 +1686,10 @@ class FigureDocument:
         data: xr.DataArray,
     ) -> FigureSourceUpdateResult:
         """Replace source data while preserving its recipe-facing alias."""
+        if source.kind != "array":
+            return FigureSourceUpdateResult(
+                skipped=((alias, "An array source is required."),)
+            )
         source_list = list(self.recipe.sources)
         existing_source: FigureSourceState | None = None
         existing_index: int | None = None
@@ -1526,12 +1706,18 @@ class FigureDocument:
             source_list.append(self.source_with_name(source, alias))
             existing_index = len(source_list) - 1
 
+        if existing_source is not None and existing_source.kind != "array":
+            return FigureSourceUpdateResult(
+                skipped=((alias, "The replacement source type does not match."),)
+            )
         replacement_name = alias
         preserve_selection_parent = False
         if (
             existing_source is not None
             and existing_source.node_uid is not None
             and existing_source.node_uid == source.node_uid
+            and existing_source.provider_id == source.provider_id
+            and existing_source.provider_selection == source.provider_selection
         ):
             source_by_name = {candidate.name: candidate for candidate in source_list}
             try:
@@ -1636,22 +1822,22 @@ class FigureDocument:
         return result
 
     def discard_source_data(self, names: Iterable[str]) -> tuple[str, ...]:
-        """Discard backing data for recipe sources that became unavailable."""
+        """Discard captured payloads for recipe sources that became unavailable."""
         recipe_names = {source.name for source in self.recipe.sources}
         discarded = tuple(
             name
             for name in dict.fromkeys(names)
-            if name in recipe_names
-            and (name in self.source_data or name in self.source_selection_base_data)
+            if name in recipe_names and name in self.source_payloads
         )
         if not discarded:
             return ()
-        source_data = dict(self.source_data)
-        selection_base_data = dict(self.source_selection_base_data)
-        for name in discarded:
-            source_data.pop(name, None)
-            selection_base_data.pop(name, None)
-        self.replace_source_payloads(source_data, selection_base_data)
+        self.replace_payloads(
+            {
+                name: payload
+                for name, payload in self.source_payloads.items()
+                if name not in discarded
+            }
+        )
         return discarded
 
     def axes_selection_has_invalid_target(

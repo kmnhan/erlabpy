@@ -13,6 +13,7 @@ from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_axis_display_names,
     _gridspec_valid_axes_ids,
 )
+from erlab.interactive._figurecomposer._providers import FigureSourceTarget
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -21,6 +22,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
+    from erlab.interactive._figurecomposer._providers import FigureSourceProvider
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 _NEW_FIGURE_TARGET = "__new_figure__"
@@ -42,6 +44,10 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         allow_new_figure: bool = False,
         source_count: int = 1,
         selected_figure_uid: str | None = None,
+        source_kind: str | None = "array",
+        default_operations: tuple[
+            erlab.interactive._figurecomposer.FigureOperationState, ...
+        ] = (),
     ) -> None:
         from erlab.interactive._figurecomposer._ui._axes_widgets import (
             _AxesSelectorWidget,
@@ -54,6 +60,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self._operation = operation
         self._allow_new_figure = allow_new_figure
         self._source_count = source_count
+        self._source_kind = source_kind
+        self._default_operations = default_operations
         self.setObjectName("managerAppendFigureTargetDialog")
         self.setWindowTitle("Add to Figure" if allow_new_figure else "Append to Figure")
         self.setModal(True)
@@ -201,6 +209,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         selection = self.axes_selection()
         if selection is None:
             return None
+        if self._selection_has_invalid_target(selection):
+            return None
         return self.figure_uid(), selection
 
     def _set_default_action(self, selected_figure_uid: str | None) -> None:
@@ -251,6 +261,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             if tool is None:
                 return
             for source in tool.source_states():
+                if self._source_kind is None or source.kind != self._source_kind:
+                    continue
                 name = source.name
                 display = tool._source_display_name(name)
                 item_text = display if name in display else f"{display} ({name})"
@@ -357,7 +369,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             self._ok_button().setEnabled(enabled)
             if self._source_count != 1:
                 self.status_label.setText(
-                    "Select one ImageTool source to replace one figure source."
+                    "Select one source to replace one figure source."
                 )
             elif selected_alias is None:
                 self.status_label.setText("Select the figure source to replace.")
@@ -371,6 +383,10 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             self.status_label.setText("Select at least one target axes.")
             return
         count = len(selection.axes_ids) if selection.axes_ids else len(selection.axes)
+        if self._selection_has_invalid_target(selection):
+            self._ok_button().setEnabled(False)
+            self.status_label.setText("Select compatible target axes for this plot.")
+            return
         suffix = "axis" if count == 1 else "axes"
         self.status_label.setText(f"{count} target {suffix} selected.")
 
@@ -453,6 +469,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         return axes_ids[:1]
 
     def _operation_defaults_to_all_axes(self) -> bool:
+        if self._requires_single_axis():
+            return False
         if self._operation is None:
             return True
         return (
@@ -460,15 +478,61 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             == erlab.interactive._figurecomposer.FigureOperationKind.PLOT_SLICES
         )
 
+    def _requires_single_axis(self) -> bool:
+        tool = self._figure_tool()
+        if tool is None:
+            return False
+        selection = (
+            erlab.interactive._figurecomposer.FigureAxesSelectionState(
+                axes_ids=_gridspec_all_axes_ids(tool.tool_status.setup)
+            )
+            if tool.tool_status.setup.layout_mode == "gridspec"
+            else erlab.interactive._figurecomposer.FigureAxesSelectionState(
+                axes=_all_axes_for_shape(
+                    tool.tool_status.setup.nrows, tool.tool_status.setup.ncols
+                )
+            )
+        )
+        return self._selection_has_invalid_target(selection)
+
+    def _selection_has_invalid_target(
+        self, selection: erlab.interactive._figurecomposer.FigureAxesSelectionState
+    ) -> bool:
+        from erlab.interactive._figurecomposer._sources import source_spec_for_kind
+
+        tool = self._figure_tool()
+        if tool is None:
+            return False
+        operations = (
+            (self._operation,)
+            if self._operation is not None
+            else self._default_operations
+        )
+        if not operations and self._source_kind is not None:
+            factory = source_spec_for_kind(self._source_kind).default_operation
+            if factory is not None:
+                operations = (factory(""),)
+        return any(
+            tool._operation_has_invalid_axes(
+                operation.model_copy(update={"axes": selection})
+            )
+            for operation in operations
+        )
+
 
 class _FigureSourcePickerDialog(QtWidgets.QDialog):
-    """Select live ImageTool manager rows to add as Figure Composer sources."""
+    """Select available tool outputs to add as Figure Composer sources."""
 
     def __init__(
-        self, manager: ImageToolManager, *, prechecked_uids: Iterable[str] = ()
+        self,
+        manager: ImageToolManager,
+        *,
+        prechecked_uids: Iterable[str] = (),
+        source_kinds: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = manager
+        self._source_kinds = None if source_kinds is None else frozenset(source_kinds)
         self._prechecked_uids = set(prechecked_uids)
         self._expanded_before_search: set[str] | None = None
         self.setObjectName("managerFigureSourcePickerDialog")
@@ -478,8 +542,8 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         self.search_edit = QtWidgets.QLineEdit(self)
         self.search_edit.setObjectName("managerFigureSourcePickerSearch")
-        self.search_edit.setAccessibleName("Search ImageTools")
-        self.search_edit.setPlaceholderText("Search ImageTools")
+        self.search_edit.setAccessibleName("Search figure sources")
+        self.search_edit.setPlaceholderText("Search figure sources")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._filter_tree)
         layout.addWidget(self.search_edit)
@@ -543,25 +607,65 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
         parent: QtWidgets.QTreeWidget | QtWidgets.QTreeWidgetItem | None,
         node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> QtWidgets.QTreeWidgetItem:
-        item = QtWidgets.QTreeWidgetItem(parent, [node.display_text])
+        tool = node.tool_window
+        type_label = "ImageTool" if node.is_imagetool else type(tool).__name__
+        item = QtWidgets.QTreeWidgetItem(
+            parent, [f"{node.display_text} ({type_label})"]
+        )
         item.setData(0, QtCore.Qt.ItemDataRole.UserRole, node.uid)
+        all_providers = self._manager._figure_workflows._figure_providers_for_node(node)
+        providers = tuple(
+            provider
+            for provider in all_providers
+            if self._source_kinds is None or provider.payload_kind in self._source_kinds
+        )
+        if len(providers) == 1:
+            self._configure_provider_item(
+                item,
+                node.uid,
+                providers[0],
+                node.uid
+                if len(all_providers) == 1
+                else FigureSourceTarget(node.uid, providers[0].provider_id),
+            )
+        else:
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+            for provider in providers:
+                child = QtWidgets.QTreeWidgetItem(item, [provider.label])
+                self._configure_provider_item(
+                    child,
+                    node.uid,
+                    provider,
+                    FigureSourceTarget(node.uid, provider.provider_id),
+                )
+            if not providers:
+                item.setForeground(0, QtGui.QBrush(QtGui.QColor("gray")))
+        return item
+
+    def _configure_provider_item(
+        self,
+        item: QtWidgets.QTreeWidgetItem,
+        node_uid: str,
+        provider: FigureSourceProvider,
+        target: str | FigureSourceTarget,
+    ) -> None:
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, target)
         flags = QtCore.Qt.ItemFlag.ItemIsEnabled
-        if node.is_imagetool:
+        if provider.is_ready():
             flags |= QtCore.Qt.ItemFlag.ItemIsUserCheckable
             item.setCheckState(
                 0,
                 QtCore.Qt.CheckState.Checked
-                if node.uid in self._prechecked_uids
+                if node_uid in self._prechecked_uids
                 else QtCore.Qt.CheckState.Unchecked,
             )
         else:
-            item.setToolTip(0, "Only ImageTool rows can be added as figure sources.")
+            item.setToolTip(0, "This tool output is not ready to capture.")
             item.setForeground(0, QtGui.QBrush(QtGui.QColor("gray")))
         item.setFlags(flags)
-        return item
 
-    def selected_targets(self) -> tuple[str, ...]:
-        output: list[str] = []
+    def selected_targets(self) -> tuple[str | FigureSourceTarget, ...]:
+        output: list[str | FigureSourceTarget] = []
         root = self.tree.invisibleRootItem()
         if root is None:
             return ()
@@ -569,13 +673,21 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
         return tuple(output)
 
     def _collect_checked_targets(
-        self, item: QtWidgets.QTreeWidgetItem, output: list[str]
+        self, item: QtWidgets.QTreeWidgetItem, output: list[str | FigureSourceTarget]
     ) -> None:
-        uid = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if isinstance(uid, str) and item.checkState(0) == QtCore.Qt.CheckState.Checked:
-            node = self._manager._tool_graph.nodes.get(uid)
-            if node is not None and node.is_imagetool and uid not in output:
-                output.append(uid)
+        target = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if (
+            isinstance(target, (str, FigureSourceTarget))
+            and item.checkState(0) == QtCore.Qt.CheckState.Checked
+        ):
+            try:
+                providers = self._manager._figure_workflows._providers_for_target(
+                    target
+                )
+            except KeyError:
+                providers = ()
+            if providers and target not in output:
+                output.append(target)
         for row in range(item.childCount()):
             child = item.child(row)
             if child is not None:
@@ -631,13 +743,21 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
             if child is not None:
                 self._filter_tree_item(child, query)
 
-    def _filter_tree_item(self, item: QtWidgets.QTreeWidgetItem, query: str) -> bool:
+    def _filter_tree_item(
+        self,
+        item: QtWidgets.QTreeWidgetItem,
+        query: str,
+        *,
+        ancestor_match: bool = False,
+    ) -> bool:
+        matches = ancestor_match or query in item.text(0).casefold()
         child_match = False
         for row in range(item.childCount()):
             child = item.child(row)
             if child is not None:
-                child_match |= self._filter_tree_item(child, query)
-        matches = query in item.text(0).casefold()
+                child_match |= self._filter_tree_item(
+                    child, query, ancestor_match=matches
+                )
         visible = matches or child_match
         item.setHidden(not visible)
         item.setExpanded(child_match)
@@ -655,6 +775,6 @@ class _FigureSourcePickerDialog(QtWidgets.QDialog):
         count = len(selected)
         if count:
             suffix = "source" if count == 1 else "sources"
-            self.status_label.setText(f"{count} ImageTool {suffix} selected.")
+            self.status_label.setText(f"{count} {suffix} selected.")
         else:
-            self.status_label.setText("Select at least one ImageTool source.")
+            self.status_label.setText("Select at least one figure source.")

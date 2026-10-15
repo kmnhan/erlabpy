@@ -93,6 +93,8 @@ def test_manager_figure_action_replace_source_keeps_recipe_steps(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
@@ -527,6 +529,7 @@ def test_manager_figure_source_helper_edge_contracts(
 
         with monkeypatch.context() as context:
             context.setattr(figure_tool, "replace_source", lambda *_args: False)
+            context.setattr(figure_tool, "replace_source_payload", lambda *_args: False)
             assert not manager._figure_workflows._replace_figure_source(
                 figure_uid,
                 source_alias,
@@ -572,8 +575,8 @@ def test_manager_figure_source_helper_edge_contracts(
             context.setattr(manager, "_selected_figure_source_targets", lambda: (0,))
             context.setattr(
                 manager._figure_workflows,
-                "_figure_sources_from_targets",
-                lambda _targets: ((), (), {}),
+                "_capture_figure_sources",
+                lambda _targets: ((), {}, {}),
             )
             manager.create_figure_from_selection()
 
@@ -589,6 +592,8 @@ def test_manager_figure_source_helper_edge_contracts(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert allow_new_figure is True
                 assert source_count == 1
@@ -610,8 +615,8 @@ def test_manager_figure_source_helper_edge_contracts(
             context.setattr(manager, "_figure_uids", lambda: (figure_uid,))
             context.setattr(
                 manager._figure_workflows,
-                "_figure_sources_from_targets",
-                lambda _targets: ((0,), source_states, source_data),
+                "_capture_figure_sources",
+                lambda _targets: (source_states, figure_tool.source_payloads(), {}),
             )
             context.setattr(
                 manager._figure_workflows,
@@ -672,6 +677,8 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
@@ -834,6 +841,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
                 _manager: erlab.interactive.imagetool.manager.ImageToolManager,
                 *,
                 prechecked_uids: Iterable[str] = (),
+                source_kinds: tuple[str, ...] | None = None,
             ) -> None:
                 assert tuple(prechecked_uids) == (second_uid,)
 
@@ -1063,18 +1071,16 @@ def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
             figure_uid, QtCore.QMimeData()
         )
 
-        original_add_sources = manager._figure_workflows._add_sources_to_figure
+        original_add_sources = figure_tool.add_source_payloads
         monkeypatch.setattr(
-            manager._figure_workflows,
-            "_add_sources_to_figure",
+            figure_tool,
+            "add_source_payloads",
             lambda *_args, **_kwargs: False,
         )
         assert not manager._figure_workflows._add_imagetool_sources_to_figure(
             figure_uid, (second_uid,), show=False
         )
-        monkeypatch.setattr(
-            manager._figure_workflows, "_add_sources_to_figure", original_add_sources
-        )
+        monkeypatch.setattr(figure_tool, "add_source_payloads", original_add_sources)
 
         source_names = tuple(figure_tool.source_data())
         assert manager._figure_workflows._add_imagetool_sources_to_figure(

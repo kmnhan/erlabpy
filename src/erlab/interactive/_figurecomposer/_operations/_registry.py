@@ -7,6 +7,7 @@ import typing
 from erlab.interactive._figurecomposer._operations import (
     _bz_overlay,
     _custom_code,
+    _fit_plot,
     _line_profile,
     _photon_energy,
     _plot_array,
@@ -22,10 +23,15 @@ from erlab.interactive._figurecomposer._operations._plot_slices._spec import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from erlab.interactive._figurecomposer._model._state import FigureOperationKind
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import (
+        FigureOperationKind,
+        FigureOperationState,
+    )
     from erlab.interactive._figurecomposer._operations._base import (
         AddStepActionSpec,
         OperationSpec,
+        SourceRequest,
     )
 
 _OPERATION_SPECS = {
@@ -35,6 +41,7 @@ _OPERATION_SPECS = {
         _plot_array.SPEC,
         _PLOT_SLICES_SPEC,
         _line_profile.SPEC,
+        _fit_plot.SPEC,
         _bz_overlay.SPEC,
         _photon_energy.SPEC,
         _METHOD_SPEC,
@@ -59,3 +66,24 @@ def spec_for_action(action_id: str) -> AddStepActionSpec:
 
 def add_step_actions() -> Iterable[AddStepActionSpec]:
     return _ADD_STEP_ACTIONS.values()
+
+
+def source_requests(
+    operation: FigureOperationState, available_names: Iterable[str]
+) -> tuple[SourceRequest, ...]:
+    return spec_for(operation.kind).source_requests(operation, available_names)
+
+
+def source_names_compatible(
+    context: FigureRecipeContext, operation: FigureOperationState
+) -> bool:
+    """Return whether the operation's available sources have accepted types."""
+    accepted = spec_for(operation.kind).accepted_source_kinds
+    if accepted is None:
+        return True
+    source_states = context.source_by_name()
+    return all(
+        request.alias not in source_states
+        or source_states[request.alias].kind in accepted
+        for request in source_requests(operation, context.source_names())
+    )

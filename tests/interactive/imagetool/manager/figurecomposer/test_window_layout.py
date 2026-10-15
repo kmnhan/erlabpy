@@ -51,6 +51,7 @@ from erlab.interactive._figurecomposer import (
     _subplot_adjust as figurecomposer_subplot_adjust,
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _render as plot_slices_render,
 )
@@ -74,6 +75,7 @@ from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import FigureOptions
+from erlab.interactive.imagetool._provenance._model import script
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
@@ -1062,9 +1064,39 @@ def test_figure_composer_generated_provenance_covers_operation_kinds(qtbot) -> N
     )
     qtbot.addWidget(overlay_tool)
 
+    from erlab.analysis.fit.models import PolynomialModel
+
+    fit_data = xr.DataArray([0.1, 1.2, 2.1], dims="x")
+    fit_result = fit_data.xlm.modelfit(
+        "x", model=PolynomialModel(degree=1), params={"c0": 0.0, "c1": 1.0}
+    )
+    fit_provenance = script(
+        start_label="Fit profile",
+        seed_code=(
+            "linear_fit = xr.DataArray([0.1, 1.2, 2.1], dims='x').xlm.modelfit("
+            "'x', model=era.fit.models.PolynomialModel(degree=1), "
+            "params={'c0': 0.0, 'c1': 1.0})"
+        ),
+        active_name="linear_fit",
+    ).model_dump(mode="json")
+    fit_tool = FigureComposerTool.from_fit_sources(
+        {
+            "linear_fit": FigureFitSourceSnapshot.from_dataset(
+                fit_result, provenance_spec=fit_provenance
+            )
+        },
+        sources=(
+            FigureSourceState(
+                name="linear_fit", kind="fit", provenance_spec=fit_provenance
+            ),
+        ),
+    )
+    qtbot.addWidget(fit_tool)
+
     tools = {
         "core plotting": plotting_tool,
         "overlays": overlay_tool,
+        "fit plotting": fit_tool,
     }
     covered_kinds = {
         operation.kind
@@ -5207,13 +5239,14 @@ def test_figure_composer_step_payload_rejects_malformed_clipboard_data() -> None
             "version": figurecomposer_tool_module._STEPS_CLIPBOARD_PAYLOAD_VERSION,
             "operations": [_custom_order_step("a").model_dump(mode="json")],
             "sources": [],
+            "source_manifest": {"version": 1, "sources": {}},
         }
         payload.update(updates)
         return json.dumps(payload)
 
     invalid_payloads = (
         "[]",
-        payload_with(version=2),
+        payload_with(version=3),
         payload_with(operations=[]),
         payload_with(operations={}),
         payload_with(sources={}),
@@ -5226,13 +5259,12 @@ def test_figure_composer_step_payload_rejects_malformed_clipboard_data() -> None
     mime = QtCore.QMimeData()
     mime.setText(payload_with())
     mime.figure_composer_source_data = object()
-    operations, sources, source_data, selection_base_data = (
+    operations, sources, source_payloads = (
         figurecomposer_tool_module._step_clipboard_payload(mime)
     )
     assert [operation.label for operation in operations] == ["a"]
     assert sources == ()
-    assert source_data == {}
-    assert selection_base_data == {}
+    assert source_payloads == {}
 
 
 def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:

@@ -34,7 +34,10 @@ from erlab.analysis.fit.functions import (
     step_linbkg_broad,
     tll,
 )
-from erlab.analysis.fit.functions.dynamic import active_shirley
+from erlab.analysis.fit.functions.dynamic import (
+    _MultiPeakComponentFunction,
+    active_shirley,
+)
 from erlab.analysis.fit.functions.general import _infer_meshgrid_shape
 from erlab.constants import TINY
 
@@ -609,8 +612,39 @@ class MultiPeakModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
+    @property
+    def components(self) -> list[lmfit.Model]:
+        """Component models with the names and curves from :meth:`eval_components`."""
+        names = [f"p{i}" for i in range(self.func.npeaks)]
+        if self.func.background == "shirley":
+            names.extend(("baseline", "shirley", "slope"))
+        elif self.func.background != "none":
+            names.append(self.func.background)
+        if self.func.fd:
+            names.append("fd")
+        key = self.prefix or self._name
+        separator = "" if key.endswith("_") else "_"
+        components = []
+        for name in names:
+            component = lmfit.Model(
+                _MultiPeakComponentFunction(self, f"{key}{separator}{name}"),
+                name=f"{key}{separator}{name}",
+                independent_vars=self.independent_vars.copy(),
+                nan_policy=self.nan_policy,
+                **self.opts,
+            )
+            for parameter, hint in self.param_hints.items():
+                component.set_param_hint(self.prefix + parameter, **hint)
+            components.append(component)
+        return components
+
     def eval_components(self, params=None, **kwargs) -> dict[str, np.ndarray]:
         """Evaluate model components.
+
+        .. versionchanged:: 3.28.0
+
+           Shirley background entries remain present when their values are zero.
+           Explicit keyword arguments override parameter values, as in ``eval``.
 
         .. versionchanged:: 3.20.0
 
@@ -623,9 +657,6 @@ class MultiPeakModel(lmfit.Model):
         key = self._prefix or self._name
         sep = "" if key.endswith("_") else "_"
 
-        if params is not None:
-            kwargs = kwargs | params.valuesdict()
-
         # Coerce into numpy arrays
         for k in list(kwargs.keys()):
             if np.iterable(kwargs[k]):
@@ -637,7 +668,13 @@ class MultiPeakModel(lmfit.Model):
         for i in range(self.func.npeaks):
             out[f"{key}{sep}p{i}"] = self.func.eval_peak(i, **fargs)
 
-        for bkg_name, bkg_comp in self.func.eval_bkg_components(**fargs).items():
+        background = self.func.eval_bkg_components(**fargs)
+        if self.func.background == "shirley":
+            background = {
+                name: background.get(name, np.zeros_like(fargs["x"], dtype=float))
+                for name in ("baseline", "shirley", "slope")
+            }
+        for bkg_name, bkg_comp in background.items():
             out[f"{key}{sep}{bkg_name}"] = bkg_comp
 
         if self.func.fd:

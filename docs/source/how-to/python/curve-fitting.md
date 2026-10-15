@@ -60,6 +60,43 @@ for a physically valid fit.
 See {class}`erlab.analysis.fit.models.MultiPeakModel` for supported peak and background
 models.
 
+(how-to-python-plot-fit)=
+
+## Plotting a fit and its confidence band
+
+Use {func}`erlab.plotting.plot_fit` to plot the data and stored best fit from one
+xarray-lmfit result:
+
+```python
+import erlab.plotting as eplt
+
+eplt.plot_fit(fit_result)
+```
+
+For a smooth curve and a 95% confidence band:
+
+```python
+eplt.plot_fit(fit_result, numpoints=500, sigma=0.95)
+```
+
+It uses [lmfit's `eval_uncertainty()`](https://lmfit.github.io/lmfit-py/model.html#lmfit.model.ModelResult.eval_uncertainty)
+to estimate approximate pointwise uncertainty in the fitted mean.
+
+To show individual components with separate styles:
+
+```python
+eplt.plot_fit(
+    fit_result,
+    show_components=True,
+    component_kws={
+        "2Peak_p0": {"color": "tab:red", "label": "Peak 1"},
+        "2Peak_p1": {"color": "tab:blue", "label": "Peak 2"},
+    },
+)
+```
+
+Names are the keys of `fit_results.eval_components()`.
+
 (how-to-python-fit-spectra-across-coordinate)=
 
 ## Independent fitting across coordinates

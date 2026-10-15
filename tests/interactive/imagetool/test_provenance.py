@@ -8909,6 +8909,77 @@ def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     assert np.isfinite(stderr.values).all()
 
 
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("output", ["value", "stderr", "value_valid_stderr"])
+def test_model_fit_operation_normalization_skips_unusable_means(weighted, output):
+    x = np.arange(-2.0, 3.0)
+    shape = 2.0 * x + 0.05 * x**3
+    offsets = np.array([0.0, 1e-10, 3.0, -3.0])
+    data = xr.DataArray(
+        offsets[:, None] + shape,
+        dims=("spectrum", "x"),
+        coords={"spectrum": np.arange(offsets.size), "x": x},
+    )
+    uncertainty = xr.full_like(data, 0.2)
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(value=1.0),
+        },
+        method="leastsq",
+        parameter="c1",
+        broadcast_dim="spectrum",
+        normalize=True,
+        weighting="uncertainty" if weighted else "none",
+        scale_covar=False,
+        output=output,
+    )
+    expected = []
+    for index, offset in enumerate(offsets):
+        curve = data.isel(spectrum=index, drop=True)
+        factor = 1.0 if index < 2 else offset
+        weights = (
+            abs(factor) / uncertainty.isel(spectrum=index, drop=True)
+            if weighted
+            else None
+        )
+        fitted = (curve / factor).xlm.modelfit(
+            "x",
+            model=erlab.analysis.fit.models.PolynomialModel(degree=1),
+            params={"c0": 0.0, "c1": 1.0},
+            scale_covar=False,
+            weights=weights,
+        )
+        variable = "modelfit_stderr" if output == "stderr" else "modelfit_coefficients"
+        expected.append(fitted[variable].sel(param="c1", drop=True))
+    expected = xr.concat(expected, dim=data.spectrum).rename(operation.output_name)
+    result = (
+        operation.apply_with_inputs(data, {"uncertainty": uncertainty})
+        if weighted
+        else operation.apply(data)
+    )
+    xr.testing.assert_allclose(result, expected)
+    code = operation.replay_code(
+        "fit_data",
+        output_name="parameter_values",
+        bound_inputs={"uncertainty": "uncertainty"} if weighted else {},
+    )
+    namespace = _exec_generated_code(
+        code,
+        {
+            "fit_data": data,
+            "uncertainty": uncertainty,
+            "era": erlab.analysis,
+            "np": np,
+            "xr": xr,
+        },
+    )
+    xr.testing.assert_identical(namespace["parameter_values"], result)
+
+
 def test_model_fit_operation_replays_unweighted_valid_values() -> None:
     x = np.linspace(-1.0, 1.0, 21)
     data = xr.DataArray(

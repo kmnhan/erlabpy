@@ -254,6 +254,8 @@ def test_manager_figure_action_new_target_creates_second_figure(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (first_uid,)
                 assert allow_new_figure is True
@@ -312,6 +314,8 @@ def test_manager_figure_action_appends_to_selected_subplots_axes(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
@@ -394,6 +398,8 @@ def test_manager_figure_action_appends_to_selected_gridspec_axes(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True
@@ -1197,6 +1203,7 @@ def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
                 _operation: FigureOperationState | None,
                 *,
                 allow_new_figure: bool = False,
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (wide_uid,)
                 assert allow_new_figure is False
@@ -1620,6 +1627,8 @@ def test_manager_append_operation_uses_axes_dialog_selection(
                 _manager: erlab.interactive.imagetool.manager.ImageToolManager,
                 figure_uids: tuple[str, ...],
                 _operation: FigureOperationState,
+                *,
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (figure_uid,)
 
@@ -1691,6 +1700,8 @@ def test_manager_figure_action_multi_source_append_preserves_image_colormaps(
                 allow_new_figure: bool = False,
                 source_count: int = 1,
                 selected_figure_uid: str | None = None,
+                source_kind: str | None = "array",
+                default_operations: tuple[FigureOperationState, ...] = (),
             ) -> None:
                 assert figure_uids == (figure_uid,)
                 assert allow_new_figure is True

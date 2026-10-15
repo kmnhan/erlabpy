@@ -2,6 +2,7 @@ import json
 import types
 import typing
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -639,11 +640,12 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
 
     first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
-    shape_widget = tool.source_panel.source_list.itemWidget(first_item, 1)
+    shape_widget = tool.source_panel.source_list.itemWidget(first_item, 2)
     assert isinstance(shape_widget, QtWidgets.QLabel)
     assert tool.source_panel.source_list.toolTip() == ""
     assert first_item.toolTip(0)
     assert first_item.toolTip(1) == first_item.toolTip(0)
+    assert first_item.toolTip(2) == first_item.toolTip(0)
     assert shape_widget.toolTip() == ""
     assert (tuple(str(dim) for dim in data.dims), False, None) in calls
     assert any(call[1] for call in calls)
@@ -673,7 +675,7 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
     )
     qtbot.addWidget(tool)
 
-    assert tool.source_panel.source_list.columnCount() == 2
+    assert tool.source_panel.source_list.columnCount() == 3
     assert tool.source_panel.source_list.findChildren(QtWidgets.QToolButton) == []
     assert (
         tool.source_panel.refresh_sources_button.accessibleName()
@@ -876,9 +878,12 @@ def test_figure_composer_source_list_has_plain_rows_and_balanced_columns(
     header = tool.source_panel.source_list.header()
     assert header is not None
     assert header.sectionResizeMode(0) == QtWidgets.QHeaderView.ResizeMode.Stretch
-    assert header.sectionResizeMode(1) == QtWidgets.QHeaderView.ResizeMode.Interactive
+    assert (
+        header.sectionResizeMode(1) == QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+    )
+    assert header.sectionResizeMode(2) == QtWidgets.QHeaderView.ResizeMode.Interactive
     assert header.sectionSize(0) >= 100
-    assert header.sectionSize(1) == 150
+    assert header.sectionSize(2) == 150
 
 
 def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> None:
@@ -1717,7 +1722,7 @@ def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     calls: list[str] = []
 
     tool._set_source_add_callbacks(
-        add_sources=lambda: calls.append("add") or True,
+        add_sources=lambda _kinds: calls.append("add") or True,
         can_drop_sources=lambda data: data is mime,
         drop_sources=lambda data: calls.append("drop") or data is mime,
     )
@@ -1730,14 +1735,14 @@ def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     assert tool._add_sources_from_mime(mime)
     assert calls == ["add", "drop"]
 
-    def raise_value() -> bool:
+    def raise_value(_kinds=None) -> bool:
         raise ValueError("unavailable")
 
     def raise_lookup(_mime: QtCore.QMimeData) -> bool:
         raise LookupError("unavailable")
 
     tool._set_source_add_callbacks(
-        add_sources=lambda: True,
+        add_sources=lambda _kinds: True,
         can_add_sources=raise_value,
         can_drop_sources=raise_lookup,
         drop_sources=raise_lookup,
@@ -3313,7 +3318,7 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     assert "sample_temp_idx" not in shape.source_text
     shape_item = tool.source_panel.source_list.topLevelItem(0)
     assert shape_item is not None
-    shape_label = tool.source_panel.source_list.itemWidget(shape_item, 1)
+    shape_label = tool.source_panel.source_list.itemWidget(shape_item, 2)
     assert isinstance(shape_label, QtWidgets.QLabel)
 
 
@@ -3421,7 +3426,7 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
     assert first_item is not None
     assert first_item.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
     assert tool.source_panel.source_list.selectedItems() == [first_item]
-    shape_label = tool.source_panel.source_list.itemWidget(first_item, 1)
+    shape_label = tool.source_panel.source_list.itemWidget(first_item, 2)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert shape_label.testAttribute(
         QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
@@ -3534,7 +3539,10 @@ def test_figure_composer_source_inspector_details_fallback_is_metadata_only(
     }
 
 
-def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None:
+@pytest.mark.parametrize("column", [1, 2])
+def test_figure_composer_source_list_metadata_cell_click_selects_row(
+    qtbot, column
+) -> None:
     first = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("eV", "kx"),
@@ -3557,7 +3565,8 @@ def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None
 
     second_item = tool.source_panel.source_list.topLevelItem(1)
     assert second_item is not None
-    index = tool.source_panel.source_list.indexFromItem(second_item, 1)
+    index = tool.source_panel.source_list.indexFromItem(second_item, column)
+    tool.source_panel.source_list.scrollTo(index)
     rect = tool.source_panel.source_list.visualRect(index)
     assert rect.isValid()
 
@@ -4616,9 +4625,10 @@ def test_figure_composer_copy_paste_steps_typed_payload_has_missing_source(
     payload_text = bytes(
         copied_mime.data(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME).data()
     ).decode("utf-8")
-    assert payload_text.startswith(
-        '{\n  "type": "erlab.figure_composer.steps",\n  "version": 1,'
-    )
+    copied_payload = json.loads(payload_text)
+    assert copied_payload["type"] == "erlab.figure_composer.steps"
+    assert copied_payload["version"] == 2
+    assert copied_payload["source_manifest"]["sources"]["remote"]["kind"] == "array"
     assert json.loads(payload_text)["type"] == "erlab.figure_composer.steps"
     assert copied_mime.text()
     assert not copied_mime.text().lstrip().startswith("{")
@@ -4655,8 +4665,8 @@ def test_figure_composer_source_data_history_helpers(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool._reset_history_stack()
-    assert list(tool._prev_source_data_states[-1][0]) == ["data"]
-    assert tool._prev_source_data_states[-1][1] == {}
+    assert list(tool._prev_source_data_states[-1]) == ["data"]
+    assert tool._prev_source_data_states[-1]["data"].selection_base is None
     assert not tool.undoable
     assert not tool.redoable
     tool.undo()
@@ -4673,7 +4683,7 @@ def test_figure_composer_source_data_history_helpers(qtbot) -> None:
     tool.set_source_data({"data": replacement})
     tool._replace_last_state()
     xr.testing.assert_identical(
-        tool._prev_source_data_states[-1][0]["data"], replacement
+        tool._prev_source_data_states[-1]["data"].data, replacement
     )
 
     tool._prev_states.clear()
@@ -4681,7 +4691,7 @@ def test_figure_composer_source_data_history_helpers(qtbot) -> None:
     tool._replace_last_state()
     assert len(tool._prev_states) == 1
     xr.testing.assert_identical(
-        tool._prev_source_data_states[-1][0]["data"], replacement
+        tool._prev_source_data_states[-1]["data"].data, replacement
     )
 
 
@@ -5628,3 +5638,433 @@ def test_figure_composer_selected_source_script_input_skips_nonreplayable_input(
         )
         is None
     )
+
+
+def _captured_fit_source():
+    import lmfit
+
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        2.0 * x + 3.0 + 0.01 * np.cos(4.0 * x), dims="x", coords={"x": x}
+    )
+    result = data.xlm.modelfit(
+        "x", lmfit.models.LinearModel(), weights=xr.full_like(data, 10.0)
+    )
+    snapshot = FigureFitSourceSnapshot.from_dataset(result)
+    return result, snapshot
+
+
+def test_figure_composer_fit_snapshot_is_detached_and_safe(monkeypatch) -> None:
+    import erlab.interactive.utils
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+
+    result, snapshot = _captured_fit_source()
+    expected = result.modelfit_best_fit.copy(deep=True)
+    expected_weights = result.modelfit_weights.copy(deep=True)
+    result.modelfit_best_fit.values[:] = 0.0
+    result.modelfit_weights.values[:] = 1.0
+    result.modelfit_results.item().params["slope"].value = 100.0
+    restored = FigureFitSourceSnapshot.from_payload(snapshot.to_payload())
+    assert restored == snapshot
+    assert restored.supports_resampling
+    assert restored.supports_confidence
+    assert restored.independent_vars == ("x",)
+    xr.testing.assert_identical(restored.result_dataset().modelfit_best_fit, expected)
+    assert (
+        restored.result_dataset().modelfit_results.item().params["slope"].value != 100.0
+    )
+
+    def blocked_decode(*args, **kwargs):
+        raise AssertionError("Native arrays must not decode a model")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "_deserialize_fit_dataset_blob", blocked_decode
+    )
+    xr.testing.assert_identical(restored.native_dataset.modelfit_best_fit, expected)
+    xr.testing.assert_identical(
+        restored.native_dataset.modelfit_weights,
+        expected_weights,
+    )
+    assert "modelfit_results" not in restored.native_dataset
+
+
+def test_figure_composer_fit_source_alias_history_and_persistence(
+    qtbot, tmp_path
+) -> None:
+    _, snapshot = _captured_fit_source()
+    source = FigureSourceState(
+        name="fit",
+        kind="fit",
+        node_uid="fit-origin",
+        node_snapshot_token="old",  # noqa: S106
+        provider_id="fit",
+        provider_selection={"dimension": "slice", "index": 1, "coordinate": 2.0},
+    )
+    assert source.to_script_input() is None
+    tool = FigureComposerTool.from_fit_sources(
+        {"fit": snapshot}, sources=(source,), operations=()
+    )
+    qtbot.addWidget(tool)
+    assert tool.source_data() == {}
+    assert tool._document.array_source_names() == ()
+    fit_operation = FigureOperationState.fit_plot(source="fit")
+    assert not tool._operation_issues(fit_operation)
+    tool._document.rename_source("fit", "fit_result")
+    tool._refresh_source_list()
+    tool._write_state()
+    assert tool.source_payloads() == {"fit_result": snapshot}
+    tool._undo_recorded_state()
+    assert tool.source_payloads() == {"fit": snapshot}
+    tool._redo_recorded_state()
+    assert tool.source_payloads() == {"fit_result": snapshot}
+    duplicate = tool._document.duplicate_sources(("fit_result",))[0]
+    assert tool.source_payloads()[duplicate] == snapshot
+    assert tool._document.remove_source(duplicate)
+    restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
+    assert restored.source_data() == {}
+    assert restored.source_payloads() == {"fit_result": snapshot}
+    xr.testing.assert_identical(
+        restored._source_value("fit_result", evaluate=False),
+        snapshot.native_dataset,
+    )
+    assert (
+        restored.tool_status.sources[0].provider_selection == source.provider_selection
+    )
+    restored.source_panel.set_selected_names(("fit_result",), current_name="fit_result")
+    restored._refresh_source_detail_panel()
+    assert restored.source_panel.source_inspector.isHidden()
+    assert restored.source_panel.source_selection_controls.isHidden()
+
+
+def test_figure_composer_paste_keeps_fit_snapshot(qtbot) -> None:
+    _, snapshot = _captured_fit_source()
+    source = FigureSourceState(name="fit", kind="fit")
+    tool = FigureComposerTool.from_fit_sources(
+        {"fit": snapshot}, sources=(source,), operations=()
+    )
+    qtbot.addWidget(tool)
+    operation = FigureOperationState.fit_plot(source="fit")
+    pasted = tool._document.paste_operations(
+        0, (operation,), (source,), source_payloads={"fit": snapshot}
+    )
+    assert pasted.source_data_changed
+    alias = tool.tool_status.operations[0].sources[0]
+    assert alias != "fit"
+    assert tool.source_payloads()[alias] == snapshot
+    assert alias not in tool.source_data()
+
+
+def test_figure_composer_custom_fit_snapshot_obeys_code_trust(qtbot) -> None:
+    import lmfit
+
+    from erlab.interactive._code_trust import untrusted_document_trust
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+
+    def custom_line(x, slope=1.0, offset=0.0):
+        return slope * x + offset
+
+    x = np.arange(11.0)
+    data = xr.DataArray(3.0 * x + 1.0, dims="x", coords={"x": x})
+    snapshot = FigureFitSourceSnapshot.from_dataset(
+        data.xlm.modelfit("x", lmfit.Model(custom_line))
+    )
+    tool = FigureComposerTool.from_fit_sources(
+        {"fit": snapshot},
+        sources=(FigureSourceState(name="fit", kind="fit"),),
+        operations=(),
+    )
+    qtbot.addWidget(tool)
+    entries = tool._code_trust_payload_entries()
+    assert entries
+    saved = tool.to_dataset()
+    assert tool._code_trust_payload_entries_from_saved_dataset(saved) == entries
+    tool.set_document_trust(
+        untrusted_document_trust(tool._current_code_trust_manifest()), notify=False
+    )
+    xr.testing.assert_identical(
+        tool._source_value("fit", evaluate=False), snapshot.native_dataset
+    )
+    with pytest.raises(FigureComposerInputError):
+        tool._source_value("fit", evaluate=True)
+
+
+def test_figure_composer_fit_clipboard_payload_and_refresh(qtbot) -> None:
+    _, snapshot = _captured_fit_source()
+    source = FigureSourceState(name="fit", kind="fit", node_uid="origin")
+    operation = FigureOperationState.fit_plot(source="fit")
+    mime = QtCore.QMimeData()
+    mime.setData(
+        figurecomposer_tool_module._STEPS_CLIPBOARD_MIME,
+        figurecomposer_tool_module._step_clipboard_payload_text(
+            (operation,), (source,), {"fit": snapshot}
+        ).encode(),
+    )
+    parsed = figurecomposer_tool_module._step_clipboard_payload(mime)
+    assert parsed is not None
+    assert parsed[2] == {"fit": snapshot}
+    tool = FigureComposerTool.empty()
+    qtbot.addWidget(tool)
+    assert tool.add_fit_sources((source,), {"fit": snapshot}).added == (("fit", "fit"),)
+    assert tool.tool_status.primary_source == "fit"
+    assert tool.source_data() == {}
+    assert tool.replace_source_payload(
+        "fit", source.model_copy(update={"label": "updated"}), snapshot
+    )
+    assert tool.tool_status.sources[0].label == "updated"
+    assert not tool.replace_source_payload("absent", source, snapshot)
+    updated = tool.add_fit_sources((source,), {"fit": snapshot})
+    assert updated.updated == (("fit", "fit"),)
+    assert tool.source_payloads() == {"fit": snapshot}
+    assert not tool.replace_source(
+        "fit", FigureSourceState(name="fit"), snapshot.native_dataset.modelfit_data
+    )
+    assert not tool.replace_source_payload(
+        "fit", FigureSourceState(name="fit"), snapshot
+    )
+    assert tool.tool_status.sources[0].kind == "fit"
+
+
+@pytest.mark.parametrize("retain_selection_base", [None, False, True])
+def test_figure_composer_mixed_fit_array_source_roundtrip(
+    qtbot, tmp_path, retain_selection_base
+) -> None:
+    _, snapshot = _captured_fit_source()
+    tool = FigureComposerTool.from_fit_sources(
+        {"fit": snapshot},
+        sources=(FigureSourceState(name="fit", kind="fit"),),
+        operations=(),
+    )
+    qtbot.addWidget(tool)
+    base = _figure_composer_profile_source("line_data")
+    if retain_selection_base is None:
+        data = base
+        source = FigureSourceState(name="line")
+    else:
+        data = base.isel(kx=slice(2, 8))
+        source = FigureSourceState(name="line", isel={"kx": slice(2, 8)})
+    tool.add_sources((source,), {"line": data})
+    if retain_selection_base:
+        tool._document.replace_source_payloads(
+            tool._document.source_data, {"line": base}
+        )
+    assert tool.tool_status.primary_source == "fit"
+    saved = tool.to_dataset()
+    assert set(saved.data_vars) == {
+        _persistence_constants.SAVED_TOOL_DATA_NAME,
+        "line",
+    }
+    assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == 0
+    assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].dtype == np.uint8
+    restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
+    assert set(restored.source_data()) == {"line"}
+    assert restored._document.array_source_names() == ("line",)
+    assert restored.source_payloads()["fit"] == snapshot
+    assert set(restored.source_payloads()) == {"fit", "line"}
+    xr.testing.assert_identical(restored.source_data()["line"], data)
+    if retain_selection_base:
+        xr.testing.assert_identical(
+            restored._document.source_selection_base_data["line"], base
+        )
+
+    legacy_saved = saved.drop_vars(_persistence_constants.SAVED_TOOL_DATA_NAME)
+    legacy_saved[_persistence_constants.SAVED_TOOL_DATA_NAME] = data
+    legacy_restored = erlab.interactive.utils.ToolWindow.from_dataset(legacy_saved)
+    qtbot.addWidget(legacy_restored)
+    assert isinstance(legacy_restored, FigureComposerTool)
+    assert legacy_restored.source_payloads()["fit"] == snapshot
+    assert set(legacy_restored.source_payloads()) == {"fit", "line"}
+    assert set(legacy_restored.source_data()) == {"line"}
+    xr.testing.assert_identical(legacy_restored.source_data()["line"], data)
+
+
+def test_figure_composer_rejects_invalid_fit_clipboard_payload(
+    qtbot, monkeypatch
+) -> None:
+    source = FigureSourceState(name="fit", kind="fit")
+    operation = FigureOperationState.fit_plot(source="fit")
+    payload = json.loads(
+        figurecomposer_tool_module._step_clipboard_payload_text((operation,), (source,))
+    )
+    payload["source_manifest"] = {
+        "version": 1,
+        "sources": {"fit": {"kind": "fit", "payload": {"blob": "invalid-base64"}}},
+    }
+    mime = QtCore.QMimeData()
+    mime.setData(
+        figurecomposer_tool_module._STEPS_CLIPBOARD_MIME, json.dumps(payload).encode()
+    )
+    assert figurecomposer_tool_module._step_clipboard_payload(mime) is None
+    tool = FigureComposerTool.empty()
+    qtbot.addWidget(tool)
+    monkeypatch.setattr(
+        tool, "_clipboard", lambda: types.SimpleNamespace(mimeData=lambda: mime)
+    )
+    tool._paste_operations_from_clipboard()
+    assert not tool.tool_status.operations
+    assert not tool.source_payloads()
+
+
+@pytest.mark.parametrize("remove_origin_before_save", [False, True])
+def test_manager_fit_source_workspace_roundtrip(
+    qtbot, manager_context, tmp_path, monkeypatch, remove_origin_before_save
+) -> None:
+    import erlab
+    import erlab.interactive.imagetool.manager._workspace._trust as workspace_trust
+    from erlab.interactive._code_trust import document_trust_has_trusted_lineage
+    from erlab.interactive._code_trust._application import reset_saved_code_trust
+
+    from ._common import _materialized_figure_tool
+    from .test_fit_plot import _assert_equal_artists, _render
+
+    x = np.linspace(-1.0, 1.0, 41)
+    spectra = xr.DataArray(
+        np.exp(-4.0 * x**2) + 0.01 * np.sin(9.0 * x),
+        dims="energy",
+        coords={"energy": x},
+        name="spectra",
+    )
+    with manager_context() as manager:
+        erlab.interactive.itool(spectra, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        fit_tool = erlab.interactive.ftool(
+            spectra,
+            data_name="spectra",
+            execute=False,
+        )
+        fit_tool.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        fit_uid = manager.add_childtool(fit_tool, script_inputs={"data": 0}, show=False)
+        job = fit_tool._fit_job()
+        fitted = (
+            fit_tool._fit_data()
+            .xlm.modelfit(
+                "energy",
+                model=fit_tool._model,
+                params=fit_tool._params,
+                method=fit_tool.method_combo.currentText(),
+                scale_covar=fit_tool.scale_covar_check.isChecked(),
+            )
+            .load()
+        )
+        fit_tool._set_fit_ds(fit_tool._fit_result_for_job(fitted, job), 0.0)
+        fit_tool._add_fit_to_figure()
+        [figure_uid] = manager._figure_uids()
+        composer = manager._child_node(figure_uid).tool_window
+        assert isinstance(composer, FigureComposerTool)
+        original_alias = composer.source_states()[0].name
+        fit_alias = "captured_edc"
+        assert composer._document.rename_source(original_alias, fit_alias)
+        composer._apply_recipe_to_controls()
+        composer._write_state()
+        assert manager._figure_workflows._add_imagetool_sources_to_figure(
+            figure_uid, (0,)
+        )
+        [array_source] = [
+            source for source in composer.source_states() if source.kind == "array"
+        ]
+        stored_array = composer.source_data()[array_source.name].copy(deep=True)
+        dense_operation = composer.tool_status.operations[0].model_copy(
+            update={"fit_numpoints": 83, "fit_sigma": 0.9}
+        )
+        composer._replace_operation(0, dense_operation, rebuild_editor=True)
+        snapshot = composer.source_payloads()[fit_alias]
+        expected_fit_entries = composer._code_trust_payload_entries()
+        initial_provenance = composer.current_provenance_spec()
+        assert initial_provenance is not None
+        assert initial_provenance.display_code() is not None, (
+            initial_provenance.model_dump(mode="python")
+        )
+        expected_dense = Figure().subplots()
+        erlab.plotting.plot_fit(
+            snapshot.result_dataset(), ax=expected_dense, numpoints=83, sigma=0.9
+        )
+        _assert_equal_artists(_render(composer), expected_dense)
+        if remove_origin_before_save:
+            manager._remove_childtool(fit_uid)
+            assert not manager._figure_workflows._can_refresh_figure_source(
+                figure_uid, fit_alias
+            )
+        composer.hide()
+        composer._hide_figure_window()
+        workspace_path = tmp_path / "fit-source.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        if not remove_origin_before_save:
+            manager._remove_childtool(fit_uid)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0)
+        reset_saved_code_trust(domain="erlab.workspace")
+        monkeypatch.setattr(
+            workspace_trust, "workspace_path_is_trusted", lambda _: False
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        node = manager._child_node(figure_uid)
+        assert node.pending_workspace_tool_payload is not None
+        assert node.tool_window is None
+        loaded = _materialized_figure_tool(manager, figure_uid)
+        assert loaded.tool_status.primary_source == fit_alias
+        assert set(loaded.source_data()) == {array_source.name}
+        assert set(loaded.source_payloads()) == {fit_alias, array_source.name}
+        assert loaded.source_payloads()[fit_alias].blob == snapshot.blob
+        xr.testing.assert_identical(
+            loaded.source_data()[array_source.name], stored_array
+        )
+        xr.testing.assert_identical(
+            loaded.source_payloads()[fit_alias].native_dataset, snapshot.native_dataset
+        )
+        if remove_origin_before_save:
+            assert loaded.source_states()[0].node_uid is None
+        native_operation = dense_operation.model_copy(
+            update={"fit_numpoints": None, "fit_sigma": None}
+        )
+        loaded._replace_operation(0, native_operation, rebuild_editor=True)
+        expected_native = Figure().subplots()
+        erlab.plotting.plot_fit(snapshot.native_dataset, ax=expected_native)
+        _assert_equal_artists(_render(loaded), expected_native)
+        assert not document_trust_has_trusted_lineage(
+            manager._workspace_state.code_trust
+        )
+        monkeypatch.setattr(
+            "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+            lambda *args, **kwargs: True,
+        )
+        manager._workspace_controller.review_and_approve_workspace_code_trust()
+        manifest = workspace_trust.current_workspace_code_trust_manifest(manager)
+        assert {entry.execution_identity() for entry in expected_fit_entries}.issubset(
+            {entry.execution_identity() for entry in manifest.entries}
+        )
+        loaded._replace_operation(0, dense_operation, rebuild_editor=True)
+        _assert_equal_artists(_render(loaded), expected_dense)
+        plotting_namespace = _exec_generated_code(
+            loaded.generated_code(),
+            {fit_alias: loaded.source_payloads()[fit_alias].result_dataset()},
+        )
+        _assert_equal_artists(plotting_namespace["fig"].axes[0], expected_dense)
+        provenance = loaded.current_provenance_spec()
+        assert provenance is not None
+        assert provenance.display_code() is not None, provenance.model_dump(
+            mode="python"
+        )
+        with patch("erlab.plotting.plot_fit", wraps=eplt.plot_fit) as plot_fit:
+            namespace = _exec_generated_code(
+                provenance.display_code(),
+                {
+                    "spectra": spectra,
+                    "data": spectra,
+                    "np": np,
+                    "xr": xr,
+                    "era": erlab.analysis,
+                },
+            )
+        assert plot_fit.call_count == 1
+        replayed = plot_fit.call_args.args[0]
+        xr.testing.assert_allclose(replayed.modelfit_best_fit, fitted.modelfit_best_fit)
+        expected_replay = Figure().subplots()
+        erlab.plotting.plot_fit(replayed, ax=expected_replay, numpoints=83, sigma=0.9)
+        _assert_equal_artists(namespace["fig"].axes[0], expected_replay)

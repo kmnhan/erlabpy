@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import hashlib
+import json
 import logging
 import pathlib
 import re
@@ -38,6 +40,8 @@ if typing.TYPE_CHECKING:
     import lmfit
     import varname
 
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive._figurecomposer._providers import FigureSourceProvider
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
 else:
     import lazy_loader as _lazy
@@ -61,6 +65,18 @@ _PythonCodeEditor = erlab.interactive.utils.PythonCodeEditor
 
 class _FitCodeEditRejected(Exception):
     """Abort one local fit-code edit without committing its trust transition."""
+
+
+class _StandaloneFigureOwner(QtCore.QObject):
+    """Keep a standalone figure alive independently of its originating ftool."""
+
+    def __init__(
+        self, tool: QtWidgets.QWidget, application: QtWidgets.QApplication
+    ) -> None:
+        super().__init__(application)
+        self.tool = tool
+        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        tool.destroyed.connect(self.deleteLater)
 
 
 class _FitTabScrollArea(QtWidgets.QScrollArea):
@@ -793,6 +809,7 @@ class _FitJob:
     revision: int
     target_index: int | None
     fit_range: tuple[float, float] | None = None
+    figure_metadata: xr.Dataset | None = None
 
 
 class _FitWorker(threading.Thread):
@@ -1038,6 +1055,7 @@ def _release_running_fit_worker(thread: _FitWorker) -> None:
 def _rebuild_ui(
     *,
     mark_fresh: bool = True,
+    restore_fit_result: bool = False,
 ) -> Callable[
     [Callable[typing.Concatenate[Fit1DTool, _P], _R]],
     Callable[typing.Concatenate[Fit1DTool, _P], _R],
@@ -1062,6 +1080,10 @@ def _rebuild_ui(
                 return func(self, *args, **kwargs)
             finally:
                 self._build_ui()
+                if restore_fit_result:
+                    self._figure_fit_restore_configuration = (
+                        self._figure_fit_configuration()
+                    )
                 self._update_fit_curve()
                 self._write_history = True
                 self._write_state()
@@ -1138,6 +1160,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         params: list[tuple[typing.Any, ...]]
         params_from_coord: dict[str, str]
         state2d: _State2D | None = None
+        figure_fit_restore_configuration: str | None = None
+        figure_fit_restored_indices: tuple[int, ...] = ()
 
     @classmethod
     def _model_code_trust_entry(cls, model_state: tuple[str, str]) -> typing.Any:
@@ -1295,6 +1319,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         scale_covar: bool | None = None,
     ) -> None:
         super().__init__()
+        self._figure_fit_restore_configuration: str | None = None
+        self._figure_fit_restored_indices: set[int] = set()
         self._fit_config_revision = 0
         self._fit_sequence_generation = 0
         self._fit_worker_registry = _fit_worker_registry()
@@ -1514,6 +1540,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._last_fit_y: np.ndarray | None = None
         self._last_residual: np.ndarray | None = None
         self._last_result_ds: xr.Dataset | None = None
+        if not self._restoring_from_dataset:
+            self._figure_fit_restore_configuration = None
+            self._figure_fit_restored_indices = set()
         self._serialized_fit_result_blob: np.ndarray | None = None
         self._pending_persisted_fit_is_current: bool | None = None
         self._slider_drag_range: tuple[float, float] | None = None
@@ -1758,6 +1787,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         plot_layout.addWidget(self.plot_widget)
         self.residual_plot = self.plot_widget.addPlot(row=0, col=0)
         self.main_plot = self.plot_widget.addPlot(row=1, col=0)
+        fit_menu = self.main_plot.vb.menu
+        fit_menu.addSeparator()
+        self.add_to_figure_action = typing.cast(
+            "QtGui.QAction", fit_menu.addAction("Add Fit to Figure")
+        )
+        self.add_to_figure_action.setObjectName("ftoolAddFitToFigureAction")
+        self.add_to_figure_action.setEnabled(False)
+        self.add_to_figure_action.triggered.connect(self._add_fit_to_figure)
+        fit_menu.aboutToShow.connect(
+            lambda: self.add_to_figure_action.setEnabled(self.has_figure_fit_source())
+        )
         self.residual_plot.setXLink(self.main_plot)
         self.residual_plot.hideAxis("bottom")
         self.plot_widget.ci.layout.setRowStretchFactor(0, 1)
@@ -2858,6 +2898,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             slider_widths=dict(self._slider_widths),
             params=self._serialize_params(self._params),
             params_from_coord=self._params_from_coord.copy(),
+            figure_fit_restore_configuration=self._figure_fit_restore_configuration,
+            figure_fit_restored_indices=tuple(
+                sorted(self._figure_fit_restored_indices)
+            ),
         )
 
     @tool_status.setter
@@ -2916,6 +2960,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         with self._history_suppressed():
             self._data_name = status.data_name
             self._model_name = status.model_name
+            self._figure_fit_restore_configuration = (
+                status.figure_fit_restore_configuration
+            )
+            self._figure_fit_restored_indices = set(status.figure_fit_restored_indices)
             self.components_check.setChecked(status.show_components)
             self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
             self.timeout_spin.setValue(status.timeout)
@@ -3836,8 +3884,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     ) -> lmfit.Parameters:
         self._invalidate_fit_result_payload()
         self._last_result_ds = result_ds.copy()
+        selection = self.figure_fit_selection()
+        self._figure_fit_restored_indices.discard(
+            0 if selection is None else selection["index"]
+        )
         result = self._last_result_ds.modelfit_results.compute().item()
         self._replace_current_params(result.params.copy())
+        self._capture_figure_fit_metadata(self._last_result_ds)
         self._fit_is_current = True
         self._fit_multi_last_elapsed = time.perf_counter() - t0
         self._fit_multi_live_refresh_pending = True
@@ -3893,8 +3946,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _set_fit_ds(self, result_ds: xr.Dataset, t0: float) -> lmfit.Parameters:
         self._invalidate_fit_result_payload()
         self._last_result_ds = result_ds.copy()
+        selection = self.figure_fit_selection()
+        self._figure_fit_restored_indices.discard(
+            0 if selection is None else selection["index"]
+        )
         result = self._last_result_ds.modelfit_results.compute().item()
         self._replace_current_params(result.params.copy())
+        self._capture_figure_fit_metadata(self._last_result_ds)
         self.param_model.set_params(
             self._params, self._params_from_coord, emit_changed=False
         )
@@ -3967,10 +4025,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             result=result,
         )
 
-    @_rebuild_ui(mark_fresh=True)
+    @_rebuild_ui(mark_fresh=True, restore_fit_result=True)
     def _restore_from_fit_dataset(
         self, fit_ds: xr.Dataset, *, model: lmfit.Model | None = None
     ) -> None:
+        fit_ds = self._unpack_figure_fit_metadata(fit_ds)
         restore = self._parse_fit_dataset_for_restore(fit_ds, model=model)
         if restore.data.ndim != 1:
             raise ValueError(
@@ -3985,6 +4044,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             model_name=self._model_name,
         )
         self._last_result_ds = fit_ds.copy()
+        self._figure_fit_restore_configuration = self._figure_fit_configuration()
+        self._figure_fit_restored_indices = {0}
         self._cache_fit_result_payload()
         self._set_fit_stats(restore.result)
 
@@ -4203,6 +4264,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return False
 
         try:
+            figure_metadata = xr.Dataset()
+            self._capture_figure_fit_metadata(figure_metadata)
+            job = dataclasses.replace(self._fit_job(), figure_metadata=figure_metadata)
             scale_covar = self._fit_scale_covar
             if scale_covar is None:
                 scale_covar = self.scale_covar_check.isChecked()
@@ -4227,7 +4291,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             on_success=on_success,
             on_timeout=on_timeout,
             on_error=on_error,
-            job=self._fit_job(),
+            job=job,
         )
 
         was_running_multi = multi and self._fit_running_multi
@@ -4285,6 +4349,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _fit_result_for_job(self, result_ds: xr.Dataset, job: _FitJob) -> xr.Dataset:
         """Attach immutable job context to a completed fit result."""
+        if job.figure_metadata is not None:
+            result_ds = result_ds.copy()
+            result_ds.attrs.update(job.figure_metadata.attrs)
         return result_ds
 
     def _finalize_fit_thread(self, thread: _FitWorker) -> None:
@@ -4533,6 +4600,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.domain_max_line.setMovable(not running)
         if scale_covar_changed:
             self._mark_fit_stale(emit_info=False)
+        self.add_to_figure_action.setEnabled(
+            not running and self.has_figure_fit_source()
+        )
         if emit_info:
             self._emit_info_changed()
 
@@ -4604,7 +4674,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     ) -> str:
         data_name = self._copy_fit_source_name(data_name, lines=lines)
 
-        if self.normalize_check.isChecked():
+        if self._fit_normalization_factor() is not None:
             if lines is not None:
                 lines.append(f"{data_name}_norm = {data_name} / {data_name}.mean()")
             data_name = f"{data_name}_norm"
@@ -4667,7 +4737,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 f"({self._uncertainty_name}).broadcast_like({data_name})"
             )
         uncertainty_name = self._copy_fit_source_name(uncertainty_name, lines=lines)
-        if self.normalize_check.isChecked():
+        if self._fit_normalization_factor() is not None:
             raw_data_name = self._copy_fit_source_name(data_name)
             if lines is not None:
                 lines.append(
@@ -4691,7 +4761,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             lines.append(f"{weights_name} = {self._direct_weights_name}")
         if self._coord_name in self._direct_weights.dims:
             weights_name = self._copy_fit_source_name(weights_name, lines=lines)
-        if self.normalize_check.isChecked():
+        if self._fit_normalization_factor() is not None:
             raw_data_name = self._copy_fit_source_name(data_name)
             if lines is not None:
                 lines.append(
@@ -4795,6 +4865,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             "method": self.method_combo.currentText(),
             "scale_covar": self.scale_covar_check.isChecked(),
         }
+        if self.nfev_spin.value() > 0:
+            fit_kwargs["max_nfev"] = self.nfev_spin.value()
         if weights_name is not None:
             fit_kwargs["weights"] = f"|{weights_name}|"
         return erlab.interactive.utils.generate_code(
@@ -4804,6 +4876,214 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             name="modelfit",
             module=f"{data_name}.xlm",
         )
+
+    def _figure_fit_provenance(self) -> ToolProvenanceSpec | None:
+        return self._resolve_script_provenance(
+            Fit1DTool.COPY_PROVENANCE, flush_deferred_restore=False
+        )
+
+    def _capture_figure_fit_metadata(self, result_ds: xr.Dataset) -> None:
+        """Record fit provenance and configuration at completion."""
+        if result_ds.attrs.get("__figure_fit_captured__"):
+            return
+        result_ds.attrs["__figure_fit_captured__"] = 1
+        result_ds.attrs["__figure_fit_configuration__"] = (
+            self._figure_fit_configuration()
+        )
+        provenance = self._figure_fit_provenance()
+        if provenance is not None:
+            result_ds.attrs["__figure_fit_provenance__"] = provenance.model_dump_json()
+
+    def figure_fit_selection(self) -> dict[str, typing.Any] | None:
+        return None
+
+    def figure_source_providers(self) -> tuple[FigureSourceProvider, ...]:
+        from erlab.interactive._figurecomposer._providers import FitSourceProvider
+
+        return (FitSourceProvider(self),)
+
+    def _figure_fit_configuration(self) -> str:
+        weighting = self._figure_fit_weighting_data()
+        weighting_token = None
+        if weighting is not None:
+            values = np.asarray(weighting.values)
+            weighting_token = (
+                str(values.dtype),
+                values.shape,
+                hashlib.sha256(values.tobytes()).hexdigest(),
+            )
+        return json.dumps(
+            {
+                "model": self._serialized_model_state,
+                "coordinate": str(self._coord_name),
+                "domain": self._fit_domain(),
+                "normalize_mean": self.normalize_check.isChecked(),
+                "method": self.method_combo.currentText(),
+                "scale_covar": self.scale_covar_check.isChecked(),
+                "max_nfev": self.nfev_spin.value(),
+                "timeout": self.timeout_spin.value(),
+                "weighting": "weights"
+                if self._direct_weights is not None
+                else "uncertainty"
+                if self._uncertainty is not None
+                else None,
+                "weighting_values": weighting_token,
+            }
+        )
+
+    def _figure_fit_weighting_data(self) -> xr.DataArray | None:
+        return (
+            self._direct_weights
+            if self._direct_weights is not None
+            else self._uncertainty
+        )
+
+    def figure_fit_source_name(self) -> str:
+        from erlab.interactive._figurecomposer._model._sources import (
+            _source_alias_candidate,
+        )
+
+        candidate = self._primary_input or self._data_name
+        name = _source_alias_candidate(self._data.rename(candidate))
+        return f"{name or 'spectrum'}_fit"
+
+    def has_figure_fit_source(
+        self, selection: dict[str, typing.Any] | None = None
+    ) -> bool:
+        return (
+            selection is None
+            and not self._fit_running()
+            and not self._fit_multi_sequence_active()
+            and self._last_result_ds is not None
+            and self._figure_fit_params_match(
+                self._last_result_ds,
+                self._params,
+                use_restore_configuration=0 in self._figure_fit_restored_indices,
+            )
+        )
+
+    def _figure_fit_params_match(
+        self,
+        result_ds: xr.Dataset,
+        params: lmfit.Parameters,
+        *,
+        check_configuration: bool = True,
+        use_restore_configuration: bool = False,
+    ) -> bool:
+        data = result_ds.get("modelfit_data")
+        best_fit = result_ds.get("modelfit_best_fit")
+        if (
+            data is None
+            or best_fit is None
+            or not np.any(
+                np.isfinite(data.values)
+                & np.isfinite(best_fit.values)
+                & np.isfinite(data[self._coord_name].values)
+            )
+        ):
+            return False
+        result = self._extract_fit_result(result_ds)
+        captured = result_ds.attrs.get("__figure_fit_configuration__")
+        if use_restore_configuration:
+            captured = self._figure_fit_restore_configuration
+        if captured is not None:
+            current = self._figure_fit_configuration()
+            if check_configuration:
+                if captured != current:
+                    return False
+            else:
+                recorded_configuration = json.loads(captured)
+                current_configuration = json.loads(current)
+                if any(
+                    recorded_configuration.get(key) != current_configuration.get(key)
+                    for key in ("model", "weighting", "weighting_values")
+                ):
+                    return False
+        if (
+            captured is None
+            and result.model is not self._model
+            and self._serialize_model_state(result.model)
+            != self._serialized_model_state
+        ):
+            return False
+        return params.keys() == result.params.keys() and all(
+            self._parameter_value(param) == self._parameter_value(result.params[name])
+            and param.vary == result.params[name].vary
+            and param.min == result.params[name].min
+            and param.max == result.params[name].max
+            and param.expr == result.params[name].expr
+            for name, param in params.items()
+        )
+
+    def figure_fit_source_snapshot(
+        self, selection: dict[str, typing.Any] | None = None
+    ) -> FigureFitSourceSnapshot:
+        self._flush_restore_work()
+        if not self.has_figure_fit_source(selection):
+            raise ValueError(
+                "A completed fit with a finite curve and unchanged parameters "
+                "is required"
+            )
+        result_ds = typing.cast("xr.Dataset", self._last_result_ds)
+        return self._figure_fit_snapshot_from_dataset(result_ds)
+
+    @staticmethod
+    def _unpack_figure_fit_metadata(result_ds: xr.Dataset) -> xr.Dataset:
+        if "__figure_fit_metadata__" not in result_ds:
+            return result_ds
+        metadata = json.loads(result_ds["__figure_fit_metadata__"].item())
+        result_ds = result_ds.drop_vars("__figure_fit_metadata__")
+        result_ds.attrs.update(metadata)
+        return result_ds
+
+    @staticmethod
+    def _figure_fit_snapshot_from_dataset(
+        result_ds: xr.Dataset,
+    ) -> FigureFitSourceSnapshot:
+        from erlab.interactive._figurecomposer._fit_sources import (
+            FigureFitSourceSnapshot,
+        )
+
+        result_ds = Fit1DTool._unpack_figure_fit_metadata(result_ds)
+
+        raw_provenance = result_ds.attrs.get("__figure_fit_provenance__")
+        provenance = None if raw_provenance is None else json.loads(raw_provenance)
+        return FigureFitSourceSnapshot.from_dataset(
+            result_ds,
+            provenance_spec=provenance,
+        )
+
+    @QtCore.Slot()
+    def _add_fit_to_figure(self) -> None:
+        self._flush_restore_work()
+        if not self.has_figure_fit_source():
+            return
+        manager, parent_uid = self._managed_output_imagetool_parent()
+        if manager is not None and parent_uid is not None:
+            manager._figure_workflows.add_fit_to_figure(self)
+            return
+        from erlab.interactive._figurecomposer import (
+            FigureComposerTool,
+            FigureSourceState,
+        )
+
+        snapshot = self.figure_fit_source_snapshot()
+        source = FigureSourceState(
+            name=self.figure_fit_source_name(),
+            kind="fit",
+            label=self.windowTitle(),
+            provenance_spec=snapshot.provenance_spec,
+            provider_id="fit",
+            provider_selection=self.figure_fit_selection() or {},
+        )
+        tool = FigureComposerTool.from_fit_sources(
+            {source.name: snapshot}, sources=(source,)
+        )
+        application = typing.cast(
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
+        )
+        _StandaloneFigureOwner(tool, application)
+        tool.show()
 
     @QtCore.Slot()
     def _save_fit(self) -> None:
@@ -5335,6 +5615,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_is_current = False
         self.save_button.setEnabled(False)
         self.copy_button.setEnabled(False)
+        self.add_to_figure_action.setEnabled(self.has_figure_fit_source())
         if emit_info:
             self._emit_info_changed()
 
@@ -5349,6 +5630,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_is_current = True
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
+        self.add_to_figure_action.setEnabled(self.has_figure_fit_source())
         if emit_info:
             self._emit_info_changed()
 

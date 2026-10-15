@@ -31,7 +31,8 @@ if typing.TYPE_CHECKING:
 
 
 _SOURCE_COLUMN = 0
-_SHAPE_COLUMN = 1
+_TYPE_COLUMN = 1
+_SHAPE_COLUMN = 2
 _USED_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 
 
@@ -44,6 +45,8 @@ class FigureSourceRow(typing.NamedTuple):
     data: xr.DataArray | None
     missing: bool
     used: bool
+    kind: str = "array"
+    payload_label: str = ""
 
 
 class FigureSourceDetail(typing.NamedTuple):
@@ -55,6 +58,8 @@ class FigureSourceDetail(typing.NamedTuple):
     usage_count: int
     origin: str
     alias_enabled: bool
+    kind: str = "array"
+    supports_selection: bool = True
 
 
 class FigureSourceSelectionRow(typing.NamedTuple):
@@ -83,8 +88,8 @@ class _FigureSourceList(ReorderList):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(_SOURCE_COLUMN, parent)
-        self.setColumnCount(2)
-        self.setHeaderLabels(("Alias", "Shape"))
+        self.setColumnCount(3)
+        self.setHeaderLabels(("Alias", "Type", "Shape"))
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu_requested)
 
@@ -153,7 +158,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
             self.source_actions,
             "figureComposerAddSourceButton",
             "Add…",
-            "Add ImageTool data from the manager as figure sources.",
+            "Add tool outputs from the manager as figure sources.",
         )
         self.add_source_button.clicked.connect(self.add_requested)
         action_layout.addWidget(self.add_source_button)
@@ -239,6 +244,9 @@ class FigureSourcePanel(QtWidgets.QWidget):
             _SOURCE_COLUMN, QtWidgets.QHeaderView.ResizeMode.Stretch
         )
         header.setSectionResizeMode(
+            _TYPE_COLUMN, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(
             _SHAPE_COLUMN, QtWidgets.QHeaderView.ResizeMode.Interactive
         )
         header.resizeSection(_SHAPE_COLUMN, 150)
@@ -261,7 +269,6 @@ class FigureSourcePanel(QtWidgets.QWidget):
         )
         self.source_editor_state_label.setObjectName("figureComposerSourceEditorState")
         self.source_editor_state_label.setWordWrap(True)
-        detail_layout.addWidget(self.source_editor_state_label)
         self.source_alias_controls = QtWidgets.QWidget(self.source_detail_content)
         self.source_alias_controls.setObjectName("figureComposerSourceAliasControls")
         alias_layout = QtWidgets.QFormLayout(self.source_alias_controls)
@@ -276,6 +283,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
         self.source_alias_edit.editingFinished.connect(self._alias_edit_finished)
         alias_layout.addRow("Alias", self.source_alias_edit)
         detail_layout.addWidget(self.source_alias_controls)
+        detail_layout.addWidget(self.source_editor_state_label)
         self.source_inspector = SourceInspectorWidget(self.source_detail_content)
         self.source_inspector.setAcceptDrops(True)
         detail_layout.addWidget(self.source_inspector)
@@ -382,11 +390,12 @@ class FigureSourcePanel(QtWidgets.QWidget):
         content.setProperty("figureComposerSourceEditorMode", "single")
         content.setProperty("figureComposerSourceUsageCount", detail.usage_count)
         content.setProperty("figureComposerSourceOrigin", detail.origin)
-        self.source_editor_state_label.setVisible(False)
+        self.source_editor_state_label.setText("\n".join(detail.context_lines))
+        self.source_editor_state_label.setVisible(not detail.supports_selection)
         self.source_alias_controls.setVisible(True)
         self.set_alias(detail.name, enabled=detail.alias_enabled)
-        self.source_inspector.setVisible(True)
-        self.source_selection_controls.setVisible(True)
+        self.source_inspector.setVisible(detail.supports_selection)
+        self.source_selection_controls.setVisible(detail.supports_selection)
         self.source_inspector.set_context(
             source_name=detail.name,
             data=detail.data,
@@ -725,7 +734,11 @@ class FigureSourcePanel(QtWidgets.QWidget):
 
     def _add_row(self, row: FigureSourceRow) -> None:
         item = QtWidgets.QTreeWidgetItem(
-            [row.display, "Data unavailable" if row.data is None else ""]
+            [
+                row.display,
+                row.payload_label,
+                "Data unavailable" if row.data is None and row.missing else "",
+            ]
         )
         item.setData(_SOURCE_COLUMN, QtCore.Qt.ItemDataRole.UserRole, row.name)
         item.setData(_SOURCE_COLUMN, _USED_ROLE, row.used)
@@ -735,6 +748,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
             | QtCore.Qt.ItemFlag.ItemIsDragEnabled
         )
         item.setToolTip(_SOURCE_COLUMN, row.tooltip)
+        item.setToolTip(_TYPE_COLUMN, row.tooltip)
         item.setToolTip(_SHAPE_COLUMN, row.tooltip)
         item.setData(
             _SOURCE_COLUMN,
@@ -744,6 +758,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
         if row.missing:
             brush = QtGui.QBrush(QtGui.QColor("darkRed"))
             item.setForeground(_SOURCE_COLUMN, brush)
+            item.setForeground(_TYPE_COLUMN, brush)
             item.setForeground(_SHAPE_COLUMN, brush)
         self.source_list.addTopLevelItem(item)
         if row.data is None:
@@ -781,6 +796,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
                 continue
             tooltip = tooltips.get(source_name, "")
             item.setToolTip(_SOURCE_COLUMN, tooltip)
+            item.setToolTip(_TYPE_COLUMN, tooltip)
             item.setToolTip(_SHAPE_COLUMN, tooltip)
             item.setData(
                 _SOURCE_COLUMN,
@@ -843,7 +859,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
     ) -> None:
         self.add_source_button.setEnabled(add)
         add_tip = (
-            "Add ImageTool data from the manager as figure sources"
+            "Add tool outputs from the manager as figure sources"
             if add
             else "Open this Figure Composer from ImageTool Manager to add sources"
         )
@@ -851,7 +867,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
         self.add_source_button.setStatusTip(add_tip)
         self.refresh_sources_button.setEnabled(refresh)
         refresh_tip = (
-            "Refresh selected sources from their ImageTools"
+            "Refresh selected sources from their tools"
             if refresh
             else "No selected sources can be refreshed"
         )
