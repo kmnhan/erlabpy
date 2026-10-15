@@ -18,6 +18,7 @@ from erlab.interactive._file_loaders import (
     builtin_file_loader_for_id,
     builtin_file_loader_for_name_filter,
 )
+from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 
 if typing.TYPE_CHECKING:
@@ -107,15 +108,30 @@ class _StandaloneAppEventFilter(QtCore.QObject):
         }
     )
 
-    def __init__(self, manager: _ImageToolManagerBase) -> None:
+    def __init__(self, manager: _ImageToolManagerBase, key: str) -> None:
         super().__init__(manager)
         self._manager = manager
+        self._key = key
 
     def eventFilter(
         self, obj: QtCore.QObject | None, event: QtCore.QEvent | None
     ) -> bool:
-        if event is not None and event.type() in self._STATE_EVENT_TYPES:
-            self._manager._mark_standalone_app_state_dirty()
+        if (
+            event is not None
+            and isinstance(obj, QtWidgets.QWidget)
+            and self._manager._standalone_app_windows.get(self._key) is obj
+        ):
+            event_type = event.type()
+            if event_type in {
+                QtCore.QEvent.Type.Hide,
+                QtCore.QEvent.Type.DeferredDelete,
+            }:
+                self._manager._remember_standalone_app_state(self._key, obj)
+            if (
+                event_type in self._STATE_EVENT_TYPES
+                or event_type == QtCore.QEvent.Type.DeferredDelete
+            ):
+                self._manager._mark_standalone_app_state_dirty()
         return super().eventFilter(obj, event)
 
 
@@ -600,6 +616,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         state = self._workspace_controller._loader_state
         state.explorer_loader_kwargs_by_name = shared_kwargs
         state.explorer_loader_extensions_by_name = shared_extensions
+        pending_explorer = self._standalone_app_pending_states.get("explorer")
+        if pending_explorer is not None:
+            pending_explorer["loader_kwargs_by_name"] = {
+                name: _serialize_loader_kwargs(kwargs)
+                for name, kwargs in shared_kwargs.items()
+            }
+            pending_explorer["loader_extensions_by_name"] = shared_extensions
 
         recent_filter = self._recent_name_filter
         if recent_filter is not None:
@@ -828,7 +851,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
     def _create_standalone_app_window(self, key: str) -> QtWidgets.QWidget:
         widget = self._standalone_app_specs[key].factory()
-        event_filter = _StandaloneAppEventFilter(self)
+        event_filter = _StandaloneAppEventFilter(self, key)
         widget.installEventFilter(event_filter)
         self._standalone_app_event_filters[key] = event_filter
         signal = getattr(widget, "sigStateChanged", None)
@@ -871,6 +894,20 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     def _mark_standalone_app_state_dirty(self) -> None:
         self._mark_workspace_layout_dirty()
 
+    def _remember_standalone_app_state(
+        self, key: str, widget: QtWidgets.QWidget
+    ) -> None:
+        state_getter = getattr(widget, "workspace_state_payload", None)
+        if not callable(state_getter):
+            return
+        state = typing.cast("dict[str, typing.Any]", state_getter())
+        window_state = _qt_state.parse_qt_window_state(state.get("window_state"))
+        if window_state is not None:
+            state["window_state"] = window_state.model_copy(
+                update={"visible": False}
+            ).model_dump(mode="json", exclude_none=True)
+        self._standalone_app_pending_states[key] = state
+
     def _apply_standalone_app_state(
         self,
         key: str,
@@ -897,7 +934,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
             self._standalone_app_windows.pop(key, None)
             self._standalone_app_event_filters.pop(key, None)
-            self._standalone_app_pending_states.pop(key, None)
             return
         if event_filter is not None:
             widget.removeEventFilter(event_filter)
@@ -905,10 +941,11 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             if event_filter is not None and erlab.interactive.utils.qt_is_valid(widget):
                 widget.installEventFilter(event_filter)
             return
+        self._remember_standalone_app_state(key, widget)
         self._standalone_app_windows.pop(key, None)
         self._standalone_app_event_filters.pop(key, None)
         widget.deleteLater()
-        self._standalone_app_pending_states.pop(key, None)
+        self._mark_standalone_app_state_dirty()
 
     def _close_standalone_apps(self) -> None:
         for key in tuple(self._standalone_app_windows):

@@ -2373,6 +2373,81 @@ def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
         assert explorer.current_explorer.current_directory == pathlib.Path(dropped_dir)
 
 
+def test_manager_closed_explorer_retains_tabs_with_current_loader_options(
+    qtbot, manager_context, tmp_path
+) -> None:
+    loader_name = next(
+        name for name in erlab.io.loaders if erlab.io.loaders[name].file_dialog_methods
+    )
+    name_filter = next(iter(erlab.io.loaders[loader_name].file_dialog_methods))
+    second_directory = tmp_path / "second"
+    second_directory.mkdir()
+    metadata_source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+    current_extensions = {"coordinate_attrs": ["current"]}
+
+    with manager_context() as manager:
+        manager._recent_directory = str(tmp_path)
+        manager._recent_name_filter = name_filter
+        manager._set_shared_loader_options(
+            loader_name, {"single": False}, {"coordinate_attrs": ["old"]}
+        )
+        manager.show_explorer()
+        explorer = manager.explorer
+        qtbot.wait_until(explorer.isVisible)
+        explorer.add_tab(root_path=second_directory, loader_name=loader_name)
+        explorer.tab_widget.setCurrentIndex(1)
+        expected_tabs = explorer.workspace_state_payload()["tabs"]
+
+        manager._close_standalone_app("explorer")
+        assert "explorer" not in manager._standalone_app_windows
+        manager._set_shared_loader_options(
+            loader_name,
+            {"single": True, "metadata": metadata_source},
+            current_extensions,
+        )
+
+        snapshot = (
+            manager._workspace_controller.saving._workspace_standalone_apps_snapshot()
+        )["apps"]["explorer"]
+        assert snapshot["tabs"] == expected_tabs
+        assert snapshot["active_tab"] == 1
+        assert not snapshot["window_state"]["visible"]
+        saved_kwargs = snapshot["loader_kwargs_by_name"][loader_name]
+        assert saved_kwargs["single"] is True
+        assert saved_kwargs["metadata"]["__erlab_spreadsheet_metadata_source__"][
+            "path"
+        ] == str(metadata_source.path)
+        assert snapshot["loader_extensions_by_name"][loader_name] == current_extensions
+
+        manager.show_explorer()
+        restored = manager.explorer
+        qtbot.wait_until(restored.isVisible)
+        assert restored is not explorer
+        assert restored.tab_widget.count() == 2
+        assert restored.tab_widget.currentIndex() == 1
+        first_tab = restored.get_explorer(0)
+        current_tab = restored.current_explorer
+        assert first_tab is not None
+        assert current_tab is not None
+        assert first_tab.current_directory == tmp_path
+        assert current_tab.current_directory == second_directory
+        restored_kwargs = restored.loader_kwargs_by_name()[loader_name]
+        assert restored_kwargs["single"] is True
+        assert isinstance(
+            restored_kwargs["metadata"], erlab.io.metadata.ExcelMetadataSource
+        )
+        assert restored_kwargs["metadata"].path == metadata_source.path
+        assert restored.loader_extensions_by_name()[loader_name] == current_extensions
+        shared_kwargs, shared_extensions = manager._shared_loader_state()
+        assert shared_kwargs[loader_name]["single"] is True
+        assert shared_extensions[loader_name] == current_extensions
+
+
 def test_manager_explorer_uses_default_directory_before_recent(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2516,6 +2591,75 @@ def test_manager_close_event_closes_standalone_apps(
         assert not erlab.interactive.utils.qt_is_valid(explorer, ptable)
 
 
+@pytest.mark.parametrize("key", ["ptable", "angle_calculator"])
+@pytest.mark.parametrize(
+    "close_mode", ["delete_on_close", "delete_later", "delete_hidden"]
+)
+def test_manager_standalone_app_state_survives_widget_deletion(
+    qtbot, manager_context, tmp_path, key, close_mode
+) -> None:
+    with manager_context() as manager:
+        adopt_workspace_path(manager, tmp_path / "apps.itws")
+        widget = manager._show_standalone_app(key)
+        qtbot.wait_until(widget.isVisible)
+        if close_mode == "delete_hidden":
+            widget.close()
+            qtbot.wait_until(lambda: not widget.isVisible())
+
+        if key == "ptable":
+            widget.hv_edit.setText("83.5")
+        else:
+            widget.inputs["photon_energy"].setValue(83.5)
+        manager._workspace_controller._mark_workspace_clean()
+
+        if close_mode == "delete_on_close":
+            widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            widget.close()
+        else:
+            widget.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(
+            None, int(QtCore.QEvent.Type.DeferredDelete.value)
+        )
+
+        assert not erlab.interactive.utils.qt_is_valid(widget)
+        assert key not in manager._standalone_app_windows
+        assert not manager._standalone_app_pending_states[key]["window_state"][
+            "visible"
+        ]
+        assert manager.is_workspace_modified
+
+        restored = manager._show_standalone_app(key)
+        qtbot.wait_until(restored.isVisible)
+        if key == "ptable":
+            assert restored.hv_edit.text() == "83.5"
+        else:
+            assert restored.inputs["photon_energy"].value() == 83.5
+
+
+def test_manager_standalone_app_old_widget_cleanup_keeps_replacement(
+    qtbot, manager_context
+) -> None:
+    with manager_context() as manager:
+        manager.show_ptable()
+        old = manager.ptable_window
+        old.hv_edit.setText("83.5")
+        manager._close_standalone_app("ptable")
+        manager.show_ptable()
+        restored = manager.ptable_window
+        restored.hv_edit.setText("120")
+        restored.hide()
+
+        QtWidgets.QApplication.sendPostedEvents(
+            None, int(QtCore.QEvent.Type.DeferredDelete.value)
+        )
+
+        assert not erlab.interactive.utils.qt_is_valid(old)
+        assert manager.ptable_window is restored
+        assert (
+            manager._standalone_app_pending_states["ptable"]["photon_energy"] == "120"
+        )
+
+
 def test_manager_close_standalone_app_keeps_ignored_close(
     qtbot,
     manager_context: Callable[
@@ -2553,13 +2697,18 @@ def test_manager_close_standalone_app_keeps_ignored_close(
         assert isinstance(standalone, _BusyStandaloneWindow)
         qtbot.wait_until(standalone.isVisible)
 
-        manager._standalone_app_event_filters["stale"] = QtCore.QObject(manager)
-        manager._standalone_app_pending_states["stale"] = {}
-        manager._close_standalone_app("stale")
+        manager._standalone_app_event_filters["angle_calculator"] = QtCore.QObject(
+            manager
+        )
+        cached_state = {"geometry": {"photon_energy": 83.5}}
+        manager._standalone_app_pending_states["angle_calculator"] = cached_state
+        manager._close_standalone_app("angle_calculator")
 
-        assert "stale" not in manager._standalone_app_windows
-        assert "stale" not in manager._standalone_app_event_filters
-        assert "stale" not in manager._standalone_app_pending_states
+        assert "angle_calculator" not in manager._standalone_app_windows
+        assert "angle_calculator" not in manager._standalone_app_event_filters
+        assert (
+            manager._standalone_app_pending_states["angle_calculator"] == cached_state
+        )
 
         manager._close_standalone_app("explorer")
 

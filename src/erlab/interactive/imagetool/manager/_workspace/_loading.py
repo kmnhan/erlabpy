@@ -2518,9 +2518,7 @@ class _WorkspaceLoader:
     def _restore_standalone_apps_state(
         self, manifest: Mapping[str, typing.Any] | None
     ) -> None:
-        if manifest is None:
-            return
-        payload = manifest.get("standalone_apps")
+        payload = {} if manifest is None else manifest.get("standalone_apps", {})
         if not isinstance(payload, dict):
             return
         try:
@@ -2539,8 +2537,10 @@ class _WorkspaceLoader:
 
         for key in set(self._manager._standalone_app_specs) - set(restored_states):
             self._manager._close_standalone_app(key)
+            self._manager._standalone_app_pending_states.pop(key, None)
 
         for key, app_state in restored_states.items():
+            self._manager._standalone_app_pending_states[key] = app_state
             window_state = _qt_state.parse_qt_window_state(
                 app_state.get("window_state")
             )
@@ -2551,8 +2551,6 @@ class _WorkspaceLoader:
                 widget = self._manager._standalone_app_windows.get(key)
                 if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
                     self._manager._apply_standalone_app_state(key, widget, app_state)
-                else:
-                    self._manager._standalone_app_pending_states[key] = app_state
 
     def _workspace_rebind_data_for_uid(
         self,
