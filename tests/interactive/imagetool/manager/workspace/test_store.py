@@ -7,6 +7,7 @@ import json
 import shutil
 import threading
 import typing
+import uuid
 from types import SimpleNamespace
 
 import dask
@@ -110,6 +111,156 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     restored = rollback.resolve_data(first)
     np.testing.assert_array_equal(restored.values, np.arange(4.0))
     assert restored.attrs["nested"]["value"] == 1
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_bound_revision_keeps_checkpoint_and_canonical_metadata(legacy: bool) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed = registry.add(data)
+    spec = script(
+        ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+        start_label="Calculation",
+        primary_input="data",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                node_uid="original",
+                node_snapshot_token="legacy-snapshot" if legacy else None,
+                revision_id=None if legacy else seed,
+            ),
+        ),
+    )
+    revision_id = registry.add(data + 1, spec, input_revisions={"data": seed})
+    before = workspace_revisions.revision_manifest_entry(
+        registry, registry.get(revision_id)
+    )
+    bound_spec = spec.model_copy(
+        update={
+            "script_inputs": (
+                spec.script_inputs[0].model_copy(update={"node_uid": "imported"}),
+            )
+        }
+    )
+    bound = registry.bind(revision_id, bound_spec)
+    assert bound.provenance_spec == bound_spec
+    assert bound.revision_id == revision_id
+    assert bound.revision == registry.get(revision_id)
+    xr.testing.assert_identical(registry.resolve_data(bound.revision_id), data + 1)
+    assert (
+        workspace_revisions.revision_manifest_entry(registry, registry.get(revision_id))
+        == before
+    )
+    assert registry.bind(seed, None).provenance_spec is None
+    with pytest.raises(KeyError):
+        registry.bind("missing", None)
+
+
+@pytest.mark.parametrize(
+    "change", ["operation", "revision", "source", "follow", "snapshot"]
+)
+def test_bound_revision_rejects_recipe_changes(change: str) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed = registry.add(data)
+    item = ScriptInput(name="data", node_uid="original", revision_id=seed)
+    spec = script(
+        ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+        start_label="Calculation",
+        primary_input="data",
+        active_name="derived",
+        script_inputs=(item,),
+    )
+    revision_id = registry.add(data + 1, spec)
+    updates = {"node_uid": "imported"}
+    if change == "revision":
+        updates["revision_id"] = "different"
+    elif change == "source":
+        updates["source_spec"] = full_data(IselOperation(kwargs={"x": 0})).model_dump(
+            mode="json"
+        )
+    elif change == "follow":
+        updates["follow_source"] = False
+    elif change == "snapshot":
+        updates["node_snapshot_token"] = uuid.uuid4().hex
+    candidate = spec.model_copy(
+        update={"script_inputs": (item.model_copy(update=updates),)}
+    )
+    if change == "operation":
+        candidate = candidate.model_copy(
+            update={
+                "steps": (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Add one", code="derived = data + 2"
+                        )
+                    ),
+                )
+            }
+        )
+    with pytest.raises(ValueError, match="bound recipe"):
+        registry.bind(revision_id, candidate)
+
+
+def test_bound_revision_reuses_legacy_normalization_seed() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed = registry.add(data)
+    legacy = full_data(IselOperation(kwargs={"x": slice(None)}))
+    normalized = registry.normalize_provenance(legacy, replay_source_revision_id=seed)
+    revision_id = registry.add(data, normalized, input_revisions={"data": seed})
+    before = registry.revision_ids
+    assert registry.bind(revision_id, legacy).provenance_spec == normalized
+    assert registry.revision_ids == before
+
+
+def test_bound_revision_keeps_loader_arguments_exact() -> None:
+    from erlab.interactive.imagetool._provenance._model import (
+        FileDataSelection,
+        FileLoadSource,
+        FileReplayCall,
+        file_load,
+    )
+
+    source = FileLoadSource(
+        path="source.h5",
+        loader_label="Loader",
+        loader_text="loader",
+        kwargs_text="",
+        replay_call=FileReplayCall(
+            kind="callable",
+            target="xarray.open_dataarray",
+            selection=FileDataSelection(kind="dataarray"),
+            kwargs={"script_inputs": [{"revision_id": "value", "node_uid": "first"}]},
+        ),
+    )
+    original = file_load(
+        start_label="Load",
+        seed_code="derived = xr.open_dataarray('source.h5')",
+        file_load_source=source,
+    )
+    changed = original.model_copy(
+        update={
+            "file_load_source": source.model_copy(
+                update={
+                    "replay_call": source.replay_call.model_copy(
+                        update={
+                            "kwargs": {
+                                "script_inputs": [
+                                    {"revision_id": "value", "node_uid": "second"}
+                                ]
+                            }
+                        }
+                    )
+                }
+            )
+        }
+    )
+    registry = _ProvenanceRevisionStore()
+    revision_id = registry.add(xr.DataArray([1.0]), original)
+    with pytest.raises(ValueError, match="bound recipe"):
+        registry.bind(revision_id, changed)
 
 
 def test_revision_capture_freezes_lazy_values_and_coordinates(tmp_path) -> None:

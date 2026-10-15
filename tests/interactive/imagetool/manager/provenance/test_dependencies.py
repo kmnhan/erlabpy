@@ -176,6 +176,115 @@ def test_resolve_captured_input_applies_source_spec() -> None:
     assert controller._resolve_live_script_input_for_reload(missing) is None
 
 
+def test_rebased_captured_input_does_not_apply_source_spec_twice() -> None:
+    from erlab.interactive.imagetool._provenance._model import (
+        compose_full_provenance,
+        rebase_script_input_node_uids,
+    )
+
+    data = xr.DataArray(np.arange(12).reshape(4, 3), dims=("x", "y"))
+    source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
+    store = _ProvenanceRevisionStore()
+    original = script(
+        ScriptCodeOperation(label="Use source", code="derived = data.copy()"),
+        start_label="Calculation",
+        primary_input="data",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="data", node_uid="original", revision_id=store.add(data)),
+        ),
+    )
+    complete = compose_full_provenance(original, source_spec)
+    expected = source_spec.apply(data)
+    revision_id = store.add(expected, complete)
+    rebound = rebase_script_input_node_uids(complete, {"original": "imported"})
+    script_input = ScriptInput(
+        name="selected",
+        revision_id=revision_id,
+        provenance_spec=rebound.model_dump(mode="json"),
+        source_spec=source_spec.model_dump(mode="json"),
+    )
+    controller = manager_lineage._LineageController(
+        types.SimpleNamespace(_provenance_revisions=store)
+    )
+    resolved = controller._resolve_recorded_script_input(script_input)
+    assert resolved is not None
+    xr.testing.assert_identical(resolved[0], expected)
+    assert store.get(revision_id).provenance_spec == complete
+
+
+def test_duplicated_subtree_history_keeps_duplicated_source(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+
+        def window(value):
+            return erlab.interactive.imagetool.ImageTool(value, _in_manager=True)
+
+        def plus_one(node):
+            return script(
+                ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+                start_label="Calculation",
+                primary_input="data",
+                active_name="derived",
+                script_inputs=(
+                    manager._lineage_controller._script_input_for_node(
+                        node, name="data"
+                    ),
+                ),
+            )
+
+        original = manager._node_for_target(
+            manager.add_imagetool(window(data), show=False)
+        )
+        derived = manager._node_for_target(
+            manager.add_imagetool_child(
+                window(data + 1),
+                original.uid,
+                show=False,
+                provenance_spec=plus_one(original),
+            )
+        )
+        final_spec = plus_one(derived)
+        historical_id = final_spec.script_inputs[0].revision_id
+        manager.add_imagetool_child(
+            window(data + 2), derived.uid, show=False, provenance_spec=final_spec
+        )
+        duplicate = manager._node_for_target(
+            manager.duplicate_imagetool(original.index)
+        )
+        copied_derived = manager._child_node(duplicate._childtool_indices[0])
+        target = manager._child_node(copied_derived._childtool_indices[0])
+        original.slicer_area.replace_source_data(data + 100)
+        duplicate.slicer_area.replace_source_data(data + 10)
+        select_child_tool(manager, target.uid)
+        manager._update_info()
+        row = next(
+            row
+            for row in target.derivation_display_rows
+            if row.revision_id == historical_id
+        )
+        editor = manager._provenance_edit_controller
+        monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            editor, "_show_failed", lambda title, exc: pytest.fail(f"{title}: {exc}")
+        )
+        assert editor.can_revert_row(row)[0]
+        editor.revert_row(row)
+        xr.testing.assert_identical(target.current_source_data(), data + 1)
+        assert target.provenance_spec.script_inputs[0].node_uid == duplicate.uid
+        promoted_index = manager.promote_child_imagetool(target.uid)
+        target = manager._node_for_target(promoted_index)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [promoted_index])
+        manager._update_info()
+        assert manager.reload_action.isEnabled()
+        manager.reload_action.trigger()
+        xr.testing.assert_identical(target.current_source_data(), data + 11)
+
+
 def test_input_plan_rejects_missing_captured_input() -> None:
     manager = types.SimpleNamespace(
         _provenance_revisions=_ProvenanceRevisionStore(),

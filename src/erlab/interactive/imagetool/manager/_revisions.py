@@ -68,6 +68,18 @@ class _ProvenanceRevision:
         return f"revision-{self.revision_id}"
 
 
+@dataclass(frozen=True)
+class _BoundProvenanceRevision:
+    """A shared checkpoint with the recipe bound to one owning reference."""
+
+    revision: _ProvenanceRevision
+    provenance_spec: ToolProvenanceSpec | None
+
+    @property
+    def revision_id(self) -> str:
+        return self.revision.revision_id
+
+
 def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
     if spec is None:
         return frozenset()
@@ -100,6 +112,28 @@ def _same_provenance(
         None if left is None else left.model_dump(mode="json"), sort_keys=True
     ) == json.dumps(
         None if right is None else right.model_dump(mode="json"), sort_keys=True
+    )
+
+
+def _same_bound_provenance(
+    left: ToolProvenanceSpec | None, right: ToolProvenanceSpec | None
+) -> bool:
+    """Compare recipes while allowing captured inputs to bind to other nodes."""
+
+    def normalized(spec: ToolProvenanceSpec | None) -> object:
+        if spec is None:
+            return None
+        payload = spec.model_dump(mode="json")
+        for item, item_payload in zip(
+            spec.script_inputs, payload["script_inputs"], strict=True
+        ):
+            item_payload["node_uid"] = None
+            item_payload["provenance_spec"] = normalized(item.parsed_provenance_spec())
+            item_payload["source_spec"] = normalized(item.parsed_source_spec())
+        return payload
+
+    return json.dumps(normalized(left), sort_keys=True) == json.dumps(
+        normalized(right), sort_keys=True
     )
 
 
@@ -220,6 +254,28 @@ class _ProvenanceRevisionStore:
         if record is None:
             return None
         return replace(record, provenance_spec=copy.deepcopy(record.provenance_spec))
+
+    def bind(
+        self, revision_id: str, provenance_spec: ToolProvenanceSpec | None
+    ) -> _BoundProvenanceRevision:
+        """Resolve a checkpoint without replacing its owner's input bindings."""
+        record = self.get(revision_id)
+        if record is None:
+            raise KeyError(revision_id)
+        normalized = self.normalize_provenance(provenance_spec)
+        if not _same_bound_provenance(
+            record.provenance_spec, normalized
+        ) and requires_legacy_replay_source(provenance_spec):
+            seed_ids = {ref for _, ref in record.input_revisions} - _spec_revision_ids(
+                provenance_spec
+            )
+            if len(seed_ids) == 1:
+                normalized = self.normalize_provenance(
+                    provenance_spec, replay_source_revision_id=next(iter(seed_ids))
+                )
+        if not _same_bound_provenance(record.provenance_spec, normalized):
+            raise ValueError("The bound recipe does not match the captured revision")
+        return _BoundProvenanceRevision(record, normalized)
 
     def has_data(self, revision_id: str) -> bool:
         record = self._records.get(revision_id)

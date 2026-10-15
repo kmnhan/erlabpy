@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import pathlib
@@ -15,6 +16,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
+from erlab.interactive._code_trust import issue_complete_execution_capability
 from erlab.interactive.imagetool import dialogs
 from erlab.interactive.imagetool._provenance._execution import (
     file_load_source_status,
@@ -81,7 +83,6 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
 from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
     _ProvenanceReorderDialog,
 )
-from erlab.interactive.imagetool.manager._revisions import _same_provenance
 from erlab.interactive.imagetool.manager._widgets import (
     _ProvenanceReplayResult,
     _TrustedProvenanceReplayCancelled,
@@ -93,8 +94,9 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.extensions import RoutineDescriptor
+    from erlab.interactive._code_trust._core import CodeTrustEntry
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
-    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevision
+    from erlab.interactive.imagetool.manager._revisions import _BoundProvenanceRevision
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
         _ManagedWindowNode,
@@ -109,7 +111,7 @@ class _ValidatedProvenanceEdit:
     spec: ToolProvenanceSpec
     filter_operation: ToolProvenanceOperation | None
     replace_filter: bool = False
-    recorded_revision: _ProvenanceRevision | None = None
+    recorded_revision: _BoundProvenanceRevision | None = None
     replay_result: _ProvenanceReplayResult | None = None
 
 
@@ -155,7 +157,7 @@ class _ProvenanceCandidate:
     scope: typing.Literal["display", "source"]
     spec: ToolProvenanceSpec
     active_filter_ref: _ProvenanceStepRef | None = None
-    recorded_revision: _ProvenanceRevision | None = None
+    recorded_revision: _BoundProvenanceRevision | None = None
 
 
 class _ProvenanceReplayFailure(RuntimeError):
@@ -203,20 +205,26 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         row: _ProvenanceDisplayRow,
-    ) -> _ProvenanceRevision | None:
-        if not row.on_primary_chain:
+    ) -> _BoundProvenanceRevision | None:
+        if not row.on_primary_chain or row.replay_ref is None:
             return None
         store = self._manager._provenance_revisions
-        if row.revision_id is not None and store.has_data(row.revision_id):
-            return store.get(row.revision_id)
-        if row.replay_ref is None or row.replay_ref.kind == "script_input":
-            return None
         spec = self._display_spec_for_row(node, row, passive=True)
         if spec is None:
             return None
         try:
-            candidate = spec._prefix_through_ref(row.replay_ref)
-        except ValueError:
+            if row.replay_ref.kind == "script_input":
+                index = row.replay_ref.script_input_index
+                if index is None:
+                    return None
+                candidate = spec.script_inputs[index].parsed_provenance_spec()
+            else:
+                candidate = spec._prefix_through_ref(row.replay_ref)
+            if row.revision_id is not None and store.has_data(row.revision_id):
+                return store.bind(row.revision_id, candidate)
+        except (IndexError, ValueError):
+            return None
+        if candidate is None or row.replay_ref.kind == "script_input":
             return None
         revision_id = node.current_revision_id
         visited: set[str] = set()
@@ -225,23 +233,25 @@ class _ProvenanceEditController:
             record = store.get(revision_id)
             if record is None:
                 break
-            recorded_spec = record.provenance_spec
-            if store.has_data(revision_id) and (
-                _same_provenance(recorded_spec, candidate)
-                or (
-                    recorded_spec is None
+            if store.has_data(revision_id):
+                bound_spec: ToolProvenanceSpec | None = candidate
+                if (
+                    record.provenance_spec is None
                     and candidate.kind in {"full_data", "public_data", "selection"}
                     and not candidate.operations
-                )
-            ):
-                return record
+                ):
+                    bound_spec = None
+                try:
+                    return store.bind(revision_id, bound_spec)
+                except ValueError:
+                    pass
             revision_id = record.primary_revision_id
         return None
 
     def _restore_recorded_revision(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        record: _ProvenanceRevision,
+        record: _BoundProvenanceRevision,
         *,
         data: xr.DataArray | None = None,
     ) -> None:
@@ -1883,15 +1893,29 @@ class _ProvenanceEditController:
                 for candidate in candidates
                 if candidate.recorded_revision is None
             )
-            entries = tuple(entry for group, _edited in entry_groups for entry in group)
-            edited_entries = tuple(
-                entry for _group, edited in entry_groups for entry in edited
+            restored_entries = (
+                self._approved_recorded_revision_entries(candidates)
+                if entry_groups
+                else ()
             )
-            with self._manager._workspace_controller.local_code_edit(
-                entries,
-                edited_entries=edited_entries,
-                focus_on_block=True,
-            ) as authorization:
+            entries = (
+                *(entry for group, _edited in entry_groups for entry in group),
+                *restored_entries,
+            )
+            edited_entries = (
+                tuple(entry for _group, edited in entry_groups for entry in edited)
+                + restored_entries
+            )
+            authorization_context = (
+                self._manager._workspace_controller.local_code_edit(
+                    entries,
+                    edited_entries=edited_entries,
+                    focus_on_block=True,
+                )
+                if entry_groups
+                else contextlib.nullcontext(None)
+            )
+            with authorization_context as authorization:
                 if entries and authorization is None:
                     raise _TrustedProvenanceReplayCancelled
                 edits = []
@@ -1935,6 +1959,35 @@ class _ProvenanceEditController:
                         self._apply_validated_edit(edit)
                     publication.publish()
         self._manager._sigDataReplaced.emit()
+
+    def _approved_recorded_revision_entries(
+        self, candidates: Sequence[_ProvenanceCandidate]
+    ) -> tuple[CodeTrustEntry, ...]:
+        """Carry prior approval from a checkpoint to its owning recipe location."""
+        previous = self._manager._workspace_state.code_trust
+        entries: list[CodeTrustEntry] = []
+        for candidate in candidates:
+            bound = candidate.recorded_revision
+            if bound is None or bound.revision.provenance_spec is None:
+                continue
+            approved = set()
+            for entry in provenance_code_trust_entries(
+                bound.revision.provenance_spec,
+                location_prefix=f"revisions/{bound.revision_id}/provenance",
+            ):
+                _trust, capability = issue_complete_execution_capability(
+                    previous, (entry,)
+                )
+                if capability is not None:
+                    approved.add(entry.execution_identity())
+            entries.extend(
+                entry
+                for entry in self._provenance_code_entries(
+                    bound.provenance_spec, node=candidate.node, scope=candidate.scope
+                )
+                if entry.execution_identity() in approved
+            )
+        return tuple(entries)
 
     def _confirm_delete_multiple(self) -> bool:
         msg_box = QtWidgets.QMessageBox(self._manager)

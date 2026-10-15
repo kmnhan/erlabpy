@@ -8,6 +8,7 @@ import logging
 import pathlib
 import traceback
 import typing
+import uuid
 
 import numpy as np
 from qtpy import QtCore, QtWidgets
@@ -49,7 +50,7 @@ from erlab.interactive.imagetool.manager._dependency import _combine_source_stat
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevisionStore,
-    _same_provenance,
+    _same_bound_provenance,
 )
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
@@ -453,12 +454,10 @@ class _LineageController:
         data_role: ScriptInputDataRole = "displayed",
     ) -> ScriptInput:
         revision_id = node.revision_id_for_role(data_role)
-        recorded = self._manager._provenance_revisions.get(revision_id)
-        input_provenance = to_replay_provenance_spec(
-            node.provenance_for_role(data_role)
-            if recorded is None
-            else recorded.provenance_spec
+        bound = self._manager._provenance_revisions.bind(
+            revision_id, node.provenance_for_role(data_role)
         )
+        input_provenance = to_replay_provenance_spec(bound.provenance_spec)
         resolved_provenance = (
             None
             if input_provenance is None
@@ -678,7 +677,7 @@ class _LineageController:
         owns_resolved_input = (
             record is not None
             and record.provenance_spec is not None
-            and _same_provenance(
+            and _same_bound_provenance(
                 record.provenance_spec, script_input.parsed_provenance_spec()
             )
         )
@@ -1413,13 +1412,26 @@ class _LineageController:
         self, loaded_targets_by_uid: Mapping[str, int | str]
     ) -> None:
         uid_map: dict[str, str] = {}
+        pending: list[ScriptInput] = []
         for saved_uid, target in loaded_targets_by_uid.items():
             try:
-                actual_uid = self._manager._node_for_target(target).uid
+                node = self._manager._node_for_target(target)
             except KeyError:
                 continue
-            if actual_uid != saved_uid:
-                uid_map[saved_uid] = actual_uid
+            if node.uid != saved_uid:
+                uid_map[saved_uid] = node.uid
+            pending.extend(node.tool_script_inputs)
+            if node.provenance_spec is not None:
+                pending.extend(node.provenance_spec.script_inputs)
+        while pending:
+            item = pending.pop()
+            if item.node_uid is not None and item.node_uid not in loaded_targets_by_uid:
+                # A closed source belongs to this document, even when another
+                # document has an open tool with the same saved UID.
+                uid_map.setdefault(item.node_uid, uuid.uuid4().hex)
+            nested = item.parsed_provenance_spec()
+            if nested is not None:
+                pending.extend(nested.script_inputs)
         if not uid_map:
             return
 
