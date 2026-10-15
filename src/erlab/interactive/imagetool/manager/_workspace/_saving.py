@@ -25,6 +25,7 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive import _persistence_constants, _qt_state
 from erlab.interactive._code_trust import document_trust_has_trusted_lineage
+from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
@@ -1343,12 +1344,38 @@ class _WorkspaceSaver:
                         serialized_datasets.append(dataset)
                         serialized_dataset_ids.add(id(dataset))
             if attrs_payload is not None:
-                if kind == "imagetool":
-                    attrs = workspace_format._restore_workspace_manifest_attrs(
-                        attrs_payload
+                if kind == "imagetool" and not needs_current_attrs:
+                    provenance_attrs: dict[str, typing.Any] = {}
+                    _set_imagetool_provenance_attrs(
+                        provenance_attrs, node.provenance_spec
                     )
-                    _set_imagetool_provenance_attrs(attrs, node.provenance_spec)
-                    attrs_payload = workspace_format._workspace_manifest_attrs(attrs)
+                    for key in (
+                        _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+                        _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+                    ):
+                        encoded_key = _serialization.encode_attr_key(key)
+                        current = next(
+                            (
+                                item[1]
+                                for item in attrs_payload
+                                if item[0] == encoded_key
+                            ),
+                            None,
+                        )
+                        expected = (
+                            _serialization.encode_attr_value(provenance_attrs[key])
+                            if key in provenance_attrs
+                            else None
+                        )
+                        if current != expected:
+                            attrs = workspace_format._restore_workspace_manifest_attrs(
+                                attrs_payload
+                            )
+                            _set_imagetool_provenance_attrs(attrs, node.provenance_spec)
+                            attrs_payload = workspace_format._workspace_manifest_attrs(
+                                attrs
+                            )
+                            break
                 entry["payload_attrs"] = attrs_payload
 
             if can_reuse_object:
