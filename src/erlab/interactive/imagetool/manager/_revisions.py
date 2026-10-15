@@ -33,6 +33,16 @@ class _RevisionCheckpoint:
     source_path: str | None = None
 
 
+def _capture_checkpoint(data: xr.DataArray) -> tuple[_RevisionCheckpoint, xr.DataArray]:
+    # A deep copy alone preserves lazy graphs that can read mutable external data.
+    protected = data.copy(deep=True).load()
+
+    def _copy_snapshot() -> xr.DataArray:
+        return protected.copy(deep=True)
+
+    return _RevisionCheckpoint(_copy_snapshot), protected
+
+
 @dataclass(frozen=True)
 class _ProvenanceRevision:
     revision_id: str
@@ -130,7 +140,7 @@ class _ProvenanceRevisionStore:
         source_file: str | None = None,
         source_path: str | None = None,
     ) -> str:
-        revision_id = revision_id or uuid.uuid4().hex
+        revision_id = uuid.uuid4().hex if revision_id is None else revision_id
         if (
             not revision_id
             or "/" in revision_id
@@ -142,21 +152,15 @@ class _ProvenanceRevisionStore:
             raise ValueError(f"Provenance revision {revision_id!r} already exists")
         if data is not None and provider is not None:
             raise ValueError("Supply revision data or a lazy provider, not both")
+        if data is not None and not isinstance(data, xr.DataArray):
+            raise TypeError("Revision data must be a DataArray")
+        if provider is not None and not callable(provider):
+            raise TypeError("Revision checkpoint provider must be callable")
         if (source_file is None) != (source_path is None):
             raise ValueError("Checkpoint source requires a file and a group path")
-        parsed_spec = parse_tool_provenance_spec(spec)
-        checkpoint = None
-        if data is not None:
-            protected = data.copy(deep=True)
-            self._data[revision_id] = protected
-
-            def provider() -> xr.DataArray:
-                return protected.copy(deep=True)
-
-        if provider is not None:
-            checkpoint = _RevisionCheckpoint(provider, source_file, source_path)
-        elif source_file is not None:
+        if source_file is not None and provider is None:
             raise ValueError("Checkpoint source requires a lazy provider")
+        parsed_spec = parse_tool_provenance_spec(spec)
         inputs = (
             tuple(input_revisions.items())
             if isinstance(input_revisions, Mapping)
@@ -164,18 +168,31 @@ class _ProvenanceRevisionStore:
         )
         if len({name for name, _ in inputs}) != len(inputs):
             raise ValueError("Revision input names must be unique")
-        if any(not name or not ref for name, ref in inputs):
+        if any(
+            not isinstance(name, str) or not name or not isinstance(ref, str) or not ref
+            for name, ref in inputs
+        ):
             raise ValueError("Revision inputs require a name and revision ID")
-        self._records[revision_id] = _ProvenanceRevision(
+        owned_spec = None if parsed_spec is None else parsed_spec.model_copy(deep=True)
+        checkpoint = (
+            None
+            if provider is None
+            else _RevisionCheckpoint(provider, source_file, source_path)
+        )
+        protected = None
+        if data is not None:
+            checkpoint, protected = _capture_checkpoint(data)
+        record = _ProvenanceRevision(
             revision_id=revision_id,
-            provenance_spec=(
-                None if parsed_spec is None else parsed_spec.model_copy(deep=True)
-            ),
+            provenance_spec=owned_spec,
             input_revisions=inputs,
             primary_revision_id=primary_revision_id,
             source_owner_uid=source_owner_uid,
             checkpoint=checkpoint,
         )
+        self._records[revision_id] = record
+        if protected is not None:
+            self._data[revision_id] = protected
         return revision_id
 
     @property
@@ -235,6 +252,18 @@ class _ProvenanceRevisionStore:
         result._records = dict(self._records)
         result._data = dict(self._data)
         return result
+
+    def stage(self) -> _ProvenanceRevisionStore:
+        return _ProvenanceRevisionStore()
+
+    def merge(self, staged: _ProvenanceRevisionStore) -> None:
+        conflicts = self.revision_ids & staged.revision_ids
+        if conflicts:
+            raise ValueError(
+                f"Provenance revisions already exist: {', '.join(sorted(conflicts))}"
+            )
+        self._records.update(staged._records)
+        self._data.update(staged._data)
 
     def bind_checkpoint_source(
         self,

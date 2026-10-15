@@ -9,6 +9,8 @@ import threading
 import typing
 from types import SimpleNamespace
 
+import dask
+import dask.array as da
 import h5py
 import numpy as np
 import pytest
@@ -107,9 +109,69 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     assert restored.attrs["nested"]["value"] == 1
 
 
+def test_revision_capture_freezes_lazy_values_and_coordinates(tmp_path) -> None:
+    registry = _ProvenanceRevisionStore()
+    source = tmp_path / "source.npy"
+    original = np.arange(6.0).reshape(2, 3)
+    np.save(source, original)
+    lazy = da.from_delayed(
+        dask.delayed(np.load)(source), shape=original.shape, dtype=original.dtype
+    )
+    data = xr.DataArray(
+        lazy,
+        name="intensity",
+        dims=("x", "eV"),
+        coords={"offset": ("x", lazy[:, 0])},
+        attrs={"nested": {"value": 1}},
+    )
+    revision_id = registry.add(data)
+    assert isinstance(data.data, da.Array)
+    assert isinstance(data.offset.data, da.Array)
+    np.save(source, original + 100)
+    data.attrs["nested"]["value"] = 2
+    expected = xr.DataArray(
+        original,
+        name="intensity",
+        dims=("x", "eV"),
+        coords={"offset": ("x", original[:, 0])},
+        attrs={"nested": {"value": 1}},
+    )
+    resolved = registry.resolve_data(revision_id)
+    assert not isinstance(resolved.data, da.Array)
+    assert not isinstance(resolved.offset.data, da.Array)
+    xr.testing.assert_identical(resolved, expected)
+    resolved.values[:] = -1
+    xr.testing.assert_identical(registry.resolve_data(revision_id), expected)
+
+
+def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -> None:
+    registry = _ProvenanceRevisionStore()
+    reads = []
+
+    def _fail_read():
+        reads.append(True)
+        raise OSError("Source is unavailable")
+
+    data = xr.DataArray(
+        da.from_delayed(dask.delayed(_fail_read)(), shape=(2, 3), dtype=float),
+        dims=("x", "eV"),
+    )
+    with pytest.raises(ValueError, match="must be unique"):
+        registry.add(data, input_revisions=(("data", "a"), ("data", "b")))
+    assert not reads
+    assert registry.revision_ids == frozenset()
+    assert not registry._data
+    with pytest.raises(OSError, match="Source is unavailable"):
+        registry.add(data)
+    assert reads == [True]
+    assert registry.revision_ids == frozenset()
+    assert not registry._data
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
+        ({"revision_id": ""}, "Invalid provenance revision ID"),
         ({"revision_id": "a/b"}, "Invalid provenance revision ID"),
         ({"revision_id": "\x00"}, "Invalid provenance revision ID"),
         ({"revision_id": ".."}, "Invalid provenance revision ID"),
@@ -130,6 +192,13 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
             {"input_revisions": [("data", "first"), ("data", "second")]},
             "must be unique",
         ),
+        (
+            {
+                "data": xr.DataArray([1]),
+                "input_revisions": [("data", "first"), ("data", "second")],
+            },
+            "must be unique",
+        ),
         ({"input_revisions": {"": "source"}}, "require a name and revision ID"),
         ({"input_revisions": {"data": ""}}, "require a name and revision ID"),
     ],
@@ -141,6 +210,51 @@ def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
     with pytest.raises(ValueError, match=message):
         registry.add(**kwargs)
     assert registry.revision_ids == frozenset()
+    assert not registry._data
+
+
+def test_staged_revision_captures_merge_without_copying_or_reading_sources() -> None:
+    registry = _ProvenanceRevisionStore()
+    existing = registry.add(xr.DataArray([1.0, 2.0], dims="x"))
+    staged = registry.stage()
+    captured = staged.add(xr.DataArray([3.0, 4.0], dims="x"))
+    reads = []
+
+    def _read_checkpoint():
+        reads.append(True)
+        return xr.DataArray([5.0, 6.0], dims="x")
+
+    lazy = staged.add(provider=_read_checkpoint, primary_revision_id=existing)
+    assert captured not in registry
+    assert lazy not in registry
+    assert not reads
+    registry.merge(staged)
+    assert not reads
+    assert registry.revision_ids == frozenset({existing, captured, lazy})
+    assert registry._data[captured] is staged._data[captured]
+    assert registry.get(lazy).primary_revision_id == existing
+    xr.testing.assert_identical(
+        registry.resolve_data(captured), xr.DataArray([3.0, 4.0], dims="x")
+    )
+    xr.testing.assert_identical(
+        registry.resolve_data(lazy), xr.DataArray([5.0, 6.0], dims="x")
+    )
+    assert reads == [True]
+    assert registry.stage().revision_ids == frozenset()
+
+
+def test_staged_revision_merge_rejects_conflicts_before_changes() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    existing = registry.add(data)
+    staged = registry.stage()
+    staged.add(data + 1)
+    staged.add(data + 2, revision_id=existing)
+    with pytest.raises(ValueError, match="already exist"):
+        registry.merge(staged)
+    assert registry.revision_ids == frozenset({existing})
+    assert set(registry._data) == {existing}
+    xr.testing.assert_identical(registry.resolve_data(existing), data)
 
 
 def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> None:
@@ -186,6 +300,33 @@ def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> Non
     invalid_id = registry.add(provider=lambda: np.arange(2))
     with pytest.raises(TypeError, match="must provide a DataArray"):
         registry.resolve_data(invalid_id)
+
+
+def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:
+    registry = _ProvenanceRevisionStore()
+    reads = []
+
+    def _read_values():
+        reads.append(True)
+        return np.arange(6.0).reshape(2, 3)
+
+    def _open_checkpoint():
+        return xr.DataArray(
+            da.from_delayed(dask.delayed(_read_values)(), shape=(2, 3), dtype=float),
+            dims=("x", "eV"),
+            name="intensity",
+        )
+
+    revision_id = registry.add(
+        provider=_open_checkpoint,
+        source_file="immutable.itws",
+        source_path="/objects/checkpoint",
+    )
+    resolved = registry.resolve_data(revision_id)
+    assert isinstance(resolved.data, da.Array)
+    assert not reads
+    np.testing.assert_array_equal(resolved.compute(), np.arange(6.0).reshape(2, 3))
+    assert reads == [True]
 
 
 @pytest.mark.parametrize(
