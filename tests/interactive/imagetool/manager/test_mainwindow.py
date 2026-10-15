@@ -1989,9 +1989,9 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
             ),
             replacement,
         )
-        replayed, _spec = manager._provenance_edit_controller._replay_candidate_result(
+        replayed = manager._provenance_edit_controller._replay_candidate_result(
             node, "display", provenance
-        )
+        ).data
         xr.testing.assert_identical(replayed, actual)
 
         incompatible = xr.DataArray(
@@ -2101,9 +2101,9 @@ def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
             ),
             replacement,
         )
-        replayed, _spec = manager._provenance_edit_controller._replay_candidate_result(
+        replayed = manager._provenance_edit_controller._replay_candidate_result(
             node, "display", node.displayed_provenance_spec
-        )
+        ).data
         xr.testing.assert_identical(
             replayed,
             replaced_expected,
@@ -2895,11 +2895,9 @@ def test_metadata_editor_supports_paste_and_per_row_values(
                 index
             ].displayed_provenance_spec
             assert provenance is not None
-            replayed, _spec = (
-                manager._provenance_edit_controller._replay_candidate_result(
-                    manager._node_for_target(index), "display", provenance
-                )
-            )
+            replayed = manager._provenance_edit_controller._replay_candidate_result(
+                manager._node_for_target(index), "display", provenance
+            ).data
             xr.testing.assert_identical(replayed, actual)
 
 
