@@ -7127,6 +7127,9 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
                 _configure_tool_code_trust=lambda _tool, **_kwargs: None,
                 _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
             )
+            self._figure_workflows = types.SimpleNamespace(
+                _figure_node_is_source=lambda _node: False
+            )
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []
@@ -7293,6 +7296,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     mime_data = model.mimeData([model._row_index("child")])
     payload = json.loads(bytes(mime_data.data(_MIME)).decode())
     assert payload == {"parent_id": "parent", "rows": [0]}
+    assert not mime_data.hasFormat(_FIGURE_SOURCE_MIME)
     assert _ImageToolWrapperItemModel._decode_mime(QtCore.QMimeData()) is None
 
 
