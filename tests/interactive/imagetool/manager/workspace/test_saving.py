@@ -528,8 +528,7 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
                         node
                     )
                 )
-            controller._release_unused_imported_workspace_accesses()
-            assert source_path.resolve() not in controller._imported_workspace_accesses
+            assert source_path.resolve() not in controller._workspace_sources
             lock = workspace_storage._acquire_workspace_document_lock(source_path)
             try:
                 with workspace_store.WorkspaceStore(source_path, create=True) as writer:
@@ -1047,7 +1046,7 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
             manager,
             types.SimpleNamespace(
                 _workspace_store=source_store,
-                _release_unused_imported_workspace_accesses=lambda: None,
+                _workspace_sources={},
             ),
         )
         saver._workspace_script_snapshot = lambda: (
@@ -1438,8 +1437,17 @@ def test_manager_workspace_path_lock_contract(
         manager._workspace_state.path = current
         lock = _FakeLock()
 
-        manager._workspace_controller._set_workspace_path(current, workspace_lock=lock)
+        from erlab.interactive.imagetool.manager._widgets import (
+            _WorkspaceDocumentAccess,
+            _WorkspaceDocumentLock,
+        )
 
+        access = _WorkspaceDocumentAccess(current, _WorkspaceDocumentLock(lock))
+        manager._workspace_controller._set_workspace_path(
+            current, workspace_access=access
+        )
+        assert lock.unlock_count == 0
+        access.release()
         assert lock.unlock_count == 1
         with pytest.raises(RuntimeError, match="pre-acquired document lock"):
             manager._workspace_controller._set_workspace_path(tmp_path / "other.itws")
@@ -3713,9 +3721,7 @@ def test_manager_workspace_save_rehomes_imported_dask_data(
         )
         imported = manager.get_imagetool(1).slicer_area._data
         assert imported.chunks is not None
-        assert source.resolve() in (
-            manager._workspace_controller._imported_workspace_accesses
-        )
+        assert source.resolve() in (manager._workspace_controller._workspace_sources)
         with pytest.raises(BlockingIOError):
             workspace_storage._acquire_workspace_document_lock(source)
 
@@ -3727,7 +3733,7 @@ def test_manager_workspace_save_rehomes_imported_dask_data(
         ) == str(target.resolve())
         assert _compute_first_value(rebound) == 0.0
         assert source.resolve() not in (
-            manager._workspace_controller._imported_workspace_accesses
+            manager._workspace_controller._workspace_sources
         )
         lock = workspace_storage._acquire_workspace_document_lock(source)
         lock.unlock()
@@ -4199,10 +4205,13 @@ def test_manager_workspace_save_as_preserves_external_non_dask_file_backed_data(
         assert _compute_first_value(rebound) == 0.0
 
 
+@pytest.mark.parametrize("fail_rebind", [False, True])
 def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
     qtbot,
     accept_dialog,
+    monkeypatch,
     tmp_path,
+    fail_rebind,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -4237,10 +4246,36 @@ def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
             if isinstance(focused, QtWidgets.QLineEdit):
                 focused.setText(new_fname.name)
 
+        errors = []
+        if fail_rebind:
+
+            def _fail_tool_rebind(*_args, **_kwargs):
+                raise workspace_controller._WorkspacePostSaveBindingError(
+                    "later failure"
+                )
+
+            monkeypatch.setattr(
+                manager._workspace_controller,
+                "_refresh_workspace_tool_data_after_full_save",
+                _fail_tool_rebind,
+            )
+            monkeypatch.setattr(
+                manager, "_show_operation_error", lambda *args: errors.append(args)
+            )
         accept_dialog(lambda: manager.save_as(native=False), pre_call=_go_to_file)
         qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
 
         rebound = manager.get_imagetool(0).slicer_area._data
+        if fail_rebind:
+            assert errors
+            assert workspace_arrays.dataarray_source_paths(rebound) == (old_source,)
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(old_fname)
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(new_fname)
+            assert _compute_first_value(rebound) == 0.0
+            return
+        assert not errors
         new_source = str(new_fname.resolve())
         assert (
             workspace_arrays._normalized_file_path(rebound.encoding.get("source"))
@@ -4248,6 +4283,10 @@ def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
         )
         assert rebound.chunks is None
 
+        lock = workspace_storage._acquire_workspace_document_lock(old_fname)
+        lock.unlock()
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(new_fname)
         old_fname.unlink()
         assert _compute_first_value(rebound) == 0.0
 
@@ -5487,9 +5526,7 @@ def test_manager_releases_eager_legacy_source_when_conversion_is_canceled(
         assert manager._workspace_state.path is None
         assert loaded.chunks is None
         assert _compute_first_value(loaded) == 0.0
-        assert fname.resolve() not in (
-            manager._workspace_controller._imported_workspace_accesses
-        )
+        assert fname.resolve() not in (manager._workspace_controller._workspace_sources)
         assert workspace_store.WorkspaceStore.active(fname) is None
         lock = workspace_storage._acquire_workspace_document_lock(fname)
         lock.unlock()
@@ -6894,7 +6931,6 @@ def test_background_save_owns_removed_revision_sources(
             qtbot.wait_until(lambda: bool(results), timeout=10000)
         assert results == [not fail_write]
         assert bool(errors) == fail_write
-        assert not controller.saving._active_snapshots
         lock = workspace_storage._acquire_workspace_document_lock(source_path)
         lock.unlock()
         if not fail_write:
@@ -6943,10 +6979,8 @@ def test_workspace_snapshot_sources_release_after_failed_start(
         assert not controller._start_workspace_save_worker(
             path, second_snapshot, on_finished=lambda *_args: None
         )
-        assert not controller.saving._active_snapshots
         assert f"revision-{revision_id}" not in store.leased_object_ids
         second_snapshot.close()
-        assert not controller.saving._active_snapshots
 
 
 def test_workspace_snapshot_cleanup_closes_each_resource_once() -> None:
@@ -7015,7 +7049,7 @@ def test_background_save_owns_removed_transformed_dask_source(
         assert transformed.chunks is not None
         assert not workspace_arrays.dataarray_source_paths(transformed)
         node.slicer_area.replace_source_data(transformed, auto_compute=False)
-        assert source.resolve() in controller._imported_workspace_accesses
+        assert source.resolve() in controller._workspace_sources
         monkeypatch.setattr(
             controller, "_workspace_save_dialog", lambda **_kwargs: destination
         )
@@ -7063,8 +7097,7 @@ def test_background_save_owns_removed_transformed_dask_source(
             qtbot.wait_until(lambda: bool(results), timeout=10000)
         assert results == [True]
         assert not errors
-        assert source.resolve() not in controller._imported_workspace_accesses
-        assert not controller.saving._active_snapshots
+        assert source.resolve() not in controller._workspace_sources
         # An independent writer can now collect the original payload objects.
         code = """
 import copy
@@ -7102,3 +7135,53 @@ lock.unlock()
             )
         finally:
             saved.close()
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_workspace_source_ownership_follows_promoted_lazy_window(
+    qtbot, tmp_path, manager_context, duplicate
+) -> None:
+    source = tmp_path / "source.itws"
+    data = xr.DataArray(np.arange(400.0).reshape(20, 20), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), 0, show=False
+        )
+        manager._workspace_controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        assert manager.offload_to_workspace([child_uid], native=False)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        assert controller.loading._load_workspace_file(
+            source, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        child_uid = manager._node_for_target(0)._childtool_indices[0]
+        child = manager._node_for_target(child_uid)
+        original = manager.get_imagetool(child_uid).slicer_area._data
+        transformed = xr.DataArray(original.data + 1, dims=original.dims)
+        assert not workspace_arrays.dataarray_source_paths(transformed)
+        child.slicer_area.replace_source_data(transformed, auto_compute=False)
+        assert not manager._provenance_revisions.revision_ids
+
+        promoted = manager.promote_child_imagetool(child_uid)
+        manager.remove_imagetool(0)
+        if duplicate:
+            target = manager.duplicate_imagetool(promoted)
+            manager.remove_imagetool(promoted)
+            assert not manager._node_for_target(target)._workspace_sources
+            lock = workspace_storage._acquire_workspace_document_lock(source)
+            lock.unlock()
+        else:
+            target = promoted
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(source)
+        xr.testing.assert_equal(
+            manager.get_imagetool(target).slicer_area._data, data + 1
+        )
+        manager.remove_imagetool(target)
+        lock = workspace_storage._acquire_workspace_document_lock(source)
+        lock.unlock()

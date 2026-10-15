@@ -26,7 +26,7 @@ from erlab.interactive.imagetool.manager._workspace._store import WorkspaceStore
 
 if typing.TYPE_CHECKING:
     import os
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     import xarray as xr
 
@@ -121,6 +121,8 @@ def bind_saved_revision_sources(
     store: _ProvenanceRevisionStore,
     manifest: Mapping[str, typing.Any],
     path: str | os.PathLike[str],
+    *,
+    source_access: Callable[[str | os.PathLike[str]], object] | None = None,
 ) -> None:
     for entry in manifest.get("provenance_revisions", ()):
         revision_id = entry["revision_id"]
@@ -130,7 +132,10 @@ def bind_saved_revision_sources(
             store.bind_checkpoint_source(
                 revision_id,
                 _RevisionCheckpointSource(
-                    str(path), source_path, _read_revision_checkpoint
+                    str(path),
+                    source_path,
+                    _read_revision_checkpoint,
+                    None if source_access is None else source_access(path),
                 ),
             )
 
@@ -139,6 +144,8 @@ def restore_revision_store(
     store: _ProvenanceRevisionStore,
     manifest: Mapping[str, typing.Any],
     path: str | os.PathLike[str],
+    *,
+    source_access: Callable[[str | os.PathLike[str]], object] | None = None,
 ) -> None:
     entries = manifest.get("provenance_revisions", [])
     if not isinstance(entries, list):
@@ -159,6 +166,7 @@ def restore_revision_store(
                 str(path),
                 WorkspaceStore.object_path(checkpoint_id),
                 _read_revision_checkpoint,
+                None if source_access is None else source_access(path),
             )
         inputs = entry.get("input_revisions", {})
         if not isinstance(inputs, Mapping) or any(

@@ -58,7 +58,7 @@ def adopt_workspace_path(manager: ImageToolManager, path: str | pathlib.Path) ->
             )
         controller._set_workspace_path(
             access.path,
-            workspace_lock=access.take_lock(),
+            workspace_access=access,
             store=store,
         )
 

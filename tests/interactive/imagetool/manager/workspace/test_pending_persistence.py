@@ -17,6 +17,7 @@ import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
@@ -1984,6 +1985,10 @@ def test_manager_save_as_rebinds_live_tool_reference_dataset(
             _current_workspace_payload_path(target).lstrip("/"),
         )
         np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
+        lock = workspace_storage._acquire_workspace_document_lock(source)
+        lock.unlock()
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(target)
 
 
 def test_manager_save_as_rebinds_external_lazy_tool_data(
@@ -2236,6 +2241,11 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             == original_failing_reference_keys
         )
 
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source)
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(target)
+
 
 def test_manager_compact_does_not_rebind_live_tool_reference_dataset(
     qtbot,
@@ -2479,7 +2489,7 @@ def test_import_retains_reachable_revision_checkpoint_source(
             select=False,
         )
         node = next(iter(manager._tool_graph.root_wrappers.values()))
-        assert source_path.resolve() in controller._imported_workspace_accesses
+        assert source_path.resolve() in controller._workspace_sources
         assert historical_id not in manager._provenance_revisions._data
         assert captured_id not in manager._provenance_revisions._data
         with pytest.raises(BlockingIOError):
@@ -2489,9 +2499,8 @@ def test_import_retains_reachable_revision_checkpoint_source(
             assert controller.loading.pending._materialize_pending_workspace_payload(
                 node
             )
-        assert not controller._workspace_node_source_paths(node)
-        controller._release_unused_imported_workspace_accesses()
-        assert source_path.resolve() in controller._imported_workspace_accesses
+        assert not frozenset(node._workspace_sources)
+        assert source_path.resolve() in controller._workspace_sources
         assert historical_id not in manager._provenance_revisions._data
         assert captured_id not in manager._provenance_revisions._data
         with pytest.raises(BlockingIOError):
@@ -2515,6 +2524,6 @@ def test_import_retains_reachable_revision_checkpoint_source(
             manager.remove_imagetool(node.index)
             qtbot.wait_until(lambda: manager.ntools == 0)
 
-        assert source_path.resolve() not in controller._imported_workspace_accesses
+        assert source_path.resolve() not in controller._workspace_sources
         lock = workspace_storage._acquire_workspace_document_lock(source_path)
         lock.unlock()

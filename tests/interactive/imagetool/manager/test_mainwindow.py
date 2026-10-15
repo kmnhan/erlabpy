@@ -744,13 +744,6 @@ def test_rejected_root_close_preserves_root_after_descendant_removal(
         )
         root.show()
         qtbot.wait_until(root.isVisible)
-        access_release_calls: list[None] = []
-        monkeypatch.setattr(
-            manager._workspace_controller,
-            "_release_unused_imported_workspace_accesses",
-            lambda: access_release_calls.append(None),
-        )
-
         manager.remove_imagetool(root_index)
 
         assert child_uid not in manager._tool_graph.nodes
@@ -759,13 +752,11 @@ def test_rejected_root_close_preserves_root_after_descendant_removal(
         assert root.close_event_count == 1
         assert not any(window is root for window in manager._retired_windows.values())
         assert not root.testAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        assert access_release_calls == [None]
 
         root.reject_close = False
         manager.remove_imagetool(root_index)
         assert root_index not in manager._tool_graph.root_wrappers
         assert any(window is root for window in manager._retired_windows.values())
-        assert access_release_calls == [None, None]
 
         QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
         QtWidgets.QApplication.processEvents()
@@ -6683,34 +6674,6 @@ def test_shutdown_bulk_remove_skips_final_ui_refresh(
         assert manager.updatesEnabled()
         assert manager.tree_view.updatesEnabled()
         assert calls == []
-
-
-def test_bulk_remove_releases_imported_workspace_accesses_once(
-    monkeypatch,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    data = xr.DataArray(
-        np.arange(4.0),
-        dims=("x",),
-        coords={"x": np.arange(4.0)},
-        name="data",
-    )
-    with manager_context() as manager:
-        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
-        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
-        manager.add_figuretool(FigureComposerTool(data), show=False)
-        calls: list[None] = []
-        monkeypatch.setattr(
-            manager._workspace_controller,
-            "_release_unused_imported_workspace_accesses",
-            lambda: calls.append(None),
-        )
-
-        manager.remove_all_tools()
-
-        assert calls == [None]
 
 
 def test_remove_all_tools_rechecks_graph_after_reentrant_addition(

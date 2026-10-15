@@ -1341,7 +1341,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.console.deleteLater()
 
             logger.debug("Releasing workspace lock...")
-            self._workspace_controller._release_imported_workspace_accesses()
+            self._provenance_revisions.discard_unreachable(())
             self._workspace_controller._release_workspace_lock()
 
             logger.debug("Closing dask client (if any)...")
@@ -1422,7 +1422,6 @@ class ImageToolManager(_ImageToolManagerBase):
         uid: str,
         *,
         refresh_dependents: bool = True,
-        release_workspace_accesses: bool = True,
     ) -> None:
         node = self._tool_graph.unregister_node(uid)
         if node is None:
@@ -1434,8 +1433,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if refresh_dependents and not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
             self._figure_workflows._refresh_figure_source_controls()
-        if release_workspace_accesses and self._workspace_state.loading_depth == 0:
-            self._workspace_controller._release_unused_imported_workspace_accesses()
+        node._workspace_sources.clear()
         if refresh_dependents and self._workspace_state.loading_depth == 0:
             self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
 
@@ -1486,7 +1484,6 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         update_view: bool = True,
         preflight: bool = True,
-        release_workspace_accesses: bool = True,
     ) -> set[str]:
         if uid not in self._tool_graph.nodes:
             return set()
@@ -1509,16 +1506,9 @@ class ImageToolManager(_ImageToolManagerBase):
             self._mark_removed_subtree_dirty(child_uid)
             if update_view and child.parent_uid is not None:
                 self.tree_view.childtool_removed(child_uid)
-            self._unregister_node(child_uid, release_workspace_accesses=False)
+            self._unregister_node(child_uid)
             child.deleteLater()
             removed_uids.add(child_uid)
-        if (
-            removed_uids
-            and release_workspace_accesses
-            and self._bulk_remove_depth == 0
-            and self._workspace_state.loading_depth == 0
-        ):
-            self._workspace_controller._release_unused_imported_workspace_accesses()
         return removed_uids
 
     def _figure_uids(self) -> list[str]:
@@ -1713,32 +1703,21 @@ class ImageToolManager(_ImageToolManagerBase):
             if removed_uids & figure_uids:
                 self._figure_collection.sync()
 
-        def release_workspace_accesses_for_removed_nodes() -> None:
-            if (
-                removed_uids
-                and self._bulk_remove_depth == 0
-                and self._workspace_state.loading_depth == 0
-            ):
-                self._workspace_controller._release_unused_imported_workspace_accesses()
-
         for uid in list(descendant_uids):
             removed_uids.update(
                 self._remove_uid_target(
                     uid,
                     update_view=update_view,
                     preflight=False,
-                    release_workspace_accesses=False,
                 )
             )
 
         if any(uid in self._tool_graph.nodes for uid in descendant_uids):
             reconcile_removed_nodes()
-            release_workspace_accesses_for_removed_nodes()
             return False
 
         if not wrapper.dispose():
             reconcile_removed_nodes()
-            release_workspace_accesses_for_removed_nodes()
             return False
 
         self._mark_removed_subtree_dirty(wrapper.uid)
@@ -1756,7 +1735,6 @@ class ImageToolManager(_ImageToolManagerBase):
             self._refresh_dependency_dependents(wrapper.uid)
             self._figure_workflows._refresh_figure_source_controls()
         wrapper.deleteLater()
-        release_workspace_accesses_for_removed_nodes()
         if self._workspace_state.loading_depth == 0:
             self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
         return True
@@ -1800,8 +1778,6 @@ class ImageToolManager(_ImageToolManagerBase):
             if outermost:
                 self.tree_view.setUpdatesEnabled(True)
                 self.setUpdatesEnabled(True)
-                if self._workspace_state.loading_depth == 0:
-                    self._workspace_controller._release_unused_imported_workspace_accesses()
 
     def _remove_imagetools(
         self,

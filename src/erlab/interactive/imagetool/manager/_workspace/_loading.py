@@ -166,26 +166,30 @@ def _workspace_load_stage(
 
 
 class _WorkspaceReplaceBackup:
-    __slots__ = ("file_path", "metadata", "snapshot", "source_paths", "tree")
+    __slots__ = ("file_path", "metadata", "snapshot", "sources", "tree")
 
     def __init__(
         self,
         snapshot: _WorkspaceStateSnapshot,
         *,
-        source_paths: frozenset[pathlib.Path],
+        sources: tuple[_WorkspaceDocumentAccess, ...],
         metadata: dict[str, typing.Any],
         tree: xr.DataTree | None = None,
         file_path: pathlib.Path | None = None,
     ) -> None:
         self.snapshot = snapshot
-        self.source_paths = source_paths
+        self.sources = sources
         self.metadata = metadata
         self.tree = tree
         self.file_path = file_path
 
     def close(self) -> None:
-        if self.tree is not None:
-            self.tree.close()
+        try:
+            if self.tree is not None:
+                self.tree.close()
+        finally:
+            for source in self.sources:
+                source.release()
 
 
 def _workspace_dataset_window_visible(
@@ -295,7 +299,6 @@ class _WorkspaceLoader:
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
         self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
         self._revision_load_roots: set[str] | None = None
-        self._active_replace_backups: list[_WorkspaceReplaceBackup] = []
 
     @staticmethod
     def _require_workspace_root_tool_is_figure(
@@ -895,11 +898,10 @@ class _WorkspaceLoader:
         snapshot = self._controller._workspace_state_snapshot()
         metadata = self._controller.saving._workspace_metadata_snapshot()
         current_path = self._manager._workspace_state.path
-        source_paths = set(self._controller._workspace_revision_source_paths())
-        for node in self._manager._tool_graph.nodes.values():
-            source_paths.update(self._controller._workspace_node_source_paths(node))
-        if current_path is not None:
-            source_paths.add(current_path.resolve())
+        sources = tuple(
+            self._controller._workspace_document_access(path)
+            for path in tuple(self._controller._workspace_sources)
+        )
         incoming_resolved = (
             None if incoming_path is None else pathlib.Path(incoming_path).resolve()
         )
@@ -913,13 +915,13 @@ class _WorkspaceLoader:
         ):
             return _WorkspaceReplaceBackup(
                 snapshot,
-                source_paths=frozenset(source_paths),
+                sources=sources,
                 metadata=metadata,
                 file_path=current_path,
             )
         return _WorkspaceReplaceBackup(
             snapshot,
-            source_paths=frozenset(source_paths),
+            sources=sources,
             metadata=metadata,
             tree=self._controller.saving._to_datatree(),
         )
@@ -939,13 +941,15 @@ class _WorkspaceLoader:
         incoming_revisions = revisions.stage() if replace else revisions
         if manifest is not None and workspace_path is not None:
             workspace_revisions.restore_revision_store(
-                incoming_revisions, manifest, workspace_path
+                incoming_revisions,
+                manifest,
+                workspace_path,
+                source_access=self._controller._workspace_document_access,
             )
         backup = None
         if replace:
             with profiler.stage("rollback backup"):
                 backup = self._workspace_replace_backup_for_load(workspace_path)
-            self._active_replace_backups.append(backup)
         previous_revisions = revisions.copy() if replace else None
         graph = self._manager._tool_graph
         previous_bindings = {
@@ -1022,13 +1026,11 @@ class _WorkspaceLoader:
             self._revision_load_roots = previous_roots
             if backup is not None:
                 backup.close()
-                self._active_replace_backups.remove(backup)
             if self._manager._provenance_revisions is incoming_revisions:
                 incoming_revisions.discard_unreachable(
                     workspace_revisions.retained_revision_ids(self._manager)
                     | (frozenset() if replace else previous_revision_ids)
                 )
-            self._controller._release_unused_imported_workspace_accesses()
 
     def _restore_workspace_state_snapshot(
         self, snapshot: _WorkspaceStateSnapshot
@@ -2810,6 +2812,7 @@ class _WorkspaceLoader:
                 slicer_area.set_data(data, auto_compute=False)
                 slicer_area.state = state
                 node._set_name(name, manual=False)
+                self._controller._sync_node_workspace_sources(node)
 
     def _load_workspace_file(
         self,
@@ -2839,16 +2842,16 @@ class _WorkspaceLoader:
             access: _WorkspaceDocumentAccess, loaded: bool
         ) -> bool:
             finished = self._finish_workspace_file_load(loaded)
-            source_is_associated = self._manager._workspace_state.path == access.path
-            if finished and not source_is_associated:
+            if finished:
                 candidate_uids = (
                     frozenset(self._manager._tool_graph.nodes)
                     if replace
                     else frozenset(self._manager._tool_graph.nodes) - nodes_before_load
                 )
-                self._controller._retain_imported_workspace_access(
-                    access, candidate_uids
-                )
+                for uid in candidate_uids:
+                    self._controller._sync_node_workspace_sources(
+                        self._manager._tool_graph.nodes[uid]
+                    )
             return finished
 
         try:
@@ -3021,7 +3024,6 @@ class _WorkspaceLoader:
                     ):
                         fallback_store.close()
         finally:
-            self._controller._release_unused_imported_workspace_accesses()
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes
 

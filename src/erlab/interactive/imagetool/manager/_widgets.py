@@ -1185,19 +1185,25 @@ class _ApplicationQuitFilter(QtCore.QObject):
 
 
 @dataclass
+class _WorkspaceDocumentLock:
+    lock: QtCore.QLockFile
+
+    def __del__(self) -> None:
+        self.lock.unlock()
+
+
+@dataclass
 class _WorkspaceDocumentAccess:
     path: pathlib.Path
-    _lock: QtCore.QLockFile | None = None
+    _ownership: _WorkspaceDocumentLock | None = None
 
-    def take_lock(self) -> QtCore.QLockFile | None:
-        lock = self._lock
-        self._lock = None
-        return lock
+    def retain(self) -> _WorkspaceDocumentAccess:
+        if self._ownership is None:
+            raise RuntimeError("Workspace document access was released")
+        return _WorkspaceDocumentAccess(self.path, self._ownership)
 
     def release(self) -> None:
-        if self._lock is not None:
-            self._lock.unlock()
-            self._lock = None
+        self._ownership = None
 
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"

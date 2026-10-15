@@ -346,6 +346,9 @@ class _ActionsController:
         snapshot_token = node.snapshot_token
         source_snapshot_token = node.source_snapshot_token
         current_revision_id = node.current_revision_id
+        workspace_sources = {
+            path: access.retain() for path, access in node._workspace_sources.items()
+        }
         note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
@@ -366,6 +369,7 @@ class _ActionsController:
                 note=note,
             )
         wrapper = self._manager._tool_graph.root_wrappers[new_index]
+        wrapper._workspace_sources = workspace_sources
         wrapper.restore_current_revision_id(current_revision_id)
         wrapper._recent_geometry = recent_geometry
         self._manager._tool_graph.replace_child_references(
@@ -1129,6 +1133,13 @@ class _ActionsController:
                     )
 
             duplicated_node = self._manager._node_for_target(new_target)
+            duplicated_node._workspace_sources = {
+                path: access.retain()
+                for path, access in node._workspace_sources.items()
+            }
+            self._manager._workspace_controller._sync_node_workspace_sources(
+                duplicated_node
+            )
             duplicated_node.restore_current_revision_id(node.current_revision_id)
             uid_map[node.uid] = duplicated_node.uid
             for child_uid in tuple(node._childtool_indices):

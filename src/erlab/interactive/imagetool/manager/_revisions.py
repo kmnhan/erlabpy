@@ -32,6 +32,7 @@ class _RevisionCheckpointSource:
     file_path: str
     group_path: str
     reader: Callable[[str, str], xr.DataArray]
+    ownership: object | None = None
 
     def __post_init__(self) -> None:
         if not self.file_path or not self.group_path:

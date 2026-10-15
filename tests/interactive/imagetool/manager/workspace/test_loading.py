@@ -4793,8 +4793,7 @@ def test_workspace_import_deduplicates_owned_revision_sources(
                         node
                     )
                 )
-        controller._release_unused_imported_workspace_accesses()
-        assert incoming.resolve() not in controller._imported_workspace_accesses
+        assert incoming.resolve() not in controller._workspace_sources
         with pytest.raises(BlockingIOError):
             workspace_storage._acquire_workspace_document_lock(original)
         lock = workspace_storage._acquire_workspace_document_lock(incoming)
@@ -5126,7 +5125,7 @@ def test_workspace_failed_load_restores_revision_ownership(
             original.resolve() if associated else None
         )
         if not associated:
-            assert original.resolve() in controller._imported_workspace_accesses
+            assert original.resolve() in controller._workspace_sources
         for record in manager._provenance_revisions.reachable([current_id]):
             assert record.checkpoint.source.file_path == str(original)
         with pytest.raises(BlockingIOError):
@@ -5758,7 +5757,6 @@ def test_failed_workspace_replacement_restores_standalone_app_backup(
             workspace_storage._acquire_workspace_document_lock(original)
         lock = workspace_storage._acquire_workspace_document_lock(incoming)
         lock.unlock()
-        assert not controller.loading._active_replace_backups
         reopened = manager._show_standalone_app("angle_calculator")
         assert not reopened._show_laser_arpes_controls
         assert _standalone_app_settings(reopened.workspace_state_payload()) == (

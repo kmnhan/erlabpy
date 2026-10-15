@@ -65,6 +65,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool._provenance._graph import ReplayGraph
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
     from erlab.interactive.imagetool.viewer_state import ImageSlicerState
@@ -453,6 +454,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = (
             None if replay_source_data is None else replay_source_data.copy(deep=False)
         )
+        self._workspace_sources: dict[pathlib.Path, _WorkspaceDocumentAccess] = {}
         self._workspace_reference_datasets: dict[
             tuple[pathlib.Path, str], xr.Dataset
         ] = {}
@@ -857,6 +859,8 @@ class _ManagedWindowNode(QtCore.QObject):
                     previous.close()
             self._workspace_reference_datasets[key] = dataset
 
+        self.manager._workspace_controller._sync_node_workspace_sources(self)
+
     def _set_workspace_tool_data_references(
         self, references: Mapping[str, Mapping[str, typing.Any]]
     ) -> None:
@@ -877,6 +881,8 @@ class _ManagedWindowNode(QtCore.QObject):
             if id(dataset) not in retained:
                 with contextlib.suppress(Exception):
                     dataset.close()
+
+        self.manager._workspace_controller._sync_node_workspace_sources(self)
 
     def _close_workspace_reference_datasets(self) -> None:
         datasets = tuple(self._workspace_reference_datasets.values())
@@ -1115,6 +1121,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
+        self.manager._workspace_controller._sync_node_workspace_sources(self)
         self._notify_info_and_type_badge_change(previous_type_badge)
         self._notify_change(_ManagedNodeChange.DEPENDENCY_INDEX)
 
@@ -1148,6 +1155,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
+        self.manager._workspace_controller._sync_node_workspace_sources(self)
         self._notify_info_and_type_badge_change(previous_type_badge)
 
     def materialize_pending_workspace_payload(self) -> bool:
@@ -2994,6 +3002,7 @@ class _ManagedWindowNode(QtCore.QObject):
         except _ManagedWindowCloseRejected:
             return False
         self._clear_pending_workspace_link_slicer_cache()
+        self._workspace_sources.clear()
         return True
 
     @QtCore.Slot()

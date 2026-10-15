@@ -300,7 +300,6 @@ class _WorkspaceSaver:
     ) -> None:
         self._manager = manager
         self._controller = controller
-        self._active_snapshots: dict[int, _WorkspaceSaveSnapshot] = {}
 
     def _dataset_source_paths(
         self, dataset: xr.Dataset, node: _ManagedWindowNode
@@ -312,7 +311,7 @@ class _WorkspaceSaver:
         ]
         if not lazy_variables:
             return frozenset()
-        paths = set(self._controller._workspace_node_source_paths(node))
+        paths = set(node._workspace_sources)
         for variable in lazy_variables:
             source = workspace_arrays._xarray_source_path(
                 variable.encoding.get("source")
@@ -323,10 +322,11 @@ class _WorkspaceSaver:
 
     def _own_snapshot_sources(self, snapshot: _WorkspaceSaveSnapshot) -> None:
         ownership = snapshot._source_ownership
-        ownership.callback(self._controller._release_unused_imported_workspace_accesses)
-        self._active_snapshots[id(snapshot)] = snapshot
-        ownership.callback(self._active_snapshots.pop, id(snapshot))
         try:
+            for path in snapshot.source_paths:
+                if path in self._controller._workspace_sources:
+                    access = self._controller._workspace_document_access(path)
+                    ownership.callback(access.release)
             sources = {
                 (item.source_file, item.source_path)
                 for item in snapshot.generation_plan.objects
