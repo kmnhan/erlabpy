@@ -8,7 +8,7 @@ import math
 import symtable
 import typing
 from collections import Counter
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 
 import numpy as np
 
@@ -388,14 +388,16 @@ def _has_opaque_namespace_access(
         for node in ast.walk(module)
     ):
         return True
-    if not any(isinstance(node, ast.Global) for node in ast.walk(module)):
-        return False
+    declares_global = any(isinstance(node, ast.Global) for node in ast.walk(module))
 
     def deferred_writes(scope: symtable.SymbolTable) -> bool:
-        return any(
-            symbol.is_declared_global()
-            and (symbol.is_assigned() or symbol.is_imported())
-            for symbol in scope.get_symbols()
+        return (
+            (declares_global or scope.get_name() == "genexpr")
+            and any(
+                symbol.is_declared_global()
+                and (symbol.is_assigned() or symbol.is_imported())
+                for symbol in scope.get_symbols()
+            )
         ) or any(deferred_writes(child) for child in scope.get_children())
 
     return any(deferred_writes(child) for child in symbols.get_children())
@@ -413,7 +415,6 @@ class _CurrentScopeNames(ast.NodeVisitor):
         self.loads: set[str] = set()
         self.stores: set[str] = set()
         self.writes: set[str] = set()
-        self.deletions: set[str] = set()
         self.load_counts: Counter[str] = Counter()
         self.store_counts: Counter[str] = Counter()
         self.definition_counts: Counter[str] = Counter()
@@ -436,8 +437,6 @@ class _CurrentScopeNames(ast.NodeVisitor):
             self.load_counts[node.id] += 1
         elif isinstance(node.ctx, ast.Store | ast.Del):
             self._store(node.id)
-            if isinstance(node.ctx, ast.Del):
-                self.deletions.add(node.id)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         if isinstance(node.target, ast.Name):
@@ -471,8 +470,6 @@ class _CurrentScopeNames(ast.NodeVisitor):
             self._store(node.name)
         for statement in node.body:
             self.visit(statement)
-        if node.name is not None:
-            self.deletions.add(node.name)
 
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
         if node.name is not None:
@@ -555,26 +552,352 @@ class _CurrentScopeNames(ast.NodeVisitor):
     visit_DictComp = _visit_comprehension
 
 
-def _definite_statement_bindings(statement: ast.stmt) -> set[str]:
-    """Return names bound whenever this statement finishes normally."""
-    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-        return {statement.name}
-    if isinstance(statement, ast.Import | ast.ImportFrom):
-        names = _CurrentScopeNames()
-        names.visit(statement)
-        return names.stores
-    if isinstance(statement, ast.Assign):
-        targets = statement.targets
-    elif isinstance(statement, ast.AnnAssign | ast.AugAssign) and (
-        not isinstance(statement, ast.AnnAssign) or statement.value is not None
-    ):
-        targets = [statement.target]
-    else:
-        return set()
-    names = _CurrentScopeNames()
-    for target in targets:
-        names.visit(target)
-    return names.stores
+class _BindingState(typing.NamedTuple):
+    """Separate possible availability, incoming-value replacement, and final binding."""
+
+    available: frozenset[str] = frozenset()
+    replaced: frozenset[str] = frozenset()
+    deleted: frozenset[str] = frozenset()
+    bound: frozenset[str] = frozenset()
+    functions: Mapping[str, frozenset[str]] = {}
+
+
+_BindingExit = typing.Literal["normal", "break", "continue", "return", "raise"]
+_BindingFlow = dict[_BindingExit, _BindingState]
+
+
+def _merge_binding_states(states: Sequence[_BindingState]) -> _BindingState:
+    """Keep possible availability and effects shared by every path."""
+    functions: dict[str, frozenset[str]] = {}
+    for state in states:
+        for name, dependencies in state.functions.items():
+            functions[name] = functions.get(name, frozenset()) | dependencies
+    return _BindingState(
+        frozenset().union(*(state.available for state in states)),
+        frozenset.intersection(*(state.replaced for state in states)),
+        frozenset.intersection(*(state.deleted for state in states)),
+        frozenset.intersection(*(state.bound for state in states)),
+        functions,
+    )
+
+
+def _merge_binding_flows(*flows: _BindingFlow) -> _BindingFlow:
+    exits: dict[_BindingExit, list[_BindingState]] = {}
+    for flow in flows:
+        for exit_kind, state in flow.items():
+            exits.setdefault(exit_kind, []).append(state)
+    return {kind: _merge_binding_states(states) for kind, states in exits.items()}
+
+
+class _CodeBindingEffects:
+    """Follow ordered module bindings without evaluating Python expressions.
+
+    Availability retains the validator's permissive union of conditional bindings.
+    Replacement and deletion are definite effects on normally completed paths. The
+    same traversal supplies notebook liveness and optional name validation.
+    """
+
+    def __init__(
+        self,
+        *,
+        read: Callable[[str, _BindingState], _BindingState] | None = None,
+        functions: Mapping[tuple[str, int], set[str]] | None = None,
+    ) -> None:
+        self.incoming_reads: set[str] = set()
+        self._read_callback = read
+        self._functions = functions or {}
+
+    def _read(self, name: str, state: _BindingState) -> _BindingState:
+        if name not in state.replaced:
+            self.incoming_reads.add(name)
+        return (
+            state if self._read_callback is None else self._read_callback(name, state)
+        )
+
+    @staticmethod
+    def _bind(
+        state: _BindingState, names: Collection[str], *, definite: bool = True
+    ) -> _BindingState:
+        names = frozenset(names)
+        return _BindingState(
+            state.available | names,
+            state.replaced | names if definite else state.replaced,
+            state.deleted - names,
+            state.bound | names if definite else state.bound,
+            {
+                name: deps
+                for name, deps in state.functions.items()
+                if not definite or name not in names
+            },
+        )
+
+    @staticmethod
+    def _delete(state: _BindingState, names: Collection[str]) -> _BindingState:
+        names = frozenset(names)
+        return _BindingState(
+            state.available - names,
+            state.replaced | names,
+            state.deleted | names,
+            state.bound - names,
+            {name: deps for name, deps in state.functions.items() if name not in names},
+        )
+
+    def _expression(self, node: ast.AST | None, state: _BindingState) -> _BindingState:
+        if node is None:
+            return state
+        if isinstance(node, ast.Name):
+            return (
+                self._read(node.id, state) if isinstance(node.ctx, ast.Load) else state
+            )
+        if isinstance(node, ast.NamedExpr):
+            return self._target(node.target, self._expression(node.value, state))
+        if isinstance(node, ast.Lambda):
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                state = self._expression(default, state)
+            return state
+        if isinstance(
+            node, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+        ):
+            names = _CurrentScopeNames()
+            names.visit(node)
+            for name in sorted(names.loads):
+                state = self._read(name, state)
+            return (
+                state
+                if isinstance(node, ast.GeneratorExp)
+                else self._bind(state, names.writes, definite=False)
+            )
+        if isinstance(node, ast.IfExp):
+            state = self._expression(node.test, state)
+            return _merge_binding_states(
+                [
+                    self._expression(node.body, state),
+                    self._expression(node.orelse, state),
+                ]
+            )
+        if isinstance(node, ast.BoolOp | ast.Compare):
+            values = (
+                node.values
+                if isinstance(node, ast.BoolOp)
+                else [node.left, *node.comparators]
+            )
+            for index, value in enumerate(values):
+                evaluated = self._expression(value, state)
+                state = (
+                    evaluated
+                    if index < (1 if isinstance(node, ast.BoolOp) else 2)
+                    else _merge_binding_states([state, evaluated])
+                )
+            return state
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                state = self._expression(key, state)
+                state = self._expression(value, state)
+            return state
+        for child in ast.iter_child_nodes(node):
+            state = self._expression(child, state)
+        return state
+
+    def _target(
+        self, target: ast.AST, state: _BindingState, *, delete: bool = False
+    ) -> _BindingState:
+        if isinstance(target, ast.Name):
+            if delete:
+                if self._read_callback is not None:
+                    state = self._read_callback(target.id, state)
+                return self._delete(state, (target.id,))
+            return self._bind(state, (target.id,))
+        if isinstance(target, ast.Tuple | ast.List | ast.Starred):
+            for child in ast.iter_child_nodes(target):
+                state = self._target(child, state, delete=delete)
+            return state
+        return self._expression(target, state)
+
+    def block(
+        self, statements: Sequence[ast.stmt], state: _BindingState | None = None
+    ) -> _BindingFlow:
+        flow: _BindingFlow = {"normal": state or _BindingState()}
+        for statement in statements:
+            normal = flow.pop("normal", None)
+            if normal is None:
+                break
+            flow = _merge_binding_flows(flow, self._statement(statement, normal))
+        return flow
+
+    def _statement(self, node: ast.stmt, state: _BindingState) -> _BindingFlow:
+        if isinstance(node, ast.If):
+            state = self._expression(node.test, state)
+            return _merge_binding_flows(
+                self.block(node.body, state), self.block(node.orelse, state)
+            )
+        if isinstance(node, ast.For | ast.AsyncFor | ast.While):
+            return self._loop(node, state)
+        if isinstance(node, ast.Try | ast.TryStar):
+            return self._try(node, state)
+        if isinstance(node, ast.Match):
+            state = self._expression(node.subject, state)
+            branches: list[_BindingFlow] = []
+            unmatched = True
+            for case in node.cases:
+                names = _CurrentScopeNames()
+                names.visit(case.pattern)
+                branch = state
+                for name in sorted(names.loads):
+                    branch = self._read(name, branch)
+                branch = self._bind(branch, names.writes)
+                branch = self._expression(case.guard, branch)
+                branches.append(self.block(case.body, branch))
+                if case.guard is None and self._irrefutable_pattern(case.pattern):
+                    unmatched = False
+            return _merge_binding_flows(
+                *branches, {"normal": state} if unmatched else {}
+            )
+        if isinstance(node, ast.With | ast.AsyncWith):
+            for item in node.items:
+                state = self._expression(item.context_expr, state)
+                if item.optional_vars is not None:
+                    state = self._target(item.optional_vars, state)
+            body = self.block(node.body, state)
+            # A context manager can suppress an exception before any body binding.
+            return _merge_binding_flows(body, {"normal": state})
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            if isinstance(node, ast.AugAssign):
+                state = (
+                    self._read(node.target.id, state)
+                    if isinstance(node.target, ast.Name)
+                    else self._expression(node.target, state)
+                )
+            state = self._expression(node.value, state)
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not isinstance(node, ast.AnnAssign) or node.value is not None:
+                for target in targets:
+                    state = self._target(target, state)
+            elif not isinstance(node.target, ast.Name):
+                state = self._expression(node.target, state)
+            if isinstance(node, ast.AnnAssign):
+                state = self._expression(node.annotation, state)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                state = self._target(target, state, delete=True)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            for decorator in node.decorator_list:
+                state = self._expression(decorator, state)
+            if isinstance(node, ast.ClassDef):
+                for expression in (*node.bases, *node.keywords):
+                    state = self._expression(expression, state)
+            else:
+                for default in (*node.args.defaults, *node.args.kw_defaults):
+                    state = self._expression(default, state)
+                for argument in (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                    *(
+                        arg
+                        for arg in (node.args.vararg, node.args.kwarg)
+                        if arg is not None
+                    ),
+                ):
+                    state = self._expression(argument.annotation, state)
+                state = self._expression(node.returns, state)
+            state = self._bind(state, (node.name,))
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                state = state._replace(
+                    functions={
+                        **state.functions,
+                        node.name: frozenset(
+                            self._functions.get((node.name, node.lineno), ())
+                        ),
+                    }
+                )
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            names = _CurrentScopeNames()
+            names.visit(node)
+            state = self._bind(state, names.writes)
+        elif isinstance(node, ast.Assert):
+            state = self._expression(node.test, state)
+            return {"normal": state, "raise": self._expression(node.msg, state)}
+        elif isinstance(node, ast.Return | ast.Raise):
+            state = self._expression(node, state)
+            return {"return" if isinstance(node, ast.Return) else "raise": state}
+        elif isinstance(node, ast.Break | ast.Continue):
+            return {"break" if isinstance(node, ast.Break) else "continue": state}
+        else:
+            state = self._expression(node, state)
+            if not isinstance(node, ast.Expr):
+                names = _CurrentScopeNames()
+                names.visit(node)
+                state = self._bind(state, names.writes, definite=False)
+        return {"normal": state}
+
+    @staticmethod
+    def _irrefutable_pattern(pattern: ast.pattern) -> bool:
+        return (
+            isinstance(pattern, ast.MatchAs)
+            and (
+                pattern.pattern is None
+                or _CodeBindingEffects._irrefutable_pattern(pattern.pattern)
+            )
+        ) or (
+            isinstance(pattern, ast.MatchOr)
+            and any(
+                _CodeBindingEffects._irrefutable_pattern(p) for p in pattern.patterns
+            )
+        )
+
+    def _loop(
+        self, node: ast.For | ast.AsyncFor | ast.While, state: _BindingState
+    ) -> _BindingFlow:
+        state = self._expression(
+            node.test if isinstance(node, ast.While) else node.iter, state
+        )
+        entry = (
+            state if isinstance(node, ast.While) else self._target(node.target, state)
+        )
+        body = self.block(node.body, entry)
+        exhausted = [state]
+        iterations = [body.pop(kind) for kind in ("normal", "continue") if kind in body]
+        exhausted.extend(
+            self._expression(node.test, iteration)
+            if isinstance(node, ast.While)
+            else iteration
+            for iteration in iterations
+        )
+        normal = self.block(node.orelse, _merge_binding_states(exhausted))
+        broken = body.pop("break", None)
+        return _merge_binding_flows(
+            body, normal, {} if broken is None else {"normal": broken}
+        )
+
+    def _try(self, node: ast.Try | ast.TryStar, state: _BindingState) -> _BindingFlow:
+        body = self.block(node.body, state)
+        branches: list[_BindingFlow] = []
+        for handler in node.handlers:
+            # An exception can occur before the first binding in the try body.
+            branch = self._expression(handler.type, state)
+            if handler.name is not None:
+                branch = self._bind(branch, (handler.name,))
+            handled = self.block(handler.body, branch)
+            if handler.name is not None:
+                handled = {
+                    kind: self._delete(value, (handler.name,))
+                    for kind, value in handled.items()
+                }
+            branches.append(handled)
+        normal = body.pop("normal", None)
+        if normal is not None:
+            branches.append(self.block(node.orelse, normal))
+        combined = _merge_binding_flows(body, *branches)
+        final: list[_BindingFlow] = []
+        for kind, value in combined.items():
+            after = self.block(node.finalbody, value)
+            completed = after.pop("normal", None)
+            final.append(
+                _merge_binding_flows(
+                    after, {} if completed is None else {kind: completed}
+                )
+            )
+        return _merge_binding_flows(*final)
 
 
 class _CodeAnalysis(typing.NamedTuple):
@@ -585,6 +908,7 @@ class _CodeAnalysis(typing.NamedTuple):
     deletions: frozenset[str]
     incoming_reads: frozenset[str]
     definite_writes: frozenset[str]
+    definite_bindings: frozenset[str]
     deferred_reads: frozenset[str]
     referenced_names: frozenset[str]
     opaque: bool
@@ -601,26 +925,18 @@ class _CodeAnalyzer:
             module = ast.parse(code, mode="exec")
             symbols = symtable.symtable(code, "<ImageTool replay scope>", "exec")
             names = _CurrentScopeNames()
-            incoming_reads: set[str] = set()
-            definite_writes: set[str] = set()
-            deletions: set[str] = set()
-            for statement in module.body:
-                names.visit(statement)
-                counts = _CurrentScopeNames(count_comprehension_locals=True)
-                counts.visit(statement)
-                incoming_reads.update(counts.loads - definite_writes)
-                bound = _definite_statement_bindings(statement)
-                definite_writes.update(bound)
-                deletions.update(counts.deletions)
-                deletions.difference_update(bound)
+            names.visit(module)
+            effects = _CodeBindingEffects()
+            final = effects.block(module.body).get("normal", _BindingState())
             self._analyses[code] = _CodeAnalysis(
                 module,
                 symbols,
                 frozenset(names.loads),
                 frozenset(names.writes),
-                frozenset(deletions),
-                frozenset(incoming_reads),
-                frozenset(definite_writes),
+                final.deleted,
+                frozenset(effects.incoming_reads),
+                final.replaced,
+                final.bound,
                 frozenset().union(
                     *(
                         _symbol_table_dependencies(child)

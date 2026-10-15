@@ -27,10 +27,12 @@ import xarray as xr
 from erlab.interactive.imagetool._provenance._code import (
     _NONUNIFORM_RESTORE_FUNCTION_NAME,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+    _BindingState,
     _code_stores_name,
     _code_uses_name,
     _CodeAnalysis,
     _CodeAnalyzer,
+    _CodeBindingEffects,
     _CurrentScopeNames,
     _expression_starts_with_name,
     _nonuniform_restore_support_code,
@@ -335,133 +337,53 @@ def _validate_script_code_names(
     Deferred function dependencies are checked when the function is first read.
     """
     analysis = analysis or _parse_replay_code(code)
-    module = analysis.module
-    new_function_dependencies = _script_function_dependencies(code, analysis=analysis)
     external_names: set[str] = set()
 
-    def require(name: str, visiting: set[str] | None = None) -> str | None:
-        if name not in available_names:
-            if external_name_candidates is None or name in external_name_candidates:
-                available_names.add(name)
+    def require(
+        name: str, state: _BindingState, visiting: set[str] | None = None
+    ) -> _BindingState:
+        if name not in state.available:
+            if name not in state.deleted and (
+                external_name_candidates is None or name in external_name_candidates
+            ):
+                state = state._replace(available=state.available | {name})
                 external_names.add(name)
-                return None
-            return name
-        deps = function_dependencies.get(name)
+            else:
+                raise ReplayGraphError(
+                    f"Script provenance references unresolved name {name!r}"
+                )
+        deps = state.functions.get(name)
         if not deps:
-            return None
+            return state
         if visiting is None:
             visiting = set()
         if name in visiting:
-            return None
+            return state
         visiting.add(name)
-        for dependency in deps:
-            missing = require(dependency, visiting)
-            if missing is not None:
-                return missing
+        for dependency in sorted(deps):
+            state = require(dependency, state, visiting)
         visiting.remove(name)
-        return None
+        return state
 
-    def require_loads(names: _CurrentScopeNames) -> None:
-        for name in sorted(names.loads):
-            missing = require(name)
-            if missing is not None:
-                raise ReplayGraphError(
-                    f"Script provenance references unresolved name {missing!r}"
-                )
-
-    def validate_stmt(stmt: ast.stmt) -> None:
-        if isinstance(stmt, ast.For):
-            iter_names = _CurrentScopeNames()
-            iter_names.visit(stmt.iter)
-            require_loads(iter_names)
-
-            target_names = _CurrentScopeNames()
-            target_names.visit(stmt.target)
-            require_loads(target_names)
-            available_names.update(target_names.stores)
-            for body_stmt in stmt.body:
-                validate_stmt(body_stmt)
-            for orelse_stmt in stmt.orelse:
-                validate_stmt(orelse_stmt)
-            return
-
-        if isinstance(stmt, ast.If):
-            test_names = _CurrentScopeNames()
-            test_names.visit(stmt.test)
-            require_loads(test_names)
-
-            available_before = set(available_names)
-            dependencies_before = dict(function_dependencies)
-            branch_stores: set[str] = set()
-            branch_dependencies: dict[str, set[str]] = {}
-            for branch in (stmt.body, stmt.orelse):
-                available_names.clear()
-                available_names.update(available_before)
-                function_dependencies.clear()
-                function_dependencies.update(dependencies_before)
-                for branch_stmt in branch:
-                    validate_stmt(branch_stmt)
-                branch_stores.update(available_names - available_before)
-                for name, dependencies in function_dependencies.items():
-                    if dependencies_before.get(name) == dependencies:
-                        continue
-                    branch_dependencies.setdefault(name, set()).update(dependencies)
-
-            available_names.clear()
-            available_names.update(available_before)
-            available_names.update(branch_stores)
-            function_dependencies.clear()
-            function_dependencies.update(dependencies_before)
-            function_dependencies.update(branch_dependencies)
-            return
-
-        if isinstance(stmt, ast.Try):
-            available_before = set(available_names)
-            dependencies_before = dict(function_dependencies)
-
-            for body_stmt in stmt.body:
-                validate_stmt(body_stmt)
-            available_after_body = set(available_names)
-            dependencies_after_body = dict(function_dependencies)
-
-            for handler in stmt.handlers:
-                available_names.clear()
-                available_names.update(available_before)
-                function_dependencies.clear()
-                function_dependencies.update(dependencies_before)
-                if handler.type is not None:
-                    handler_names = _CurrentScopeNames()
-                    handler_names.visit(handler.type)
-                    require_loads(handler_names)
-                if handler.name is not None:
-                    available_names.add(handler.name)
-                for handler_stmt in handler.body:
-                    validate_stmt(handler_stmt)
-
-            available_names.clear()
-            available_names.update(available_after_body)
-            function_dependencies.clear()
-            function_dependencies.update(dependencies_after_body)
-            for orelse_stmt in stmt.orelse:
-                validate_stmt(orelse_stmt)
-
-            available_names.clear()
-            available_names.update(available_before)
-            function_dependencies.clear()
-            function_dependencies.update(dependencies_before)
-            return
-
-        names = _statement_scope_names(stmt)
-        require_loads(names)
-        if isinstance(stmt, ast.FunctionDef):
-            function_dependencies[stmt.name] = new_function_dependencies.get(
-                (stmt.name, stmt.lineno),
-                set(),
-            )
-        available_names.update(names.stores)
-
-    for stmt in module.body:
-        validate_stmt(stmt)
+    effects = _CodeBindingEffects(
+        read=require, functions=_script_function_dependencies(code, analysis=analysis)
+    )
+    final = effects.block(
+        analysis.module.body,
+        _BindingState(
+            available=frozenset(available_names),
+            functions={
+                name: frozenset(deps) for name, deps in function_dependencies.items()
+            },
+        ),
+    ).get("normal")
+    if final is not None:
+        available_names.clear()
+        available_names.update(final.available)
+        function_dependencies.clear()
+        function_dependencies.update(
+            (name, set(deps)) for name, deps in final.functions.items()
+        )
     return external_names
 
 
@@ -4287,6 +4209,8 @@ def selected_provenance_code(
         logical_namespace.update(explicit_bindings)
         required_reads = set(inherited_reads)
         direct_reads: set[str] = set()
+        possible_writes: set[str] = set()
+        replaced_names: set[str] = set()
         opaque_namespace = False
         codes = tuple(
             code
@@ -4299,8 +4223,19 @@ def selected_provenance_code(
         for code in codes:
             analysis = _parse_replay_code(code, analyzer=code_analyzer)
             direct_reads.update(analysis.loads)
+            possible_writes.update(analysis.writes)
+            replaced_names.update(analysis.definite_writes)
             required_reads.update(analysis.deferred_reads)
             opaque_namespace |= analysis.opaque
+        # A conditional write can retain the incoming value even without a direct
+        # read. Publish that value from the primary namespace, not an unrelated scope.
+        retained_names = {
+            name
+            for name in possible_writes - replaced_names
+            if (binding := logical_namespace.get(name)) is not None
+            and binding.available
+        }
+        required_reads.update(retained_names)
         required_reads.update(
             name
             for name in direct_reads
@@ -4354,7 +4289,7 @@ def selected_provenance_code(
             output_name=spec.active_name,
             include_framework_imports=include_framework_imports,
             publish_output=index in consumed,
-            required_public_bindings=deferred_reads,
+            required_public_bindings=deferred_reads | retained_names,
             code_analyzer=code_analyzer,
         )
         scope_codes.append("\n".join(part for part in (restoration_code, code) if part))
@@ -4365,7 +4300,13 @@ def selected_provenance_code(
             latest_opaque_scope = index
         deferred_reads.update(effects.deferred_reads)
         for name in effects.writes:
-            binding = _NotebookBinding(index, name, name not in effects.deletions)
+            previous = logical_namespace.get(name)
+            available = name not in effects.deletions and (
+                name in effects.definite_bindings
+                or previous is None
+                or previous.available
+            )
+            binding = _NotebookBinding(index, name, available)
             logical_namespace[name] = binding
             physical_namespace[name] = binding
         logical_namespaces.append(logical_namespace)

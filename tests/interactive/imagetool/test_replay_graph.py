@@ -7079,7 +7079,9 @@ def test_selected_notebook_scopes_allow_read_only_global_declarations() -> None:
     xr.testing.assert_identical(namespace["result"], source + 1)
 
 
-@pytest.mark.parametrize("initialization", ["direct", "conditional", "augmented"])
+@pytest.mark.parametrize(
+    "initialization", ["direct", "conditional", "augmented", "assertion"]
+)
 def test_selected_notebook_scopes_restore_only_live_incoming_names(
     initialization: str,
 ) -> None:
@@ -7116,7 +7118,11 @@ def test_selected_notebook_scopes_restore_only_live_incoming_names(
             else (
                 "saved += 1\n"
                 if initialization == "augmented"
-                else "saved = derived + 1\n"
+                else (
+                    "assert True, (saved := derived + 100)\n"
+                    if initialization == "assertion"
+                    else "saved = derived + 1\n"
+                )
             )
         )
         + "result = saved + correction",
@@ -7130,7 +7136,10 @@ def test_selected_notebook_scopes_restore_only_live_incoming_names(
     namespace = _exec_generated_code(
         code, {"data": source, "offsets": offsets, "flag": False, "xr": xr}
     )
-    xr.testing.assert_identical(namespace["result"], source + (1 if conditional else 2))
+    xr.testing.assert_identical(
+        namespace["result"],
+        source + (1 if conditional or initialization == "assertion" else 2),
+    )
     if initialization == "direct":
         assert "saved_input" not in code
         live_consumer = scope(
@@ -7191,6 +7200,395 @@ def test_selected_notebook_scopes_preserve_bindings_across_bare_annotations() ->
     assert "saved_input" not in code
 
 
+@pytest.mark.parametrize(
+    ("body", "flag", "increment"),
+    [
+        ("if flag:\n    del saved\n    saved = data + 2", True, 2),
+        ("if flag:\n    del saved\n    saved = data + 2", False, 1),
+        ("if flag:\n    del saved", False, 1),
+        ("for item in range(1):\n    del saved\n    saved = data + 2", True, 2),
+        (
+            "for item in range(1):\n    del saved\n    saved = data + 2\n"
+            "    break\n    del saved",
+            True,
+            2,
+        ),
+        (
+            "for item in range(1):\n    del saved\n    saved = data + 2\n"
+            "    continue\n    del saved",
+            True,
+            2,
+        ),
+        ("while flag:\n    del saved\n    saved = data + 2\n    break", True, 2),
+        ("while flag:\n    del saved", False, 1),
+        ("try:\n    pass\nexcept ValueError as saved:\n    pass", True, 1),
+        (
+            "try:\n    raise ValueError()\nexcept ValueError:\n"
+            "    del saved\n    saved = data + 2",
+            True,
+            2,
+        ),
+        ("try:\n    del saved\nfinally:\n    saved = data + 2", True, 2),
+        (
+            "try:\n    raise ValueError()\nexcept ValueError as saved:\n"
+            "    pass\nfinally:\n    saved = data + 2",
+            True,
+            2,
+        ),
+        (
+            "try:\n    del saved\nexcept ValueError:\n    pass\n"
+            "else:\n    saved = data + 2",
+            True,
+            2,
+        ),
+        (
+            "match flag:\n    case True:\n        del saved\n"
+            "        saved = data + 2\n    case False:\n        pass",
+            True,
+            2,
+        ),
+        (
+            "match flag:\n    case _:\n        del saved\n        saved = data + 2",
+            True,
+            2,
+        ),
+    ],
+)
+def test_selected_notebook_scopes_keep_ordered_compound_bindings(
+    body: str, flag: bool, increment: int
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope(
+                f"saved = data + 1\n{body}\nprepared = data + 1",
+                "data",
+                "prepared",
+                {},
+            ),
+            scope(
+                "saved = offsets * 10\ncorrection = saved * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                "result = saved + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": source + 10, "flag": flag}
+    )
+    xr.testing.assert_identical(namespace["result"], source + increment)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize(
+    "initialization",
+    [
+        "if flag:\n    saved = derived + 2\nelse:\n    saved = derived + 2",
+        "try:\n    saved = derived + 2\nfinally:\n    pass",
+        "try:\n    pass\nfinally:\n    saved = derived + 2",
+        "match flag:\n    case _:\n        saved = derived + 2",
+        "for item in ():\n    pass\nelse:\n    saved = derived + 2",
+    ],
+)
+def test_selected_notebook_scopes_do_not_restore_replaced_compound_bindings(
+    initialization: str,
+) -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare",
+                    code="saved = data + 1\ndel saved\nderived = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Replace", code=f"{initialization}\nresult = saved + 0"
+                )
+            ),
+        ),
+        input_name="derived",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(producer, {}),
+            SelectedProvenanceScope(consumer, {"derived": 0}),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source, "flag": False})
+    xr.testing.assert_identical(namespace["result"], source + 3)
+    assert "saved_input" not in code
+
+
+@pytest.mark.parametrize(
+    ("body", "flag", "increment"),
+    [
+        ("if flag:\n    saved = prepared + 2", False, 1),
+        ("if flag:\n    saved = prepared + 2", True, 3),
+        ("if flag:\n    del saved", False, 1),
+        ("for item in ():\n    saved = prepared + 2", False, 1),
+        ("values = [(saved := item) for item in ()]", False, 1),
+        ("try:\n    pass\nexcept ValueError as saved:\n    pass", False, 1),
+        ("assert True, (saved := prepared + 2)", False, 1),
+    ],
+)
+def test_selected_notebook_scopes_publish_retained_conditional_bindings(
+    body: str, flag: bool, increment: int
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope("saved = data + 1\nprepared = data + 1", "data", "prepared", {}),
+            scope(
+                "saved = offsets * 5\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                f"{body}\nchild = prepared + 0", "prepared", "child", {"prepared": 0}
+            ),
+            scope(
+                "result = saved + correction",
+                "child",
+                "result",
+                {"child": 2, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": source + 100, "flag": flag}
+    )
+    xr.testing.assert_identical(namespace["result"], source + increment)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize(
+    "recovery",
+    [
+        "conditional",
+        "delete_conditional",
+        "branch_delete",
+        "definite",
+        "branch_definite",
+    ],
+)
+def test_selected_notebook_scopes_do_not_retain_deleted_conditional_bindings(
+    flag: bool, recovery: str
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    initialization = {
+        "conditional": "if flag:\n    saved = prepared + 2\n",
+        "delete_conditional": "del saved\nif flag:\n    saved = prepared + 2\n",
+        "branch_delete": "if flag:\n    saved = prepared + 2\nelse:\n    del saved\n",
+        "definite": "saved = prepared + 2\n",
+        "branch_definite": (
+            "if flag:\n    saved = prepared + 2\nelse:\n    saved = prepared + 2\n"
+        ),
+    }[recovery]
+    scopes = [
+        scope(
+            "saved = data + 1\ndel saved\nprepared = data + 1", "data", "prepared", {}
+        ),
+        scope(
+            "saved = offsets * 5\ncorrection = offsets * 0",
+            "offsets",
+            "correction",
+            {},
+        ),
+        scope(
+            initialization + "child = prepared + 0",
+            "prepared",
+            "child",
+            {"prepared": 0},
+        ),
+    ]
+    code = selected_provenance_code(scopes)
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    inputs = {"data": source, "offsets": source + 100, "flag": flag}
+    namespace = _exec_generated_code(code, inputs)
+    xr.testing.assert_identical(namespace["child"], source + 1)
+    assert "saved_input" not in code
+    scopes.append(
+        scope(
+            "result = saved + correction",
+            "child",
+            "result",
+            {"child": 2, "correction": 1},
+        )
+    )
+    if recovery in {"conditional", "delete_conditional", "branch_delete"}:
+        with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+            selected_provenance_code(scopes)
+    else:
+        code = selected_provenance_code(scopes)
+        namespace = _exec_generated_code(code, inputs)
+        xr.testing.assert_identical(namespace["result"], source + 3)
+
+
+@pytest.mark.parametrize(
+    "deletion",
+    [
+        "del saved",
+        "if flag:\n    del saved\nelse:\n    del saved",
+        "try:\n    pass\nfinally:\n    del saved",
+        "try:\n    raise ValueError()\nexcept ValueError as saved:\n    pass",
+        "match flag:\n    case _:\n        del saved",
+    ],
+)
+def test_selected_notebook_scopes_reject_definite_compound_deletions(
+    deletion: str,
+) -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Delete",
+                    code=f"saved = data + 1\n{deletion}\nderived = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Use", code="result = saved + 0")
+            ),
+        ),
+        input_name="derived",
+        output_name="result",
+    )
+    with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+        selected_provenance_code(
+            (
+                SelectedProvenanceScope(producer, {}),
+                SelectedProvenanceScope(consumer, {"derived": 0}),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "code", ["saved: int", "del saved", "if flag:\n    del saved\nelse:\n    del saved"]
+)
+def test_script_name_validation_does_not_create_bindings(code: str) -> None:
+    available = {"int", "flag"} | ({"saved"} if "del saved" in code else set())
+    _validate_script_code_names(code, available, {})
+    assert "saved" not in available
+    with pytest.raises(ReplayGraphError, match="unresolved name 'saved'"):
+        _validate_script_code_names("result = saved", available, {})
+
+
+def test_selected_steps_code_keeps_definition_time_bindings() -> None:
+    code = selected_steps_code(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Define",
+                    code="def helper(value=(saved := data + 2)):\n    return value\n"
+                    "result = saved + helper()",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["result"], (source + 2) * 2)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "missing"),
+    [("container.value: float", "container"), ("container[index]: float", "index")],
+)
+def test_script_name_validation_reads_annotation_targets(
+    annotation: str, missing: str
+) -> None:
+    available = {"container", "index", "float"}
+    _validate_script_code_names(annotation, available, {})
+    available.remove(missing)
+    with pytest.raises(ReplayGraphError, match=f"unresolved name {missing!r}"):
+        _validate_script_code_names(annotation, available, {})
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["values = ((saved := item) for item in ())", "((saved := item) for item in ())"],
+)
+def test_script_name_validation_keeps_generator_bindings_deferred(
+    statement: str,
+) -> None:
+    available: set[str] = set()
+    code = f"saved = 1\ndel saved\n{statement}"
+    _validate_script_code_names(code, available, {})
+    namespace = _exec_generated_code(code)
+    assert "saved" not in namespace
+    assert "saved" not in available
+    with pytest.raises(ReplayGraphError, match="unresolved name 'saved'"):
+        _validate_script_code_names(
+            f"{code}\nresult = saved", set(), {}, external_name_candidates=None
+        )
+
+
+def test_script_name_validation_does_not_readmit_deleted_callers() -> None:
+    with pytest.raises(ReplayGraphError, match="unresolved name 'saved'"):
+        _validate_script_code_names(
+            "saved = data\ndel saved\nresult = saved",
+            {"data"},
+            {},
+            external_name_candidates=None,
+        )
+
+
 def test_selected_notebook_scope_publishes_input_used_by_dynamic_access() -> None:
     source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
     producer = selected_steps_spec(
@@ -7231,6 +7629,7 @@ def test_selected_notebook_scope_publishes_input_used_by_dynamic_access() -> Non
     [
         ("import builtins as runtime", "runtime.exec('derived = offsets')"),
         ("namespace = globals", "namespace()['derived'] = offsets"),
+        ("values = ((saved := item) for item in ())", "next(values)"),
         ("namespace = globals()", "namespace['derived'] = offsets"),
         (
             "namespace = globals()\nnamespace['_scratch'] = None\n"
