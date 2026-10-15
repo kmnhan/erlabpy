@@ -222,7 +222,9 @@ def merge_document_trust(
     """Return document trust after a load or import operation."""
     if replace:
         return incoming
-    if incoming == current:
+    # Composing signed copies changes their document locations. The signature
+    # covers the original inventory, while both copies retain approved lineage.
+    if incoming == current and current.reason != CodeTrustReason.SIGNATURE:
         return current
     if incoming.reason == CodeTrustReason.NO_EXECUTABLE_CODE:
         return current

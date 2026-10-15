@@ -68,7 +68,7 @@ from erlab.interactive.imagetool.manager._workspace._trust import (
     workspace_code_trust_manifest,
 )
 from erlab.interactive.utils import ToolWindow
-from tests.interactive.imagetool.manager.helpers import make_fit2d_child
+from tests.interactive.imagetool.manager.helpers import make_fit2d_child, select_tools
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
@@ -2201,6 +2201,142 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
         )
         assert manager.code_trust_banner.isVisible()
         xr.testing.assert_identical(first_node.current_public_data(), source + 3)
+
+
+@pytest.mark.parametrize("trust_mode", ["imported", "signature", "untrusted"])
+def test_mixed_checkpoint_revert_preserves_code_ownership(
+    qtbot, monkeypatch, tmp_path, manager_context, trust_mode: str
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1, 2]},
+    )
+    with manager_context() as manager:
+
+        def add(value, spec=None):
+            index = manager.add_imagetool(
+                ImageTool(value, _in_manager=True),
+                provenance_spec=spec,
+                show=False,
+            )
+            return manager._node_for_target(index)
+
+        def plus_one(node):
+            return script(
+                ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+                start_label="Calculation",
+                active_name="derived",
+                primary_input="data",
+                script_inputs=(
+                    manager._lineage_controller._script_input_for_node(
+                        node, name="data"
+                    ),
+                ),
+            )
+
+        source = add(data)
+        derived = add(data + 1, plus_one(source))
+        captured_spec = plus_one(derived)
+        captured_id = captured_spec.script_inputs[0].revision_id
+        add(data + 2, captured_spec)
+        legacy_spec = captured_spec.model_copy(
+            update={
+                "script_inputs": (
+                    captured_spec.script_inputs[0].model_copy(
+                        update={"revision_id": None}
+                    ),
+                )
+            }
+        )
+        add(data + 2, legacy_spec)
+        workspace = tmp_path / "mixed-history.itws"
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(workspace)
+        assert controller.loading._load_workspace_file(
+            workspace, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        manager.get_imagetool(4).slicer_area.replace_source_data(data + 10)
+        captured = manager._node_for_target(6)
+        replayed = manager._node_for_target(7)
+        captured_row = next(
+            row
+            for row in captured.derivation_display_rows
+            if row.on_primary_chain and row.revision_id == captured_id
+        )
+        replayed_row = next(
+            row
+            for row in replayed.derivation_display_rows
+            if row.script_input_path == (0,)
+            and row.replay_ref == captured_row.replay_ref
+        )
+        assert replayed_row.revision_id is None
+        manifest = current_workspace_code_trust_manifest(manager)
+        if trust_mode == "signature":
+            trust = _document_trust_after_save(
+                new_document_trust(),
+                manifest,
+                saved_trusted_lineage=True,
+                signature_stored=True,
+            )
+            controller._set_workspace_code_trust(trust)
+        elif trust_mode == "untrusted":
+            controller._set_workspace_code_trust(untrusted_document_trust(manifest))
+        else:
+            assert document_trust_is_trusted(manager._workspace_state.code_trust)
+        editor = manager._provenance_edit_controller
+        monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+        failures = []
+        monkeypatch.setattr(editor, "_show_failed", lambda *args: failures.append(args))
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        select_tools(manager, [6, 7])
+        manager._update_info()
+        editor.revert_rows(((captured.uid, captured_row), (replayed.uid, replayed_row)))
+        if trust_mode != "untrusted":
+            assert failures == []
+            xr.testing.assert_identical(captured.current_source_data(), data + 1)
+            xr.testing.assert_identical(replayed.current_source_data(), data + 1)
+            assert document_trust_has_trusted_lineage(
+                manager._workspace_state.code_trust
+            )
+            assert manager._lineage_controller._reload_script_derived_target(6)
+            xr.testing.assert_identical(captured.current_source_data(), data + 11)
+            return
+
+        assert failures
+        xr.testing.assert_identical(captured.current_source_data(), data + 2)
+        xr.testing.assert_identical(replayed.current_source_data(), data + 2)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [6])
+        manager._update_info()
+        editor.revert_row(captured_row)
+        xr.testing.assert_identical(captured.current_source_data(), data + 1)
+        candidate = editor._display_spec_for_row(replayed, replayed_row)
+        assert candidate is not None
+        candidate = candidate.model_copy(
+            update={
+                "steps": (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Add two", code="derived = data + 2"
+                        )
+                    ),
+                )
+            }
+        )
+        editor._validate_and_replace(replayed, "display", candidate)
+        xr.testing.assert_identical(replayed.current_source_data(), data + 2)
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        runtime_entries = provenance_code_trust_entries(
+            candidate, location_prefix="runtime"
+        )
+        assert replayed.slicer_area._stored_code_authorizer(runtime_entries) is not None
+        captured_entries = provenance_code_trust_entries(
+            captured.provenance_spec, location_prefix="runtime"
+        )
+        assert captured.slicer_area._stored_code_authorizer(captured_entries) is None
+        assert not manager._lineage_controller._reload_script_derived_target(6)
+        xr.testing.assert_identical(captured.current_source_data(), data + 1)
 
 
 def test_local_source_provenance_edit_owns_source_and_display_locations(

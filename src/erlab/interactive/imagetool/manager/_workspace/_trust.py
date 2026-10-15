@@ -291,6 +291,7 @@ def captured_revision_code_trust_entries(
     previous_revision_ids: frozenset[str],
     node_paths: Mapping[str, str],
     previous_entries: Iterable[CodeTrustEntry],
+    execution_entries: Iterable[CodeTrustEntry],
     edited_entries: Iterable[CodeTrustEntry],
     previous_trust: _DocumentTrust,
 ) -> tuple[CodeTrustEntry, ...]:
@@ -308,6 +309,17 @@ def captured_revision_code_trust_entries(
         if owner is not None:
             authored.setdefault(owner, set()).add(entry.execution_identity())
     approved = {owner: set(identities) for owner, identities in authored.items()}
+    # Replay can capture checkpoints without editing code. Keep its approval
+    # scoped to the node that already owned the authorized execution entry.
+    for entry in execution_entries:
+        owner = _owner(entry.location)
+        if owner is None:
+            continue
+        _trust, capability = issue_complete_execution_capability(
+            previous_trust, (entry,)
+        )
+        if capability is not None:
+            approved.setdefault(owner, set()).add(entry.execution_identity())
     for entry in previous_entries:
         owner = _owner(entry.location)
         if owner not in approved:

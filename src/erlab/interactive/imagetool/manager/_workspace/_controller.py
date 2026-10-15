@@ -449,6 +449,7 @@ class _WorkspaceController:
                 previous_revision_ids=previous_revision_ids,
                 node_paths=node_paths,
                 previous_entries=prior_entries,
+                execution_entries=resolved_execution_entries,
                 edited_entries=resolved_edited_entries,
                 previous_trust=previous,
             )

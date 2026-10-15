@@ -86,6 +86,22 @@ def _trust_after_save(
     )
 
 
+def test_composing_the_same_signed_document_preserves_approval_after_relocation() -> (
+    None
+):
+    signed = _signed_trust()
+    combined = merge_document_trust(signed, signed, replace=False)
+    manifest = CodeTrustManifest(
+        "erlab.workspace", 1, (_entry(), _entry(location="window/1"))
+    )
+    relocated = code_trust.bind_document_trust_manifest(combined, manifest)
+
+    assert document_trust_is_trusted(relocated)
+    _, capability = code_trust.issue_execution_capability(relocated, manifest.entries)
+    assert code_trust.execution_capability_allows(capability, manifest.entries)
+    assert merge_document_trust(signed, signed, replace=True) == signed
+
+
 def test_code_trust_package_exposes_only_the_functional_facade() -> None:
     for implementation_type in (
         "CodeTrustDecision",
@@ -295,7 +311,9 @@ def test_code_trust_lifecycle_is_centralized_behind_document_operations() -> Non
     signed = _signed_trust()
 
     assert merge_document_trust(local, safe_external, replace=False) == local
-    assert merge_document_trust(signed, signed, replace=False) == signed
+    assert document_trust_has_trusted_lineage(
+        merge_document_trust(signed, signed, replace=False)
+    )
     assert document_trust_is_trusted(safe_external)
     assert not document_trust_has_trusted_lineage(safe_external)
     assert not code_trust.authorize_document_execution(
