@@ -1136,11 +1136,13 @@ class _ProvenanceEditController:
                         "No editor is available for this complete operation group.",
                     )
                 return True, ""
-        if spec.kind == "script":
+        active_filter_ref = self._active_filter_ref(node, spec)
+        if spec.kind == "script" and (
+            row.script_input_path or active_filter_ref != row.edit_ref
+        ):
             input_spec = spec._prefix_before_ref(row.edit_ref)
             if self._script_replay_unavailable_reason(node, input_spec) is not None:
                 return False, "This script step cannot be replayed."
-        active_filter_ref = self._active_filter_ref(node, spec)
         if (
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"
@@ -1171,8 +1173,6 @@ class _ProvenanceEditController:
             return False, reason or "No editing dialog is available for this step."
         if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
             return False, "No editor is available for this complete operation group."
-        if not row.script_input_path and active_filter_ref == row.edit_ref:
-            return True, ""
         return True, ""
 
     def can_revert_row(

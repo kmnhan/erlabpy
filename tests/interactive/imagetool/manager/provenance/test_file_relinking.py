@@ -1106,7 +1106,8 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
         _fake_edit_node(script_with_structured_step),
         script_input_unavailable_reason=lambda *_args, **_kwargs: "Unavailable",
     )
-    assert controller.can_edit_row(structured_row) == (True, "")
+    assert not controller.can_edit_row(structured_row)[0]
+    assert controller.can_edit_row(script_code_row) == (True, "")
 
     script_parent = script(
         ScriptCodeOperation(

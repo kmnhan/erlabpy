@@ -3068,6 +3068,7 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
         )
 
 
+@pytest.mark.parametrize("missing_script_input", [False, True])
 def test_manager_provenance_active_filter_edit_accept_and_cancel(
     qtbot,
     accept_dialog,
@@ -3075,6 +3076,7 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    missing_script_input: bool,
 ) -> None:
     data = xr.DataArray(
         np.arange(24, dtype=float).reshape((3, 4, 2)) + 1.0,
@@ -3084,13 +3086,28 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
     )
     file_path = tmp_path / "scan.h5"
     data.to_netcdf(file_path, engine="h5netcdf")
-    spec = _manager_replay_file_spec(file_path)
+    spec = (
+        script(
+            start_label="Use input",
+            active_name="data",
+            primary_input="data",
+            script_inputs=(ScriptInput(name="data", node_uid="missing"),),
+        )
+        if missing_script_input
+        else _manager_replay_file_spec(file_path)
+    )
 
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         tool = _add_file_replay_tool(manager, data, spec)
+        if missing_script_input:
+            assert (
+                manager._provenance_edit_controller._script_replay_unavailable_reason(
+                    manager._node_for_target(0), spec
+                )
+            )
         operation = NormalizeOperation(dims=("x",), mode="area")
         tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
