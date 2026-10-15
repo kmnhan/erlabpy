@@ -7128,7 +7128,7 @@ def test_selected_notebook_scopes_restore_only_live_incoming_names(
     source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
     offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
     namespace = _exec_generated_code(
-        code, {"data": source, "offsets": offsets, "flag": False}
+        code, {"data": source, "offsets": offsets, "flag": False, "xr": xr}
     )
     xr.testing.assert_identical(namespace["result"], source + (1 if conditional else 2))
     if initialization == "direct":
@@ -7148,7 +7148,9 @@ def test_selected_notebook_scopes_restore_only_live_incoming_names(
             {},
         )
         code = selected_provenance_code((rebound, auxiliary, live_consumer))
-        namespace = _exec_generated_code(code, {"data": source, "offsets": offsets})
+        namespace = _exec_generated_code(
+            code, {"data": source, "offsets": offsets, "xr": xr}
+        )
         xr.testing.assert_identical(namespace["result"], source + 2)
 
 
@@ -7182,7 +7184,9 @@ def test_selected_notebook_scopes_preserve_bindings_across_bare_annotations() ->
     )
     source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
     offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
-    namespace = _exec_generated_code(code, {"data": source, "offsets": offsets})
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": offsets, "xr": xr}
+    )
     xr.testing.assert_identical(namespace["result"], source + 1)
     assert "saved_input" not in code
 
