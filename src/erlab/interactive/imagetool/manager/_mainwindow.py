@@ -338,6 +338,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
         self._standalone_app_windows: dict[str, QtWidgets.QWidget] = {}
         self._standalone_app_event_filters: dict[str, QtCore.QObject] = {}
+        # Retain closed app state until its window is created again.
         self._standalone_app_pending_states: dict[str, dict[str, typing.Any]] = {}
         self._standalone_app_specs: dict[str, _StandaloneAppSpec] = {
             "explorer": _StandaloneAppSpec(

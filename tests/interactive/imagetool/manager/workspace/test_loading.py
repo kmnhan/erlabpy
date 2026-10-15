@@ -29,6 +29,7 @@ import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive import _persistence_constants
+from erlab.interactive.angle_calculator._state import AngleCalculatorState
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
@@ -4888,6 +4889,173 @@ def test_manager_workspace_load_visible_windows_stays_clean_after_events(
             QtWidgets.QApplication.processEvents()
 
         assert not manager.is_workspace_modified
+
+
+def _standalone_app_settings(state: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    if "geometry" in state:
+        # Workspace manifests omit optional overlay images that are not set.
+        state = AngleCalculatorState.model_validate(state).model_dump(
+            mode="json", exclude_none=True
+        )
+    # Qt can change window geometry and aspect-locked plot ranges on show.
+    return {
+        key: value
+        for key, value in state.items()
+        if key
+        not in {"window_state", "momentum_range", "angle_range", "out_of_plane_range"}
+    }
+
+
+def _configure_workspace_app(
+    manager: ImageToolManager, key: str
+) -> tuple[typing.Any, dict[str, typing.Any]]:
+    widget = manager._show_standalone_app(key)
+    state = widget.workspace_state_payload()
+    if key == "ptable":
+        state.update(
+            selected_atomic_numbers=[6, 8],
+            current_atomic_number=8,
+            anchor_atomic_number=6,
+            plot_atomic_number=6,
+            plot_target_user_selected=True,
+            photon_energy="80",
+            work_function="4.5",
+            max_harmonic=3,
+            notation="iupac",
+        )
+    else:
+        state["geometry"]["photon_energy"] = 21.2
+        state["geometry"]["sample_work_function"] = 4.7
+        state["geometry"]["low_energy_correction"] = True
+        state.update(lattice_a=4.123456789, cutoff_visible=True)
+    widget.restore_workspace_state(state)
+    return widget, _standalone_app_settings(widget.workspace_state_payload())
+
+
+@pytest.mark.parametrize("key", ["angle_calculator", "ptable"])
+def test_manager_standalone_app_close_retains_workspace_state(
+    qtbot, manager_context, tmp_path, key
+):
+    with manager_context() as manager:
+        adopt_workspace_path(manager, tmp_path / "apps.itws")
+        widget, expected = _configure_workspace_app(manager, key)
+        qtbot.wait_until(widget.isVisible)
+        manager._workspace_controller._mark_workspace_clean()
+
+        assert widget.close()
+        assert not widget.isVisible()
+        cached = manager._standalone_app_pending_states[key]
+        assert not cached["window_state"]["visible"]
+        assert _standalone_app_settings(cached) == expected
+        assert manager.is_workspace_modified
+
+        reopened = manager._show_standalone_app(key)
+        assert reopened is widget
+        assert _standalone_app_settings(reopened.workspace_state_payload()) == expected
+
+        manager._close_standalone_app(key)
+        assert key not in manager._standalone_app_windows
+        cached = manager._standalone_app_pending_states[key]
+        assert not cached["window_state"]["visible"]
+        assert _standalone_app_settings(cached) == expected
+
+        recreated = manager._show_standalone_app(key)
+        assert recreated is not widget
+        assert recreated.isVisible()
+        assert _standalone_app_settings(recreated.workspace_state_payload()) == expected
+
+
+@pytest.mark.parametrize("key", ["angle_calculator", "ptable"])
+def test_manager_workspace_roundtrip_closed_standalone_app(
+    qtbot, manager_context, tmp_path, key
+):
+    with manager_context() as manager:
+        widget, expected = _configure_workspace_app(manager, key)
+        qtbot.wait_until(widget.isVisible)
+        manager._close_standalone_app(key)
+        path = tmp_path / f"closed-{key}.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        saved = _current_workspace_manifest(path)["standalone_apps"]["apps"][key]
+        assert not saved["window_state"]["visible"]
+        assert _standalone_app_settings(saved) == expected
+        assert key not in manager._standalone_app_windows
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert key not in manager._standalone_app_windows
+        assert manager._standalone_app_pending_states[key] == saved
+        assert not manager.is_workspace_modified
+
+        for index in range(2):
+            resaved_path = tmp_path / f"closed-{key}-resaved-{index}.itws"
+            manager._workspace_controller.saving._save_workspace_document(resaved_path)
+            assert (
+                _current_workspace_manifest(resaved_path)["standalone_apps"]["apps"][
+                    key
+                ]
+                == saved
+            )
+            assert key not in manager._standalone_app_windows
+            assert not manager.is_workspace_modified
+
+        reopened = manager._show_standalone_app(key)
+        assert reopened is not widget
+        qtbot.wait_until(reopened.isVisible)
+        assert _standalone_app_settings(reopened.workspace_state_payload()) == expected
+
+
+def test_manager_workspace_replacement_clears_closed_standalone_app_state(
+    qtbot, manager_context, tmp_path
+):
+    with manager_context() as manager:
+        empty_path = tmp_path / "empty-app-state.itws"
+        manager._workspace_controller.saving._save_workspace_document(empty_path)
+        assert not _current_workspace_manifest(empty_path)["standalone_apps"]["apps"]
+
+        for key in ("angle_calculator", "ptable"):
+            widget, _expected = _configure_workspace_app(manager, key)
+            qtbot.wait_until(widget.isVisible)
+            manager._close_standalone_app(key)
+            assert key in manager._standalone_app_pending_states
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            empty_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert not manager._standalone_app_pending_states
+        assert not manager._standalone_app_windows
+        assert not manager.is_workspace_modified
+
+        resaved_path = tmp_path / "empty-app-state-resaved.itws"
+        manager._workspace_controller.saving._save_workspace_document(resaved_path)
+        assert not _current_workspace_manifest(resaved_path)["standalone_apps"]["apps"]
+
+
+@pytest.mark.parametrize("manifest", [None, {}])
+def test_manager_workspace_missing_standalone_app_state_clears_cache(
+    manager_context, manifest
+):
+    with manager_context() as manager:
+        manager._standalone_app_pending_states["angle_calculator"] = {}
+        manager.show_ptable()
+        with manager._workspace_load_context():
+            manager._workspace_controller.loading._restore_standalone_apps_state(
+                manifest
+            )
+        assert not manager._standalone_app_pending_states
+        assert not manager._standalone_app_windows
+        snapshot = (
+            manager._workspace_controller.saving._workspace_standalone_apps_snapshot()
+        )
+        assert not snapshot["apps"]
 
 
 def test_manager_workspace_roundtrip_angle_calculator(qtbot, manager_context, tmp_path):
