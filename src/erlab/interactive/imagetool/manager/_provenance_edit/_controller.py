@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import functools
 import pathlib
@@ -1491,7 +1490,21 @@ class _ProvenanceEditController:
         recorded = self._recorded_revision_for_row(node, row)
         if recorded is not None:
             try:
-                self._restore_recorded_revision(node, recorded)
+                sessions = self._row_sessions(((node.uid, row),))
+                self._validate_and_replace_multiple(
+                    sessions,
+                    (
+                        _ProvenanceCandidate(
+                            node=node,
+                            scope=row.scope,
+                            spec=recorded.provenance_spec or full_data(),
+                            recorded_revision=recorded,
+                        ),
+                    ),
+                    where="validating the provenance revert target",
+                )
+            except _TrustedProvenanceReplayCancelled:
+                return
             except Exception as exc:
                 self._show_failed("Could Not Revert Provenance Step", exc)
             return
@@ -1676,11 +1689,15 @@ class _ProvenanceEditController:
         self,
         sessions: Sequence[_ProvenanceRowSession],
     ) -> str:
-        selected_uids = self._selected_imagetool_uids()
-        session_uids = tuple(session.node.uid for session in sessions)
-        if len(selected_uids) != len(session_uids) or frozenset(
-            selected_uids
-        ) != frozenset(session_uids):
+        if len(sessions) == 1:
+            selection_changed = self._metadata_node() is not sessions[0].node
+        else:
+            selected_uids = self._selected_imagetool_uids()
+            session_uids = tuple(session.node.uid for session in sessions)
+            selection_changed = len(selected_uids) != len(session_uids) or frozenset(
+                selected_uids
+            ) != frozenset(session_uids)
+        if selection_changed:
             return "The ImageTool selection changed while the dialog was open."
 
         for session in sessions:
@@ -1893,11 +1910,7 @@ class _ProvenanceEditController:
                 for candidate in candidates
                 if candidate.recorded_revision is None
             )
-            restored_entries = (
-                self._approved_recorded_revision_entries(candidates)
-                if entry_groups
-                else ()
-            )
+            restored_entries = self._approved_recorded_revision_entries(candidates)
             entries = (
                 *(entry for group, _edited in entry_groups for entry in group),
                 *restored_entries,
@@ -1906,16 +1919,11 @@ class _ProvenanceEditController:
                 tuple(entry for _group, edited in entry_groups for entry in edited)
                 + restored_entries
             )
-            authorization_context = (
-                self._manager._workspace_controller.local_code_edit(
-                    entries,
-                    edited_entries=edited_entries,
-                    focus_on_block=True,
-                )
-                if entry_groups
-                else contextlib.nullcontext(None)
-            )
-            with authorization_context as authorization:
+            with self._manager._workspace_controller.local_code_edit(
+                entries,
+                edited_entries=edited_entries,
+                focus_on_block=True,
+            ) as authorization:
                 if entries and authorization is None:
                     raise _TrustedProvenanceReplayCancelled
                 edits = []

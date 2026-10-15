@@ -16,6 +16,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive import _persistence_constants
+from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._execution import (
     _memoized_live_input_resolver,
@@ -1265,10 +1266,30 @@ class _LineageController:
 
         def authorize(entries):
             if authorization is None:
-                return self._authorize_provenance_execution(
-                    entries,
+                located_entries = entries
+                if target_node_uid is not None:
+                    node = self._manager._tool_graph.nodes.get(target_node_uid)
+                    if node is None:
+                        raise _TrustedProvenanceReplayCancelled
+                    saving = self._manager._workspace_controller.saving
+                    path = saving._workspace_node_path_for_node(node)
+                    # Live inputs can change graph node indices. Check the owning
+                    # stored inventory before issuing a location-free capability.
+                    requested = {entry.execution_identity() for entry in entries}
+                    located_entries = tuple(
+                        entry
+                        for entry in provenance_code_trust_entries(
+                            spec, location_prefix=f"{path}/provenance"
+                        )
+                        if entry.execution_identity() in requested
+                    )
+                capability = self._authorize_provenance_execution(
+                    located_entries,
                     reason="reload this result",
                 )
+                if not execution_capability_allows(capability, entries):
+                    raise _TrustedProvenanceReplayCancelled
+                return capability
             return authorization
 
         revisions = self._manager._provenance_revisions.stage()

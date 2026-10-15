@@ -2203,6 +2203,140 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
         xr.testing.assert_identical(first_node.current_public_data(), source + 3)
 
 
+@pytest.mark.parametrize(
+    "restore_kind", ["single", "checkpoints", "mixed", "mixed_unapproved"]
+)
+def test_checkpoint_revert_retains_partial_approval_at_its_owner(
+    qtbot, monkeypatch, manager_context, restore_kind: str
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+
+        def add(value, spec=None):
+            index = manager.add_imagetool(
+                ImageTool(value, _in_manager=True),
+                provenance_spec=spec,
+                show=False,
+            )
+            return manager._node_for_target(index)
+
+        def offset(node, amount):
+            return script(
+                ScriptCodeOperation(label="Offset", code=f"derived = data + {amount}"),
+                start_label="Calculation",
+                active_name="derived",
+                primary_input="data",
+                script_inputs=(
+                    manager._lineage_controller._script_input_for_node(
+                        node, name="data"
+                    ),
+                ),
+            )
+
+        source = add(data)
+        edited = add(data + 1, offset(source, 1))
+        external = add(data + 3, offset(source, 3))
+        controller = manager._workspace_controller
+        controller._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        editor = manager._provenance_edit_controller
+        editor._validate_and_replace(edited, "display", offset(source, 3))
+        captured_spec = offset(edited, 10)
+        captured_id = captured_spec.script_inputs[0].revision_id
+        record = manager._provenance_revisions.get(captured_id)
+        assert record is not None
+        assert record.provenance_spec is not None
+        assert (
+            controller.issue_code_execution_capability(
+                provenance_code_trust_entries(
+                    record.provenance_spec,
+                    location_prefix=f"revisions/{captured_id}/provenance",
+                )
+            )
+            is not None
+        )
+        restored = add(data + 13, captured_spec)
+        targets = [restored]
+        if restore_kind != "single":
+            second_spec = captured_spec
+            if restore_kind.startswith("mixed"):
+                second_spec = captured_spec.model_copy(
+                    update={
+                        "script_inputs": (
+                            captured_spec.script_inputs[0].model_copy(
+                                update={"revision_id": None}
+                            ),
+                        )
+                    }
+                )
+            if restore_kind == "mixed":
+                second = add(data + 1, offset(source, 1))
+                editor._validate_and_replace(second, "display", offset(source, 3))
+                second.replace_with_detached_data(
+                    data + 13, second_spec, replay_source_data=None
+                )
+            else:
+                second = add(data + 13, second_spec)
+            targets.append(second)
+        row = next(
+            row
+            for row in restored.derivation_display_rows
+            if row.on_primary_chain and row.revision_id == captured_id
+        )
+        rows = [(restored.uid, row)]
+        if len(targets) == 2:
+            second_row = next(
+                other
+                for other in targets[1].derivation_display_rows
+                if other.script_input_path == row.script_input_path
+                and other.replay_ref == row.replay_ref
+            )
+            rows.append((targets[1].uid, second_row))
+        monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(
+            editor, "_show_failed", lambda *args: pytest.fail(str(args))
+        )
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        select_tools(manager, list(range(3, 3 + len(targets))))
+        manager._update_info()
+        editor.revert_rows(rows)
+
+        if restore_kind == "mixed_unapproved":
+            for target in targets:
+                xr.testing.assert_identical(target.current_source_data(), data + 13)
+                entries = provenance_code_trust_entries(
+                    target.provenance_spec, location_prefix="runtime"
+                )
+                assert target.slicer_area._stored_code_authorizer(entries) is None
+            external_entries = provenance_code_trust_entries(
+                external.provenance_spec, location_prefix="runtime"
+            )
+            assert (
+                external.slicer_area._stored_code_authorizer(external_entries) is None
+            )
+            return
+
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        for target in targets:
+            xr.testing.assert_identical(target.current_source_data(), data + 3)
+            entries = provenance_code_trust_entries(
+                target.provenance_spec, location_prefix="runtime"
+            )
+            assert target.slicer_area._stored_code_authorizer(entries) is not None
+        external_entries = provenance_code_trust_entries(
+            external.provenance_spec, location_prefix="runtime"
+        )
+        assert external.slicer_area._stored_code_authorizer(external_entries) is None
+        source.slicer_area.replace_source_data(data + 10)
+        for index, target in enumerate(targets, start=3):
+            assert manager._lineage_controller._reload_script_derived_target(index)
+            xr.testing.assert_identical(target.current_source_data(), data + 13)
+        assert external.slicer_area._stored_code_authorizer(external_entries) is None
+        assert not manager._lineage_controller._reload_script_derived_target(2)
+        xr.testing.assert_identical(external.current_source_data(), data + 3)
+
+
 @pytest.mark.parametrize("trust_mode", ["imported", "signature", "untrusted"])
 def test_mixed_checkpoint_revert_preserves_code_ownership(
     qtbot, monkeypatch, tmp_path, manager_context, trust_mode: str
