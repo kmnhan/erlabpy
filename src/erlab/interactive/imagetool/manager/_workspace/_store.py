@@ -322,7 +322,6 @@ class WorkspaceStore:
             if store is None or store.closed:
                 cls._pending_readers.setdefault(key, weakref.WeakSet()).add(reader)
                 return None
-        store.register_reader(reader)
         return store
 
     @classmethod
@@ -461,17 +460,18 @@ class WorkspaceStore:
 
     def _register(self) -> None:
         key = self._key(self._path)
-        with self._active_lock:
-            existing = self._active.get(key)
-            if existing is not None and existing is not self:
-                self._close_handle()
-                raise RuntimeError(
-                    f"Workspace already has an active store: {self._path}"
-                )
-            self._active[key] = self
-            pending_readers = tuple(self._pending_readers.pop(key, ()))
-        for reader in pending_readers:
-            reader._attach_store(self)
+        with self._lock:
+            with self._active_lock:
+                existing = self._active.get(key)
+                if existing is not None and existing is not self:
+                    self._close_handle()
+                    raise RuntimeError(
+                        f"Workspace already has an active store: {self._path}"
+                    )
+                self._active[key] = self
+                pending_readers = tuple(self._pending_readers.pop(key, ()))
+            for reader in pending_readers:
+                reader._attach_store(self)
 
     def _unregister(self, path: pathlib.Path | None = None) -> None:
         key = self._key(self._path if path is None else path)

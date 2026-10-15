@@ -1245,6 +1245,340 @@ def test_workspace_store_rebinds_only_existing_legacy_payloads(tmp_path) -> None
         assert matching.object_ids == ["payload"]
 
 
+def test_workspace_reader_attachment_does_not_block_legacy_rebinding(
+    monkeypatch, tmp_path
+) -> None:
+    import contextlib
+
+    path = tmp_path / "workspace.itws"
+    attachment_started = threading.Event()
+    store_locked = threading.Event()
+    attachment_waiting = threading.Event()
+    readers = []
+    errors: list[BaseException] = []
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(workspace_store.WorkspaceStore.object_path("payload"))
+        legacy = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
+        original_attach = workspace_arrays.WorkspaceFileManager._attach_store
+        original_read_session = store.read_session
+        original_lock = store.lock
+
+        class _ObservedStoreLock:
+            def __enter__(self):
+                if threading.current_thread() is attachment_thread:
+                    attachment_waiting.set()
+                if not original_lock.acquire(timeout=2):
+                    raise TimeoutError("Reader attachment blocked legacy rebinding")
+                return self
+
+            def __exit__(self, *_args):
+                original_lock.release()
+
+        def _attach(reader, target):
+            attachment_started.set()
+            if not store_locked.wait(2):
+                raise TimeoutError("Legacy rebinding did not acquire the store lock")
+            original_attach(reader, target)
+
+        @contextlib.contextmanager
+        def _read_session(*args, **kwargs):
+            if threading.current_thread() is rebind_thread:
+                store_locked.set()
+                if not attachment_waiting.wait(2):
+                    raise TimeoutError(
+                        "Reader attachment did not request the store lock"
+                    )
+            with original_read_session(*args, **kwargs) as h5_file:
+                yield h5_file
+
+        def _new_reader():
+            try:
+                readers.append(
+                    workspace_arrays.WorkspaceFileManager(path, group_path="/other")
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        def _rebind():
+            try:
+                store.rebind_legacy_readers({"/legacy": "payload"})
+            except BaseException as exc:
+                errors.append(exc)
+
+        attachment_thread = threading.Thread(target=_new_reader)
+        rebind_thread = threading.Thread(target=_rebind)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                workspace_arrays.WorkspaceFileManager, "_attach_store", _attach
+            )
+            patch.setattr(store, "_lock", _ObservedStoreLock())
+            patch.setattr(store, "read_session", _read_session)
+            attachment_thread.start()
+            try:
+                assert attachment_started.wait(2)
+                rebind_thread.start()
+            finally:
+                attachment_thread.join(3)
+                if rebind_thread.ident is not None:
+                    rebind_thread.join(3)
+                store_locked.set()
+                attachment_waiting.set()
+        assert not attachment_thread.is_alive()
+        assert not rebind_thread.is_alive()
+        assert not errors
+        assert legacy._object_id == "payload"
+        assert len(readers) == 1
+        assert readers[0]._store is store
+        assert readers[0] in store._readers
+        readers[0].close()
+        legacy.close()
+
+
+def test_workspace_reader_rejects_store_closed_before_attachment(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    store = workspace_store.WorkspaceStore(path, create=True)
+    attachment_started = threading.Event()
+    finish_attachment = threading.Event()
+    original_attach = workspace_arrays.WorkspaceFileManager._attach_store
+    errors: list[BaseException] = []
+
+    def _attach(reader, target):
+        attachment_started.set()
+        if not finish_attachment.wait(2):
+            raise TimeoutError("Reader attachment was not released")
+        original_attach(reader, target)
+
+    def _new_reader():
+        try:
+            workspace_arrays.WorkspaceFileManager(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_arrays.WorkspaceFileManager, "_attach_store", _attach)
+        reader_thread = threading.Thread(target=_new_reader)
+        reader_thread.start()
+        try:
+            assert attachment_started.wait(2)
+            store.close()
+        finally:
+            finish_attachment.set()
+            reader_thread.join(3)
+            store.close()
+    assert not reader_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert str(errors[0]) == "Workspace store closed before reader attachment"
+    reader = workspace_arrays.WorkspaceFileManager(path)
+    try:
+        with reader.read_session() as h5_file:
+            assert h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
+    finally:
+        reader.close()
+
+
+def test_workspace_recovery_does_not_block_reader_attachment(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    recovery_started = threading.Event()
+    attachment_waiting = threading.Event()
+    errors: list[BaseException] = []
+    readers = []
+    original_path_lock = workspace_arrays._workspace_file_lock(path)
+    original_path_check = workspace_storage._workspace_path_is_itws
+
+    class _ObservedPathLock:
+        def __enter__(self):
+            if threading.current_thread() is attachment_thread:
+                attachment_waiting.set()
+            if not original_path_lock.acquire(timeout=2):
+                raise TimeoutError("Workspace recovery blocked reader attachment")
+            return self
+
+        def __exit__(self, *_args):
+            original_path_lock.release()
+
+        def acquire(self, *args, **kwargs):
+            return original_path_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            original_path_lock.release()
+
+    def _path_check(fname):
+        if threading.current_thread() is recovery_thread:
+            recovery_started.set()
+            if not attachment_waiting.wait(2):
+                raise TimeoutError("Reader attachment did not request the path lock")
+        return original_path_check(fname)
+
+    def _recover():
+        try:
+            workspace_storage._recover_workspace_transactions(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _new_reader():
+        try:
+            readers.append(workspace_arrays.WorkspaceFileManager(path))
+        except BaseException as exc:
+            errors.append(exc)
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.create_group("__itws_pending_orphan")
+        recovery_thread = threading.Thread(target=_recover)
+        attachment_thread = threading.Thread(target=_new_reader)
+        with monkeypatch.context() as patch:
+            observed_lock = _ObservedPathLock()
+            patch.setattr(
+                workspace_arrays, "_workspace_file_lock", lambda _path: observed_lock
+            )
+            patch.setattr(workspace_storage, "_workspace_path_is_itws", _path_check)
+            recovery_thread.start()
+            try:
+                assert recovery_started.wait(2)
+                attachment_thread.start()
+                attachment_thread.join(3)
+                recovery_thread.join(3)
+            finally:
+                attachment_waiting.set()
+                recovery_thread.join(3)
+                if attachment_thread.ident is not None:
+                    attachment_thread.join(3)
+        assert not attachment_thread.is_alive()
+        assert not recovery_thread.is_alive()
+        assert not errors
+        assert len(readers) == 1
+        assert readers[0]._store is store
+        with store.read_session() as h5_file:
+            assert "__itws_pending_orphan" not in h5_file
+        readers[0].close()
+
+
+def test_workspace_pending_reader_owns_historical_payload_before_gc(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    historical_path = workspace_store.WorkspaceStore.object_path("historical")
+    values = np.arange(4.0)
+    with workspace_store.WorkspaceStore(path, create=True) as previous:
+        with previous.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file,
+                historical_path,
+                xr.Dataset({"data": ("x", values)}),
+                compression_mode="none",
+            )
+            h5_file.require_group(workspace_store.WorkspaceStore.object_path("current"))
+        previous.publish(_manifest("historical"))
+        previous.publish(_manifest("current"))
+        previous.publish(_manifest("current"))
+
+    reader = workspace_arrays.WorkspaceFileManager(
+        path, object_id="historical", group_path=historical_path
+    )
+    original_attach = workspace_arrays.WorkspaceFileManager._attach_store
+    attachment_started = threading.Event()
+    finish_attachment = threading.Event()
+    collector_waiting = threading.Event()
+    collection_finished = threading.Event()
+    collection_blocked: list[bool] = []
+    errors: list[BaseException] = []
+    stores = []
+
+    def _attach(pending_reader, target):
+        stores.append(target)
+        attachment_started.set()
+        if not finish_attachment.wait(2):
+            raise TimeoutError("Pending reader attachment was not released")
+        original_attach(pending_reader, target)
+
+    def _open_store():
+        try:
+            workspace_store.WorkspaceStore(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _collect():
+        try:
+            stores[0].collect_garbage(max_objects=10)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            collection_finished.set()
+
+    opening_thread = threading.Thread(target=_open_store)
+    collector_thread = threading.Thread(target=_collect)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                workspace_arrays.WorkspaceFileManager, "_attach_store", _attach
+            )
+            opening_thread.start()
+            assert attachment_started.wait(2)
+            store = stores[0]
+            original_lock = store.lock
+
+            class _ObservedStoreLock:
+                def __enter__(self):
+                    acquired = original_lock.acquire(blocking=False)
+                    if (
+                        threading.current_thread() is collector_thread
+                        and not collection_blocked
+                    ):
+                        collection_blocked.append(not acquired)
+                        collector_waiting.set()
+                    if not acquired and not original_lock.acquire(timeout=2):
+                        raise TimeoutError("Pending reader attachment did not finish")
+                    return self
+
+                def __exit__(self, *_args):
+                    original_lock.release()
+
+                def __getattr__(self, name):
+                    return getattr(original_lock, name)
+
+            observed_lock = _ObservedStoreLock()
+            patch.setattr(store, "_lock", observed_lock)
+            patch.setattr(
+                store, "_access_condition", threading.Condition(observed_lock)
+            )
+            collector_thread.start()
+            assert collector_waiting.wait(2)
+            # If publication released the store lock early, finish collection
+            # before attachment so the historical data loss is deterministic.
+            if not collection_blocked[0]:
+                assert collection_finished.wait(2)
+            finish_attachment.set()
+            opening_thread.join(3)
+            collector_thread.join(3)
+        assert not opening_thread.is_alive()
+        assert not collector_thread.is_alive()
+        assert not errors
+        assert reader._store is stores[0]
+        with reader.read_session() as h5_file:
+            actual = (
+                h5_file.groups[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+                .groups["historical"]
+                .variables["data"][:]
+            )
+        np.testing.assert_array_equal(actual, values)
+    finally:
+        finish_attachment.set()
+        if opening_thread.ident is not None:
+            opening_thread.join(3)
+        if collector_thread.ident is not None:
+            collector_thread.join(3)
+        reader.close()
+        for store in stores:
+            store.close()
+
+
 def test_workspace_compaction_allows_missing_optional_extension_source(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2633,7 +2967,6 @@ def test_workspace_metadata_retains_handle_until_operation_finishes(
             manager,
             group=owner.object_path(object_id),
             mode="r",
-            lock=manager.lock,
         )
         if operation not in {"construct", "tree"}:
             original_acquire = backend._acquire

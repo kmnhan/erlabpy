@@ -16,7 +16,6 @@ import numpy as np
 import xarray as xr
 from xarray.backends import BackendArray, CachingFileManager, H5NetCDFStore
 from xarray.backends.common import ArrayWriter
-from xarray.backends.locks import SerializableLock
 from xarray.core import indexing
 
 import erlab
@@ -90,11 +89,6 @@ def _workspace_file_lock(path: str | os.PathLike[str]) -> threading.RLock:
             lock = threading.RLock()
             _WORKSPACE_FILE_LOCKS[target] = lock
         return lock
-
-
-def _workspace_save_lock(path: str | os.PathLike[str]) -> threading.RLock:
-    """Return the single-writer lock for one published workspace document."""
-    return _workspace_file_lock(path)
 
 
 @contextlib.contextmanager
@@ -364,7 +358,6 @@ class WorkspaceFileManager(CachingFileManager):
         self._store_handle_generation = -1
         self._serialized_worker = False
         self._workspace_id: str | None = None
-        self.lock: typing.Any
         target = _normalized_file_path(path)
         if target is None:
             target = os.fsdecode(path)
@@ -372,8 +365,6 @@ class WorkspaceFileManager(CachingFileManager):
         self.workspace_path = target
         self.reader_path = target
         self._object_id = object_id
-        reader_key = ("erlab-workspace-reader", target)
-        self.lock = SerializableLock(reader_key)
         ensure_workspace_hdf5_filters_registered()
         cache_key = (
             "erlab-workspace-reader",
@@ -390,7 +381,9 @@ class WorkspaceFileManager(CachingFileManager):
                 "decode_vlen_strings": True,
                 "locking": "best-effort",
             },
-            lock=self.lock,
+            # Cache cleanup must use the same lock as complete standalone reads.
+            # xarray finalizers take this lock before calling close().
+            lock=_workspace_file_lock(target),
             manager_id=cache_key,
         )
         store = workspace_store.WorkspaceStore.register_path_reader(target, self)
@@ -399,11 +392,15 @@ class WorkspaceFileManager(CachingFileManager):
 
     def _attach_store(self, store: workspace_store.WorkspaceStore) -> None:
         """Attach this reader to the store that now owns its path."""
-        if self._store is store:
-            return
-        if self._store is not None:
-            raise RuntimeError("Workspace reader is already attached to a store")
-        with _workspace_file_lock(self.reader_path), self.lock:
+        # Standalone reads release the path lock before using the store lock.
+        # Publish attachment and reader ownership under both locks.
+        with store.lock, _workspace_file_lock(self.reader_path):
+            if self._store is store:
+                return
+            if self._store is not None:
+                raise RuntimeError("Workspace reader is already attached to a store")
+            if store.closed:
+                raise RuntimeError("Workspace store closed before reader attachment")
             if hasattr(self, "_ref_counter"):
                 super().close(needs_lock=False)
             self._store = store
@@ -435,11 +432,11 @@ class WorkspaceFileManager(CachingFileManager):
         store = self._store
         if store is None:
             raise RuntimeError("Workspace reader is not attached to a store")
-        if self._object_id is not None:
-            if self._object_id == object_id:
-                return
-            raise RuntimeError("Workspace reader already uses another object")
-        with self.lock:
+        with store.lock:
+            if self._object_id is not None:
+                if self._object_id == object_id:
+                    return
+                raise RuntimeError("Workspace reader already uses another object")
             self._close_store_wrapper()
             store.acquire_object(object_id)
             self._object_id = object_id
@@ -673,7 +670,6 @@ class WorkspaceFileManager(CachingFileManager):
         self._store_handle_generation = -1
         self._serialized_worker = True
         self._direct_read_datasets = {}
-        self.lock = SerializableLock(("erlab-workspace-reader", self.reader_path))
 
     def __dask_tokenize__(self) -> tuple[str, str, str | None, str | None]:
         store = self._store
@@ -773,7 +769,7 @@ class _WorkspaceH5NetCDFStore(H5NetCDFStore):
         manager: WorkspaceFileManager,
         group: str | None = None,
         mode: str | None = None,
-        lock: typing.Any = None,
+        lock: typing.Any = False,
         autoclose: bool = False,
     ) -> None:
         with manager.read_session():
@@ -852,7 +848,6 @@ def _open_workspace_dataset_from_manager(
             file_manager,
             group=group,
             mode="r",
-            lock=file_manager.lock,
             autoclose=False,
         )
         if chunks is None:
