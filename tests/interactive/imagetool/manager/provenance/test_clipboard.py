@@ -2232,9 +2232,9 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
         )
 
 
-@pytest.mark.parametrize("use_function", [False, True])
+@pytest.mark.parametrize("function_scope", [None, "default", "global"])
 def test_manager_copied_branches_keep_display_order(
-    use_function: bool,
+    function_scope: str | None,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -2244,15 +2244,25 @@ def test_manager_copied_branches_keep_display_order(
         [0.0, 0.25, -0.25], dims="x", coords={"x": data.x}, name="offsets"
     )
     first_code = "events.append('A')\nderived = data + 1"
-    last_code = "events.append('B')\nderived = derived * 2"
-    if use_function:
+    last_code = "events.append('B')\nderived = derived * 2 + correction"
+    input_name = "derived" if function_scope == "global" else "data"
+    expected = (data + (2 if function_scope == "global" else 1)) * 2 + offsets * 2
+    if function_scope == "default":
         first_code = (
             "events.append('A')\n"
             "def normalize(values=data):\n"
             "    return values + 1\n"
             "derived = normalize()"
         )
-        last_code = "events.append('B')\nderived = normalize() * 2"
+        last_code = "events.append('B')\nderived = normalize() * 2 + correction"
+    elif function_scope == "global":
+        first_code = (
+            "events.append('A')\n"
+            "def normalize():\n"
+            "    return derived + 1\n"
+            "derived = normalize()"
+        )
+        last_code = "events.append('B')\nderived = normalize() * 2 + correction"
     auxiliary_spec = script(
         ScriptCodeOperation(
             label="Prepare correction",
@@ -2265,9 +2275,9 @@ def test_manager_copied_branches_keep_display_order(
     spec = script(
         start_label="Prepare and shift sample",
         active_name="derived",
-        primary_input="data",
+        primary_input=input_name,
         script_inputs=(
-            ScriptInput(name="data"),
+            ScriptInput(name=input_name),
             ScriptInput(
                 name="correction",
                 provenance_spec=auxiliary_spec.model_dump(mode="json"),
@@ -2322,11 +2332,100 @@ def test_manager_copied_branches_keep_display_order(
         assert code is not None
         events: list[str] = []
         copied = _exec_generated_code(
-            code, {"data": data, "offsets": offsets, "events": events}
+            code, {input_name: data, "offsets": offsets, "events": events}
         )
         assert events == ["A", "X", "B"]
-        xr.testing.assert_identical(copied["derived"], (data + 1) * 2)
+        xr.testing.assert_identical(copied["derived"], expected)
         xr.testing.assert_identical(copied["correction"], offsets * 2)
+        assert manager._details_panel._selected_derivation_step_payload() is None
+
+
+def test_manager_copied_auxiliary_precedes_reused_bound_input(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("sample").rename(y="eV").qsel.mean("z")
+    offsets = xr.DataArray(
+        [0.0, 0.25, -0.25], dims="x", coords={"x": data.x}, name="offsets"
+    )
+    auxiliary = script(
+        ScriptCodeOperation(
+            label="Prepare correction",
+            code="events.append('X')\ncorrection = correction * 2",
+        ),
+        start_label="Use measured offsets",
+        seed_code="correction = offsets",
+        active_name="correction",
+    )
+    shift = ReplayStep(
+        operation=ShiftFromInputOperation(along="eV", negate=False),
+        input_bindings={"shift": "correction"},
+    )
+    spec = script(
+        start_label="Prepare and shift sample",
+        active_name="derived",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(
+                name="correction", provenance_spec=auxiliary.model_dump(mode="json")
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset sample", code="events.append('A')\nderived = data + 1"
+                )
+            ),
+            shift,
+            shift,
+        ),
+    )
+    expected = erlab.analysis.transform.shift(data + 1, offsets * 2, along="eV")
+    with manager_context() as manager:
+        source = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+            provenance_spec=spec,
+        )
+        select_tools(manager, [source])
+        manager._update_info()
+        rows = []
+        auxiliary_selected = False
+        for index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if not isinstance(row, _ProvenanceDisplayRow) or row.replay_ref is None:
+                continue
+            if row.replay_ref.kind != "operation":
+                continue
+            if not row.script_input_path and row.replay_ref.operation_index in (0, 2):
+                rows.append(index)
+            elif row.script_input_path == (1,) and not auxiliary_selected:
+                rows.append(index)
+                auxiliary_selected = True
+        assert len(rows) == 3
+        select_metadata_rows(manager, rows)
+        code = manager._selected_derivation_code()
+        assert code is not None
+        events: list[str] = []
+        original_shift = erlab.analysis.transform.shift
+
+        def observed_shift(*args, **kwargs):
+            events.append("B")
+            return original_shift(*args, **kwargs)
+
+        monkeypatch.setattr(erlab.analysis.transform, "shift", observed_shift)
+        copied = _exec_generated_code(
+            code, {"data": data, "offsets": offsets, "events": events}
+        )
+
+        xr.testing.assert_identical(copied["derived"], expected)
+        assert events == ["A", "X", "B"]
+        assert ".copy(" not in code
         assert manager._details_panel._selected_derivation_step_payload() is None
 
 

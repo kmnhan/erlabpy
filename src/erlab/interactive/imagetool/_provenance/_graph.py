@@ -81,6 +81,11 @@ def _memoized_input_provenance_resolver() -> InputProvenanceResolver:
     return _memoized_by_identity(ScriptInput.parsed_provenance_spec)
 
 
+class SelectedProvenanceScope(typing.NamedTuple):
+    spec: ToolProvenanceSpec
+    input_scopes: Mapping[str, int]
+
+
 class ReplayNode:
     __slots__ = (
         "cacheable",
@@ -3423,12 +3428,41 @@ def _extension_script_references(
     return references
 
 
+def _partition_emission_prologues(
+    chunks: Sequence[tuple[str, bool]],
+) -> tuple[str, list[tuple[str, bool]]]:
+    """Keep module declarations before the ordered notebook statements."""
+    module_docstring: str | None = None
+    future_prologues: list[str] = []
+    bodies = list(chunks)
+    for index, (chunk, group_imports) in enumerate(chunks):
+        docstring, chunk_future_imports, body = _partition_module_prologue(chunk)
+        if docstring is not None:
+            if module_docstring is None:
+                module_docstring = docstring
+            else:
+                body = "\n".join(part for part in (docstring, body) if part)
+        if chunk_future_imports:
+            future_prologues.append(chunk_future_imports)
+        bodies[index] = (body, group_imports)
+
+    future_import_code = _group_framework_imports(
+        tuple((future_prologue, True) for future_prologue in future_prologues)
+    )
+    module_prologue = "\n".join(
+        part for part in (module_docstring, future_import_code) if part
+    )
+    return module_prologue, bodies
+
+
 def emit_replay_code(
     graph: ReplayGraph,
     *,
     output_name: str | None = None,
     include_all_aliases: bool = False,
     input_name_overrides: Mapping[str, str] | None = None,
+    include_framework_imports: bool = False,
+    publish_output: bool = False,
 ) -> str:
     from erlab.interactive.imagetool._provenance._operations._extension import (
         ExtensionRoutineOperation,
@@ -3472,7 +3506,9 @@ def emit_replay_code(
                 )
             )
         )
-        if not omit_mutating_display_alias and output_alias not in aliases:
+        if (
+            publish_output or not omit_mutating_display_alias
+        ) and output_alias not in aliases:
             aliases = [*aliases, output_alias]
     remaining_uses: Counter[str] = Counter()
     for replay_node in graph.nodes:
@@ -3928,18 +3964,7 @@ def emit_replay_code(
         ):
             append_code(f"{public_name} = {planned_name}")
             owned_names[public_name] = _emitted_node_key(graph, node_by_key, key)
-    module_docstring: str | None = None
-    future_prologues: list[str] = []
-    for index, (chunk, group_imports) in enumerate(chunks):
-        docstring, chunk_future_imports, body = _partition_module_prologue(chunk)
-        if docstring is not None:
-            if module_docstring is None:
-                module_docstring = docstring
-            else:
-                body = "\n".join(part for part in (docstring, body) if part)
-        if chunk_future_imports:
-            future_prologues.append(chunk_future_imports)
-        chunks[index] = (body, group_imports)
+    module_prologue, chunks = _partition_emission_prologues(chunks)
 
     implicit_framework_names: set[str] = set()
     framework_import_targets: dict[str, str] = {}
@@ -3949,7 +3974,9 @@ def emit_replay_code(
 
     known_framework_bindings: dict[str, str] = {}
     synthesize_framework_imports = (
-        not graph.display or _semantic_emitted_step_count(graph) > 1
+        include_framework_imports
+        or not graph.display
+        or _semantic_emitted_step_count(graph) > 1
     )
     for index, ((chunk, group_imports), implicit_imports) in enumerate(
         zip(chunks, chunk_implicit_imports, strict=True)
@@ -4033,12 +4060,6 @@ def emit_replay_code(
             *extension_setup_chunks,
             *chunks,
         )
-    )
-    future_import_code = _group_framework_imports(
-        tuple((future_prologue, True) for future_prologue in future_prologues)
-    )
-    module_prologue = "\n".join(
-        part for part in (module_docstring, future_import_code) if part
     )
     if dynamic_restore_support is None:
         cleaned_code = _rename_display_replay_temps(
@@ -4130,48 +4151,96 @@ def selected_steps_spec(
 
 
 def selected_provenance_code(
-    scopes: Sequence[tuple[ToolProvenanceSpec, int | None]],
+    scopes: Sequence[SelectedProvenanceScope],
 ) -> str:
-    """Emit selected scopes in order, binding each primary predecessor once."""
+    """Emit notebook scopes in order with each public binding visible immediately."""
     resolve_input_provenance = _memoized_input_provenance_resolver()
-    notebook_specs = tuple(_selected_notebook_spec(spec) for spec, _previous in scopes)
+    notebook_specs = tuple(_selected_notebook_spec(scope.spec) for scope in scopes)
     reserved_names: set[str] = set()
+    scope_writes: list[set[str]] = []
     for spec in notebook_specs:
         reserved_names.update(_reserved_names_from_spec(spec, resolve_input_provenance))
-    graph = ReplayGraph(reserved_names=reserved_names, display=True)
-    outputs: list[str] = []
-    aliases: dict[str, str] = {}
-    caller_keys: dict[str, str] = {}
-    scope_names: list[set[str]] = []
-    consumed = {previous for _spec, previous in scopes if previous is not None}
-    for index, (spec, (_original, previous)) in enumerate(
-        zip(notebook_specs, scopes, strict=True)
-    ):
-        inherited_names = set() if previous is None else scope_names[previous]
-        input_keys = {
-            item.name: caller_keys[item.name]
-            for item in spec.script_inputs
-            if item.revision_id is None
-            and item.node_snapshot_token is None
-            and item.provenance_spec is None
-            and item.name in caller_keys
-        }
-        for item in spec.script_inputs:
-            if (
-                item.name != spec.primary_input
-                and item.name in inherited_names
-                and item.name not in input_keys
-                and item.revision_id is None
-                and item.node_snapshot_token is None
+        stores = set() if spec.active_name is None else {spec.active_name}
+        for step in spec.steps:
+            stores.update(step.context_names)
+        codes = (
+            spec.seed_code,
+            *(getattr(step.operation, "code", None) for step in spec.steps),
+        )
+        for code in codes:
+            if isinstance(code, str):
+                accesses, code_stores = _code_name_accesses(code)
+                reserved_names.update(accesses)
+                reserved_names.update(code_stores)
+                stores.update(code_stores)
+        scope_writes.append(stores)
+
+    def capture_name(public_name: str) -> str:
+        candidate = f"{public_name}_input"
+        suffix = 2
+        while candidate in reserved_names:
+            candidate = f"{public_name}_input_{suffix}"
+            suffix += 1
+        reserved_names.add(candidate)
+        return candidate
+
+    source_captures: dict[str, str] = {}
+    output_captures: dict[int, str] = {}
+    scope_bindings: list[dict[str, str]] = []
+    written_names: set[str] = set()
+    for index, scope in enumerate(scopes):
+        spec = scope.spec
+        bindings: dict[str, str] = {}
+        for input_name, previous in scope.input_scopes.items():
+            if not 0 <= previous < index:
+                raise ReplayGraphError("Selected notebook scope has no earlier input")
+            previous_name = notebook_specs[previous].active_name
+            if previous_name is None:
+                raise ReplayGraphError("Selected notebook scope has no named output")
+            if previous_name in _REPLAY_PROTECTED_NAMES or any(
+                previous_name in names for names in scope_writes[previous + 1 : index]
             ):
-                input_keys[item.name] = graph.add_node(
-                    _canonical_key("caller_input", {"name": item.name}),
-                    "caller_input",
-                    payload={"name": item.name},
-                )
-        if previous is not None and spec.primary_input is not None:
-            input_keys[spec.primary_input] = outputs[previous]
-        output_key = _compile_spec(
+                if previous not in output_captures:
+                    output_captures[previous] = capture_name(input_name)
+                previous_name = output_captures[previous]
+            bindings[input_name] = previous_name
+        for item in spec.script_inputs:
+            if item.name in bindings:
+                continue
+            recorded = (
+                item.node_uid is not None
+                or item.revision_id is not None
+                or item.node_snapshot_token is not None
+                or item.source_spec is not None
+                or item.provenance_spec is not None
+            )
+            if not recorded:
+                if item.name in bindings.values():
+                    bindings[item.name] = item.name
+                continue
+            if item.name not in written_names:
+                continue
+            if item.name not in source_captures:
+                source_captures[item.name] = capture_name(item.name)
+            bindings[item.name] = source_captures[item.name]
+        scope_bindings.append(bindings)
+        written_names.update(scope_writes[index])
+
+    graphs: list[ReplayGraph] = []
+    for spec, bindings in zip(notebook_specs, scope_bindings, strict=True):
+        graph = ReplayGraph(reserved_names=reserved_names, display=True)
+        input_names = {
+            item.name: bindings.get(item.name, item.name) for item in spec.script_inputs
+        }
+        public_inputs = {
+            name: graph.add_node(
+                _canonical_key("caller_input", {"name": name}),
+                "caller_input",
+                payload={"name": name},
+            )
+            for name in dict.fromkeys(input_names.values())
+        }
+        graph.output_key = _compile_spec(
             graph,
             spec,
             display=True,
@@ -4181,35 +4250,35 @@ def selected_provenance_code(
             live_input_resolver=None,
             allow_unresolved_inputs=False,
             input_provenance_resolver=resolve_input_provenance,
-            input_keys=input_keys,
+            input_keys={
+                name: public_inputs[value] for name, value in input_names.items()
+            },
         )
-        for item in spec.script_inputs:
-            if (
-                item.revision_id is None
-                and item.node_snapshot_token is None
-                and item.provenance_spec is None
-                and item.name not in input_keys
-                and (keys := graph.required_input_keys(item.name))
-            ):
-                caller_keys[item.name] = keys[-1]
-        outputs.append(output_key)
-        stored_names = set(inherited_names)
-        for step in spec.steps:
-            if getattr(step.operation, "op", None) == "script_code":
-                operation = typing.cast("ScriptCodeOperation", step.operation)
-                _accesses, stores = _code_name_accesses(
-                    typing.cast("str", operation.code)
-                )
-                stored_names.update(stores)
-        scope_names.append(stored_names)
-        if index not in consumed and spec.active_name is not None:
-            aliases[spec.active_name] = output_key
-    graph.aliases = list(aliases.items())
-    graph.output_key = outputs[-1] if outputs else None
-    return emit_replay_code(
-        graph,
-        include_all_aliases=True,
-        output_name=notebook_specs[-1].active_name if notebook_specs else None,
+        graphs.append(graph)
+    consumed = {
+        previous for scope in scopes for previous in scope.input_scopes.values()
+    }
+    include_framework_imports = sum(map(_semantic_emitted_step_count, graphs)) > 1
+    chunks: list[tuple[str, bool]] = [
+        (f"{alias} = {name}", False) for name, alias in source_captures.items()
+    ]
+    for index, (graph, spec) in enumerate(zip(graphs, notebook_specs, strict=True)):
+        chunks.append(
+            (
+                emit_replay_code(
+                    graph,
+                    output_name=spec.active_name,
+                    include_framework_imports=include_framework_imports,
+                    publish_output=index in consumed,
+                ),
+                True,
+            )
+        )
+        if index in output_captures:
+            chunks.append((f"{output_captures[index]} = {spec.active_name}", False))
+    module_prologue, chunks = _partition_emission_prologues(chunks)
+    return "\n".join(
+        part for part in (module_prologue, _group_framework_imports(chunks)) if part
     )
 
 
@@ -4234,14 +4303,14 @@ def selected_steps_code(
     """Emit selected operations with explicit notebook input variables."""
     return selected_provenance_code(
         (
-            (
+            SelectedProvenanceScope(
                 selected_steps_spec(
                     steps,
                     input_name=input_name,
                     output_name=output_name,
                     input_alias=input_alias,
                 ),
-                None,
+                {},
             ),
         )
     )

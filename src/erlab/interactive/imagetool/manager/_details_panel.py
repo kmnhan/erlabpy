@@ -18,6 +18,7 @@ import erlab.interactive.utils
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
+    SelectedProvenanceScope,
     compile_replay_graph,
     emit_replay_code,
     script_inputs_code,
@@ -1247,7 +1248,7 @@ class _DetailsPanelController:
 
     def _selected_derivation_scopes(
         self,
-    ) -> list[tuple[ToolProvenanceSpec, int | None]]:
+    ) -> list[SelectedProvenanceScope]:
         groups = [
             tuple(group)
             for _key, group in itertools.groupby(
@@ -1259,7 +1260,7 @@ class _DetailsPanelController:
                 ),
             )
         ]
-        selected: list[tuple[ToolProvenanceSpec, int | None]] = []
+        selected: list[SelectedProvenanceScope] = []
         for group_index, rows in enumerate(groups):
             spec = rows[0][1]
             if any(entry[1] != spec for entry in rows[1:]):
@@ -1294,7 +1295,7 @@ class _DetailsPanelController:
             )
 
             uid, _original, row, _step = rows[0]
-            previous = None
+            input_scopes: dict[str, int] = {}
             for index in range(group_index - 1, -1, -1):
                 previous_uid, _previous_spec, previous_row, _previous_step = groups[
                     index
@@ -1304,24 +1305,35 @@ class _DetailsPanelController:
                 path = previous_row.script_input_path
                 if path[: len(row.script_input_path)] != row.script_input_path:
                     continue
+                relative_path = path[len(row.script_input_path) :]
+                input_name = selected_spec.primary_input
                 current: ToolProvenanceSpec | None = spec
                 primary_chain = True
-                for input_index in path[len(row.script_input_path) :]:
+                for depth, input_index in enumerate(relative_path):
                     if current is None or input_index >= len(current.script_inputs):
                         primary_chain = False
                         break
                     item = current.script_inputs[input_index]
-                    primary_input = current.primary_input or _direct_replay_source_name(
-                        current
-                    )
-                    if item.name != primary_input:
-                        primary_chain = False
-                        break
+                    if depth == 0:
+                        input_name = item.name
+                    else:
+                        primary_input = (
+                            current.primary_input or _direct_replay_source_name(current)
+                        )
+                        if item.name != primary_input:
+                            primary_chain = False
+                            break
                     current = item.parsed_provenance_spec()
-                if primary_chain:
-                    previous = index
-                    break
-            selected.append((selected_spec, previous))
+                if (
+                    primary_chain
+                    and input_name is not None
+                    and input_name not in input_scopes
+                    and any(
+                        item.name == input_name for item in selected_spec.script_inputs
+                    )
+                ):
+                    input_scopes[input_name] = index
+            selected.append(SelectedProvenanceScope(selected_spec, input_scopes))
         return selected
 
     def _selected_derivation_code(self) -> str | None:
@@ -1377,13 +1389,14 @@ class _DetailsPanelController:
         except ReplayGraphError:
             return None
         if not scopes or any(
-            previous != index - 1
-            for index, (_spec, previous) in enumerate(scopes)
+            scope.input_scopes != {scope.spec.primary_input: index - 1}
+            for index, scope in enumerate(scopes)
             if index
         ):
             return None
-        spec = scopes[0][0]
-        for local, _previous in scopes[1:]:
+        spec = scopes[0].spec
+        for scope in scopes[1:]:
+            local = scope.spec
             spec = local.model_copy(
                 update={
                     "script_inputs": tuple(

@@ -492,18 +492,15 @@ def menu_map_by_object_name(
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
-    locals_ns = dict(namespace)
-    exec(  # noqa: S102
-        code,
-        {
-            "np": np,
-            "xr": xr,
-            "erlab": erlab,
-            "era": erlab.analysis,
-        },
-        locals_ns,
-    )
-    return locals_ns
+    namespace = {
+        "np": np,
+        "xr": xr,
+        "erlab": erlab,
+        "era": erlab.analysis,
+        **namespace,
+    }
+    exec(code, namespace, namespace)  # noqa: S102
+    return namespace
 
 
 def _assert_modelfit_code_replays_source(
