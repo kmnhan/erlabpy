@@ -955,7 +955,7 @@ class _WorkspaceSaver:
         attrs["itool_name"] = node.name
         attrs["itool_title"] = node.name
 
-        _set_imagetool_provenance_attrs(attrs, node.provenance_spec)
+        _set_imagetool_provenance_attrs(attrs, node.persistence_provenance_spec)
 
         if isinstance(node, _ImageToolWrapper):
             if node.source_input_ndim is None:
@@ -1345,10 +1345,9 @@ class _WorkspaceSaver:
                         serialized_dataset_ids.add(id(dataset))
             if attrs_payload is not None:
                 if kind == "imagetool" and not needs_current_attrs:
+                    provenance_spec = node.persistence_provenance_spec
                     provenance_attrs: dict[str, typing.Any] = {}
-                    _set_imagetool_provenance_attrs(
-                        provenance_attrs, node.provenance_spec
-                    )
+                    _set_imagetool_provenance_attrs(provenance_attrs, provenance_spec)
                     for key in (
                         _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
                         _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
@@ -1371,7 +1370,7 @@ class _WorkspaceSaver:
                             attrs = workspace_format._restore_workspace_manifest_attrs(
                                 attrs_payload
                             )
-                            _set_imagetool_provenance_attrs(attrs, node.provenance_spec)
+                            _set_imagetool_provenance_attrs(attrs, provenance_spec)
                             attrs_payload = workspace_format._workspace_manifest_attrs(
                                 attrs
                             )

@@ -2005,6 +2005,20 @@ class _ManagedWindowNode(QtCore.QObject):
             return self._tool_provenance_spec(flush_deferred_restore=False)
         return self.displayed_provenance_spec
 
+    @property
+    def persistence_provenance_spec(self) -> ToolProvenanceSpec | None:
+        """Return the saved recipe without reading data or deferred tool state."""
+        if (
+            isinstance(self, _ImageToolWrapper)
+            and self.watched
+            and self._provenance_spec is None
+        ):
+            # The watched binding reconstructs this seed from the main data payload.
+            return None
+        if self.tool_window is not None:
+            return self._tool_provenance_spec(flush_deferred_restore=False)
+        return self.provenance_spec
+
     def persistence_data_backing(
         self,
     ) -> tuple[typing.Literal["dask", "file_lazy", "memory"] | None, tuple[str, ...]]:
@@ -2032,17 +2046,10 @@ class _ManagedWindowNode(QtCore.QObject):
             raise ValueError(
                 "Could not read this node's saved data from the workspace file."
             )
-        provenance_spec = self.provenance_spec
-        replay_source_data = self.replay_source_data
-        if (
-            isinstance(self, _ImageToolWrapper)
-            and self.watched
-            and self._provenance_spec is None
-        ):
-            # A watched root's seed is reconstructed from its watched binding, and its
-            # unmodified source is already the main ImageTool workspace payload.
-            provenance_spec = None
-            replay_source_data = None
+        provenance_spec = self.persistence_provenance_spec
+        replay_source_data = (
+            None if provenance_spec is None else self.replay_source_data
+        )
         if self.imagetool is None:
             return _NodePersistenceView(
                 data=None,

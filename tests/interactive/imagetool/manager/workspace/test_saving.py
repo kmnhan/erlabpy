@@ -46,6 +46,10 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,
 )
+from erlab.interactive.imagetool.manager._metadata_editor import (
+    MetadataCellEdit,
+    MetadataField,
+)
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
@@ -585,6 +589,101 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
             ]
         } == registry_ids
         assert reads == 1
+
+
+@pytest.mark.parametrize("save_mode", ["first", "repeat", "save_as", "pending_state"])
+def test_workspace_save_preserves_watched_root_replay(
+    qtbot, monkeypatch, tmp_path, manager_context, save_mode
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        name="scan",
+    ).assign_coords(angle=0.0)
+    path = tmp_path / "watched.itws"
+    with manager_context() as manager:
+        manager._data_watched_update("scan", "watched-source", data)
+        controller = manager._workspace_controller
+        if save_mode == "pending_state":
+            manager.get_imagetool(0).hide()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        node = manager._node_for_target(0)
+        assert node.provenance_spec is not None
+        encoded_attrs = []
+        encode_attrs = workspace_format._workspace_manifest_attrs
+
+        def record_encode(attrs):
+            encoded = encode_attrs(attrs)
+            encoded_attrs.append(encoded)
+            return encoded
+
+        monkeypatch.setattr(
+            workspace_format, "_workspace_manifest_attrs", record_encode
+        )
+        if save_mode == "save_as":
+            path = tmp_path / "watched-copy.itws"
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        elif save_mode == "pending_state":
+            assert controller.loading._load_workspace_file(
+                path, replace=True, associate=True, mark_dirty=False, select=False
+            )
+            node = manager._node_for_target(0)
+            assert node.imagetool is None
+            node.note = "Reviewed"
+            with monkeypatch.context() as pending_patch:
+                pending_patch.setattr(
+                    node,
+                    "materialize_pending_workspace_payload",
+                    lambda: pytest.fail("Saving metadata must not read pending data"),
+                )
+                assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            assert node.imagetool is None
+        elif save_mode == "repeat":
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            assert encoded_attrs == []
+
+        attrs = _current_workspace_payload_attrs(path)
+        for key in (
+            _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+            _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+        ):
+            assert key not in attrs
+        assert node._provenance_spec is None
+        assert controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager._node_for_target(0)
+        assert restored.watched
+        assert restored._provenance_spec is None
+        assert restored.has_replay_source
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                restored, "display", restored.provenance_spec
+            ),
+            data,
+        )
+
+        edits = (
+            MetadataCellEdit(
+                MetadataField(kind="attribute", name="sample"), value="reference"
+            ),
+            MetadataCellEdit(MetadataField(kind="coordinate", name="angle"), value=1.5),
+        )
+        assert manager._metadata_editor.apply_edits({0: edits})
+        select_tools(manager, [0])
+        manager._update_info(uid=restored.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                restored, "display", restored.provenance_spec
+            ),
+            data.assign_attrs(sample="reference").assign_coords(angle=1.5),
+        )
 
 
 def test_workspace_adoption_normalizes_legacy_seed_before_pure_save(
