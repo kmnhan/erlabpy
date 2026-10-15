@@ -691,12 +691,8 @@ class _WorkspaceSaver:
             nodes=self._workspace_node_manifest_entries(),
             erlab_version=str(erlab.__version__),
             workspace_link_id=self._manager._workspace_state.link_id,
-            manager_layout=self._workspace_layout_snapshot(),
-            loader_state=self._workspace_loader_state_snapshot(),
-            standalone_apps=self._workspace_standalone_apps_snapshot(),
-            option_overrides=self._workspace_option_overrides_snapshot(),
-            acquisition_context=(self._manager._acquisition_context.state_payload()),
         )
+        manifest.update(self._workspace_metadata_snapshot())
         manifest["extension_requirements"] = scripts.requirement_manifest_value(
             requirements
         )
@@ -712,6 +708,16 @@ class _WorkspaceSaver:
             )
         ]
         return manifest
+
+    def _workspace_metadata_snapshot(self) -> dict[str, typing.Any]:
+        """Capture the document settings restored by a full workspace load."""
+        return {
+            "manager_layout": self._workspace_layout_snapshot(),
+            "loader_state": self._workspace_loader_state_snapshot(),
+            "standalone_apps": self._workspace_standalone_apps_snapshot(),
+            "interactive_option_overrides": self._workspace_option_overrides_snapshot(),
+            "acquisition_context": self._manager._acquisition_context.state_payload(),
+        }
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
         return self._manager.effective_interactive_options.io.workspace.compression

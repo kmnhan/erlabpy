@@ -165,18 +165,20 @@ def _workspace_load_stage(
 
 
 class _WorkspaceReplaceBackup:
-    __slots__ = ("file_path", "snapshot", "source_paths", "tree")
+    __slots__ = ("file_path", "metadata", "snapshot", "source_paths", "tree")
 
     def __init__(
         self,
         snapshot: _WorkspaceStateSnapshot,
         *,
         source_paths: frozenset[pathlib.Path],
+        metadata: dict[str, typing.Any],
         tree: xr.DataTree | None = None,
         file_path: pathlib.Path | None = None,
     ) -> None:
         self.snapshot = snapshot
         self.source_paths = source_paths
+        self.metadata = metadata
         self.tree = tree
         self.file_path = file_path
 
@@ -890,6 +892,7 @@ class _WorkspaceLoader:
         incoming_path: str | os.PathLike[str] | None,
     ) -> _WorkspaceReplaceBackup:
         snapshot = self._controller._workspace_state_snapshot()
+        metadata = self._controller.saving._workspace_metadata_snapshot()
         current_path = self._manager._workspace_state.path
         source_paths = set(self._controller._workspace_revision_source_paths())
         for node in self._manager._tool_graph.nodes.values():
@@ -908,11 +911,15 @@ class _WorkspaceLoader:
             and self._workspace_file_can_restore_replace_backup(current_path)
         ):
             return _WorkspaceReplaceBackup(
-                snapshot, source_paths=frozenset(source_paths), file_path=current_path
+                snapshot,
+                source_paths=frozenset(source_paths),
+                metadata=metadata,
+                file_path=current_path,
             )
         return _WorkspaceReplaceBackup(
             snapshot,
             source_paths=frozenset(source_paths),
+            metadata=metadata,
             tree=self._controller.saving._to_datatree(),
         )
 
@@ -2242,11 +2249,7 @@ class _WorkspaceLoader:
                 self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
             if replace:
                 with profiler.stage("link/layout restore"):
-                    self._restore_workspace_layout(manifest)
-                    self._restore_workspace_option_overrides(manifest)
-                    self._restore_workspace_loader_state(manifest)
-                    self._restore_acquisition_context(manifest)
-                    self._restore_standalone_apps_state(manifest)
+                    self._restore_workspace_metadata(manifest)
             if mark_dirty and not replace and extension_scripts_changed:
                 self._controller._mark_workspace_structure_dirty(
                     "Imported extension scripts"
@@ -2260,58 +2263,63 @@ class _WorkspaceLoader:
     def _restore_replaced_workspace(
         self,
         backup_tree: xr.DataTree,
-        snapshot: _WorkspaceStateSnapshot,
     ) -> None:
-        with self._controller._workspace_load_context():
-            self._manager.remove_all_tools()
-            self._controller._drain_workspace_restore_events()
-            self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
-            self._load_workspace_figures(backup_tree)
-            self._controller._drain_workspace_restore_events()
-        self._restore_workspace_state_snapshot(snapshot)
+        self._manager.remove_all_tools()
+        self._controller._drain_workspace_restore_events()
+        self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
+        self._load_workspace_figures(backup_tree)
+        self._controller._drain_workspace_restore_events()
 
-    def _restore_replaced_workspace_file(
-        self, path: pathlib.Path, snapshot: _WorkspaceStateSnapshot
-    ) -> None:
-        with self._controller._workspace_load_context():
-            self._manager.remove_all_tools()
-            self._controller._drain_workspace_restore_events()
-            root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
-            schema_version, manifest = (
-                workspace_format._workspace_file_metadata_from_attrs(root_attrs)
+    def _restore_replaced_workspace_file(self, path: pathlib.Path) -> None:
+        self._manager.remove_all_tools()
+        self._controller._drain_workspace_restore_events()
+        root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
+        schema_version, manifest = workspace_format._workspace_file_metadata_from_attrs(
+            root_attrs
+        )
+        if (
+            workspace_format._workspace_schema_uses_immutable_generations(
+                schema_version
             )
-            if (
-                workspace_format._workspace_schema_uses_immutable_generations(
-                    schema_version
-                )
-                and manifest is not None
-            ):
-                self._from_h5py_workspace_file(
-                    path,
-                    manifest,
-                    replace=False,
-                    mark_dirty=False,
-                )
-            else:
-                tree = workspace_arrays.open_workspace_datatree(path, chunks=None)
-                self._from_datatree(
-                    tree,
-                    replace=False,
-                    mark_dirty=False,
-                    select=False,
-                    workspace_file_path=path,
-                )
-            self._controller._drain_workspace_restore_events()
-        self._restore_workspace_state_snapshot(snapshot)
+            and manifest is not None
+        ):
+            self._from_h5py_workspace_file(
+                path,
+                manifest,
+                replace=False,
+                mark_dirty=False,
+            )
+        else:
+            tree = workspace_arrays.open_workspace_datatree(path, chunks=None)
+            self._from_datatree(
+                tree,
+                replace=False,
+                mark_dirty=False,
+                select=False,
+                workspace_file_path=path,
+            )
+        self._controller._drain_workspace_restore_events()
 
     def _restore_replaced_workspace_backup(
         self, backup: _WorkspaceReplaceBackup
     ) -> None:
-        if backup.tree is not None:
-            self._restore_replaced_workspace(backup.tree, backup.snapshot)
-            return
-        if backup.file_path is not None:
-            self._restore_replaced_workspace_file(backup.file_path, backup.snapshot)
+        with self._controller._workspace_load_context():
+            if backup.tree is not None:
+                self._restore_replaced_workspace(backup.tree)
+            elif backup.file_path is not None:
+                self._restore_replaced_workspace_file(backup.file_path)
+            self._restore_workspace_state_snapshot(backup.snapshot)
+            self._restore_workspace_metadata(backup.metadata)
+            self._controller._drain_workspace_restore_events()
+
+    def _restore_workspace_metadata(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        self._restore_workspace_layout(manifest)
+        self._restore_workspace_option_overrides(manifest)
+        self._restore_workspace_loader_state(manifest)
+        self._restore_acquisition_context(manifest)
+        self._restore_standalone_apps_state(manifest)
 
     def _from_datatree(
         self,
@@ -2421,11 +2429,7 @@ class _WorkspaceLoader:
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if replace:
                     with profiler.stage("link/layout restore"):
-                        self._restore_workspace_layout(manifest)
-                        self._restore_workspace_option_overrides(manifest)
-                        self._restore_workspace_loader_state(manifest)
-                        self._restore_acquisition_context(manifest)
-                        self._restore_standalone_apps_state(manifest)
+                        self._restore_workspace_metadata(manifest)
                 if not mark_dirty:
                     with profiler.stage("ui catch-up"):
                         self._controller._drain_workspace_restore_events()

@@ -5422,3 +5422,153 @@ def test_manager_workspace_validates_angle_calculator_state(manager_context):
         validate = manager._workspace_controller._validated_standalone_app_state
         assert validate("angle_calculator", {"geometry": "invalid"}) is None
         assert validate("angle_calculator", {}) is not None
+
+
+@pytest.mark.parametrize("memory_backup", [False, True])
+@pytest.mark.parametrize("original_visible", [False, True])
+def test_failed_workspace_replacement_restores_standalone_app_backup(
+    qtbot, monkeypatch, tmp_path, manager_context, memory_backup, original_visible
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    incoming = tmp_path / "incoming.itws"
+
+    def _set_metadata(manager, label, widths):
+        directory = tmp_path / label
+        directory.mkdir(exist_ok=True)
+        manager.resize(720, 600)
+        QtWidgets.QApplication.processEvents()
+        manager.main_splitter.setSizes(widths)
+        manager._workspace_controller.loading._restore_workspace_loader_state(
+            {
+                "loader_state": {
+                    "recent_directory": str(directory),
+                    "recent_name_filter": label,
+                    "manager_loader_kwargs_by_filter": {label: {"sentinel": label}},
+                }
+            }
+        )
+        QtWidgets.QApplication.processEvents()
+
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 10, _in_manager=True),
+            show=False,
+        )
+        manager.set_workspace_option_override(
+            "angle_calculator.show_laser_arpes_controls", True
+        )
+        _configure_workspace_app(manager, "ptable")
+        _set_metadata(manager, "incoming-loader", [540, 180])
+        manager._workspace_controller.saving._save_workspace_document(incoming)
+
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        node = manager._node_for_target(index)
+        revision_id = node.revision_id_for_role("source")
+        manager.set_workspace_option_override(
+            "angle_calculator.show_laser_arpes_controls", False
+        )
+        _configure_workspace_app(manager, "angle_calculator")
+        if not original_visible:
+            manager._close_standalone_app("angle_calculator")
+        controller = manager._workspace_controller
+        _set_metadata(manager, "original-loader", [180, 540])
+        controller.saving._save_workspace_document(original)
+        adopt_workspace_path(manager, original)
+        _set_metadata(manager, "original-loader", [180, 540])
+        controller._mark_workspace_clean()
+        if memory_backup:
+            # Closed app settings can differ from the last saved workspace.
+            _configure_workspace_app(manager, "angle_calculator")
+            widget = manager._standalone_app_windows["angle_calculator"]
+            changed_state = widget.workspace_state_payload()
+            changed_state["geometry"]["photon_energy"] = 38.4
+            widget.restore_workspace_state(changed_state)
+            if not original_visible:
+                manager._close_standalone_app("angle_calculator")
+        expected_metadata = controller.saving._workspace_metadata_snapshot()
+        expected_apps = expected_metadata["standalone_apps"]
+        expected_splitter_sizes = manager.main_splitter.sizes()
+        expected_modified = manager.is_workspace_modified
+        expected_node_uid = node.uid
+        backup_modes = []
+        create_backup = controller.loading._workspace_replace_backup_for_load
+
+        def _record_backup(*args, **kwargs):
+            backup = create_backup(*args, **kwargs)
+            backup_modes.append(backup.tree is not None)
+            return backup
+
+        monkeypatch.setattr(
+            controller.loading, "_workspace_replace_backup_for_load", _record_backup
+        )
+        apply_state = manager._apply_standalone_app_state
+        failed = False
+
+        def _fail_incoming_app(key, *args):
+            nonlocal failed
+            if key == "ptable" and not failed:
+                failed = True
+                assert key in manager._standalone_app_windows
+                raise RuntimeError("Incoming app restore failed")
+            return apply_state(key, *args)
+
+        monkeypatch.setattr(manager, "_apply_standalone_app_state", _fail_incoming_app)
+        with pytest.raises(RuntimeError, match="Incoming app restore failed"):
+            controller.loading._load_workspace_file(
+                incoming,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+        assert backup_modes == [memory_backup]
+        assert manager.ntools == 1
+        restored_node = manager._node_for_target(index)
+        assert restored_node.uid == expected_node_uid
+        assert restored_node.current_revision_id == revision_id
+        assert manager.is_workspace_modified == expected_modified
+        assert manager._workspace_state.path == original.resolve()
+        assert (
+            controller.saving._workspace_loader_state_snapshot()
+            == (expected_metadata["loader_state"])
+        )
+        assert manager.main_splitter.sizes() == expected_splitter_sizes
+        assert (
+            controller.saving._workspace_layout_snapshot()["main_splitter"]
+            == (expected_metadata["manager_layout"]["main_splitter"])
+        )
+        assert (
+            manager.workspace_option_overrides()
+            == (expected_metadata["interactive_option_overrides"]["overrides"])
+        )
+        assert set(manager._standalone_app_windows) == (
+            {"angle_calculator"} if original_visible else set()
+        )
+        assert set(manager._standalone_app_pending_states) == {"angle_calculator"}
+        restored_apps = controller.saving._workspace_standalone_apps_snapshot()
+        if original_visible:
+            restored_app = restored_apps["apps"]["angle_calculator"]
+            expected_app = expected_apps["apps"]["angle_calculator"]
+            assert restored_app["window_state"]["visible"]
+            assert _standalone_app_settings(restored_app) == _standalone_app_settings(
+                expected_app
+            )
+        else:
+            assert restored_apps == expected_apps
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(revision_id).compute(), data
+        )
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(original)
+        lock = workspace_storage._acquire_workspace_document_lock(incoming)
+        lock.unlock()
+        assert not controller.loading._active_replace_backups
+        reopened = manager._show_standalone_app("angle_calculator")
+        assert not reopened._show_laser_arpes_controls
+        assert _standalone_app_settings(reopened.workspace_state_payload()) == (
+            _standalone_app_settings(expected_apps["apps"]["angle_calculator"])
+        )
