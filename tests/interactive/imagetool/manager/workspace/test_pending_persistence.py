@@ -2430,3 +2430,91 @@ def test_manager_save_as_repoints_imported_pending_payload(
             manager.get_imagetool(wrapper.index).slicer_area._data.values,
             data.values,
         )
+
+
+@pytest.mark.parametrize("finish", ["save_as", "close"])
+def test_import_retains_reachable_revision_checkpoint_source(
+    qtbot, monkeypatch, tmp_path, manager_context, finish
+) -> None:
+    from erlab.interactive.imagetool._provenance._model import (
+        ScriptInput,
+        ToolProvenanceSpec,
+    )
+    from erlab.interactive.imagetool.manager._workspace import (
+        _storage as workspace_storage,
+    )
+
+    source_path = tmp_path / "revision-source.itws"
+    target_path = tmp_path / "revision-copy.itws"
+    data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+    with manager_context() as manager:
+        source = itool(data, manager=False, execute=False)
+        manager.add_imagetool(source, show=False)
+        source_node = manager._tool_graph.root_wrappers[0]
+        historical_id = source_node.revision_id_for_role("source")
+        captured_id = manager._provenance_revisions.add(
+            data + 1, primary_revision_id=historical_id
+        )
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Saved",
+            active_name="data",
+            primary_input="data",
+            script_inputs=(
+                ScriptInput(name="data", revision_id=captured_id, follow_source=False),
+            ),
+        )
+        derived = itool(data + 1, manager=False, execute=False)
+        manager.add_imagetool(derived, show=False, provenance_spec=spec)
+        manager.remove_imagetool(source_node.index)
+        manager._workspace_controller.saving._save_workspace_document(source_path)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        assert controller.loading._load_workspace_file(
+            source_path,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        node = next(iter(manager._tool_graph.root_wrappers.values()))
+        assert source_path.resolve() in controller._imported_workspace_accesses
+        assert historical_id not in manager._provenance_revisions._data
+        assert captured_id not in manager._provenance_revisions._data
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source_path)
+
+        if node.pending_workspace_payload is not None:
+            assert controller.loading.pending._materialize_pending_workspace_payload(
+                node
+            )
+        assert not controller._workspace_node_source_paths(node)
+        controller._release_unused_imported_workspace_accesses()
+        assert source_path.resolve() in controller._imported_workspace_accesses
+        assert historical_id not in manager._provenance_revisions._data
+        assert captured_id not in manager._provenance_revisions._data
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source_path)
+
+        if finish == "save_as":
+            monkeypatch.setattr(
+                controller, "_workspace_save_dialog", lambda **_kwargs: target_path
+            )
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+            for revision_id, expected in (
+                (historical_id, data),
+                (captured_id, data + 1),
+            ):
+                record = manager._provenance_revisions.get(revision_id)
+                assert record.checkpoint.source_file == str(target_path)
+                xr.testing.assert_equal(
+                    manager._provenance_revisions.resolve_data(revision_id), expected
+                )
+        else:
+            manager.remove_imagetool(node.index)
+            qtbot.wait_until(lambda: manager.ntools == 0)
+
+        assert source_path.resolve() not in controller._imported_workspace_accesses
+        lock = workspace_storage._acquire_workspace_document_lock(source_path)
+        lock.unlock()

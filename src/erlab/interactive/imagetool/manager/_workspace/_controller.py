@@ -1081,12 +1081,24 @@ class _WorkspaceController:
         )
         return frozenset(paths)
 
+    def _workspace_revision_source_paths(self) -> frozenset[pathlib.Path]:
+        """Return checkpoint sources reachable from the current managed nodes."""
+        records = self._manager._provenance_revisions.reachable(
+            workspace_revisions.retained_revision_ids(self._manager)
+        )
+        return frozenset(
+            pathlib.Path(record.checkpoint.source_file).resolve()
+            for record in records
+            if record.checkpoint is not None
+            and record.checkpoint.source_file is not None
+        )
+
     def _retain_imported_workspace_access(
         self,
         access: _WorkspaceDocumentAccess,
         candidate_uids: Collection[str],
     ) -> None:
-        """Retain an imported source only when loaded nodes still read from it."""
+        """Retain an imported source while nodes or revision checkpoints use it."""
         path = access.path.resolve()
         dependents = {
             uid
@@ -1096,7 +1108,7 @@ class _WorkspaceController:
                 and path in self._workspace_node_source_paths(node)
             )
         }
-        if not dependents:
+        if not dependents and path not in self._workspace_revision_source_paths():
             return
         self._imported_workspace_dependents.setdefault(path, set()).update(dependents)
         if path in self._imported_workspace_accesses:
@@ -1109,6 +1121,9 @@ class _WorkspaceController:
 
     def _release_unused_imported_workspace_accesses(self) -> None:
         """Release imported sources after all dependent payloads are rehomed."""
+        if not self._imported_workspace_accesses:
+            return
+        revision_source_paths = self._workspace_revision_source_paths()
         for path, access in tuple(self._imported_workspace_accesses.items()):
             previous_dependents = self._imported_workspace_dependents.get(path, set())
             dependents: set[str] = set()
@@ -1127,7 +1142,7 @@ class _WorkspaceController:
                     # Some Dask transformations discard xarray's source encoding.
                     # Keep ownership until a save rebinds or materializes this node.
                     dependents.add(uid)
-            if dependents:
+            if dependents or path in revision_source_paths:
                 self._imported_workspace_dependents[path] = dependents
                 continue
             self._imported_workspace_accesses.pop(path, None)
