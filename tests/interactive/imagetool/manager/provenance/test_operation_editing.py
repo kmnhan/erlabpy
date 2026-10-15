@@ -1290,11 +1290,15 @@ def test_manager_multi_provenance_source_session_stale_guards() -> None:
     controller = _fake_edit_controller(
         parent=parent,
         nodes={"child": child},
-        metadata_uid=None,
+        metadata_uid="child",
         selected_targets=("child",),
     )
     sessions = controller._row_sessions((("child", row),))
     assert controller._row_sessions_current(sessions) == ""
+
+    controller._manager._metadata_node_uid = None
+    assert controller._row_sessions_current(sessions)
+    controller._manager._metadata_node_uid = "child"
 
     child.parent_uid = None
     assert controller._row_sessions_current(sessions)

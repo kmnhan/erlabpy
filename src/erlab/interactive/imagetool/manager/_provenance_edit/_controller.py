@@ -1972,12 +1972,12 @@ class _ProvenanceEditController:
         self, candidates: Sequence[_ProvenanceCandidate]
     ) -> tuple[CodeTrustEntry, ...]:
         """Carry prior approval from a checkpoint to its owning recipe location."""
-        previous = self._manager._workspace_state.code_trust
         entries: list[CodeTrustEntry] = []
         for candidate in candidates:
             bound = candidate.recorded_revision
             if bound is None or bound.revision.provenance_spec is None:
                 continue
+            previous = self._manager._workspace_state.code_trust
             approved = set()
             for entry in provenance_code_trust_entries(
                 bound.revision.provenance_spec,

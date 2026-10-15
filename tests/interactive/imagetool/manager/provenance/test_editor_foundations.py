@@ -20,6 +20,10 @@ import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dia
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive._code_trust import (
+    issue_complete_execution_capability,
+    new_document_trust,
+)
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
     _serialize_loader_kwargs,
@@ -70,6 +74,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ThinOperation,
     UniformInterpolationOperation,
 )
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
@@ -1709,7 +1714,12 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     )
     manager._provenance_revisions = _ProvenanceRevisionStore()
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
-    capability = object()
+    entries = provenance_code_trust_entries(spec, location_prefix="runtime")
+    assert entries
+    _trust, capability = issue_complete_execution_capability(
+        new_document_trust(), entries
+    )
+    assert capability is not None
     controller._authorize_provenance_execution = (  # type: ignore[method-assign]
         lambda _entries, *, reason, **_kwargs: ensured.append(reason) or capability
     )
@@ -1732,7 +1742,7 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
         spec_arg: ToolProvenanceSpec,
         **kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
-        trusted_flags.append(kwargs["authorize"]((object(),)) is capability)
+        trusted_flags.append(kwargs["authorize"](entries) is capability)
         return xr.DataArray([2.0], dims=("x",)), spec_arg
 
     monkeypatch.setattr(
