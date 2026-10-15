@@ -1115,7 +1115,7 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
         ) -> None:
             del object_id, group_path
 
-        def acquire_context(self):
+        def read_session(self):
             return contextlib.nullcontext(object())
 
         def close(self) -> None:

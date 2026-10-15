@@ -2538,6 +2538,132 @@ def test_workspace_store_reentrant_and_writer_owned_read_sessions(
             assert reader is writable
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "construct",
+        "get_variables",
+        "get_attrs",
+        "get_dimensions",
+        "get_parent_dimensions",
+        "get_encoding",
+        "load",
+        "tree",
+    ],
+)
+@pytest.mark.parametrize("attached", [False, True])
+def test_workspace_metadata_retains_handle_until_operation_finishes(
+    tmp_path: pathlib.Path, monkeypatch, operation: str, attached: bool
+) -> None:
+    import xarray.backends.h5netcdf_ as h5netcdf_backend
+
+    path = tmp_path / "workspace.itws"
+    object_id = "payload"
+    dataset = xr.Dataset(
+        {"data": (("x", "y"), np.arange(6.0).reshape(2, 3))},
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        attrs={"description": "metadata read"},
+    )
+    with workspace_store.WorkspaceStore(path, create=True) as owner:
+        workspace_storage._write_workspace_generation(
+            owner,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=_manifest(object_id),
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(object_id, dataset=dataset),
+                ),
+            ),
+            compression_mode="none",
+        )
+        if not attached:
+            owner.close()
+        manager = workspace_arrays.WorkspaceFileManager(
+            path, object_id=object_id, group_path=owner.object_path(object_id)
+        )
+        other_reader = workspace_arrays.WorkspaceFileManager(path)
+        closed: list[bool] = []
+        errors: list[BaseException] = []
+
+        def _collect_if_unlocked() -> None:
+            lock = (
+                owner.lock if attached else workspace_arrays._workspace_file_lock(path)
+            )
+            acquired = lock.acquire(blocking=False)
+            closed.append(acquired)
+            if acquired:
+                try:
+                    if attached:
+                        owner.collect_garbage(max_objects=10)
+                    else:
+                        other_reader.close()
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    lock.release()
+
+        def _probe_handle_lifetime() -> None:
+            if closed:
+                return
+            collector = threading.Thread(target=_collect_if_unlocked)
+            collector.start()
+            collector.join(2)
+            assert not collector.is_alive()
+            assert not errors
+
+        if operation == "construct":
+            original_find_root = h5netcdf_backend.find_root_and_group
+
+            def _find_root(group):
+                _probe_handle_lifetime()
+                return original_find_root(group)
+
+            monkeypatch.setattr(h5netcdf_backend, "find_root_and_group", _find_root)
+        elif operation == "tree":
+            original_iter = workspace_arrays._iter_h5netcdf_group_paths
+
+            def _iter_groups(group, path="/"):
+                _probe_handle_lifetime()
+                yield from original_iter(group, path)
+
+            monkeypatch.setattr(
+                workspace_arrays, "_iter_h5netcdf_group_paths", _iter_groups
+            )
+
+        backend = workspace_arrays._WorkspaceH5NetCDFStore(
+            manager,
+            group=owner.object_path(object_id),
+            mode="r",
+            lock=manager.lock,
+        )
+        if operation not in {"construct", "tree"}:
+            original_acquire = backend._acquire
+
+            def _acquire(needs_lock=True):
+                group = original_acquire(needs_lock)
+                _probe_handle_lifetime()
+                return group
+
+            monkeypatch.setattr(backend, "_acquire", _acquire)
+            getattr(backend, operation)()
+        elif operation == "tree":
+            with workspace_arrays.open_workspace_datatree(path, chunks={}) as tree:
+                xr.testing.assert_equal(
+                    tree[owner.object_path(object_id)].to_dataset(),
+                    dataset,
+                )
+
+        assert closed == [False]
+        if attached:
+            assert not owner.collect_garbage(max_objects=10)
+        else:
+            other_reader.close()
+        with workspace_arrays.open_workspace_dataset(
+            path, owner.object_path(object_id), chunks={}
+        ) as opened:
+            xr.testing.assert_equal(opened.compute(), dataset)
+        backend.close()
+
+
 def test_workspace_metadata_reads_wait_during_established_write(
     tmp_path: pathlib.Path,
 ) -> None:
