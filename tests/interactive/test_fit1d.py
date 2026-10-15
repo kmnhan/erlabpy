@@ -2687,7 +2687,7 @@ def test_fit1d_refit_start_failure_commits_published_input(qtbot, monkeypatch) -
 
     assert win.source_state == "fresh"
     assert win.script_inputs == (refreshed_binding,)
-    assert win._pending_script_inputs is None
+    assert win._input_state().pending is None
     xr.testing.assert_identical(win.tool_data, updated)
 
 
@@ -2722,7 +2722,7 @@ def test_fit1d_async_refit_terminal_commits_published_input(
 
     assert win.source_state == "fresh"
     assert win.script_inputs == (refreshed_binding,)
-    assert win._pending_script_inputs is None
+    assert win._input_state().pending is None
     assert win._source_refresh_deferred is False
     xr.testing.assert_identical(win.tool_data, updated)
 

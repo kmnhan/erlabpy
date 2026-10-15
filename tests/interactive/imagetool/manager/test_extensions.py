@@ -7816,7 +7816,9 @@ def test_workspace_script_remap_updates_node_provenance_owners(
             script_inputs={"data": child_uid},
             show=False,
         )
-        input_tool._pending_script_inputs = input_tool.script_inputs
+        input_tool._pending_input_transaction = (
+            erlab.interactive.utils._ToolInputTransaction(input_tool.script_inputs)
+        )
         manager._workspace_state.mark_clean()
 
         manager._extensions._remap_workspace_script(
@@ -7832,7 +7834,8 @@ def test_workspace_script_remap_updates_node_provenance_owners(
         )
         tool_source_spec = input_tool.script_inputs[0].parsed_source_spec()
         tool_input_spec = input_tool.script_inputs[0].parsed_provenance_spec()
-        pending_inputs = input_tool._pending_script_inputs
+        pending = input_tool._input_state().pending
+        pending_inputs = None if pending is None else pending.script_inputs
         pending_tool_input_spec = (
             None
             if pending_inputs is None

@@ -2038,6 +2038,71 @@ def test_deferred_abort_runs_newest_input_before_descendant_continuations(
         assert not manager._dependency_tracker.has_pending_source_refreshes()
 
 
+@pytest.mark.parametrize("accept_close", [False, True])
+def test_managed_close_cancels_only_its_own_deferred_refresh_chain(
+    qtbot, manager_context, accept_close: bool
+) -> None:
+    class _ClosingTool(_DeferredManagedSumTool):
+        allow_close = accept_close
+
+        def closeEvent(self, event) -> None:
+            if not self.allow_close:
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+    data = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("x", "y"))
+    with manager_context() as manager:
+        for values in (data, data + 10):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(values), show=False
+            )
+        closing = _ClosingTool(data)
+        independent = _DeferredManagedSumTool(data)
+        targets = {}
+        for tool in (closing, independent):
+            uid = manager.add_childtool(
+                tool, script_inputs={"data": 0, "weights": 1}, show=False
+            )
+            tool.set_script_inputs(
+                tool.script_inputs, primary_input="data", auto_update=True
+            )
+            targets[tool] = uid
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 100)
+        qtbot.wait_until(lambda: closing.update_calls == independent.update_calls == 1)
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 200)
+        tracker = manager._dependency_tracker
+        qtbot.wait_until(
+            lambda: all(
+                tracker.source_refresh_queued(uid, uid) for uid in targets.values()
+            )
+        )
+        pending = {tool: tool._input_state() for tool in targets}
+        assert closing.close() is accept_close
+        qtbot.wait_until(lambda: not manager._interaction_gate.pending_keys)
+
+        assert closing.update_calls == independent.update_calls == 1
+        assert independent._input_state() == pending[independent]
+        assert tracker.source_refresh_queued(targets[independent], targets[independent])
+        if accept_close:
+            assert closing._input_state().pending is None
+            assert closing.active_script_inputs == closing.script_inputs
+            assert not closing._source_refresh_deferred
+            assert not tracker.source_refresh_queued(targets[closing], targets[closing])
+        else:
+            assert closing._input_state() == pending[closing]
+            assert closing._source_refresh_deferred
+            assert tracker.source_refresh_queued(targets[closing], targets[closing])
+
+        # Close the rejected window during test cleanup without starting its rerun.
+        closing.abort_source_refresh(resume_pending=False)
+        independent.abort_source_refresh(resume_pending=False)
+        closing.allow_close = True
+
+
 def test_deferred_abort_discards_descendant_continuations_without_rerun(
     qtbot,
     manager_context: Callable[
@@ -6414,8 +6479,10 @@ def test_rebuilt_tool_input_captures_follow_adoption(
             assert store.revision_ids == initial
             assert tool.script_inputs == (binding,)
         if outcome in {"deferred", "abort", "rebind"}:
-            assert tool._pending_script_inputs is not None
-            captured = tool._pending_script_inputs[0].revision_id
+            assert tool._input_state().pending is not None
+            transaction = tool._input_state().pending
+            assert transaction is not None
+            captured = transaction.script_inputs[0].revision_id
             assert captured is not None
             assert captured not in store
             if outcome == "abort":
@@ -6432,7 +6499,98 @@ def test_rebuilt_tool_input_captures_follow_adoption(
                 assert manager._provenance_revisions.has_data(captured)
                 if outcome == "rebind":
                     assert captured not in store
-        assert tool._pending_input_commit is None
+        assert tool._input_state().pending is None
+
+
+@pytest.mark.parametrize("outcome", ["accept", "abort", "replace", "close"])
+def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
+    qtbot, manager_context, tmp_path, outcome: str
+) -> None:
+    from erlab.interactive.imagetool.manager._workspace._revisions import (
+        retained_revision_ids,
+    )
+    from tests.interactive.imagetool.manager.workspace._support import (
+        _current_workspace_manifest,
+    )
+
+    class _DeferredDisplayedInputTool(_ManagedUnaryTool):
+        def __init__(self, data: xr.DataArray) -> None:
+            erlab.interactive.utils.ToolWindow.__init__(self)
+            self._data = data
+            self._status = _ManagedInputTestState()
+            self.update_calls = 0
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="displayed"),),
+                primary_input="data",
+            )
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.pending_data = inputs["data"]
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray(np.arange(36.0).reshape(6, 6), dims=("x", "y"))
+    with manager_context() as manager:
+        source_index, unrelated = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data), show=False
+            )
+            for _ in range(2)
+        ]
+        source = manager._node_for_target(source_index)
+        tool = _DeferredDisplayedInputTool(data)
+        target_uid = manager.add_childtool(
+            tool, script_inputs={"data": source_index}, show=False
+        )
+        accepted_inputs = tool.script_inputs
+        source.slicer_area.apply_filter_operation(
+            GaussianFilterOperation(sigma={"x": 0.5}), emit_edited=True
+        )
+        assert not manager._lineage_controller._refresh_tool_inputs(
+            target_uid, allow_recorded=True
+        )
+        transaction = tool._input_state().pending
+        assert transaction is not None
+        captured = transaction.script_inputs[0].revision_id
+        assert captured is not None
+        expected = tool.pending_data.copy(deep=True)
+        source.slicer_area.apply_filter_operation(
+            GaussianFilterOperation(sigma={"x": 1.5}), emit_edited=True
+        )
+        assert source.revision_id_for_role("displayed") != captured
+        assert captured in retained_revision_ids(manager)
+        manager.remove_imagetool(unrelated)
+        assert manager._provenance_revisions.has_data(captured)
+
+        workspace = tmp_path / "pending-inputs.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert captured in {
+            entry["revision_id"]
+            for entry in _current_workspace_manifest(workspace)["provenance_revisions"]
+        }
+        assert tool._input_state().pending == transaction
+        assert tool.script_inputs == accepted_inputs
+        if outcome == "accept":
+            tool._data = tool.pending_data
+            tool.finalize_source_refresh()
+            assert tool.script_inputs[0].revision_id == captured
+            assert captured in retained_revision_ids(manager)
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(captured), expected
+            )
+        else:
+            if outcome == "abort":
+                tool.abort_source_refresh()
+            elif outcome == "replace":
+                tool.set_script_inputs(
+                    accepted_inputs, primary_input="data", state="stale"
+                )
+            else:
+                assert tool.close()
+            assert captured not in retained_revision_ids(manager)
+            assert tool.script_inputs == accepted_inputs
+        assert tool._input_state().pending is None
+        assert not tool._source_refresh_deferred
 
 
 def test_cancelled_live_replay_keeps_only_reusable_node_checkpoint(

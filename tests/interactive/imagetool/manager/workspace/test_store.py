@@ -731,7 +731,7 @@ def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> No
         }[role],
         passive_displayed_provenance_spec=None,
         source_spec=None,
-        tool_script_inputs=(
+        active_tool_script_inputs=(
             ScriptInput(
                 name="outer",
                 revision_id=tool_id,

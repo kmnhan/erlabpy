@@ -68,7 +68,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
     from erlab.interactive.imagetool.viewer_state import ImageSlicerState
-    from erlab.interactive.utils import ToolWindow
+    from erlab.interactive.utils import ToolWindow, _ToolInputState
 
 
 logger = logging.getLogger(__name__)
@@ -337,10 +337,7 @@ class _NodeProvenanceOwnerSnapshot:
     pending_payload_kind: typing.Literal["imagetool", "tool"] | None
     node_source_spec: ToolProvenanceSpec | None
     node_provenance_spec: ToolProvenanceSpec | None
-    tool_script_inputs: tuple[ScriptInput, ...] | None
-    tool_primary_input: str | None
-    tool_pending_script_inputs: tuple[ScriptInput, ...] | None
-    tool_pending_input_commit: Callable[[], None] | None
+    tool_input_state: _ToolInputState | None
     pending_payload_attrs: dict[str, typing.Any] | None
 
 
@@ -1072,6 +1069,12 @@ class _ManagedWindowNode(QtCore.QObject):
         return self._tool_input_metadata()[0]
 
     @property
+    def active_tool_script_inputs(self) -> tuple[ScriptInput, ...]:
+        """Return ToolWindow inputs retained by accepted or pending work."""
+        tool = self.tool_window
+        return self.tool_script_inputs if tool is None else tool.active_script_inputs
+
+    @property
     def tool_primary_input(self) -> str | None:
         """Return the primary input for a live or deferred ToolWindow node."""
         return self._tool_input_metadata()[1]
@@ -1634,18 +1637,7 @@ class _ManagedWindowNode(QtCore.QObject):
             pending_payload_kind=self._pending_workspace_payload_kind,
             node_source_spec=self._source_spec,
             node_provenance_spec=self._provenance_spec,
-            tool_script_inputs=None if tool is None else tool.script_inputs,
-            tool_primary_input=None if tool is None else tool.primary_input,
-            tool_pending_script_inputs=(
-                None
-                if tool is None or tool._pending_script_inputs is None
-                else tuple(
-                    item.model_copy(deep=True) for item in tool._pending_script_inputs
-                )
-            ),
-            tool_pending_input_commit=(
-                None if tool is None else tool._pending_input_commit
-            ),
+            tool_input_state=None if tool is None else tool._input_state(),
             pending_payload_attrs=(
                 None
                 if self._pending_workspace_payload_attrs is None
@@ -1736,31 +1728,9 @@ class _ManagedWindowNode(QtCore.QObject):
 
         tool = snapshot.tool_window
         if tool is not None:
-            input_changed = (
-                tool.script_inputs != snapshot.tool_script_inputs
-                or tool.primary_input != snapshot.tool_primary_input
-                or tool._pending_script_inputs != snapshot.tool_pending_script_inputs
-                or tool._pending_input_commit is not snapshot.tool_pending_input_commit
-            )
-            if input_changed:
-                script_inputs = typing.cast(
-                    "tuple[ScriptInput, ...]", snapshot.tool_script_inputs
-                )
-                with tool._coalesce_provenance_changes():
-                    tool._script_inputs = tuple(
-                        item.model_copy(deep=True) for item in script_inputs
-                    )
-                    tool._primary_input = snapshot.tool_primary_input
-                    tool._pending_script_inputs = (
-                        None
-                        if snapshot.tool_pending_script_inputs is None
-                        else tuple(
-                            item.model_copy(deep=True)
-                            for item in snapshot.tool_pending_script_inputs
-                        )
-                    )
-                    tool._pending_input_commit = snapshot.tool_pending_input_commit
-                    tool._notify_provenance_changed()
+            if snapshot.tool_input_state is None:
+                raise RuntimeError("ToolWindow input state is missing")
+            tool._restore_input_state(snapshot.tool_input_state)
 
         if snapshot.imagetool is not None and node_provenance_changed:
             snapshot.imagetool.set_provenance_spec(self.provenance_spec)
@@ -1785,20 +1755,11 @@ class _ManagedWindowNode(QtCore.QObject):
         node_provenance_spec = self._remap_provenance_value(
             before.node_provenance_spec, remap
         )
-        tool_script_inputs = (
+        tool_input_state = (
             None
-            if before.tool_script_inputs is None
-            else tuple(
-                self._remap_script_input(script_input, remap)
-                for script_input in before.tool_script_inputs
-            )
-        )
-        tool_pending_script_inputs = (
-            None
-            if before.tool_pending_script_inputs is None
-            else tuple(
-                self._remap_script_input(script_input, remap)
-                for script_input in before.tool_pending_script_inputs
+            if before.tool_input_state is None
+            else before.tool_input_state.map_inputs(
+                lambda script_input: self._remap_script_input(script_input, remap)
             )
         )
 
@@ -1829,8 +1790,7 @@ class _ManagedWindowNode(QtCore.QObject):
         changed = (
             node_source_spec != before.node_source_spec
             or node_provenance_spec != before.node_provenance_spec
-            or tool_script_inputs != before.tool_script_inputs
-            or tool_pending_script_inputs != before.tool_pending_script_inputs
+            or tool_input_state != before.tool_input_state
             or pending_attrs_changed
         )
         if not changed:
@@ -1843,10 +1803,7 @@ class _ManagedWindowNode(QtCore.QObject):
             pending_payload_kind=before.pending_payload_kind,
             node_source_spec=node_source_spec,
             node_provenance_spec=node_provenance_spec,
-            tool_script_inputs=tool_script_inputs,
-            tool_primary_input=before.tool_primary_input,
-            tool_pending_script_inputs=tool_pending_script_inputs,
-            tool_pending_input_commit=before.tool_pending_input_commit,
+            tool_input_state=tool_input_state,
             pending_payload_attrs=attrs,
         )
         try:
@@ -2880,8 +2837,8 @@ class _ManagedWindowNode(QtCore.QObject):
         if tool_window.source_state == "fresh":
             manager._lineage_controller._resume_pending_source_refreshes(self.uid)
 
-    @QtCore.Slot()
-    def _handle_tool_source_refresh_aborted(self) -> None:
+    @QtCore.Slot(bool)
+    def _handle_tool_source_refresh_aborted(self, resume_pending: bool) -> None:
         manager = self._manager()
         if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return
@@ -2889,6 +2846,9 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         tool_window = self.tool_window
         if tool_window is None:
+            return
+        if not resume_pending:
+            manager._dependency_tracker.discard_source_refresh_chain(self.uid)
             return
         if self._suspend_descendant_signal_propagation:
             return

@@ -4082,7 +4082,7 @@ def test_ktool_update_inputs_cancel_keeps_current_data(
     xr.testing.assert_identical(win.data, original_data)
     assert win.source_state == "stale"
     assert win.script_inputs == (old_binding,)
-    assert win._pending_script_inputs is None
+    assert win._input_state().pending is None
     assert win._source_refresh_deferred is False
 
 

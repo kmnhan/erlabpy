@@ -5204,7 +5204,7 @@ def test_tool_window_false_update_discards_pending_bindings(qtbot) -> None:
     assert not tool._apply_inputs({"data": data + 1.0}, (refreshed_binding,))
     assert tool.source_state == "stale"
     assert tool.script_inputs == (old_binding,)
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
     assert tool._source_refresh_deferred is False
 
 
@@ -5234,7 +5234,7 @@ def test_tool_window_false_update_clears_reentrant_rerun(qtbot) -> None:
     assert tool.update_calls == 1
     assert tool.source_state == "stale"
     assert tool._source_refresh_rerun_requested is False
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
 
 
 def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
@@ -5262,7 +5262,7 @@ def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
 
     assert tool.source_state == "stale"
     assert tool.script_inputs == (old_binding,)
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
     assert tool._source_refresh_deferred is False
     assert tool.provenance_revision == revision
     assert data_changes == []
@@ -5478,7 +5478,7 @@ def test_tool_window_failed_named_input_update_discards_pending_bindings(qtbot) 
         )
 
     assert tool.script_inputs == old_bindings
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
 
 
 def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> None:
@@ -5516,7 +5516,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
         {"data": data, "weights": data},
         refreshed_bindings,
     )
-    pending_bindings = tool._pending_script_inputs
+    pending_bindings = tool._input_state().pending
     invalid_contracts = (
         (
             (old_bindings[0].model_copy(update={"name": "renamed"}), old_bindings[1]),
@@ -5550,7 +5550,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
                 auto_update=True,
             )
         assert tool.script_inputs == old_bindings
-        assert tool._pending_script_inputs == pending_bindings
+        assert tool._input_state().pending == pending_bindings
 
     invalid_refresh = (
         refreshed_bindings[0],
@@ -5561,7 +5561,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
             {"data": data, "weights": data},
             invalid_refresh,
         )
-    assert tool._pending_script_inputs == pending_bindings
+    assert tool._input_state().pending == pending_bindings
 
     tool.set_script_inputs(
         replacement_bindings,
@@ -7763,4 +7763,59 @@ def test_tool_window_input_commit_follows_acceptance(qtbot, outcome: str) -> Non
         tool.finalize_source_refresh()
         assert not committed
         assert tool.script_inputs == (binding,)
-    assert tool._pending_input_commit is None
+    assert tool._input_state().pending is None
+
+
+def test_tool_window_failed_input_commit_discards_transaction(qtbot) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    binding = ScriptInput(name="data", revision_id="accepted")
+    refreshed = binding.model_copy(update={"revision_id": "pending"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data")
+    data_changes: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+
+    def fail_commit() -> None:
+        raise ValueError("commit failed")
+
+    assert not tool._apply_inputs(
+        {"data": data + 1}, (refreshed,), on_commit=fail_commit
+    )
+    assert tool.active_script_inputs == (binding, refreshed)
+    with pytest.raises(ValueError, match="commit failed"):
+        tool.finalize_source_refresh()
+    assert tool.script_inputs == (binding,)
+    assert tool.active_script_inputs == (binding,)
+    assert tool._input_state().pending is None
+    assert not tool._source_refresh_deferred
+    assert tool.source_state == "stale"
+    assert not data_changes
+
+
+@pytest.mark.parametrize("terminal", ["unavailable", "close"])
+def test_tool_window_terminal_state_releases_deferred_input_callback(
+    qtbot, terminal: str
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    binding = ScriptInput(name="data", revision_id="accepted")
+    refreshed = binding.model_copy(update={"revision_id": "pending"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data", auto_update=True)
+    committed: list[None] = []
+    assert not tool._apply_inputs(
+        {"data": data + 1}, (refreshed,), on_commit=lambda: committed.append(None)
+    )
+    tool._source_refresh_rerun_requested = True
+    if terminal == "close":
+        assert tool.close()
+    else:
+        tool._set_source_state("unavailable")
+    assert tool.active_script_inputs == (binding,)
+    assert tool._input_state().pending is None
+    assert not tool._source_refresh_deferred
+    assert not tool._source_refresh_rerun_requested
+    tool.finalize_source_refresh()
+    assert not committed
+    assert tool.script_inputs == (binding,)

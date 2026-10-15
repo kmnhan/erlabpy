@@ -35,7 +35,7 @@ import warnings
 import weakref
 import webbrowser
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import numpy.typing as npt
@@ -3386,6 +3386,43 @@ def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
     return output_id
 
 
+@dataclass(frozen=True)
+class _ToolInputTransaction:
+    script_inputs: tuple[ScriptInput, ...]
+    commit: Callable[[], None] | None = None
+
+
+@dataclass(frozen=True)
+class _ToolInputState:
+    script_inputs: tuple[ScriptInput, ...]
+    primary_input: str | None
+    pending: _ToolInputTransaction | None = None
+
+    @property
+    def active_script_inputs(self) -> tuple[ScriptInput, ...]:
+        return self.script_inputs + (
+            () if self.pending is None else self.pending.script_inputs
+        )
+
+    def map_inputs(
+        self, transform: Callable[[ScriptInput], ScriptInput]
+    ) -> _ToolInputState:
+        return replace(
+            self,
+            script_inputs=tuple(transform(item) for item in self.script_inputs),
+            pending=(
+                None
+                if self.pending is None
+                else replace(
+                    self.pending,
+                    script_inputs=tuple(
+                        transform(item) for item in self.pending.script_inputs
+                    ),
+                )
+            ),
+        )
+
+
 class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     """A window that can be saved and restored from a netcdf file.
 
@@ -3506,7 +3543,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     sigStateChanged = QtCore.Signal()  #: :meta private:
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigProvenanceChanged = QtCore.Signal()  #: :meta private:
-    _sigSourceRefreshAborted = QtCore.Signal()  #: :meta private:
+    _sigSourceRefreshAborted = QtCore.Signal(bool)  #: :meta private:
 
     def __init_subclass__(cls, **kwargs: typing.Any) -> None:
         """Put each concrete status setter inside the mutation boundary."""
@@ -3576,8 +3613,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
         ) = None
         self._script_inputs: tuple[ScriptInput, ...] = ()
-        self._pending_script_inputs: tuple[ScriptInput, ...] | None = None
-        self._pending_input_commit: Callable[[], None] | None = None
+        self._pending_input_transaction: _ToolInputTransaction | None = None
         self._primary_input: str | None = None
         self._provenance_revision = 0
         self._provenance_change_depth = 0
@@ -4643,6 +4679,30 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         """Return the fixed named inputs consumed by this tool."""
         return tuple(item.model_copy(deep=True) for item in self._script_inputs)
 
+    def _input_state(self) -> _ToolInputState:
+        return _ToolInputState(
+            self._script_inputs, self._primary_input, self._pending_input_transaction
+        ).map_inputs(lambda item: item.model_copy(deep=True))
+
+    def _restore_input_state(self, state: _ToolInputState) -> None:
+        if self._input_state() == state:
+            return
+        copied = state.map_inputs(lambda item: item.model_copy(deep=True))
+        with self._coalesce_provenance_changes():
+            self._script_inputs = copied.script_inputs
+            self._primary_input = copied.primary_input
+            self._pending_input_transaction = copied.pending
+            self._notify_provenance_changed()
+
+    @property
+    def active_script_inputs(self) -> tuple[ScriptInput, ...]:
+        """Return accepted inputs and inputs held by an active refresh."""
+        return self._input_state().active_script_inputs
+
+    def _discard_input_transaction(self) -> None:
+        self._pending_input_transaction = None
+        self._source_refresh_deferred = False
+
     @property
     def primary_input(self) -> str | None:
         """Return the input used as the primary tool data source."""
@@ -4713,8 +4773,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         elif primary_input is not None:
             raise ValueError("primary_input requires at least one script input")
 
-        self._pending_script_inputs = None
-        self._pending_input_commit = None
+        self._discard_input_transaction()
+        self._source_refresh_rerun_requested = False
         changed = (
             normalized != self._script_inputs or primary_input != self._primary_input
         )
@@ -4848,18 +4908,19 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         rerun_requested = self._source_refresh_rerun_requested
         self._source_refresh_rerun_requested = False
         with self._coalesce_provenance_changes():
-            pending_inputs = self._pending_script_inputs
-            pending_commit = self._pending_input_commit
-            if pending_commit is not None:
-                pending_commit()
-            self._pending_input_commit = None
-            self._pending_script_inputs = None
-            if pending_inputs is not None:
+            transaction = self._pending_input_transaction
+            if transaction is not None:
+                try:
+                    if transaction.commit is not None:
+                        transaction.commit()
+                except Exception:
+                    self.abort_source_refresh()
+                    raise
                 with self._provenance_mutation(
-                    changed=pending_inputs != self._script_inputs
+                    changed=transaction.script_inputs != self._script_inputs
                 ):
-                    self._script_inputs = pending_inputs
-            self._source_refresh_deferred = False
+                    self._script_inputs = transaction.script_inputs
+            self._discard_input_transaction()
             self._set_source_state(
                 "stale" if rerun_requested and not self._source_auto_update else "fresh"
             )
@@ -4878,24 +4939,29 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
 
     def _defer_source_refresh(self) -> None:
         """Keep the current input transaction pending until explicit completion."""
-        if not self._source_refreshing or self._pending_script_inputs is None:
+        if not self._source_refreshing or self._pending_input_transaction is None:
             raise RuntimeError(
                 "source refresh can only be deferred from update_inputs()"
             )
         self._source_refresh_deferred = True
 
-    def abort_source_refresh(self) -> None:
-        """Discard a pending input transaction after deferred work fails or stops."""
-        if self._pending_script_inputs is None and not self._source_refresh_deferred:
+    def abort_source_refresh(self, *, resume_pending: bool = True) -> None:
+        """Discard pending inputs and optionally resume queued refreshes.
+
+        Set ``resume_pending=False`` to cancel queued work when the tool closes.
+        """
+        active = (
+            self._pending_input_transaction is not None or self._source_refresh_deferred
+        )
+        if not active and resume_pending:
             return
         rerun_requested = self._source_refresh_rerun_requested
         self._source_refresh_rerun_requested = False
-        self._pending_script_inputs = None
-        self._pending_input_commit = None
-        self._source_refresh_deferred = False
-        self._set_source_state("stale")
-        self._sigSourceRefreshAborted.emit()
-        if rerun_requested and self._source_auto_update:
+        self._discard_input_transaction()
+        if active:
+            self._set_source_state("stale")
+        self._sigSourceRefreshAborted.emit(resume_pending)
+        if resume_pending and rerun_requested and self._source_auto_update:
             single_shot(self, 0, self._rerun_source_refresh)
 
     def _set_source_auto_update(self, value: bool) -> None:
@@ -4909,10 +4975,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     ) -> None:
         """Update the source state, refresh the banner, and emit info changes."""
         if state != "stale":
-            self._source_refresh_deferred = False
+            self._discard_input_transaction()
             self._source_refresh_rerun_requested = False
-            self._pending_script_inputs = None
-            self._pending_input_commit = None
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
@@ -5054,10 +5118,11 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             raise ValueError("refreshed inputs do not match the fixed input binding")
 
         def _update(validated: Mapping[str, xr.DataArray]) -> bool | None:
-            self._source_refresh_deferred = False
+            self._discard_input_transaction()
             self._source_refreshing = True
-            self._pending_script_inputs = refreshed_inputs
-            self._pending_input_commit = on_commit
+            self._pending_input_transaction = _ToolInputTransaction(
+                refreshed_inputs, on_commit
+            )
             try:
                 return self.update_inputs(validated)
             except Exception:
@@ -5071,8 +5136,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         )
         if update_complete is False:
             if not self._source_refresh_deferred:
-                self._pending_script_inputs = None
-                self._pending_input_commit = None
+                self._discard_input_transaction()
                 self._source_refresh_rerun_requested = False
             self._set_source_state("stale")
             return False
@@ -6572,7 +6636,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         # Teardown has no consumer for optional restored state, and running it here can
         # queue paints for widgets that Qt is already deleting.
         self._deferred_restore_work.clear()
-        return super().closeEvent(event)
+        super().closeEvent(event)
+        if event is None or event.isAccepted():
+            self.abort_source_refresh(resume_pending=False)
 
     @property
     def _tool_display_name(self) -> str:

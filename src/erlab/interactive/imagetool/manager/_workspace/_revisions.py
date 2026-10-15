@@ -46,7 +46,7 @@ def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
         )
         ids.update(_spec_revision_ids(node.passive_displayed_provenance_spec))
         ids.update(_spec_revision_ids(node.source_spec))
-        ids.update(_script_input_revision_ids(node.tool_script_inputs))
+        ids.update(_script_input_revision_ids(node.active_tool_script_inputs))
     return frozenset(ids)
 
 

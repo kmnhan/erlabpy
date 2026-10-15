@@ -169,7 +169,7 @@ def test_wrapper_provenance_owner_remap_rolls_back_atomically(
         node.commit_provenance_owner_remap()
 
 
-def test_wrapper_applies_tool_owned_script_inputs() -> None:
+def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
     changed: list[str | None] = []
     previous = ScriptInput(name="data", source_spec=full_data().model_dump(mode="json"))
     replacement = ScriptInput(
@@ -177,30 +177,13 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
         source_spec=ToolProvenanceSpec(kind="public_data").model_dump(mode="json"),
         provenance_spec=ToolProvenanceSpec(kind="public_data").model_dump(mode="json"),
     )
-
-    class _Tool:
-        _script_inputs = (previous,)
-        _primary_input = "data"
-        _pending_script_inputs = (previous,)
-        _pending_input_commit = None
-
-        @property
-        def script_inputs(self):
-            return self._script_inputs
-
-        @property
-        def primary_input(self):
-            return self._primary_input
-
-        @staticmethod
-        def _coalesce_provenance_changes():
-            return contextlib.nullcontext()
-
-        @staticmethod
-        def _notify_provenance_changed() -> None:
-            changed.append(None)
-
-    tool = _Tool()
+    tool = erlab.interactive.utils.ToolWindow()
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((previous,), primary_input="data")
+    tool._pending_input_transaction = erlab.interactive.utils._ToolInputTransaction(
+        (previous,)
+    )
+    tool.sigProvenanceChanged.connect(lambda: changed.append(None))
     node = types.SimpleNamespace(
         imagetool=None,
         tool_window=tool,
@@ -211,17 +194,23 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
         _provenance_spec=None,
         _mark_provenance_changed=lambda **_kwargs: None,
     )
+
+    def commit() -> None:
+        changed.append("commit")
+
+    state = erlab.interactive.utils._ToolInputState(
+        (replacement,),
+        "data",
+        erlab.interactive.utils._ToolInputTransaction((replacement,), commit),
+    )
     snapshot = _NodeProvenanceOwnerSnapshot(
         imagetool=None,
-        tool_window=typing.cast("typing.Any", tool),
+        tool_window=tool,
         pending_payload=None,
         pending_payload_kind=None,
         node_source_spec=None,
         node_provenance_spec=None,
-        tool_script_inputs=(replacement,),
-        tool_primary_input="data",
-        tool_pending_script_inputs=(replacement,),
-        tool_pending_input_commit=lambda: changed.append("commit"),
+        tool_input_state=state,
         pending_payload_attrs=None,
     )
 
@@ -231,10 +220,10 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
 
     assert tool.script_inputs == (replacement,)
     assert tool.primary_input == "data"
-    assert tool._pending_script_inputs == (replacement,)
-    assert tool._pending_input_commit is snapshot.tool_pending_input_commit
+    assert tool._input_state() == state
+    assert tool.active_script_inputs == (replacement, replacement)
     assert changed == [None]
-    tool._pending_input_commit()
+    tool._input_state().pending.commit()
     assert changed == [None, "commit"]
 
 
