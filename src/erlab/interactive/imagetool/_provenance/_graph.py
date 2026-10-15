@@ -91,11 +91,13 @@ class SelectedProvenanceScope(typing.NamedTuple):
 class _NotebookScopeEffects(typing.NamedTuple):
     writes: set[str]
     deferred_reads: set[str]
+    deletions: set[str]
 
 
 class _NotebookBinding(typing.NamedTuple):
     scope: int | None
     name: str
+    available: bool = True
 
 
 class ReplayNode:
@@ -306,6 +308,14 @@ class _CurrentScopeNames(ast.NodeVisitor):
             self._local_names
         ):
             self.stores.add(node.id)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if (
+            isinstance(node.target, ast.Name)
+            and node.target.id not in self._local_names
+        ):
+            self.loads.add(node.target.id)
+        self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -582,13 +592,33 @@ def _simple_name_assignment(code: str) -> tuple[str, str] | None:
     return None
 
 
+def _definite_statement_bindings(statement: ast.stmt) -> set[str]:
+    """Return names bound whenever this statement finishes normally."""
+    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return {statement.name}
+    if isinstance(statement, ast.Import | ast.ImportFrom):
+        return _statement_scope_names(statement).stores
+    if isinstance(statement, ast.Assign):
+        targets = statement.targets
+    elif isinstance(statement, ast.AnnAssign | ast.AugAssign) and (
+        not isinstance(statement, ast.AnnAssign) or statement.value is not None
+    ):
+        targets = [statement.target]
+    else:
+        return set()
+    names = _CurrentScopeNames()
+    for target in targets:
+        names.visit(target)
+    return names.stores
+
+
 def _name_value_is_live(codes: Sequence[str], name: str) -> bool:
     """Return whether later code reads the current value before replacing it."""
     for code in codes:
         for statement in ast.parse(code, mode="exec").body:
             if _statement_load_count(statement, name):
                 return True
-            if _statement_store_count(statement, name):
+            if name in _definite_statement_bindings(statement):
                 return False
     return False
 
@@ -4307,6 +4337,10 @@ def selected_provenance_code(
     def binding_name(
         binding: _NotebookBinding, *, public_name: str, displaced: Collection[str] = ()
     ) -> str:
+        if not binding.available:
+            raise ReplayGraphError(
+                f"Selected notebook binding {binding.name!r} was deleted"
+            )
         if binding.scope is not None and any(
             "*" in writes for writes in scope_writes[binding.scope : index]
         ):
@@ -4370,17 +4404,25 @@ def selected_provenance_code(
             )
         logical_namespace.update(explicit_bindings)
         required_reads = set(inherited_reads)
+        direct_reads: set[str] = set()
         opaque_namespace = False
-        for code in (
-            spec.seed_code,
-            *(getattr(step.operation, "code", None) for step in spec.steps),
-        ):
-            if isinstance(code, str):
-                module, table = _parse_replay_code(code)
-                for statement in module.body:
-                    required_reads.update(_statement_scope_names(statement).loads)
-                required_reads.update(_deferred_scope_reads(table))
-                opaque_namespace |= _has_opaque_namespace_access(module)
+        codes = tuple(
+            code
+            for code in (
+                spec.seed_code,
+                *(getattr(step.operation, "code", None) for step in spec.steps),
+            )
+            if isinstance(code, str)
+        )
+        for code in codes:
+            module, table = _parse_replay_code(code)
+            for statement in module.body:
+                direct_reads.update(_statement_scope_names(statement).loads)
+            required_reads.update(_deferred_scope_reads(table))
+            opaque_namespace |= _has_opaque_namespace_access(module)
+        required_reads.update(
+            name for name in direct_reads if _name_value_is_live(codes, name)
+        )
         restores: list[tuple[str, str]] = []
         for name in sorted(required_reads - explicit_bindings.keys()):
             binding = logical_namespace.get(name)
@@ -4391,7 +4433,7 @@ def selected_provenance_code(
                         f"{name!r}"
                     )
                 continue
-            if current_binding(name) != binding:
+            if not binding.available or current_binding(name) != binding:
                 restores.append((name, binding_name(binding, public_name=name)))
         needed_inputs = required_reads | {
             name for step in spec.steps for name in step.input_bindings.values()
@@ -4439,7 +4481,7 @@ def selected_provenance_code(
         written_names.update(effects.writes)
         deferred_reads.update(effects.deferred_reads)
         for name in effects.writes - {"*"}:
-            binding = _NotebookBinding(index, name)
+            binding = _NotebookBinding(index, name, name not in effects.deletions)
             logical_namespace[name] = binding
             physical_namespace[name] = binding
         logical_namespaces.append(logical_namespace)
@@ -4477,26 +4519,52 @@ def _notebook_scope_effects(code: str) -> _NotebookScopeEffects:
     These bindings must remain public even when later source text does not load them
     directly. Opaque namespace access prevents a safe static binding across that scope.
     """
-    names = _CurrentScopeNames()
+
+    class NotebookScopeNames(_CurrentScopeNames):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deletions: set[str] = set()
+
+        def visit_Name(self, node: ast.Name) -> None:
+            super().visit_Name(node)
+            if isinstance(node.ctx, ast.Del):
+                self.deletions.add(node.id)
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            self.generic_visit(node)
+            if node.name is not None:
+                self.deletions.add(node.name)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is None and isinstance(node.target, ast.Name):
+                self.visit(node.annotation)
+            else:
+                self.generic_visit(node)
+
     module, table = _parse_replay_code(code, kind="Generated")
-    names.visit(module)
-    if _has_opaque_namespace_access(module):
-        names.stores.add("*")
-
-    def global_writes(table: symtable.SymbolTable) -> set[str]:
-        writes = {
-            symbol.get_name()
-            for symbol in table.get_symbols()
-            if symbol.is_global() and (symbol.is_assigned() or symbol.is_imported())
-        }
-        for child in table.get_children():
-            writes.update(global_writes(child))
-        return writes
-
-    return _NotebookScopeEffects(
-        names.stores | global_writes(table),
-        _deferred_scope_reads(table),
+    writes: set[str] = set()
+    deletions: set[str] = set()
+    for statement in module.body:
+        names = NotebookScopeNames()
+        names.visit(statement)
+        writes.update(names.stores)
+        deletions.update(names.deletions)
+        deletions.difference_update(_definite_statement_bindings(statement))
+    writes.update(
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if (symbol.is_assigned() or symbol.is_imported())
+        and (
+            not symbol.is_annotated()
+            or any(
+                _statement_store_count(statement, symbol.get_name())
+                for statement in module.body
+            )
+        )
     )
+    if _has_opaque_namespace_access(module):
+        writes.add("*")
+    return _NotebookScopeEffects(writes, _deferred_scope_reads(table), deletions)
 
 
 def _selected_notebook_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:

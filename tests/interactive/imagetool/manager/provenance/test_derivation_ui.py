@@ -110,6 +110,7 @@ def _composed_reorder_file_spec(file_path: pathlib.Path) -> ToolProvenanceSpec:
         "globals()['derived'] = offsets",
         "locals()['derived'] = offsets",
         "exec('derived = offsets')",
+        "def overwrite():\n    global derived\n    derived = offsets\noverwrite()",
     ],
 )
 def test_manager_copy_selected_scopes_preserves_notebook_namespace(

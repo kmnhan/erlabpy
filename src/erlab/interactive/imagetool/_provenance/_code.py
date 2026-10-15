@@ -353,7 +353,7 @@ def _has_opaque_namespace_access(module: ast.AST) -> bool:
     or callables. Composed notebook code must therefore retain this scope as an opaque
     boundary instead of trying to infer the resulting Python objects.
     """
-    return any(
+    if any(
         (
             isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
@@ -383,7 +383,24 @@ def _has_opaque_namespace_access(module: ast.AST) -> bool:
             and node.args[1].value in _OPAQUE_NAMESPACE_ATTRIBUTES
         )
         for node in ast.walk(module)
-    )
+    ):
+        return True
+    if not any(isinstance(node, ast.Global) for node in ast.walk(module)):
+        return False
+    try:
+        table = symtable.symtable(ast.unparse(module), "<ImageTool namespace>", "exec")
+    except SyntaxError:
+        # Invalid source is diagnosed by the replay-code validation boundary.
+        return True
+
+    def deferred_writes(scope: symtable.SymbolTable) -> bool:
+        return any(
+            symbol.is_declared_global()
+            and (symbol.is_assigned() or symbol.is_imported())
+            for symbol in scope.get_symbols()
+        ) or any(deferred_writes(child) for child in scope.get_children())
+
+    return any(deferred_writes(child) for child in table.get_children())
 
 
 class _CurrentScopeNameCounter(ast.NodeVisitor):
@@ -402,6 +419,21 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if node.id == self.target and isinstance(node.ctx, self.contexts):
             self.count += 1
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if (
+            isinstance(node.target, ast.Name)
+            and node.target.id == self.target
+            and ast.Load in self.contexts
+        ):
+            self.count += 1
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is None and isinstance(node.target, ast.Name):
+            self.visit(node.annotation)
+        else:
+            self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         if ast.Store not in self.contexts:
