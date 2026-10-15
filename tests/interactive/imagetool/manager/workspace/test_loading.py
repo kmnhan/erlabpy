@@ -5484,9 +5484,8 @@ def test_failed_workspace_replacement_restores_standalone_app_backup(
             # Closed app settings can differ from the last saved workspace.
             _configure_workspace_app(manager, "angle_calculator")
             widget = manager._standalone_app_windows["angle_calculator"]
-            changed_state = widget.workspace_state_payload()
-            changed_state["geometry"]["photon_energy"] = 38.4
-            widget.restore_workspace_state(changed_state)
+            widget.inputs["photon_energy"].setValue(38.4)
+            assert manager.is_workspace_modified
             if not original_visible:
                 manager._close_standalone_app("angle_calculator")
         expected_metadata = controller.saving._workspace_metadata_snapshot()
