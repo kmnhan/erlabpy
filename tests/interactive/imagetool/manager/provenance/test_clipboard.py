@@ -1166,8 +1166,11 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
         *,
         preserve_filter: bool,
         replay_source_data: xr.DataArray | None,
+        on_commit: Callable[[], None] | None = None,
     ) -> None:
         replaced.append((result, spec, preserve_filter, replay_source_data))
+        if on_commit is not None:
+            on_commit()
 
     node = types.SimpleNamespace(
         uid="node",

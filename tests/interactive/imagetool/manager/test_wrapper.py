@@ -170,7 +170,7 @@ def test_wrapper_provenance_owner_remap_rolls_back_atomically(
 
 
 def test_wrapper_applies_tool_owned_script_inputs() -> None:
-    changed: list[None] = []
+    changed: list[str | None] = []
     previous = ScriptInput(name="data", source_spec=full_data().model_dump(mode="json"))
     replacement = ScriptInput(
         name="data",
@@ -182,6 +182,7 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
         _script_inputs = (previous,)
         _primary_input = "data"
         _pending_script_inputs = (previous,)
+        _pending_input_commit = None
 
         @property
         def script_inputs(self):
@@ -220,6 +221,7 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
         tool_script_inputs=(replacement,),
         tool_primary_input="data",
         tool_pending_script_inputs=(replacement,),
+        tool_pending_input_commit=lambda: changed.append("commit"),
         pending_payload_attrs=None,
     )
 
@@ -230,7 +232,10 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
     assert tool.script_inputs == (replacement,)
     assert tool.primary_input == "data"
     assert tool._pending_script_inputs == (replacement,)
+    assert tool._pending_input_commit is snapshot.tool_pending_input_commit
     assert changed == [None]
+    tool._pending_input_commit()
+    assert changed == [None, "commit"]
 
 
 def test_wrapper_parent_refresh_marks_missing_output_unavailable() -> None:

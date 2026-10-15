@@ -561,7 +561,7 @@ def test_manager_bound_shift_edit_rejects_invalid_dialog_selection(
     monkeypatch.setattr(
         controller,
         "_replay_candidate_result",
-        lambda *_args: (prefix_data, spec),
+        lambda *_args: manager_widgets._ProvenanceReplayResult(prefix_data, spec),
     )
     monkeypatch.setattr(
         controller,
@@ -1785,15 +1785,17 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return current, candidate
+        return manager_widgets._ProvenanceReplayResult(current, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
         controller,
         "_replace_node_data",
-        lambda _node, _scope, _data, candidate, _filter: replaced.append(candidate),
+        lambda _node, _scope, _data, candidate, _filter, **_kwargs: replaced.append(
+            candidate
+        ),
     )
     monkeypatch.setattr(
         imagetool_dialogs.NormalizeDialog,
@@ -2332,15 +2334,17 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return current, candidate
+        return manager_widgets._ProvenanceReplayResult(current, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
         controller,
         "_replace_node_data",
-        lambda _node, _scope, _data, candidate, _filter: replaced.append(candidate),
+        lambda _node, _scope, _data, candidate, _filter, **_kwargs: replaced.append(
+            candidate
+        ),
     )
     monkeypatch.setattr(
         imagetool_dialogs.AssignCoordsDialog,
@@ -2531,9 +2535,9 @@ def test_manager_affine_coord_edit_falls_back_to_replay(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return replay_data, candidate
+        return manager_widgets._ProvenanceReplayResult(replay_data, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
@@ -2616,9 +2620,9 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return replay_data, candidate
+        return manager_widgets._ProvenanceReplayResult(replay_data, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
@@ -2701,9 +2705,9 @@ def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed_specs.append(candidate)
-        return data, candidate
+        return manager_widgets._ProvenanceReplayResult(data, candidate)
 
     monkeypatch.setattr(
         controller,
@@ -2839,9 +2843,9 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
         _scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed_specs.append(spec)
-        return data, spec
+        return manager_widgets._ProvenanceReplayResult(data, spec)
 
     monkeypatch.setattr(
         controller,
@@ -2956,10 +2960,10 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
         _scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         nonlocal calls
         calls += 1
-        return data, spec
+        return manager_widgets._ProvenanceReplayResult(data, spec)
 
     monkeypatch.setattr(
         controller,
@@ -3033,13 +3037,14 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
     controller = _fake_edit_controller(node, parent=parent)
     spec = selection(IselOperation(kwargs={"x": 1}))
 
-    data, replayed_spec = controller._replay_candidate_result(
+    result = controller._replay_candidate_result(
         typing.cast("typing.Any", node),
         "source",
         spec,
     )
+    data = result.data
     xr.testing.assert_identical(data, parent_data.isel(x=1))
-    assert replayed_spec == spec
+    assert result.provenance_spec == spec
 
     controller._replace_node_data(
         typing.cast("typing.Any", node),

@@ -36,6 +36,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,14 @@ _DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
 
 
 @dataclass(frozen=True)
-class _ScriptRebuildResult:
+class _ProvenanceReplayResult:
     data: xr.DataArray
     provenance_spec: ToolProvenanceSpec
+    revisions: _ProvenanceRevisionStore | None = None
+
+    def commit_revisions(self, store: _ProvenanceRevisionStore) -> None:
+        if self.revisions is not None:
+            store.merge(self.revisions)
 
 
 class _ScriptRebuildError(RuntimeError):

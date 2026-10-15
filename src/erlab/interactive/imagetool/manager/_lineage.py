@@ -47,14 +47,17 @@ from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperat
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
-from erlab.interactive.imagetool.manager._revisions import _same_provenance
+from erlab.interactive.imagetool.manager._revisions import (
+    _ProvenanceRevisionStore,
+    _same_provenance,
+)
 from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
     _DEPENDENCY_STATUS_LABELS,
     _DEPENDENCY_STATUS_TOOLTIPS,
+    _ProvenanceReplayResult,
     _ScriptRebuildError,
-    _ScriptRebuildResult,
     _TrustedProvenanceReplayCancelled,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -696,12 +699,13 @@ class _LineageController:
             and self._manager._provenance_revisions.has_data(script_input.revision_id)
         )
 
-    def _record_rebuilt_script_input(
-        self, data: xr.DataArray, script_input: ScriptInput
+    @staticmethod
+    def _capture_rebuilt_script_input(
+        revisions: _ProvenanceRevisionStore,
+        data: xr.DataArray,
+        script_input: ScriptInput,
     ) -> ScriptInput:
-        revision_id = self._manager._provenance_revisions.add(
-            data, script_input.parsed_provenance_spec()
-        )
+        revision_id = revisions.add(data, script_input.parsed_provenance_spec())
         return script_input.model_copy(update={"revision_id": revision_id})
 
     def _live_input_resolver(
@@ -1177,6 +1181,7 @@ class _LineageController:
                 live_uids=plan.live_uids,
             )
 
+            revisions = self._manager._provenance_revisions.stage()
             try:
                 resolved, refreshed_inputs = rebuild_script_inputs(
                     plan.script_inputs,
@@ -1189,10 +1194,18 @@ class _LineageController:
                         reason="reload this tool input"
                     ),
                     allow_recorded=allow_recorded,
-                    _record_input_revision=self._record_rebuilt_script_input,
+                    _capture_input_revision=functools.partial(
+                        self._capture_rebuilt_script_input, revisions
+                    ),
                 )
                 with node._suspend_descendant_propagation():
-                    updated = tool._apply_inputs(resolved, refreshed_inputs)
+                    updated = tool._apply_inputs(
+                        resolved,
+                        refreshed_inputs,
+                        on_commit=lambda: self._manager._provenance_revisions.merge(
+                            revisions
+                        ),
+                    )
             except _TrustedProvenanceReplayCancelled:
                 return fail_refresh()
             except Exception as exc:
@@ -1243,7 +1256,7 @@ class _LineageController:
         target_node_uid: str | None = None,
         authorization: object | None = None,
         prefer_recorded_revisions: bool = False,
-    ) -> _ScriptRebuildResult:
+    ) -> _ProvenanceReplayResult:
         resolve_live = self._live_input_resolver(
             target_node_uid=target_node_uid,
             prefer_recorded_revisions=prefer_recorded_revisions,
@@ -1257,6 +1270,7 @@ class _LineageController:
                 )
             return authorization
 
+        revisions = self._manager._provenance_revisions.stage()
         try:
             data, rebuilt_spec = rebuild_script_provenance(
                 spec,
@@ -1264,7 +1278,9 @@ class _LineageController:
                 extension_executor=self._manager._extensions.execution.run_operation,
                 extension_loader_executor=self._manager._extensions.replay_loader,
                 authorize=authorize,
-                _record_input_revision=self._record_rebuilt_script_input,
+                _capture_input_revision=functools.partial(
+                    self._capture_rebuilt_script_input, revisions
+                ),
             )
         except _TrustedProvenanceReplayCancelled:
             raise
@@ -1278,9 +1294,10 @@ class _LineageController:
                 "Could not reload data.",
                 details=traceback.format_exc(),
             ) from exc
-        return _ScriptRebuildResult(
+        return _ProvenanceReplayResult(
             data=data,
             provenance_spec=rebuilt_spec,
+            revisions=revisions,
         )
 
     def _node_can_reload_script_inputs(
@@ -1999,7 +2016,7 @@ class _LineageController:
     def _replace_script_reload_target(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        result: _ScriptRebuildResult,
+        result: _ProvenanceReplayResult,
     ) -> None:
         node.replace_with_detached_data(
             result.data,
@@ -2007,6 +2024,9 @@ class _LineageController:
             propagate_descendants=True,
             preserve_filter=True,
             replay_source_data=node.replay_source_data,
+            on_commit=functools.partial(
+                result.commit_revisions, self._manager._provenance_revisions
+            ),
         )
         self._manager.tree_view.refresh(node.uid)
         self._resume_pending_source_refreshes(node.uid)
@@ -2096,6 +2116,10 @@ class _LineageController:
                         show=True,
                         activate=True,
                         provenance_spec=result.provenance_spec,
+                        _on_commit=functools.partial(
+                            result.commit_revisions,
+                            self._manager._provenance_revisions,
+                        ),
                     )
                     self._manager._status_bar.showMessage(
                         "Opened reloaded data as a new tool", 5000

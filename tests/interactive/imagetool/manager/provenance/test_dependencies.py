@@ -6358,3 +6358,116 @@ def test_dependency_cycle_detection_ignores_immutable_fallback() -> None:
             ),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "outcome", ["accept", "reject", "fail", "deferred", "abort", "rebind"]
+)
+def test_rebuilt_tool_input_captures_follow_adoption(
+    qtbot, monkeypatch, manager_context, outcome: str
+) -> None:
+    class _TransactionTool(_ManagedUnaryTool):
+        pending_data: xr.DataArray | None = None
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool | None:
+            if outcome == "reject":
+                return False
+            if outcome == "fail":
+                raise ValueError("stop")
+            if outcome in {"deferred", "abort", "rebind"}:
+                self.pending_data = inputs["data"]
+                self._defer_source_refresh()
+                return False
+            return super().update_inputs(inputs)
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        tool = _TransactionTool(data)
+        uid = manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+        raw = manager._node_for_target(index).revision_id_for_role("source")
+        fallback = script(
+            start_label="Recorded input",
+            primary_input="raw",
+            active_name="raw",
+            script_inputs=(
+                ScriptInput(name="raw", revision_id=raw, follow_source=False),
+            ),
+        )
+        binding = ScriptInput(name="data", data_role="source", provenance_spec=fallback)
+        tool.set_script_inputs((binding,), primary_input="data")
+        store = manager._provenance_revisions
+        initial = store.revision_ids
+        refreshed = manager._lineage_controller._refresh_tool_inputs(
+            uid, allow_recorded=True
+        )
+        assert refreshed is (outcome == "accept")
+        if outcome == "accept":
+            captured = tool.script_inputs[0].revision_id
+            assert captured is not None
+            assert captured not in initial
+            assert store.has_data(captured)
+            xr.testing.assert_identical(store.resolve_data(captured), data)
+        else:
+            assert store.revision_ids == initial
+            assert tool.script_inputs == (binding,)
+        if outcome in {"deferred", "abort", "rebind"}:
+            assert tool._pending_script_inputs is not None
+            captured = tool._pending_script_inputs[0].revision_id
+            assert captured is not None
+            assert captured not in store
+            if outcome == "abort":
+                tool.abort_source_refresh()
+                assert store.revision_ids == initial
+                assert tool.script_inputs == (binding,)
+            else:
+                if outcome == "rebind":
+                    manager._provenance_revisions = store.copy()
+                assert tool.pending_data is not None
+                tool._data = tool.pending_data
+                tool.finalize_source_refresh()
+                assert tool.script_inputs[0].revision_id == captured
+                assert manager._provenance_revisions.has_data(captured)
+                if outcome == "rebind":
+                    assert captured not in store
+        assert tool._pending_input_commit is None
+
+
+def test_cancelled_live_replay_keeps_only_reusable_node_checkpoint(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    from erlab.interactive.imagetool.manager._workspace._revisions import (
+        retained_revision_ids,
+    )
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        node = manager._node_for_target(index)
+        spec = script(
+            ScriptCodeOperation(label="Update", code="result = data + 1"),
+            start_label="Update",
+            active_name="result",
+            script_inputs=(ScriptInput(name="data", node_uid=node.uid),),
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "issue_code_execution_capability",
+            lambda *_args, **_kwargs: None,
+        )
+        initial = manager._provenance_revisions.revision_ids
+        for _ in range(3):
+            with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
+                manager._lineage_controller._rebuild_script_provenance(spec)
+            added = manager._provenance_revisions.revision_ids - initial
+            assert len(added) == 1
+            assert added <= retained_revision_ids(manager)
+            captured = next(iter(added))
+            assert node.revision_id_for_role("displayed") == captured
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(captured), data
+            )

@@ -3577,6 +3577,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         ) = None
         self._script_inputs: tuple[ScriptInput, ...] = ()
         self._pending_script_inputs: tuple[ScriptInput, ...] | None = None
+        self._pending_input_commit: Callable[[], None] | None = None
         self._primary_input: str | None = None
         self._provenance_revision = 0
         self._provenance_change_depth = 0
@@ -4713,6 +4714,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             raise ValueError("primary_input requires at least one script input")
 
         self._pending_script_inputs = None
+        self._pending_input_commit = None
         changed = (
             normalized != self._script_inputs or primary_input != self._primary_input
         )
@@ -4847,6 +4849,10 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         self._source_refresh_rerun_requested = False
         with self._coalesce_provenance_changes():
             pending_inputs = self._pending_script_inputs
+            pending_commit = self._pending_input_commit
+            if pending_commit is not None:
+                pending_commit()
+            self._pending_input_commit = None
             self._pending_script_inputs = None
             if pending_inputs is not None:
                 with self._provenance_mutation(
@@ -4885,6 +4891,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         rerun_requested = self._source_refresh_rerun_requested
         self._source_refresh_rerun_requested = False
         self._pending_script_inputs = None
+        self._pending_input_commit = None
         self._source_refresh_deferred = False
         self._set_source_state("stale")
         self._sigSourceRefreshAborted.emit()
@@ -4905,6 +4912,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self._source_refresh_deferred = False
             self._source_refresh_rerun_requested = False
             self._pending_script_inputs = None
+            self._pending_input_commit = None
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
@@ -5025,6 +5033,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         self,
         inputs: Mapping[str, xr.DataArray],
         refreshed_script_inputs: Sequence[ScriptInput],
+        *,
+        on_commit: Callable[[], None] | None = None,
     ) -> bool:
         """Validate and apply one complete input transaction."""
         if not self._script_inputs:
@@ -5047,6 +5057,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self._source_refresh_deferred = False
             self._source_refreshing = True
             self._pending_script_inputs = refreshed_inputs
+            self._pending_input_commit = on_commit
             try:
                 return self.update_inputs(validated)
             except Exception:
@@ -5061,6 +5072,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         if update_complete is False:
             if not self._source_refresh_deferred:
                 self._pending_script_inputs = None
+                self._pending_input_commit = None
                 self._source_refresh_rerun_requested = False
             self._set_source_state("stale")
             return False

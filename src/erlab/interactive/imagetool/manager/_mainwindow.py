@@ -124,7 +124,7 @@ if typing.TYPE_CHECKING:
         _WatcherServer,
     )
     from erlab.interactive.imagetool.manager._widgets import (
-        _ScriptRebuildResult,
+        _ProvenanceReplayResult,
         _WorkspaceDocumentAccess,
     )
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
@@ -2807,7 +2807,7 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         target_node_uid: str | None = None,
         authorization: object | None = None,
-    ) -> _ScriptRebuildResult:
+    ) -> _ProvenanceReplayResult:
         return self._lineage_controller._rebuild_script_provenance(
             spec,
             target_node_uid=target_node_uid,
@@ -3337,6 +3337,7 @@ class ImageToolManager(_ImageToolManagerBase):
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
+        _on_commit: Callable[[], None] | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -3397,6 +3398,8 @@ class ImageToolManager(_ImageToolManagerBase):
             created_time=created_time,
             note=note,
         )
+        if _on_commit is not None:
+            _on_commit()
         self._register_root_wrapper(wrapper)
         wrapper.update_title()
 

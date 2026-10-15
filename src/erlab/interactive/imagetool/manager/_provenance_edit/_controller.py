@@ -83,11 +83,12 @@ from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
 )
 from erlab.interactive.imagetool.manager._revisions import _same_provenance
 from erlab.interactive.imagetool.manager._widgets import (
+    _ProvenanceReplayResult,
     _TrustedProvenanceReplayCancelled,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import xarray as xr
 
@@ -109,6 +110,7 @@ class _ValidatedProvenanceEdit:
     filter_operation: ToolProvenanceOperation | None
     replace_filter: bool = False
     recorded_revision: _ProvenanceRevision | None = None
+    replay_result: _ProvenanceReplayResult | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -935,6 +937,7 @@ class _ProvenanceEditController:
             ) as authorization:
                 if entries and authorization is None:
                     raise _TrustedProvenanceReplayCancelled
+                rebuilt = None
                 try:
                     if local.kind == "script" and local.primary_input is not None:
                         lineage = self._manager._lineage_controller
@@ -988,6 +991,14 @@ class _ProvenanceEditController:
                     spec,
                     preserve_filter=False,
                     replay_source_data=replay_source_data,
+                    on_commit=(
+                        None
+                        if rebuilt is None
+                        else functools.partial(
+                            rebuilt.commit_revisions,
+                            self._manager._provenance_revisions,
+                        )
+                    ),
                 )
                 publication.publish()
         self._manager._update_info(uid=node.uid)
@@ -2624,11 +2635,11 @@ class _ProvenanceEditController:
         )
         if current_input is None:
             raise RuntimeError("The bound shift input is not available")
-        prefix_data, _prefix = self._replay_candidate_result(
+        prefix_data = self._replay_candidate_result(
             node,
             row.scope,
             spec._prefix_before_ref(ref),
-        )
+        ).data
         temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
         temp_tool.hide()
         dialog: dialogs.ShiftDialog | None = None
@@ -2844,11 +2855,11 @@ class _ProvenanceEditController:
         )
         if prefix_data is None:
             try:
-                prefix_data, _prefix = self._replay_candidate_result(
+                prefix_data = self._replay_candidate_result(
                     node,
                     row.scope,
                     spec._prefix_before_ref(start_ref),
-                )
+                ).data
             except _TrustedProvenanceReplayCancelled:
                 raise
             except Exception as exc:
@@ -3210,12 +3221,14 @@ class _ProvenanceEditController:
         else:
             base_candidate, filter_operation = candidate, None
         try:
-            source_data, base_candidate = self._replay_candidate_result(
+            replay_result = self._replay_candidate_result(
                 node,
                 scope,
                 base_candidate,
                 authorization=authorization,
             )
+            source_data = replay_result.data
+            base_candidate = replay_result.provenance_spec
         except _TrustedProvenanceReplayCancelled:
             raise
         except Exception as exc:
@@ -3247,6 +3260,7 @@ class _ProvenanceEditController:
             scope=scope,
             data=source_data,
             spec=base_candidate,
+            replay_result=replay_result,
             filter_operation=filter_operation,
             replace_filter=(
                 active_filter_ref is not None and filter_operation is not None
@@ -3293,6 +3307,14 @@ class _ProvenanceEditController:
             edit.data,
             edit.spec,
             None if edit.replace_filter else edit.filter_operation,
+            on_commit=(
+                None
+                if edit.replay_result is None
+                else functools.partial(
+                    edit.replay_result.commit_revisions,
+                    self._manager._provenance_revisions,
+                )
+            ),
         )
         if edit.replace_filter:
             edit.node.slicer_area.apply_filter_operation(
@@ -3377,8 +3399,7 @@ class _ProvenanceEditController:
         scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
     ) -> xr.DataArray:
-        data, _spec = self._replay_candidate_result(node, scope, spec)
-        return data
+        return self._replay_candidate_result(node, scope, spec).data
 
     def _replay_candidate_result(
         self,
@@ -3387,9 +3408,9 @@ class _ProvenanceEditController:
         spec: ToolProvenanceSpec,
         *,
         authorization: object | None = None,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> _ProvenanceReplayResult:
         if spec.kind == "file":
-            return self._replay_file_candidate(spec), spec
+            return _ProvenanceReplayResult(self._replay_file_candidate(spec), spec)
         if spec.kind in {"full_data", "public_data", "selection"}:
             if any(
                 isinstance(
@@ -3398,7 +3419,7 @@ class _ProvenanceEditController:
                 )
                 for operation in spec.operations
             ):
-                return (
+                return _ProvenanceReplayResult(
                     self._replay_live_script_candidate(
                         node,
                         scope,
@@ -3409,7 +3430,7 @@ class _ProvenanceEditController:
                 )
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
-                return (
+                return _ProvenanceReplayResult(
                     self._manager._lineage_controller._apply_provenance(
                         spec,
                         parent.current_source_data(),
@@ -3421,7 +3442,7 @@ class _ProvenanceEditController:
             parent_data = node.resolved_replay_source_data()
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-            return (
+            return _ProvenanceReplayResult(
                 self._manager._lineage_controller._apply_provenance(
                     spec,
                     parent_data,
@@ -3437,7 +3458,7 @@ class _ProvenanceEditController:
                 if source_data is None:
                     raise RuntimeError("Script provenance needs its replay source")
                 replay_inputs = dict.fromkeys(external_input_names, source_data)
-                return (
+                return _ProvenanceReplayResult(
                     replay_script_provenance(
                         spec,
                         replay_inputs,
@@ -3458,13 +3479,12 @@ class _ProvenanceEditController:
                     ),
                     spec,
                 )
-            result = self._manager._lineage_controller._rebuild_script_provenance(
+            return self._manager._lineage_controller._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
                 authorization=authorization,
                 prefer_recorded_revisions=True,
             )
-            return result.data, result.provenance_spec
         raise RuntimeError("Unsupported provenance kind")
 
     def _replay_live_script_candidate(
@@ -3563,6 +3583,8 @@ class _ProvenanceEditController:
         data: xr.DataArray,
         spec: ToolProvenanceSpec,
         filter_operation: ToolProvenanceOperation | None,
+        *,
+        on_commit: Callable[[], None] | None = None,
     ) -> None:
         if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
@@ -3603,6 +3625,7 @@ class _ProvenanceEditController:
             spec,
             preserve_filter=preserve_filter,
             replay_source_data=replay_source_data,
+            on_commit=on_commit,
         )
 
     def _active_filter_ref(

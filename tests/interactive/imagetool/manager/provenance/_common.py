@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
 from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+from erlab.interactive.imagetool.manager._widgets import _ProvenanceReplayResult
 
 _register_local_callable_loader(xr.load_dataarray)
 
@@ -264,7 +265,7 @@ def _fake_edit_controller(
             if script_input_unavailable_reason is not None
             else lambda *_args, **_kwargs: None
         ),
-        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
+        _rebuild_script_provenance=lambda spec, **_kwargs: _ProvenanceReplayResult(
             data=xr.DataArray([1.0], dims=("x",)),
             provenance_spec=spec,
         ),

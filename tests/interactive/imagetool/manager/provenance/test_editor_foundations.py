@@ -80,6 +80,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _files as provenance_edit_files,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 from ._common import (
     _fake_edit_controller,
@@ -1706,6 +1707,7 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
         ),
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
+    manager._provenance_revisions = _ProvenanceRevisionStore()
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
     capability = object()
     controller._authorize_provenance_execution = (  # type: ignore[method-assign]
@@ -1961,7 +1963,7 @@ def test_manager_edit_live_script_code_row_replays_with_data_context(
     monkeypatch.setattr(
         controller,
         "_replace_node_data",
-        lambda _node, _scope, data, candidate, _filter: applied.append(
+        lambda _node, _scope, data, candidate, _filter, **_kwargs: applied.append(
             (data, candidate)
         ),
     )
@@ -2008,3 +2010,99 @@ def test_manager_edit_script_code_trust_cancel_does_not_show_error(
     controller.edit_row(spec.display_rows()[2])
 
     assert failures == []
+
+
+def _staged_replay_controller():
+    store = _ProvenanceRevisionStore()
+    raw_revision = store.add(
+        xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    )
+    inner = script(
+        start_label="Recorded input",
+        primary_input="raw",
+        active_name="raw",
+        script_inputs=(
+            ScriptInput(name="raw", revision_id=raw_revision, follow_source=False),
+        ),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Update", code="result = data + 1"),
+        start_label="Update",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data", provenance_spec=inner),),
+    )
+    manager = types.SimpleNamespace(
+        _provenance_revisions=store,
+        _tool_graph=types.SimpleNamespace(nodes={}),
+        _extensions=types.SimpleNamespace(
+            execution=types.SimpleNamespace(run_operation=None), replay_loader=None
+        ),
+        _workspace_controller=types.SimpleNamespace(
+            issue_code_execution_capability=lambda *_args, **_kwargs: None
+        ),
+    )
+    return manager_lineage._LineageController(manager), store, spec
+
+
+def test_rebuild_discarded_captures_on_authorization_cancel() -> None:
+    controller, store, spec = _staged_replay_controller()
+    initial = store.revision_ids
+    for _ in range(3):
+        with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
+            controller._rebuild_script_provenance(spec)
+        assert store.revision_ids == initial
+
+
+def test_rebuild_discarded_captures_on_execution_failure() -> None:
+    from tests.interactive.imagetool.manager.provenance._common import (
+        _authorize_execution,
+    )
+
+    controller, store, spec = _staged_replay_controller()
+    controller._authorize_provenance_execution = lambda entries, **_kwargs: (
+        _authorize_execution(entries)
+    )
+    spec = spec.model_copy(
+        update={
+            "steps": (
+                spec.steps[0].model_copy(
+                    update={
+                        "operation": ScriptCodeOperation(
+                            label="Fail", code="result = data.isel(missing=0)"
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    initial = store.revision_ids
+    for _ in range(3):
+        with pytest.raises(manager_widgets._ScriptRebuildError) as error:
+            controller._rebuild_script_provenance(spec)
+        assert "ValueError:" in error.value.details
+        assert "missing" in error.value.details
+        assert store.revision_ids == initial
+
+
+def test_rebuild_captures_commit_only_when_result_is_adopted() -> None:
+    from tests.interactive.imagetool.manager.provenance._common import (
+        _authorize_execution,
+    )
+
+    controller, store, spec = _staged_replay_controller()
+    controller._authorize_provenance_execution = lambda entries, **_kwargs: (
+        _authorize_execution(entries)
+    )
+    initial = store.revision_ids
+    result = controller._rebuild_script_provenance(spec)
+    assert store.revision_ids == initial
+    assert result.revisions is not None
+    captured = result.provenance_spec.script_inputs[0].revision_id
+    assert captured is not None
+    assert captured not in store
+    xr.testing.assert_identical(
+        result.data, xr.DataArray(np.arange(6.0).reshape(2, 3) + 1, dims=("x", "y"))
+    )
+    result.commit_revisions(store)
+    assert captured in store
+    xr.testing.assert_identical(store.resolve_data(captured), result.data - 1)

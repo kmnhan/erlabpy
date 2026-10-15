@@ -340,6 +340,7 @@ class _NodeProvenanceOwnerSnapshot:
     tool_script_inputs: tuple[ScriptInput, ...] | None
     tool_primary_input: str | None
     tool_pending_script_inputs: tuple[ScriptInput, ...] | None
+    tool_pending_input_commit: Callable[[], None] | None
     pending_payload_attrs: dict[str, typing.Any] | None
 
 
@@ -1642,6 +1643,9 @@ class _ManagedWindowNode(QtCore.QObject):
                     item.model_copy(deep=True) for item in tool._pending_script_inputs
                 )
             ),
+            tool_pending_input_commit=(
+                None if tool is None else tool._pending_input_commit
+            ),
             pending_payload_attrs=(
                 None
                 if self._pending_workspace_payload_attrs is None
@@ -1736,6 +1740,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 tool.script_inputs != snapshot.tool_script_inputs
                 or tool.primary_input != snapshot.tool_primary_input
                 or tool._pending_script_inputs != snapshot.tool_pending_script_inputs
+                or tool._pending_input_commit is not snapshot.tool_pending_input_commit
             )
             if input_changed:
                 script_inputs = typing.cast(
@@ -1754,6 +1759,7 @@ class _ManagedWindowNode(QtCore.QObject):
                             for item in snapshot.tool_pending_script_inputs
                         )
                     )
+                    tool._pending_input_commit = snapshot.tool_pending_input_commit
                     tool._notify_provenance_changed()
 
         if snapshot.imagetool is not None and node_provenance_changed:
@@ -1840,6 +1846,7 @@ class _ManagedWindowNode(QtCore.QObject):
             tool_script_inputs=tool_script_inputs,
             tool_primary_input=before.tool_primary_input,
             tool_pending_script_inputs=tool_pending_script_inputs,
+            tool_pending_input_commit=before.tool_pending_input_commit,
             pending_payload_attrs=attrs,
         )
         try:
@@ -2741,7 +2748,9 @@ class _ManagedWindowNode(QtCore.QObject):
         propagate_descendants: bool,
         preserve_filter: bool = False,
         detach_source_binding: bool = False,
+        on_commit: Callable[[], None] | None = None,
     ) -> None:
+        data = data.compute()
         self.revision_id_for_role("source")
         accepted_filter_operation = None
         filtered = None
@@ -2765,6 +2774,8 @@ class _ManagedWindowNode(QtCore.QObject):
                     operation=accepted_filter_operation,
                     accept=True,
                 )
+        if on_commit is not None:
+            on_commit()
         if detach_source_binding:
             self._source_spec = None
             self._source_binding = None
@@ -2794,6 +2805,7 @@ class _ManagedWindowNode(QtCore.QObject):
         propagate_descendants: bool = True,
         preserve_filter: bool = False,
         replay_source_data: xr.DataArray | None,
+        on_commit: Callable[[], None] | None = None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
         provenance_spec = self._normalize_detached_provenance(
@@ -2810,6 +2822,7 @@ class _ManagedWindowNode(QtCore.QObject):
             propagate_descendants=propagate_descendants,
             preserve_filter=preserve_filter,
             detach_source_binding=True,
+            on_commit=on_commit,
         )
 
     def _handle_tool_data_changed(self) -> None:

@@ -7710,3 +7710,57 @@ def test_tool_window_suppressed_edit_notifies_after_history_resumes(qtbot):
     assert win.tool_status.value == 2
     win.undo()
     assert win.tool_status.value == 0
+
+
+@pytest.mark.parametrize("outcome", ["accept", "abort", "reject", "fail", "replace"])
+def test_tool_window_input_commit_follows_acceptance(qtbot, outcome: str) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed = binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data")
+    committed: list[str] = []
+    if outcome == "reject":
+        tool.update_inputs = lambda _inputs: False
+    elif outcome == "fail":
+
+        def fail(_inputs):
+            raise ValueError("stop")
+
+        tool.update_inputs = fail
+    if outcome == "fail":
+        with pytest.raises(ValueError, match="stop"):
+            tool._apply_inputs(
+                {"data": data + 1},
+                (refreshed,),
+                on_commit=lambda: committed.append("first"),
+            )
+    else:
+        assert not tool._apply_inputs(
+            {"data": data + 1},
+            (refreshed,),
+            on_commit=lambda: committed.append("first"),
+        )
+    assert not committed
+    if outcome == "accept":
+        tool.finish_deferred_update()
+        assert committed == ["first"]
+        assert tool.script_inputs == (refreshed,)
+        tool.finalize_source_refresh()
+        assert committed == ["first"]
+    elif outcome == "replace":
+        assert not tool._apply_inputs(
+            {"data": data + 2},
+            (refreshed,),
+            on_commit=lambda: committed.append("second"),
+        )
+        tool.finish_deferred_update()
+        assert committed == ["second"]
+    else:
+        tool.abort_source_refresh()
+        tool.finalize_source_refresh()
+        assert not committed
+        assert tool.script_inputs == (binding,)
+    assert tool._pending_input_commit is None

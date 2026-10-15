@@ -16,6 +16,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceSpec,
     full_data,
+    script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
@@ -248,7 +249,7 @@ def test_manager_recorded_input_edit_uses_captured_data_and_open_input_is_indepe
         assert plan.unavailable_reason is None
         assert plan.actions == ()
         controller = manager._provenance_edit_controller
-        replayed, _ = controller._replay_candidate_result(node, "display", spec)
+        replayed = controller._replay_candidate_result(node, "display", spec).data
         xr.testing.assert_identical(replayed, expected)
         manager._metadata_node_uid = node.uid
         row = node.derivation_display_rows[-1].materialized_children()[0]
@@ -879,3 +880,166 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert not manager._metadata_edit_step_action.isEnabled()
         assert not manager._metadata_revert_step_action.isEnabled()
         assert not manager._metadata_delete_step_action.isEnabled()
+
+
+def test_reload_output_failure_precedes_node_and_capture_adoption(
+    qtbot, manager_context
+) -> None:
+    import dask.array as da
+    from dask import delayed
+
+    from erlab.interactive.imagetool.manager._widgets import _ProvenanceReplayResult
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+
+    @delayed
+    def fail():
+        raise OSError("output source unavailable")
+
+    output = data.copy(data=da.from_delayed(fail(), shape=(2, 3), dtype=float))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        node = manager._node_for_target(index)
+        original_spec = node.provenance_spec
+        original_snapshot = node.snapshot_token
+        store = manager._provenance_revisions
+        revisions = store.stage()
+        revisions.add(data)
+        result = _ProvenanceReplayResult(output, full_data(), revisions)
+        initial = store.revision_ids
+        with pytest.raises(OSError, match="output source unavailable"):
+            manager._lineage_controller._replace_script_reload_target(node, result)
+        assert store.revision_ids == initial
+        assert node.provenance_spec == original_spec
+        assert node.snapshot_token == original_snapshot
+        xr.testing.assert_identical(node.current_source_data(), data)
+        assert isinstance(output.data, da.Array)
+
+
+@pytest.mark.parametrize("choice", ["cancel", "new", "replace"])
+def test_reloaded_fallback_captures_exist_before_publication(
+    qtbot, monkeypatch, manager_context, choice: str
+) -> None:
+    current = xr.DataArray(
+        np.zeros((2, 2)), dims=("x", "y"), coords={"x": [0.0, 1.0], "y": [0.0, 1.0]}
+    )
+    expected = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [10.0, 11.0], "y": [10.0, 11.0, 12.0]},
+    )
+    with manager_context() as manager:
+        store = manager._provenance_revisions
+        raw = store.add(expected)
+        fallback = script(
+            start_label="Recorded input",
+            primary_input="raw",
+            active_name="raw",
+            script_inputs=(
+                ScriptInput(name="raw", revision_id=raw, follow_source=False),
+            ),
+        )
+        spec = script(
+            start_label="Recorded result",
+            primary_input="data",
+            active_name="data",
+            script_inputs=(ScriptInput(name="data", provenance_spec=fallback),),
+        )
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(current),
+            provenance_spec=spec,
+            show=False,
+        )
+        node = manager._node_for_target(index)
+        monkeypatch.setattr(
+            manager._lineage_controller,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: choice,
+        )
+        observed: list[str] = []
+
+        def check_published_inputs():
+            for published in manager._tool_graph.nodes.values():
+                published_spec = published.provenance_spec
+                if published_spec is None:
+                    continue
+                for item in published_spec.script_inputs:
+                    if item.revision_id is not None:
+                        assert store.has_data(item.revision_id)
+                        observed.append(item.revision_id)
+
+        manager._sigReloadLinkers.connect(check_published_inputs)
+        initial = store.revision_ids
+        assert manager._lineage_controller._reload_script_derived_target(index) is (
+            choice != "cancel"
+        )
+        if choice == "cancel":
+            assert store.revision_ids == initial
+            xr.testing.assert_identical(node.current_source_data(), current)
+        else:
+            target = manager._node_for_target(1) if choice == "new" else node
+            captured = target.provenance_spec.script_inputs[0].revision_id
+            assert captured is not None
+            assert store.has_data(captured)
+            xr.testing.assert_identical(store.resolve_data(captured), expected)
+            xr.testing.assert_identical(target.current_source_data(), expected)
+            if choice == "new":
+                assert captured in observed
+                xr.testing.assert_identical(node.current_source_data(), current)
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_provenance_edit_captures_follow_validation_and_adoption(
+    qtbot, manager_context, valid: bool
+) -> None:
+    from erlab.interactive.imagetool.manager._provenance_edit._controller import (
+        _ProvenanceReplayFailure,
+    )
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        node = manager._node_for_target(index)
+        store = manager._provenance_revisions
+        raw = store.add(data + 1 if valid else xr.DataArray(1.0))
+        fallback = script(
+            start_label="Recorded input",
+            primary_input="raw",
+            active_name="raw",
+            script_inputs=(
+                ScriptInput(name="raw", revision_id=raw, follow_source=False),
+            ),
+        )
+        candidate = script(
+            start_label="Recorded result",
+            primary_input="data",
+            active_name="data",
+            script_inputs=(ScriptInput(name="data", provenance_spec=fallback),),
+        )
+        controller = manager._provenance_edit_controller
+        initial = store.revision_ids
+        preview = controller._replay_candidate_result(node, "display", candidate)
+        assert preview.revisions is not None
+        assert store.revision_ids == initial
+        if not valid:
+            with pytest.raises(_ProvenanceReplayFailure):
+                controller._validated_edit(
+                    node, "display", candidate, where="validating the edit"
+                )
+            assert store.revision_ids == initial
+            xr.testing.assert_identical(node.current_source_data(), data)
+            return
+        edit = controller._validated_edit(
+            node, "display", candidate, where="validating the edit"
+        )
+        assert store.revision_ids == initial
+        controller._apply_validated_edit(edit)
+        captured = node.provenance_spec.script_inputs[0].revision_id
+        assert captured is not None
+        assert store.has_data(captured)
+        xr.testing.assert_identical(store.resolve_data(captured), data + 1)
+        xr.testing.assert_identical(node.current_source_data(), data + 1)
