@@ -283,15 +283,18 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
         expected_first = manager._provenance_revisions.resolve_data(first)
         if replace_external:
             node.slicer_area.replace_source_data(test_data + 10)
-            assert node.current_revision_id is None
+            assert node.current_revision_id is not None
         else:
             node.replace_with_detached_data(
                 test_data + 10, None, replay_source_data=None
             )
         orphan = manager._provenance_revisions.add(test_data + 99)
         path = tmp_path / "history.itws"
-        manager._workspace_controller.saving._save_workspace_document(path)
         second = node.current_revision_id
+        revision_ids = manager._provenance_revisions.revision_ids
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert node.current_revision_id == second
+        assert manager._provenance_revisions.revision_ids == revision_ids
         assert second is not None
         manifest = _current_workspace_manifest(path)
         assert manifest["nodes"][0]["current_revision_id"] == second
@@ -585,7 +588,7 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
         assert reads == 1
 
 
-def test_workspace_save_normalizes_existing_legacy_seed_once(
+def test_workspace_adoption_normalizes_legacy_seed_before_pure_save(
     qtbot, tmp_path, test_data, manager_context
 ) -> None:
     with manager_context() as manager:
@@ -598,7 +601,7 @@ def test_workspace_save_normalizes_existing_legacy_seed_once(
         adopt_workspace_path(manager, path)
         object_id = _current_workspace_manifest(path)["nodes"][0]["payload_object_id"]
 
-        # A node from an older session can still carry the raw seed before save.
+        # Adopt the old representation at the node boundary, before saving.
         node.set_displayed_provenance(
             script(
                 ScriptCodeOperation(label="Add", code="derived = data + 1"),
@@ -606,9 +609,13 @@ def test_workspace_save_normalizes_existing_legacy_seed_once(
                 active_name="derived",
             ),
             advance_snapshot=False,
+            replay_source_data=test_data,
         )
-        node._replay_source_data = test_data.copy(deep=True)
+        adopted = node.provenance_spec
+        revision_ids = manager._provenance_revisions.revision_ids
         manager._workspace_controller.saving._save_workspace_document(path)
+        assert node.provenance_spec == adopted
+        assert manager._provenance_revisions.revision_ids == revision_ids
 
         spec = node.provenance_spec
         seed_id = spec.script_inputs[0].revision_id

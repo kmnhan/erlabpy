@@ -132,10 +132,8 @@ def test_bound_revision_keeps_checkpoint_and_canonical_metadata(legacy: bool) ->
             ),
         ),
     )
-    revision_id = registry.add(data + 1, spec, input_revisions={"data": seed})
-    before = workspace_revisions.revision_manifest_entry(
-        registry, registry.get(revision_id)
-    )
+    revision_id = registry.add(data + 1, spec)
+    before = workspace_revisions.revision_manifest_entry(registry.get(revision_id))
     bound_spec = spec.model_copy(
         update={
             "script_inputs": (
@@ -149,8 +147,7 @@ def test_bound_revision_keeps_checkpoint_and_canonical_metadata(legacy: bool) ->
     assert bound.revision == registry.get(revision_id)
     xr.testing.assert_identical(registry.resolve_data(bound.revision_id), data + 1)
     assert (
-        workspace_revisions.revision_manifest_entry(registry, registry.get(revision_id))
-        == before
+        workspace_revisions.revision_manifest_entry(registry.get(revision_id)) == before
     )
     assert registry.bind(seed, None).provenance_spec is None
     with pytest.raises(KeyError):
@@ -203,15 +200,18 @@ def test_bound_revision_rejects_recipe_changes(change: str) -> None:
         registry.bind(revision_id, candidate)
 
 
-def test_bound_revision_reuses_legacy_normalization_seed() -> None:
+def test_bound_revision_requires_explicit_legacy_normalization_seed() -> None:
     registry = _ProvenanceRevisionStore()
     data = xr.DataArray([1.0, 2.0], dims="x")
     seed = registry.add(data)
     legacy = full_data(IselOperation(kwargs={"x": slice(None)}))
     normalized = registry.normalize_provenance(legacy, replay_source_revision_id=seed)
-    revision_id = registry.add(data, normalized, input_revisions={"data": seed})
+    revision_id = registry.add(data, normalized)
     before = registry.revision_ids
-    assert registry.bind(revision_id, legacy).provenance_spec == normalized
+    with pytest.raises(ValueError, match="bound recipe does not match"):
+        registry.bind(revision_id, legacy)
+    assert registry.bind(revision_id, normalized).provenance_spec == normalized
+    assert registry.get(revision_id).extra_input_revisions == ()
     assert registry.revision_ids == before
 
 
@@ -361,7 +361,7 @@ def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -
         dims=("x", "eV"),
     )
     with pytest.raises(ValueError, match="must be unique"):
-        registry.add(data, input_revisions=(("data", "a"), ("data", "b")))
+        registry.add(data, extra_input_revisions=(("data", "a"), ("data", "b")))
     assert not reads
     assert registry.revision_ids == frozenset()
     assert not registry._data
@@ -391,18 +391,18 @@ def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -
             "Supply revision data or a checkpoint source",
         ),
         (
-            {"input_revisions": [("data", "first"), ("data", "second")]},
+            {"extra_input_revisions": [("data", "first"), ("data", "second")]},
             "must be unique",
         ),
         (
             {
                 "data": xr.DataArray([1]),
-                "input_revisions": [("data", "first"), ("data", "second")],
+                "extra_input_revisions": [("data", "first"), ("data", "second")],
             },
             "must be unique",
         ),
-        ({"input_revisions": {"": "source"}}, "require a name and revision ID"),
-        ({"input_revisions": {"data": ""}}, "require a name and revision ID"),
+        ({"extra_input_revisions": {"": "source"}}, "require a name and revision ID"),
+        ({"extra_input_revisions": {"data": ""}}, "require a name and revision ID"),
     ],
 )
 def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
@@ -461,9 +461,7 @@ def test_workspace_revision_restore_validates_all_records_before_adoption() -> N
     registry = _ProvenanceRevisionStore()
     data = xr.DataArray([1.0, 2.0])
     current = registry.add(data, full_data())
-    conflict = workspace_revisions.revision_manifest_entry(
-        registry, registry.get(current)
-    )
+    conflict = workspace_revisions.revision_manifest_entry(registry.get(current))
     conflict["source_owner_uid"] = "conflicting-owner"
     manifest = {
         "provenance_revisions": [
@@ -671,14 +669,13 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
     )
     revision_id = registry.add(
         spec=recipe,
-        input_revisions={"data": "missing-source", "other": "missing-source"},
+        extra_input_revisions={"data": "missing-source", "other": "missing-source"},
         primary_revision_id="missing-prior",
     )
     records = registry.reachable([revision_id])
     manifest = {
         "provenance_revisions": [
-            workspace_revisions.revision_manifest_entry(registry, record)
-            for record in records
+            workspace_revisions.revision_manifest_entry(record) for record in records
         ]
     }
     assert workspace_revisions.revision_object_writes(registry, records) == ()
@@ -697,10 +694,12 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
     )
     assert restored.revision_ids == frozenset({revision_id})
     assert restored.get(revision_id).provenance_spec == recipe
-    assert restored.get(revision_id).input_revisions == (
-        ("data", "missing-source"),
+    assert restored.get(revision_id).extra_input_revisions == (
         ("other", "missing-source"),
     )
+    assert workspace_revisions.revision_manifest_entry(restored.get(revision_id))[
+        "input_revisions"
+    ] == {"data": "missing-source", "other": "missing-source"}
     assert not restored.has_data(revision_id)
     with pytest.raises(ValueError, match="has no data checkpoint"):
         restored.resolve_data(revision_id)
@@ -715,40 +714,6 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
         restored.normalize_provenance(
             full_data(), replay_source_revision_id=revision_id
         )
-
-
-@pytest.mark.parametrize(
-    "attrs_payload",
-    [
-        None,
-        1,
-        [None],
-        {_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR: "invalid JSON"},
-    ],
-)
-def test_saved_provenance_rejects_missing_or_invalid_metadata(attrs_payload) -> None:
-    node = SimpleNamespace(is_imagetool=True, provenance_spec=full_data())
-    assert not workspace_revisions.saved_provenance_matches_node(node, attrs_payload)
-
-
-def test_saved_provenance_matches_encoded_attrs_and_recipe_changes() -> None:
-    from erlab.interactive.imagetool.manager._workspace import _format
-
-    recipe = full_data(IselOperation(kwargs={"x": 1}))
-    node = SimpleNamespace(is_imagetool=True, provenance_spec=recipe)
-    attrs = {
-        _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR: recipe.model_dump_json()
-    }
-    assert workspace_revisions.saved_provenance_matches_node(node, attrs)
-    assert workspace_revisions.saved_provenance_matches_node(
-        node, _format._workspace_manifest_attrs(attrs)
-    )
-    node.provenance_spec = full_data()
-    assert not workspace_revisions.saved_provenance_matches_node(node, attrs)
-    node.provenance_spec = None
-    assert workspace_revisions.saved_provenance_matches_node(node, {})
-    node.is_imagetool = False
-    assert workspace_revisions.saved_provenance_matches_node(node, None)
 
 
 def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
@@ -767,8 +732,7 @@ def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
     records = registry.reachable([second])
     manifest = _manifest()
     manifest["provenance_revisions"] = [
-        workspace_revisions.revision_manifest_entry(registry, record)
-        for record in records
+        workspace_revisions.revision_manifest_entry(record) for record in records
     ]
     path = tmp_path / "revisions.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
@@ -860,7 +824,7 @@ def test_workspace_trust_covers_historical_revision_recipes() -> None:
     second = registry.add(primary_revision_id=first)
     manifest = _manifest()
     manifest["provenance_revisions"] = [
-        workspace_revisions.revision_manifest_entry(registry, record)
+        workspace_revisions.revision_manifest_entry(record)
         for record in registry.reachable([second])
     ]
     baseline = workspace_code_trust_manifest(manifest).canonical_bytes()
@@ -902,17 +866,23 @@ def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None
     revision_id = registry.add(
         spec=spec,
         source=source,
-        input_revisions={"data": "source", "shift": "shift-source"},
+        extra_input_revisions={"data": "source", "shift": "shift-source"},
         primary_revision_id="prior",
         source_owner_uid="owner",
     )
     record = registry.get(revision_id)
-    entry = workspace_revisions.revision_manifest_entry(registry, record)
+    entry = workspace_revisions.revision_manifest_entry(record)
     assert entry["provenance_spec"]["script_inputs"][0]["node_snapshot_token"] is None
     manifest = json.loads(json.dumps({"provenance_revisions": [entry]}))
     workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
     assert registry.get(revision_id).checkpoint.source is source
-    assert registry.get(revision_id).provenance_spec == spec
+    assert registry.get(revision_id).provenance_spec == registry.normalize_provenance(
+        spec
+    )
+    assert spec.script_inputs[0].node_snapshot_token == owner_snapshot
+    assert registry.get(revision_id).extra_input_revisions == ()
+    manifest["provenance_revisions"][0].pop("input_revisions")
+    workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
 
     manifest["provenance_revisions"][0]["provenance_spec"]["steps"][0]["operation"][
         "cval"
@@ -932,8 +902,7 @@ def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
     records = registry.reachable([revision_id])
     manifest = _manifest()
     manifest["provenance_revisions"] = [
-        workspace_revisions.revision_manifest_entry(registry, record)
-        for record in records
+        workspace_revisions.revision_manifest_entry(record) for record in records
     ]
     original = tmp_path / "original.itws"
     destination = tmp_path / "destination.itws"
@@ -972,16 +941,53 @@ def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
     assert restored.get(revision_id).source_owner_uid == "owner"
 
 
+def test_legacy_input_edges_preserve_conflicting_names_without_replay() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = registry.add(xr.DataArray([1.0]))
+    extra = registry.add(xr.DataArray([2.0]))
+    spec = script(
+        ScriptCodeOperation(label="Identity", code="derived = data"),
+        start_label="Saved",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data", revision_id=data),),
+    )
+    revision_id = registry.add(
+        spec=spec,
+        extra_input_revisions={"data": extra, "unavailable": "missing-input"},
+    )
+    records = registry.reachable([revision_id])
+    assert {record.revision_id for record in records} == {data, extra, revision_id}
+    manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(record) for record in records
+        ]
+    }
+    restored = _ProvenanceRevisionStore()
+    workspace_revisions.restore_revision_store(restored, manifest, "unused.itws")
+    workspace_revisions.restore_revision_store(restored, manifest, "unused.itws")
+    record = restored.get(revision_id)
+    assert record.provenance_spec == spec
+    assert record.extra_input_revisions == (
+        ("data", extra),
+        ("unavailable", "missing-input"),
+    )
+    assert {record.revision_id for record in restored.reachable([revision_id])} == {
+        data,
+        extra,
+        revision_id,
+    }
+
+
 def test_revision_retention_preserves_unavailable_input_references() -> None:
     registry = _ProvenanceRevisionStore()
     current = registry.add(
         xr.DataArray([1.0], dims="x"),
-        input_revisions={"unavailable": "missing-input"},
+        extra_input_revisions={"unavailable": "missing-input"},
         primary_revision_id="missing-prior",
     )
     records = registry.reachable([current])
     assert len(records) == 1
-    assert records[0].input_revisions == (("unavailable", "missing-input"),)
+    assert records[0].extra_input_revisions == (("unavailable", "missing-input"),)
     assert records[0].primary_revision_id == "missing-prior"
     registry.discard_unreachable([current])
     assert registry.has_data(current)
@@ -1120,17 +1126,17 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
     assert reads == 1
     record = registry.get(result)
     assert record is not None
-    entry = workspace_revisions.revision_manifest_entry(registry, record)
+    entry = workspace_revisions.revision_manifest_entry(record)
     assert entry["provenance_spec"]["script_inputs"][0]["revision_id"] == seed_id
     assert "replay_source_revision_id" not in entry
     manifest = {
         "provenance_revisions": [
-            workspace_revisions.revision_manifest_entry(registry, record)
+            workspace_revisions.revision_manifest_entry(record)
             for record in registry.reachable([result])
         ]
     }
     workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
-    assert registry.get(result).input_revisions == ()
+    assert registry.get(result).extra_input_revisions == ()
 
 
 @pytest.mark.parametrize(

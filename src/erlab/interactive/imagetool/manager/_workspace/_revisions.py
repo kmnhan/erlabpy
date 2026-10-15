@@ -10,12 +10,12 @@ from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
 from erlab.interactive.imagetool.manager._revisions import (
+    _provenance_input_revisions,
     _ProvenanceRevision,
     _ProvenanceRevisionStore,
     _RevisionCheckpointSource,
     _script_input_revision_ids,
     _spec_revision_ids,
-    requires_legacy_replay_source,
 )
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import _format as workspace_format
@@ -31,7 +31,6 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
-    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 
 def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
@@ -50,17 +49,18 @@ def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
     return frozenset(ids)
 
 
-def revision_manifest_entry(
-    store: _ProvenanceRevisionStore, record: _ProvenanceRevision
-) -> dict[str, typing.Any]:
-    spec = store.normalize_provenance(record.provenance_spec)
+def revision_manifest_entry(record: _ProvenanceRevision) -> dict[str, typing.Any]:
+    spec = record.provenance_spec
     return {
         "revision_id": record.revision_id,
         "checkpoint_object_id": (
             record.checkpoint_object_id if record.checkpoint is not None else None
         ),
         "provenance_spec": (None if spec is None else spec.model_dump(mode="json")),
-        "input_revisions": dict(record.input_revisions),
+        "input_revisions": {
+            **_provenance_input_revisions(spec),
+            **dict(record.extra_input_revisions),
+        },
         "primary_revision_id": record.primary_revision_id,
         "source_owner_uid": record.source_owner_uid,
     }
@@ -115,50 +115,6 @@ def _read_revision_checkpoint(path: str, group: str) -> xr.DataArray:
         json.loads(dataset.attrs["revision_data_name"])
     )
     return data
-
-
-def normalize_workspace_nodes(manager: ImageToolManager) -> None:
-    for node in manager._tool_graph.nodes.values():
-        if not node.is_imagetool:
-            continue
-        spec = node.provenance_spec
-        seed_id = None
-        if requires_legacy_replay_source(spec) and node.replay_source_data is not None:
-            seed_id = manager._provenance_revisions.add(node.replay_source_data)
-        normalized = manager._provenance_revisions.normalize_provenance(
-            spec, replay_source_revision_id=seed_id
-        )
-        if normalized != spec or seed_id is not None:
-            node.adopt_normalized_provenance(normalized)
-        if (
-            node.imagetool is not None
-            and node._current_revision_id is not None
-            and node.current_revision_id is None
-        ):
-            node.revision_id_for_role("source")
-
-
-def saved_provenance_matches_node(
-    node: _ManagedWindowNode, attrs_payload: object
-) -> bool:
-    if not node.is_imagetool:
-        return True
-    if attrs_payload is None:
-        return False
-    try:
-        attrs = (
-            workspace_format._restore_workspace_manifest_attrs(attrs_payload)
-            if isinstance(attrs_payload, list)
-            else attrs_payload
-        )
-        if not isinstance(attrs, Mapping):
-            return False
-        raw = attrs.get(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR)
-        saved = parse_tool_provenance_spec(json.loads(raw)) if raw is not None else None
-    except (TypeError, ValueError):
-        return False
-    else:
-        return saved == node.provenance_spec
 
 
 def bind_saved_revision_sources(
@@ -221,10 +177,10 @@ def restore_revision_store(
         spec = store.normalize_provenance(
             parse_tool_provenance_spec(entry.get("provenance_spec"))
         )
-        inputs = dict(inputs)
+        inputs = {**_provenance_input_revisions(spec), **inputs}
         existing = staged.get(revision_id) or store.get(revision_id)
         if existing is not None:
-            existing_metadata = revision_manifest_entry(store, existing)
+            existing_metadata = revision_manifest_entry(existing)
             loaded_metadata = {
                 "revision_id": revision_id,
                 "checkpoint_object_id": checkpoint_id,
@@ -244,7 +200,7 @@ def restore_revision_store(
         staged.add(
             spec=spec,
             revision_id=revision_id,
-            input_revisions=inputs,
+            extra_input_revisions=inputs,
             primary_revision_id=primary,
             source_owner_uid=source_owner_uid,
             source=source,

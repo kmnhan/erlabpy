@@ -35,9 +35,10 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, MutableMapping
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._extensions._models import (
         _WorkspaceScriptRequirement,
     )
@@ -55,6 +56,20 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 
 logger = logging.getLogger(__name__)
 _WORKSPACE_SAVE_SUFFIX_ERROR = "ImageTool workspace documents must be saved as .itws"
+
+
+def _set_imagetool_provenance_attrs(
+    attrs: MutableMapping[typing.Any, typing.Any], spec: ToolProvenanceSpec | None
+) -> None:
+    encoded = None if spec is None else json.dumps(spec.model_dump(mode="json"))
+    for key in (
+        _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+        _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+    ):
+        if encoded is None:
+            attrs.pop(key, None)
+        else:
+            attrs[key] = encoded
 
 
 @dataclass
@@ -401,10 +416,8 @@ class _WorkspaceSaver:
             ds.attrs.pop("manager_node_note", None)
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
-        if kind == "imagetool" and provenance_spec is not None:
-            ds.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
-                provenance_spec.model_dump(mode="json")
-            )
+        if kind == "imagetool":
+            _set_imagetool_provenance_attrs(ds.attrs, provenance_spec)
         else:
             ds.attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
@@ -683,7 +696,6 @@ class _WorkspaceSaver:
         | None = None,
     ) -> dict[str, typing.Any]:
         if script_snapshot is None:
-            workspace_revisions.normalize_workspace_nodes(self._manager)
             script_snapshot = self._workspace_script_snapshot()
         requirements, scripts, source_keys = script_snapshot
         manifest = workspace_format._workspace_manifest_payload(
@@ -700,9 +712,7 @@ class _WorkspaceSaver:
             source_keys
         )
         manifest["provenance_revisions"] = [
-            workspace_revisions.revision_manifest_entry(
-                self._manager._provenance_revisions, record
-            )
+            workspace_revisions.revision_manifest_entry(record)
             for record in self._manager._provenance_revisions.reachable(
                 workspace_revisions.retained_revision_ids(self._manager)
             )
@@ -944,16 +954,7 @@ class _WorkspaceSaver:
         attrs["itool_name"] = node.name
         attrs["itool_title"] = node.name
 
-        provenance_spec = node.provenance_spec
-        if provenance_spec is None:
-            attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
-        else:
-            attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
-                provenance_spec.model_dump(mode="json")
-            )
-            attrs[_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR] = attrs[
-                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
-            ]
+        _set_imagetool_provenance_attrs(attrs, node.provenance_spec)
 
         if isinstance(node, _ImageToolWrapper):
             if node.source_input_ndim is None:
@@ -1236,7 +1237,6 @@ class _WorkspaceSaver:
             )
         }
 
-        workspace_revisions.normalize_workspace_nodes(self._manager)
         script_snapshot = self._workspace_script_snapshot()
         manifest = self._workspace_manifest(script_snapshot=script_snapshot)
         _requirements, scripts, source_keys = script_snapshot
@@ -1320,9 +1320,6 @@ class _WorkspaceSaver:
                 or uid in dirty_state
                 or uid in dirty_data
                 or has_saved_input_provenance
-                or not workspace_revisions.saved_provenance_matches_node(
-                    node, attrs_payload
-                )
             )
             if needs_current_attrs:
                 pending_attrs = (
@@ -1346,6 +1343,12 @@ class _WorkspaceSaver:
                         serialized_datasets.append(dataset)
                         serialized_dataset_ids.add(id(dataset))
             if attrs_payload is not None:
+                if kind == "imagetool":
+                    attrs = workspace_format._restore_workspace_manifest_attrs(
+                        attrs_payload
+                    )
+                    _set_imagetool_provenance_attrs(attrs, node.provenance_spec)
+                    attrs_payload = workspace_format._workspace_manifest_attrs(attrs)
                 entry["payload_attrs"] = attrs_payload
 
             if can_reuse_object:

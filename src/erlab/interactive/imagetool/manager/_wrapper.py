@@ -2102,13 +2102,6 @@ class _ManagedWindowNode(QtCore.QObject):
                 revision_id,
             )
 
-    def adopt_normalized_provenance(
-        self, provenance_spec: ToolProvenanceSpec | None
-    ) -> None:
-        """Adopt canonical loaded provenance without changing the recorded data."""
-        self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
-        self._replay_source_data = None
-
     def revision_id_for_role(self, data_role: ScriptInputDataRole) -> str:
         """Capture an exact input independently of this window's lifetime."""
         token = self.snapshot_token_for_role(data_role)
@@ -2120,29 +2113,23 @@ class _ManagedWindowNode(QtCore.QObject):
             if source is not None and source[0] == token:
                 self._revision_ids_by_role[data_role] = source
                 return source[1]
-        spec = self.provenance_for_role(data_role)
-        replay_source_revision_id = None
+        base_spec = self.provenance_spec
         watched_source = (
             isinstance(self, _ImageToolWrapper)
             and self.watched
             and self._provenance_spec is None
         )
-        if requires_legacy_replay_source(spec) and not watched_source:
-            seed = self.resolved_replay_source_data()
-            if seed is not None:
-                replay_source_revision_id = self.manager._provenance_revisions.add(seed)
-            spec = self.manager._provenance_revisions.normalize_provenance(
-                spec, replay_source_revision_id=replay_source_revision_id
+        if requires_legacy_replay_source(base_spec) and not watched_source:
+            normalized = self._normalize_provenance(
+                base_spec, self.resolved_replay_source_data()
             )
+            if normalized != base_spec:
+                self.set_displayed_provenance(normalized, advance_snapshot=False)
+        spec = self.provenance_for_role(data_role)
         revision_id = self.manager._provenance_revisions.add(
             self.data_for_role(data_role),
             spec,
             source_owner_uid=self.uid,
-            input_revisions={
-                item.name: item.revision_id
-                for item in (() if spec is None else spec.script_inputs)
-                if item.revision_id is not None
-            },
             primary_revision_id=(
                 self._current_revision_id if data_role == "source" else None
             ),
@@ -2316,9 +2303,14 @@ class _ManagedWindowNode(QtCore.QObject):
         provenance_spec: ToolProvenanceSpec | None,
         *,
         advance_snapshot: bool = True,
+        replay_source_data: xr.DataArray | None = None,
     ) -> None:
-        self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
+        self._provenance_spec = self._normalize_provenance(
+            parse_tool_provenance_spec(provenance_spec), replay_source_data
+        )
+        self._replay_source_data = None
         self._mark_provenance_changed()
+        self.manager._mark_node_state_dirty(self.uid)
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -2616,20 +2608,16 @@ class _ManagedWindowNode(QtCore.QObject):
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
-        provenance_spec = self._normalize_detached_provenance(
-            provenance_spec, replay_source_data
-        )
         self._source_spec = None
-        self._mark_provenance_changed()
         self._source_binding = None
         self._source_auto_update = False
         self._output_id = None
-        self.set_displayed_provenance(provenance_spec)
-        self._replay_source_data = None
+        self.set_displayed_provenance(
+            provenance_spec, replay_source_data=replay_source_data
+        )
         self._set_source_state("fresh")
-        self.manager._mark_node_state_dirty(self.uid)
 
-    def _normalize_detached_provenance(
+    def _normalize_provenance(
         self,
         provenance_spec: ToolProvenanceSpec | None,
         replay_source_data: xr.DataArray | None,
@@ -2765,7 +2753,7 @@ class _ManagedWindowNode(QtCore.QObject):
         on_commit: Callable[[], None] | None = None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
-        provenance_spec = self._normalize_detached_provenance(
+        provenance_spec = self._normalize_provenance(
             provenance_spec, replay_source_data
         )
         self.manager._lineage_controller._validate_detached_replacement(
@@ -3094,6 +3082,11 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def _handle_imagetool_source_data_changed(self) -> None:
         self._advance_source_snapshot_token(defer_refresh=True)
+        if (
+            not self._suspend_snapshot_token_updates
+            and self._current_revision_id is not None
+        ):
+            self.revision_id_for_role("source")
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:

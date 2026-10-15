@@ -51,6 +51,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,
 )
+from erlab.interactive.imagetool.manager._revisions import requires_legacy_replay_source
 from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _strip_workspace_modified_placeholder,
@@ -1124,9 +1125,7 @@ class _WorkspaceLoader:
             seed_id = None
             if (
                 _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
-                and workspace_revisions.requires_legacy_replay_source(
-                    parsed_provenance_spec
-                )
+                and requires_legacy_replay_source(parsed_provenance_spec)
             ):
                 source_data = self._workspace_replay_source_data(ds, uid=uid)
                 if source_data is not None:

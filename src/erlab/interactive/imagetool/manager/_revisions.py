@@ -58,7 +58,7 @@ class _RevisionCheckpoint:
 class _ProvenanceRevision:
     revision_id: str
     provenance_spec: ToolProvenanceSpec | None
-    input_revisions: tuple[tuple[str, str], ...] = ()
+    extra_input_revisions: tuple[tuple[str, str], ...] = ()
     primary_revision_id: str | None = None
     source_owner_uid: str | None = None
     checkpoint: _RevisionCheckpoint | None = None
@@ -78,6 +78,14 @@ class _BoundProvenanceRevision:
     @property
     def revision_id(self) -> str:
         return self.revision.revision_id
+
+
+def _provenance_input_revisions(spec: ToolProvenanceSpec | None) -> dict[str, str]:
+    return {
+        item.name: item.revision_id
+        for item in (() if spec is None else spec.script_inputs)
+        if item.revision_id is not None
+    }
 
 
 def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
@@ -102,17 +110,6 @@ def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
 
     _visit(spec.model_dump(mode="python"))
     return frozenset(ids)
-
-
-def _same_provenance(
-    left: ToolProvenanceSpec | None, right: ToolProvenanceSpec | None
-) -> bool:
-    """Compare recorded recipes, including serialized NaN operation values."""
-    return json.dumps(
-        None if left is None else left.model_dump(mode="json"), sort_keys=True
-    ) == json.dumps(
-        None if right is None else right.model_dump(mode="json"), sort_keys=True
-    )
 
 
 def _same_bound_provenance(
@@ -178,7 +175,7 @@ class _ProvenanceRevisionStore:
         data: xr.DataArray | None = None,
         spec: ToolProvenanceSpec | None = None,
         *,
-        input_revisions: Mapping[str, str] | Iterable[tuple[str, str]] = (),
+        extra_input_revisions: Mapping[str, str] | Iterable[tuple[str, str]] = (),
         primary_revision_id: str | None = None,
         source_owner_uid: str | None = None,
         revision_id: str | None = None,
@@ -198,11 +195,11 @@ class _ProvenanceRevisionStore:
             raise ValueError("Supply revision data or a checkpoint source, not both")
         if data is not None and not isinstance(data, xr.DataArray):
             raise TypeError("Revision data must be a DataArray")
-        parsed_spec = parse_tool_provenance_spec(spec)
+        parsed_spec = self.normalize_provenance(parse_tool_provenance_spec(spec))
         inputs = (
-            tuple(input_revisions.items())
-            if isinstance(input_revisions, Mapping)
-            else tuple(input_revisions)
+            tuple(extra_input_revisions.items())
+            if isinstance(extra_input_revisions, Mapping)
+            else tuple(extra_input_revisions)
         )
         if len({name for name, _ in inputs}) != len(inputs):
             raise ValueError("Revision input names must be unique")
@@ -212,6 +209,7 @@ class _ProvenanceRevisionStore:
         ):
             raise ValueError("Revision inputs require a name and revision ID")
         owned_spec = None if parsed_spec is None else parsed_spec.model_copy(deep=True)
+        ordinary_inputs = _provenance_input_revisions(owned_spec)
         checkpoint = None if source is None else _RevisionCheckpoint(source)
         protected = None
         if data is not None:
@@ -221,7 +219,9 @@ class _ProvenanceRevisionStore:
         record = _ProvenanceRevision(
             revision_id=revision_id,
             provenance_spec=owned_spec,
-            input_revisions=inputs,
+            extra_input_revisions=tuple(
+                (name, ref) for name, ref in inputs if ordinary_inputs.get(name) != ref
+            ),
             primary_revision_id=primary_revision_id,
             source_owner_uid=source_owner_uid,
             checkpoint=checkpoint,
@@ -262,20 +262,9 @@ class _ProvenanceRevisionStore:
         record = self.get(revision_id)
         if record is None:
             raise KeyError(revision_id)
-        normalized = self.normalize_provenance(provenance_spec)
-        if not _same_bound_provenance(
-            record.provenance_spec, normalized
-        ) and requires_legacy_replay_source(provenance_spec):
-            seed_ids = {ref for _, ref in record.input_revisions} - _spec_revision_ids(
-                provenance_spec
-            )
-            if len(seed_ids) == 1:
-                normalized = self.normalize_provenance(
-                    provenance_spec, replay_source_revision_id=next(iter(seed_ids))
-                )
-        if not _same_bound_provenance(record.provenance_spec, normalized):
+        if not _same_bound_provenance(record.provenance_spec, provenance_spec):
             raise ValueError("The bound recipe does not match the captured revision")
-        return _BoundProvenanceRevision(record, normalized)
+        return _BoundProvenanceRevision(record, copy.deepcopy(provenance_spec))
 
     def has_data(self, revision_id: str) -> bool:
         record = self._records.get(revision_id)
@@ -307,7 +296,7 @@ class _ProvenanceRevisionStore:
                 # Their missing checkpoints cannot block retention of known data.
                 continue
             visited.add(revision_id)
-            pending.extend(ref for _, ref in record.input_revisions)
+            pending.extend(ref for _, ref in record.extra_input_revisions)
             if record.primary_revision_id is not None:
                 pending.append(record.primary_revision_id)
             pending.extend(_spec_revision_ids(record.provenance_spec))
