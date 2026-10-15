@@ -13,16 +13,24 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
     full_data,
+    public_data,
+    recipe,
     script,
+    selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
+    IselOperation,
     NormalizeOperation,
+    RenameOperation,
+    ScriptCodeOperation,
     ShiftFromInputOperation,
     ShiftOperation,
+    TransposeOperation,
 )
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from tests.interactive.imagetool.manager.helpers import (
@@ -39,6 +47,794 @@ from tests.interactive.imagetool.manager.provenance._common import (
     _authorize_local_edit,
     _manager_replay_file_spec,
 )
+
+
+@pytest.mark.parametrize(
+    ("nested", "multiple", "missing"),
+    [
+        (False, False, False),
+        (True, False, True),
+        (True, True, False),
+        (False, True, True),
+    ],
+)
+def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
+    qtbot, monkeypatch, tmp_path, manager_context, nested, multiple, missing
+) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 25.0).reshape(4, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(6)},
+        name="raw",
+    )
+    path = tmp_path / "raw.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    raw_operations = (
+        NormalizeOperation(dims=("x",)),
+        RenameOperation(name="prepared"),
+    )
+
+    def prepare(value):
+        for operation in raw_operations:
+            value = operation.apply(value)
+        return value
+
+    source_spec = selection(
+        IselOperation(kwargs={"x": slice(1, 3)}),
+        TransposeOperation(dims=("y", "x")),
+    )
+    prepared = prepare(data)
+    selected = source_spec.apply(prepared)
+    expected = prepared.isel(x=slice(1, 3))
+    workspace = tmp_path / "selected-input.itws"
+    with manager_context() as manager:
+        raw_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(prepared, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(path, *raw_operations),
+            show=False,
+        )
+        raw = manager._node_for_target(raw_index)
+        captured = manager._lineage_controller._script_input_for_node(
+            raw, name="data", source_spec=source_spec, data_role="source"
+        )
+        spec = recipe(
+            ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
+            start_label="Use selected input",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(captured,),
+        )
+        output = selected.assign_attrs(later=True)
+        intermediates = []
+        if nested:
+            intermediate = manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(output, _in_manager=True),
+                provenance_spec=spec,
+                show=False,
+            )
+            intermediates.append(intermediate)
+            captured = manager._lineage_controller._script_input_for_node(
+                manager._node_for_target(intermediate), name="data", data_role="source"
+            )
+            spec = recipe(
+                ReplayStep(operation=AssignAttrsOperation(attrs={"outer": True})),
+                start_label="Use nested input",
+                active_name="derived",
+                primary_input="data",
+                script_inputs=(captured,),
+            )
+            output = output.assign_attrs(outer=True)
+        for _ in range(2 if multiple else 1):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(output, _in_manager=True),
+                provenance_spec=spec,
+                show=False,
+            )
+        for index in intermediates:
+            manager.remove_imagetool(index)
+        manager.remove_imagetool(raw_index)
+        if missing:
+            path.unlink()
+        else:
+            (data + 100).to_netcdf(path, engine="h5netcdf", mode="w")
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+
+    with manager_context() as manager:
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        controller = manager._provenance_edit_controller
+        monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(controller, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda title, error: pytest.fail(f"{title}: {error}"),
+        )
+        nodes = list(manager._tool_graph.root_wrappers.values())
+        targets = []
+        for node in nodes:
+            row = next(
+                row
+                for row in node.derivation_display_rows
+                if row.replay_ref is not None
+                and isinstance(
+                    controller._display_spec_for_row(node, row)._operation_for_ref(
+                        row.replay_ref
+                    ),
+                    IselOperation,
+                )
+            )
+            assert len(row.script_input_path) == (2 if nested else 1)
+            targets.append((node.uid, row))
+        select_tools(manager, [node.index for node in nodes])
+        manager._update_info()
+        assert all(
+            controller._can_revert_row(node, row)[0]
+            for node, (_, row) in zip(nodes, targets, strict=True)
+        )
+        if multiple:
+            controller.revert_rows(targets)
+        else:
+            controller.revert_row(targets[0][1])
+        for node in nodes:
+            xr.testing.assert_identical(node.slicer_area._data, expected)
+            assert node.slicer_area.data.dims == selected.dims
+            restored = node.provenance_spec
+            assert restored is not None
+            assert restored.primary_input == "data"
+            assert restored.script_inputs[0].source_spec is None
+            assert restored.script_inputs[0].follow_source
+        restored_workspace = tmp_path / "restored-input.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            restored_workspace
+        )
+
+    (data + 200).to_netcdf(path, engine="h5netcdf", mode="w")
+    with manager_context() as manager:
+        assert manager._workspace_controller.loading._load_workspace_file(
+            restored_workspace,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        for node in list(manager._tool_graph.root_wrappers.values()):
+            assert node.materialize_pending_workspace_payload()
+            # Workspace data follows the saved slicer layout. The recorded
+            # selection and its next replay retain the source dimension order.
+            xr.testing.assert_identical(
+                node.slicer_area._data, expected.transpose(*selected.dims)
+            )
+            assert manager._lineage_controller._reload_script_derived_target(node.index)
+            xr.testing.assert_identical(
+                node.slicer_area._data, prepare(data + 200).isel(x=slice(1, 3))
+            )
+
+
+@pytest.mark.parametrize(
+    ("missing", "pin_at"),
+    [(False, None), (True, None), (False, "outer"), (True, "inner")],
+)
+def test_revert_selection_after_closed_source_reloads_uses_latest_raw_checkpoint(
+    qtbot, monkeypatch, tmp_path, manager_context, missing, pin_at
+) -> None:
+    data = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    source_spec = selection(
+        IselOperation(kwargs={"x": slice(1, 3)}),
+        IselOperation(kwargs={"y": slice(1, 5)}),
+    )
+    workspace = tmp_path / "reloaded-input.itws"
+    with manager_context() as manager:
+        raw_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(path),
+            show=False,
+        )
+        captured = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target(raw_index),
+            name="data",
+            source_spec=source_spec,
+            data_role="source",
+        )
+        provenance = recipe(
+            ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
+            start_label="Use selected source",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(captured,),
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                source_spec.apply(data).assign_attrs(later=True), _in_manager=True
+            ),
+            provenance_spec=provenance,
+            show=False,
+        )
+        manager.remove_imagetool(raw_index)
+        node = manager._node_for_target(target)
+        for offset in (100, 200):
+            (data + offset).to_netcdf(path, engine="h5netcdf", mode="w")
+            assert manager._lineage_controller._reload_script_derived_target(target)
+            xr.testing.assert_identical(
+                node.slicer_area._data,
+                source_spec.apply(data + offset).assign_attrs(later=True),
+            )
+        if pin_at is not None:
+            current = node.provenance_spec
+            source = current.script_inputs[0]
+            if pin_at == "outer":
+                source = source.model_copy(update={"follow_source": False})
+            else:
+                fallback = source.parsed_provenance_spec()
+                pinned = fallback.script_inputs[0].model_copy(
+                    update={"follow_source": False}
+                )
+                source = source.model_copy(
+                    update={
+                        "provenance_spec": fallback.model_copy(
+                            update={"script_inputs": (pinned,)}
+                        )
+                    }
+                )
+            node.set_displayed_provenance(
+                current.model_copy(update={"script_inputs": (source,)})
+            )
+            (data + 250).to_netcdf(path, engine="h5netcdf", mode="w")
+            assert manager._lineage_controller._reload_script_derived_target(target)
+            xr.testing.assert_identical(
+                node.slicer_area._data,
+                source_spec.apply(data + 200).assign_attrs(later=True),
+            )
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+
+    if missing:
+        path.unlink()
+    else:
+        (data + 300).to_netcdf(path, engine="h5netcdf", mode="w")
+    with manager_context() as manager:
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        node = next(iter(manager._tool_graph.root_wrappers.values()))
+        controller = manager._provenance_edit_controller
+        monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(controller, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda title, error: pytest.fail(f"{title}: {error}"),
+        )
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        select_tools(manager, [node.index])
+        manager._update_info()
+        row = next(
+            row
+            for row in node.derivation_display_rows
+            if row.replay_ref is not None
+            and isinstance(
+                controller._display_spec_for_row(node, row)._operation_for_ref(
+                    row.replay_ref
+                ),
+                IselOperation,
+            )
+        )
+        assert controller.can_revert_row(row)[0]
+        controller.revert_row(row)
+        xr.testing.assert_identical(
+            node.slicer_area._data, (data + 200).isel(x=slice(1, 3))
+        )
+        assert node.provenance_spec.script_inputs[0].follow_source is (pin_at is None)
+        (data + 400).to_netcdf(path, engine="h5netcdf", mode="w")
+        assert manager._lineage_controller._reload_script_derived_target(node.index)
+        xr.testing.assert_identical(
+            node.slicer_area._data,
+            (data + (400 if pin_at is None else 200)).isel(x=slice(1, 3)),
+        )
+
+
+@pytest.mark.parametrize(
+    "source_spec",
+    [
+        full_data(),
+        full_data(RenameOperation(name="raw")),
+        public_data(),
+        selection(),
+        selection(IselOperation(kwargs={"x": slice(1, 3)})),
+        selection(RenameOperation(name="raw")),
+    ],
+)
+def test_closed_source_reloads_keep_source_recipe_depth_and_transform_once(
+    qtbot, tmp_path, manager_context, source_spec
+) -> None:
+    data = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"), name="raw")
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+
+    def input_depth(spec):
+        nested = [
+            item.parsed_provenance_spec()
+            for item in (() if spec is None else spec.script_inputs)
+        ]
+        return 1 + max((input_depth(value) for value in nested), default=0)
+
+    with manager_context() as manager:
+        raw = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(path),
+            show=False,
+        )
+        source = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target(raw), name="data", source_spec=source_spec
+        )
+        provenance = recipe(
+            ReplayStep(operation=AssignAttrsOperation(attrs={"result": True})),
+            start_label="Use source",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(source,),
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                source_spec.apply(data).assign_attrs(result=True), _in_manager=True
+            ),
+            provenance_spec=provenance,
+            show=False,
+        )
+        manager.remove_imagetool(raw)
+        node = manager._node_for_target(target)
+        depth = None
+        for offset in (100, 200, 300):
+            (data + offset).to_netcdf(path, engine="h5netcdf", mode="w")
+            assert manager._lineage_controller._reload_script_derived_target(target)
+            xr.testing.assert_identical(
+                node.slicer_area._data,
+                source_spec.apply(data + offset).assign_attrs(result=True),
+            )
+            if depth is None:
+                depth = input_depth(node.provenance_spec)
+            assert input_depth(node.provenance_spec) == depth
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_selected_input_revert_preserves_exact_raw_revision_code_approval(
+    qtbot, monkeypatch, tmp_path, manager_context, approved
+) -> None:
+    from erlab.interactive._code_trust import untrusted_document_trust
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_code_trust_entries,
+    )
+    from erlab.interactive.imagetool.manager._workspace._trust import (
+        current_workspace_code_trust_manifest,
+    )
+
+    data = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    source_spec = selection(
+        IselOperation(kwargs={"x": slice(1, 3)}),
+        IselOperation(kwargs={"y": slice(1, 5)}),
+    )
+    raw_provenance = script(
+        ScriptCodeOperation(label="Add offset", code="derived = data + 7"),
+        start_label="Prepare raw input",
+        active_name="derived",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data", provenance_spec=_manager_replay_file_spec(path)),
+        ),
+    )
+    expected = (data + 7).isel(x=slice(1, 3))
+    with manager_context() as manager:
+        raw = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 7, _in_manager=True),
+            provenance_spec=raw_provenance,
+            show=False,
+        )
+        captured = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target(raw), name="data", source_spec=source_spec
+        )
+        provenance = recipe(
+            ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
+            start_label="Use selected input",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(captured,),
+        )
+        original = source_spec.apply(data + 7).assign_attrs(later=True)
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(original, _in_manager=True),
+            provenance_spec=provenance,
+            show=False,
+        )
+        external = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 7, _in_manager=True),
+            provenance_spec=raw_provenance,
+            show=False,
+        )
+        manager.remove_imagetool(raw)
+        workspace = manager._workspace_controller
+        workspace._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        if approved:
+            entries = provenance_code_trust_entries(
+                raw_provenance,
+                location_prefix=f"revisions/{captured.revision_id}/provenance",
+            )
+            with workspace.local_code_edit(
+                entries, edited_entries=entries
+            ) as capability:
+                assert capability is not None
+        path.unlink()
+        node = manager._node_for_target(target)
+        controller = manager._provenance_edit_controller
+        select_tools(manager, [target])
+        manager._update_info()
+        row = next(
+            row
+            for row in node.derivation_display_rows
+            if row.replay_ref is not None
+            and isinstance(
+                controller._display_spec_for_row(node, row)._operation_for_ref(
+                    row.replay_ref
+                ),
+                IselOperation,
+            )
+        )
+        monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(controller, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda title, error: pytest.fail(f"{title}: {error}"),
+        )
+        controller.revert_row(row)
+        xr.testing.assert_identical(node.slicer_area._data, expected)
+        stored_entries = provenance_code_trust_entries(
+            node.provenance_spec, location_prefix="runtime"
+        )
+        assert (
+            node.slicer_area._stored_code_authorizer(stored_entries) is not None
+        ) is approved
+        external_node = manager._node_for_target(external)
+        external_entries = provenance_code_trust_entries(
+            external_node.provenance_spec, location_prefix="runtime"
+        )
+        assert (
+            external_node.slicer_area._stored_code_authorizer(external_entries) is None
+        )
+        (data + 100).to_netcdf(path, engine="h5netcdf", mode="w")
+        assert (
+            manager._lineage_controller._reload_script_derived_target(target)
+            is approved
+        )
+        xr.testing.assert_identical(
+            node.slicer_area._data,
+            (data + 107).isel(x=slice(1, 3)) if approved else expected,
+        )
+
+
+@pytest.mark.parametrize("approved", [False, True])
+@pytest.mark.parametrize("file_backed", [False, True])
+def test_relative_restore_keeps_only_its_own_parameter_expression_approval(
+    qtbot, tmp_path, manager_context, approved, file_backed
+) -> None:
+    from erlab.interactive._code_trust import (
+        execution_capability_allows,
+        untrusted_document_trust,
+    )
+    from erlab.interactive.imagetool._provenance._operations import (
+        ModelFitOperation,
+        _ModelFitParameterSpec,
+    )
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_code_trust_entries,
+    )
+    from erlab.interactive.imagetool.manager._workspace._trust import (
+        current_workspace_code_trust_manifest,
+    )
+
+    data = xr.DataArray(
+        np.arange(24.0).reshape(4, 6),
+        dims=("y", "x"),
+        coords={"x": np.arange(6), "y": np.arange(4)},
+    )
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(expr="2 * c0"),
+        },
+        method="leastsq",
+        parameter="c0",
+    )
+    with manager_context() as manager:
+        raw = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(path) if file_backed else None,
+            show=False,
+        )
+        source = manager._lineage_controller._script_input_for_node(
+            manager._node_for_target(raw),
+            name="data",
+            source_spec=selection(operation),
+        )
+        if not file_backed:
+            # A tool can retain its relative recipe without a raw reload recipe.
+            source = source.model_copy(
+                update={"provenance_spec": selection(operation).to_replay_spec()}
+            )
+        provenance = recipe(
+            ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
+            start_label="Use fit parameter",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(source,),
+        )
+        targets = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+                provenance_spec=provenance,
+                show=False,
+            )
+            for _ in range(2)
+        ]
+        manager.remove_imagetool(raw)
+        controller = manager._provenance_edit_controller
+        workspace = manager._workspace_controller
+        workspace._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        node = manager._node_for_target(targets[0])
+        if approved:
+            prior = controller._provenance_code_entries(
+                node.provenance_spec, node=node, scope="display"
+            )
+            with workspace.local_code_edit(prior, edited_entries=prior) as capability:
+                assert capability is not None
+        row = next(
+            row
+            for row in node.derivation_display_rows
+            if row.replay_ref is not None
+            and isinstance(
+                controller._display_spec_for_row(node, row)._operation_for_ref(
+                    row.replay_ref
+                ),
+                ModelFitOperation,
+            )
+        )
+        prefix = controller._display_spec_for_row(node, row)._prefix_through_ref(
+            row.replay_ref
+        )
+        candidate = controller._revert_candidate(node, row, prefix)
+        assert candidate.restored_input_revision is not None
+        runtime = controller._provenance_code_entries(
+            candidate.spec,
+            node=node,
+            scope="display",
+            resolve_inputs=True,
+            prefer_recorded_revisions=True,
+        )
+        assert runtime
+        relocated = controller._approved_recorded_revision_entries((candidate,))
+        with workspace.local_code_edit(
+            (*runtime, *relocated), edited_entries=relocated
+        ) as capability:
+            assert execution_capability_allows(capability, runtime) is approved
+        other = manager._node_for_target(targets[1])
+        other_entries = provenance_code_trust_entries(
+            other.provenance_spec, location_prefix="runtime"
+        )
+        assert other.slicer_area._stored_code_authorizer(other_entries) is None
+
+
+@pytest.mark.parametrize("approved", [False, True])
+@pytest.mark.parametrize("multiple", [False, True])
+def test_exact_selected_checkpoint_revert_keeps_pin_without_replaying_fit(
+    qtbot, monkeypatch, tmp_path, manager_context, approved, multiple
+) -> None:
+    from erlab.interactive._code_trust import untrusted_document_trust
+    from erlab.interactive.imagetool._provenance._operations import (
+        ModelFitOperation,
+        _ModelFitParameterSpec,
+    )
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_code_trust_entries,
+    )
+    from erlab.interactive.imagetool.manager._workspace._trust import (
+        current_workspace_code_trust_manifest,
+    )
+    from tests.interactive.imagetool.manager.workspace._support import (
+        _current_workspace_manifest,
+    )
+
+    data = xr.DataArray(np.arange(48.0).reshape(2, 4, 6), dims=("z", "y", "x"))
+    selected = xr.DataArray(np.arange(8.0).reshape(2, 4), dims=("z", "y"))
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(expr="2 * c0"),
+        },
+        method="leastsq",
+        parameter="c0",
+    )
+    source = selection(operation)
+    with manager_context() as manager:
+        store = manager._provenance_revisions
+        raw_spec = _manager_replay_file_spec(path)
+        raw = ScriptInput(
+            name="data", revision_id=store.add(data, raw_spec), provenance_spec=raw_spec
+        )
+        complete = script(
+            start_label="Use source input",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(raw,),
+            steps=ReplayStep.from_source_spec(source),
+        )
+        checkpoint = store.add(selected, complete)
+        pinned = ScriptInput(
+            name="data",
+            revision_id=checkpoint,
+            follow_source=False,
+            source_spec=source,
+            provenance_spec=complete,
+        )
+        provenance = recipe(
+            ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
+            start_label="Use saved fit",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(pinned,),
+        )
+        targets = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(
+                    selected.assign_attrs(later=True), _in_manager=True
+                ),
+                provenance_spec=provenance,
+                show=False,
+            )
+            for _ in range(2 if multiple else 1)
+        ]
+        workspace = manager._workspace_controller
+        workspace._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        if approved:
+            entries = provenance_code_trust_entries(
+                complete, location_prefix=f"revisions/{checkpoint}/provenance"
+            )
+            with workspace.local_code_edit(
+                entries, edited_entries=entries
+            ) as capability:
+                assert capability is not None
+        controller = manager._provenance_edit_controller
+        monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(controller, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda title, error: pytest.fail(f"{title}: {error}"),
+        )
+        monkeypatch.setattr(
+            ModelFitOperation,
+            "apply",
+            lambda *_args, **_kwargs: pytest.fail(
+                "A checkpoint restore replayed the fit"
+            ),
+        )
+        select_tools(manager, targets)
+        manager._update_info()
+        nodes = [manager._node_for_target(target) for target in targets]
+        rows = []
+        for node in nodes:
+            row = next(
+                row
+                for row in node.derivation_display_rows
+                if row.replay_ref is not None
+                and isinstance(
+                    controller._display_spec_for_row(node, row)._operation_for_ref(
+                        row.replay_ref
+                    ),
+                    ModelFitOperation,
+                )
+            )
+            assert (
+                controller._recorded_revision_for_row(node, row).revision_id
+                == checkpoint
+            )
+            rows.append((node.uid, row))
+        if multiple:
+            controller.revert_rows(rows)
+        else:
+            controller.revert_row(rows[0][1])
+        for node in nodes:
+            xr.testing.assert_identical(node.slicer_area._data, selected)
+            assert not node.provenance_spec.script_inputs[0].follow_source
+            assert node.provenance_spec.script_inputs[0].source_spec is None
+            assert node.current_revision_id != checkpoint
+            store.bind(node.current_revision_id, node.provenance_spec)
+            current_row = next(
+                row
+                for row in node.derivation_display_rows
+                if row.replay_ref is not None
+                and isinstance(
+                    controller._display_spec_for_row(node, row)._operation_for_ref(
+                        row.replay_ref
+                    ),
+                    ModelFitOperation,
+                )
+            )
+            assert not controller._can_revert_row(node, current_row)[0]
+            entries = provenance_code_trust_entries(
+                node.provenance_spec, location_prefix="runtime"
+            )
+            assert (
+                node.slicer_area._stored_code_authorizer(entries) is not None
+            ) is approved
+        later_rows = []
+        for node in nodes:
+            node.replace_with_detached_data(
+                selected.assign_attrs(later=True),
+                node.provenance_spec.append_operations(
+                    AssignAttrsOperation(attrs={"later": True})
+                ),
+                replay_source_data=None,
+            )
+            row = next(
+                row
+                for row in node.derivation_display_rows
+                if row.replay_ref is not None
+                and isinstance(
+                    controller._display_spec_for_row(node, row)._operation_for_ref(
+                        row.replay_ref
+                    ),
+                    ModelFitOperation,
+                )
+            )
+            assert controller._can_revert_row(node, row) == (True, "")
+            later_rows.append((node.uid, row))
+        if multiple:
+            controller.revert_rows(later_rows)
+        else:
+            controller.revert_row(later_rows[0][1])
+        for node in nodes:
+            xr.testing.assert_identical(node.slicer_area._data, selected)
+            saved_input = node.provenance_spec.script_inputs[0]
+            assert not saved_input.follow_source
+            assert saved_input.revision_id == checkpoint
+            assert saved_input.source_spec is None
+            store.bind(node.current_revision_id, node.provenance_spec)
+            entries = provenance_code_trust_entries(
+                node.provenance_spec, location_prefix="runtime"
+            )
+            assert (
+                node.slicer_area._stored_code_authorizer(entries) is not None
+            ) is approved
+        saved = tmp_path / "pinned-fit.itws"
+        workspace.saving._save_workspace_document(saved)
+        assert checkpoint in {
+            entry["revision_id"]
+            for entry in _current_workspace_manifest(saved)["provenance_revisions"]
+        }
+        (data + 100).to_netcdf(path, engine="h5netcdf", mode="w")
+        for node in nodes:
+            assert manager._lineage_controller._reload_script_derived_target(node.index)
+            xr.testing.assert_identical(node.slicer_area._data, selected)
 
 
 def test_recorded_resolved_input_with_nan_parameters_applies_transform_once(
@@ -253,10 +1049,22 @@ def test_manager_repeated_shift_restores_primary_checkpoints_after_sources_close
         assert controller.can_revert_row(row) == (True, "")
         controller.revert_row(row)
         xr.testing.assert_identical(node.data_for_role("source"), normalized)
-        assert node.current_revision_id == normalized_revision
+        store = manager._provenance_revisions
+        assert node.current_revision_id != normalized_revision
+        store.bind(node.current_revision_id, node.provenance_spec)
+        saved_input = node.provenance_spec.script_inputs[0]
+        assert saved_input.revision_id == normalized_revision
+        assert not saved_input.follow_source
+        assert saved_input.source_spec is None
+        xr.testing.assert_identical(store.resolve_data(normalized_revision), normalized)
+        saved_spec = saved_input.parsed_provenance_spec()
+        store.bind(normalized_revision, saved_spec)
+        assert any(
+            isinstance(step.operation, NormalizeOperation) for step in saved_spec.steps
+        )
         assert all(
             not isinstance(step.operation, ShiftFromInputOperation)
-            for step in node.provenance_spec.steps
+            for step in (*node.provenance_spec.steps, *saved_spec.steps)
         )
         for index in tuple(manager._tool_graph.root_wrappers):
             manager._remove_imagetool(index)

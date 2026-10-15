@@ -27,8 +27,10 @@ from erlab.interactive.imagetool._provenance._execution import (
     rebuild_script_provenance,
 )
 from erlab.interactive.imagetool._provenance._graph import (
+    InputProvenanceResolver,
     LiveInputResolver,
     ReplayGraphError,
+    _memoized_by_identity,
 )
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
@@ -742,6 +744,28 @@ class _LineageController:
         )
         return typing.cast("LiveInputResolver", resolver)
 
+    def _input_provenance_resolver(self) -> InputProvenanceResolver:
+        def resolve(item: ScriptInput) -> ToolProvenanceSpec | None:
+            resolved = self._manager._provenance_revisions.raw_source_input(item)
+            if resolved is None:
+                return item.parsed_provenance_spec()
+            raw, source = resolved
+            # Rebuild and capture the latest raw fallback before its selection.
+            # Clear a following input's old revision; keep a pinned checkpoint.
+            return script(
+                start_label="Use source input",
+                active_name="derived",
+                primary_input=raw.name,
+                script_inputs=(
+                    raw.model_copy(update={"revision_id": None})
+                    if raw.follow_source
+                    else raw,
+                ),
+                steps=ReplayStep.from_source_spec(source),
+            )
+
+        return _memoized_by_identity(resolve)
+
     def _input_resolution_plan(
         self,
         script_inputs: Sequence[ScriptInput],
@@ -1203,6 +1227,7 @@ class _LineageController:
                     _capture_input_revision=functools.partial(
                         self._capture_rebuilt_script_input, revisions
                     ),
+                    _input_provenance_resolver=self._input_provenance_resolver(),
                 )
                 with node._suspend_descendant_propagation():
                     updated = tool._apply_inputs(
@@ -1303,6 +1328,7 @@ class _LineageController:
                 _capture_input_revision=functools.partial(
                     self._capture_rebuilt_script_input, revisions
                 ),
+                _input_provenance_resolver=self._input_provenance_resolver(),
             )
         except _TrustedProvenanceReplayCancelled:
             raise

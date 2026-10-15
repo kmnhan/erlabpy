@@ -16,7 +16,9 @@ from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
+    compose_full_provenance,
     parse_tool_provenance_spec,
+    script,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import (
@@ -266,6 +268,71 @@ class _ProvenanceRevisionStore:
         if not _same_bound_provenance(record.provenance_spec, provenance_spec):
             raise ValueError("The bound recipe does not match the captured revision")
         return _BoundProvenanceRevision(record, copy.deepcopy(provenance_spec))
+
+    def raw_source_input(
+        self, script_input: ScriptInput
+    ) -> tuple[ScriptInput, ToolProvenanceSpec] | None:
+        """Separate a captured raw input from its relative source selection."""
+        source = script_input.parsed_source_spec()
+        bound = script_input.parsed_provenance_spec()
+        record = self.get(script_input.revision_id or "")
+        if (
+            source is None
+            or (source.kind == "full_data" and not source.operations)
+            or record is None
+            or record.checkpoint is None
+        ):
+            return None
+        raw = record.provenance_spec
+        if raw is not None and bound is not None and raw.kind == "script":
+            # Source composition retains the raw recipe's input bindings.
+            raw = raw.model_copy(update={"script_inputs": bound.script_inputs})
+        if not _same_bound_provenance(compose_full_provenance(raw, source), bound):
+            # A fallback rebuild stores the selection around its new raw input.
+            # Reuse that explicit boundary on later reloads and partial restores.
+            if (
+                bound is None
+                or bound.primary_input is None
+                or len(bound.script_inputs) != 1
+            ):
+                return None
+            raw_input = bound.script_inputs[0]
+            if (
+                raw_input.source_spec is not None
+                or raw_input.revision_id is None
+                or not self.has_data(raw_input.revision_id)
+            ):
+                return None
+            expected = script(
+                start_label=bound.start_label or "Use source input",
+                active_name=bound.active_name,
+                primary_input=raw_input.name,
+                script_inputs=(raw_input,),
+                steps=ReplayStep.from_source_spec(source),
+            )
+            if not _same_bound_provenance(expected, bound):
+                return None
+            try:
+                self.bind(raw_input.revision_id, raw_input.parsed_provenance_spec())
+            except (KeyError, ValueError):
+                return None
+            return raw_input.model_copy(
+                update={
+                    "follow_source": script_input.follow_source
+                    and raw_input.follow_source
+                }
+            ), source
+        return (
+            script_input.model_copy(
+                update={
+                    "source_spec": None,
+                    "provenance_spec": None
+                    if raw is None
+                    else raw.model_dump(mode="json"),
+                }
+            ),
+            source,
+        )
 
     def has_data(self, revision_id: str) -> bool:
         record = self._records.get(revision_id)
