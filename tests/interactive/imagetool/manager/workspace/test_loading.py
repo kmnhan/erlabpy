@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import pathlib
+import shutil
 import types
 import typing
 import weakref
@@ -64,6 +65,7 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_path,
     _edit_current_workspace_payload_attrs,
     _request_workspace_save_and_wait,
+    _request_workspace_save_as_and_wait,
     _workspace_test_file_spec,
     _WorkspaceSweepChildTool,
     _WorkspaceSweepFigureTool,
@@ -4701,6 +4703,248 @@ def test_manager_workspace_load_dialog_skips_stale_internal_groups(
         )
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+
+@pytest.mark.parametrize("copied", [False, True])
+def test_workspace_replacement_rehomes_matching_revision_checkpoints(
+    qtbot, monkeypatch, tmp_path, manager_context, copied
+) -> None:
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    destination = tmp_path / "saved.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        historical_id = node.revision_id_for_role("source")
+        node.replace_with_detached_data(expected + 10, None, replay_source_data=None)
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(original)
+        current_id = node.current_revision_id
+        assert controller.loading._load_workspace_file(
+            original, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        incoming = tmp_path / "copy.itws" if copied else original
+        if copied:
+            shutil.copy2(original, incoming)
+        assert controller.loading._load_workspace_file(
+            incoming, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        assert manager._node_for_target(0).current_revision_id == current_id
+        for record in manager._provenance_revisions.reachable([current_id]):
+            assert record.checkpoint.source.file_path == str(incoming)
+            assert record.revision_id not in manager._provenance_revisions._data
+        if copied:
+            lock = workspace_storage._acquire_workspace_document_lock(original)
+            lock.unlock()
+            original.unlink()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        for record in manager._provenance_revisions.reachable([current_id]):
+            assert record.checkpoint.source.file_path == str(destination)
+        incoming.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(historical_id).compute(),
+            expected,
+        )
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(current_id).compute(),
+            expected + 10,
+        )
+
+
+def test_workspace_import_deduplicates_owned_revision_sources(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    incoming = tmp_path / "import.itws"
+    destination = tmp_path / "saved.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        revision_id = manager._node_for_target(target).revision_id_for_role("source")
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(original)
+        assert controller.loading._load_workspace_file(
+            original, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        shutil.copy2(original, incoming)
+        registry = manager._provenance_revisions
+        source = manager._provenance_revisions.get(revision_id).checkpoint.source
+        assert controller.loading._load_workspace_file(
+            incoming, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        assert manager.ntools == 2
+        assert manager._provenance_revisions is registry
+        assert (
+            manager._provenance_revisions.get(revision_id).checkpoint.source is source
+        )
+        for node in manager._tool_graph.root_wrappers.values():
+            if node.pending_workspace_payload is not None:
+                assert (
+                    controller.loading.pending._materialize_pending_workspace_payload(
+                        node
+                    )
+                )
+        controller._release_unused_imported_workspace_accesses()
+        assert incoming.resolve() not in controller._imported_workspace_accesses
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(original)
+        lock = workspace_storage._acquire_workspace_document_lock(incoming)
+        lock.unlock()
+        incoming.unlink()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        original.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(revision_id).compute(), expected
+        )
+
+
+@pytest.mark.parametrize("remove_before_node", [1, 2])
+def test_workspace_load_retains_unregistered_incoming_revisions(
+    qtbot, monkeypatch, tmp_path, manager_context, remove_before_node
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    incoming = tmp_path / "incoming.itws"
+    expected_revisions = {}
+    with manager_context() as manager:
+        for offset in (0, 10):
+            target = manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data + offset, _in_manager=True),
+                show=False,
+            )
+            manager._node_for_target(target).revision_id_for_role("source")
+        manager._workspace_controller.saving._save_workspace_document(incoming)
+        for revision_id in manager._provenance_revisions.revision_ids:
+            expected_revisions[revision_id] = (
+                manager._provenance_revisions.resolve_data(revision_id).compute()
+            )
+    with manager_context() as manager:
+        for offset in (100, 200):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data + offset, _in_manager=True),
+                show=False,
+            )
+        previous_uids = frozenset(manager._tool_graph.nodes)
+        loader = manager._workspace_controller.loading
+        load_dataset = loader._load_workspace_imagetool_dataset
+        calls = 0
+
+        def _remove_unrelated_before_registration(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == remove_before_node:
+                manager.remove_imagetool(1)
+                assert (
+                    set(expected_revisions)
+                    <= manager._provenance_revisions.revision_ids
+                )
+            return load_dataset(*args, **kwargs)
+
+        monkeypatch.setattr(
+            loader,
+            "_load_workspace_imagetool_dataset",
+            _remove_unrelated_before_registration,
+        )
+        assert loader._load_workspace_file(
+            incoming, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        assert calls == 2
+        assert manager.ntools == 3
+        assert len(frozenset(manager._tool_graph.nodes) - previous_uids) == 2
+        for revision_id, expected in expected_revisions.items():
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(revision_id).compute(),
+                expected,
+            )
+
+
+@pytest.mark.parametrize(
+    ("replace", "memory_backup", "associated"),
+    [
+        (False, False, True),
+        (True, False, True),
+        (True, True, True),
+        (True, True, False),
+    ],
+)
+def test_workspace_failed_load_restores_revision_ownership(
+    qtbot, monkeypatch, tmp_path, manager_context, replace, memory_backup, associated
+) -> None:
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    incoming = tmp_path / "incoming.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        historical_id = node.revision_id_for_role("source")
+        node.replace_with_detached_data(expected + 10, None, replay_source_data=None)
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(original)
+        current_id = node.current_revision_id
+        assert controller.loading._load_workspace_file(
+            original, replace=True, associate=associated, mark_dirty=False, select=False
+        )
+        if memory_backup:
+            controller._mark_node_state_dirty(manager._node_for_target(0).uid)
+        shutil.copy2(original, incoming)
+        restore_links = controller.loading._restore_workspace_link_groups
+        failed = False
+
+        def _fail_after_nodes_load(*args, **kwargs):
+            nonlocal failed
+            if not failed:
+                failed = True
+                assert any(
+                    node.pending_workspace_payload is not None
+                    and node.pending_workspace_payload[0] == incoming.resolve()
+                    for node in manager._tool_graph.nodes.values()
+                )
+                raise RuntimeError("Load failed after node registration")
+            return restore_links(*args, **kwargs)
+
+        monkeypatch.setattr(
+            controller.loading, "_restore_workspace_link_groups", _fail_after_nodes_load
+        )
+        with pytest.raises(RuntimeError, match="after node registration"):
+            controller.loading._load_workspace_file(
+                incoming,
+                replace=replace,
+                associate=replace,
+                mark_dirty=False,
+                select=False,
+            )
+        assert manager.ntools == 1
+        assert manager._node_for_target(0).current_revision_id == current_id
+        assert manager._workspace_state.path == (
+            original.resolve() if associated else None
+        )
+        if not associated:
+            assert original.resolve() in controller._imported_workspace_accesses
+        for record in manager._provenance_revisions.reachable([current_id]):
+            assert record.checkpoint.source.file_path == str(original)
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(original)
+        lock = workspace_storage._acquire_workspace_document_lock(incoming)
+        lock.unlock()
+        incoming.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(historical_id).compute(),
+            expected,
+        )
 
 
 def test_manager_workspace_replace_load_failure_restores_previous_workspace(

@@ -31,7 +31,10 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     ShiftFromInputOperation,
 )
-from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+from erlab.interactive.imagetool.manager._revisions import (
+    _ProvenanceRevisionStore,
+    _RevisionCheckpointSource,
+)
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import (
     _revisions as workspace_revisions,
@@ -103,8 +106,8 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
         registry.add(data, revision_id=first)
     rollback = registry.copy()
     registry.discard_unreachable(())
-    checkpoint = rollback.get(first).checkpoint
-    restored = checkpoint.provider()
+    assert rollback.get(first).checkpoint.source is None
+    restored = rollback.resolve_data(first)
     np.testing.assert_array_equal(restored.values, np.arange(4.0))
     assert restored.attrs["nested"]["value"] == 1
 
@@ -144,6 +147,56 @@ def test_revision_capture_freezes_lazy_values_and_coordinates(tmp_path) -> None:
     xr.testing.assert_identical(registry.resolve_data(revision_id), expected)
 
 
+def test_revision_consumers_retain_ancestors_until_each_owner_releases() -> None:
+    registry = _ProvenanceRevisionStore()
+    parent = registry.add(xr.DataArray([1]))
+    child = registry.add(xr.DataArray([2]), primary_revision_id=parent)
+    other = registry.add(xr.DataArray([3]))
+    with registry.retain([child]) as roots:
+        with registry.retain([child, other]):
+            roots.add(other)
+            registry.discard_unreachable(())
+            assert registry.revision_ids == {parent, child, other}
+            assert registry.retained_roots == {child, other}
+        roots.remove(other)
+        registry.discard_unreachable(())
+        assert registry.revision_ids == {parent, child}
+        assert registry.retained_roots == {child}
+    assert not registry.retained_roots
+    registry.discard_unreachable(())
+    assert not registry.revision_ids
+
+
+def test_revision_consumer_releases_on_error_and_does_not_transfer_to_copy() -> None:
+    registry = _ProvenanceRevisionStore()
+    reads = []
+
+    def _read(file_path, group_path):
+        reads.append((file_path, group_path))
+        return xr.DataArray([1])
+
+    revision_id = registry.add(
+        source=_RevisionCheckpointSource("source.itws", "/checkpoint", _read)
+    )
+
+    def _failed_load():
+        with registry.retain([revision_id]):
+            snapshot = registry.copy()
+            assert not snapshot.retained_roots
+            snapshot.discard_unreachable(())
+            assert not snapshot.revision_ids
+            registry.discard_unreachable(())
+            assert revision_id in registry
+            raise RuntimeError("Failed load")
+
+    with pytest.raises(RuntimeError, match="Failed load"):
+        _failed_load()
+    assert not reads
+    assert not registry.retained_roots
+    registry.discard_unreachable(())
+    assert not registry.revision_ids
+
+
 def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -> None:
     registry = _ProvenanceRevisionStore()
     reads = []
@@ -176,17 +229,15 @@ def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -
         ({"revision_id": "\x00"}, "Invalid provenance revision ID"),
         ({"revision_id": ".."}, "Invalid provenance revision ID"),
         (
-            {"data": xr.DataArray([1]), "provider": lambda: xr.DataArray([2])},
-            "Supply revision data or a lazy provider",
-        ),
-        ({"source_file": "source.itws"}, "requires a file and a group path"),
-        (
-            {"source_path": "/objects/revision-source"},
-            "requires a file and a group path",
-        ),
-        (
-            {"source_file": "source.itws", "source_path": "/objects/revision-source"},
-            "requires a lazy provider",
+            {
+                "data": xr.DataArray([1]),
+                "source": _RevisionCheckpointSource(
+                    "source.itws",
+                    "/checkpoint",
+                    lambda _file, _group: xr.DataArray([2]),
+                ),
+            },
+            "Supply revision data or a checkpoint source",
         ),
         (
             {"input_revisions": [("data", "first"), ("data", "second")]},
@@ -213,6 +264,72 @@ def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
     assert not registry._data
 
 
+@pytest.mark.parametrize(
+    ("file_path", "group_path"), [("", "/checkpoint"), ("a.itws", "")]
+)
+def test_checkpoint_source_requires_a_complete_owner(file_path, group_path) -> None:
+    with pytest.raises(ValueError, match="requires a file and a group path"):
+        _RevisionCheckpointSource(file_path, group_path, lambda *_args: None)
+
+
+def test_checkpoint_source_rebinds_reader_and_owner_together() -> None:
+    calls = []
+
+    def read(file_path, group_path):
+        calls.append((file_path, group_path))
+        return xr.DataArray([1.0 if file_path == "original.itws" else 2.0])
+
+    registry = _ProvenanceRevisionStore()
+    revision_id = registry.add(
+        source=_RevisionCheckpointSource("original.itws", "/old", read)
+    )
+    xr.testing.assert_equal(registry.resolve_data(revision_id), xr.DataArray([1.0]))
+    copied = registry.copy()
+    registry.bind_checkpoint_source(
+        revision_id, _RevisionCheckpointSource("copy.itws", "/new", read)
+    )
+    assert calls == [("original.itws", "/old")]
+    xr.testing.assert_equal(registry.resolve_data(revision_id), xr.DataArray([2.0]))
+    xr.testing.assert_equal(copied.resolve_data(revision_id), xr.DataArray([1.0]))
+    assert calls == [("original.itws", "/old"), ("copy.itws", "/new")]
+
+
+def test_invalid_checkpoint_source_does_not_change_owned_capture() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0])
+    revision_id = registry.add(data)
+    with pytest.raises(TypeError, match="must be a checkpoint source"):
+        registry.bind_checkpoint_source(revision_id, object())
+    assert registry.get(revision_id).checkpoint.source is None
+    xr.testing.assert_identical(registry.resolve_data(revision_id), data)
+    with pytest.raises(TypeError, match="reader must be callable"):
+        _RevisionCheckpointSource("source.itws", "/checkpoint", None)
+
+
+def test_workspace_revision_restore_validates_all_records_before_adoption() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0])
+    current = registry.add(data, full_data())
+    conflict = workspace_revisions.revision_manifest_entry(
+        registry, registry.get(current)
+    )
+    conflict["source_owner_uid"] = "conflicting-owner"
+    manifest = {
+        "provenance_revisions": [
+            {"revision_id": "new", "checkpoint_object_id": "revision-new"},
+            conflict,
+        ]
+    }
+    with pytest.raises(
+        ValueError, match="Conflicting workspace provenance revision ID"
+    ):
+        workspace_revisions.restore_revision_store(registry, manifest, "incoming.itws")
+    assert registry.revision_ids == {current}
+    assert registry.get(current).source_owner_uid is None
+    assert registry.get(current).checkpoint.source is None
+    xr.testing.assert_identical(registry.resolve_data(current), data)
+
+
 def test_staged_revision_captures_merge_without_copying_or_reading_sources() -> None:
     registry = _ProvenanceRevisionStore()
     existing = registry.add(xr.DataArray([1.0, 2.0], dims="x"))
@@ -220,11 +337,17 @@ def test_staged_revision_captures_merge_without_copying_or_reading_sources() -> 
     captured = staged.add(xr.DataArray([3.0, 4.0], dims="x"))
     reads = []
 
-    def _read_checkpoint():
+    def _read_checkpoint(file_path, group_path):
+        assert (file_path, group_path) == ("source.itws", "/checkpoint")
         reads.append(True)
         return xr.DataArray([5.0, 6.0], dims="x")
 
-    lazy = staged.add(provider=_read_checkpoint, primary_revision_id=existing)
+    lazy = staged.add(
+        source=_RevisionCheckpointSource(
+            "source.itws", "/checkpoint", _read_checkpoint
+        ),
+        primary_revision_id=existing,
+    )
     assert captured not in registry
     assert lazy not in registry
     assert not reads
@@ -262,11 +385,15 @@ def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> Non
     data = xr.DataArray([1.0, 2.0], dims="x", attrs={"nested": {"value": 1}})
     calls = []
 
-    def read_checkpoint() -> xr.DataArray:
+    def read_checkpoint(file_path: str, group_path: str) -> xr.DataArray:
+        assert (file_path, group_path) == ("original.itws", "/checkpoint")
         calls.append("original")
         return data
 
-    revision_id = registry.add(provider=read_checkpoint)
+    original_source = _RevisionCheckpointSource(
+        "original.itws", "/checkpoint", read_checkpoint
+    )
+    revision_id = registry.add(source=original_source)
     assert registry.has_data(revision_id)
     assert not calls
     resolved = registry.resolve_data(revision_id)
@@ -275,29 +402,28 @@ def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> Non
     xr.testing.assert_identical(registry.resolve_data(revision_id), data)
     assert calls == ["original"]
 
-    registry.bind_checkpoint_source(revision_id, "original.itws", "/checkpoint")
-    xr.testing.assert_identical(registry.resolve_data(revision_id), data)
-    assert calls == ["original"]
-
     replacement = data + 10
 
-    def read_replacement() -> xr.DataArray:
+    def read_replacement(file_path: str, group_path: str) -> xr.DataArray:
+        assert (file_path, group_path) == ("saved.itws", "/saved-checkpoint")
         calls.append("replacement")
         return replacement
 
-    registry.bind_checkpoint_source(
-        revision_id, "saved.itws", "/saved-checkpoint", provider=read_replacement
+    saved_source = _RevisionCheckpointSource(
+        "saved.itws", "/saved-checkpoint", read_replacement
     )
+    registry.bind_checkpoint_source(revision_id, saved_source)
     assert calls == ["original"]
     xr.testing.assert_identical(registry.resolve_data(revision_id), replacement)
     assert calls == ["original", "replacement"]
     checkpoint = registry.get(revision_id).checkpoint
-    assert (checkpoint.source_file, checkpoint.source_path) == (
-        "saved.itws",
-        "/saved-checkpoint",
-    )
+    assert checkpoint.source is saved_source
 
-    invalid_id = registry.add(provider=lambda: np.arange(2))
+    invalid_id = registry.add(
+        source=_RevisionCheckpointSource(
+            "invalid.itws", "/checkpoint", lambda _file, _group: np.arange(2)
+        )
+    )
     with pytest.raises(TypeError, match="must provide a DataArray"):
         registry.resolve_data(invalid_id)
 
@@ -310,7 +436,7 @@ def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:
         reads.append(True)
         return np.arange(6.0).reshape(2, 3)
 
-    def _open_checkpoint():
+    def _open_checkpoint(_file_path, _group_path):
         return xr.DataArray(
             da.from_delayed(dask.delayed(_read_values)(), shape=(2, 3), dtype=float),
             dims=("x", "eV"),
@@ -318,9 +444,9 @@ def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:
         )
 
     revision_id = registry.add(
-        provider=_open_checkpoint,
-        source_file="immutable.itws",
-        source_path="/objects/checkpoint",
+        source=_RevisionCheckpointSource(
+            "immutable.itws", "/objects/checkpoint", _open_checkpoint
+        ),
     )
     resolved = registry.resolve_data(revision_id)
     assert isinstance(resolved.data, da.Array)
@@ -428,7 +554,10 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
     with pytest.raises(ValueError, match="has no data checkpoint"):
         restored.resolve_data(revision_id)
     with pytest.raises(ValueError, match="without a data checkpoint"):
-        restored.bind_checkpoint_source(revision_id, "saved.itws", "/checkpoint")
+        restored.bind_checkpoint_source(
+            revision_id,
+            _RevisionCheckpointSource("saved.itws", "/checkpoint", lambda *_args: None),
+        )
     with pytest.raises(
         ValueError, match="Legacy replay source revision has no checkpoint"
     ):
@@ -613,12 +742,15 @@ def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None
         ),
     )
 
-    def _forbid_checkpoint_read() -> xr.DataArray:
+    def _forbid_checkpoint_read(_file_path: str, _group_path: str) -> xr.DataArray:
         raise AssertionError("metadata normalization read immutable data")
 
+    source = _RevisionCheckpointSource(
+        "immutable.itws", "/checkpoint", _forbid_checkpoint_read
+    )
     revision_id = registry.add(
         spec=spec,
-        provider=_forbid_checkpoint_read,
+        source=source,
         input_revisions={"data": "source", "shift": "shift-source"},
         primary_revision_id="prior",
         source_owner_uid="owner",
@@ -628,7 +760,7 @@ def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None
     assert entry["provenance_spec"]["script_inputs"][0]["node_snapshot_token"] is None
     manifest = json.loads(json.dumps({"provenance_revisions": [entry]}))
     workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
-    assert registry.get(revision_id).checkpoint.provider is _forbid_checkpoint_read
+    assert registry.get(revision_id).checkpoint.source is source
     assert registry.get(revision_id).provenance_spec == spec
 
     manifest["provenance_revisions"][0]["provenance_spec"]["steps"][0]["operation"][
@@ -739,11 +871,19 @@ def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> No
             ),
         ),
     )
-    manager = SimpleNamespace(_tool_graph=SimpleNamespace(nodes={"tool": node}))
+    manager = SimpleNamespace(
+        _tool_graph=SimpleNamespace(nodes={"tool": node}),
+        _provenance_revisions=registry,
+    )
+    expected = {current, displayed, nested_id, tool_id}
+    leased = registry.add(data)
+    with registry.retain((leased,)):
+        assert workspace_revisions.retained_revision_ids(manager) == expected | {leased}
     retained = workspace_revisions.retained_revision_ids(manager)
-    assert retained == {current, displayed, nested_id, tool_id}
+    assert retained == expected
     registry.discard_unreachable(retained)
     assert stale not in registry
+    assert leased not in registry
 
 
 @pytest.mark.parametrize("factory", [full_data, public_data, selection])
@@ -796,12 +936,16 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
     )
     reads = 0
 
-    def _read_immutable_legacy_seed() -> xr.DataArray:
+    def _read_immutable_legacy_seed(_file_path: str, _group_path: str) -> xr.DataArray:
         nonlocal reads
         reads += 1
         return xr.DataArray([1.0, 2.0], dims="x")
 
-    seed_id = registry.add(provider=_read_immutable_legacy_seed)
+    seed_id = registry.add(
+        source=_RevisionCheckpointSource(
+            "immutable.itws", "/checkpoint", _read_immutable_legacy_seed
+        )
+    )
     frozen = registry.normalize_provenance(spec, replay_source_revision_id=seed_id)
     assert frozen is not None
     assert reads == 0

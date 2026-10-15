@@ -1082,15 +1082,17 @@ class _WorkspaceController:
         return frozenset(paths)
 
     def _workspace_revision_source_paths(self) -> frozenset[pathlib.Path]:
-        """Return checkpoint sources reachable from the current managed nodes."""
+        """Return sources owned by current checkpoints or replacement backups."""
         records = self._manager._provenance_revisions.reachable(
             workspace_revisions.retained_revision_ids(self._manager)
         )
-        return frozenset(
-            pathlib.Path(record.checkpoint.source_file).resolve()
+        paths = frozenset(
+            pathlib.Path(record.checkpoint.source.file_path).resolve()
             for record in records
-            if record.checkpoint is not None
-            and record.checkpoint.source_file is not None
+            if record.checkpoint is not None and record.checkpoint.source is not None
+        )
+        return paths.union(
+            *(backup.source_paths for backup in self.loading._active_replace_backups)
         )
 
     def _retain_imported_workspace_access(

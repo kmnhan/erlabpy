@@ -7,6 +7,7 @@ import json
 import typing
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
 import xarray as xr
@@ -23,24 +24,34 @@ from erlab.interactive.imagetool._provenance._trust import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
+
+
+@dataclass(frozen=True)
+class _RevisionCheckpointSource:
+    file_path: str
+    group_path: str
+    reader: Callable[[str, str], xr.DataArray]
+
+    def __post_init__(self) -> None:
+        if not self.file_path or not self.group_path:
+            raise ValueError("Checkpoint source requires a file and a group path")
+        if not callable(self.reader):
+            raise TypeError("Checkpoint source reader must be callable")
+
+    def read_data(self) -> xr.DataArray:
+        return self.reader(self.file_path, self.group_path)
 
 
 @dataclass(frozen=True)
 class _RevisionCheckpoint:
-    provider: Callable[[], xr.DataArray]
-    source_file: str | None = None
-    source_path: str | None = None
+    source: _RevisionCheckpointSource | None = None
 
-
-def _capture_checkpoint(data: xr.DataArray) -> tuple[_RevisionCheckpoint, xr.DataArray]:
-    # A deep copy alone preserves lazy graphs that can read mutable external data.
-    protected = data.copy(deep=True).load()
-
-    def _copy_snapshot() -> xr.DataArray:
-        return protected.copy(deep=True)
-
-    return _RevisionCheckpoint(_copy_snapshot), protected
+    def __post_init__(self) -> None:
+        if self.source is not None and not isinstance(
+            self.source, _RevisionCheckpointSource
+        ):
+            raise TypeError("Revision source must be a checkpoint source")
 
 
 @dataclass(frozen=True)
@@ -123,6 +134,7 @@ class _ProvenanceRevisionStore:
     def __init__(self) -> None:
         self._records: dict[str, _ProvenanceRevision] = {}
         self._data: dict[str, xr.DataArray] = {}
+        self._retained_roots: dict[object, set[str]] = {}
 
     def __contains__(self, revision_id: object) -> bool:
         return revision_id in self._records
@@ -136,9 +148,7 @@ class _ProvenanceRevisionStore:
         primary_revision_id: str | None = None,
         source_owner_uid: str | None = None,
         revision_id: str | None = None,
-        provider: Callable[[], xr.DataArray] | None = None,
-        source_file: str | None = None,
-        source_path: str | None = None,
+        source: _RevisionCheckpointSource | None = None,
     ) -> str:
         revision_id = uuid.uuid4().hex if revision_id is None else revision_id
         if (
@@ -150,16 +160,10 @@ class _ProvenanceRevisionStore:
             raise ValueError("Invalid provenance revision ID")
         if revision_id in self._records:
             raise ValueError(f"Provenance revision {revision_id!r} already exists")
-        if data is not None and provider is not None:
-            raise ValueError("Supply revision data or a lazy provider, not both")
+        if data is not None and source is not None:
+            raise ValueError("Supply revision data or a checkpoint source, not both")
         if data is not None and not isinstance(data, xr.DataArray):
             raise TypeError("Revision data must be a DataArray")
-        if provider is not None and not callable(provider):
-            raise TypeError("Revision checkpoint provider must be callable")
-        if (source_file is None) != (source_path is None):
-            raise ValueError("Checkpoint source requires a file and a group path")
-        if source_file is not None and provider is None:
-            raise ValueError("Checkpoint source requires a lazy provider")
         parsed_spec = parse_tool_provenance_spec(spec)
         inputs = (
             tuple(input_revisions.items())
@@ -174,14 +178,12 @@ class _ProvenanceRevisionStore:
         ):
             raise ValueError("Revision inputs require a name and revision ID")
         owned_spec = None if parsed_spec is None else parsed_spec.model_copy(deep=True)
-        checkpoint = (
-            None
-            if provider is None
-            else _RevisionCheckpoint(provider, source_file, source_path)
-        )
+        checkpoint = None if source is None else _RevisionCheckpoint(source)
         protected = None
         if data is not None:
-            checkpoint, protected = _capture_checkpoint(data)
+            # A deep copy alone preserves graphs that can read mutable external data.
+            protected = data.copy(deep=True).load()
+            checkpoint = _RevisionCheckpoint()
         record = _ProvenanceRevision(
             revision_id=revision_id,
             provenance_spec=owned_spec,
@@ -199,6 +201,20 @@ class _ProvenanceRevisionStore:
     def revision_ids(self) -> frozenset[str]:
         return frozenset(self._records)
 
+    @property
+    def retained_roots(self) -> frozenset[str]:
+        return frozenset().union(*self._retained_roots.values())
+
+    @contextmanager
+    def retain(self, revision_ids: Iterable[str]) -> Iterator[set[str]]:
+        token = object()
+        roots = set(revision_ids)
+        self._retained_roots[token] = roots
+        try:
+            yield roots
+        finally:
+            del self._retained_roots[token]
+
     def get(self, revision_id: str) -> _ProvenanceRevision | None:
         record = self._records.get(revision_id)
         if record is None:
@@ -214,7 +230,9 @@ class _ProvenanceRevisionStore:
         if record.checkpoint is None:
             raise ValueError(f"Revision {revision_id!r} has no data checkpoint")
         if revision_id not in self._data:
-            data = record.checkpoint.provider()
+            if record.checkpoint.source is None:
+                raise ValueError(f"Revision {revision_id!r} has no captured data")
+            data = record.checkpoint.source.read_data()
             if not isinstance(data, xr.DataArray):
                 raise TypeError("Revision checkpoint must provide a DataArray")
             self._data[revision_id] = data.copy(deep=True)
@@ -268,28 +286,22 @@ class _ProvenanceRevisionStore:
     def bind_checkpoint_source(
         self,
         revision_id: str,
-        source_file: str,
-        source_path: str,
-        *,
-        provider: Callable[[], xr.DataArray] | None = None,
+        source: _RevisionCheckpointSource,
     ) -> None:
         record = self._records[revision_id]
         if record.checkpoint is None:
             raise ValueError("Cannot bind a revision without a data checkpoint")
         self._records[revision_id] = replace(
             record,
-            checkpoint=replace(
-                record.checkpoint,
-                provider=record.checkpoint.provider if provider is None else provider,
-                source_file=source_file,
-                source_path=source_path,
-            ),
+            checkpoint=_RevisionCheckpoint(source),
         )
-        if provider is not None:
-            self._data.pop(revision_id, None)
+        self._data.pop(revision_id, None)
 
     def discard_unreachable(self, revision_ids: Iterable[str]) -> None:
-        retained = {record.revision_id for record in self.reachable(revision_ids)}
+        retained = {
+            record.revision_id
+            for record in self.reachable(set(revision_ids) | self.retained_roots)
+        }
         self._records = {
             key: record for key, record in self._records.items() if key in retained
         }

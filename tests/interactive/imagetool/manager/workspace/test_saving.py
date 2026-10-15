@@ -319,7 +319,9 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
         )
         records = manager._provenance_revisions.reachable([second])
         assert len(records) == 2
-        assert all(record.checkpoint.source_file == str(path) for record in records)
+        assert all(
+            record.checkpoint.source.file_path == str(path) for record in records
+        )
 
 
 @pytest.mark.parametrize("source_change", ["overwrite", "delete"])
@@ -476,6 +478,22 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
 
     monkeypatch.setattr(
         erlab.interactive.utils, "_tool_data_from_blob", _count_seed_reads
+    )
+    normalize = _ProvenanceRevisionStore.normalize_provenance
+
+    def _collect_before_node_registration(registry, *args, **kwargs):
+        normalized = normalize(registry, *args, **kwargs)
+        seed_id = kwargs.get("replay_source_revision_id")
+        if seed_id is not None:
+            assert seed_id in registry.retained_roots
+            registry.discard_unreachable(())
+            assert registry.has_data(seed_id)
+        return normalized
+
+    monkeypatch.setattr(
+        _ProvenanceRevisionStore,
+        "normalize_provenance",
+        _collect_before_node_registration,
     )
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)

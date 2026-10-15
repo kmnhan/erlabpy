@@ -2507,7 +2507,7 @@ def test_import_retains_reachable_revision_checkpoint_source(
                 (captured_id, data + 1),
             ):
                 record = manager._provenance_revisions.get(revision_id)
-                assert record.checkpoint.source_file == str(target_path)
+                assert record.checkpoint.source.file_path == str(target_path)
                 xr.testing.assert_equal(
                     manager._provenance_revisions.resolve_data(revision_id), expected
                 )

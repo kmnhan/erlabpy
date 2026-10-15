@@ -6593,6 +6593,87 @@ def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
         assert not tool._source_refresh_deferred
 
 
+def test_failed_workspace_import_keeps_existing_accepted_input_transaction(
+    qtbot, monkeypatch, manager_context, tmp_path
+) -> None:
+    class _DeferredInputTool(_ManagedUnaryTool):
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.pending_data = inputs["data"]
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        incoming = tmp_path / "incoming.itws"
+        manager._workspace_controller.saving._save_workspace_document(incoming)
+        tool = _DeferredInputTool(data * 0)
+        uid = manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+        raw = manager._node_for_target(index).revision_id_for_role("source")
+        fallback = script(
+            start_label="Recorded input",
+            primary_input="raw",
+            active_name="raw",
+            script_inputs=(
+                ScriptInput(name="raw", revision_id=raw, follow_source=False),
+            ),
+        )
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="source", provenance_spec=fallback),),
+            primary_input="data",
+        )
+        assert not manager._lineage_controller._refresh_tool_inputs(
+            uid, allow_recorded=True
+        )
+        transaction = tool._input_state().pending
+        assert transaction is not None
+        captured = transaction.script_inputs[0].revision_id
+        assert captured is not None
+        assert captured not in manager._provenance_revisions
+        existing_uids = frozenset(manager._tool_graph.nodes)
+        existing_store = manager._provenance_revisions
+        accepted_node_revision: str | None = None
+
+        def accept_then_fail(*_args, **_kwargs) -> None:
+            nonlocal accepted_node_revision
+            tool._data = tool.pending_data
+            tool.finalize_source_refresh()
+            accepted_node_revision = manager._child_node(uid).revision_id_for_role(
+                "source"
+            )
+            assert manager._provenance_revisions.has_data(captured)
+            raise RuntimeError("workspace import failed after pending input acceptance")
+
+        loading = manager._workspace_controller.loading
+        monkeypatch.setattr(loading, "_restore_workspace_link_groups", accept_then_fail)
+        with pytest.raises(RuntimeError, match="after pending input acceptance"):
+            loading._load_workspace_file(
+                incoming,
+                replace=False,
+                associate=False,
+                mark_dirty=True,
+                select=False,
+            )
+        assert frozenset(manager._tool_graph.nodes) == existing_uids
+        assert manager._provenance_revisions is existing_store
+        assert tool.script_inputs[0].revision_id == captured
+        assert tool.source_state == "fresh"
+        assert tool._input_state().pending is None
+        assert manager._provenance_revisions.has_data(captured)
+        assert accepted_node_revision is not None
+        assert manager._child_node(uid).current_revision_id == accepted_node_revision
+        assert manager._provenance_revisions.has_data(accepted_node_revision)
+        xr.testing.assert_identical(tool.tool_data, data)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured), data
+        )
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(accepted_node_revision), data
+        )
+
+
 def test_cancelled_live_replay_keeps_only_reusable_node_checkpoint(
     qtbot, monkeypatch, manager_context
 ) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import typing
 from collections.abc import Mapping
@@ -13,6 +12,7 @@ from erlab.interactive.imagetool._provenance._model import parse_tool_provenance
 from erlab.interactive.imagetool.manager._revisions import (
     _ProvenanceRevision,
     _ProvenanceRevisionStore,
+    _RevisionCheckpointSource,
     _script_input_revision_ids,
     _spec_revision_ids,
     requires_legacy_replay_source,
@@ -35,7 +35,7 @@ if typing.TYPE_CHECKING:
 
 
 def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
-    ids: set[str] = set()
+    ids = set(manager._provenance_revisions.retained_roots)
     for node in manager._tool_graph.nodes.values():
         if node._current_revision_id is not None:
             ids.add(node._current_revision_id)
@@ -74,12 +74,12 @@ def revision_object_writes(
         checkpoint = record.checkpoint
         if checkpoint is None:
             continue
-        if checkpoint.source_file is not None and checkpoint.source_path is not None:
+        if checkpoint.source is not None:
             writes.append(
                 _WorkspaceObjectWrite(
                     record.checkpoint_object_id,
-                    source_file=checkpoint.source_file,
-                    source_path=checkpoint.source_path,
+                    source_file=checkpoint.source.file_path,
+                    source_path=checkpoint.source.group_path,
                 )
             )
             continue
@@ -173,10 +173,8 @@ def bind_saved_revision_sources(
             source_path = WorkspaceStore.object_path(checkpoint_id)
             store.bind_checkpoint_source(
                 revision_id,
-                str(path),
-                source_path,
-                provider=functools.partial(
-                    _read_revision_checkpoint, str(path), source_path
+                _RevisionCheckpointSource(
+                    str(path), source_path, _read_revision_checkpoint
                 ),
             )
 
@@ -189,6 +187,7 @@ def restore_revision_store(
     entries = manifest.get("provenance_revisions", [])
     if not isinstance(entries, list):
         raise TypeError("Workspace provenance revisions must be a list")
+    staged = store.stage()
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise TypeError("Workspace provenance revision must be an object")
@@ -196,14 +195,14 @@ def restore_revision_store(
         if not isinstance(revision_id, str) or not revision_id:
             raise ValueError("Workspace provenance revision has no ID")
         checkpoint_id = entry.get("checkpoint_object_id")
-        provider = None
-        source_path = None
+        source = None
         if checkpoint_id is not None:
             if checkpoint_id != f"revision-{revision_id}":
                 raise ValueError("Workspace revision checkpoint ID is not canonical")
-            source_path = WorkspaceStore.object_path(checkpoint_id)
-            provider = functools.partial(
-                _read_revision_checkpoint, str(path), source_path
+            source = _RevisionCheckpointSource(
+                str(path),
+                WorkspaceStore.object_path(checkpoint_id),
+                _read_revision_checkpoint,
             )
         inputs = entry.get("input_revisions", {})
         if not isinstance(inputs, Mapping) or any(
@@ -223,7 +222,7 @@ def restore_revision_store(
             parse_tool_provenance_spec(entry.get("provenance_spec"))
         )
         inputs = dict(inputs)
-        existing = store.get(revision_id)
+        existing = staged.get(revision_id) or store.get(revision_id)
         if existing is not None:
             existing_metadata = revision_manifest_entry(store, existing)
             loaded_metadata = {
@@ -242,13 +241,12 @@ def restore_revision_store(
             ):
                 raise ValueError("Conflicting workspace provenance revision ID")
             continue
-        store.add(
+        staged.add(
             spec=spec,
             revision_id=revision_id,
             input_revisions=inputs,
             primary_revision_id=primary,
             source_owner_uid=source_owner_uid,
-            provider=provider,
-            source_file=str(path) if source_path is not None else None,
-            source_path=source_path,
+            source=source,
         )
+    store.merge(staged)
