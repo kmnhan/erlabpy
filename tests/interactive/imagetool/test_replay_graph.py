@@ -2,6 +2,8 @@ import ast
 import hashlib
 import pathlib
 import re
+import symtable
+import sys
 import textwrap
 import types
 import typing
@@ -24,6 +26,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
     _simplify_display_code,
+    _symbol_table_dependencies,
 )
 from erlab.interactive.imagetool._provenance._execution import (
     execute_replay_graph,
@@ -6898,6 +6901,264 @@ def test_selected_notebook_scopes_restore_globals_and_publish_inputs_together() 
     xr.testing.assert_identical(namespace["result"], source + 1 + offsets * 2)
     assert ".copy(" not in code
     assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize(
+    ("definition", "external_name", "scale", "offset"),
+    [
+        (
+            "def compute():\n"
+            "    edge = data.mean()\n"
+            "    def normalize():\n"
+            "        return data / edge\n"
+            "    return normalize()",
+            None,
+            None,
+            None,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        return edge + 1\n"
+            "    return normalize()",
+            None,
+            1,
+            1,
+        ),
+        ("def compute(edge=data):\n    return (lambda: edge + 1)()", None, 1, 1),
+        (
+            "def compute(edge=data):\n    return sum(edge + item for item in range(2))",
+            None,
+            2,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    return [(lambda: edge + item)() for item in range(2)][1]",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        nonlocal edge\n"
+            "        edge = edge + 1\n"
+            "        return edge\n"
+            "    return normalize()",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    class Normalizer:\n"
+            "        edge = 100\n"
+            "        def normalize(self):\n"
+            "            return edge + 1\n"
+            "    return Normalizer().normalize()",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    class Normalizer:\n"
+            "        def normalize(self):\n"
+            "            return edge + int(__class__.__name__ == 'Normalizer')\n"
+            "    return Normalizer().normalize()",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        global edge\n"
+            "        return edge + 1\n"
+            "    return normalize()",
+            "edge",
+            1,
+            11,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        return reference + 1\n"
+            "    return normalize()",
+            "reference",
+            1,
+            21,
+        ),
+        (
+            "def compute():\n"
+            "    class Normalizer:\n"
+            "        edge = 100\n"
+            "        def normalize(self):\n"
+            "            return edge + 1\n"
+            "    return Normalizer().normalize()",
+            "edge",
+            1,
+            11,
+        ),
+    ],
+    ids=[
+        "local",
+        "parameter",
+        "lambda",
+        "generator",
+        "lambda-in-comprehension",
+        "nonlocal",
+        "class-outer-closure",
+        "class-cell",
+        "explicit-global-shadow",
+        "implicit-global",
+        "class-method-global",
+    ],
+)
+def test_selected_notebook_scopes_keep_lexical_closures_out_of_caller_inputs(
+    definition: str, external_name: str | None, scale: int | None, offset: int | None
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    producer = scope(f"{definition}\nprepared = compute()", "data", "prepared", {})
+    expected_inputs = {"data"} | ({external_name} if external_name else set())
+    assert {item.name for item in producer.spec.script_inputs} == expected_inputs
+    code = selected_provenance_code(
+        (
+            producer,
+            scope(
+                "edge = offsets * 0\nreference = offsets * 0\n"
+                "item = offsets * 0\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                "result = compute() + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(1.0, 7.0).reshape(3, 2), dims=("x", "eV"))
+    inputs = {"data": source, "offsets": source + 100}
+    if external_name:
+        inputs[external_name] = source + (10 if external_name == "edge" else 20)
+    namespace = _exec_generated_code(code, inputs)
+    expected = (
+        source / source.mean()
+        if scale is None
+        else source * scale + typing.cast("int", offset)
+    )
+
+    xr.testing.assert_identical(namespace["prepared"], expected)
+    xr.testing.assert_identical(namespace["result"], expected)
+    captures = {
+        statement.targets[0].id
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id.endswith("_input")
+    }
+    assert captures == ({f"{external_name}_input"} if external_name else set())
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "def compute[T](values=data):\n"
+        "    def normalize():\n"
+        "        return values + (T.__name__ == 'T')\n"
+        "    return normalize()",
+        "class Normalizer[T]:\n"
+        "    def normalize(self, values):\n"
+        "        return values + (T.__name__ == 'T')\n"
+        "def compute():\n"
+        "    return Normalizer().normalize(data)",
+    ],
+    ids=["function", "class"],
+)
+def test_selected_notebook_scopes_keep_type_parameters_in_lexical_scopes(
+    definition: str,
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    producer = scope(f"{definition}\nprepared = compute()", "data", "prepared", {})
+    assert {item.name for item in producer.spec.script_inputs} == {"data"}
+    code = selected_provenance_code(
+        (
+            producer,
+            scope(
+                "T = offsets * 0\ncorrection = offsets * 0", "offsets", "correction", {}
+            ),
+            scope(
+                "result = compute() + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source, "offsets": source + 100})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert "T_input" not in code
+    assert ".copy(" not in code
+
+
+def test_symbol_table_dependencies_keep_free_names_of_the_requested_scope() -> None:
+    code = (
+        "def outer(edge):\n"
+        "    def inner():\n"
+        "        return edge + 1\n"
+        "    return inner\n"
+        "result = outer(3)()"
+    )
+    module = symtable.symtable(code, "<closure>", "exec")
+    outer = next(
+        child for child in module.get_children() if child.get_name() == "outer"
+    )
+    inner = next(child for child in outer.get_children() if child.get_name() == "inner")
+    namespace = _exec_generated_code(code)
+
+    assert namespace["result"] == 4
+    assert _symbol_table_dependencies(outer) == set()
+    assert _symbol_table_dependencies(inner) == {"edge"}
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
+def test_symbol_table_dependencies_keep_type_alias_parameters_in_lexical_scope() -> (
+    None
+):
+    code = "type Pair[T] = tuple[T, T]\nresult = Pair.__name__"
+    symbols = symtable.symtable(code, "<type alias>", "exec")
+    namespace = _exec_generated_code(code)
+
+    assert namespace["result"] == "Pair"
+    assert _symbol_table_dependencies(symbols) == {"Pair", "tuple"}
 
 
 def test_selected_notebook_scopes_do_not_capture_unused_inputs() -> None:

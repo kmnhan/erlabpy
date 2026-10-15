@@ -315,17 +315,29 @@ def _validate_active_name(value: typing.Any) -> str | None:
     return value
 
 
-def _symbol_table_dependencies(table: symtable.SymbolTable) -> set[str]:
-    """Return names read outside a scope, including its nested scopes."""
+def _symbol_table_dependencies(
+    table: symtable.SymbolTable, enclosing_bound: frozenset[str] = frozenset()
+) -> set[str]:
+    """Return external reads, excluding closures supplied by enclosing scopes."""
     dependencies = {
         symbol.get_name()
         for symbol in table.get_symbols()
         if symbol.is_referenced()
-        and (symbol.is_global() or symbol.is_free())
+        and (
+            symbol.is_global()
+            or (symbol.is_free() and symbol.get_name() not in enclosing_bound)
+        )
         and (table.get_type() != "function" or symbol.get_name() != table.get_name())
     }
+    supplied = enclosing_bound
+    if table.get_type() not in {"module", "class"}:
+        supplied = supplied.union(
+            symbol.get_name() for symbol in table.get_symbols() if symbol.is_local()
+        )
+    elif table.get_type() == "class":
+        supplied = supplied.union({"__class__", "__classdict__"})
     for child in table.get_children():
-        dependencies.update(_symbol_table_dependencies(child))
+        dependencies.update(_symbol_table_dependencies(child, supplied))
     return dependencies
 
 
