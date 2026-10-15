@@ -1795,6 +1795,104 @@ def test_display_graph_validates_input_name_overrides() -> None:
         emit_replay_code(graph, input_name_overrides={left_key: "np"})
 
 
+@pytest.mark.parametrize(
+    "input_names",
+    [
+        {"left": "right", "right": "left", "reference": "reference"},
+        {"left": "right", "right": "reference", "reference": "left"},
+        {"left": "right", "right": "reference", "reference": "offsets"},
+    ],
+    ids=["swap", "cycle", "chain"],
+)
+@pytest.mark.parametrize("binding_scope", ["expression", "global", "default"])
+@pytest.mark.parametrize("external_inputs", [False, True])
+def test_display_graph_publishes_renamed_inputs_together(
+    input_names: dict[str, str], binding_scope: str, external_inputs: bool
+) -> None:
+    expression = "left - right + reference * 10"
+    if binding_scope == "expression":
+        code = f"result = {expression}"
+    else:
+        arguments = (
+            "left=left, right=right, reference=reference"
+            if binding_scope == "default"
+            else ""
+        )
+        code = f"def combine({arguments}):\n    return {expression}\nresult = combine()"
+    graph = compile_replay_graph(
+        script(
+            ScriptCodeOperation(label="Combine inputs", code=code),
+            start_label="Use caller inputs",
+            active_name="result",
+            script_inputs=(
+                tuple(ScriptInput(name=name) for name in input_names)
+                if external_inputs
+                else ()
+            ),
+        ),
+        display=True,
+    )
+    overrides = {
+        key: input_names[name]
+        for name in input_names
+        for key in graph.required_input_keys(name)
+    }
+    emitted = emit_replay_code(
+        graph, output_name="result", input_name_overrides=overrides
+    )
+    namespace = {
+        name: xr.DataArray(np.full((3, 2), value), dims=("x", "y"))
+        for name, value in {
+            "left": 10.0,
+            "right": 3.0,
+            "reference": 2.0,
+            "offsets": 100.0,
+        }.items()
+    }
+    expected = (
+        namespace[input_names["left"]]
+        - namespace[input_names["right"]]
+        + namespace[input_names["reference"]] * 10
+    )
+    actual = _exec_generated_code(emitted, namespace)
+
+    xr.testing.assert_identical(actual["result"], expected)
+    assert ".copy(" not in emitted
+    assert "_itool_replay_" not in emitted
+
+
+@pytest.mark.parametrize("external_inputs", [False, True])
+def test_display_graph_publishes_swapped_output_aliases_together(
+    external_inputs: bool,
+) -> None:
+    graph = compile_replay_graph(
+        script(
+            ScriptCodeOperation(label="Combine", code="result = left - right"),
+            start_label="Use caller inputs",
+            active_name="result",
+            script_inputs=(
+                (ScriptInput(name="left"), ScriptInput(name="right"))
+                if external_inputs
+                else ()
+            ),
+        ),
+        display=True,
+    )
+    (left_key,) = graph.required_input_keys("left")
+    (right_key,) = graph.required_input_keys("right")
+    graph.add_alias("left", right_key)
+    graph.add_alias("right", left_key)
+    code = emit_replay_code(graph, output_name="result", include_all_aliases=True)
+    left = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "y"))
+    right = left / 2
+    actual = _exec_generated_code(code, {"left": left, "right": right})
+
+    xr.testing.assert_identical(actual["result"], left - right)
+    xr.testing.assert_identical(actual["left"], right)
+    xr.testing.assert_identical(actual["right"], left)
+    assert ".copy(" not in code
+
+
 def test_display_graph_disambiguates_and_overrides_external_input_names() -> None:
     graph = ReplayGraph(display=True)
     script_code = "def add_values():\n    return left + right\n\nresult = add_values()"
@@ -7002,6 +7100,69 @@ def test_selected_notebook_scopes_ignore_local_bindings_when_capturing_outputs()
 
     xr.testing.assert_identical(namespace["result"], source + 1 + (source + 3) * 2)
     assert "data_input" not in code
+
+
+def test_selected_notebook_scopes_reject_opaque_import_across_bound_values() -> None:
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="array = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="array",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code="from numpy import *\ncorrection = offsets * 2",
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine inputs", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+
+    with pytest.raises(ReplayGraphError, match="opaque namespace import"):
+        selected_provenance_code(
+            (
+                SelectedProvenanceScope(first, {}),
+                SelectedProvenanceScope(auxiliary, {}),
+                SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+            )
+        )
+
+    source = xr.DataArray([10.0])
+    code = selected_steps_code(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset sample",
+                    code="from math import *\nresult = source + sqrt(4)",
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="result",
+    )
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"source": source})["result"], source + 2
+    )
 
 
 def test_selected_notebook_scopes_share_framework_imports() -> None:

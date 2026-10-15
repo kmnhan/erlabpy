@@ -1347,7 +1347,29 @@ class _DetailsPanelController:
         self,
     ) -> list[tuple[str, ToolProvenanceSpec, _ProvenanceDisplayRow, ReplayStep]]:
         selected = []
-        for item in self._manager._selected_derivation_items():
+        selected_refs: dict[
+            tuple[str, str, tuple[int, ...], _ProvenanceStepRef, str | None],
+            ToolProvenanceSpec,
+        ] = {}
+        root_order: list[QtWidgets.QTreeWidgetItem] = []
+
+        def input_first_order(
+            item: QtWidgets.QTreeWidgetItem,
+        ) -> tuple[int | float, ...]:
+            path: list[int] = []
+            current = item
+            while (parent := current.parent()) is not None:
+                path.append(parent.indexOfChild(current))
+                current = parent
+            if current not in root_order:
+                root_order.append(current)
+            root_index = root_order.index(current)
+            # Inputs appear below their consumer in the tree, but execute first.
+            return (root_index, *reversed(path), float("inf"))
+
+        for item in sorted(
+            self._manager._selected_derivation_items(), key=input_first_order
+        ):
             if not item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE) or not item.data(
                 0, _METADATA_DERIVATION_CODE_ROLE
             ):
@@ -1373,6 +1395,14 @@ class _DetailsPanelController:
             operation = spec._operation_for_ref(ref)
             if operation is None:
                 continue
+            identity = (uid, row.scope, row.script_input_path, ref, row.revision_id)
+            if identity in selected_refs:
+                if selected_refs[identity] != spec:
+                    raise ReplayGraphError(
+                        "Selected rows refer to different provenance scopes"
+                    )
+                continue
+            selected_refs[identity] = spec
             step = (
                 spec.steps[typing.cast("int", ref.operation_index)]
                 if spec.kind in {"script", "file"}

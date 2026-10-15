@@ -3418,6 +3418,23 @@ def _extension_script_references(
     return references
 
 
+def _binding_assignments_code(assignments: Sequence[tuple[str, str]]) -> str:
+    """Publish bindings from one namespace without replacing another input early."""
+    source_names = [_code_name_accesses(value)[0] for _target, value in assignments]
+    parallel = any(
+        target in reads
+        for index, (target, _value) in enumerate(assignments)
+        for other_index, reads in enumerate(source_names)
+        if index != other_index
+    )
+    if parallel:
+        return (
+            f"{', '.join(target for target, _value in assignments)} = "
+            f"{', '.join(value for _target, value in assignments)}"
+        )
+    return "\n".join(f"{target} = {value}" for target, value in assignments)
+
+
 def _partition_emission_prologues(
     chunks: Sequence[tuple[str, bool]],
 ) -> tuple[str, list[tuple[str, bool]]]:
@@ -3819,6 +3836,7 @@ def emit_replay_code(
             active_name = typing.cast("str", node.payload["active_name"])
             input_replacements: dict[str, str] = {}
             input_names: set[str] = set()
+            input_assignments: list[tuple[str, str]] = []
             if external_load_script_name is not None and not any(
                 input_name == "load_script"
                 for input_name, _input_key in typing.cast(
@@ -3843,8 +3861,8 @@ def emit_replay_code(
                     binding in copied_script_bindings
                 ):
                     generated_input_name = copied_binding_name(input_name)
-                    append_code(
-                        f"{generated_input_name} = {input_value_name}.copy(deep=True)"
+                    input_assignments.append(
+                        (generated_input_name, f"{input_value_name}.copy(deep=True)")
                     )
                     generated_copy_names.add(generated_input_name)
                     if generated_input_name != input_name:
@@ -3869,9 +3887,14 @@ def emit_replay_code(
                 ):
                     input_replacements[input_name] = input_value_name
                 else:
-                    append_code(f"{input_name} = {input_value_name}")
+                    input_assignments.append((input_name, input_value_name))
                     materialized_aliases[input_name] = input_value_name
+            # All bindings refer to the namespace before this script starts. Publish
+            # dependent aliases together so a renamed input cannot replace a value
+            # still needed by another input, including function globals and defaults.
             consume(node.parents)
+            if input_assignments:
+                append_code(_binding_assignments_code(input_assignments))
             if input_replacements:
                 try:
                     codes = [
@@ -3945,6 +3968,7 @@ def emit_replay_code(
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
         owned_names[name] = node.key
 
+    alias_assignments: list[tuple[str, str]] = []
     for public_name, key in aliases:
         planned_name = names[key]
         consume((key,))
@@ -3952,8 +3976,9 @@ def emit_replay_code(
             public_name != planned_name
             and materialized_aliases.get(public_name) != planned_name
         ):
-            append_code(f"{public_name} = {planned_name}")
-            owned_names[public_name] = _emitted_node_key(graph, node_by_key, key)
+            alias_assignments.append((public_name, planned_name))
+    if alias_assignments:
+        append_code(_binding_assignments_code(alias_assignments))
     module_prologue, chunks = _partition_emission_prologues(chunks)
 
     implicit_framework_names: set[str] = set()
@@ -4219,8 +4244,13 @@ def selected_provenance_code(
             previous_name = notebook_specs[previous].active_name
             if previous_name is None:
                 raise ReplayGraphError("Selected notebook scope has no named output")
+            intervening_writes = scope_writes[previous + 1 : index]
+            if any("*" in names for names in intervening_writes):
+                raise ReplayGraphError(
+                    "Selected notebook input crosses an opaque namespace import"
+                )
             if previous_name in _REPLAY_PROTECTED_NAMES or any(
-                previous_name in names for names in scope_writes[previous + 1 : index]
+                previous_name in names for names in intervening_writes
             ):
                 if previous not in output_captures:
                     output_captures[previous] = capture_name(input_name)
@@ -4240,6 +4270,10 @@ def selected_provenance_code(
                 if item.name in bindings.values():
                     bindings[item.name] = item.name
                 continue
+            if "*" in written_names:
+                raise ReplayGraphError(
+                    "Selected notebook input crosses an opaque namespace import"
+                )
             if item.name not in written_names:
                 continue
             if item.name not in source_captures:
@@ -4278,7 +4312,14 @@ def selected_provenance_code(
 def _notebook_scope_writes(code: str) -> set[str]:
     """Find bindings changed by the final emitted scope, including its aliases."""
     names = _CurrentScopeNames()
-    names.visit(ast.parse(code, mode="exec"))
+    module = ast.parse(code, mode="exec")
+    names.visit(module)
+    if any(
+        isinstance(node, ast.ImportFrom)
+        and any(alias.name == "*" for alias in node.names)
+        for node in ast.walk(module)
+    ):
+        names.stores.add("*")
 
     def global_writes(table: symtable.SymbolTable) -> set[str]:
         writes = {
