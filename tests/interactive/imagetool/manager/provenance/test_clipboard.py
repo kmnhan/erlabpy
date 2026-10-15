@@ -2340,6 +2340,93 @@ def test_manager_copied_branches_keep_display_order(
         assert manager._details_panel._selected_derivation_step_payload() is None
 
 
+def test_manager_copied_nested_scopes_preserve_outputs_across_generated_aliases(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+    inner = script(
+        ScriptCodeOperation(label="Prepare offsets", code="derived = offsets * 2"),
+        start_label="Use offsets",
+        active_name="derived",
+        primary_input="offsets",
+        script_inputs=(ScriptInput(name="offsets"),),
+    )
+    auxiliary = script(
+        ScriptCodeOperation(
+            label="Prepare correction",
+            code="def f():\n    return data * 10\ncorrection = f()",
+        ),
+        start_label="Use prepared offsets",
+        active_name="correction",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data", provenance_spec=inner.model_dump(mode="json")),
+        ),
+    )
+    spec = script(
+        start_label="Prepare and shift sample",
+        active_name="data",
+        primary_input="source",
+        script_inputs=(
+            ScriptInput(name="source"),
+            ScriptInput(
+                name="correction", provenance_spec=auxiliary.model_dump(mode="json")
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset sample", code="data = source + 1"
+                )
+            ),
+            ReplayStep(
+                operation=ShiftFromInputOperation(along="eV"),
+                input_bindings={"shift": "correction"},
+            ),
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Add correction", code="data = data + correction"
+                )
+            ),
+        ),
+    )
+    with manager_context() as manager:
+        source_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(source, _in_manager=True),
+            show=False,
+            provenance_spec=spec,
+        )
+        select_tools(manager, [source_index])
+        manager._update_info()
+        rows = []
+        for index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if (
+                isinstance(row, _ProvenanceDisplayRow)
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+                and not (
+                    row.script_input_path == () and row.replay_ref.operation_index == 1
+                )
+            ):
+                rows.append(index)
+        assert len(rows) == 4
+        select_metadata_rows(manager, rows)
+        code = manager._selected_derivation_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"source": source, "offsets": offsets})
+
+        xr.testing.assert_identical(namespace["data"], source + 1 + offsets * 20)
+        xr.testing.assert_identical(namespace["correction"], offsets * 20)
+        assert ".copy(" not in code
+        assert "_itool_replay_" not in code
+
+
 def test_manager_copied_auxiliary_precedes_reused_bound_input(
     monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[

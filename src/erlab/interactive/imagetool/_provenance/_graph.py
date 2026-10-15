@@ -988,16 +988,19 @@ def _compile_replay_steps(
     return current_key
 
 
+def _validate_external_input_name(name: str) -> None:
+    if name in _REPLAY_PROTECTED_NAMES:
+        raise ReplayGraphError(
+            f"External provenance input {name!r} conflicts with a replay global"
+        )
+
+
 def _add_external_input_node(
     graph: ReplayGraph,
     script_input: typing.Any,
 ) -> str:
     """Add and transform one display-only caller-provided input."""
-    if script_input.name in _REPLAY_PROTECTED_NAMES:
-        raise ReplayGraphError(
-            f"External provenance input {script_input.name!r} conflicts with a replay "
-            "global"
-        )
+    _validate_external_input_name(script_input.name)
     input_revision = script_input.revision_id or script_input.node_snapshot_token
     has_stable_identity = input_revision is not None
     identity = (
@@ -4157,23 +4160,18 @@ def selected_provenance_code(
     resolve_input_provenance = _memoized_input_provenance_resolver()
     notebook_specs = tuple(_selected_notebook_spec(scope.spec) for scope in scopes)
     reserved_names: set[str] = set()
-    scope_writes: list[set[str]] = []
-    for spec in notebook_specs:
+    for scope, spec in zip(scopes, notebook_specs, strict=True):
         reserved_names.update(_reserved_names_from_spec(spec, resolve_input_provenance))
-        stores = set() if spec.active_name is None else {spec.active_name}
-        for step in spec.steps:
-            stores.update(step.context_names)
-        codes = (
+        for item in spec.script_inputs:
+            if item.name not in scope.input_scopes:
+                _validate_external_input_name(item.name)
+        for code in (
             spec.seed_code,
             *(getattr(step.operation, "code", None) for step in spec.steps),
-        )
-        for code in codes:
+        ):
             if isinstance(code, str):
-                accesses, code_stores = _code_name_accesses(code)
-                reserved_names.update(accesses)
-                reserved_names.update(code_stores)
-                stores.update(code_stores)
-        scope_writes.append(stores)
+                accesses, stores = _code_name_accesses(code)
+                reserved_names.update(accesses | stores)
 
     def capture_name(public_name: str) -> str:
         candidate = f"{public_name}_input"
@@ -4184,50 +4182,9 @@ def selected_provenance_code(
         reserved_names.add(candidate)
         return candidate
 
-    source_captures: dict[str, str] = {}
-    output_captures: dict[int, str] = {}
-    scope_bindings: list[dict[str, str]] = []
-    written_names: set[str] = set()
-    for index, scope in enumerate(scopes):
-        spec = scope.spec
-        bindings: dict[str, str] = {}
-        for input_name, previous in scope.input_scopes.items():
-            if not 0 <= previous < index:
-                raise ReplayGraphError("Selected notebook scope has no earlier input")
-            previous_name = notebook_specs[previous].active_name
-            if previous_name is None:
-                raise ReplayGraphError("Selected notebook scope has no named output")
-            if previous_name in _REPLAY_PROTECTED_NAMES or any(
-                previous_name in names for names in scope_writes[previous + 1 : index]
-            ):
-                if previous not in output_captures:
-                    output_captures[previous] = capture_name(input_name)
-                previous_name = output_captures[previous]
-            bindings[input_name] = previous_name
-        for item in spec.script_inputs:
-            if item.name in bindings:
-                continue
-            recorded = (
-                item.node_uid is not None
-                or item.revision_id is not None
-                or item.node_snapshot_token is not None
-                or item.source_spec is not None
-                or item.provenance_spec is not None
-            )
-            if not recorded:
-                if item.name in bindings.values():
-                    bindings[item.name] = item.name
-                continue
-            if item.name not in written_names:
-                continue
-            if item.name not in source_captures:
-                source_captures[item.name] = capture_name(item.name)
-            bindings[item.name] = source_captures[item.name]
-        scope_bindings.append(bindings)
-        written_names.update(scope_writes[index])
-
-    graphs: list[ReplayGraph] = []
-    for spec, bindings in zip(notebook_specs, scope_bindings, strict=True):
+    def compile_scope(
+        spec: ToolProvenanceSpec, bindings: Mapping[str, str]
+    ) -> ReplayGraph:
         graph = ReplayGraph(reserved_names=reserved_names, display=True)
         input_names = {
             item.name: bindings.get(item.name, item.name) for item in spec.script_inputs
@@ -4254,31 +4211,100 @@ def selected_provenance_code(
                 name: public_inputs[value] for name, value in input_names.items()
             },
         )
-        graphs.append(graph)
+        return graph
+
+    # Input bindings do not change the number of semantic producers.
+    graphs = [compile_scope(spec, {}) for spec in notebook_specs]
+    include_framework_imports = sum(map(_semantic_emitted_step_count, graphs)) > 1
     consumed = {
         previous for scope in scopes for previous in scope.input_scopes.values()
     }
-    include_framework_imports = sum(map(_semantic_emitted_step_count, graphs)) > 1
+    source_captures: dict[str, str] = {}
+    output_captures: dict[int, str] = {}
+    scope_codes: list[str] = []
+    scope_writes: list[set[str]] = []
+    written_names: set[str] = set()
+    for index, (scope, spec) in enumerate(zip(scopes, notebook_specs, strict=True)):
+        bindings: dict[str, str] = {}
+        for input_name, previous in scope.input_scopes.items():
+            if not 0 <= previous < index:
+                raise ReplayGraphError("Selected notebook scope has no earlier input")
+            previous_name = notebook_specs[previous].active_name
+            if previous_name is None:
+                raise ReplayGraphError("Selected notebook scope has no named output")
+            if previous_name in _REPLAY_PROTECTED_NAMES or any(
+                previous_name in names for names in scope_writes[previous + 1 : index]
+            ):
+                if previous not in output_captures:
+                    output_captures[previous] = capture_name(input_name)
+                previous_name = output_captures[previous]
+            bindings[input_name] = previous_name
+        for item in scope.spec.script_inputs:
+            if item.name in bindings:
+                continue
+            recorded = (
+                item.node_uid is not None
+                or item.revision_id is not None
+                or item.node_snapshot_token is not None
+                or item.source_spec is not None
+                or item.provenance_spec is not None
+            )
+            if not recorded:
+                if item.name in bindings.values():
+                    bindings[item.name] = item.name
+                continue
+            if item.name not in written_names:
+                continue
+            if item.name not in source_captures:
+                source_captures[item.name] = capture_name(item.name)
+            bindings[item.name] = source_captures[item.name]
+        graph = compile_scope(spec, bindings) if bindings else graphs[index]
+        graph._reserved_names.update(reserved_names)
+        # Later consumers can add unique captures after a producer without changing
+        # its code. Only this final emitted code determines which names it replaces.
+        code = emit_replay_code(
+            graph,
+            output_name=spec.active_name,
+            include_framework_imports=include_framework_imports,
+            publish_output=index in consumed,
+        )
+        scope_codes.append(code)
+        accesses, stores = _code_name_accesses(code)
+        reserved_names.update(accesses | stores)
+        writes = _notebook_scope_writes(code)
+        scope_writes.append(writes)
+        written_names.update(writes)
+
     chunks: list[tuple[str, bool]] = [
         (f"{alias} = {name}", False) for name, alias in source_captures.items()
     ]
-    for index, (graph, spec) in enumerate(zip(graphs, notebook_specs, strict=True)):
-        chunks.append(
-            (
-                emit_replay_code(
-                    graph,
-                    output_name=spec.active_name,
-                    include_framework_imports=include_framework_imports,
-                    publish_output=index in consumed,
-                ),
-                True,
-            )
-        )
+    for index, (code, spec) in enumerate(zip(scope_codes, notebook_specs, strict=True)):
+        chunks.append((code, True))
         if index in output_captures:
             chunks.append((f"{output_captures[index]} = {spec.active_name}", False))
     module_prologue, chunks = _partition_emission_prologues(chunks)
     return "\n".join(
         part for part in (module_prologue, _group_framework_imports(chunks)) if part
+    )
+
+
+def _notebook_scope_writes(code: str) -> set[str]:
+    """Find bindings changed by the final emitted scope, including its aliases."""
+    names = _CurrentScopeNames()
+    names.visit(ast.parse(code, mode="exec"))
+
+    def global_writes(table: symtable.SymbolTable) -> set[str]:
+        writes = {
+            symbol.get_name()
+            for symbol in table.get_symbols()
+            if symbol.is_global() and (symbol.is_assigned() or symbol.is_imported())
+        }
+        for child in table.get_children():
+            writes.update(global_writes(child))
+        return writes
+
+    return names.stores | global_writes(
+        symtable.symtable(code, "<ImageTool notebook scope>", "exec")
     )
 
 

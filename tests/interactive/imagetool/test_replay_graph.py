@@ -6656,6 +6656,354 @@ def test_selected_notebook_scopes_publish_consumed_metadata_updates() -> None:
     assert ".copy(" not in code
 
 
+def test_selected_notebook_scopes_preserve_outputs_across_emitted_input_aliases() -> (
+    None
+):
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "y"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope("data = source + 1", "source", "data", {}),
+            scope("original = offsets * 2", "offsets", "original", {}),
+            scope(
+                "def f():\n    return data * 10\ncorrection = f()",
+                "data",
+                "correction",
+                {"data": 1},
+            ),
+            scope(
+                "def g():\n    return original + correction\nresult = g()",
+                "original",
+                "result",
+                {"original": 0, "correction": 2},
+            ),
+            scope(
+                "final = correction + result",
+                "correction",
+                "final",
+                {"correction": 1, "result": 3},
+            ),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": offsets})
+
+    xr.testing.assert_identical(namespace["result"], source + 1 + offsets * 20)
+    xr.testing.assert_identical(
+        namespace["final"], offsets * 2 + source + 1 + offsets * 20
+    )
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+def test_selected_notebook_scopes_capture_recorded_inputs_before_emitted_aliases() -> (
+    None
+):
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "y"))
+    recorded = source + 100
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="derived = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="derived",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code="def f():\n    return data * 2\ncorrection = f()",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Apply correction", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="correction",
+        output_name="result",
+        script_inputs=(ScriptInput(name="data", revision_id="recorded"),),
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {"data": 0}),
+            SelectedProvenanceScope(last, {"correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "data": recorded})
+
+    xr.testing.assert_identical(namespace["result"], recorded + (source + 1) * 2)
+    assert ".copy(" not in code
+
+
+def test_selected_notebook_scopes_reserve_emitted_extension_bindings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script_path = tmp_path / "original_input.py"
+    script_path.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n"
+        "@routine(id='scale')\n"
+        "def scale(data: xr.DataArray) -> xr.DataArray:\n    return data * 2\n"
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="data = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="data",
+    )
+    extension = selected_steps_spec(
+        (ReplayStep(operation=_extension_routine_operation()),),
+        input_name="other",
+        output_name="scaled",
+    )
+    alias = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Use scaled data",
+                    code="def f():\n    return data + 1\ncorrection = f()",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine inputs", code="result = original + correction"
+                )
+            ),
+        ),
+        input_name="original",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(extension, {}),
+            SelectedProvenanceScope(alias, {"data": 1}),
+            SelectedProvenanceScope(last, {"original": 0, "correction": 2}),
+            SelectedProvenanceScope(extension, {}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "other": source + 100})
+
+    xr.testing.assert_identical(
+        namespace["result"], source + 1 + (source + 100) * 2 + 1
+    )
+    assert isinstance(namespace["original_input"], erlab.extensions.LoadedScript)
+    xr.testing.assert_identical(namespace["original_input_2"], source + 1)
+    assert ".copy(" not in code
+
+
+def test_selected_notebook_scopes_forward_captured_source_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def expression_code(self, input_name, *, source_name=None):
+        return f"({input_name} + {source_name}).qsel.mean('x')"
+
+    monkeypatch.setattr(AverageOperation, "expression_code", expression_code)
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="derived = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="derived",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction", code="derived = offsets * 2"
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="derived",
+    )
+    last = selected_steps_spec(
+        (ReplayStep(operation=AverageOperation(dims=("x",))),),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": source + 100})
+
+    xr.testing.assert_identical(namespace["result"], ((source + 1) * 2).qsel.mean("x"))
+    assert ".copy(" not in code
+
+
+@pytest.mark.parametrize(
+    "overwrite_code",
+    [
+        "import math as data",
+        "from math import pi as data",
+        "def overwrite():\n    global data\n    data = 0\noverwrite()",
+    ],
+)
+def test_selected_notebook_scopes_preserve_outputs_across_namespace_writes(
+    overwrite_code: str,
+) -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="data = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="data",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code=f"{overwrite_code}\ncorrection = offsets * 2",
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine inputs", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": source + 3})
+
+    xr.testing.assert_identical(namespace["result"], source + 1 + (source + 3) * 2)
+    assert ".copy(" not in code
+
+
+@pytest.mark.parametrize("input_name", ["np", "xr", "len", "load_script"])
+def test_selected_notebook_scopes_reject_protected_external_input_names(
+    input_name: str,
+) -> None:
+    steps = (
+        ReplayStep(
+            operation=ScriptCodeOperation(
+                label="Use input", code=f"result = {input_name}"
+            )
+        ),
+    )
+    with pytest.raises(ReplayGraphError, match="conflicts with a replay global"):
+        selected_steps_code(steps, input_name=input_name, output_name="result")
+
+
+def test_selected_notebook_scopes_ignore_local_bindings_when_capturing_outputs() -> (
+    None
+):
+    source = xr.DataArray([10.0])
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Prepare", code="data = source + 1")
+            ),
+        ),
+        input_name="source",
+        output_name="data",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code="def f(data):\n    return data * 2\ncorrection = f(offsets)",
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": source + 3})
+
+    xr.testing.assert_identical(namespace["result"], source + 1 + (source + 3) * 2)
+    assert "data_input" not in code
+
+
 def test_selected_notebook_scopes_share_framework_imports() -> None:
     source = xr.DataArray(
         np.arange(6.0).reshape(3, 2), dims=("x", "y"), coords={"x": [0.0, 1.0, 2.0]}
