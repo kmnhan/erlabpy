@@ -12,7 +12,7 @@ import time
 import traceback
 import typing
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import xarray as xr
 from qtpy import QtCore
@@ -69,14 +69,39 @@ class _WorkspaceSaveSnapshot:
         tuple[str, str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
     embedded_script_sources: tuple[tuple[str, str, bytes], ...] = ()
+    _source_ownership: contextlib.ExitStack = field(
+        default_factory=contextlib.ExitStack, repr=False
+    )
+    _data_closed: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def source_paths(self) -> frozenset[pathlib.Path]:
+        return frozenset(
+            pathlib.Path(item.source_file).resolve()
+            for item in self.generation_plan.objects
+            if item.source_file is not None
+        ) | frozenset(
+            pathlib.Path(item.source_file).resolve()
+            for item in self.generation_plan.preserved_groups
+        )
+
+    def close_data(self) -> None:
+        if self._data_closed:
+            return
+        self._data_closed = True
+        closed: set[int] = set()
+        with contextlib.ExitStack() as datasets:
+            for item in self.generation_plan.objects:
+                if item.dataset is None or id(item.dataset) in closed:
+                    continue
+                closed.add(id(item.dataset))
+                datasets.callback(item.dataset.close)
 
     def close(self) -> None:
-        closed: set[int] = set()
-        for item in self.generation_plan.objects:
-            if item.dataset is None or id(item.dataset) in closed:
-                continue
-            closed.add(id(item.dataset))
-            item.dataset.close()
+        try:
+            self.close_data()
+        finally:
+            self._source_ownership.close()
 
 
 @dataclass(frozen=True)
@@ -190,8 +215,9 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         except Exception:
             error = _WorkspaceSaveError(traceback_text=traceback.format_exc())
         finally:
+            # Source ownership ends when the GUI handles completion.
             with contextlib.suppress(Exception):
-                self._snapshot.close()
+                self._snapshot.close_data()
         self.signals.finished.emit(time.perf_counter() - start_time, error)
 
 
@@ -253,6 +279,32 @@ class _WorkspaceSaver:
     ) -> None:
         self._manager = manager
         self._controller = controller
+        self._active_snapshots: dict[int, _WorkspaceSaveSnapshot] = {}
+
+    def _own_snapshot_sources(self, snapshot: _WorkspaceSaveSnapshot) -> None:
+        ownership = snapshot._source_ownership
+        ownership.callback(self._controller._release_unused_imported_workspace_accesses)
+        self._active_snapshots[id(snapshot)] = snapshot
+        ownership.callback(self._active_snapshots.pop, id(snapshot))
+        try:
+            sources = {
+                (item.source_file, item.source_path)
+                for item in snapshot.generation_plan.objects
+                if item.source_file is not None and item.source_path is not None
+            }
+            for source_file, source_path in sources:
+                store = workspace_store.WorkspaceStore.active(source_file)
+                parts = source_path.strip("/").split("/")
+                if (
+                    store is not None
+                    and len(parts) >= 2
+                    and parts[0] == _persistence_constants.WORKSPACE_OBJECTS_GROUP
+                ):
+                    store.acquire_object(parts[1])
+                    ownership.callback(store.release_object, parts[1])
+        except Exception:
+            snapshot.close()
+            raise
 
     def _workspace_reader_closers(
         self, fname: str | os.PathLike[str]
@@ -1484,7 +1536,7 @@ class _WorkspaceSaver:
                 )
                 for group_path in sorted(leased_legacy_group_paths)
             )
-        return _WorkspaceSaveSnapshot(
+        snapshot = _WorkspaceSaveSnapshot(
             generation=generation,
             generation_plan=workspace_storage._WorkspaceGenerationPlan(
                 manifest=manifest,
@@ -1504,3 +1556,5 @@ class _WorkspaceSaver:
             ),
             embedded_script_sources=tuple(embedded_script_sources),
         )
+        self._own_snapshot_sources(snapshot)
+        return snapshot

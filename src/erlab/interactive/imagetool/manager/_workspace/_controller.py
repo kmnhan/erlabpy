@@ -1092,7 +1092,11 @@ class _WorkspaceController:
             if record.checkpoint is not None and record.checkpoint.source is not None
         )
         return paths.union(
-            *(backup.source_paths for backup in self.loading._active_replace_backups)
+            *(backup.source_paths for backup in self.loading._active_replace_backups),
+            *(
+                snapshot.source_paths
+                for snapshot in self.saving._active_snapshots.values()
+            ),
         )
 
     def _retain_imported_workspace_access(
@@ -2489,6 +2493,8 @@ class _WorkspaceController:
                     "Error while saving workspace",
                     "An error occurred while saving the workspace file.",
                 )
+            finally:
+                snapshot.close()
 
         receiver = workspace_saving._WorkspaceSaveResultReceiver(
             callback=_finish,

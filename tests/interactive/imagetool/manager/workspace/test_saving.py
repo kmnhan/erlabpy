@@ -1036,11 +1036,13 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
             ),
             _tool_graph=types.SimpleNamespace(nodes={}),
         )
-        saver = workspace_saving._WorkspaceSaver.__new__(
-            workspace_saving._WorkspaceSaver
+        saver = workspace_saving._WorkspaceSaver(
+            manager,
+            types.SimpleNamespace(
+                _workspace_store=source_store,
+                _release_unused_imported_workspace_accesses=lambda: None,
+            ),
         )
-        saver._manager = manager
-        saver._controller = types.SimpleNamespace(_workspace_store=source_store)
         saver._workspace_script_snapshot = lambda: (
             (),
             scripts,
@@ -1977,7 +1979,7 @@ class _DeferredWorkspaceSaveWorker:
         elapsed: float = 0.0,
         error: workspace_saving._WorkspaceSaveError | None = None,
     ) -> None:
-        self._snapshot.close()
+        self._snapshot.close_data()
         self.signals.finished.emit(elapsed, error)
 
 
@@ -5019,6 +5021,9 @@ def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
         tree = manager._workspace_controller.saving._to_datatree()
         manifest = manager._workspace_controller.saving._workspace_manifest()
         manifest["schema_version"] = schema_version
+        manifest.pop("provenance_revisions", None)
+        for entry in manifest["nodes"]:
+            entry.pop("current_revision_id", None)
         tree.attrs["imagetool_workspace_schema_version"] = schema_version
         tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
             manifest
@@ -6803,3 +6808,167 @@ def test_manager_workspace_delta_save_persists_geometry_changes(
         saved_state = json.loads(saved_attrs["itool_window_state"])
         saved_rect = tuple(int(value) for value in saved_state["rect"])
         assert saved_rect == expected_rect
+
+
+@pytest.mark.parametrize("save_as", [False, True])
+@pytest.mark.parametrize("fail_write", [False, True])
+def test_background_save_owns_removed_revision_sources(
+    qtbot, monkeypatch, tmp_path, manager_context, save_as, fail_write
+) -> None:
+    import threading
+
+    source_path = tmp_path / "source.itws"
+    destination = tmp_path / "destination.itws"
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        revision_id = manager._node_for_target(index).revision_id_for_role("source")
+        manager._node_for_target(index).set_displayed_provenance(
+            script(
+                start_label="Saved",
+                active_name="data",
+                primary_input="data",
+                script_inputs=(ScriptInput(name="data", revision_id=revision_id),),
+            )
+        )
+        manager._workspace_controller.saving._save_workspace_document(source_path)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        if not save_as:
+            controller.saving._save_workspace_document(destination)
+            adopt_workspace_path(manager, destination)
+        assert controller.loading._load_workspace_file(
+            source_path, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        assert revision_id not in manager._provenance_revisions._data
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+        started = threading.Event()
+        proceed = threading.Event()
+        write_generation = workspace_storage._write_workspace_generation
+
+        def _delayed_write(*args, **kwargs):
+            started.set()
+            if not proceed.wait(10):
+                raise TimeoutError("Test did not release workspace save")
+            if fail_write:
+                raise OSError("Test workspace write failure")
+            return write_generation(*args, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_storage, "_write_workspace_generation", _delayed_write
+        )
+        results = []
+        save = controller.save_as if save_as else controller.save
+        assert save(native=False, on_finished=results.append)
+        try:
+            qtbot.wait_until(started.is_set)
+            select_tools(manager, [next(iter(manager._tool_graph.root_wrappers))])
+            manager._update_info()
+            assert manager.remove_action.isEnabled()
+            manager.remove_action.trigger()
+            dialog = manager._lineage_controller._remove_confirmation_dialog
+            dialog.done(QtWidgets.QMessageBox.StandardButton.Yes.value)
+            qtbot.wait_until(lambda: not manager._tool_graph.nodes)
+            assert not manager._provenance_revisions.revision_ids
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(source_path)
+            assert not manager.close()
+            assert manager._workspace_state.save_in_progress
+        finally:
+            proceed.set()
+            qtbot.wait_until(lambda: bool(results), timeout=10000)
+        assert results == [not fail_write]
+        assert bool(errors) == fail_write
+        assert not controller.saving._active_snapshots
+        lock = workspace_storage._acquire_workspace_document_lock(source_path)
+        lock.unlock()
+        if not fail_write:
+            registry = _ProvenanceRevisionStore()
+            workspace_controller.workspace_revisions.restore_revision_store(
+                registry, _current_workspace_manifest(destination), destination
+            )
+            xr.testing.assert_identical(
+                registry.resolve_data(revision_id).compute(), expected
+            )
+
+
+def test_workspace_snapshot_sources_release_after_failed_start(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    path = tmp_path / "source.itws"
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y")),
+                _in_manager=True,
+            ),
+            show=False,
+        )
+        revision_id = manager._node_for_target(index).revision_id_for_role("source")
+        controller.saving._save_workspace_document(path)
+        adopt_workspace_path(manager, path)
+        store = controller._workspace_store
+        snapshot = controller.saving._workspace_save_snapshot(path)
+        second_snapshot = controller.saving._workspace_save_snapshot(path)
+        assert f"revision-{revision_id}" in store.leased_object_ids
+        manager.remove_imagetool(index)
+        assert not manager._provenance_revisions.revision_ids
+        empty_manifest = dict(snapshot.generation_plan.manifest)
+        empty_manifest["nodes"] = []
+        empty_manifest["root_order"] = []
+        empty_manifest["provenance_revisions"] = []
+        for _ in range(2):
+            store.publish(empty_manifest)
+        store.collect_garbage(max_objects=1000)
+        assert store.object_path(f"revision-{revision_id}") in store.h5_file
+        snapshot.close()
+        assert f"revision-{revision_id}" in store.leased_object_ids
+        monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", lambda: None)
+        assert not controller._start_workspace_save_worker(
+            path, second_snapshot, on_finished=lambda *_args: None
+        )
+        assert not controller.saving._active_snapshots
+        assert f"revision-{revision_id}" not in store.leased_object_ids
+        second_snapshot.close()
+        assert not controller.saving._active_snapshots
+
+
+def test_workspace_snapshot_cleanup_closes_each_resource_once() -> None:
+    closed = []
+    first = xr.Dataset()
+    second = xr.Dataset()
+
+    def _fail_close() -> None:
+        closed.append("first")
+        raise OSError("Test dataset close failure")
+
+    first.set_close(_fail_close)
+    second.set_close(lambda: closed.append("second"))
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        generation_plan=workspace_storage._WorkspaceGenerationPlan(
+            manifest={},
+            objects=(
+                workspace_storage._WorkspaceObjectWrite("first", dataset=first),
+                workspace_storage._WorkspaceObjectWrite("duplicate", dataset=first),
+                workspace_storage._WorkspaceObjectWrite("second", dataset=second),
+            ),
+        ),
+        compression_mode="none",
+        trusted_lineage=True,
+    )
+    snapshot._source_ownership.callback(lambda: closed.append("ownership"))
+    with pytest.raises(OSError, match="Test dataset close failure"):
+        snapshot.close()
+    assert closed == ["second", "first", "ownership"]
+    snapshot.close()
+    assert closed == ["second", "first", "ownership"]
