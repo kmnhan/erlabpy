@@ -4349,8 +4349,8 @@ def direct_replay_input_name(
 
 
 def _direct_replay_source_name(spec: ToolProvenanceSpec) -> str | None:
-    """Return the external array name used by a direct script replay seed."""
-    if spec.kind != "script" or spec.script_inputs or spec.seed_code is None:
+    """Return the source array name used by a direct script replay seed."""
+    if spec.kind != "script" or spec.seed_code is None:
         return None
     try:
         module = ast.parse(spec.seed_code, mode="exec")

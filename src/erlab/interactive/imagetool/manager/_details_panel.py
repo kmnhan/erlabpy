@@ -1311,7 +1311,10 @@ class _DetailsPanelController:
                         primary_chain = False
                         break
                     item = current.script_inputs[input_index]
-                    if item.name != current.primary_input:
+                    primary_input = current.primary_input or _direct_replay_source_name(
+                        current
+                    )
+                    if item.name != primary_input:
                         primary_chain = False
                         break
                     current = item.parsed_provenance_spec()

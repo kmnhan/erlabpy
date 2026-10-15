@@ -2024,12 +2024,13 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
 
 
 @pytest.mark.parametrize(
-    ("depth", "active_name", "shift_name", "script_steps"),
+    ("depth", "active_name", "shift_name", "script_steps", "alias_seed"),
     [
-        (1, "shifted", "correction", False),
-        (2, "derived", "correction", False),
-        (2, "shifted", "derived", False),
-        (2, "derived", "correction", True),
+        (1, "shifted", "correction", False, False),
+        (2, "derived", "correction", False, False),
+        (2, "shifted", "derived", False, False),
+        (2, "derived", "correction", True, False),
+        (1, "shifted", "correction", False, True),
     ],
 )
 def test_manager_copied_primary_chain_connects_nested_outputs(
@@ -2037,6 +2038,7 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
     active_name: str,
     shift_name: str,
     script_steps: bool,
+    alias_seed: bool,
     monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2106,26 +2108,42 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
             prepared = attributes.apply(prepared)
             operations += (attribute_step,)
         correction_revision = manager._provenance_revisions.add(correction)
-        spec = script(
-            start_label="Shift prepared data",
-            active_name=active_name,
-            primary_input="data",
-            steps=(ReplayStep(operation=shift, input_bindings={"shift": shift_name}),),
-            script_inputs=(
-                ScriptInput(
-                    name="data",
-                    revision_id=manager._provenance_revisions.add(prepared),
-                    follow_source=False,
-                    provenance_spec=inner.model_dump(mode="json"),
-                ),
-                ScriptInput(
-                    name=shift_name,
-                    revision_id=correction_revision,
-                    follow_source=False,
-                ),
-            ),
+        primary = ScriptInput(
+            name="data",
+            revision_id=manager._provenance_revisions.add(prepared),
+            follow_source=False,
+            provenance_spec=inner.model_dump(mode="json"),
         )
-        expected = erlab.analysis.transform.shift(prepared, correction, along="eV")
+        outer_operation: ToolProvenanceOperation = shift
+        if alias_seed:
+            outer_operation = AssignAttrsOperation(attrs={"shifted": "yes"})
+            spec = script(
+                outer_operation,
+                start_label="Mark prepared data",
+                seed_code=f"{active_name} = data",
+                active_name=active_name,
+                script_inputs=(primary,),
+            )
+            assert spec.primary_input is None
+            expected = outer_operation.apply(prepared)
+        else:
+            spec = script(
+                start_label="Shift prepared data",
+                active_name=active_name,
+                primary_input="data",
+                steps=(
+                    ReplayStep(operation=shift, input_bindings={"shift": shift_name}),
+                ),
+                script_inputs=(
+                    primary,
+                    ScriptInput(
+                        name=shift_name,
+                        revision_id=correction_revision,
+                        follow_source=False,
+                    ),
+                ),
+            )
+            expected = erlab.analysis.transform.shift(prepared, correction, along="eV")
         source = manager.add_imagetool(
             erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
             show=False,
@@ -2142,7 +2160,7 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
                 isinstance(row, _ProvenanceDisplayRow)
                 and row.replay_ref is not None
                 and row.replay_ref.kind == "operation"
-                and row.on_primary_chain
+                and (row.on_primary_chain or alias_seed)
             ):
                 rows.append(index)
         assert len(rows) == depth + 1
@@ -2160,13 +2178,13 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
         )
         assert payload is not None
         assert [operation.model_dump_json() for operation in payload.operations] == [
-            operation.model_dump_json() for operation in (*operations, shift)
+            operation.model_dump_json() for operation in (*operations, outer_operation)
         ]
         assert payload.active_name == active_name
         selected_spec = payload.spec
         assert [
             operation.model_dump_json() for operation in selected_spec.operations
-        ] == [shift.model_dump_json()]
+        ] == [outer_operation.model_dump_json()]
         for operation in reversed(operations):
             primary_input = next(
                 item
@@ -2178,12 +2196,15 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
                 primary_input.provenance_spec
             )
             assert selected_spec.operations == (operation,)
-        bound_name = payload.steps[-1].input_bindings["shift"]
-        assert len(payload.script_inputs) == 1
-        captured_input = payload.script_inputs[0]
-        assert captured_input.name == bound_name
-        assert captured_input.revision_id == correction_revision
-        assert not captured_input.follow_source
+        if alias_seed:
+            assert payload.script_inputs == ()
+        else:
+            bound_name = payload.steps[-1].input_bindings["shift"]
+            assert len(payload.script_inputs) == 1
+            captured_input = payload.script_inputs[0]
+            assert captured_input.name == bound_name
+            assert captured_input.revision_id == correction_revision
+            assert not captured_input.follow_source
 
         target_data = data + 100.0
         target = manager.add_imagetool(
@@ -2197,9 +2218,14 @@ def test_manager_copied_primary_chain_connects_nested_outputs(
         target_expected = average.apply(target_data)
         if depth == 2:
             target_expected = attributes.apply(target_expected)
+        if alias_seed:
+            target_expected = outer_operation.apply(target_expected)
+        else:
+            target_expected = erlab.analysis.transform.shift(
+                target_expected, correction, along="eV"
+            )
         xr.testing.assert_identical(
-            manager._node_for_target(target).data_for_role("source"),
-            erlab.analysis.transform.shift(target_expected, correction, along="eV"),
+            manager._node_for_target(target).data_for_role("source"), target_expected
         )
 
 
