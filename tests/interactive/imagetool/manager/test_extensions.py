@@ -1288,6 +1288,7 @@ def test_direct_extension_loader_uses_shared_loader_state(
             )
         ),
         _workspace_controller=types.SimpleNamespace(_loader_state=state),
+        _standalone_app_pending_states={},
         _available_file_loaders=lambda: {"Lab Data (*.dat)": (call, {})},
         _recent_loader_kwargs_by_filter={"Lab Data (*.dat)": {"scale": 4.0}},
         _recent_loader_extensions_by_filter={},
