@@ -3835,6 +3835,7 @@ def emit_replay_code(
             )
             active_name = typing.cast("str", node.payload["active_name"])
             input_replacements: dict[str, str] = {}
+            inline_input_aliases: dict[str, str] = {}
             input_names: set[str] = set()
             input_assignments: list[tuple[str, str]] = []
             if external_load_script_name is not None and not any(
@@ -3885,10 +3886,24 @@ def emit_replay_code(
                         for code in codes
                     )
                 ):
-                    input_replacements[input_name] = input_value_name
+                    inline_input_aliases[input_name] = input_value_name
                 else:
                     input_assignments.append((input_name, input_value_name))
                     materialized_aliases[input_name] = input_value_name
+            while inline_input_aliases:
+                assigned_names = {target for target, _value in input_assignments}
+                captures = {
+                    target: value
+                    for target, value in inline_input_aliases.items()
+                    if value in assigned_names
+                }
+                if not captures:
+                    break
+                input_assignments.extend(captures.items())
+                materialized_aliases.update(captures)
+                for target in captures:
+                    del inline_input_aliases[target]
+            input_replacements.update(inline_input_aliases)
             # All bindings refer to the namespace before this script starts. Publish
             # dependent aliases together so a renamed input cannot replace a value
             # still needed by another input, including function globals and defaults.

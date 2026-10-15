@@ -1798,13 +1798,17 @@ def test_display_graph_validates_input_name_overrides() -> None:
 @pytest.mark.parametrize(
     "input_names",
     [
+        {"left": "left", "right": "right", "reference": "reference"},
         {"left": "right", "right": "left", "reference": "reference"},
         {"left": "right", "right": "reference", "reference": "left"},
+        {"left": "reference", "right": "left", "reference": "right"},
         {"left": "right", "right": "reference", "reference": "offsets"},
     ],
-    ids=["swap", "cycle", "chain"],
+    ids=["identity", "swap", "cycle", "reverse-cycle", "chain"],
 )
-@pytest.mark.parametrize("binding_scope", ["expression", "global", "default"])
+@pytest.mark.parametrize(
+    "binding_scope", ["expression", "global", "default", "rebind", "self_assignment"]
+)
 @pytest.mark.parametrize("external_inputs", [False, True])
 def test_display_graph_publishes_renamed_inputs_together(
     input_names: dict[str, str], binding_scope: str, external_inputs: bool
@@ -1812,6 +1816,10 @@ def test_display_graph_publishes_renamed_inputs_together(
     expression = "left - right + reference * 10"
     if binding_scope == "expression":
         code = f"result = {expression}"
+    elif binding_scope == "rebind":
+        code = "left = right + 1\nresult = left + reference * 10"
+    elif binding_scope == "self_assignment":
+        code = f"left = left\nresult = {expression}"
     else:
         arguments = (
             "left=left, right=right, reference=reference"
@@ -1850,9 +1858,67 @@ def test_display_graph_publishes_renamed_inputs_together(
         }.items()
     }
     expected = (
-        namespace[input_names["left"]]
+        namespace[input_names["right"]] + 1 + namespace[input_names["reference"]] * 10
+        if binding_scope == "rebind"
+        else namespace[input_names["left"]]
         - namespace[input_names["right"]]
         + namespace[input_names["reference"]] * 10
+    )
+    actual = _exec_generated_code(emitted, namespace)
+
+    xr.testing.assert_identical(actual["result"], expected)
+    assert ".copy(" not in emitted
+    assert "_itool_replay_" not in emitted
+
+
+@pytest.mark.parametrize("reverse_inputs", [False, True])
+@pytest.mark.parametrize("external_inputs", [False, True])
+def test_display_graph_captures_inputs_before_alias_chains(
+    reverse_inputs: bool, external_inputs: bool
+) -> None:
+    input_names = {
+        "left": "offsets",
+        "right": "left",
+        "reference": "right",
+        "offsets": "reference",
+    }
+    if reverse_inputs:
+        input_names = dict(reversed(tuple(input_names.items())))
+    graph = compile_replay_graph(
+        script(
+            ScriptCodeOperation(
+                label="Combine inputs",
+                code="left = right + 1\nresult = left + reference * 10 + offsets * 100",
+            ),
+            start_label="Use caller inputs",
+            active_name="result",
+            script_inputs=(
+                tuple(ScriptInput(name=name) for name in input_names)
+                if external_inputs
+                else ()
+            ),
+        ),
+        display=True,
+    )
+    overrides = {
+        key: input_names[name]
+        for name in input_names
+        for key in graph.required_input_keys(name)
+    }
+    emitted = emit_replay_code(
+        graph, output_name="result", input_name_overrides=overrides
+    )
+    namespace = {
+        name: xr.DataArray(np.full((3, 2), value), dims=("x", "y"))
+        for name, value in {
+            "left": 10.0,
+            "right": 3.0,
+            "reference": 2.0,
+            "offsets": 100.0,
+        }.items()
+    }
+    expected = (
+        namespace["left"] + 1 + namespace["right"] * 10 + namespace["reference"] * 100
     )
     actual = _exec_generated_code(emitted, namespace)
 
