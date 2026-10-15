@@ -99,6 +99,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     TransposeOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_trust_entries,
     provenance_replay_graph_code_trust_entries,
     provenance_requires_code_trust,
 )
@@ -117,6 +118,70 @@ def _exec_generated_code(
     namespace = dict(namespace_items or {})
     exec(code, namespace, namespace)  # noqa: S102
     return namespace
+
+
+def test_captured_input_trust_inventory_matches_replay_bindings() -> None:
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    original = source.copy(deep=True)
+    spec = script(
+        start_label="Apply copied script",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                revision_id="captured",
+                follow_source=False,
+                provenance_spec=script(
+                    ScriptCodeOperation(
+                        label="Previous script", code="result = derived + 1"
+                    ),
+                    start_label="Previous data",
+                    seed_code="derived = data",
+                    active_name="result",
+                ),
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset", code="result = derived + 2"
+                ),
+                context_names=("derived",),
+            ),
+        ),
+    )
+
+    def resolve(item: ScriptInput):
+        return (source, item) if item.revision_id == "captured" else None
+
+    entries = provenance_code_trust_entries(
+        spec, location_prefix="copied", live_input_resolver=resolve
+    )
+    authorization = _authorize_execution(entries)
+    graph = compile_replay_graph(spec, live_input_resolver=resolve)
+    actual = execute_replay_graph(graph, authorize=lambda _entries: authorization)
+    xr.testing.assert_identical(actual, source + 2)
+    xr.testing.assert_identical(source, original)
+
+    changed = spec.model_copy(
+        update={
+            "steps": (
+                spec.steps[0].model_copy(
+                    update={
+                        "operation": ScriptCodeOperation(
+                            label="Changed", code="result = derived + 3"
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(ReplayGraphError, match="not trusted"):
+        execute_replay_graph(
+            compile_replay_graph(changed, live_input_resolver=resolve),
+            authorize=lambda _entries: authorization,
+        )
 
 
 def test_concrete_bound_input_operation_replays_without_stored_code() -> None:

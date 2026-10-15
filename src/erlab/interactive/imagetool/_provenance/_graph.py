@@ -1114,6 +1114,7 @@ def _compile_spec(
     live_input_resolver: LiveInputResolver | None,
     allow_unresolved_inputs: bool,
     input_provenance_resolver: InputProvenanceResolver,
+    input_keys: Mapping[str, str] | None = None,
 ) -> str:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
@@ -1165,6 +1166,9 @@ def _compile_spec(
         bindings: list[tuple[str, str]] = []
         if parsed.script_inputs:
             for script_input in parsed.script_inputs:
+                if input_keys is not None and script_input.name in input_keys:
+                    bindings.append((script_input.name, input_keys[script_input.name]))
+                    continue
                 live_data: xr.DataArray | None = None
                 live_key = f"live_input:{uuid.uuid4().hex}"
                 if external_inputs is not None and script_input.name in external_inputs:
@@ -4073,14 +4077,15 @@ def emit_replay_code(
     )
 
 
-def selected_steps_code(
+def selected_steps_spec(
     steps: Sequence[ReplayStep],
     *,
     input_name: str,
     output_name: str,
     input_alias: str | None = None,
-) -> str:
-    """Emit selected operations with explicit notebook input variables."""
+    script_inputs: Sequence[ScriptInput] = (),
+) -> ToolProvenanceSpec:
+    """Build a selected scope with explicit inputs and its original bindings."""
     if input_alias is not None and input_alias != input_name:
         steps = (
             steps[0].model_copy(
@@ -4091,12 +4096,18 @@ def selected_steps_code(
     input_names = dict.fromkeys(
         (input_name, *(name for step in steps for name in step.input_bindings.values()))
     )
+    recorded_inputs = {item.name: item for item in script_inputs}
     spec = ToolProvenanceSpec(
         kind="script",
         start_label="Apply selected provenance steps",
         active_name=output_name,
         primary_input=input_name,
-        script_inputs=tuple(ScriptInput(name=name) for name in input_names),
+        script_inputs=tuple(
+            recorded_inputs.get(name, ScriptInput(name=name))
+            if name != input_name
+            else ScriptInput(name=name)
+            for name in input_names
+        ),
         steps=tuple(steps),
     )
     caller_names, _ = _validate_script_provenance(
@@ -4108,12 +4119,131 @@ def selected_steps_code(
             update={
                 "script_inputs": (
                     *spec.script_inputs,
-                    *(ScriptInput(name=name) for name in sorted(caller_names)),
+                    *(
+                        recorded_inputs.get(name, ScriptInput(name=name))
+                        for name in sorted(caller_names)
+                    ),
                 )
             }
         )
+    return spec
+
+
+def selected_provenance_code(
+    scopes: Sequence[tuple[ToolProvenanceSpec, int | None]],
+) -> str:
+    """Emit selected scopes in order, binding each primary predecessor once."""
+    resolve_input_provenance = _memoized_input_provenance_resolver()
+    notebook_specs = tuple(_selected_notebook_spec(spec) for spec, _previous in scopes)
+    reserved_names: set[str] = set()
+    for spec in notebook_specs:
+        reserved_names.update(_reserved_names_from_spec(spec, resolve_input_provenance))
+    graph = ReplayGraph(reserved_names=reserved_names, display=True)
+    outputs: list[str] = []
+    aliases: dict[str, str] = {}
+    caller_keys: dict[str, str] = {}
+    scope_names: list[set[str]] = []
+    consumed = {previous for _spec, previous in scopes if previous is not None}
+    for index, (spec, (_original, previous)) in enumerate(
+        zip(notebook_specs, scopes, strict=True)
+    ):
+        inherited_names = set() if previous is None else scope_names[previous]
+        input_keys = {
+            item.name: caller_keys[item.name]
+            for item in spec.script_inputs
+            if item.revision_id is None
+            and item.node_snapshot_token is None
+            and item.provenance_spec is None
+            and item.name in caller_keys
+        }
+        for item in spec.script_inputs:
+            if (
+                item.name != spec.primary_input
+                and item.name in inherited_names
+                and item.name not in input_keys
+                and item.revision_id is None
+                and item.node_snapshot_token is None
+            ):
+                input_keys[item.name] = graph.add_node(
+                    _canonical_key("caller_input", {"name": item.name}),
+                    "caller_input",
+                    payload={"name": item.name},
+                )
+        if previous is not None and spec.primary_input is not None:
+            input_keys[spec.primary_input] = outputs[previous]
+        output_key = _compile_spec(
+            graph,
+            spec,
+            display=True,
+            trusted_user_code=False,
+            structured_file_replay=False,
+            external_inputs=None,
+            live_input_resolver=None,
+            allow_unresolved_inputs=False,
+            input_provenance_resolver=resolve_input_provenance,
+            input_keys=input_keys,
+        )
+        for item in spec.script_inputs:
+            if (
+                item.revision_id is None
+                and item.node_snapshot_token is None
+                and item.provenance_spec is None
+                and item.name not in input_keys
+                and (keys := graph.required_input_keys(item.name))
+            ):
+                caller_keys[item.name] = keys[-1]
+        outputs.append(output_key)
+        stored_names = set(inherited_names)
+        for step in spec.steps:
+            if getattr(step.operation, "op", None) == "script_code":
+                operation = typing.cast("ScriptCodeOperation", step.operation)
+                _accesses, stores = _code_name_accesses(
+                    typing.cast("str", operation.code)
+                )
+                stored_names.update(stores)
+        scope_names.append(stored_names)
+        if index not in consumed and spec.active_name is not None:
+            aliases[spec.active_name] = output_key
+    graph.aliases = list(aliases.items())
+    graph.output_key = outputs[-1] if outputs else None
     return emit_replay_code(
-        compile_replay_graph(spec, display=True), output_name=output_name
+        graph,
+        include_all_aliases=True,
+        output_name=notebook_specs[-1].active_name if notebook_specs else None,
+    )
+
+
+def _selected_notebook_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+    return spec.model_copy(
+        update={
+            "script_inputs": tuple(
+                item.model_copy(update={"source_spec": None, "provenance_spec": None})
+                for item in spec.script_inputs
+            )
+        }
+    )
+
+
+def selected_steps_code(
+    steps: Sequence[ReplayStep],
+    *,
+    input_name: str,
+    output_name: str,
+    input_alias: str | None = None,
+) -> str:
+    """Emit selected operations with explicit notebook input variables."""
+    return selected_provenance_code(
+        (
+            (
+                selected_steps_spec(
+                    steps,
+                    input_name=input_name,
+                    output_name=output_name,
+                    input_alias=input_alias,
+                ),
+                None,
+            ),
+        )
     )
 
 

@@ -84,7 +84,7 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
     operation_payload = AverageOperation(dims=("z",)).model_dump(mode="json")
     valid_payload = {
         "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
-        "version": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
+        "version": 2,
         "active_name": "derived",
         "primary_input": None,
         "steps": [{"operation": operation_payload, "input_bindings": {}}],
@@ -104,6 +104,24 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
     assert payload.primary_input is None
     assert payload.script_inputs == ()
     assert payload.source_manager_id is None
+
+    canonical_payload = {
+        "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+        "version": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
+        "provenance_spec": payload.spec.model_dump(mode="json"),
+        "source_manager_id": "source-manager",
+    }
+    canonical_mime_data = QtCore.QMimeData()
+    canonical_mime_data.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        json.dumps(canonical_payload).encode("utf-8"),
+    )
+    canonical = manager_details_panel._provenance_step_clipboard_payload(
+        canonical_mime_data
+    )
+    assert canonical is not None
+    assert canonical.spec == payload.spec
+    assert canonical.source_manager_id == "source-manager"
 
     v1_mime_data = QtCore.QMimeData()
     v1_mime_data.setData(
@@ -170,6 +188,23 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
         {**valid_payload, "script_inputs": {}},
         {**valid_payload, "primary_input": 1},
         {**valid_payload, "source_manager_id": 1},
+        {**valid_payload, "active_name": "not a name"},
+        {**canonical_payload, "provenance_spec": None},
+        {**canonical_payload, "provenance_spec": {}},
+        {**canonical_payload, "provenance_spec": {"kind": "unknown"}},
+        {
+            **canonical_payload,
+            "provenance_spec": script(
+                start_label="Empty selection", active_name="derived"
+            ).model_dump(mode="json"),
+        },
+        {
+            **canonical_payload,
+            "provenance_spec": full_data(AverageOperation(dims=("z",))).model_dump(
+                mode="json"
+            ),
+        },
+        {**canonical_payload, "source_manager_id": 1},
         {
             **valid_payload,
             "primary_input": "data",
@@ -954,8 +989,12 @@ def test_manager_copy_selected_derivation_code_fallbacks(
         controller,
         "_selected_derivation_step_payload",
         lambda: manager_details_panel._ProvenanceStepsClipboardPayload(
-            steps=(ReplayStep(operation=AverageOperation(dims=("x",))),),
-            active_name="derived",
+            spec=script(
+                AverageOperation(dims=("x",)),
+                start_label="Average data",
+                seed_code="derived = data",
+                active_name="derived",
+            ),
         ),
     )
     monkeypatch.setattr(QtWidgets.QApplication, "clipboard", lambda: None)
@@ -1905,6 +1944,7 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
         manager._update_info(uid=child_uid)
 
         clipboard = QtWidgets.QApplication.clipboard()
+        separate_branch_rows = []
         for path, namespace, output_name, result in (
             ((0,), {"sample": data}, "prepared", prepared),
             ((1,), {"offsets": offsets}, "correction", correction),
@@ -1923,6 +1963,8 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
                 ):
                     rows.append(index)
             assert rows
+            if path:
+                separate_branch_rows.extend(rows)
             select_metadata_rows(manager, rows)
             manager._copy_selected_derivation_code()
             code = clipboard.text()
@@ -1948,11 +1990,22 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
         assert payload.script_inputs[0].revision_id == captured_revision
         assert not payload.script_inputs[0].follow_source
 
+        select_metadata_rows(manager, separate_branch_rows)
+        separate_code = manager._selected_derivation_code()
+        assert separate_code is not None
+        separate_results = _exec_generated_code(
+            separate_code, {"sample": data, "offsets": offsets}
+        )
+        xr.testing.assert_identical(separate_results["prepared"], prepared)
+        xr.testing.assert_identical(separate_results["correction"], correction)
+        assert manager._details_panel._selected_derivation_step_payload() is None
+
         target_data = prepared + 100.0
         target = manager.add_imagetool(
             erlab.interactive.imagetool.ImageTool(target_data, _in_manager=True),
             show=False,
         )
+        manager.tree_view.clearSelection()
         select_tools(manager, [target])
         manager._update_info()
         manager._paste_provenance_steps_from_clipboard()
@@ -1968,6 +2021,284 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
         )
         assert target_correction.revision_id == captured_revision
         assert not target_correction.follow_source
+
+
+@pytest.mark.parametrize(
+    ("depth", "active_name", "shift_name", "script_steps"),
+    [
+        (1, "shifted", "correction", False),
+        (2, "derived", "correction", False),
+        (2, "shifted", "derived", False),
+        (2, "derived", "correction", True),
+    ],
+)
+def test_manager_copied_primary_chain_connects_nested_outputs(
+    depth: int,
+    active_name: str,
+    shift_name: str,
+    script_steps: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("sample").rename(y="eV")
+    correction = xr.DataArray(
+        [0.0, 0.25, -0.25], dims="x", coords={"x": data.x}, name="offsets"
+    )
+    average = AverageOperation(dims=("z",))
+    average_step: ToolProvenanceOperation = average
+    if script_steps:
+        average_step = ScriptCodeOperation(
+            label="Average sample", code="derived = data.qsel.mean('z')"
+        )
+    shift = ShiftFromInputOperation(along="eV", negate=False)
+
+    def fail_paste(_title, error, **_kwargs):
+        raise error
+
+    with manager_context() as manager:
+        manager._workspace_controller.local_code_edit = _authorize_local_edit
+        monkeypatch.setattr(
+            manager._provenance_edit_controller, "_show_failed", fail_paste
+        )
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_unavailable",
+            lambda reason: pytest.fail(reason),
+        )
+        seed_revision = manager._provenance_revisions.add(data)
+        inner = script(
+            average_step,
+            start_label="Average sample",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(
+                ScriptInput(
+                    name="data", revision_id=seed_revision, follow_source=False
+                ),
+            ),
+        )
+        prepared = average.apply(data)
+        operations: tuple[ToolProvenanceOperation, ...] = (average_step,)
+        if depth == 2:
+            attributes = AssignAttrsOperation(attrs={"prepared": "yes"})
+            attribute_step: ToolProvenanceOperation = attributes
+            if script_steps:
+                attribute_step = ScriptCodeOperation(
+                    label="Mark prepared data",
+                    code="derived = data.assign_attrs({'prepared': 'yes'})",
+                )
+            inner = script(
+                attribute_step,
+                start_label="Mark prepared data",
+                active_name="derived",
+                primary_input="data",
+                script_inputs=(
+                    ScriptInput(
+                        name="data",
+                        revision_id=manager._provenance_revisions.add(prepared),
+                        follow_source=False,
+                        provenance_spec=inner.model_dump(mode="json"),
+                    ),
+                ),
+            )
+            prepared = attributes.apply(prepared)
+            operations += (attribute_step,)
+        correction_revision = manager._provenance_revisions.add(correction)
+        spec = script(
+            start_label="Shift prepared data",
+            active_name=active_name,
+            primary_input="data",
+            steps=(ReplayStep(operation=shift, input_bindings={"shift": shift_name}),),
+            script_inputs=(
+                ScriptInput(
+                    name="data",
+                    revision_id=manager._provenance_revisions.add(prepared),
+                    follow_source=False,
+                    provenance_spec=inner.model_dump(mode="json"),
+                ),
+                ScriptInput(
+                    name=shift_name,
+                    revision_id=correction_revision,
+                    follow_source=False,
+                ),
+            ),
+        )
+        expected = erlab.analysis.transform.shift(prepared, correction, along="eV")
+        source = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+            provenance_spec=spec,
+        )
+        select_tools(manager, [source])
+        manager._update_info()
+        rows = []
+        for index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if (
+                isinstance(row, _ProvenanceDisplayRow)
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+                and row.on_primary_chain
+            ):
+                rows.append(index)
+        assert len(rows) == depth + 1
+        select_metadata_rows(manager, rows)
+        code = manager._selected_derivation_code()
+        assert code is not None
+        copied = _exec_generated_code(code, {"data": data, shift_name: correction})
+        xr.testing.assert_identical(copied[active_name], expected)
+        assert copied[active_name].dims == ("x", "eV")
+        manager._copy_selected_derivation_code()
+        clipboard = QtWidgets.QApplication.clipboard()
+        assert clipboard.text() == code
+        payload = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert payload is not None
+        assert [operation.model_dump_json() for operation in payload.operations] == [
+            operation.model_dump_json() for operation in (*operations, shift)
+        ]
+        assert payload.active_name == active_name
+        selected_spec = payload.spec
+        assert [
+            operation.model_dump_json() for operation in selected_spec.operations
+        ] == [shift.model_dump_json()]
+        for operation in reversed(operations):
+            primary_input = next(
+                item
+                for item in selected_spec.script_inputs
+                if item.name == selected_spec.primary_input
+            )
+            assert primary_input.provenance_spec is not None
+            selected_spec = ToolProvenanceSpec.model_validate(
+                primary_input.provenance_spec
+            )
+            assert selected_spec.operations == (operation,)
+        bound_name = payload.steps[-1].input_bindings["shift"]
+        assert len(payload.script_inputs) == 1
+        captured_input = payload.script_inputs[0]
+        assert captured_input.name == bound_name
+        assert captured_input.revision_id == correction_revision
+        assert not captured_input.follow_source
+
+        target_data = data + 100.0
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(target_data, _in_manager=True),
+            show=False,
+        )
+        manager.tree_view.clearSelection()
+        select_tools(manager, [target])
+        manager._update_info()
+        manager._paste_provenance_steps_from_clipboard()
+        target_expected = average.apply(target_data)
+        if depth == 2:
+            target_expected = attributes.apply(target_expected)
+        xr.testing.assert_identical(
+            manager._node_for_target(target).data_for_role("source"),
+            erlab.analysis.transform.shift(target_expected, correction, along="eV"),
+        )
+
+
+@pytest.mark.parametrize("use_function", [False, True])
+def test_manager_copied_branches_keep_display_order(
+    use_function: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = _provenance_paste_test_data("sample").rename(y="eV").qsel.mean("z")
+    offsets = xr.DataArray(
+        [0.0, 0.25, -0.25], dims="x", coords={"x": data.x}, name="offsets"
+    )
+    first_code = "events.append('A')\nderived = data + 1"
+    last_code = "events.append('B')\nderived = derived * 2"
+    if use_function:
+        first_code = (
+            "events.append('A')\n"
+            "def normalize(values=data):\n"
+            "    return values + 1\n"
+            "derived = normalize()"
+        )
+        last_code = "events.append('B')\nderived = normalize() * 2"
+    auxiliary_spec = script(
+        ScriptCodeOperation(
+            label="Prepare correction",
+            code="events.append('X')\ncorrection = correction * 2",
+        ),
+        start_label="Use measured offsets",
+        seed_code="correction = offsets",
+        active_name="correction",
+    )
+    spec = script(
+        start_label="Prepare and shift sample",
+        active_name="derived",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(
+                name="correction",
+                provenance_spec=auxiliary_spec.model_dump(mode="json"),
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset sample",
+                    code=first_code,
+                )
+            ),
+            ReplayStep(
+                operation=ShiftFromInputOperation(along="eV", negate=False),
+                input_bindings={"shift": "correction"},
+            ),
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Scale sample",
+                    code=last_code,
+                )
+            ),
+        ),
+    )
+    displayed = erlab.analysis.transform.shift(data + 1, offsets * 2, along="eV") * 2
+    with manager_context() as manager:
+        source = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(displayed, _in_manager=True),
+            show=False,
+            provenance_spec=spec,
+        )
+        select_tools(manager, [source])
+        manager._update_info()
+        rows = []
+        for index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if (
+                isinstance(row, _ProvenanceDisplayRow)
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+                and (
+                    row.script_input_path == (1,)
+                    or row.replay_ref.operation_index in (0, 2)
+                )
+            ):
+                rows.append(index)
+        assert len(rows) == 3
+        select_metadata_rows(manager, rows)
+        code = manager._selected_derivation_code()
+        assert code is not None
+        events: list[str] = []
+        copied = _exec_generated_code(
+            code, {"data": data, "offsets": offsets, "events": events}
+        )
+        assert events == ["A", "X", "B"]
+        xr.testing.assert_identical(copied["derived"], (data + 1) * 2)
+        xr.testing.assert_identical(copied["correction"], offsets * 2)
+        assert manager._details_panel._selected_derivation_step_payload() is None
 
 
 def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
@@ -2790,6 +3121,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
 
 
 def test_manager_paste_script_steps_replays_from_current_output_name(
+    monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -2822,6 +3154,13 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
     )
 
     with manager_context() as manager:
+
+        def fail_paste(_title, error, **_kwargs):
+            raise error
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller, "_show_failed", fail_paste
+        )
         dest_tool = itool(dest_data, manager=False, execute=False)
         assert isinstance(dest_tool, erlab.interactive.imagetool.ImageTool)
         dest_index = manager.add_imagetool(
@@ -2859,17 +3198,20 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
         xr.testing.assert_identical(dest_tool.slicer_area.data, renderer_expected)
         dest_node = manager._tool_graph.root_wrappers[dest_index]
         assert dest_node.displayed_provenance_spec is not None
-        assert [
-            operation.derivation_entry().label
-            for operation in dest_node.displayed_provenance_spec.operations
-        ] == [
-            "Compute destination result",
-            "Offset copied result",
-        ]
+        pasted_spec = dest_node.displayed_provenance_spec
+        assert pasted_spec.operations == (copied_operation,)
+        primary = next(
+            item
+            for item in pasted_spec.script_inputs
+            if item.name == pasted_spec.primary_input
+        )
+        assert primary.provenance_spec is not None
+        destination_spec = ToolProvenanceSpec.model_validate(primary.provenance_spec)
+        assert destination_spec.operations == dest_base_spec.operations
         assert [
             binding.model_dump(mode="json")
-            for binding in dest_node.displayed_provenance_spec.script_context_bindings
-        ] == [{"operation_index": 1, "names": ["data", "derived"]}]
+            for binding in pasted_spec.script_context_bindings
+        ] == [{"operation_index": 0, "names": ["derived"]}]
 
         code = dest_node.displayed_provenance_spec.derivation_code()
         assert code is not None

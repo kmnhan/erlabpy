@@ -185,13 +185,15 @@ def _set_provenance_steps_clipboard(
             "version": (
                 manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION
             ),
-            "active_name": active_name,
-            "steps": [
-                ReplayStep(operation=operation).model_dump(mode="json")
-                for operation in operations
-            ],
-            "script_inputs": [],
-            "primary_input": None,
+            "provenance_spec": {
+                "kind": "script",
+                "start_label": "Apply selected provenance steps",
+                "active_name": active_name,
+                "steps": [
+                    ReplayStep(operation=operation).model_dump(mode="json")
+                    for operation in operations
+                ],
+            },
             "source_manager_id": None,
         },
         separators=(",", ":"),

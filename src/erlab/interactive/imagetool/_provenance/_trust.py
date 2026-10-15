@@ -22,6 +22,9 @@ from erlab.interactive.imagetool._provenance._model import (
     parse_tool_provenance_spec,
 )
 
+if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool._provenance._graph import LiveInputResolver
+
 
 def _model_fit_parameter_expressions(
     operation: typing.Any,
@@ -237,6 +240,7 @@ def provenance_code_trust_entries(
     *,
     location_prefix: str,
     external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
 ):
     """Return stored code that can reach a provenance execution boundary."""
     from erlab.interactive.imagetool._provenance._graph import (
@@ -257,6 +261,7 @@ def provenance_code_trust_entries(
             parsed,
             trusted_user_code=True,
             external_inputs=external_inputs or None,
+            live_input_resolver=live_input_resolver,
             allow_unresolved_inputs=True,
         )
     except (ReplayGraphError, TypeError, ValueError):

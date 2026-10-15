@@ -21,7 +21,8 @@ from erlab.interactive.imagetool._provenance._graph import (
     compile_replay_graph,
     emit_replay_code,
     script_inputs_code,
-    selected_steps_code,
+    selected_provenance_code,
+    selected_steps_spec,
 )
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
@@ -33,6 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
     parse_tool_provenance_operation,
+    parse_tool_provenance_spec,
     strip_partial_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
@@ -68,7 +70,7 @@ logger = logging.getLogger(__name__)
 _TOOL_PREVIEW_UPDATE_DELAY_MS = 250
 _PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-steps+json"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
-_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 2
+_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 3
 _MAXIMUM_WRAPPED_METADATA_LINES = 4
 _MAXIMUM_DERIVATION_TOOLTIP_WIDTH = 720
 _MULTI_PROVENANCE_DIFFERENCE_LABEL = "Steps differ across selected ImageTools"
@@ -79,11 +81,37 @@ _MULTI_PROVENANCE_DIFFERENCE_ROW = _ProvenanceDisplayRow(
 
 @dataclasses.dataclass(frozen=True)
 class _ProvenanceStepsClipboardPayload:
-    steps: tuple[ReplayStep, ...]
-    active_name: str
-    primary_input: str | None = None
-    script_inputs: tuple[ScriptInput, ...] = ()
+    spec: ToolProvenanceSpec
     source_manager_id: str | None = None
+
+    @property
+    def steps(self) -> tuple[ReplayStep, ...]:
+        primary = next(
+            (
+                item
+                for item in self.spec.script_inputs
+                if item.name == self.spec.primary_input
+            ),
+            None,
+        )
+        nested = None if primary is None else primary.parsed_provenance_spec()
+        return (
+            () if nested is None else _ProvenanceStepsClipboardPayload(nested).steps
+        ) + self.spec.steps
+
+    @property
+    def active_name(self) -> str:
+        return self.spec.active_name or "derived"
+
+    @property
+    def primary_input(self) -> str | None:
+        return self.spec.primary_input
+
+    @property
+    def script_inputs(self) -> tuple[ScriptInput, ...]:
+        return tuple(
+            item for item in self.spec.script_inputs if item.name != self.primary_input
+        )
 
     @property
     def operations(self) -> tuple[ToolProvenanceOperation, ...]:
@@ -122,8 +150,17 @@ def _provenance_step_clipboard_payload(
         if payload.get("type") != _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE:
             return None
         version = payload.get("version")
-        if version not in {1, _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION}:
+        if version not in {1, 2, _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION}:
             return None
+        if version == _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION:
+            spec = parse_tool_provenance_spec(payload.get("provenance_spec"))
+            source_manager_id = payload.get("source_manager_id")
+            if spec is None or spec.kind != "script":
+                return None
+            if source_manager_id is not None and not isinstance(source_manager_id, str):
+                return None
+            result = _ProvenanceStepsClipboardPayload(spec, source_manager_id)
+            return result if result.steps else None
         if version == 1:
             operations_payload = payload.get("operations")
             if not isinstance(operations_payload, list):
@@ -165,24 +202,31 @@ def _provenance_step_clipboard_payload(
             source_manager_id = payload.get("source_manager_id")
             if source_manager_id is not None and not isinstance(source_manager_id, str):
                 return None
+        active_name = payload.get("active_name")
+        if not isinstance(active_name, str) or not active_name:
+            active_name = "derived"
+        if not steps:
+            return None
+        return _ProvenanceStepsClipboardPayload(
+            ToolProvenanceSpec(
+                kind="script",
+                start_label="Apply selected provenance steps",
+                active_name=active_name,
+                primary_input=primary_input,
+                script_inputs=(
+                    *((ScriptInput(name=primary_input),) if primary_input else ()),
+                    *script_inputs,
+                ),
+                steps=steps,
+            ),
+            source_manager_id,
+        )
     except (
         TypeError,
         ValueError,
         json.JSONDecodeError,
     ):
         return None
-    active_name = payload.get("active_name")
-    if not isinstance(active_name, str) or not active_name:
-        active_name = "derived"
-    if not steps:
-        return None
-    return _ProvenanceStepsClipboardPayload(
-        steps,
-        active_name,
-        primary_input,
-        script_inputs,
-        source_manager_id,
-    )
 
 
 class _DetailsPanelController:
@@ -1201,18 +1245,27 @@ class _DetailsPanelController:
         )
         return sorted(items, key=display_order)
 
-    def _selected_derivation_code(self) -> str | None:
-        chunks: list[str] = []
-        for (_uid, spec, _scope, _path), group in itertools.groupby(
-            self._selected_derivation_steps(),
-            key=lambda entry: (
-                entry[0],
-                entry[1],
-                entry[2].scope,
-                entry[2].script_input_path,
-            ),
-        ):
-            rows = tuple(group)
+    def _selected_derivation_scopes(
+        self,
+    ) -> list[tuple[ToolProvenanceSpec, int | None]]:
+        groups = [
+            tuple(group)
+            for _key, group in itertools.groupby(
+                self._selected_derivation_steps(),
+                key=lambda entry: (
+                    entry[0],
+                    entry[2].scope,
+                    entry[2].script_input_path,
+                ),
+            )
+        ]
+        selected: list[tuple[ToolProvenanceSpec, int | None]] = []
+        for group_index, rows in enumerate(groups):
+            spec = rows[0][1]
+            if any(entry[1] != spec for entry in rows[1:]):
+                raise ReplayGraphError(
+                    "Selected rows refer to different provenance scopes"
+                )
             prefix = spec._prefix_before_ref(
                 typing.cast("_ProvenanceStepRef", rows[0][2].replay_ref)
             )
@@ -1226,18 +1279,54 @@ class _DetailsPanelController:
                 ).active_name
                 or "derived"
             )
-            try:
-                code = selected_steps_code(
-                    tuple(step for _uid, _spec, _row, step in rows),
-                    input_name=input_name,
-                    output_name=output_name,
-                    input_alias=prefix.active_name if source_name is not None else None,
-                )
-            except ReplayGraphError:
-                return None
-            if code:
-                chunks.append(code)
-        return "\n".join(chunks) or None
+            operations = strip_partial_operation_groups(
+                tuple(step.operation for _uid, _spec, _row, step in rows)
+            )
+            selected_spec = selected_steps_spec(
+                tuple(
+                    entry[3].model_copy(update={"operation": operation})
+                    for entry, operation in zip(rows, operations, strict=True)
+                ),
+                input_name=input_name,
+                output_name=output_name,
+                input_alias=prefix.active_name if source_name is not None else None,
+                script_inputs=spec.script_inputs,
+            )
+
+            uid, _original, row, _step = rows[0]
+            previous = None
+            for index in range(group_index - 1, -1, -1):
+                previous_uid, _previous_spec, previous_row, _previous_step = groups[
+                    index
+                ][0]
+                if previous_uid != uid or previous_row.scope != row.scope:
+                    continue
+                path = previous_row.script_input_path
+                if path[: len(row.script_input_path)] != row.script_input_path:
+                    continue
+                current: ToolProvenanceSpec | None = spec
+                primary_chain = True
+                for input_index in path[len(row.script_input_path) :]:
+                    if current is None or input_index >= len(current.script_inputs):
+                        primary_chain = False
+                        break
+                    item = current.script_inputs[input_index]
+                    if item.name != current.primary_input:
+                        primary_chain = False
+                        break
+                    current = item.parsed_provenance_spec()
+                if primary_chain:
+                    previous = index
+                    break
+            selected.append((selected_spec, previous))
+        return selected
+
+    def _selected_derivation_code(self) -> str | None:
+        try:
+            scopes = self._selected_derivation_scopes()
+            return (selected_provenance_code(scopes) or None) if scopes else None
+        except ReplayGraphError:
+            return None
 
     def _selected_derivation_steps(
         self,
@@ -1280,61 +1369,41 @@ class _DetailsPanelController:
     def _selected_derivation_step_payload(
         self,
     ) -> _ProvenanceStepsClipboardPayload | None:
-        steps: list[ReplayStep] = []
-        step_specs: list[ToolProvenanceSpec] = []
-        script_active_names: list[str] = []
-        for _uid, spec, _row, step in self._selected_derivation_steps():
-            operation = step.operation
-            if isinstance(operation, ScriptCodeOperation):
-                if not operation.copyable or not operation.code:
-                    continue
-            elif not operation.live_applicable and not step.input_bindings:
-                continue
-            steps.append(step)
-            step_specs.append(spec)
-            if spec.kind == "script":
-                script_active_names.append(spec.active_name or "derived")
-
-        if not steps:
+        try:
+            scopes = self._selected_derivation_scopes()
+        except ReplayGraphError:
             return None
-        script_active_name = (
-            script_active_names[0] if script_active_names else "derived"
-        )
-        if any(
-            active_name != script_active_name for active_name in script_active_names
+        if not scopes or any(
+            previous != index - 1
+            for index, (_spec, previous) in enumerate(scopes)
+            if index
         ):
             return None
-        retained_operations = strip_partial_operation_groups(
-            tuple(step.operation for step in steps)
+        spec = scopes[0][0]
+        for local, _previous in scopes[1:]:
+            spec = local.model_copy(
+                update={
+                    "script_inputs": tuple(
+                        item.model_copy(
+                            update={"provenance_spec": spec.model_dump(mode="json")}
+                        )
+                        if item.name == local.primary_input
+                        else item
+                        for item in local.script_inputs
+                    )
+                }
+            )
+        payload = _ProvenanceStepsClipboardPayload(
+            spec, self._manager._manager_record.internal_id
         )
-        retained_steps = tuple(
-            step.model_copy(update={"operation": operation})
-            for step, operation in zip(steps, retained_operations, strict=True)
-        )
-        input_names = {
-            name for step in retained_steps for name in step.input_bindings.values()
-        }
-        bound_specs = tuple(
-            spec
-            for step, spec in zip(retained_steps, step_specs, strict=True)
-            if step.input_bindings
-        )
-        if bound_specs and any(spec != bound_specs[0] for spec in bound_specs[1:]):
+        if any(
+            not step.operation.live_applicable
+            and not isinstance(step.operation, ScriptCodeOperation)
+            and not step.input_bindings
+            for step in payload.steps
+        ):
             return None
-        bound_spec = bound_specs[0] if bound_specs else None
-        primary_input = None if bound_spec is None else bound_spec.primary_input
-        script_inputs = tuple(
-            item
-            for item in (() if bound_spec is None else bound_spec.script_inputs)
-            if item.name in input_names and item.name != primary_input
-        )
-        return _ProvenanceStepsClipboardPayload(
-            retained_steps,
-            script_active_name,
-            primary_input,
-            script_inputs,
-            self._manager._manager_record.internal_id,
-        )
+        return payload
 
     def _selected_derivation_row(
         self,
@@ -1484,12 +1553,7 @@ class _DetailsPanelController:
             {
                 "type": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
                 "version": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
-                "active_name": payload.active_name,
-                "primary_input": payload.primary_input,
-                "steps": [step.model_dump(mode="json") for step in payload.steps],
-                "script_inputs": [
-                    item.model_dump(mode="json") for item in payload.script_inputs
-                ],
+                "provenance_spec": payload.spec.model_dump(mode="json"),
                 "source_manager_id": payload.source_manager_id,
             },
             separators=(",", ":"),
@@ -1517,6 +1581,7 @@ class _DetailsPanelController:
         self._manager._provenance_edit_controller.paste_steps(
             payload.steps,
             active_name=payload.active_name,
+            provenance_spec=payload.spec,
             primary_input=payload.primary_input,
             script_inputs=payload.script_inputs,
             source_manager_id=payload.source_manager_id,
