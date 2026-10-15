@@ -16,7 +16,6 @@ import json
 import keyword
 import pathlib
 import re
-import symtable
 import tokenize
 import typing
 import uuid
@@ -30,8 +29,10 @@ from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_stores_name,
     _code_uses_name,
+    _CodeAnalysis,
+    _CodeAnalyzer,
+    _CurrentScopeNames,
     _expression_starts_with_name,
-    _has_opaque_namespace_access,
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
     _script_codes_output_name,
@@ -86,12 +87,6 @@ def _memoized_input_provenance_resolver() -> InputProvenanceResolver:
 class SelectedProvenanceScope(typing.NamedTuple):
     spec: ToolProvenanceSpec
     input_scopes: Mapping[str, int]
-
-
-class _NotebookScopeEffects(typing.NamedTuple):
-    writes: set[str]
-    deferred_reads: set[str]
-    deletions: set[str]
 
 
 class _NotebookBinding(typing.NamedTuple):
@@ -295,114 +290,6 @@ def _reserved_names_from_spec(
     return names
 
 
-class _CurrentScopeNames(ast.NodeVisitor):
-    def __init__(self, local_names: set[str] | None = None) -> None:
-        self.loads: set[str] = set()
-        self.stores: set[str] = set()
-        self._local_names = set(local_names or ())
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load) and node.id not in self._local_names:
-            self.loads.add(node.id)
-        elif isinstance(node.ctx, (ast.Store, ast.Del)) and node.id not in (
-            self._local_names
-        ):
-            self.stores.add(node.id)
-
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        if (
-            isinstance(node.target, ast.Name)
-            and node.target.id not in self._local_names
-        ):
-            self.loads.add(node.target.id)
-        self.generic_visit(node)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            self.stores.add(
-                alias.asname
-                if alias.asname is not None
-                else alias.name.partition(".")[0]
-            )
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        for alias in node.names:
-            if alias.name == "*":
-                continue
-            self.stores.add(alias.asname if alias.asname is not None else alias.name)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.stores.add(node.name)
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        self._visit_argument_expressions(node.args)
-        if node.returns is not None:
-            self.visit(node.returns)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._visit_argument_expressions(node.args)
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        self._visit_comprehension(node.generators, node.elt)
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:
-        self._visit_comprehension(node.generators, node.elt)
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        self._visit_comprehension(node.generators, node.elt)
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:
-        self._visit_comprehension(node.generators, node.key, node.value)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.stores.add(node.name)
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for base in node.bases:
-            self.visit(base)
-        for keyword_arg in node.keywords:
-            self.visit(keyword_arg)
-
-    def _visit_argument_expressions(self, args: ast.arguments) -> None:
-        for default in args.defaults:
-            self.visit(default)
-        for default in args.kw_defaults:
-            if default is not None:
-                self.visit(default)
-        for arg in (
-            *args.posonlyargs,
-            *args.args,
-            *args.kwonlyargs,
-            *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
-        ):
-            if arg.annotation is not None:
-                self.visit(arg.annotation)
-
-    def _visit_comprehension(
-        self, generators: Sequence[ast.comprehension], *value_nodes: ast.AST
-    ) -> None:
-        local_names = set(self._local_names)
-        for generator in generators:
-            self._visit_with_local_names(generator.iter, local_names)
-            target_names = _CurrentScopeNames(local_names)
-            target_names.visit(generator.target)
-            self.loads.update(target_names.loads)
-            local_names.update(target_names.stores)
-            for condition in generator.ifs:
-                self._visit_with_local_names(condition, local_names)
-        for node in value_nodes:
-            self._visit_with_local_names(node, local_names)
-
-    def _visit_with_local_names(self, node: ast.AST, local_names: set[str]) -> None:
-        names = _CurrentScopeNames(local_names)
-        names.visit(node)
-        self.loads.update(names.loads)
-        self.stores.update(names.stores)
-
-
 def _statement_scope_names(stmt: ast.stmt) -> _CurrentScopeNames:
     names = _CurrentScopeNames()
     names.visit(stmt)
@@ -410,18 +297,18 @@ def _statement_scope_names(stmt: ast.stmt) -> _CurrentScopeNames:
 
 
 def _parse_replay_code(
-    code: str, *, kind: str = "Script"
-) -> tuple[ast.Module, symtable.SymbolTable]:
+    code: str, *, kind: str = "Script", analyzer: _CodeAnalyzer | None = None
+) -> _CodeAnalysis:
     try:
-        return ast.parse(code, mode="exec"), symtable.symtable(
-            code, "<ImageTool replay scope>", "exec"
-        )
+        return (analyzer or _CodeAnalyzer())(code)
     except SyntaxError as exc:
         raise ReplayGraphError(f"{kind} replay code is not valid Python") from exc
 
 
-def _script_function_dependencies(code: str) -> dict[tuple[str, int], set[str]]:
-    _module, table = _parse_replay_code(code)
+def _script_function_dependencies(
+    code: str, *, analysis: _CodeAnalysis | None = None
+) -> dict[tuple[str, int], set[str]]:
+    table = (analysis or _parse_replay_code(code)).symbols
 
     output: dict[tuple[str, int], set[str]] = {}
     for child in table.get_children():
@@ -440,14 +327,16 @@ def _validate_script_code_names(
     function_dependencies: dict[str, set[str]],
     *,
     external_name_candidates: Collection[str] | None = (),
+    analysis: _CodeAnalysis | None = None,
 ) -> set[str]:
     """Validate reads and return permitted names supplied by the caller.
 
     ``None`` permits every unresolved name. A collection permits only its members.
     Deferred function dependencies are checked when the function is first read.
     """
-    module = ast.parse(code, mode="exec")
-    new_function_dependencies = _script_function_dependencies(code)
+    analysis = analysis or _parse_replay_code(code)
+    module = analysis.module
+    new_function_dependencies = _script_function_dependencies(code, analysis=analysis)
     external_names: set[str] = set()
 
     def require(name: str, visiting: set[str] | None = None) -> str | None:
@@ -592,34 +481,17 @@ def _simple_name_assignment(code: str) -> tuple[str, str] | None:
     return None
 
 
-def _definite_statement_bindings(statement: ast.stmt) -> set[str]:
-    """Return names bound whenever this statement finishes normally."""
-    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-        return {statement.name}
-    if isinstance(statement, ast.Import | ast.ImportFrom):
-        return _statement_scope_names(statement).stores
-    if isinstance(statement, ast.Assign):
-        targets = statement.targets
-    elif isinstance(statement, ast.AnnAssign | ast.AugAssign) and (
-        not isinstance(statement, ast.AnnAssign) or statement.value is not None
-    ):
-        targets = [statement.target]
-    else:
-        return set()
-    names = _CurrentScopeNames()
-    for target in targets:
-        names.visit(target)
-    return names.stores
-
-
-def _name_value_is_live(codes: Sequence[str], name: str) -> bool:
+def _name_value_is_live(
+    codes: Sequence[str], name: str, *, code_analyzer: _CodeAnalyzer | None = None
+) -> bool:
     """Return whether later code reads the current value before replacing it."""
+    analyzer = code_analyzer or _CodeAnalyzer()
     for code in codes:
-        for statement in ast.parse(code, mode="exec").body:
-            if _statement_load_count(statement, name):
-                return True
-            if name in _definite_statement_bindings(statement):
-                return False
+        analysis = _parse_replay_code(code, analyzer=analyzer)
+        if name in analysis.incoming_reads:
+            return True
+        if name in analysis.definite_writes:
+            return False
     return False
 
 
@@ -629,6 +501,7 @@ def _validate_script_provenance(
     external_input_names: set[str] | None = None,
     allow_external_names: bool = False,
     strict_replay_code: bool = True,
+    code_analyzer: _CodeAnalyzer | None = None,
 ) -> tuple[set[str], set[str]]:
     """Validate a script recipe and return all and seed-only caller names.
 
@@ -636,6 +509,7 @@ def _validate_script_provenance(
     normal strict name checks, except for ``load_script`` because generated extension
     setup owns that import name.
     """
+    code_analyzer = code_analyzer or _CodeAnalyzer()
     if spec.kind != "script":
         raise ReplayGraphError("Expected script provenance")
     if spec.active_name is None:
@@ -678,18 +552,12 @@ def _validate_script_provenance(
                 _validate_script_replay_code(spec.seed_code)
             except (TypeError, ValueError) as exc:
                 raise ReplayGraphError(str(exc)) from exc
-        else:
-            try:
-                ast.parse(spec.seed_code, mode="exec")
-            except SyntaxError as exc:
-                raise ReplayGraphError(
-                    "Script replay code is not valid Python"
-                ) from exc
         seed_caller_names = _validate_script_code_names(
             spec.seed_code,
             available_names,
             function_dependencies,
             external_name_candidates=None if allow_external_names else (),
+            analysis=_parse_replay_code(spec.seed_code, analyzer=code_analyzer),
         )
         caller_names.update(seed_caller_names)
         if allow_external_names:
@@ -733,19 +601,15 @@ def _validate_script_provenance(
                     _validate_script_replay_code(script_operation.code)
                 except (TypeError, ValueError) as exc:
                     raise ReplayGraphError(str(exc)) from exc
-            else:
-                try:
-                    ast.parse(script_operation.code, mode="exec")
-                except SyntaxError as exc:
-                    raise ReplayGraphError(
-                        "Script replay code is not valid Python"
-                    ) from exc
             caller_names.update(
                 _validate_script_code_names(
                     script_operation.code,
                     operation_available_names,
                     function_dependencies,
                     external_name_candidates=external_name_candidates,
+                    analysis=_parse_replay_code(
+                        script_operation.code, analyzer=code_analyzer
+                    ),
                 )
             )
             if uses_implicit_imports:
@@ -1162,7 +1026,9 @@ def _compile_spec(
     allow_unresolved_inputs: bool,
     input_provenance_resolver: InputProvenanceResolver,
     input_keys: Mapping[str, str] | None = None,
+    code_analyzer: _CodeAnalyzer | None = None,
 ) -> str:
+    code_analyzer = code_analyzer or _CodeAnalyzer()
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
@@ -1208,6 +1074,7 @@ def _compile_spec(
             and not external_inputs
             and parsed.file_load_source is None,
             strict_replay_code=not display and not trusted_user_code,
+            code_analyzer=code_analyzer,
         )
         graph._external_names.update(caller_names)
         bindings: list[tuple[str, str]] = []
@@ -1288,6 +1155,7 @@ def _compile_spec(
                         live_input_resolver=live_input_resolver,
                         allow_unresolved_inputs=allow_unresolved_inputs,
                         input_provenance_resolver=input_provenance_resolver,
+                        code_analyzer=code_analyzer,
                     )
                     if display:
                         graph.add_alias(script_input.name, input_key)
@@ -1398,7 +1266,9 @@ def _compile_spec(
                 seed_assignment = _simple_name_assignment(pending_codes[0])
                 if seed_assignment is not None:
                     seed_name, _source_name = seed_assignment
-                    if not _name_value_is_live(pending_codes[1:], seed_name):
+                    if not _name_value_is_live(
+                        pending_codes[1:], seed_name, code_analyzer=code_analyzer
+                    ):
                         del pending_codes[0]
                         del pending_code_external_names[0]
                         del pending_code_implicit_imports[0]
@@ -2958,6 +2828,7 @@ def _cleanup_emitted_replay_code(
     generated_copy_names: set[str],
     protected_names: set[str] | None = None,
     compact_temporaries: bool = True,
+    code_analyzer: _CodeAnalyzer | None = None,
 ) -> str:
     """Simplify replay code while optionally preserving graph-owned temp names.
 
@@ -2965,7 +2836,7 @@ def _cleanup_emitted_replay_code(
     renaming can associate each surviving binding with the graph node that owns it.
     """
     code = _remove_noop_assignments(code)
-    if _has_opaque_namespace_access(ast.parse(code, mode="exec")):
+    if _parse_replay_code(code, analyzer=code_analyzer).opaque:
         return code
     code = _inline_simple_name_aliases(code, protected_names=protected_names)
     code = _inline_adjacent_replay_assignments(code, protected_names=protected_names)
@@ -3186,10 +3057,14 @@ def _emission_chunk_names(code: str) -> _CurrentScopeNames:
     return names
 
 
-def _code_name_accesses(code: str) -> tuple[set[str], set[str]]:
+def _code_name_accesses(
+    code: str, *, analysis: _CodeAnalysis | None = None
+) -> tuple[set[str], set[str]]:
     """Return conservatively accessed and rebound names in a code chunk."""
     try:
-        module = ast.parse(code, mode="exec")
+        module = (
+            analysis.module if analysis is not None else ast.parse(code, mode="exec")
+        )
     except SyntaxError:
         # Invalid generated code is diagnosed by the normal replay-code path. Treat it
         # as opaque so import grouping cannot make its behavior less predictable.
@@ -3532,11 +3407,13 @@ def emit_replay_code(
     include_framework_imports: bool = False,
     publish_output: bool = False,
     required_public_bindings: Collection[str] = (),
+    code_analyzer: _CodeAnalyzer | None = None,
 ) -> str:
     from erlab.interactive.imagetool._provenance._operations._extension import (
         ExtensionRoutineOperation,
     )
 
+    code_analyzer = code_analyzer or _CodeAnalyzer()
     input_name_overrides = dict(input_name_overrides or {})
     required_input_keys = set(graph.required_input_keys())
     if unknown_keys := input_name_overrides.keys() - required_input_keys:
@@ -3616,13 +3493,14 @@ def emit_replay_code(
         for code in node_codes:
             if not isinstance(code, str):
                 continue
-            accesses, rebindings = _code_name_accesses(code)
-            reserved_binding_names.update(accesses)
-            reserved_binding_names.update(rebindings)
-            _module, table = _parse_replay_code(
-                code, kind="Script" if replay_node.kind == "script" else "Generated"
+            analysis = _parse_replay_code(
+                code,
+                kind="Script" if replay_node.kind == "script" else "Generated",
+                analyzer=code_analyzer,
             )
-            required_public_bindings.update(_deferred_scope_reads(table))
+            accesses, rebindings = _code_name_accesses(code, analysis=analysis)
+            reserved_binding_names.update(accesses | rebindings)
+            required_public_bindings.update(analysis.deferred_reads)
     dynamic_restore_needed = any(
         (node.kind == "source_view" and _source_view_emits_code(graph, node))
         or (
@@ -3882,7 +3760,7 @@ def emit_replay_code(
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
             opaque_namespace = any(
-                _has_opaque_namespace_access(ast.parse(code, mode="exec"))
+                _parse_replay_code(code, analyzer=code_analyzer).opaque
                 for code in codes
             )
             external_names_by_code = list(
@@ -3946,7 +3824,9 @@ def emit_replay_code(
                     and not opaque_namespace
                     and input_name not in required_public_bindings
                     and not any(_code_has_scoped_definition(code) for code in codes)
-                    and not _name_value_is_live(codes, input_name)
+                    and not _name_value_is_live(
+                        codes, input_name, code_analyzer=code_analyzer
+                    )
                 ):
                     continue
                 if (
@@ -4175,6 +4055,7 @@ def emit_replay_code(
                 protected_names=required_public_bindings
                 | set(extension_script_bindings.values()),
                 compact_temporaries=not graph.display,
+                code_analyzer=code_analyzer,
             ),
         )
         return "\n\n".join(part for part in (module_prologue, cleaned_code) if part)
@@ -4189,6 +4070,7 @@ def emit_replay_code(
             protected_names=required_public_bindings
             | set(extension_script_bindings.values()),
             compact_temporaries=not graph.display,
+            code_analyzer=code_analyzer,
         ),
     )
     import_prefix = "\n".join(source for _canonical, source in leading_imports)
@@ -4260,6 +4142,7 @@ def selected_provenance_code(
     scopes: Sequence[SelectedProvenanceScope],
 ) -> str:
     """Emit notebook scopes in order with each public binding visible immediately."""
+    code_analyzer = _CodeAnalyzer()
     resolve_input_provenance = _memoized_input_provenance_resolver()
     notebook_specs = tuple(_selected_notebook_spec(scope.spec) for scope in scopes)
     reserved_names: set[str] = set()
@@ -4273,7 +4156,9 @@ def selected_provenance_code(
             *(getattr(step.operation, "code", None) for step in spec.steps),
         ):
             if isinstance(code, str):
-                accesses, stores = _code_name_accesses(code)
+                accesses, stores = _code_name_accesses(
+                    code, analysis=_parse_replay_code(code, analyzer=code_analyzer)
+                )
                 reserved_names.update(accesses | stores)
 
     def capture_name(public_name: str) -> str:
@@ -4313,6 +4198,7 @@ def selected_provenance_code(
             input_keys={
                 name: public_inputs[value] for name, value in input_names.items()
             },
+            code_analyzer=code_analyzer,
         )
         return graph
 
@@ -4324,8 +4210,7 @@ def selected_provenance_code(
     }
     captures: dict[_NotebookBinding, str] = {}
     scope_codes: list[str] = []
-    scope_writes: list[set[str]] = []
-    written_names: set[str] = set()
+    latest_opaque_scope = -1
     deferred_reads: set[str] = set()
     physical_namespace: dict[str, _NotebookBinding] = {}
     logical_namespaces: list[dict[str, _NotebookBinding]] = []
@@ -4341,9 +4226,7 @@ def selected_provenance_code(
             raise ReplayGraphError(
                 f"Selected notebook binding {binding.name!r} was deleted"
             )
-        if binding.scope is not None and any(
-            "*" in writes for writes in scope_writes[binding.scope : index]
-        ):
+        if binding.scope is not None and binding.scope <= latest_opaque_scope:
             raise ReplayGraphError(
                 "Selected notebook input crosses an opaque namespace import "
                 "or dynamic access"
@@ -4375,8 +4258,7 @@ def selected_provenance_code(
             previous_name = notebook_specs[previous].active_name
             if previous_name is None:
                 raise ReplayGraphError("Selected notebook scope has no named output")
-            intervening_writes = scope_writes[previous:index]
-            if any("*" in names for names in intervening_writes):
+            if previous <= latest_opaque_scope:
                 raise ReplayGraphError(
                     "Selected notebook input crosses an opaque namespace import "
                     "or dynamic access"
@@ -4392,7 +4274,7 @@ def selected_provenance_code(
                 or item.source_spec is not None
                 or item.provenance_spec is not None
             )
-            if recorded and "*" in written_names:
+            if recorded and latest_opaque_scope >= 0:
                 raise ReplayGraphError(
                     "Selected notebook input crosses an opaque namespace import "
                     "or dynamic access"
@@ -4415,19 +4297,20 @@ def selected_provenance_code(
             if isinstance(code, str)
         )
         for code in codes:
-            module, table = _parse_replay_code(code)
-            for statement in module.body:
-                direct_reads.update(_statement_scope_names(statement).loads)
-            required_reads.update(_deferred_scope_reads(table))
-            opaque_namespace |= _has_opaque_namespace_access(module)
+            analysis = _parse_replay_code(code, analyzer=code_analyzer)
+            direct_reads.update(analysis.loads)
+            required_reads.update(analysis.deferred_reads)
+            opaque_namespace |= analysis.opaque
         required_reads.update(
-            name for name in direct_reads if _name_value_is_live(codes, name)
+            name
+            for name in direct_reads
+            if _name_value_is_live(codes, name, code_analyzer=code_analyzer)
         )
         restores: list[tuple[str, str]] = []
         for name in sorted(required_reads - explicit_bindings.keys()):
             binding = logical_namespace.get(name)
             if binding is None:
-                if name in inherited_reads and name in written_names:
+                if name in inherited_reads and name in physical_namespace:
                     raise ReplayGraphError(
                         "Selected notebook scope cannot resolve retained global "
                         f"{name!r}"
@@ -4472,15 +4355,16 @@ def selected_provenance_code(
             include_framework_imports=include_framework_imports,
             publish_output=index in consumed,
             required_public_bindings=deferred_reads,
+            code_analyzer=code_analyzer,
         )
         scope_codes.append("\n".join(part for part in (restoration_code, code) if part))
         accesses, stores = _code_name_accesses(code)
         reserved_names.update(accesses | stores)
-        effects = _notebook_scope_effects(code)
-        scope_writes.append(effects.writes)
-        written_names.update(effects.writes)
+        effects = _parse_replay_code(code, kind="Generated", analyzer=code_analyzer)
+        if effects.opaque:
+            latest_opaque_scope = index
         deferred_reads.update(effects.deferred_reads)
-        for name in effects.writes - {"*"}:
+        for name in effects.writes:
             binding = _NotebookBinding(index, name, name not in effects.deletions)
             logical_namespace[name] = binding
             physical_namespace[name] = binding
@@ -4503,68 +4387,6 @@ def selected_provenance_code(
     return "\n".join(
         part for part in (module_prologue, _group_framework_imports(chunks)) if part
     )
-
-
-def _deferred_scope_reads(table: symtable.SymbolTable) -> set[str]:
-    """Return bindings that nested definitions can read after the current scope."""
-    return set().union(
-        *(_symbol_table_dependencies(child) for child in table.get_children())
-    )
-
-
-def _notebook_scope_effects(code: str) -> _NotebookScopeEffects:
-    """Find observable bindings in the final emitted notebook scope.
-
-    A retained definition can read module bindings after its defining scope finishes.
-    These bindings must remain public even when later source text does not load them
-    directly. Opaque namespace access prevents a safe static binding across that scope.
-    """
-
-    class NotebookScopeNames(_CurrentScopeNames):
-        def __init__(self) -> None:
-            super().__init__()
-            self.deletions: set[str] = set()
-
-        def visit_Name(self, node: ast.Name) -> None:
-            super().visit_Name(node)
-            if isinstance(node.ctx, ast.Del):
-                self.deletions.add(node.id)
-
-        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-            self.generic_visit(node)
-            if node.name is not None:
-                self.deletions.add(node.name)
-
-        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-            if node.value is None and isinstance(node.target, ast.Name):
-                self.visit(node.annotation)
-            else:
-                self.generic_visit(node)
-
-    module, table = _parse_replay_code(code, kind="Generated")
-    writes: set[str] = set()
-    deletions: set[str] = set()
-    for statement in module.body:
-        names = NotebookScopeNames()
-        names.visit(statement)
-        writes.update(names.stores)
-        deletions.update(names.deletions)
-        deletions.difference_update(_definite_statement_bindings(statement))
-    writes.update(
-        symbol.get_name()
-        for symbol in table.get_symbols()
-        if (symbol.is_assigned() or symbol.is_imported())
-        and (
-            not symbol.is_annotated()
-            or any(
-                _statement_store_count(statement, symbol.get_name())
-                for statement in module.body
-            )
-        )
-    )
-    if _has_opaque_namespace_access(module):
-        writes.add("*")
-    return _NotebookScopeEffects(writes, _deferred_scope_reads(table), deletions)
 
 
 def _selected_notebook_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:

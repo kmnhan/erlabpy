@@ -7,6 +7,7 @@ import keyword
 import math
 import symtable
 import typing
+from collections import Counter
 from collections.abc import Hashable, Mapping, Sequence
 
 import numpy as np
@@ -346,7 +347,9 @@ _OPAQUE_NAMESPACE_ATTRIBUTES = {
 }
 
 
-def _has_opaque_namespace_access(module: ast.AST) -> bool:
+def _has_opaque_namespace_access(
+    module: ast.AST, symbols: symtable.SymbolTable
+) -> bool:
     """Detect explicit access to Python namespace capabilities.
 
     A scope that creates these capabilities can export them through arbitrary aliases
@@ -387,11 +390,6 @@ def _has_opaque_namespace_access(module: ast.AST) -> bool:
         return True
     if not any(isinstance(node, ast.Global) for node in ast.walk(module)):
         return False
-    try:
-        table = symtable.symtable(ast.unparse(module), "<ImageTool namespace>", "exec")
-    except SyntaxError:
-        # Invalid source is diagnosed by the replay-code validation boundary.
-        return True
 
     def deferred_writes(scope: symtable.SymbolTable) -> bool:
         return any(
@@ -400,86 +398,99 @@ def _has_opaque_namespace_access(module: ast.AST) -> bool:
             for symbol in scope.get_symbols()
         ) or any(deferred_writes(child) for child in scope.get_children())
 
-    return any(deferred_writes(child) for child in table.get_children())
+    return any(deferred_writes(child) for child in symbols.get_children())
 
 
-class _CurrentScopeNameCounter(ast.NodeVisitor):
+class _CurrentScopeNames(ast.NodeVisitor):
+    """Collect lexical bindings and retain the existing statement-count view."""
+
     def __init__(
         self,
-        target: str,
-        contexts: tuple[type[ast.expr_context], ...],
+        local_names: set[str] | None = None,
         *,
-        count_definition_names: bool = True,
+        count_comprehension_locals: bool = False,
     ) -> None:
-        self.target = target
-        self.contexts = contexts
-        self.count_definition_names = count_definition_names
-        self.count = 0
+        self.loads: set[str] = set()
+        self.stores: set[str] = set()
+        self.writes: set[str] = set()
+        self.deletions: set[str] = set()
+        self.load_counts: Counter[str] = Counter()
+        self.store_counts: Counter[str] = Counter()
+        self.definition_counts: Counter[str] = Counter()
+        self.wildcard_stores = 0
+        self._local_names = set(local_names or ())
+        self._count_comprehension_locals = count_comprehension_locals
+
+    def _store(self, name: str, *, counted: bool = True) -> None:
+        if name not in self._local_names:
+            self.stores.add(name)
+            self.writes.add(name)
+            if counted:
+                self.store_counts[name] += 1
 
     def visit_Name(self, node: ast.Name) -> None:
-        if node.id == self.target and isinstance(node.ctx, self.contexts):
-            self.count += 1
+        if node.id in self._local_names:
+            return
+        if isinstance(node.ctx, ast.Load):
+            self.loads.add(node.id)
+            self.load_counts[node.id] += 1
+        elif isinstance(node.ctx, ast.Store | ast.Del):
+            self._store(node.id)
+            if isinstance(node.ctx, ast.Del):
+                self.deletions.add(node.id)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        if (
-            isinstance(node.target, ast.Name)
-            and node.target.id == self.target
-            and ast.Load in self.contexts
-        ):
-            self.count += 1
+        if isinstance(node.target, ast.Name):
+            self.visit(ast.Name(id=node.target.id, ctx=ast.Load()))
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is None and isinstance(node.target, ast.Name):
+            self.stores.add(node.target.id)
             self.visit(node.annotation)
         else:
             self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
-        if ast.Store not in self.contexts:
-            return
         for alias in node.names:
-            bound_name = alias.asname or alias.name.partition(".")[0]
-            self.count += bound_name == self.target
+            self._store(alias.asname or alias.name.partition(".")[0])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if ast.Store not in self.contexts or node.module == "__future__":
-            return
         for alias in node.names:
             if alias.name == "*":
-                self.count += 1
-                continue
-            self.count += (alias.asname or alias.name) == self.target
+                self.wildcard_stores += node.module != "__future__"
+            else:
+                self._store(
+                    alias.asname or alias.name, counted=node.module != "__future__"
+                )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if ast.Store in self.contexts and node.name is not None:
-            self.count += node.name == self.target
         if node.type is not None:
             self.visit(node.type)
+        if node.name is not None:
+            self._store(node.name)
         for statement in node.body:
             self.visit(statement)
+        if node.name is not None:
+            self.deletions.add(node.name)
 
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if ast.Store in self.contexts and node.name is not None:
-            self.count += node.name == self.target
-        if node.pattern is not None:
-            self.visit(node.pattern)
+        if node.name is not None:
+            self._store(node.name)
+        self.generic_visit(node)
 
     def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if ast.Store in self.contexts and node.name is not None:
-            self.count += node.name == self.target
+        if node.name is not None:
+            self._store(node.name)
 
     def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
-        if ast.Store in self.contexts and node.rest is not None:
-            self.count += node.rest == self.target
-        for key in node.keys:
-            self.visit(key)
-        for pattern in node.patterns:
-            self.visit(pattern)
+        if node.rest is not None:
+            self._store(node.rest)
+        self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if self.count_definition_names and ast.Store in self.contexts:
-            self.count += node.name == self.target
+        self._store(node.name, counted=False)
+        self.definition_counts[node.name] += 1
         for decorator in node.decorator_list:
             self.visit(decorator)
         self._visit_argument_expressions(node.args)
@@ -493,8 +504,8 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
         self._visit_argument_expressions(node.args)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if self.count_definition_names and ast.Store in self.contexts:
-            self.count += node.name == self.target
+        self._store(node.name, counted=False)
+        self.definition_counts[node.name] += 1
         for decorator in node.decorator_list:
             self.visit(decorator)
         for base in node.bases:
@@ -503,9 +514,7 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
             self.visit(keyword_arg)
 
     def _visit_argument_expressions(self, args: ast.arguments) -> None:
-        for default in args.defaults:
-            self.visit(default)
-        for default in args.kw_defaults:
+        for default in (*args.defaults, *args.kw_defaults):
             if default is not None:
                 self.visit(default)
         for arg in (
@@ -516,6 +525,112 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
         ):
             if arg.annotation is not None:
                 self.visit(arg.annotation)
+
+    def _visit_comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp
+    ) -> None:
+        if self._count_comprehension_locals:
+            self.generic_visit(node)
+            return
+        previous_locals = self._local_names
+        self._local_names = set(previous_locals)
+        try:
+            for generator in node.generators:
+                self.visit(generator.iter)
+                target = _CurrentScopeNames(self._local_names)
+                target.visit(generator.target)
+                self.loads.update(target.loads)
+                self._local_names.update(target.stores)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for field in ("elt", "key", "value"):
+                if (value := getattr(node, field, None)) is not None:
+                    self.visit(value)
+        finally:
+            self._local_names = previous_locals
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+
+
+def _definite_statement_bindings(statement: ast.stmt) -> set[str]:
+    """Return names bound whenever this statement finishes normally."""
+    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return {statement.name}
+    if isinstance(statement, ast.Import | ast.ImportFrom):
+        names = _CurrentScopeNames()
+        names.visit(statement)
+        return names.stores
+    if isinstance(statement, ast.Assign):
+        targets = statement.targets
+    elif isinstance(statement, ast.AnnAssign | ast.AugAssign) and (
+        not isinstance(statement, ast.AnnAssign) or statement.value is not None
+    ):
+        targets = [statement.target]
+    else:
+        return set()
+    names = _CurrentScopeNames()
+    for target in targets:
+        names.visit(target)
+    return names.stores
+
+
+class _CodeAnalysis(typing.NamedTuple):
+    module: ast.Module
+    symbols: symtable.SymbolTable
+    loads: frozenset[str]
+    writes: frozenset[str]
+    deletions: frozenset[str]
+    incoming_reads: frozenset[str]
+    definite_writes: frozenset[str]
+    deferred_reads: frozenset[str]
+    referenced_names: frozenset[str]
+    opaque: bool
+
+
+class _CodeAnalyzer:
+    """Cache read-only analysis facts for one code-generation request."""
+
+    def __init__(self) -> None:
+        self._analyses: dict[str, _CodeAnalysis] = {}
+
+    def __call__(self, code: str) -> _CodeAnalysis:
+        if code not in self._analyses:
+            module = ast.parse(code, mode="exec")
+            symbols = symtable.symtable(code, "<ImageTool replay scope>", "exec")
+            names = _CurrentScopeNames()
+            incoming_reads: set[str] = set()
+            definite_writes: set[str] = set()
+            deletions: set[str] = set()
+            for statement in module.body:
+                names.visit(statement)
+                counts = _CurrentScopeNames(count_comprehension_locals=True)
+                counts.visit(statement)
+                incoming_reads.update(counts.loads - definite_writes)
+                bound = _definite_statement_bindings(statement)
+                definite_writes.update(bound)
+                deletions.update(counts.deletions)
+                deletions.difference_update(bound)
+            self._analyses[code] = _CodeAnalysis(
+                module,
+                symbols,
+                frozenset(names.loads),
+                frozenset(names.writes),
+                frozenset(deletions),
+                frozenset(incoming_reads),
+                frozenset(definite_writes),
+                frozenset().union(
+                    *(
+                        _symbol_table_dependencies(child)
+                        for child in symbols.get_children()
+                    )
+                ),
+                frozenset(_symbol_table_dependencies(symbols)),
+                _has_opaque_namespace_access(module, symbols),
+            )
+        return self._analyses[code]
 
 
 class _ScopedNameReplacer(ast.NodeTransformer):
@@ -576,21 +691,21 @@ class _ScopedNameReplacer(ast.NodeTransformer):
 
 
 def _statement_load_count(stmt: ast.stmt, target: str) -> int:
-    counter = _CurrentScopeNameCounter(target, (ast.Load,))
-    counter.visit(stmt)
-    return counter.count
+    names = _CurrentScopeNames(count_comprehension_locals=True)
+    names.visit(stmt)
+    return names.load_counts[target]
 
 
 def _statement_store_count(
     stmt: ast.stmt, target: str, *, count_definition_names: bool = False
 ) -> int:
-    counter = _CurrentScopeNameCounter(
-        target,
-        (ast.Store, ast.Del),
-        count_definition_names=count_definition_names,
+    names = _CurrentScopeNames(count_comprehension_locals=True)
+    names.visit(stmt)
+    return (
+        names.store_counts[target]
+        + names.wildcard_stores
+        + (names.definition_counts[target] if count_definition_names else 0)
     )
-    counter.visit(stmt)
-    return counter.count
 
 
 class _NameReplacer(_ScopedNameReplacer):

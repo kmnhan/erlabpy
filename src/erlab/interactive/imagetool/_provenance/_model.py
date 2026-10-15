@@ -124,7 +124,6 @@ import importlib
 import inspect
 import json
 import keyword
-import symtable
 import typing
 import uuid
 from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
@@ -143,13 +142,12 @@ from erlab.interactive.imagetool._provenance._code import (
     _MAPPING_MARKER,
     _SLICE_MARKER,
     _TUPLE_MARKER,
+    _CodeAnalyzer,
     _dynamic_nonuniform_restore_replay_code,
     _expression_receiver_code,
-    _has_opaque_namespace_access,
     _migrate_legacy_nonuniform_restore_code,
     _receiver_path,
     _script_codes_output_name,
-    _symbol_table_dependencies,
     _validate_active_name,
 )
 
@@ -3288,7 +3286,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 updates["active_name"] = self.primary_input
         return self.model_copy(update=updates)
 
-    def _step_input_names(self, step: ReplayStep) -> tuple[str, ...]:
+    def _step_input_names(
+        self, step: ReplayStep, *, code_analyzer: _CodeAnalyzer | None = None
+    ) -> tuple[str, ...]:
         if not _operation_is(step.operation, "script_code"):
             return tuple(dict.fromkeys(step.input_bindings.values()))
         declared = tuple(item.name for item in self.script_inputs)
@@ -3296,15 +3296,14 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if code is None:
             return declared
         try:
-            module = ast.parse(code, mode="exec")
-            names = _symbol_table_dependencies(
-                symtable.symtable(code, "<ImageTool provenance inputs>", "exec")
-            )
+            analysis = (code_analyzer or _CodeAnalyzer())(code)
         except SyntaxError:
             return declared
-        if _has_opaque_namespace_access(module):
-            return declared
-        return tuple(name for name in declared if name in names)
+        return (
+            declared
+            if analysis.opaque
+            else tuple(name for name in declared if name in analysis.referenced_names)
+        )
 
     def _script_inputs_for_steps(
         self, steps: Sequence[ReplayStep]
@@ -3900,12 +3899,14 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         _lazy_script_inputs: bool = False,
         _script_input_path: tuple[int, ...] = (),
         _on_primary_chain: bool = True,
+        _code_analyzer: _CodeAnalyzer | None = None,
     ) -> list[_ProvenanceDisplayRow]:
         """Return streamlined derivation rows for UI, editing, and copy-code output.
 
         The display path hides internal ImageTool normalization steps while keeping the
         recorded replay steps available through :meth:`derivation_entries`.
         """
+        code_analyzer = _code_analyzer or _CodeAnalyzer()
         start_ref = _ProvenanceStepRef(
             "file_load"
             if self.kind == "file"
@@ -3947,6 +3948,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         _lazy_script_inputs=_lazy_script_inputs,
                         _script_input_path=child_path,
                         _on_primary_chain=on_primary_chain,
+                        _code_analyzer=code_analyzer,
                     )
                     if nested_rows and revision_id is not None:
                         final_index = next(
@@ -4004,7 +4006,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 attached_inputs = {
                     name
                     for operation_index, _operation in displayed_operations
-                    for name in self._step_input_names(self.steps[operation_index])
+                    for name in self._step_input_names(
+                        self.steps[operation_index], code_analyzer=code_analyzer
+                    )
                 }
                 rows.extend(
                     input_row(index, primary=False)
@@ -4025,7 +4029,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 auxiliary_indices = (
                     dict.fromkeys(
                         input_indices[name]
-                        for name in self._step_input_names(self.steps[operation_index])
+                        for name in self._step_input_names(
+                            self.steps[operation_index], code_analyzer=code_analyzer
+                        )
                         if name != self.primary_input
                     )
                     if self.primary_input is not None
