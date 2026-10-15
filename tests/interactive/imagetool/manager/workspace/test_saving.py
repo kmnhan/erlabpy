@@ -322,14 +322,66 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
         assert all(record.checkpoint.source_file == str(path) for record in records)
 
 
-@pytest.mark.parametrize("workspace_schema", [3, 5])
+@pytest.mark.parametrize("source_change", ["overwrite", "delete"])
+def test_manager_workspace_captures_lazy_input_before_source_changes(
+    qtbot, tmp_path, manager_context, source_change
+) -> None:
+    import dask.array as da
+    from dask import delayed
+
+    expected = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+        name="sample",
+    )
+    source_path = tmp_path / "sample.npy"
+    np.save(source_path, expected.values)
+    source = expected.copy(
+        data=da.from_delayed(
+            delayed(np.load)(source_path), shape=expected.shape, dtype=float
+        )
+    )
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                source, auto_compute=False, _in_manager=True
+            ),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        assert node.data_for_role("source").chunks is not None
+        captured = node.revision_id_for_role("source")
+        assert node.data_for_role("source").chunks is not None
+        node.replace_with_detached_data(expected + 10, None, replay_source_data=None)
+        if source_change == "overwrite":
+            np.save(source_path, expected.values + 100)
+        else:
+            source_path.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured), expected
+        )
+        destination = tmp_path / "captured.itws"
+        manager._workspace_controller.saving._save_workspace_document(destination)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            destination, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured).compute(), expected
+        )
+
+
+@pytest.mark.parametrize("workspace_schema", [3, 4, 5])
+@pytest.mark.parametrize("imported", [False, True])
 def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
-    qtbot, tmp_path, test_data, manager_context, monkeypatch, workspace_schema
+    qtbot, tmp_path, test_data, manager_context, monkeypatch, workspace_schema, imported
 ) -> None:
     source = erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True)
     qtbot.addWidget(source)
     dataset = source.to_dataset()
     source.close()
+    dataset.attrs["itool_visible"] = False
+    dataset.attrs.pop("itool_window_state", None)
     owner_snapshot = "legacy-owner"
     spec = script(
         ScriptCodeOperation(label="Add", code="derived = data + 1"),
@@ -346,10 +398,27 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
         test_data, blob_name
     )
     source_path = tmp_path / "legacy.itws"
-    if workspace_schema == 3:
+    if workspace_schema in {3, 4}:
         tree = xr.DataTree.from_dict({"0/imagetool": dataset})
         workspace_format._set_legacy_workspace_schema(tree.attrs)
+        if workspace_schema == 4:
+            tree.attrs["imagetool_workspace_schema_version"] = 4
+            tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                {
+                    "schema_version": 4,
+                    "root_order": [0],
+                    "nodes": [
+                        {
+                            "uid": "legacy-node",
+                            "path": "0",
+                            "kind": "imagetool",
+                            "data_backing": "memory",
+                        }
+                    ],
+                }
+            )
         tree.to_netcdf(source_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
     else:
         object_id = "legacy-payload"
         manifest = {
@@ -416,7 +485,11 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
 
         monkeypatch.setattr(manager, "_apply_provenance", _forbid_replay)
         assert manager._workspace_controller.loading._load_workspace_file(
-            source_path, replace=True, associate=True, mark_dirty=False, select=False
+            source_path,
+            replace=not imported,
+            associate=not imported,
+            mark_dirty=imported,
+            select=False,
         )
         node = manager._node_for_target(0)
         canonical = node.provenance_spec
@@ -425,7 +498,32 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
         assert seed_id is not None
         assert canonical.script_inputs[0].node_snapshot_token is None
         assert node.replay_source_data is None
-        assert reads == (1 if workspace_schema == 3 else 0)
+        assert reads == 1
+        if imported:
+            controller = manager._workspace_controller
+            if node.pending_workspace_payload is not None:
+                assert (
+                    controller.loading.pending._materialize_pending_workspace_payload(
+                        node
+                    )
+                )
+            controller._release_unused_imported_workspace_accesses()
+            assert source_path.resolve() not in controller._imported_workspace_accesses
+            lock = workspace_storage._acquire_workspace_document_lock(source_path)
+            try:
+                with workspace_store.WorkspaceStore(source_path, create=True) as writer:
+                    workspace_storage._write_workspace_generation(
+                        writer,
+                        workspace_storage._WorkspaceGenerationPlan(
+                            manifest={"root_order": [], "nodes": []}, objects=()
+                        ),
+                        compression_mode="none",
+                    )
+            finally:
+                lock.unlock()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id), test_data
+        )
         destination = tmp_path / "canonical.itws"
         monkeypatch.setattr(
             manager._workspace_controller,

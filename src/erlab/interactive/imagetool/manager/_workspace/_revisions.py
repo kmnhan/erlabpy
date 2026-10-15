@@ -7,7 +7,6 @@ import json
 import typing
 from collections.abc import Mapping
 
-import erlab
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
@@ -116,14 +115,6 @@ def _read_revision_checkpoint(path: str, group: str) -> xr.DataArray:
         json.loads(dataset.attrs["revision_data_name"])
     )
     return data
-
-
-def read_legacy_replay_source(path: str, group: str) -> xr.DataArray:
-    with workspace_arrays.open_workspace_dataset(path, group, chunks={}) as dataset:
-        dataset = workspace_format._restore_workspace_dataset_attrs(dataset)
-        return erlab.interactive.utils._tool_data_from_blob(
-            dataset[_persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME]
-        )
 
 
 def normalize_workspace_nodes(manager: ImageToolManager) -> None:

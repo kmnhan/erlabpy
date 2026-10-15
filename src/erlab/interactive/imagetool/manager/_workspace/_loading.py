@@ -1002,19 +1002,9 @@ class _WorkspaceLoader:
                     parsed_provenance_spec
                 )
             ):
-                if pending_workspace_memory_payload is not None:
-                    path, group = pending_workspace_memory_payload
-                    seed_id = self._manager._provenance_revisions.add(
-                        provider=functools.partial(
-                            workspace_revisions.read_legacy_replay_source,
-                            str(path),
-                            group,
-                        )
-                    )
-                else:
-                    source_data = self._workspace_replay_source_data(ds, uid=uid)
-                    if source_data is not None:
-                        seed_id = self._manager._provenance_revisions.add(source_data)
+                source_data = self._workspace_replay_source_data(ds, uid=uid)
+                if source_data is not None:
+                    seed_id = self._manager._provenance_revisions.add(source_data)
             parsed_provenance_spec = (
                 self._manager._provenance_revisions.normalize_provenance(
                     parsed_provenance_spec, replay_source_revision_id=seed_id
@@ -1596,20 +1586,18 @@ class _WorkspaceLoader:
                     workspace_file_path, payload_path, "itool"
                 ):
                     try:
-                        attrs = _workspace_payload_attrs_h5py(
-                            workspace_file_path, payload_path
+                        pending_ds = self._read_workspace_imagetool_payload_dataset(
+                            workspace_file_path, payload_path, load_data=False
                         )
                     except Exception:
                         logger.debug(
-                            "Failed workspace payload attr read for %s",
+                            "Failed metadata-only workspace payload read for %s",
                             payload_path,
                             exc_info=True,
                         )
                     else:
-                        if attrs is not None and not _workspace_dataset_window_visible(
-                            xr.Dataset(attrs=attrs), "itool"
-                        ):
-                            ds = xr.Dataset(attrs=attrs)
+                        if not _workspace_dataset_window_visible(pending_ds, "itool"):
+                            ds = pending_ds
                             pending_imagetool_payload = (
                                 workspace_file_path,
                                 payload_path,
