@@ -69,6 +69,7 @@ class _WorkspaceSaveSnapshot:
         tuple[str, str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
     embedded_script_sources: tuple[tuple[str, str, bytes], ...] = ()
+    dataset_source_paths: frozenset[pathlib.Path] = frozenset()
     _source_ownership: contextlib.ExitStack = field(
         default_factory=contextlib.ExitStack, repr=False
     )
@@ -76,13 +77,17 @@ class _WorkspaceSaveSnapshot:
 
     @property
     def source_paths(self) -> frozenset[pathlib.Path]:
-        return frozenset(
-            pathlib.Path(item.source_file).resolve()
-            for item in self.generation_plan.objects
-            if item.source_file is not None
-        ) | frozenset(
-            pathlib.Path(item.source_file).resolve()
-            for item in self.generation_plan.preserved_groups
+        return (
+            self.dataset_source_paths
+            | frozenset(
+                pathlib.Path(item.source_file).resolve()
+                for item in self.generation_plan.objects
+                if item.source_file is not None
+            )
+            | frozenset(
+                pathlib.Path(item.source_file).resolve()
+                for item in self.generation_plan.preserved_groups
+            )
         )
 
     def close_data(self) -> None:
@@ -280,6 +285,25 @@ class _WorkspaceSaver:
         self._manager = manager
         self._controller = controller
         self._active_snapshots: dict[int, _WorkspaceSaveSnapshot] = {}
+
+    def _dataset_source_paths(
+        self, dataset: xr.Dataset, node: _ManagedWindowNode
+    ) -> frozenset[pathlib.Path]:
+        lazy_variables = [
+            variable
+            for variable in dataset.variables.values()
+            if not variable._in_memory
+        ]
+        if not lazy_variables:
+            return frozenset()
+        paths = set(self._controller._workspace_node_source_paths(node))
+        for variable in lazy_variables:
+            source = workspace_arrays._xarray_source_path(
+                variable.encoding.get("source")
+            )
+            if source is not None:
+                paths.add(pathlib.Path(source))
+        return frozenset(paths)
 
     def _own_snapshot_sources(self, snapshot: _WorkspaceSaveSnapshot) -> None:
         ownership = snapshot._source_ownership
@@ -1239,6 +1263,7 @@ class _WorkspaceSaver:
         final_entries: list[dict[str, typing.Any]] = []
         serialized_datasets: list[xr.Dataset] = []
         serialized_dataset_ids: set[int] = set()
+        dataset_source_paths: set[pathlib.Path] = set()
         legacy_payload_rewrite_uids: set[str] = set()
         extension_object_ids = set(
             workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
@@ -1371,6 +1396,9 @@ class _WorkspaceSaver:
                     object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
                         object_id,
                         dataset=dataset,
+                    )
+                    dataset_source_paths.update(
+                        self._dataset_source_paths(dataset, node)
                     )
 
             entry["payload_object_id"] = object_id
@@ -1555,6 +1583,7 @@ class _WorkspaceSaver:
                 self._serialized_tool_data_references(serialized_datasets)
             ),
             embedded_script_sources=tuple(embedded_script_sources),
+            dataset_source_paths=frozenset(dataset_source_paths),
         )
         self._own_snapshot_sources(snapshot)
         return snapshot

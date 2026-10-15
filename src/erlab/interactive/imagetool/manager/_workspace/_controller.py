@@ -1063,11 +1063,11 @@ class _WorkspaceController:
         for access in accesses:
             access.release()
 
-    @staticmethod
     def _workspace_node_source_paths(
+        self,
         node: _ManagedWindowNode,
     ) -> frozenset[pathlib.Path]:
-        """Return workspace paths directly referenced by one managed node."""
+        """Return workspace sources owned by one managed node."""
         paths: set[pathlib.Path] = set()
         pending = node.pending_workspace_payload
         if pending is not None:
@@ -1079,6 +1079,18 @@ class _WorkspaceController:
         paths.update(
             path.resolve() for path, _group in node._workspace_reference_datasets
         )
+        if (
+            not paths
+            and node.is_imagetool
+            and node.imagetool is not None
+            and node.slicer_area._data.chunks is not None
+        ):
+            # Dask transformations can discard xarray's source encodings.
+            paths.update(
+                path
+                for path, dependents in self._imported_workspace_dependents.items()
+                if node.uid in dependents
+            )
         return frozenset(paths)
 
     def _workspace_revision_source_paths(self) -> frozenset[pathlib.Path]:
@@ -1131,22 +1143,10 @@ class _WorkspaceController:
             return
         revision_source_paths = self._workspace_revision_source_paths()
         for path, access in tuple(self._imported_workspace_accesses.items()):
-            previous_dependents = self._imported_workspace_dependents.get(path, set())
             dependents: set[str] = set()
             for uid, node in self._manager._tool_graph.nodes.items():
                 source_paths = self._workspace_node_source_paths(node)
                 if path in source_paths:
-                    dependents.add(uid)
-                    continue
-                if (
-                    uid in previous_dependents
-                    and node.is_imagetool
-                    and node.imagetool is not None
-                    and node.slicer_area._data.chunks is not None
-                    and not source_paths
-                ):
-                    # Some Dask transformations discard xarray's source encoding.
-                    # Keep ownership until a save rebinds or materializes this node.
                     dependents.add(uid)
             if dependents or path in revision_source_paths:
                 self._imported_workspace_dependents[path] = dependents

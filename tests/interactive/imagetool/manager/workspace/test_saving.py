@@ -6972,3 +6972,126 @@ def test_workspace_snapshot_cleanup_closes_each_resource_once() -> None:
     assert closed == ["second", "first", "ownership"]
     snapshot.close()
     assert closed == ["second", "first", "ownership"]
+
+
+@pytest.mark.parametrize("save_as", [False, True])
+def test_background_save_owns_removed_transformed_dask_source(
+    qtbot, monkeypatch, tmp_path, manager_context, save_as
+) -> None:
+    import subprocess
+    import threading
+
+    source = tmp_path / "source.itws"
+    destination = tmp_path / "destination.itws"
+    data = xr.DataArray(np.arange(400.0).reshape(20, 20), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        assert manager.offload_to_workspace([0], native=False)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        if not save_as:
+            controller.saving._save_workspace_document(destination)
+            adopt_workspace_path(manager, destination)
+        assert controller.loading._load_workspace_file(
+            source, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        index = next(iter(manager._tool_graph.root_wrappers))
+        node = manager._node_for_target(index)
+        original = manager.get_imagetool(index).slicer_area._data
+        transformed = xr.DataArray(original.data + 1, dims=original.dims)
+        assert transformed.chunks is not None
+        assert not workspace_arrays.dataarray_source_paths(transformed)
+        node.slicer_area.replace_source_data(transformed, auto_compute=False)
+        assert source.resolve() in controller._imported_workspace_accesses
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        started = threading.Event()
+        proceed = threading.Event()
+        write_generation = workspace_storage._write_workspace_generation
+
+        def _delayed_write(*args, **kwargs):
+            started.set()
+            if not proceed.wait(10):
+                raise TimeoutError("Test did not release workspace save")
+            return write_generation(*args, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_storage, "_write_workspace_generation", _delayed_write
+        )
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+        results = []
+        save = controller.save_as if save_as else controller.save
+        assert save(native=False, on_finished=results.append)
+        try:
+            qtbot.wait_until(started.is_set)
+            snapshot = controller._background_save_worker._snapshot
+            assert snapshot.dataset_source_paths == frozenset({source.resolve()})
+            select_tools(manager, [index])
+            manager._update_info()
+            manager.remove_action.trigger()
+            manager._lineage_controller._remove_confirmation_dialog.done(
+                QtWidgets.QMessageBox.StandardButton.Yes.value
+            )
+            qtbot.wait_until(lambda: not manager._tool_graph.nodes)
+            # Evict the incidental HDF5 read handle through normal xarray cache use.
+            other = tmp_path / "cache-eviction.nc"
+            xr.Dataset({"value": ("i", [1])}).to_netcdf(other, engine="h5netcdf")
+            with (
+                xr.set_options(file_cache_maxsize=1),
+                xr.open_dataset(other, engine="h5netcdf") as opened,
+            ):
+                opened.load()
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(source)
+        finally:
+            proceed.set()
+            qtbot.wait_until(lambda: bool(results), timeout=10000)
+        assert results == [True]
+        assert not errors
+        assert source.resolve() not in controller._imported_workspace_accesses
+        assert not controller.saving._active_snapshots
+        # An independent writer can now collect the original payload objects.
+        code = """
+import copy
+import sys
+from erlab.interactive.imagetool.manager._workspace import _storage, _store
+lock = _storage._acquire_workspace_document_lock(sys.argv[1])
+with _store.WorkspaceStore(sys.argv[1]) as store:
+    manifest = copy.deepcopy(store.current_generation().manifest)
+    manifest['nodes'] = []
+    manifest['root_order'] = []
+    manifest['provenance_revisions'] = []
+    for _ in range(2):
+        store.publish(manifest)
+    store.collect_garbage(max_objects=1000)
+lock.unlock()
+"""
+        with (
+            xr.set_options(file_cache_maxsize=1),
+            xr.open_dataset(other, engine="h5netcdf") as opened,
+        ):
+            opened.load()
+        subprocess.run(
+            [sys.executable, "-c", code, str(source)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        saved = workspace_arrays.open_workspace_dataset(
+            destination, _current_workspace_payload_path(destination), chunks=None
+        )
+        try:
+            np.testing.assert_array_equal(
+                saved[_persistence_constants.ITOOL_DATA_NAME].values, data.values + 1
+            )
+        finally:
+            saved.close()
