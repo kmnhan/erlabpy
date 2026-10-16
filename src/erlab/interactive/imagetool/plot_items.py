@@ -616,6 +616,7 @@ class ItoolPlotItem(pg.PlotItem):
         if raw_menu is None:
             return None
         if self._context_menu_ready and self._context_menu is raw_menu:
+            self._update_manager_figure_actions()
             return raw_menu
         menu = typing.cast("typing.Any", raw_menu)
 
@@ -778,6 +779,37 @@ class ItoolPlotItem(pg.PlotItem):
             menu.insertAction(insert_before, append_action)
         self._plot_with_matplotlib_action = plot_action
         self._append_to_figure_action = append_action
+        self._update_manager_figure_actions()
+
+    @property
+    def _physical_display_axes(self) -> tuple[int, ...]:
+        physical_dims = self.slicer_area.displayed_data.dims
+        return tuple(
+            axis
+            for axis in self.display_axis
+            if self.array_slicer.physical_dims[axis] in physical_dims
+        )
+
+    def _update_manager_figure_actions(self) -> None:
+        enabled = bool(self._physical_display_axes)
+        for action in (
+            self._plot_with_matplotlib_action,
+            self._append_to_figure_action,
+        ):
+            if action is not None:
+                action.setEnabled(enabled)
+
+    def _figure_source_plot(self) -> ItoolPlotItem | None:
+        axes = self._physical_display_axes
+        if not axes:
+            return None
+        if axes == self.display_axis:
+            return self
+        return next(
+            profile
+            for profile in self.slicer_area.profiles
+            if profile.display_axis == axes
+        )
 
     @QtCore.Slot()
     def _update_signal_refresh_rate(self) -> None:
@@ -2284,39 +2316,18 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def plot_with_matplotlib(self) -> None:
         """Show the current data using matplotlib (only works in ImageTool Manager)."""
-        if self.slicer_area._in_manager:  # pragma: no branch
-            from erlab.interactive.imagetool import _figurecomposer_adapter
-
-            manager = self.slicer_area._manager_instance
-            if manager:  # pragma: no branch
-                target = manager.target_from_slicer_area(self.slicer_area)
-                if target is None:
-                    return
-                source_name = manager._script_input_name_for_node(
-                    manager._node_for_target(target)
-                )
-                from erlab.interactive._figurecomposer._exceptions import (
-                    FigureComposerPlotSlicesSelectionError,
-                )
-
-                try:
-                    operation = _figurecomposer_adapter.build_figure_composer_operation(
-                        self, source_name=source_name
-                    )
-                except FigureComposerPlotSlicesSelectionError as exc:
-                    _figurecomposer_adapter.show_plot_slices_selection_error(
-                        self.slicer_area, exc
-                    )
-                    return
-                manager.create_figure_from_slicer_area(
-                    self.slicer_area,
-                    operation=operation,
-                )
+        self._plot_with_matplotlib(append=False)
 
     @QtCore.Slot()
     def append_to_matplotlib_figure(self) -> None:
         """Append the current plot state to an existing managed figure."""
+        self._plot_with_matplotlib(append=True)
+
+    def _plot_with_matplotlib(self, *, append: bool) -> None:
         if self.slicer_area._in_manager:  # pragma: no branch
+            source = self._figure_source_plot()
+            if source is None:
+                return
             from erlab.interactive.imagetool import _figurecomposer_adapter
 
             manager = self.slicer_area._manager_instance
@@ -2333,14 +2344,19 @@ class ItoolPlotItem(pg.PlotItem):
 
                 try:
                     operation = _figurecomposer_adapter.build_figure_composer_operation(
-                        self, source_name=source_name
+                        source, source_name=source_name
                     )
                 except FigureComposerPlotSlicesSelectionError as exc:
                     _figurecomposer_adapter.show_plot_slices_selection_error(
                         self.slicer_area, exc
                     )
                     return
-                manager.append_figure_from_slicer_area(
+                launch = (
+                    manager.append_figure_from_slicer_area
+                    if append
+                    else manager.create_figure_from_slicer_area
+                )
+                launch(
                     self.slicer_area,
                     operation=operation,
                 )

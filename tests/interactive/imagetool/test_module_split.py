@@ -314,6 +314,10 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             ),
         )
 
+        plot._figure_source_plot = lambda: plot
+        plot._plot_with_matplotlib = types.MethodType(
+            plot_items.ItoolPlotItem._plot_with_matplotlib, plot
+        )
         plot_items.ItoolPlotItem.plot_with_matplotlib(plot)
 
         assert adapter_name in sys.modules
