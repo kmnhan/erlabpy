@@ -1026,16 +1026,15 @@ def test_kspace_conversion_dialog_missing_configuration_cancel(
 def test_kspace_conversion_seed_helpers_cover_nonuniform_guidelines() -> None:
     data = xr.DataArray(
         np.zeros((3, 3)),
-        dims=("alpha", "beta_idx"),
+        dims=("alpha", "beta"),
         coords={
             "alpha": [-1.0, 0.0, 1.0],
-            "beta_idx": [0.0, 1.0, 2.0],
-            "beta": ("beta_idx", [10.0, 20.0, 40.0]),
+            "beta": [10.0, 20.0, 40.0],
         },
         attrs={"configuration": int(AxesConfiguration.Type1)},
     )
     slicer_area = SimpleNamespace(
-        data=data,
+        displayed_data=data,
         current_values=(0.0, 20.0),
         main_image=SimpleNamespace(
             display_axis=(0, 1),
@@ -1044,6 +1043,7 @@ def test_kspace_conversion_seed_helpers_cover_nonuniform_guidelines() -> None:
             _guideline_angle=12.0,
         ),
         array_slicer=SimpleNamespace(
+            physical_dims=data.dims,
             _nonuniform_axes_set={1},
             coords_uniform={1: np.array([0.0, 1.0, 2.0])},
             coords={1: np.array([10.0, 20.0, 40.0])},
@@ -1087,7 +1087,7 @@ def test_kspace_conversion_seed_infers_delta_from_configuration_and_axis_order(
         attrs={"configuration": int(configuration)},
     )
     slicer_area = SimpleNamespace(
-        data=data,
+        displayed_data=data,
         current_values=(0.0, 0.0),
         main_image=SimpleNamespace(
             display_axis=(0, 1),
@@ -1095,7 +1095,9 @@ def test_kspace_conversion_seed_infers_delta_from_configuration_and_axis_order(
             _guideline_offset=(0.0, 0.0),
             _guideline_angle=12.0,
         ),
-        array_slicer=SimpleNamespace(_nonuniform_axes_set=set()),
+        array_slicer=SimpleNamespace(
+            physical_dims=data.dims, _nonuniform_axes_set=set()
+        ),
     )
 
     normal_emission, delta = (
@@ -1113,7 +1115,7 @@ def test_kspace_conversion_seed_uses_base_sign_without_configuration() -> None:
         coords={"alpha": [-1.0, 0.0, 1.0], "beta": [-1.0, 0.0, 1.0]},
     )
     slicer_area = SimpleNamespace(
-        data=data,
+        displayed_data=data,
         current_values=(0.0, 0.0),
         main_image=SimpleNamespace(
             display_axis=(0, 1),
@@ -1121,7 +1123,9 @@ def test_kspace_conversion_seed_uses_base_sign_without_configuration() -> None:
             _guideline_offset=(0.0, 0.0),
             _guideline_angle=12.0,
         ),
-        array_slicer=SimpleNamespace(_nonuniform_axes_set=set()),
+        array_slicer=SimpleNamespace(
+            physical_dims=data.dims, _nonuniform_axes_set=set()
+        ),
     )
 
     normal_emission, delta = (
@@ -1152,7 +1156,7 @@ def test_kspace_conversion_seed_ignores_guidelines_outside_first_two_angle_axes(
         attrs={"configuration": int(AxesConfiguration.Type1)},
     )
     slicer_area = SimpleNamespace(
-        data=data,
+        displayed_data=data,
         current_values=(0.0, 0.0, 0.0),
         main_image=SimpleNamespace(
             display_axis=(0, 1),
@@ -1160,7 +1164,9 @@ def test_kspace_conversion_seed_ignores_guidelines_outside_first_two_angle_axes(
             _guideline_offset=(0.0, 0.0),
             _guideline_angle=12.0,
         ),
-        array_slicer=SimpleNamespace(_nonuniform_axes_set=set()),
+        array_slicer=SimpleNamespace(
+            physical_dims=data.dims, _nonuniform_axes_set=set()
+        ),
     )
 
     normal_emission, delta = (
