@@ -5268,11 +5268,28 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         return attrs
 
     @staticmethod
+    def _canonical_saved_script_inputs(
+        script_inputs: Sequence[ScriptInput],
+    ) -> tuple[ScriptInput, ...]:
+        from erlab.interactive.imagetool._provenance._model import (
+            _normalize_legacy_script_input,
+        )
+
+        # Revision roles need the Manager store. Standalone inputs have no
+        # checkpoint references and can normalize their stored fallback directly.
+        return tuple(
+            _normalize_legacy_script_input(item)
+            if item.revision_id is None and item.resolved_revision_id is None
+            else item
+            for item in script_inputs
+        )
+
+    @staticmethod
     def _saved_script_input_attrs(
         script_inputs: Sequence[ScriptInput], primary_input: str | None
     ) -> dict[str, typing.Any]:
         """Encode one canonical saved-input attribute pair."""
-        inputs = tuple(script_inputs)
+        inputs = ToolWindow._canonical_saved_script_inputs(script_inputs)
         if not inputs:
             if primary_input is not None:
                 raise ValueError("primary input requires at least one script input")
@@ -5713,7 +5730,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                                 }
                             )
                             script_inputs = tuple(updated)
-                return script_inputs, primary_input
+                return ToolWindow._canonical_saved_script_inputs(
+                    script_inputs
+                ), primary_input
 
         raw_source_spec = attrs.get(_persistence_constants.TOOL_SOURCE_SPEC_ATTR)
         raw_source_binding = attrs.get(_persistence_constants.TOOL_SOURCE_BINDING_ATTR)
@@ -5746,18 +5765,23 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         )
         if source_spec is None and provenance_spec is None and source_binding is None:
             return (), None
-        return (
-            ScriptInput(
-                name="data",
-                source_spec=(
-                    None if source_spec is None else source_spec.model_dump(mode="json")
+        return ToolWindow._canonical_saved_script_inputs(
+            (
+                ScriptInput(
+                    input_version=1,
+                    name="data",
+                    source_spec=(
+                        None
+                        if source_spec is None
+                        else source_spec.model_dump(mode="json")
+                    ),
+                    provenance_spec=(
+                        None
+                        if provenance_spec is None
+                        else provenance_spec.model_dump(mode="json")
+                    ),
                 ),
-                provenance_spec=(
-                    None
-                    if provenance_spec is None
-                    else provenance_spec.model_dump(mode="json")
-                ),
-            ),
+            )
         ), "data"
 
     @classmethod

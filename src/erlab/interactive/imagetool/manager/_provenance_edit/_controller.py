@@ -216,13 +216,13 @@ class _ProvenanceEditController:
         parent = root
         follow_source = True
         for depth, index in enumerate(row.script_input_path):
-            if not 0 <= index < len(parent.script_inputs):
+            if not 0 <= index < len(parent.replay_inputs):
                 return None
-            owner = parent.script_inputs[index]
+            owner = parent.replay_inputs[index]
             follow_source = follow_source and owner.follow_source
             if depth == len(row.script_input_path) - 1:
                 return owner.model_copy(update={"follow_source": follow_source})
-            nested = owner.parsed_provenance_spec()
+            nested = owner.resolved_provenance_spec()
             if nested is None:
                 return None
             parent = nested
@@ -236,21 +236,41 @@ class _ProvenanceEditController:
     ) -> _ProvenanceCandidate:
         spec = recorded.provenance_spec
         owner = self._input_owning_row(node, row)
-        if owner is not None and not owner.follow_source:
+        store = self._manager._provenance_revisions
+        pinned_recipe = (
+            spec is not None
+            and spec.kind == "script"
+            and spec.seed_code is None
+            and spec.file_load_source is None
+            and bool(spec.replay_inputs)
+            and all(
+                not item.follow_source
+                and item.revision_id is not None
+                and store.has_data(item.revision_id)
+                and (
+                    item.source_spec is None
+                    or (
+                        item.resolved_revision_id is not None
+                        and store.has_data(item.resolved_revision_id)
+                    )
+                )
+                for item in spec.replay_inputs
+            )
+        )
+        if owner is not None and not owner.follow_source and not pinned_recipe:
             spec = script(
                 start_label="Use saved input",
                 active_name=owner.name,
-                primary_input=owner.name,
-                script_inputs=(
-                    owner.model_copy(
-                        update={
-                            "revision_id": recorded.revision_id,
-                            "source_spec": None,
-                            "provenance_spec": None
-                            if spec is None
-                            else spec.model_dump(mode="json"),
-                        }
-                    ),
+                root_input=owner.model_copy(
+                    update={
+                        "revision_id": recorded.revision_id,
+                        "resolved_revision_id": None,
+                        "source_spec": None,
+                        "fallback_role": "raw",
+                        "provenance_spec": None
+                        if spec is None
+                        else spec.model_dump(mode="json"),
+                    }
                 ),
             )
         return _ProvenanceCandidate(
@@ -276,7 +296,7 @@ class _ProvenanceEditController:
                 index = row.replay_ref.script_input_index
                 if index is None:
                     return None
-                candidate = spec.script_inputs[index].parsed_provenance_spec()
+                candidate = spec.replay_inputs[index].resolved_provenance_spec()
             else:
                 candidate = spec._prefix_through_ref(row.replay_ref)
             if row.revision_id is not None and store.has_data(row.revision_id):
@@ -288,7 +308,7 @@ class _ProvenanceEditController:
         owner = self._input_owning_row(node, row)
         pending = [node.current_revision_id]
         if owner is not None:
-            pending.append(owner.revision_id)
+            pending.extend((owner.revision_id, owner.resolved_revision_id))
         visited: set[str] = set()
         while pending:
             revision_id = pending.pop()
@@ -330,12 +350,22 @@ class _ProvenanceEditController:
         if owner is None or owner.revision_id is None:
             return unchanged
         store = self._manager._provenance_revisions
-        resolved = store.raw_source_input(owner)
-        if resolved is None:
+        source = owner.parsed_source_spec()
+        if source is None or not store.has_data(owner.revision_id):
             return unchanged
-        raw_input, source = resolved
-        raw = raw_input.parsed_provenance_spec()
-        recorded = owner.parsed_provenance_spec()
+        if owner.fallback_role == "resolved":
+            record = store.get(owner.revision_id)
+            raw = None if record is None else record.provenance_spec
+        else:
+            raw = owner.parsed_provenance_spec()
+        raw_input = owner.model_copy(
+            update={
+                "source_spec": None,
+                "resolved_revision_id": None,
+                "fallback_role": "raw",
+                "provenance_spec": None if raw is None else raw.model_dump(mode="json"),
+            }
+        )
         for end in range(1, len(source.operations) + 1):
             relative = source.model_copy(
                 update={"source_operations": source.operations[:end]}
@@ -345,25 +375,14 @@ class _ProvenanceEditController:
             restored = script(
                 start_label=candidate.start_label or "Restore saved input",
                 active_name=candidate.active_name or "derived",
-                primary_input=raw_input.name,
-                script_inputs=(raw_input,),
+                root_input=raw_input,
                 steps=ReplayStep.from_source_spec(relative),
             )
-            recorded_prefix = restored
-            if (
-                recorded is not None
-                and recorded.primary_input == raw_input.name
-                and len(recorded.script_inputs) == 1
-            ):
-                # Match the stored wrapper before inheriting its outer pin.
-                recorded_prefix = restored.model_copy(
-                    update={"script_inputs": recorded.script_inputs}
-                )
             if not (
                 _same_bound_provenance(
                     compose_full_provenance(raw, relative), candidate
                 )
-                or _same_bound_provenance(recorded_prefix, candidate)
+                or _same_bound_provenance(restored, candidate)
             ):
                 continue
             return _ProvenanceCandidate(
@@ -414,7 +433,7 @@ class _ProvenanceEditController:
             return
         self._manager.add_imagetool(
             tool,
-            provenance_spec=script_input.parsed_provenance_spec(),
+            provenance_spec=script_input.resolved_provenance_spec(),
             show=True,
             activate=True,
         )
@@ -576,7 +595,7 @@ class _ProvenanceEditController:
         ):
             return "This provenance contains recorded code that cannot be replayed."
         return self._manager._lineage_controller._input_resolution_plan(
-            spec.script_inputs,
+            spec.replay_inputs,
             target_node_uid=node.uid,
             prefer_recorded_revisions=True,
         ).unavailable_reason
@@ -781,19 +800,18 @@ class _ProvenanceEditController:
         fallback = item.parsed_provenance_spec()
         if fallback is None or fallback.kind not in {"file", "script"}:
             raise ReplayGraphError(f"{item.label} has no portable recorded provenance")
-        fallback = fallback.model_copy(
-            update={
-                "script_inputs": tuple(
-                    _ProvenanceEditController._portable_script_input(nested)
-                    for nested in fallback.script_inputs
-                )
-            }
+        fallback = fallback.with_replay_inputs(
+            tuple(
+                _ProvenanceEditController._portable_script_input(nested)
+                for nested in fallback.replay_inputs
+            )
         )
         return item.model_copy(
             update={
                 "node_uid": None,
                 "node_snapshot_token": None,
                 "revision_id": None,
+                "resolved_revision_id": None,
                 "provenance_spec": fallback.model_dump(mode="json"),
             }
         )
@@ -807,8 +825,8 @@ class _ProvenanceEditController:
     ) -> ToolProvenanceSpec:
         """Bind selected primary scopes to the destination's captured data."""
         inputs: list[ScriptInput] = []
-        for item in spec.script_inputs:
-            if item.name != spec.primary_input:
+        for item in spec.replay_inputs:
+            if item.name != spec.replay_primary_input:
                 inputs.append(
                     self._portable_script_input(item) if portable_inputs else item
                 )
@@ -821,6 +839,7 @@ class _ProvenanceEditController:
                         name=item.name,
                         detached_input_uid=node.uid,
                         data_role="source",
+                        source_spec=item.parsed_source_spec(),
                     )
                 )
                 continue
@@ -833,7 +852,7 @@ class _ProvenanceEditController:
                         "node_uid": None,
                         "node_snapshot_token": None,
                         "revision_id": None,
-                        "source_spec": None,
+                        "resolved_revision_id": None,
                         "provenance_spec": rebound.model_dump(mode="json"),
                     }
                 )
@@ -841,22 +860,21 @@ class _ProvenanceEditController:
         operations = restamp_operation_groups(
             tuple(step.operation for step in spec.steps)
         )
-        return spec.model_copy(
+        return spec.with_replay_inputs(inputs).model_copy(
             update={
                 "steps": tuple(
                     step.model_copy(update={"operation": operation})
                     for step, operation in zip(spec.steps, operations, strict=True)
                 ),
-                "script_inputs": tuple(inputs),
             }
         )
 
     @staticmethod
     def _live_workflow_steps(spec: ToolProvenanceSpec) -> tuple[ReplayStep, ...] | None:
         if (
-            spec.primary_input is None
-            or len(spec.script_inputs) != 1
-            or spec.script_inputs[0].name != spec.primary_input
+            spec.replay_primary_input is None
+            or len(spec.replay_inputs) != 1
+            or spec.replay_inputs[0].name != spec.replay_primary_input
             or spec.seed_code is not None
             or any(
                 not step.operation.live_applicable
@@ -867,7 +885,7 @@ class _ProvenanceEditController:
             )
         ):
             return None
-        nested = spec.script_inputs[0].parsed_provenance_spec()
+        nested = spec.replay_inputs[0].resolved_provenance_spec()
         if nested is None:
             return spec.steps
         previous = _ProvenanceEditController._live_workflow_steps(nested)
@@ -888,7 +906,7 @@ class _ProvenanceEditController:
             item if isinstance(item, ReplayStep) else ReplayStep(operation=item)
             for item in steps
         )
-        if provenance_spec is None or provenance_spec.primary_input is None:
+        if provenance_spec is None or provenance_spec.replay_primary_input is None:
             has_bound_inputs = any(step.input_bindings for step in replay_steps)
             if has_bound_inputs and primary_input is None:
                 raise ValueError("Bound provenance steps need a primary input")
@@ -910,7 +928,10 @@ class _ProvenanceEditController:
                 # Live operations keep the destination's existing source binding.
                 replay_steps = live_steps
                 provenance_spec = None
-        if provenance_spec is not None and provenance_spec.primary_input is not None:
+        if (
+            provenance_spec is not None
+            and provenance_spec.replay_primary_input is not None
+        ):
             local = self._rebind_pasted_workflow(
                 node,
                 provenance_spec,
@@ -999,7 +1020,7 @@ class _ProvenanceEditController:
             current_output_names = (
                 (current_output_name,) if isinstance(current_output_name, str) else ()
             )
-            if local.kind == "script" and local.primary_input is not None:
+            if local.kind == "script" and local.replay_primary_input is not None:
                 spec = local
             elif local.kind == "script":
                 spec = compose_full_provenance(
@@ -1024,7 +1045,7 @@ class _ProvenanceEditController:
                 node=node,
                 scope="display",
                 resolve_inputs=(
-                    local.kind == "script" and local.primary_input is not None
+                    local.kind == "script" and local.replay_primary_input is not None
                 ),
             )
             current_identities = {
@@ -1044,7 +1065,10 @@ class _ProvenanceEditController:
                     raise _TrustedProvenanceReplayCancelled
                 rebuilt = None
                 try:
-                    if local.kind == "script" and local.primary_input is not None:
+                    if (
+                        local.kind == "script"
+                        and local.replay_primary_input is not None
+                    ):
                         lineage = self._manager._lineage_controller
                         rebuilt = lineage._rebuild_script_provenance(
                             local,
@@ -2241,9 +2265,9 @@ class _ProvenanceEditController:
     ) -> ToolProvenanceSpec | None:
         current = spec
         for index in path:
-            if index < 0 or index >= len(current.script_inputs):
+            if index < 0 or index >= len(current.replay_inputs):
                 return None
-            nested = current.script_inputs[index].parsed_provenance_spec()
+            nested = current.replay_inputs[index].resolved_provenance_spec()
             if nested is None:
                 return None
             current = nested
@@ -2275,10 +2299,10 @@ class _ProvenanceEditController:
         if not path:
             return replacement
         index = path[0]
-        if index < 0 or index >= len(spec.script_inputs):
+        if index < 0 or index >= len(spec.replay_inputs):
             raise IndexError("Script input provenance path is not available")
-        script_input = spec.script_inputs[index]
-        nested = script_input.parsed_provenance_spec()
+        script_input = spec.replay_inputs[index]
+        nested = script_input.resolved_provenance_spec()
         if nested is None:
             raise RuntimeError("Script input does not have replayable provenance")
         replaced = self._replace_script_input_path_spec(
@@ -2286,16 +2310,19 @@ class _ProvenanceEditController:
             path[1:],
             replacement,
         )
-        script_inputs = list(spec.script_inputs)
+        script_inputs = list(spec.replay_inputs)
         script_inputs[index] = script_input.model_copy(
             update={
                 "node_uid": None,
                 "node_snapshot_token": None,
                 "revision_id": None,
+                "resolved_revision_id": None,
+                "source_spec": None,
+                "fallback_role": "raw",
                 "provenance_spec": replaced.model_dump(mode="json"),
             }
         )
-        return spec.model_copy(update={"script_inputs": tuple(script_inputs)})
+        return spec.with_replay_inputs(script_inputs)
 
     def _replace_file_load_target_spec(
         self,
@@ -2359,8 +2386,8 @@ class _ProvenanceEditController:
                 return
         if spec.kind != "script":
             return
-        for index, script_input in enumerate(spec.script_inputs):
-            nested = script_input.parsed_provenance_spec()
+        for index, script_input in enumerate(spec.replay_inputs):
+            nested = script_input.resolved_provenance_spec()
             self._append_file_load_targets(
                 targets,
                 node,
@@ -2814,7 +2841,7 @@ class _ProvenanceEditController:
         if shift_name is None:
             raise RuntimeError("The bound shift step has no shift input")
         current_input = next(
-            (item for item in spec.script_inputs if item.name == shift_name), None
+            (item for item in spec.replay_inputs if item.name == shift_name), None
         )
         if current_input is None:
             raise RuntimeError("The bound shift input is not available")
@@ -2876,12 +2903,12 @@ class _ProvenanceEditController:
             )
             if item.name == shift_name
             else item
-            for item in spec.script_inputs
+            for item in spec.replay_inputs
         )
         steps = list(spec.steps)
         steps[ref.operation_index] = step.model_copy(update={"operation": replacement})
-        candidate = spec.model_copy(
-            update={"steps": tuple(steps), "script_inputs": inputs}
+        candidate = spec.with_replay_inputs(inputs).model_copy(
+            update={"steps": tuple(steps)}
         )
         root_candidate = self._root_candidate_for_row(node, row, candidate)
         self._validate_and_replace(

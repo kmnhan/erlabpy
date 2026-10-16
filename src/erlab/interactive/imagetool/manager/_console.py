@@ -1228,17 +1228,15 @@ class ToolNamespace(_ConsoleDataHandleBase):
         else:
             raw_value = value
         if provenance_spec is not None:
-            provenance_spec = provenance_spec.model_copy(
-                update={
-                    "script_inputs": tuple(
-                        script_input.model_copy(
-                            update={"node_uid": None, "node_snapshot_token": None}
-                        )
-                        if script_input.node_uid == self.uid
-                        else script_input
-                        for script_input in provenance_spec.script_inputs
+            provenance_spec = provenance_spec.with_replay_inputs(
+                tuple(
+                    script_input.model_copy(
+                        update={"node_uid": None, "node_snapshot_token": None}
                     )
-                }
+                    if script_input.node_uid == self.uid
+                    else script_input
+                    for script_input in provenance_spec.replay_inputs
+                )
             )
             self._wrapper.set_detached_provenance(
                 provenance_spec,

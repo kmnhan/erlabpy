@@ -529,7 +529,7 @@ def test_manager_provenance_nested_file_load_batch_relinks_deleted_parents(
             (new_a + new_b).astype(np.float64).rename(None),
         )
         assert root.provenance_spec is not None
-        first_input, second_input = root.provenance_spec.script_inputs
+        first_input, second_input = root.provenance_spec.replay_inputs
         assert first_input.node_uid is None
         assert second_input.node_uid is None
         first_relinked = first_input.parsed_provenance_spec()
@@ -1826,7 +1826,7 @@ def test_history_actions_use_captured_inputs_after_source_changes(
                 controller.edit_rows(((node.uid, rows[1]),))
         expected = data.assign_attrs(order="edited" if action == "edit" else "first")
         xr.testing.assert_identical(node.current_source_data(), expected)
-        assert node.provenance_spec.script_inputs[0].revision_id == binding.revision_id
+        assert node.provenance_spec.replay_inputs[0].revision_id == binding.revision_id
         if source_change == "close":
             assert manager._lineage_controller._node_reload_unavailable_reason(node)
 
@@ -2148,7 +2148,7 @@ def test_manager_detached_watched_provenance_reorder_uses_retained_source(
         assert root.slicer_area._data.attrs["order"] == "first"
         assert root.replay_source_data is None
         assert root.provenance_spec is not None
-        seed_id = root.provenance_spec.script_inputs[0].revision_id
+        seed_id = root.provenance_spec.replay_inputs[0].revision_id
         assert seed_id is not None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(seed_id), source
@@ -2207,7 +2207,7 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
 
         assert root.replay_source_data is None
         assert root.provenance_spec is not None
-        seed_id = root.provenance_spec.script_inputs[0].revision_id
+        seed_id = root.provenance_spec.replay_inputs[0].revision_id
         assert seed_id is not None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(seed_id), source

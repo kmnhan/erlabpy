@@ -76,12 +76,12 @@ class _ManagerDependencyTracker:
             return ()
         if node.is_imagetool:
             spec = node.provenance_spec
-            script_inputs = () if spec is None else spec.script_inputs
+            script_inputs = () if spec is None else spec.replay_inputs
         else:
             script_inputs = node.tool_script_inputs
             spec = None if script_inputs else node.provenance_spec
             if spec is not None:
-                script_inputs = spec.script_inputs
+                script_inputs = spec.replay_inputs
         if not script_inputs:
             self._remove_reverse_refs(uid)
             self._ref_cache.pop(uid, None)

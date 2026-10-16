@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._provenance._execution import replay_script_pro
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
+    compose_full_provenance,
     full_data,
     public_data,
     script,
@@ -111,6 +112,189 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     restored = rollback.resolve_data(first)
     np.testing.assert_array_equal(restored.values, np.arange(4.0))
     assert restored.attrs["nested"]["value"] == 1
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("external_raw", [False, True])
+def test_revision_migration_resolves_later_raw_references(
+    reverse, external_raw
+) -> None:
+    references = _ProvenanceRevisionStore()
+    staged = references.stage()
+    raw = script(start_label="Raw", seed_code="derived = data + 1")
+    source = selection(IselOperation(kwargs={"x": slice(1, None)}))
+    complete = compose_full_provenance(raw, source)
+    old_input = ScriptInput(
+        input_version=1,
+        name="data",
+        revision_id="raw",
+        source_spec=source,
+        provenance_spec=complete,
+        data_role="source",
+    )
+    consumer = script(
+        start_label="Consumer",
+        active_name="data",
+        primary_input="data",
+        script_inputs=(old_input,),
+    )
+    entries = [("consumer", consumer), ("raw", raw)]
+    if reverse:
+        entries.reverse()
+    for revision_id, spec in entries:
+        target = references if external_raw and revision_id == "raw" else staged
+        target.add(spec=spec, revision_id=revision_id, normalize=False)
+    staged.normalize_records(references=references)
+    migrated = staged.get("consumer").provenance_spec.replay_inputs[0]
+    assert migrated.input_version == 2
+    assert migrated.fallback_role == "raw"
+    assert migrated.revision_id == "raw"
+    assert migrated.resolved_revision_id is None
+    assert migrated.data_role == "source"
+    assert migrated.parsed_provenance_spec() == raw
+    assert migrated.parsed_source_spec() == source
+    before = staged.get("consumer")
+    staged.normalize_records(references=references)
+    assert staged.get("consumer") == before
+    assert old_input.input_version == 1
+    assert old_input.parsed_provenance_spec() == complete
+    loaded = references.copy()
+    manifest = {
+        "provenance_revisions": [
+            {
+                "revision_id": revision_id,
+                "provenance_spec": spec.model_dump(mode="json"),
+            }
+            for revision_id, spec in entries
+            if not external_raw or revision_id != "raw"
+        ]
+    }
+    workspace_revisions.restore_revision_store(loaded, manifest, "incoming.itws")
+    assert loaded.get("consumer").provenance_spec.replay_inputs[0] == migrated
+    workspace_revisions.restore_revision_store(loaded, manifest, "incoming.itws")
+    assert loaded.get("consumer").provenance_spec.replay_inputs[0] == migrated
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("external_selected", [False, True])
+def test_revision_migration_keeps_raw_and_selected_wrapper_checkpoints(
+    reverse, external_selected
+) -> None:
+    store = _ProvenanceRevisionStore()
+    references = _ProvenanceRevisionStore()
+    raw = script(start_label="Raw", seed_code="derived = data + 1")
+    source = selection(IselOperation(kwargs={"x": slice(1, None)}))
+    raw_input = ScriptInput(
+        input_version=1,
+        name="raw_data",
+        revision_id="raw",
+        follow_source=False,
+        provenance_spec=raw,
+    )
+    complete = script(
+        start_label="Use source input",
+        active_name="derived",
+        primary_input="raw_data",
+        script_inputs=(raw_input,),
+        steps=ReplayStep.from_source_spec(source),
+    )
+    outer = ScriptInput(
+        input_version=1,
+        name="selected",
+        label="Selected source",
+        node_uid="owner",
+        data_role="source",
+        revision_id="selected",
+        source_spec=source,
+        provenance_spec=complete,
+    )
+    consumer = script(
+        start_label="Consumer",
+        active_name="selected",
+        primary_input="selected",
+        script_inputs=(outer,),
+    )
+    entries = [("consumer", consumer), ("selected", complete), ("raw", raw)]
+    if reverse:
+        entries.reverse()
+    for revision_id, spec in entries:
+        target = (
+            references if external_selected and revision_id == "selected" else store
+        )
+        target.add(
+            spec=spec,
+            revision_id=revision_id,
+            normalize=external_selected and revision_id == "selected",
+        )
+    store.normalize_records(references=references)
+    migrated = store.get("consumer").provenance_spec.replay_inputs[0]
+    assert migrated.revision_id == "raw"
+    assert migrated.resolved_revision_id == "selected"
+    assert not migrated.follow_source
+    assert (migrated.name, migrated.label, migrated.node_uid, migrated.data_role) == (
+        "selected",
+        "Selected source",
+        "owner",
+        "source",
+    )
+    assert migrated.parsed_provenance_spec() == raw
+    assert migrated.parsed_source_spec() == source
+    selected = (store.get("selected") or references.get("selected")).provenance_spec
+    assert selected.root_input is not None
+    assert selected.root_input.revision_id == "raw"
+    assert {record.revision_id for record in store.reachable(["consumer"])} == {
+        "consumer",
+        "raw",
+    } | (set() if external_selected else {"selected"})
+
+
+def test_revision_migration_keeps_unseparated_resolved_fallback() -> None:
+    store = _ProvenanceRevisionStore()
+    raw = script(start_label="Raw", seed_code="derived = data + 1")
+    complete = script(start_label="Resolved", seed_code="derived = data.isel(x=0)")
+    source = selection(IselOperation(kwargs={"x": 0}))
+    store.add(spec=raw, revision_id="raw")
+    item = ScriptInput(
+        input_version=1,
+        name="selected",
+        revision_id="raw",
+        source_spec=source,
+        provenance_spec=complete,
+    )
+    migrated = store.normalize_input(item)
+    assert migrated.input_version == 2
+    assert migrated.fallback_role == "resolved"
+    assert migrated.revision_id == "raw"
+    assert migrated.parsed_source_spec() == source
+    assert migrated.resolved_provenance_spec() == complete
+    assert store.normalize_input(migrated) == migrated
+
+
+def test_revision_retention_follows_root_and_selected_references_with_cycles() -> None:
+    store = _ProvenanceRevisionStore()
+    nested = script(
+        start_label="Nested",
+        root_input=ScriptInput(name="nested", revision_id="nested-raw"),
+    )
+    spec = script(
+        start_label="Consumer",
+        root_input=ScriptInput(
+            name="data",
+            revision_id="raw",
+            resolved_revision_id="selected",
+            provenance_spec=nested,
+        ),
+    )
+    store.add(spec=spec, revision_id="consumer")
+    store.add(revision_id="raw", primary_revision_id="consumer")
+    store.add(revision_id="selected", extra_input_revisions={"lost": "missing"})
+    store.add(revision_id="nested-raw")
+    orphan = store.add()
+    store.normalize_records()
+    store.discard_unreachable(["consumer"])
+    assert store.revision_ids == {"consumer", "raw", "selected", "nested-raw"}
+    assert store.get("selected").extra_input_revisions == (("lost", "missing"),)
+    assert orphan not in store
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -1055,7 +1239,7 @@ def test_revision_normalizes_legacy_source_kind_with_stored_python(factory) -> N
     )
     assert normalized is not None
     assert normalized.kind == "script"
-    assert normalized.script_inputs[0].revision_id == source_id
+    assert normalized.root_input.revision_id == source_id
     assert normalized.steps[-1].operation.code == code
     from erlab.interactive._code_trust import (
         issue_execution_capability,
@@ -1153,9 +1337,9 @@ def test_provenance_revision_normalizes_live_source_to_exact_named_input(
         legacy, replay_source_revision_id=seed_id
     )
     assert normalized is not None
-    assert normalized.primary_input == "data"
-    assert normalized.script_inputs[0].revision_id == seed_id
-    assert normalized.script_inputs[0].node_snapshot_token is None
+    assert normalized.replay_primary_input == "data"
+    assert normalized.root_input.revision_id == seed_id
+    assert normalized.root_input.node_snapshot_token is None
     expected = data if operation is None else data.isel(x=slice(1, None))
     xr.testing.assert_identical(
         replay_script_provenance(normalized, {"data": data}), expected

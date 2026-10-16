@@ -243,7 +243,7 @@ def _workspace_provenance_file_stems(
             stem = _file_path_stem(current.file_load_source.path)
             if stem not in stems:
                 stems.append(stem)
-        for script_input in current.script_inputs:
+        for script_input in current.replay_inputs:
             collect(script_input.parsed_provenance_spec())
 
     collect(spec)
@@ -714,9 +714,26 @@ class _WorkspaceLoader:
         *,
         parent_target: int | str | None,
     ) -> xr.Dataset:
-        """Convert released unary ToolWindow metadata to one canonical input."""
+        """Normalize saved ToolWindow inputs with the loaded revision store."""
         inputs_attr = _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR
-        if parent_target is None or inputs_attr in ds.attrs:
+        tool_cls = erlab.interactive.utils.ToolWindow
+        if inputs_attr in ds.attrs:
+            script_inputs, primary_input = tool_cls._saved_script_input_metadata(
+                ds.attrs
+            )
+            normalized = tuple(
+                self._manager._provenance_revisions.normalize_input(item)
+                for item in script_inputs
+            )
+            if normalized == script_inputs:
+                return ds
+            migrated = ds.copy(deep=False)
+            migrated.attrs = dict(ds.attrs)
+            migrated.attrs.update(
+                tool_cls._saved_script_input_attrs(normalized, primary_input)
+            )
+            return migrated
+        if parent_target is None:
             return ds
 
         legacy_attrs = (
@@ -727,7 +744,6 @@ class _WorkspaceLoader:
         if not any(key in ds.attrs for key in legacy_attrs):
             return ds
 
-        tool_cls = erlab.interactive.utils.ToolWindow
         try:
             script_inputs, primary_input = tool_cls._saved_script_input_metadata(
                 ds.attrs

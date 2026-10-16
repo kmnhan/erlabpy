@@ -16,6 +16,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
+    compose_full_provenance,
     full_data,
     public_data,
     recipe,
@@ -58,8 +59,16 @@ from tests.interactive.imagetool.manager.provenance._common import (
         (False, True, True),
     ],
 )
+@pytest.mark.parametrize("fallback_role", ["raw", "resolved"])
 def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
-    qtbot, monkeypatch, tmp_path, manager_context, nested, multiple, missing
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context,
+    nested,
+    multiple,
+    missing,
+    fallback_role,
 ) -> None:
     data = xr.DataArray(
         np.arange(1.0, 25.0).reshape(4, 6),
@@ -97,6 +106,15 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
         captured = manager._lineage_controller._script_input_for_node(
             raw, name="data", source_spec=source_spec, data_role="source"
         )
+        if fallback_role == "resolved":
+            complete = captured.resolved_provenance_spec()
+            assert complete is not None
+            captured = captured.model_copy(
+                update={
+                    "fallback_role": "resolved",
+                    "provenance_spec": complete.model_dump(mode="json"),
+                }
+            )
         spec = recipe(
             ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
             start_label="Use selected input",
@@ -183,9 +201,10 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
             assert node.slicer_area.data.dims == selected.dims
             restored = node.provenance_spec
             assert restored is not None
-            assert restored.primary_input == "data"
-            assert restored.script_inputs[0].source_spec is None
-            assert restored.script_inputs[0].follow_source
+            assert restored.root_input is not None
+            assert restored.root_input.name == "data"
+            assert restored.root_input.source_spec is None
+            assert restored.root_input.follow_source
         restored_workspace = tmp_path / "restored-input.itws"
         manager._workspace_controller.saving._save_workspace_document(
             restored_workspace
@@ -220,6 +239,11 @@ def test_revert_selected_input_uses_saved_raw_prefix_and_reloads_current_file(
 def test_revert_selection_after_closed_source_reloads_uses_latest_raw_checkpoint(
     qtbot, monkeypatch, tmp_path, manager_context, missing, pin_at
 ) -> None:
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, _title, text, **kwargs: pytest.fail(f"{text}: {kwargs}"),
+    )
     data = xr.DataArray(np.arange(24.0).reshape(4, 6), dims=("x", "y"))
     path = tmp_path / "source.nc"
     data.to_netcdf(path, engine="h5netcdf")
@@ -269,15 +293,25 @@ def test_revert_selection_after_closed_source_reloads_uses_latest_raw_checkpoint
             if pin_at == "outer":
                 source = source.model_copy(update={"follow_source": False})
             else:
-                fallback = source.parsed_provenance_spec()
-                pinned = fallback.script_inputs[0].model_copy(
-                    update={"follow_source": False}
+                pinned = source.model_copy(
+                    update={
+                        "follow_source": False,
+                        "source_spec": None,
+                        "resolved_revision_id": None,
+                    }
                 )
+                fallback = script(
+                    start_label="Use saved raw input",
+                    active_name="data",
+                    root_input=pinned,
+                )
+                store = manager._provenance_revisions
                 source = source.model_copy(
                     update={
-                        "provenance_spec": fallback.model_copy(
-                            update={"script_inputs": (pinned,)}
-                        )
+                        "revision_id": store.add(
+                            store.resolve_data(source.revision_id), fallback
+                        ),
+                        "provenance_spec": fallback.model_dump(mode="json"),
                     }
                 )
             node.set_displayed_provenance(
@@ -327,9 +361,17 @@ def test_revert_selection_after_closed_source_reloads_uses_latest_raw_checkpoint
         xr.testing.assert_identical(
             node.slicer_area._data, (data + 200).isel(x=slice(1, 3))
         )
-        assert node.provenance_spec.script_inputs[0].follow_source is (pin_at is None)
+        if pin_at is not None:
+            restored_input = node.provenance_spec.root_input
+            assert restored_input is not None
+            if restored_input.follow_source:
+                fallback = restored_input.parsed_provenance_spec()
+                assert fallback.root_input is not None
+                assert not fallback.root_input.follow_source
         (data + 400).to_netcdf(path, engine="h5netcdf", mode="w")
-        assert manager._lineage_controller._reload_script_derived_target(node.index)
+        assert manager._lineage_controller._reload_target_with_continuations(
+            node.index, ()
+        )
         xr.testing.assert_identical(
             node.slicer_area._data,
             (data + (400 if pin_at is None else 200)).isel(x=slice(1, 3)),
@@ -357,7 +399,7 @@ def test_closed_source_reloads_keep_source_recipe_depth_and_transform_once(
     def input_depth(spec):
         nested = [
             item.parsed_provenance_spec()
-            for item in (() if spec is None else spec.script_inputs)
+            for item in (() if spec is None else spec.replay_inputs)
         ]
         return 1 + max((input_depth(value) for value in nested), default=0)
 
@@ -567,11 +609,6 @@ def test_relative_restore_keeps_only_its_own_parameter_expression_approval(
             name="data",
             source_spec=selection(operation),
         )
-        if not file_backed:
-            # A tool can retain its relative recipe without a raw reload recipe.
-            source = source.model_copy(
-                update={"provenance_spec": selection(operation).to_replay_spec()}
-            )
         provenance = recipe(
             ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
             start_label="Use fit parameter",
@@ -678,20 +715,16 @@ def test_exact_selected_checkpoint_revert_keeps_pin_without_replaying_fit(
         raw = ScriptInput(
             name="data", revision_id=store.add(data, raw_spec), provenance_spec=raw_spec
         )
-        complete = script(
-            start_label="Use source input",
-            active_name="derived",
-            primary_input="data",
-            script_inputs=(raw,),
-            steps=ReplayStep.from_source_spec(source),
-        )
+        complete = compose_full_provenance(raw_spec, source)
+        assert complete is not None
         checkpoint = store.add(selected, complete)
         pinned = ScriptInput(
             name="data",
-            revision_id=checkpoint,
+            revision_id=raw.revision_id,
+            resolved_revision_id=checkpoint,
             follow_source=False,
             source_spec=source,
-            provenance_spec=complete,
+            provenance_spec=raw_spec,
         )
         provenance = recipe(
             ReplayStep(operation=AssignAttrsOperation(attrs={"later": True})),
@@ -764,8 +797,9 @@ def test_exact_selected_checkpoint_revert_keeps_pin_without_replaying_fit(
             controller.revert_row(rows[0][1])
         for node in nodes:
             xr.testing.assert_identical(node.slicer_area._data, selected)
-            assert not node.provenance_spec.script_inputs[0].follow_source
-            assert node.provenance_spec.script_inputs[0].source_spec is None
+            assert node.provenance_spec.root_input is not None
+            assert not node.provenance_spec.root_input.follow_source
+            assert node.provenance_spec.root_input.source_spec is None
             assert node.current_revision_id != checkpoint
             store.bind(node.current_revision_id, node.provenance_spec)
             current_row = next(
@@ -814,7 +848,8 @@ def test_exact_selected_checkpoint_revert_keeps_pin_without_replaying_fit(
             controller.revert_row(later_rows[0][1])
         for node in nodes:
             xr.testing.assert_identical(node.slicer_area._data, selected)
-            saved_input = node.provenance_spec.script_inputs[0]
+            saved_input = node.provenance_spec.root_input
+            assert saved_input is not None
             assert not saved_input.follow_source
             assert saved_input.revision_id == checkpoint
             assert saved_input.source_spec is None
@@ -852,9 +887,9 @@ def test_recorded_resolved_input_with_nan_parameters_applies_transform_once(
         revision_id = store.add(resolved, recipe)
         source = ScriptInput(
             name="data",
-            revision_id=revision_id,
+            revision_id=raw_id,
+            resolved_revision_id=revision_id,
             source_spec=source_spec,
-            provenance_spec=json.loads(json.dumps(recipe.model_dump(mode="json"))),
         )
         recorded, _source = manager._lineage_controller._resolve_recorded_script_input(
             source
@@ -1007,6 +1042,7 @@ def test_manager_repeated_shift_restores_primary_checkpoints_after_sources_close
             normalized, full_data(operation), replay_source_data=data
         )
         normalized_revision = node.current_revision_id
+        normalized_spec = node.provenance_spec
         for _ in range(2):
             current = node.data_for_role("source")
             spec = manager._multi_input_operation_provenance(
@@ -1050,21 +1086,23 @@ def test_manager_repeated_shift_restores_primary_checkpoints_after_sources_close
         controller.revert_row(row)
         xr.testing.assert_identical(node.data_for_role("source"), normalized)
         store = manager._provenance_revisions
-        assert node.current_revision_id != normalized_revision
+        assert node.current_revision_id == normalized_revision
+        assert node.provenance_spec == normalized_spec
         store.bind(node.current_revision_id, node.provenance_spec)
-        saved_input = node.provenance_spec.script_inputs[0]
-        assert saved_input.revision_id == normalized_revision
+        saved_input = node.provenance_spec.root_input
+        assert saved_input is not None
         assert not saved_input.follow_source
         assert saved_input.source_spec is None
         xr.testing.assert_identical(store.resolve_data(normalized_revision), normalized)
         saved_spec = saved_input.parsed_provenance_spec()
-        store.bind(normalized_revision, saved_spec)
+        store.bind(saved_input.revision_id, saved_spec)
         assert any(
-            isinstance(step.operation, NormalizeOperation) for step in saved_spec.steps
+            isinstance(step.operation, NormalizeOperation)
+            for step in node.provenance_spec.steps
         )
         assert all(
             not isinstance(step.operation, ShiftFromInputOperation)
-            for step in (*node.provenance_spec.steps, *saved_spec.steps)
+            for step in node.provenance_spec.steps
         )
         for index in tuple(manager._tool_graph.root_wrappers):
             manager._remove_imagetool(index)
@@ -1657,7 +1695,8 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
         assert detached.replay_source_data is None
-        seed_revision = detached.provenance_spec.script_inputs[0].revision_id
+        assert detached.provenance_spec.root_input is not None
+        seed_revision = detached.provenance_spec.root_input.revision_id
         assert manager._provenance_revisions.has_data(seed_revision)
         detached_tool = manager.get_imagetool(1)
         detached_derivation_before = detached.provenance_spec.derivation_code()
@@ -1831,10 +1870,11 @@ def test_reloaded_fallback_captures_exist_before_publication(
                 published_spec = published.provenance_spec
                 if published_spec is None:
                     continue
-                for item in published_spec.script_inputs:
-                    if item.revision_id is not None:
-                        assert store.has_data(item.revision_id)
-                        observed.append(item.revision_id)
+                for item in published_spec.replay_inputs:
+                    for revision_id in (item.revision_id, item.resolved_revision_id):
+                        if revision_id is not None:
+                            assert store.has_data(revision_id)
+                            observed.append(revision_id)
 
         manager._sigReloadLinkers.connect(check_published_inputs)
         initial = store.revision_ids

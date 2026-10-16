@@ -6925,7 +6925,7 @@ def test_selected_primary_display_does_not_claim_raw_revision(tmp_path, with_fal
             start_label="Load data",
             seed_code=f"import xarray\nderived = xarray.load_dataarray({str(path)!r})",
             file_load_source=_file_replay_source(path),
-        ).append_replay_stage(source_spec)
+        )
     primary_input = ScriptInput(
         name="data",
         node_uid="owner",
@@ -6946,9 +6946,7 @@ def test_selected_primary_display_does_not_claim_raw_revision(tmp_path, with_fal
     assert all(row.on_primary_chain for row in rows)
     graph = compile_replay_graph(
         spec,
-        live_input_resolver=(
-            None if with_fallback else lambda item: (source_spec.apply(raw), item)
-        ),
+        live_input_resolver=(None if with_fallback else lambda item: (raw, item)),
     )
     expected = raw.isel(x=slice(0, 2)).mean("y")
     xr.testing.assert_identical(execute_replay_graph(graph), expected)

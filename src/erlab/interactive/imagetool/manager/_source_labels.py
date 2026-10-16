@@ -27,13 +27,15 @@ def _recorded_file_basename(script_input: ScriptInput) -> str | None:
                     return basename
         inputs = payload.get("script_inputs", ())
         primary = payload.get("primary_input")
-        nested = (
-            next((item for item in inputs if item.get("name") == primary), None)
-            if primary is not None
-            else inputs[0]
-            if len(inputs) == 1
-            else None
-        )
+        nested = payload.get("root_input")
+        if not isinstance(nested, Mapping):
+            nested = (
+                next((item for item in inputs if item.get("name") == primary), None)
+                if primary is not None
+                else inputs[0]
+                if len(inputs) == 1
+                else None
+            )
         if isinstance(nested, Mapping):
             pending.extend((nested.get("provenance_spec"), nested.get("source_spec")))
     return None

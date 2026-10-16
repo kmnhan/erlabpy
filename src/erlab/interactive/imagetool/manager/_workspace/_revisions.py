@@ -182,11 +182,9 @@ def restore_revision_store(
         source_owner_uid = entry.get("source_owner_uid")
         if source_owner_uid is not None and not isinstance(source_owner_uid, str):
             raise TypeError("Workspace revision source owner must be a node UID")
-        spec = store.normalize_provenance(
-            parse_tool_provenance_spec(entry.get("provenance_spec"))
-        )
+        spec = parse_tool_provenance_spec(entry.get("provenance_spec"))
         inputs = {**_provenance_input_revisions(spec), **inputs}
-        existing = staged.get(revision_id) or store.get(revision_id)
+        existing = staged.get(revision_id)
         if existing is not None:
             existing_metadata = revision_manifest_entry(existing)
             loaded_metadata = {
@@ -212,5 +210,30 @@ def restore_revision_store(
             primary_revision_id=primary,
             source_owner_uid=source_owner_uid,
             source=source,
+            normalize=False,
         )
-    store.merge(staged)
+    staged.normalize_records(references=store)
+    additions = store.stage()
+    for record in staged.reachable(staged.revision_ids):
+        existing = store.get(record.revision_id)
+        if existing is not None:
+            if json.dumps(
+                revision_manifest_entry(existing), sort_keys=True
+            ) != json.dumps(revision_manifest_entry(record), sort_keys=True):
+                raise ValueError("Conflicting workspace provenance revision ID")
+            continue
+        additions.add(
+            data=(
+                staged.resolve_data(record.revision_id)
+                if record.checkpoint is not None and record.checkpoint.source is None
+                else None
+            ),
+            spec=record.provenance_spec,
+            revision_id=record.revision_id,
+            extra_input_revisions=record.extra_input_revisions,
+            primary_revision_id=record.primary_revision_id,
+            source_owner_uid=record.source_owner_uid,
+            source=None if record.checkpoint is None else record.checkpoint.source,
+            normalize=False,
+        )
+    store.merge(additions)

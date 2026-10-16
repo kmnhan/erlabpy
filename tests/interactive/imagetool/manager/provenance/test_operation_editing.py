@@ -497,7 +497,7 @@ def test_manager_bound_shift_edit_rejects_stale_model_state() -> None:
 
     missing_binding_spec = types.SimpleNamespace(
         steps=(types.SimpleNamespace(input_bindings={}),),
-        script_inputs=(),
+        replay_inputs=(),
     )
     node = _fake_edit_node(typing.cast("typing.Any", missing_binding_spec))
     with pytest.raises(RuntimeError, match="has no shift input"):
@@ -511,7 +511,7 @@ def test_manager_bound_shift_edit_rejects_stale_model_state() -> None:
 
     missing_input_spec = types.SimpleNamespace(
         steps=(valid_step,),
-        script_inputs=(),
+        replay_inputs=(),
     )
     with pytest.raises(RuntimeError, match="input is not available"):
         controller._edit_bound_shift_operation_row(

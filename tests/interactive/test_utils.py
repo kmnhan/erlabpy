@@ -5626,9 +5626,11 @@ def test_tool_window_dataset_migrates_legacy_input_metadata(qtbot) -> None:
     assert fallback_restored.script_inputs[0].parsed_source_spec() == source_spec
 
 
+@pytest.mark.parametrize("attribute_format", ["unary", "named"])
 def test_tool_window_legacy_input_fallback_replays_source_transform_once(
     qtbot,
     tmp_path,
+    attribute_format,
 ) -> None:
     data = xr.DataArray(
         np.arange(6.0),
@@ -5658,16 +5660,36 @@ def test_tool_window_legacy_input_fallback_replays_source_transform_once(
     assert complete_fallback is not None
     expected = source_spec.apply(data)
     saved = _PersistentTool(expected).to_dataset()
-    saved.attrs["tool_source_spec"] = json.dumps(source_spec.model_dump(mode="json"))
-    saved.attrs["tool_input_provenance_spec"] = json.dumps(
-        complete_fallback.model_dump(mode="json")
-    )
+    if attribute_format == "unary":
+        saved.attrs["tool_source_spec"] = json.dumps(
+            source_spec.model_dump(mode="json")
+        )
+        saved.attrs["tool_input_provenance_spec"] = json.dumps(
+            complete_fallback.model_dump(mode="json")
+        )
+    else:
+        saved.attrs["tool_script_inputs"] = json.dumps(
+            [
+                {
+                    "name": "data",
+                    "source_spec": source_spec.model_dump(mode="json"),
+                    "provenance_spec": complete_fallback.model_dump(mode="json"),
+                }
+            ]
+        )
+        saved.attrs["tool_primary_input"] = "data"
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
     resolved, _refreshed = rebuild_script_inputs(restored.script_inputs)
 
     xr.testing.assert_identical(resolved["data"], expected)
+    assert restored.script_inputs[0].input_version == 2
+    assert restored.script_inputs[0].parsed_provenance_spec() == parent_spec
+    roundtrip_inputs, _ = restored._saved_script_input_metadata(
+        restored.to_dataset().attrs
+    )
+    assert roundtrip_inputs == restored.script_inputs
 
 
 def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> None:

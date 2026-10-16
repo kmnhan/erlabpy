@@ -90,12 +90,12 @@ class _ProvenanceStepsClipboardPayload:
         primary = next(
             (
                 item
-                for item in self.spec.script_inputs
-                if item.name == self.spec.primary_input
+                for item in self.spec.replay_inputs
+                if item.name == self.spec.replay_primary_input
             ),
             None,
         )
-        nested = None if primary is None else primary.parsed_provenance_spec()
+        nested = None if primary is None else primary.resolved_provenance_spec()
         return (
             () if nested is None else _ProvenanceStepsClipboardPayload(nested).steps
         ) + self.spec.steps
@@ -106,12 +106,12 @@ class _ProvenanceStepsClipboardPayload:
 
     @property
     def primary_input(self) -> str | None:
-        return self.spec.primary_input
+        return self.spec.replay_primary_input
 
     @property
     def script_inputs(self) -> tuple[ScriptInput, ...]:
         return tuple(
-            item for item in self.spec.script_inputs if item.name != self.primary_input
+            item for item in self.spec.replay_inputs if item.name != self.primary_input
         )
 
     @property
@@ -692,17 +692,17 @@ class _DetailsPanelController:
             return None
         current = spec
         for index in row.script_input_path:
-            if current.kind != "script" or index >= len(current.script_inputs):
+            if current.kind != "script" or index >= len(current.replay_inputs):
                 return None
-            nested = current.script_inputs[index].parsed_provenance_spec()
+            nested = current.replay_inputs[index].resolved_provenance_spec()
             if nested is None:
                 return None
             current = nested
         if current.kind != "script" or ref.script_input_index >= len(
-            current.script_inputs
+            current.replay_inputs
         ):
             return None
-        return current.script_inputs[ref.script_input_index]
+        return current.replay_inputs[ref.script_input_index]
 
     def _current_derivation_display_row(
         self,
@@ -1291,7 +1291,7 @@ class _DetailsPanelController:
                 input_name=input_name,
                 output_name=output_name,
                 input_alias=prefix.active_name if source_name is not None else None,
-                script_inputs=spec.script_inputs,
+                script_inputs=spec.replay_inputs,
             )
 
             uid, _original, row, _step = rows[0]
@@ -1306,30 +1306,31 @@ class _DetailsPanelController:
                 if path[: len(row.script_input_path)] != row.script_input_path:
                     continue
                 relative_path = path[len(row.script_input_path) :]
-                input_name = selected_spec.primary_input
+                input_name = selected_spec.replay_primary_input
                 current: ToolProvenanceSpec | None = spec
                 primary_chain = True
                 for depth, input_index in enumerate(relative_path):
-                    if current is None or input_index >= len(current.script_inputs):
+                    if current is None or input_index >= len(current.replay_inputs):
                         primary_chain = False
                         break
-                    item = current.script_inputs[input_index]
+                    item = current.replay_inputs[input_index]
                     if depth == 0:
                         input_name = item.name
                     else:
                         primary_input = (
-                            current.primary_input or _direct_replay_source_name(current)
+                            current.replay_primary_input
+                            or _direct_replay_source_name(current)
                         )
                         if item.name != primary_input:
                             primary_chain = False
                             break
-                    current = item.parsed_provenance_spec()
+                    current = item.resolved_provenance_spec()
                 if (
                     primary_chain
                     and input_name is not None
                     and input_name not in input_scopes
                     and any(
-                        item.name == input_name for item in selected_spec.script_inputs
+                        item.name == input_name for item in selected_spec.replay_inputs
                     )
                 ):
                     input_scopes[input_name] = index
@@ -1419,7 +1420,7 @@ class _DetailsPanelController:
         except ReplayGraphError:
             return None
         if not scopes or any(
-            scope.input_scopes != {scope.spec.primary_input: index - 1}
+            scope.input_scopes != {scope.spec.replay_primary_input: index - 1}
             for index, scope in enumerate(scopes)
             if index
         ):
@@ -1427,17 +1428,22 @@ class _DetailsPanelController:
         spec = scopes[0].spec
         for scope in scopes[1:]:
             local = scope.spec
-            spec = local.model_copy(
-                update={
-                    "script_inputs": tuple(
-                        item.model_copy(
-                            update={"provenance_spec": spec.model_dump(mode="json")}
-                        )
-                        if item.name == local.primary_input
-                        else item
-                        for item in local.script_inputs
+            spec = local.with_replay_inputs(
+                tuple(
+                    item.model_copy(
+                        update={
+                            "node_uid": None,
+                            "node_snapshot_token": None,
+                            "revision_id": None,
+                            "resolved_revision_id": None,
+                            "source_spec": None,
+                            "provenance_spec": spec.model_dump(mode="json"),
+                        }
                     )
-                }
+                    if item.name == local.replay_primary_input
+                    else item
+                    for item in local.replay_inputs
+                )
             )
         payload = _ProvenanceStepsClipboardPayload(
             spec, self._manager._manager_record.internal_id
@@ -1670,7 +1676,7 @@ class _DetailsPanelController:
         if spec is None or spec.kind != "script":
             return set()
         replayable_labels: set[str] = set()
-        for script_input in spec.script_inputs:
+        for script_input in spec.replay_inputs:
             try:
                 script_inputs_code((script_input,), display=True)
             except ReplayGraphError:

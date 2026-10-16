@@ -23,10 +23,12 @@ from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     compose_display_provenance,
     compose_full_provenance,
     full_data,
     parse_script_inputs,
+    script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
@@ -1208,7 +1210,7 @@ def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
 
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
-        source_revision = wrapper.provenance_spec.script_inputs[0].revision_id
+        source_revision = wrapper.provenance_spec.replay_inputs[0].revision_id
         assert source_revision is not None
         assert manager._provenance_revisions.has_data(source_revision)
         select_tools(manager, [0])
@@ -1223,7 +1225,7 @@ def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
 
         duplicate_index = typing.cast("int", manager.duplicate_imagetool(0))
         duplicate = manager._tool_graph.root_wrappers[duplicate_index]
-        assert duplicate.provenance_spec.script_inputs[0].revision_id == source_revision
+        assert duplicate.provenance_spec.replay_inputs[0].revision_id == source_revision
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(source_revision).compute(),
             source,
@@ -1464,6 +1466,60 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
         assert skipped
         assert skipped[0][0] == f"0/childtools/{child_uid}"
         assert isinstance(skipped[0][1], TypeError)
+
+
+@pytest.mark.parametrize("checkpoint_role", ["raw", "resolved"])
+def test_workspace_named_tool_inputs_normalize_checkpoint_roles(
+    manager_context,
+    checkpoint_role,
+) -> None:
+    raw = script(
+        start_label="Raw", seed_code="derived = data + 1", active_name="derived"
+    )
+    source = full_data(IselOperation(kwargs={"x": slice(1, None)}))
+    complete = compose_full_provenance(raw, source)
+    with manager_context() as manager:
+        store = manager._provenance_revisions
+        store.add(
+            spec=raw if checkpoint_role == "raw" else complete, revision_id="saved"
+        )
+        old_input = ScriptInput(
+            input_version=1,
+            name="data",
+            revision_id="saved",
+            source_spec=source,
+            provenance_spec=complete,
+        )
+        dataset = xr.Dataset(
+            attrs={
+                _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
+                    [old_input.model_dump(mode="json")]
+                ),
+                _persistence_constants.TOOL_PRIMARY_INPUT_ATTR: "data",
+            }
+        )
+        loader = manager._workspace_controller.loading
+        normalized = loader._workspace_tool_dataset_with_canonical_inputs(
+            dataset,
+            parent_target=None,
+        )
+        migrated = parse_script_inputs(
+            normalized.attrs[_persistence_constants.TOOL_SCRIPT_INPUTS_ATTR]
+        )[0]
+        assert migrated.input_version == 2
+        assert migrated.parsed_provenance_spec() == raw
+        assert migrated.parsed_source_spec() == source
+        assert migrated.revision_id == ("saved" if checkpoint_role == "raw" else None)
+        assert migrated.resolved_revision_id == (
+            "saved" if checkpoint_role == "resolved" else None
+        )
+        assert (
+            loader._workspace_tool_dataset_with_canonical_inputs(
+                normalized,
+                parent_target=None,
+            )
+            is normalized
+        )
 
 
 def test_pending_toolwindow_legacy_binding_is_materialized_by_saved_input_decoder(
@@ -1898,7 +1954,7 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
         root_node = manager._tool_graph.root_wrappers[0]
         assert child_node.pending_workspace_memory_payload is not None
         assert root_node.pending_workspace_memory_payload is not None
-        source_revision = root_node.provenance_spec.script_inputs[0].revision_id
+        source_revision = root_node.provenance_spec.replay_inputs[0].revision_id
         assert source_revision is not None
         assert manager._provenance_revisions.has_data(source_revision)
 

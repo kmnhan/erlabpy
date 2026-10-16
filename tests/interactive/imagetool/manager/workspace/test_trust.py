@@ -2106,7 +2106,7 @@ def test_signed_workspace_runs_locally_edited_provenance_without_review(
         node = manager._node_for_target(0)
         candidate = manager._provenance_revisions.normalize_provenance(
             candidate,
-            replay_source_revision_id=node.provenance_spec.script_inputs[0].revision_id,
+            replay_source_revision_id=node.provenance_spec.replay_inputs[0].revision_id,
         )
         assert candidate is not None
         manager._provenance_edit_controller._validate_and_replace(
@@ -2265,7 +2265,10 @@ def test_checkpoint_revert_retains_partial_approval_at_its_owner(
                     update={
                         "script_inputs": (
                             captured_spec.script_inputs[0].model_copy(
-                                update={"revision_id": None}
+                                update={
+                                    "revision_id": None,
+                                    "resolved_revision_id": None,
+                                }
                             ),
                         )
                     }
@@ -2378,7 +2381,7 @@ def test_mixed_checkpoint_revert_preserves_code_ownership(
             update={
                 "script_inputs": (
                     captured_spec.script_inputs[0].model_copy(
-                        update={"revision_id": None}
+                        update={"revision_id": None, "resolved_revision_id": None}
                     ),
                 )
             }

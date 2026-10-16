@@ -1456,7 +1456,7 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
         assert duplicated_wrapper.replay_source_data is None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
-                duplicated_wrapper.provenance_spec.script_inputs[0].revision_id
+                duplicated_wrapper.provenance_spec.replay_inputs[0].revision_id
             ),
             replay_source,
         )

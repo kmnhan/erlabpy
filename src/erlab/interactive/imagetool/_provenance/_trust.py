@@ -157,7 +157,7 @@ def _stored_spec_code_trust_entries(
     context = {
         "active_name": parsed.active_name if parsed.kind == "script" else "derived",
         "binding_names": (
-            sorted({item.name for item in parsed.script_inputs})
+            sorted({item.name for item in parsed.replay_inputs})
             if parsed.kind == "script"
             else ["data", "derived", "parent_data"]
         ),
@@ -195,11 +195,19 @@ def _stored_spec_code_trust_entries(
                     context=context,
                 )
             )
-    for index, script_input in enumerate(parsed.script_inputs):
+    for index, script_input in enumerate(parsed.replay_inputs):
         entries.extend(
             _stored_spec_code_trust_entries(
                 script_input.parsed_provenance_spec(),
                 location_prefix=f"{location_prefix}/inputs/{index}:{script_input.name}",
+            )
+        )
+        entries.extend(
+            _stored_spec_code_trust_entries(
+                script_input.parsed_source_spec(),
+                location_prefix=(
+                    f"{location_prefix}/inputs/{index}:{script_input.name}/source"
+                ),
             )
         )
     return tuple(entries)
@@ -213,7 +221,7 @@ def script_replay_source_input_names(spec: typing.Any) -> tuple[str, ...]:
     )
 
     parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script" or parsed.script_inputs:
+    if parsed is None or parsed.kind != "script" or parsed.replay_inputs:
         return ()
 
     candidates = ["data", "derived", "parent_data"]

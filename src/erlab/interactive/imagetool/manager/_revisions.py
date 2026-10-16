@@ -16,9 +16,9 @@ from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
+    _normalize_legacy_script_input,
     compose_full_provenance,
     parse_tool_provenance_spec,
-    script,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import (
@@ -86,7 +86,7 @@ class _BoundProvenanceRevision:
 def _provenance_input_revisions(spec: ToolProvenanceSpec | None) -> dict[str, str]:
     return {
         item.name: item.revision_id
-        for item in (() if spec is None else spec.script_inputs)
+        for item in (() if spec is None else spec.replay_inputs)
         if item.revision_id is not None
     }
 
@@ -102,9 +102,16 @@ def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
             if isinstance(inputs, (list, tuple)):
                 for item in inputs:
                     if isinstance(item, Mapping):
-                        revision_id = item.get("revision_id")
-                        if isinstance(revision_id, str) and revision_id:
-                            ids.add(revision_id)
+                        for field in ("revision_id", "resolved_revision_id"):
+                            revision_id = item.get(field)
+                            if isinstance(revision_id, str) and revision_id:
+                                ids.add(revision_id)
+            root = payload.get("root_input")
+            if isinstance(root, Mapping):
+                for field in ("revision_id", "resolved_revision_id"):
+                    revision_id = root.get(field)
+                    if isinstance(revision_id, str) and revision_id:
+                        ids.add(revision_id)
             for value in payload.values():
                 _visit(value)
         elif isinstance(payload, (list, tuple)):
@@ -124,9 +131,10 @@ def _same_bound_provenance(
         if spec is None:
             return None
         payload = spec.model_dump(mode="json")
-        for item, item_payload in zip(
-            spec.script_inputs, payload["script_inputs"], strict=True
-        ):
+        input_payloads = payload["script_inputs"]
+        if spec.root_input is not None:
+            input_payloads = [payload["root_input"], *input_payloads]
+        for item, item_payload in zip(spec.replay_inputs, input_payloads, strict=True):
             item_payload["node_uid"] = None
             item_payload["provenance_spec"] = normalized(item.parsed_provenance_spec())
             item_payload["source_spec"] = normalized(item.parsed_source_spec())
@@ -144,12 +152,12 @@ def requires_legacy_replay_source(spec: ToolProvenanceSpec | None) -> bool:
         return True
     if spec.kind != "script":
         return False
-    if spec.script_inputs:
+    if spec.replay_inputs:
         return any(
             item.node_uid is None
             and item.node_snapshot_token is not None
             and item.revision_id is None
-            for item in spec.script_inputs
+            for item in spec.replay_inputs
         )
     return bool(script_replay_source_input_names(spec))
 
@@ -159,6 +167,8 @@ def _script_input_revision_ids(inputs: Iterable[ScriptInput]) -> frozenset[str]:
     for item in inputs:
         if item.revision_id is not None:
             ids.add(item.revision_id)
+        if item.resolved_revision_id is not None:
+            ids.add(item.resolved_revision_id)
         ids.update(_spec_revision_ids(item.parsed_provenance_spec()))
         ids.update(_spec_revision_ids(item.parsed_source_spec()))
     return frozenset(ids)
@@ -183,6 +193,7 @@ class _ProvenanceRevisionStore:
         source_owner_uid: str | None = None,
         revision_id: str | None = None,
         source: _RevisionCheckpointSource | None = None,
+        normalize: bool = True,
     ) -> str:
         revision_id = uuid.uuid4().hex if revision_id is None else revision_id
         if (
@@ -198,7 +209,9 @@ class _ProvenanceRevisionStore:
             raise ValueError("Supply revision data or a checkpoint source, not both")
         if data is not None and not isinstance(data, xr.DataArray):
             raise TypeError("Revision data must be a DataArray")
-        parsed_spec = self.normalize_provenance(parse_tool_provenance_spec(spec))
+        parsed_spec = parse_tool_provenance_spec(spec)
+        if normalize:
+            parsed_spec = self.normalize_provenance(parsed_spec)
         inputs = (
             tuple(extra_input_revisions.items())
             if isinstance(extra_input_revisions, Mapping)
@@ -269,70 +282,142 @@ class _ProvenanceRevisionStore:
             raise ValueError("The bound recipe does not match the captured revision")
         return _BoundProvenanceRevision(record, copy.deepcopy(provenance_spec))
 
-    def raw_source_input(
-        self, script_input: ScriptInput
-    ) -> tuple[ScriptInput, ToolProvenanceSpec] | None:
-        """Separate a captured raw input from its relative source selection."""
-        source = script_input.parsed_source_spec()
-        bound = script_input.parsed_provenance_spec()
-        record = self.get(script_input.revision_id or "")
-        if (
-            source is None
-            or (source.kind == "full_data" and not source.operations)
-            or record is None
-            or record.checkpoint is None
-        ):
-            return None
-        raw = record.provenance_spec
-        if raw is not None and bound is not None and raw.kind == "script":
-            # Source composition retains the raw recipe's input bindings.
-            raw = raw.model_copy(update={"script_inputs": bound.script_inputs})
-        if not _same_bound_provenance(compose_full_provenance(raw, source), bound):
-            # A fallback rebuild stores the selection around its new raw input.
-            # Reuse that explicit boundary on later reloads and partial restores.
+    def _normalization_store(
+        self, references: _ProvenanceRevisionStore | None
+    ) -> _ProvenanceRevisionStore:
+        result = _ProvenanceRevisionStore()
+        if references is not None:
+            result._records.update(references._records)
+        result._records.update(self._records)
+        return result
+
+    def normalize_input(
+        self,
+        item: ScriptInput,
+        *,
+        references: _ProvenanceRevisionStore | None = None,
+    ) -> ScriptInput:
+        """Convert saved resolved fallbacks to the explicit raw-input contract."""
+        if references is not None:
+            return self._normalization_store(references).normalize_input(item)
+        original = item
+        bound = item.parsed_provenance_spec()
+        source = item.parsed_source_spec()
+        item = _normalize_legacy_script_input(item)
+        if original.input_version == 1 and source is not None and bound is not None:
+            # Saved wrappers and their already imported canonical forms use the
+            # same boundary. Compare these forms without looking up references,
+            # so cyclic record references cannot recurse during migration.
+            syntax_normalizer = _ProvenanceRevisionStore()
+
+            def same_recipe(
+                left: ToolProvenanceSpec | None, right: ToolProvenanceSpec | None
+            ) -> bool:
+                return _same_bound_provenance(
+                    syntax_normalizer.normalize_provenance(left),
+                    syntax_normalizer.normalize_provenance(right),
+                )
+
+            record = self._records.get(original.revision_id or "")
+            record_is_resolved = False
+            if record is not None:
+                identity_source = source.kind == "full_data" and not source.operations
+                if not identity_source and same_recipe(record.provenance_spec, bound):
+                    record_is_resolved = True
+                    # The saved revision captured the selected result. Its raw
+                    # boundary can be recovered from the exact source suffix.
+                    item = item.model_copy(
+                        update={
+                            "revision_id": (
+                                item.revision_id
+                                if item.revision_id != original.revision_id
+                                else None
+                            ),
+                            "resolved_revision_id": original.revision_id,
+                        }
+                    )
+                else:
+                    raw = record.provenance_spec
+                    if (
+                        raw is not None
+                        and raw.kind == "script"
+                        and tuple(value.name for value in raw.replay_inputs)
+                        == tuple(value.name for value in bound.replay_inputs)
+                    ):
+                        # Workspace UID rebasing changes each owner's bindings,
+                        # while the checkpoint retains its original recipe.
+                        raw = raw.with_replay_inputs(bound.replay_inputs)
+                    if same_recipe(compose_full_provenance(raw, source), bound):
+                        item = item.model_copy(
+                            update={
+                                "fallback_role": "raw",
+                                "revision_id": original.revision_id,
+                                "resolved_revision_id": original.resolved_revision_id,
+                                "provenance_spec": (
+                                    None if raw is None else raw.model_dump(mode="json")
+                                ),
+                            }
+                        )
+                    elif item.resolved_revision_id == original.revision_id:
+                        item = item.model_copy(
+                            update={
+                                "resolved_revision_id": original.resolved_revision_id
+                            }
+                        )
+            raw_record = self._records.get(item.revision_id or "")
             if (
-                bound is None
-                or bound.primary_input is None
-                or len(bound.script_inputs) != 1
+                item.revision_id != original.revision_id
+                and raw_record is not None
+                and not same_recipe(
+                    raw_record.provenance_spec, item.parsed_provenance_spec()
+                )
             ):
-                return None
-            raw_input = bound.script_inputs[0]
-            if (
-                raw_input.source_spec is not None
-                or raw_input.revision_id is None
-                or not self.has_data(raw_input.revision_id)
-            ):
-                return None
-            expected = script(
-                start_label=bound.start_label or "Use source input",
-                active_name=bound.active_name,
-                primary_input=raw_input.name,
-                script_inputs=(raw_input,),
-                steps=ReplayStep.from_source_spec(source),
-            )
-            if not _same_bound_provenance(expected, bound):
-                return None
-            try:
-                self.bind(raw_input.revision_id, raw_input.parsed_provenance_spec())
-            except (KeyError, ValueError):
-                return None
-            return raw_input.model_copy(
-                update={
-                    "follow_source": script_input.follow_source
-                    and raw_input.follow_source
-                }
-            ), source
-        return (
-            script_input.model_copy(
-                update={
-                    "source_spec": None,
-                    "provenance_spec": None
-                    if raw is None
-                    else raw.model_dump(mode="json"),
-                }
-            ),
-            source,
+                # The old outer reference does not prove that the nested recipe
+                # belongs to its checkpoint. Keep its complete resolved fallback.
+                item = original.model_copy(
+                    update={
+                        "input_version": 2,
+                        "fallback_role": "resolved",
+                        "revision_id": None
+                        if record_is_resolved
+                        else original.revision_id,
+                        "resolved_revision_id": original.revision_id
+                        if record_is_resolved
+                        else original.resolved_revision_id,
+                    }
+                )
+        normalized = self.normalize_provenance(item.parsed_provenance_spec())
+        return item.model_copy(
+            update={
+                "input_version": 2,
+                "provenance_spec": (
+                    None if normalized is None else normalized.model_dump(mode="json")
+                ),
+            },
+            deep=True,
         )
+
+    def normalize_records(
+        self, *, references: _ProvenanceRevisionStore | None = None
+    ) -> None:
+        """Normalize recipes after all imported revision references are visible."""
+        # Read the same original records for every migration. Mutation order must
+        # not determine whether a reference denotes raw or selected data.
+        normalizer = self._normalization_store(references)
+        records = {}
+        for revision_id, record in tuple(self._records.items()):
+            spec = normalizer.normalize_provenance(record.provenance_spec)
+            ordinary_inputs = _provenance_input_revisions(spec)
+            records[revision_id] = replace(
+                record,
+                provenance_spec=spec,
+                extra_input_revisions=tuple(
+                    (name, ref)
+                    for name, ref in record.extra_input_revisions
+                    if ordinary_inputs.get(name) != ref
+                ),
+            )
+        self._records = records
 
     def has_data(self, revision_id: str) -> bool:
         record = self._records.get(revision_id)
@@ -425,7 +510,12 @@ class _ProvenanceRevisionStore:
         spec: ToolProvenanceSpec | None,
         *,
         replay_source_revision_id: str | None = None,
+        references: _ProvenanceRevisionStore | None = None,
     ) -> ToolProvenanceSpec | None:
+        if references is not None:
+            return self._normalization_store(references).normalize_provenance(
+                spec, replay_source_revision_id=replay_source_revision_id
+            )
         if spec is None:
             return None
         if replay_source_revision_id is not None and not self.has_data(
@@ -433,22 +523,18 @@ class _ProvenanceRevisionStore:
         ):
             raise ValueError("Legacy replay source revision has no checkpoint")
         inputs = []
-        for item in spec.script_inputs:
-            updates: dict[str, typing.Any] = {}
-            nested = item.parsed_provenance_spec()
-            if nested is not None:
-                normalized = self.normalize_provenance(nested)
-                updates["provenance_spec"] = (
-                    None if normalized is None else normalized.model_dump(mode="json")
-                )
+        for item in spec.replay_inputs:
+            normalized = self.normalize_input(item)
             if item.node_uid is None and item.node_snapshot_token is not None:
-                updates["node_snapshot_token"] = None
-                updates["follow_source"] = False
-                if item.revision_id is None and replay_source_revision_id is not None:
-                    updates["revision_id"] = replay_source_revision_id
-            inputs.append(
-                item.model_copy(update=updates, deep=True) if updates else item
-            )
+                normalized = normalized.model_copy(
+                    update={
+                        "node_snapshot_token": None,
+                        "follow_source": False,
+                        "revision_id": normalized.revision_id
+                        or replay_source_revision_id,
+                    }
+                )
+            inputs.append(normalized)
         if replay_source_revision_id is not None and spec.kind in {
             "full_data",
             "public_data",
@@ -481,14 +567,11 @@ class _ProvenanceRevisionStore:
                     "kind": "script",
                     "start_label": "Saved",
                     "active_name": "derived" if steps else "data",
-                    "primary_input": "data",
-                    "script_inputs": (
-                        ScriptInput(
-                            name="data",
-                            label="Saved",
-                            revision_id=replay_source_revision_id,
-                            follow_source=False,
-                        ),
+                    "root_input": ScriptInput(
+                        name="data",
+                        label="Saved",
+                        revision_id=replay_source_revision_id,
+                        follow_source=False,
                     ),
                     "steps": steps,
                 }
@@ -507,4 +590,20 @@ class _ProvenanceRevisionStore:
                 )
                 for name in script_replay_source_input_names(spec)
             )
-        return spec.model_copy(update={"script_inputs": tuple(inputs)}, deep=True)
+        normalized = spec.with_replay_inputs(inputs)
+        if (
+            normalized.kind == "script"
+            and normalized.root_input is None
+            and normalized.primary_input is not None
+            and len(normalized.script_inputs) == 1
+            and normalized.seed_code is None
+            and normalized.start_label in {"Use saved input", "Use source input"}
+        ):
+            normalized = normalized.model_copy(
+                update={
+                    "root_input": normalized.script_inputs[0],
+                    "primary_input": None,
+                    "script_inputs": (),
+                }
+            )
+        return normalized

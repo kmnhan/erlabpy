@@ -519,9 +519,9 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
         node = manager._node_for_target(0)
         canonical = node.provenance_spec
         assert canonical is not None
-        seed_id = canonical.script_inputs[0].revision_id
+        seed_id = canonical.replay_inputs[0].revision_id
         assert seed_id is not None
-        assert canonical.script_inputs[0].node_snapshot_token is None
+        assert canonical.replay_inputs[0].node_snapshot_token is None
         assert node.replay_source_data is None
         assert reads == 1
         if imported:
@@ -571,7 +571,7 @@ def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
         )
         assert reads == 1
         node = manager._node_for_target(0)
-        assert node.provenance_spec.script_inputs[0].revision_id == seed_id
+        assert node.provenance_spec.replay_inputs[0].revision_id == seed_id
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(seed_id).compute(), test_data
         )
@@ -716,7 +716,7 @@ def test_workspace_adoption_normalizes_legacy_seed_before_pure_save(
         assert manager._provenance_revisions.revision_ids == revision_ids
 
         spec = node.provenance_spec
-        seed_id = spec.script_inputs[0].revision_id
+        seed_id = spec.replay_inputs[0].revision_id
         assert seed_id is not None
         assert node.replay_source_data is None
         xr.testing.assert_identical(
@@ -739,7 +739,7 @@ def test_workspace_adoption_normalizes_legacy_seed_before_pure_save(
             path, replace=True, associate=True, mark_dirty=False, select=False
         )
         restored = manager._node_for_target(0)
-        assert restored.provenance_spec.script_inputs[0].revision_id == seed_id
+        assert restored.provenance_spec.replay_inputs[0].revision_id == seed_id
         assert restored.pending_workspace_memory_payload is not None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(seed_id).compute(), test_data

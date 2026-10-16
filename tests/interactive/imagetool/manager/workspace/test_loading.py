@@ -1274,7 +1274,12 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
             manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
             restored_input.parsed_source_spec(),
         )
-        assert restored_input.parsed_provenance_spec() == expected
+        assert restored_input.parsed_provenance_spec() == (
+            manager._tool_graph.root_wrappers[
+                0
+            ].displayed_provenance_spec.to_replay_spec()
+        )
+        assert restored_input.resolved_provenance_spec() == expected
         current = restored.current_provenance_spec()
         assert current is not None
         assert "attacker" not in current.display_code()

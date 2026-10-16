@@ -274,7 +274,7 @@ def test_duplicated_subtree_history_keeps_duplicated_source(
         assert editor.can_revert_row(row)[0]
         editor.revert_row(row)
         xr.testing.assert_identical(target.current_source_data(), data + 1)
-        assert target.provenance_spec.script_inputs[0].node_uid == duplicate.uid
+        assert target.provenance_spec.replay_inputs[0].node_uid == duplicate.uid
         promoted_index = manager.promote_child_imagetool(target.uid)
         target = manager._node_for_target(promoted_index)
         manager.tree_view.clearSelection()
@@ -3142,7 +3142,7 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
             (data + updated_shift).rename(None),
         )
         refreshed_data_input = {
-            item.name: item for item in data_node.provenance_spec.script_inputs
+            item.name: item for item in data_node.provenance_spec.replay_inputs
         }["data"]
         assert refreshed_data_input.node_uid is None
         assert refreshed_data_input.node_snapshot_token is None
@@ -3624,7 +3624,7 @@ def test_managed_reload_resumes_after_deferred_script_result_input(
         xr.testing.assert_identical(consumer.tool_data, expected)
         assert consumer.update_calls == 1
         assert derived_node.provenance_spec is not None
-        assert derived_node.provenance_spec.script_inputs[0].node_uid == source_uid
+        assert derived_node.provenance_spec.replay_inputs[0].node_uid == source_uid
         assert not manager._dependency_tracker.has_pending_source_refreshes()
 
 
@@ -6158,7 +6158,7 @@ def test_manager_promote_live_child_retains_replay_source(
         promoted = manager._tool_graph.root_wrappers[promoted_index]
         assert promoted.replay_source_data is None
         assert promoted.provenance_spec is not None
-        captured = promoted.provenance_spec.script_inputs[0]
+        captured = promoted.provenance_spec.replay_inputs[0]
         assert captured.revision_id is not None
         assert not captured.follow_source
         xr.testing.assert_identical(

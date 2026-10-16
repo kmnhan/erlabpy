@@ -1976,7 +1976,7 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         assert provenance is not None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
-                provenance.script_inputs[0].revision_id
+                provenance.replay_inputs[0].revision_id
             ),
             replacement,
         )
@@ -1996,7 +1996,7 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, before)
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
-                provenance.script_inputs[0].revision_id
+                provenance.replay_inputs[0].revision_id
             ),
             replacement,
         )
@@ -2088,7 +2088,7 @@ def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
         assert node.displayed_provenance_spec is not None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
-                node.displayed_provenance_spec.script_inputs[0].revision_id
+                node.displayed_provenance_spec.replay_inputs[0].revision_id
             ),
             replacement,
         )
@@ -2426,7 +2426,7 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
         assert node.replay_source_data is None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
-                node.provenance_spec.script_inputs[0].revision_id
+                node.provenance_spec.replay_inputs[0].revision_id
             ),
             source,
         )
@@ -2450,7 +2450,7 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
         assert restored.provenance_spec is not None
         xr.testing.assert_identical(
             manager._provenance_revisions.resolve_data(
-                restored.provenance_spec.script_inputs[0].revision_id
+                restored.provenance_spec.replay_inputs[0].revision_id
             ),
             source,
         )
@@ -2524,7 +2524,7 @@ def test_live_replacement_preserves_explicit_assignment_when_source_matches(
         assert node.displayed_provenance_spec is not None
         assert node.replay_source_data is None
         assert manager._provenance_revisions.has_data(
-            node.displayed_provenance_spec.script_inputs[0].revision_id
+            node.displayed_provenance_spec.replay_inputs[0].revision_id
         )
 
 
@@ -9476,7 +9476,7 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         assert isinstance(
             top_node.provenance_spec.operations[-1], ShiftFromInputOperation
         )
-        assert [item.node_uid for item in top_node.provenance_spec.script_inputs] == [
+        assert [item.node_uid for item in top_node.provenance_spec.replay_inputs] == [
             source_node.uid,
             shift_node.uid,
         ]

@@ -384,7 +384,7 @@ def _collect_provenance_file_paths(
         return
     if spec.file_load_source is not None:
         _append_unique_path(paths, spec.file_load_source.path)
-    for script_input in spec.script_inputs:
+    for script_input in spec.replay_inputs:
         _collect_provenance_file_paths(script_input.parsed_provenance_spec(), paths)
 
 
@@ -2457,7 +2457,7 @@ class _ManagedWindowNode(QtCore.QObject):
         provenance_spec = self._derivation_provenance_spec
         if provenance_spec is None:
             return None
-        if self.manager._is_figure_uid(self.uid) and provenance_spec.script_inputs:
+        if self.manager._is_figure_uid(self.uid) and provenance_spec.replay_inputs:
             from erlab.interactive.imagetool._provenance._graph import (
                 ReplayGraphError,
                 compile_replay_graph,

@@ -1654,10 +1654,7 @@ def test_rebuild_cache_separates_live_input_source_transforms() -> None:
     def resolve_live(script_input: ScriptInput):
         if script_input.node_uid != "shared-node":
             return None
-        source_spec = script_input.parsed_source_spec()
-        if source_spec is None:
-            return source, script_input
-        return source_spec.apply(source), script_input
+        return source, script_input
 
     result, _ = rebuild_script_provenance(
         spec,
@@ -2312,8 +2309,6 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     xr.testing.assert_identical(rebuilt, data + 1.0)
     assert rebuilt_spec.script_inputs[0].node_uid is None
 
-    with pytest.raises(ReplayGraphError, match="maximum reload depth"):
-        rebuild_script_provenance(script_spec, depth=21)
     missing_spec = script(
         ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
         start_label="Run script",
@@ -2483,7 +2478,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
             ),
         ),
     )
-    with pytest.raises(ReplayGraphError, match="not self-contained"):
+    with pytest.raises(ReplayGraphError, match="reloadable script or file"):
         rebuild_script_provenance(full_data_spec)
 
 
@@ -5984,7 +5979,7 @@ def test_missing_later_callable_precedes_any_file_load(
     assert load_calls == []
 
 
-def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
+def test_live_input_classification_supports_deep_replay() -> None:
     data = xr.DataArray([1.0, 2.0], dims="x")
     spec = script(
         ScriptCodeOperation(label="Add inputs", code="result = left + right"),
@@ -5996,7 +5991,7 @@ def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
             ScriptInput(name="right", node_uid="right"),
         ),
     )
-    for level in range(21):
+    for level in range(40):
         spec = script(
             start_label=f"Copy nested input {level}",
             seed_code="result = child",
@@ -6009,15 +6004,28 @@ def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
             return data, script_input
         return None
 
-    assert not script_provenance_replayable(
+    assert script_provenance_replayable(
         spec,
         live_input_resolver=resolve_live,
     )
-    with pytest.raises(ReplayGraphError, match="maximum reload depth"):
-        rebuild_script_provenance(
-            spec,
-            live_input_resolver=resolve_live,
-        )
+    result, rebuilt = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
+    )
+    xr.testing.assert_identical(result, data + data)
+    assert rebuilt.kind == "script"
+
+
+def test_replay_rejects_recorded_input_cycle() -> None:
+    spec = script(
+        start_label="Use child",
+        active_name="child",
+        primary_input="child",
+        script_inputs=(ScriptInput(name="child"),),
+    )
+    with pytest.raises(ReplayGraphError, match="input cycle"):
+        rebuild_script_provenance(spec, _input_provenance_resolver=lambda _item: spec)
 
 
 def test_rebuild_preflight_work_scales_linearly(
@@ -9011,3 +9019,196 @@ def test_selected_steps_code_preserves_input_before_effectful_property(
 
     xr.testing.assert_identical(namespace["derived"], source + 1.0)
     xr.testing.assert_identical(namespace["data"], xr.DataArray([100.0]))
+
+
+def test_rebuild_captures_raw_and_source_checkpoints_on_cache_hits(
+    tmp_path: pathlib.Path,
+) -> None:
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+
+    data = xr.DataArray(np.arange(12.0).reshape(4, 3), dims=("x", "y"))
+    path = tmp_path / "raw-checkpoint.nc"
+    data.to_netcdf(path)
+    source = selection(
+        IselOperation(kwargs={"x": slice(1, None)}),
+        IselOperation(kwargs={"x": slice(1, None)}),
+    )
+    spec = script(
+        start_label="Use selected source",
+        active_name="data",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data", provenance_spec=_file_spec(path), source_spec=source
+            ),
+        ),
+    )
+    cache = {}
+    for _attempt in range(2):
+        revisions = _ProvenanceRevisionStore()
+
+        def capture(
+            value: xr.DataArray, item: ScriptInput, *, revisions=revisions
+        ) -> ScriptInput:
+            revision_id = revisions.add(
+                value,
+                item.parsed_provenance_spec(),
+                primary_revision_id=item.revision_id,
+            )
+            return item.model_copy(update={"revision_id": revision_id})
+
+        result, rebuilt = rebuild_script_provenance(
+            spec, cache=cache, _capture_input_revision=capture
+        )
+        owner = rebuilt.script_inputs[0]
+        xr.testing.assert_identical(result, data.isel(x=slice(2, None)))
+        xr.testing.assert_identical(revisions.resolve_data(owner.revision_id), data)
+        xr.testing.assert_identical(
+            revisions.resolve_data(owner.resolved_revision_id), result
+        )
+        intermediate = [
+            revisions.resolve_data(record.revision_id)
+            for record in revisions.reachable((owner.resolved_revision_id,))
+        ]
+        assert any(value.sizes["x"] == 3 for value in intermediate)
+        if _attempt == 1:
+            result.values[:] = -1
+            xr.testing.assert_identical(revisions.resolve_data(owner.revision_id), data)
+
+
+def test_composed_primary_source_runs_once(tmp_path: pathlib.Path) -> None:
+    raw = xr.DataArray(np.arange(20.0).reshape(5, 4), dims=("x", "y"))
+    path = tmp_path / "composed-source.nc"
+    raw.to_netcdf(path)
+    local = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average source",
+        active_name="average",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                source_spec=selection(IselOperation(kwargs={"x": slice(1, None)})),
+            ),
+        ),
+    )
+    composed = compose_full_provenance(_file_spec(path), local)
+    expected = raw.isel(x=slice(1, None)).mean("y")
+    xr.testing.assert_identical(
+        execute_replay_graph(compile_replay_graph(composed)), expected
+    )
+    code = emit_replay_code(
+        compile_replay_graph(composed, display=True), output_name="average"
+    )
+    xr.testing.assert_identical(_exec_generated_code(code)["average"], expected)
+
+
+def test_composition_preserves_pinned_root_provider(tmp_path: pathlib.Path) -> None:
+    raw = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    path = tmp_path / "root-source.nc"
+    raw.to_netcdf(path)
+    owner = ScriptInput(
+        name="base",
+        revision_id="captured",
+        follow_source=False,
+        provenance_spec=_file_spec(path),
+    )
+    parent = script(start_label="Use saved input", active_name="base", root_input=owner)
+    local = script(
+        ScriptCodeOperation(label="Offset data", code="result = base + 2"),
+        start_label="Offset data",
+        active_name="result",
+    )
+    composed = compose_full_provenance(parent, local)
+    path.unlink()
+    graph = compile_replay_graph(
+        composed,
+        trusted_user_code=True,
+        live_input_resolver=lambda item: _graph.ResolvedReplayInput(raw, item, "raw"),
+    )
+    xr.testing.assert_identical(
+        execute_replay_graph(graph, authorize=_authorize_execution), raw + 2
+    )
+    assert composed.root_input == owner
+
+
+@pytest.mark.parametrize("root", [False, True])
+def test_input_source_extension_controls_reload_capability(
+    tmp_path: pathlib.Path, root: bool
+) -> None:
+    raw = xr.DataArray([1.0], dims="x")
+    path = tmp_path / "source-capability.nc"
+    raw.to_netcdf(path)
+    source = full_data(
+        ExtensionRoutineOperation(
+            script_name="routine.py",
+            source_hash="a" * 64,
+            routine_id="scale",
+            routine_name="Scale",
+            parameters={},
+        )
+    )
+    item = ScriptInput(
+        name="data", provenance_spec=_file_spec(path), source_spec=source
+    )
+    spec = script(
+        start_label="Use input",
+        active_name="data",
+        **(
+            {"root_input": item}
+            if root
+            else {"primary_input": "data", "script_inputs": (item,)}
+        ),
+    )
+    for status in ("ready", "disabled"):
+        calls = []
+
+        def capability(
+            script_name, source_hash, kind, capability_id, *, status=status, calls=calls
+        ):
+            calls.append((script_name, source_hash, kind, capability_id))
+            return status
+
+        assert _execution.can_reload_without_trust(
+            spec, extension_status_resolver=capability
+        ) == (status == "ready")
+        assert calls == [("routine.py", "a" * 64, "routine", "scale")]
+
+
+def test_raw_provider_replaces_stale_selected_checkpoint_ancestry() -> None:
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+
+    raw = xr.DataArray(np.arange(6.0), dims="x")
+    revisions = _ProvenanceRevisionStore()
+    raw_id = revisions.add(raw)
+    owner = ScriptInput(
+        name="data",
+        revision_id=raw_id,
+        resolved_revision_id="stale-selected",
+        source_spec=selection(IselOperation(kwargs={"x": slice(1, None)})),
+    )
+    spec = script(
+        start_label="Use selected input", active_name="data", root_input=owner
+    )
+    parents = []
+
+    def capture(value: xr.DataArray, item: ScriptInput) -> ScriptInput:
+        parents.append(item.revision_id)
+        revision_id = revisions.add(
+            value, item.parsed_provenance_spec(), primary_revision_id=item.revision_id
+        )
+        return item.model_copy(update={"revision_id": revision_id})
+
+    result, rebuilt = rebuild_script_provenance(
+        spec,
+        live_input_resolver=lambda item: _graph.ResolvedReplayInput(raw, item, "raw"),
+        _capture_input_revision=capture,
+    )
+    xr.testing.assert_identical(result, raw.isel(x=slice(1, None)))
+    assert parents[0] == raw_id
+    assert "stale-selected" not in parents
+    assert rebuilt.root_input.revision_id == raw_id
+    assert raw_id in {
+        record.revision_id
+        for record in revisions.reachable((rebuilt.root_input.resolved_revision_id,))
+    }

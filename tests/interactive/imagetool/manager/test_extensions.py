@@ -7864,8 +7864,12 @@ def test_workspace_script_remap_updates_node_provenance_owners(
         assert {child_uid, tool_uid}.issubset(manager._workspace_state.dirty_state)
 
 
+@pytest.mark.parametrize("root_input", [False, True])
+@pytest.mark.parametrize("source_transform", [False, True])
 def test_workspace_script_remap_updates_nested_and_loader_provenance(
     manager_context,
+    root_input,
+    source_transform,
 ) -> None:
     source_hash = "a" * 64
     operation = ExtensionRoutineOperation(
@@ -7876,17 +7880,18 @@ def test_workspace_script_remap_updates_nested_and_loader_provenance(
         parameters={},
     )
     nested = full_data(operation)
+    nested_input = ScriptInput(
+        name="nested",
+        provenance_spec=full_data() if source_transform else nested,
+        source_spec=nested if source_transform else None,
+    )
     provenance = ToolProvenanceSpec(
         kind="script",
         start_label="Use extension inputs",
-        seed_code="result = nested",
+        seed_code=None if root_input else "result = nested",
         active_name="result",
-        script_inputs=(
-            ScriptInput(
-                name="nested",
-                provenance_spec=nested.model_dump(mode="json"),
-            ),
-        ),
+        root_input=nested_input if root_input else None,
+        script_inputs=() if root_input else (nested_input,),
         file_load_source=FileLoadSource(
             path="data.dat",
             loader_label="Workspace loader",
@@ -7909,12 +7914,21 @@ def test_workspace_script_remap_updates_nested_and_loader_provenance(
             provenance_spec=provenance,
         )
 
+        assert any(
+            item.capability_id == "normalize"
+            for item in manager._extensions.collect_workspace_requirements()
+        )
         manager._extensions._remap_workspace_script(
             "workspace.py", source_hash, "registered.py"
         )
 
         remapped = manager._node_for_target(index).provenance_spec
-        remapped_nested = remapped.script_inputs[0].parsed_provenance_spec()
+        remapped_input = remapped.replay_inputs[0]
+        remapped_nested = (
+            remapped_input.parsed_source_spec()
+            if source_transform
+            else remapped_input.parsed_provenance_spec()
+        )
         if remapped_nested is None:
             raise RuntimeError("The nested provenance was not retained")
         remapped_operation = typing.cast(
