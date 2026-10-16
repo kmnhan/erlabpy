@@ -1341,6 +1341,13 @@ def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
     monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
     monkeypatch.setattr(
         controller,
+        "_apply_candidates",
+        lambda candidates, **_kwargs: replaced.extend(
+            candidate.spec for candidate in candidates
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
         "_validate_and_replace",
         lambda _node, _scope, candidate, **_kwargs: replaced.append(candidate),
     )
@@ -2048,7 +2055,7 @@ def test_manager_provenance_edit_controller_error_paths(
     )
     monkeypatch.setattr(
         controller,
-        "_validate_and_replace",
+        "_apply_candidates",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     controller.revert_row(row)
