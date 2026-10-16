@@ -248,6 +248,19 @@ either value changes. Use
 {meth}`_notify_data_changed() <erlab.interactive.utils.ToolWindow._notify_data_changed>`
 instead when output data also changes.
 
+## Figure Composer sources
+
+Override `figure_source_providers()` to expose a captured output directly to Figure
+Composer. A provider declares a stable ID and payload kind, checks readiness without
+capturing data, and returns a `FigureSourceCapture` when selected. Keep parameter
+exports as ImageTool outputs.
+
+Register a `SourceSpec` in `_figurecomposer._sources` for a new payload kind. It defines
+copying, storage, safe values, and optional model execution and trust inspection. Store
+arrays in the codec's native array slots. Keep generated code in the operation spec and
+use public Python APIs. Each operation declares the source kinds and evaluation it
+requires.
+
 ## Generated code
 
 Set {attr}`COPY_PROVENANCE <erlab.interactive.utils.ToolWindow.COPY_PROVENANCE>` when

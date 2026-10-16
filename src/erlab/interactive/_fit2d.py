@@ -64,6 +64,7 @@ if typing.TYPE_CHECKING:
     import varname
 
     from erlab.interactive._figurecomposer import FigureOperationState
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 else:
@@ -121,6 +122,7 @@ def _fit_dataset_settings(
 def _rebuild_ui(
     *,
     mark_fresh: bool = True,
+    restore_fit_result: bool = False,
 ) -> Callable[
     [Callable[typing.Concatenate[Fit2DTool, _P], _R]],
     Callable[typing.Concatenate[Fit2DTool, _P], _R],
@@ -152,6 +154,8 @@ def _rebuild_ui(
                 rebuilt_fit_result_blob = getattr(
                     self, "_serialized_fit_result_blob", None
                 )
+                fit_restore_configuration = self._figure_fit_restore_configuration
+                fit_restored_indices = self._figure_fit_restored_indices
                 # Reset current slice + fit state.
                 self._reset_fit_state(
                     self._data_full.isel({self._y_dim_name: self._current_idx}),
@@ -167,9 +171,16 @@ def _rebuild_ui(
                     model_name=self._model_name,
                 )
                 self._serialized_fit_result_blob = rebuilt_fit_result_blob
+                if restore_fit_result:
+                    self._figure_fit_restore_configuration = fit_restore_configuration
+                    self._figure_fit_restored_indices = fit_restored_indices
 
                 # Rebuild UI and refresh views.
                 self._build_ui()
+                if restore_fit_result:
+                    self._figure_fit_restore_configuration = (
+                        self._figure_fit_configuration()
+                    )
                 self.param_model.sigParamsChanged.connect(self._update_params_full)
                 self._update_fit_curve()
                 self._write_history = True
@@ -882,6 +893,7 @@ class Fit2DTool(Fit1DTool):
 
     def _restore_fit_parameter_axes(self, result_ds: xr.Dataset) -> xr.Dataset:
         """Remove alignment padding and recover each slice's parameter order."""
+        result_ds = self._unpack_figure_fit_metadata(result_ds)
         if self._FIT_PARAMETER_AXES_VAR in result_ds:
             axes = json.loads(result_ds[self._FIT_PARAMETER_AXES_VAR].item())
             result_ds = result_ds.drop_vars(self._FIT_PARAMETER_AXES_VAR)
@@ -907,6 +919,27 @@ class Fit2DTool(Fit1DTool):
         fit_ranges: list[tuple[float, float]] | None = None,
     ) -> xr.Dataset:
         """Align different result indexes and retain the identical-index fast path."""
+        if any(
+            any(str(name).startswith("__figure_fit_") for name in result.attrs)
+            for result in results
+        ):
+            prepared = []
+            for result in results:
+                metadata = {
+                    name: value
+                    for name, value in result.attrs.items()
+                    if str(name).startswith("__figure_fit_")
+                }
+                prepared_result = result.assign(
+                    __figure_fit_metadata__=xr.DataArray(json.dumps(metadata))
+                )
+                prepared_result.attrs = {
+                    name: value
+                    for name, value in result.attrs.items()
+                    if name not in metadata
+                }
+                prepared.append(prepared_result)
+            results = prepared
         if fit_ranges is None:
             range_coord_names = (
                 self._FIT_RANGE_MIN_COORD,
@@ -2377,7 +2410,7 @@ class Fit2DTool(Fit1DTool):
         if emit_info:
             self._emit_info_changed()
 
-    @_rebuild_ui(mark_fresh=True)
+    @_rebuild_ui(mark_fresh=True, restore_fit_result=True)
     def _restore_from_fit_dataset(
         self, fit_ds: xr.Dataset, *, model: lmfit.Model | None = None
     ) -> None:
@@ -2443,6 +2476,8 @@ class Fit2DTool(Fit1DTool):
         self._result_ds_full = [
             self._fit_result_with_range(slice_ds) for _, slice_ds in slice_states
         ]
+        self._figure_fit_restore_configuration = self._figure_fit_configuration()
+        self._figure_fit_restored_indices = set(range(len(self._result_ds_full)))
         self._fit_is_current = True
         self._refresh_fit_code_entries()
         self._cache_fit_result_payload()
@@ -2759,6 +2794,7 @@ class Fit2DTool(Fit1DTool):
         """Attach the submitted Fit2D range after xarray-lmfit completes."""
         if job.fit_range is None:  # pragma: no cover - Fit2D always records a range.
             raise RuntimeError("Fit2D job does not contain a fit range.")
+        result_ds = super()._fit_result_for_job(result_ds, job)
         if job.fit_range == self._data_fit_range(self._data_full):
             return result_ds
         return self._fit_result_with_explicit_range(result_ds, job.fit_range)
@@ -2842,8 +2878,10 @@ class Fit2DTool(Fit1DTool):
         self, idx: int, result_ds: xr.Dataset, t0: float
     ) -> lmfit.model.ModelResult:
         self._last_result_ds = result_ds.copy()
+        self._figure_fit_restored_indices.discard(idx)
         result = self._last_result_ds.modelfit_results.compute().item()
         self._replace_current_params(result.params.copy())
+        self._capture_figure_fit_metadata(self._last_result_ds)
         previous = self._params_full[idx]
         full_expressions_changed = (
             () if previous is None else self._live_parameter_expressions(previous)
@@ -3640,9 +3678,18 @@ class Fit2DTool(Fit1DTool):
             normalize = self.normalize_check.isChecked()
         if normalize:
             if lines is not None:
-                lines.append(
-                    f"{data_name}_norm = "
-                    f'{data_name} / {data_name}.mean("{self._coord_name}")'
+                mean_name = f"{data_name}_mean"
+                factor_name = f"{data_name}_norm_factor"
+                lines.extend(
+                    (
+                        "import numpy as np",
+                        f'{mean_name} = {data_name}.mean("{self._coord_name}")',
+                        f"{factor_name} = {mean_name}.where(",
+                        f"    np.isfinite({mean_name}) "
+                        f"& ~np.isclose({mean_name}, 0.0), 1.0",
+                        ")",
+                        f"{data_name}_norm = {data_name} / {factor_name}",
+                    )
                 )
             data_name = f"{data_name}_norm"
 
@@ -3679,7 +3726,7 @@ class Fit2DTool(Fit1DTool):
             if lines is not None:
                 lines.append(
                     f"{uncertainty_name}_norm = {uncertainty_name} / "
-                    f'abs({raw_data_name}.mean("{self._coord_name}"))'
+                    f"abs({raw_data_name}_norm_factor)"
                 )
             uncertainty_name = f"{uncertainty_name}_norm"
         return uncertainty_name
@@ -3741,7 +3788,7 @@ class Fit2DTool(Fit1DTool):
             if lines is not None:
                 lines.append(
                     f"{weights_name}_norm = {weights_name} * "
-                    f'abs({raw_data_name}.mean("{self._coord_name}"))'
+                    f"abs({raw_data_name}_norm_factor)"
                 )
             weights_name = f"{weights_name}_norm"
         return weights_name
@@ -3797,6 +3844,8 @@ class Fit2DTool(Fit1DTool):
             "method": self.method_combo.currentText(),
             "scale_covar": self.scale_covar_check.isChecked(),
         }
+        if self.nfev_spin.value() > 0:
+            fit_kwargs["max_nfev"] = self.nfev_spin.value()
         if weights_name is not None:
             fit_kwargs["weights"] = f"|{weights_name}|"
         return erlab.interactive.utils.generate_code(
@@ -3824,6 +3873,143 @@ class Fit2DTool(Fit1DTool):
     ) -> str | None:
         prelude = self._build_full_copy_prelude(input_name=primary_input, warn=False)
         return prelude or None
+
+    def _figure_fit_provenance(self) -> ToolProvenanceSpec | None:
+        from erlab.interactive.imagetool._provenance._operations import (
+            ScriptCodeOperation,
+        )
+
+        selection = erlab.interactive.utils.format_kwargs(
+            {self._y_dim_name: self._current_idx}
+        )
+        primary = f"{self._primary_input or self._data_name_full}.isel({selection})"
+        provenance = self._build_script_provenance(
+            Fit1DTool.COPY_PROVENANCE,
+            data=None,
+            script_inputs=self._script_inputs,
+            primary_input=primary,
+        )
+        if provenance is None:
+            return None
+        operation = provenance.operations[-1]
+        if not isinstance(operation, ScriptCodeOperation):
+            return provenance
+        code = typing.cast("str", operation.code)
+        if self._uncertainty_full is not None and self._direct_weights_full is None:
+            # Broadcast before selecting so scalar and one-dimensional errors work.
+            code = code.replace(
+                f"({self._uncertainty_name}).broadcast_like(input_data)",
+                f"({self._uncertainty_name}).broadcast_like("
+                f"{self._primary_input or self._data_name_full}).isel({selection})",
+            )
+        if (
+            self._direct_weights_full is not None
+            and self._y_dim_name in self._direct_weights_full.dims
+        ):
+            code = code.replace(
+                f"= {self._direct_weights_name}\n",
+                f"= ({self._direct_weights_name}).isel({selection})\n",
+            )
+        return provenance.model_copy(
+            update={
+                "steps": (
+                    *provenance.steps[:-1],
+                    provenance.steps[-1].model_copy(
+                        update={
+                            "operation": operation.model_copy(update={"code": code})
+                        }
+                    ),
+                )
+            }
+        )
+
+    def figure_fit_selection(self) -> dict[str, typing.Any]:
+        coordinate = self._y_values()[self._current_idx]
+        return {
+            "dimension": str(self._y_dim_name),
+            "index": int(self._current_idx),
+            "coordinate": coordinate.item()
+            if isinstance(coordinate, np.generic)
+            else coordinate,
+        }
+
+    def figure_fit_source_name(self) -> str:
+        from erlab.interactive._figurecomposer._model._sources import (
+            _source_alias_candidate,
+        )
+
+        name = _source_alias_candidate(
+            self._data.rename(self._primary_input or self._data_name_full)
+        )
+        return f"{name or 'spectrum'}_fit_{self._current_idx}"
+
+    def _figure_fit_weighting_data(self) -> xr.DataArray | None:
+        return (
+            self._direct_weights_full
+            if self._direct_weights_full is not None
+            else self._uncertainty_full
+        )
+
+    def _figure_fit_index(self, selection: dict[str, typing.Any] | None) -> int | None:
+        if selection is None:
+            return self._current_idx
+        if selection.get("dimension") != str(self._y_dim_name):
+            return None
+        index = selection.get("index")
+        if not isinstance(index, int) or not 0 <= index < len(self._result_ds_full):
+            return None
+        if self._y_values()[index] != selection.get("coordinate"):
+            return None
+        return index
+
+    def has_figure_fit_source(
+        self, selection: dict[str, typing.Any] | None = None
+    ) -> bool:
+        index = self._figure_fit_index(selection)
+        if (
+            index is None
+            or self._fit_running()
+            or self._fit_multi_sequence_active()
+            or self._fit_2d_sequence_active()
+        ):
+            return False
+        result_ds = (
+            self._last_result_ds
+            if index == self._current_idx
+            else self._result_ds_full[index]
+        )
+        params = (
+            self._params if index == self._current_idx else self._params_full[index]
+        )
+        return (
+            result_ds is not None
+            and params is not None
+            and self._figure_fit_params_match(
+                result_ds,
+                params,
+                check_configuration=selection is None,
+                use_restore_configuration=index in self._figure_fit_restored_indices,
+            )
+        )
+
+    def figure_fit_source_snapshot(
+        self, selection: dict[str, typing.Any] | None = None
+    ) -> FigureFitSourceSnapshot:
+        self._flush_restore_work()
+        if not self.has_figure_fit_source(selection):
+            raise ValueError(
+                "The selected slice has no completed fit with a finite curve "
+                "and unchanged parameters"
+            )
+        index = self._figure_fit_index(selection)
+        result_ds = (
+            self._last_result_ds
+            if index == self._current_idx
+            else self._result_ds_full[typing.cast("int", index)]
+        )
+        return self._figure_fit_snapshot_from_dataset(
+            typing.cast("xr.Dataset", result_ds)
+        )
 
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
@@ -3999,6 +4185,7 @@ class Fit2DTool(Fit1DTool):
             model_kwargs=model_kwargs,
             parameters=parameters,
             method=self.method_combo.currentText(),
+            max_nfev=self.nfev_spin.value() or None,
             parameter=param_name,
             output=output,
             broadcast_dim=self._y_dim_name,
@@ -4290,6 +4477,7 @@ def ftool(
                 win._set_direct_weights(
                     fit_ds_weights, weights_name=fit_ds_weights_name
                 )
+                win._figure_fit_restore_configuration = win._figure_fit_configuration()
             if (
                 uncertainty is not None
                 or not saved_weighting_reproducible

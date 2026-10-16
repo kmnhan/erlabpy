@@ -20,6 +20,7 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
+    SourceRequest,
     _empty_source_editor,
     _no_invalid_target,
     _uses_no_source_section,
@@ -28,6 +29,8 @@ from erlab.interactive._figurecomposer._rendering import _source_namespace
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -147,7 +150,12 @@ def _render_custom(
     code = operation.code.strip()
     if not code:
         return
-    namespace = _source_namespace(tool, fig, axs)
+    namespace = _source_namespace(
+        tool,
+        fig,
+        axs,
+        source_requests=_source_requests(operation, tool._document.source_names()),
+    )
     # The whole-recipe renderer checks document trust before it calls this function.
     exec(operation.code, namespace)  # noqa: S102
 
@@ -243,6 +251,13 @@ def _custom_first_axis_code(tool: FigureComposerTool) -> str:
     return axes_code[0] if axes_code else "None"
 
 
+def _source_requests(
+    operation: FigureOperationState, available_names: Iterable[str]
+) -> tuple[SourceRequest, ...]:
+    names = _custom_code_names(operation.code)
+    return tuple(SourceRequest(name, True) for name in available_names if name in names)
+
+
 SPEC = OperationSpec(
     kind=FigureOperationKind.CUSTOM,
     add_actions=(
@@ -263,5 +278,7 @@ SPEC = OperationSpec(
     section_summary=_section_summary,
     render=_render_custom,
     code_lines=_code_lines,
+    accepted_source_kinds=None,
+    source_requests=_source_requests,
     required_imports=_required_imports,
 )

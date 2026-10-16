@@ -32,6 +32,9 @@ from erlab.analysis.fit.functions.general import (
 )
 from erlab.constants import TINY, kb_eV
 
+if typing.TYPE_CHECKING:
+    from erlab.analysis.fit.models import MultiPeakModel
+
 
 class PeakArgs(typing.TypedDict):
     args: list[str]
@@ -465,6 +468,37 @@ class MultiPeakFunction(DynamicFunction):
                 return self.pre_call(x, **params)
             return self._compute_convolution(x, self.pre_call, **params)
         return self.pre_call(x, **params)
+
+
+class _MultiPeakComponentFunction(DynamicFunction):
+    def __init__(self, model: "MultiPeakModel", component: str) -> None:
+        self.model = model
+        self.component = component
+
+    def _argument_name(self, name: str) -> str:
+        return name if name in self.model.independent_vars else self.model.prefix + name
+
+    @property
+    def argnames(self) -> list[str]:
+        names = [self._argument_name(name) for name in self.model.func.argnames]
+        # Parent hints can supply prefixed independent inputs when no keyword
+        # override is given. Keep those parameters visible to lmfit as well.
+        if self.model.prefix:
+            names.extend(
+                self.model.prefix + name
+                for name in self.model.independent_vars
+                if name in self.model.param_hints
+            )
+        return names
+
+    @property
+    def kwargs(self) -> list[tuple[str, float]]:
+        return [
+            (self._argument_name(name), value) for name, value in self.model.func.kwargs
+        ]
+
+    def __call__(self, **kwargs):
+        return self.model.eval_components(**kwargs)[self.component]
 
 
 class FermiEdge2dFunction(DynamicFunction):

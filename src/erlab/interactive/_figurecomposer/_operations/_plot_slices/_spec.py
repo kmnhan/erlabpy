@@ -65,7 +65,7 @@ _SECTION_TOOLTIPS = {
 
 
 def _create_plot_slices_operation(tool: FigureComposerTool) -> FigureOperationState:
-    source_names = tool._document.source_names()
+    source_names = tool._document.array_source_names()
     first_source = (
         source_names[0] if source_names else tool._document.recipe.primary_source
     )

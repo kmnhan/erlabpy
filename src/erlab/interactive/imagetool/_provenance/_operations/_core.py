@@ -272,6 +272,7 @@ class ModelFitOperation(ToolProvenanceOperation):
     model_kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
     parameters: dict[str, _ModelFitParameterSpec]
     method: str
+    max_nfev: int | None = pydantic.Field(default=None, gt=0)
     parameter: str
     output: typing.Literal["value", "stderr", "value_valid_stderr"] = "value"
     broadcast_dim: NullableProvenanceHashable = None
@@ -379,9 +380,14 @@ class ModelFitOperation(ToolProvenanceOperation):
             raise ValueError(
                 f"Model-fit dimension {self.fit_dim!r} was not found in data"
             )
-        mean_dim = self.fit_dim if isinstance(self.fit_dim, str) else (self.fit_dim,)
-        mean = data.mean(mean_dim)
-        fit_data = data / mean if self.normalize else data
+        normalization = None
+        if self.normalize:
+            mean_dim = (
+                self.fit_dim if isinstance(self.fit_dim, str) else (self.fit_dim,)
+            )
+            mean = data.mean(mean_dim)
+            normalization = mean.where(np.isfinite(mean) & ~np.isclose(mean, 0.0), 1.0)
+        fit_data = data if normalization is None else data / normalization
         weights: xr.DataArray | None = None
         if uncertainty is not None:
             if self.uncertainty_sel:
@@ -389,8 +395,8 @@ class ModelFitOperation(ToolProvenanceOperation):
             if self.uncertainty_isel:
                 uncertainty = uncertainty.isel(self.uncertainty_isel)
             uncertainty = uncertainty.broadcast_like(data)
-            if self.normalize:
-                uncertainty = uncertainty / abs(mean)
+            if normalization is not None:
+                uncertainty = uncertainty / abs(normalization)
             weights = 1 / uncertainty
         from erlab.interactive._code_trust import execution_capability_allows
         from erlab.interactive.imagetool._provenance._trust import (
@@ -403,6 +409,7 @@ class ModelFitOperation(ToolProvenanceOperation):
         )
         if not execution_capability_allows(authorization, entries):
             raise PermissionError("Model-fit parameter expressions are not authorized")
+        fit_kwargs = {} if self.max_nfev is None else {"max_nfev": self.max_nfev}
         return fit_data.xlm.modelfit(
             self.fit_dim,
             model=self._model(),
@@ -410,6 +417,7 @@ class ModelFitOperation(ToolProvenanceOperation):
             method=self.method,
             weights=weights,
             scale_covar=self.scale_covar,
+            **fit_kwargs,
         )
 
     def _output_from_fit(self, fit_result: xr.Dataset) -> xr.DataArray:
@@ -467,6 +475,15 @@ class ModelFitOperation(ToolProvenanceOperation):
             output = "values"
         return f"Fit {self.model} and extract {self.parameter!r} parameter {output}"
 
+    def _normalization_expression_code(self, input_name: str) -> str:
+        mean_dim = self.fit_dim if isinstance(self.fit_dim, str) else (self.fit_dim,)
+        return (
+            f"{input_name}.mean({_provenance_value_code(mean_dim)}).where(\n"
+            "    lambda mean: np.isfinite(mean) & ~np.isclose(mean, 0.0),\n"
+            "    other=1.0,\n"
+            ")"
+        )
+
     def _uncertainty_expression_code(
         self,
         input_name: str,
@@ -487,8 +504,8 @@ class ModelFitOperation(ToolProvenanceOperation):
             )
         expression += f".broadcast_like({input_name})"
         if self.normalize:
-            fit_dim = _provenance_value_code(self.fit_dim)
-            expression = f"({expression} / abs({input_name}.mean({fit_dim})))"
+            normalization = self._normalization_expression_code(input_name)
+            expression = f"({expression} / abs({normalization}))"
         return expression
 
     def _fit_expression_code(
@@ -508,8 +525,7 @@ class ModelFitOperation(ToolProvenanceOperation):
             broadcast_dim=self.broadcast_dim,
         )
         fit_input = (
-            f"({input_name} / {input_name}.mean("
-            f"{_provenance_value_code(self.fit_dim)}))"
+            f"({input_name} / {self._normalization_expression_code(input_name)})"
             if self.normalize
             else input_name
         )
@@ -534,12 +550,17 @@ class ModelFitOperation(ToolProvenanceOperation):
         lines.extend(f"    {line}" for line in parameter_lines[1:-1])
         lines.append(f"    {parameter_lines[-1]},")
         lines.append(f"    method={self.method!r},")
+        if self.max_nfev is not None:
+            lines.append(f"    max_nfev={self.max_nfev!r},")
         if uncertainty_name is not None:
             uncertainty_expression = self._uncertainty_expression_code(
                 input_name,
                 uncertainty_name,
             )
-            lines.append(f"    weights=1 / ({uncertainty_expression}),")
+            lines.extend(
+                f"    {line}"
+                for line in f"weights=1 / ({uncertainty_expression}),".splitlines()
+            )
         if not self.scale_covar or uncertainty_name is not None:
             lines.append(f"    scale_covar={self.scale_covar!r},")
         lines.append(")")

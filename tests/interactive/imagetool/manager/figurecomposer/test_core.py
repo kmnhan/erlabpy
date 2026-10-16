@@ -91,6 +91,55 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
 from ._common import _activate_combo_index, _select_operation_rows
 
 
+@pytest.mark.parametrize("use_node_data", [False, True])
+def test_selected_sources_inherit_provider_metadata(use_node_data: bool) -> None:
+    parent = FigureSourceState(
+        name="base",
+        node_uid="new-producer",
+        provider_id="output",
+        provider_selection={"output": "corrected"},
+        use_node_data=use_node_data,
+    )
+    child = FigureSourceState(
+        name="selected",
+        selection_source="base",
+        node_uid="old-producer",
+        provider_id="array",
+        use_node_data=not use_node_data,
+    )
+    sources = FigureDocument.source_states_with_propagated_link_metadata(
+        {"base": parent, "selected": child}, ("base",)
+    )
+    selected = sources["selected"]
+    assert selected.node_uid == parent.node_uid
+    assert selected.provider_id == parent.provider_id
+    assert selected.provider_selection == parent.provider_selection
+    assert selected.use_node_data is use_node_data
+    assert selected.selection_source == "base"
+
+
+def test_replacing_selected_array_with_another_provider_keeps_parent() -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    parent = FigureSourceState(
+        name="base", node_uid="producer", provider_id="first", use_node_data=False
+    )
+    child = parent.model_copy(
+        update={"name": "selected", "selection_source": "base", "isel": {"x": 0}}
+    )
+    document = FigureDocument(
+        FigureRecipeState(sources=(parent, child), primary_source="base"),
+        source_data={"base": data, "selected": data.isel(x=0)},
+    )
+    incoming = parent.model_copy(update={"name": "other", "provider_id": "second"})
+    result = document.replace_source("selected", incoming, data + 10)
+    assert result.updated == ("selected",)
+    xr.testing.assert_identical(document.source_data["base"], data)
+    xr.testing.assert_identical(document.source_data["selected"], (data + 10).isel(x=0))
+    assert document.source_by_name()["base"].provider_id == "first"
+    assert document.source_by_name()["selected"].provider_id == "second"
+    assert document.source_by_name()["selected"].selection_source is None
+
+
 def test_figure_document_orders_source_dependencies_and_rejects_cycles() -> None:
     source = xr.DataArray(np.arange(3.0), dims="x", name="source")
     sources = (
@@ -901,6 +950,7 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
         plot_array,
         plot_slices,
         line,
+        FigureOperationState.fit_plot(source="fitted_curve"),
         FigureOperationState.bz_overlay(),
         photon_energy,
         method,
@@ -911,6 +961,7 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
         FigureOperationKind.PLOT_ARRAY: ("first", "second"),
         FigureOperationKind.PLOT_SLICES: ("second", "first"),
         FigureOperationKind.LINE: ("second", "first"),
+        FigureOperationKind.FIT_PLOT: ("fitted_curve",),
         FigureOperationKind.BZ_OVERLAY: (),
         FigureOperationKind.PHOTON_ENERGY_OVERLAY: ("first",),
         FigureOperationKind.METHOD: ("first", "second", "third"),
@@ -926,6 +977,7 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
         FigureOperationKind.PLOT_ARRAY: True,
         FigureOperationKind.PLOT_SLICES: True,
         FigureOperationKind.LINE: True,
+        FigureOperationKind.FIT_PLOT: True,
         FigureOperationKind.BZ_OVERLAY: True,
         FigureOperationKind.PHOTON_ENERGY_OVERLAY: True,
         FigureOperationKind.METHOD: True,

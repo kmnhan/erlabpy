@@ -22,12 +22,12 @@ For complete Python and Figure Composer examples, see the
 
 Figure Composer can start with or without data sources. In ImageTool Manager,
 {menuselection}`File --> New Empty Figure` creates a figure without sources or recipe
-steps. Use {guilabel}`Add…` in the {guilabel}`Sources` tab, or drag ImageTool rows from
-the Manager, to add sources later.
+steps. Use {guilabel}`Add…` in the {guilabel}`Sources` tab, or drag ImageTool or fitted
+ftool rows from the Manager, to add sources later.
 
-The {guilabel}`Sources` tab lists the named data variables stored with the figure. Use
-{guilabel}`Refresh` to update selected sources from their ImageTools. Use
-{guilabel}`Reveal in Manager` to select their ImageTool rows and bring the Manager to
+The {guilabel}`Sources` tab lists the data and fit results stored with the figure. Use
+{guilabel}`Refresh` to update selected sources from their open tools. Use
+{guilabel}`Reveal in Manager` to select their source rows and bring the Manager to
 the front.
 
 The {guilabel}`Add to Figure…` action in ImageTool Manager can create a figure, add a
@@ -76,6 +76,8 @@ There are several step types:
   {func}`erlab.plotting.plot_array`.
 - {guilabel}`Slice Plot` for plotting multiple slices on multiple axes. Uses
   {func}`erlab.plotting.plot_slices`.
+- {guilabel}`Fit plot` for measured data, a completed model fit, optional measurement
+  error bars, and a model confidence band. Uses {func}`erlab.plotting.plot_fit`.
 - {guilabel}`Line/Profile` for extracted one-dimensional profiles. This also provides an
   ability to create MDC/EDC stack plots. You can either use this step as a simple
   interface to {meth}`xarray.DataArray.plot` with 1D data, or use it to extract multiple

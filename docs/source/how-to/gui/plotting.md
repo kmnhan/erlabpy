@@ -45,6 +45,9 @@ custom Matplotlib stylesheet.
 4. Add recipe steps and assign each data-dependent step to the required source.
 5. Check the rendered figure after you add or replace a source.
 
+Selecting an ftool row adds its completed fit as a source. Add a {guilabel}`Fit plot`
+step, or use {guilabel}`Add Fit to Figure` in ftool. See {ref}`how-to-gui-plot-fit`.
+
 Use this procedure when you must define the layout or plotting recipe before all source
 data is available. Save the Manager workspace to preserve the figure and its sources.
 

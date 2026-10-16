@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import typing
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from erlab.interactive._code_trust._core import CodeTrustEntry
+
+
 from erlab.interactive._code_trust import create_entry
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_all_axes_ids
 from erlab.interactive._figurecomposer._model._sources import _valid_source_variable
@@ -95,15 +103,34 @@ def _figure_operation_code_trust_entries(
 
 
 def figure_operation_execution_entries(
-    recipe: FigureRecipeState, operation_index: int, *, location_prefix: str
+    recipe: FigureRecipeState,
+    operation_index: int,
+    *,
+    location_prefix: str,
+    source_payloads: Mapping[str, object] | None = None,
 ):
     """Return the entries that one render operation is about to execute."""
-    return _figure_operation_code_trust_entries(
+    entries = _figure_operation_code_trust_entries(
         recipe,
         operation_index,
         location_prefix=location_prefix,
         include_inactive=False,
     )
+    operation = recipe.operations[operation_index]
+    if operation.enabled and source_payloads:
+        from erlab.interactive._figurecomposer._operations._registry import (
+            source_requests,
+        )
+
+        entries += figure_source_entries(
+            {
+                request.alias: source_payloads[request.alias]
+                for request in source_requests(operation, source_payloads)
+                if request.evaluate and request.alias in source_payloads
+            },
+            location_prefix=location_prefix,
+        )
+    return entries
 
 
 def figure_code_trust_entries(recipe: FigureRecipeState, *, location_prefix: str):
@@ -120,4 +147,23 @@ def figure_code_trust_entries(recipe: FigureRecipeState, *, location_prefix: str
                 axes_namespace=axes_namespace,
             )
         )
+    return tuple(entries)
+
+
+def figure_source_entries(
+    source_payloads: Mapping[str, object], *, location_prefix: str
+) -> tuple[CodeTrustEntry, ...]:
+    """Inspect registered source payloads without materializing their values."""
+    from erlab.interactive._figurecomposer._sources import (
+        OpaqueSourcePayload,
+        source_spec_for_payload,
+    )
+
+    entries: list[CodeTrustEntry] = []
+    for name, payload in source_payloads.items():
+        if isinstance(payload, OpaqueSourcePayload):
+            continue
+        inspect = source_spec_for_payload(payload).trust_entries
+        if inspect is not None:
+            entries.extend(inspect(payload, name, location_prefix))
     return tuple(entries)

@@ -1,3 +1,4 @@
+import lmfit
 import numpy as np
 import pytest
 import xarray as xr
@@ -226,6 +227,217 @@ def test_multi_peak_model_shirley_components_and_guess() -> None:
     guess = model.guess(y, x=x)
     assert np.isfinite(guess["k_step_0"].value)
     assert np.isfinite(guess["const_bkg"].value)
+
+
+@pytest.mark.parametrize("prefix", ["", "m_", "a"])
+@pytest.mark.parametrize(("fd", "convolve"), [(False, False), (True, True)])
+@pytest.mark.parametrize(
+    "background", ["none", "constant", "linear", "polynomial", "shirley"]
+)
+def test_multi_peak_component_models(prefix, fd, convolve, background) -> None:
+    model = models.MultiPeakModel(
+        npeaks=2,
+        peak_shapes=["gaussian", "voigt"],
+        fd=fd,
+        convolve=convolve,
+        background=background,
+        prefix=prefix,
+        name="Custom peaks",
+    )
+    model.set_param_hint("p0_center", value=-0.3)
+    model.set_param_hint("p1_center", value=0.1)
+    params = model.make_params()
+    x = np.linspace(-1.0, 0.5, 61)
+    original = model.eval_components(params=params, x=x)
+    component_models = model.components
+    assert [component._name for component in component_models] == list(original)
+    for component in component_models:
+        assert isinstance(component, lmfit.Model)
+        assert component.prefix == ""
+        component_params = component.make_params()
+        assert component_params.keys() == params.keys()
+        for name, parameter in params.items():
+            assert component_params[name].expr == parameter.expr
+            assert component_params[name].min == parameter.min
+            assert component_params[name].max == parameter.max
+        np.testing.assert_allclose(
+            component.eval(params=params, x=x), original[component._name]
+        )
+        np.testing.assert_allclose(
+            component.eval(params=component_params, x=x), original[component._name]
+        )
+
+
+@pytest.mark.parametrize("prefix", ["", "m_", "a"])
+@pytest.mark.parametrize(("fd", "convolve"), [(False, False), (True, True)])
+@pytest.mark.parametrize("composite", [False, True])
+def test_multi_peak_lmfit_uncertainty(prefix, fd, convolve, composite) -> None:
+    from scipy.stats import t
+
+    peak_model = models.MultiPeakModel(
+        npeaks=1,
+        peak_shapes="gaussian",
+        fd=fd,
+        convolve=convolve,
+        background="none",
+        prefix=prefix,
+    )
+    model = peak_model
+    if composite:
+        model = lmfit.models.ConstantModel(prefix="baseline_") + model
+    params = model.make_params()
+    for name, value in {
+        "p0_height": 2.0,
+        "p0_center": -0.1,
+        "p0_width": 0.3,
+        "temp": 30.0,
+        "efermi": 0.0,
+        "offset": 0.0,
+        "resolution": 0.03,
+    }.items():
+        if prefix + name in params:
+            params[prefix + name].set(value=value)
+    for parameter in params.values():
+        if parameter.expr is None:
+            parameter.set(vary=False)
+    params[prefix + "p0_height"].set(vary=True)
+    if composite:
+        params["baseline_c"].set(value=0.4)
+    x = np.linspace(-0.8, 0.6, 101)
+    data = model.eval(params=params, x=x) + 0.01 * np.sin(np.arange(x.size))
+    result = model.fit(data, params=params, x=x)
+    params_before = result.params.valuesdict()
+    assert result.errorbars
+    dense_x = np.linspace(x.min(), x.max(), 151)
+    band = result.eval_uncertainty(sigma=0.95, x=dense_x)
+    height = result.params[prefix + "p0_height"]
+    scale = t.ppf(0.975, result.nfree) * height.stderr
+    full_peak = peak_model.eval(params=result.params, x=dense_x)
+    np.testing.assert_allclose(
+        band, scale * np.abs(full_peak / height.value), atol=1e-12
+    )
+    components = result.eval_components(x=dense_x)
+    assert result.dely_comps.keys() == components.keys()
+    peak_name = (prefix if prefix.endswith("_") else (prefix or "1Peak") + "_") + "p0"
+    for name, delta in result.dely_comps.items():
+        if name == peak_name:
+            np.testing.assert_allclose(
+                delta, scale * np.abs(components[name] / height.value)
+            )
+        else:
+            np.testing.assert_allclose(delta, 0.0)
+    assert result.params.valuesdict() == params_before
+    assert all(np.isfinite(delta).all() for delta in result.dely_comps.values())
+
+
+def test_multi_peak_components_follow_model_updates() -> None:
+    model = models.MultiPeakModel(fd=False, convolve=False)
+    assert model.components[0]._name == "1Peak_p0"
+    model.prefix = "updated_"
+    model.set_param_hint("p0_height", value=2.0)
+    components = model.components
+    assert components[0]._name == "updated_p0"
+    assert components[0].make_params()["updated_p0_height"].value == 2.0
+
+
+@pytest.mark.parametrize("prefix", ["", "m_", "a"])
+def test_multi_peak_component_keyword_overrides(prefix) -> None:
+    model = models.MultiPeakModel(
+        1,
+        fd=True,
+        convolve=False,
+        background="none",
+        prefix=prefix,
+        independent_vars=["x", "temp"],
+    )
+    params = model.make_params(temp=300.0, offset=0.0)
+    x = np.linspace(-0.1, 0.1, 41)
+    defaults = model.eval_components(params=params, x=x)
+    for component in model.components:
+        np.testing.assert_allclose(
+            component.eval(params=params, x=x), defaults[component._name]
+        )
+    kwargs = {"x": x, "temp": 30.0, prefix + "p0_height": 2.5}
+    components = model.eval_components(params=params, **kwargs)
+    for component in model.components:
+        np.testing.assert_allclose(
+            component.eval(params=params, **kwargs), components[component._name]
+        )
+    peak, fd = components.values()
+    np.testing.assert_allclose(peak * fd, model.eval(params=params, **kwargs))
+    np.testing.assert_allclose(
+        fd, model.func.eval_fd(x, temp=30.0, efermi=0.0, offset=0.0)
+    )
+
+
+@pytest.mark.parametrize("background", ["none", "shirley"])
+def test_multi_peak_lmfit_uncertainty_uses_full_covariance(background) -> None:
+    from scipy.stats import t
+
+    model = models.MultiPeakModel(
+        2, peak_shapes="gaussian", fd=False, convolve=False, background=background
+    )
+    params = model.make_params(
+        p0_center=-0.1,
+        p0_height=2.0,
+        p0_width=0.3,
+        p1_center=0.1,
+        p1_height=1.0,
+        p1_width=0.35,
+    )
+    for name, parameter in params.items():
+        if parameter.expr is None:
+            parameter.set(vary=name in {"p0_height", "p1_height"})
+    if background == "shirley":
+        params["k_step_0"].set(value=0.0)
+    x = np.linspace(-0.8, 0.8, 101)
+    data = model.eval(params=params, x=x) + 0.01 * np.sin(np.arange(x.size))
+    result = model.fit(data, params=params, x=x)
+    assert result.errorbars
+    assert abs(result.covar[0, 1]) > 0.1 * np.sqrt(
+        result.covar[0, 0] * result.covar[1, 1]
+    )
+    dense_x = np.linspace(x.min(), x.max(), 151)
+    components = result.eval_components(x=dense_x)
+    jacobian = np.array(
+        [
+            components[f"2Peak_p{i}"] / result.params[f"p{i}_height"].value
+            for i in range(2)
+        ]
+    )
+    variance = np.einsum("ij,ix,jx->x", result.covar, jacobian, jacobian)
+    scale = t.ppf(0.975, result.nfree)
+    uncertainty = result.eval_uncertainty(sigma=0.95, x=dense_x)
+    np.testing.assert_allclose(uncertainty, scale * np.sqrt(variance), atol=1e-12)
+    assert result.dely_comps.keys() == components.keys()
+    for i in range(2):
+        np.testing.assert_allclose(
+            result.dely_comps[f"2Peak_p{i}"],
+            scale * np.sqrt(result.covar[i, i]) * np.abs(jacobian[i]),
+            atol=1e-12,
+        )
+    if background == "shirley":
+        for name in ("baseline", "shirley", "slope"):
+            np.testing.assert_array_equal(result.dely_comps[f"2Peak_{name}"], 0.0)
+
+
+@pytest.mark.parametrize("npeaks", [0, 1])
+@pytest.mark.parametrize("size", [1, 41])
+def test_multi_peak_shirley_zero_components(npeaks, size) -> None:
+    model = models.MultiPeakModel(
+        npeaks, fd=False, convolve=False, background="shirley"
+    )
+    params = model.make_params()
+    if npeaks:
+        params["k_step_0"].set(value=0.0)
+    x = np.linspace(-1.0, 1.0, size)
+    components = model.eval_components(params=params, x=x)
+    assert [component._name for component in model.components] == list(components)
+    for name in ("shirley", "slope"):
+        np.testing.assert_array_equal(
+            components[f"{npeaks}Peak_{name}"], np.zeros(size)
+        )
+    np.testing.assert_allclose(sum(components.values()), model.eval(params=params, x=x))
 
 
 def test_multi_peak_model_voigt() -> None:
@@ -472,3 +684,92 @@ def test_symmetrized_gap_model_params_and_eval() -> None:
     result = model.eval(params=params, x=x)
     expected = sc_spectral_function(x, **params.valuesdict())
     assert np.allclose(result, expected)
+
+
+@pytest.mark.parametrize("prefix", ["", "main_"])
+@pytest.mark.parametrize("composite", [False, True])
+@pytest.mark.parametrize(
+    ("model_class", "model_kwargs", "parameter_values", "varying_parameter"),
+    [
+        pytest.param(models.FermiEdgeModel, {}, {}, "dos0", id="fermi-edge"),
+        pytest.param(models.FermiDiracModel, {}, {}, "center", id="fermi-dirac"),
+        pytest.param(models.StepEdgeModel, {}, {}, "dos0", id="step-edge"),
+        pytest.param(
+            models.PolynomialModel,
+            {"degree": 2},
+            {"c0": 1.0, "c1": 0.5, "c2": 0.3},
+            "c0",
+            id="polynomial",
+        ),
+        pytest.param(
+            models.FermiEdge2dModel,
+            {"degree": 2},
+            {"c0": 0.0, "c1": 0.001, "c2": 0.0},
+            "const_bkg",
+            id="fermi-edge-2d",
+        ),
+        pytest.param(models.BCSGapModel, {}, {}, "a", id="bcs-gap"),
+        pytest.param(models.DynesModel, {}, {}, "n0", id="dynes"),
+        pytest.param(models.TLLModel, {}, {}, "amp", id="tll"),
+        pytest.param(
+            models.SymmetrizedGapModel,
+            {},
+            {"gamma1": 0.005, "delta": 0.01},
+            "amp",
+            id="symmetrized-gap",
+        ),
+    ],
+)
+def test_single_component_model_uncertainty(
+    model_class, model_kwargs, parameter_values, varying_parameter, prefix, composite
+) -> None:
+    model = model_class(prefix=prefix, **model_kwargs)
+    params = model.make_params(**parameter_values)
+    if composite:
+        secondary = model_class(prefix="secondary_", **model_kwargs)
+        params.update(secondary.make_params(**parameter_values))
+        model += secondary
+
+    for parameter in params.values():
+        parameter.vary = False
+    params[f"{prefix}{varying_parameter}"].vary = True
+
+    if model_class is models.FermiEdge2dModel:
+        independent = {
+            "eV": np.linspace(-0.1, 0.1, 81),
+            "alpha": np.linspace(-3.0, 3.0, 9),
+        }
+    else:
+        independent = {
+            "x": (
+                np.linspace(1.0, 90.0, 101)
+                if model_class is models.BCSGapModel
+                else np.linspace(-0.1, 0.1, 101)
+            )
+        }
+
+    expected = model.eval(params=params, **independent)
+    noise = np.random.default_rng(0).normal(
+        scale=max(np.ptp(expected), 1.0) * 1e-4, size=expected.shape
+    )
+    result = model.fit(expected + noise, params=params, **independent)
+    assert result.success
+    assert result.covar is not None
+
+    components = result.eval_components(**independent)
+    labels = [component.prefix or component._name for component in model.components]
+    assert len(labels) == (2 if composite else 1)
+    assert labels == list(components)
+    for component, label in zip(model.components, labels, strict=True):
+        np.testing.assert_allclose(
+            component.eval(params=result.params, **independent), components[label]
+        )
+
+    uncertainty = result.eval_uncertainty(**independent)
+    assert uncertainty.shape == expected.shape
+    assert np.all(np.isfinite(uncertainty))
+    assert np.any(uncertainty > 0.0)
+    assert set(result.dely_comps) == set(labels)
+    np.testing.assert_allclose(result.dely_comps[labels[0]], uncertainty, atol=1e-12)
+    if composite:
+        np.testing.assert_allclose(result.dely_comps[labels[1]], 0.0)

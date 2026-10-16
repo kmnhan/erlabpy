@@ -59,6 +59,7 @@ from erlab.interactive._figurecomposer._defaults import (
     figure_options_context,
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
 from erlab.interactive._figurecomposer._model._axes import (
     _all_axes,
     _axes_expression_value,
@@ -145,6 +146,22 @@ from erlab.interactive._figurecomposer._rendering import (
     _rendered_output_figure,
     _set_preview_draw_error,
 )
+from erlab.interactive._figurecomposer._source_storage import (
+    SourceBundle,
+    decode_source_bundle,
+    encode_source_bundle,
+)
+from erlab.interactive._figurecomposer._sources import (
+    ArraySourcePayload,
+    EncodedSourcePayload,
+    OpaqueSourcePayload,
+    _is_array_source_payload,
+    decode_source_payload,
+    duplicate_source_payload,
+    source_payload_kind,
+    source_spec_for_kind,
+    source_spec_for_payload,
+)
 from erlab.interactive._figurecomposer._text import _format_axes_tuple
 from erlab.interactive._figurecomposer._trust import (
     figure_code_trust_entries,
@@ -219,7 +236,9 @@ _INITIAL_SIZE_HINT_EXTRA_HEIGHT = 80
 _SOURCE_FREE_DATA_DIM = "_figure_composer_source_free"
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
-_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+_STEPS_CLIPBOARD_PAYLOAD_VERSION = 2
+_SOURCE_MANIFEST_ATTR = "figure_composer_source_manifest"
+_SourcePayloadT = typing.TypeVar("_SourcePayloadT")
 _AXES_EXPRESSION_PLACEHOLDER = "Advanced: axs[0, :] or axs[:, 0]"
 logger = logging.getLogger(__name__)
 
@@ -240,29 +259,27 @@ def _source_free_tool_data() -> xr.DataArray:
 
 
 class _FigureComposerStepMimeData(QtCore.QMimeData):
-    """Clipboard payload that can also carry live source data in one process."""
+    """Clipboard payload with detached source snapshots for this process."""
 
     def __init__(
         self,
         payload_text: str,
         step_code_text: str,
-        source_data: Mapping[str, xr.DataArray],
-        selection_base_data: Mapping[str, xr.DataArray],
+        source_payloads: Mapping[str, object],
         *,
         cut_source_tool_id: str | None = None,
     ) -> None:
         super().__init__()
-        self.figure_composer_source_data: dict[str, xr.DataArray] = dict(source_data)
-        self.figure_composer_selection_base_data: dict[str, xr.DataArray] = dict(
-            selection_base_data
-        )
+        self.figure_composer_source_payloads = dict(source_payloads)
         self.figure_composer_cut_source_tool_id = cut_source_tool_id
         self.setData(_STEPS_CLIPBOARD_MIME, payload_text.encode("utf-8"))
         self.setText(step_code_text)
 
 
 def _step_clipboard_payload_text(
-    operations: Sequence[FigureOperationState], sources: Sequence[FigureSourceState]
+    operations: Sequence[FigureOperationState],
+    sources: Sequence[FigureSourceState],
+    source_payloads: Mapping[str, object] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -272,6 +289,7 @@ def _step_clipboard_payload_text(
                 operation.model_dump(mode="json") for operation in operations
             ],
             "sources": [source.model_dump(mode="json") for source in sources],
+            "source_manifest": encode_source_bundle(source_payloads or {}).manifest,
         },
         indent=2,
     )
@@ -301,8 +319,7 @@ def _step_clipboard_payload(
     tuple[
         tuple[FigureOperationState, ...],
         tuple[FigureSourceState, ...],
-        dict[str, xr.DataArray],
-        dict[str, xr.DataArray],
+        dict[str, object],
     ]
     | None
 ):
@@ -318,35 +335,43 @@ def _step_clipboard_payload(
         else:
             return None
         payload = json.loads(payload_text)
-        if not isinstance(payload, dict):
+        if (
+            not isinstance(payload, dict)
+            or payload.get("type") != _STEPS_CLIPBOARD_PAYLOAD_TYPE
+        ):
             return None
-        if payload.get("type") != _STEPS_CLIPBOARD_PAYLOAD_TYPE:
-            return None
-        if payload.get("version") != _STEPS_CLIPBOARD_PAYLOAD_VERSION:
+        if payload.get("version") not in (1, _STEPS_CLIPBOARD_PAYLOAD_VERSION):
             return None
         raw_operations = payload.get("operations")
         raw_sources = payload.get("sources", [])
-        if not isinstance(raw_operations, list) or not raw_operations:
-            return None
-        if not isinstance(raw_sources, list):
+        if (
+            not isinstance(raw_operations, list)
+            or not raw_operations
+            or not isinstance(raw_sources, list)
+        ):
             return None
         operations = tuple(
-            FigureOperationState.model_validate(operation)
-            for operation in raw_operations
+            FigureOperationState.model_validate(item) for item in raw_operations
         )
-        sources = tuple(
-            FigureSourceState.model_validate(source) for source in raw_sources
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        sources = tuple(FigureSourceState.model_validate(item) for item in raw_sources)
+        live_payloads = getattr(mime, "figure_composer_source_payloads", None)
+        if live_payloads is not None:
+            if not isinstance(live_payloads, dict):
+                return None
+            source_payloads = {
+                name: duplicate_source_payload(value)
+                for name, value in live_payloads.items()
+            }
+        elif payload.get("version") == 1:
+            source_payloads = _legacy_clipboard_source_payloads(mime, payload)
+        else:
+            source_payloads = decode_source_bundle(
+                payload["source_manifest"], {}, skip_missing_arrays=True
+            )
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
-
-    source_data = getattr(mime, "figure_composer_source_data", {})
-    if not isinstance(source_data, dict):
-        source_data = {}
-    selection_base_data = getattr(mime, "figure_composer_selection_base_data", {})
-    if not isinstance(selection_base_data, dict):
-        selection_base_data = {}
-    return operations, sources, dict(source_data), dict(selection_base_data)
+    else:
+        return operations, sources, source_payloads
 
 
 def _target_axes_count_text(count: int) -> str:
@@ -361,6 +386,29 @@ def _removed_axes_summary_text(count: int) -> str:
 def _removed_axes_status_text(count: int, layout: str) -> str:
     verb = "was" if count == 1 else "were"
     return f"{_target_axes_count_text(count)} {verb} removed by the {layout}."
+
+
+def _legacy_clipboard_source_payloads(
+    mime: QtCore.QMimeData, payload: Mapping[str, typing.Any]
+) -> dict[str, object]:
+    arrays = getattr(mime, "figure_composer_source_data", {})
+    bases = getattr(mime, "figure_composer_selection_base_data", {})
+    snapshots = getattr(mime, "figure_composer_fit_source_data", None)
+    if not isinstance(arrays, dict) or not isinstance(bases, dict):
+        raise TypeError("Invalid legacy array source clipboard payload.")
+    restored: dict[str, object] = {
+        name: ArraySourcePayload(data, bases.get(name)) for name, data in arrays.items()
+    }
+    if snapshots is not None:
+        if not isinstance(snapshots, dict) or not all(
+            isinstance(value, FigureFitSourceSnapshot) for value in snapshots.values()
+        ):
+            raise ValueError("Invalid legacy fit source clipboard payload.")
+        restored.update(snapshots)
+    else:
+        for name, value in payload.get("fit_sources", {}).items():
+            restored[name] = decode_source_payload("fit", EncodedSourcePayload(value))
+    return restored
 
 
 class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
@@ -378,6 +426,58 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _code_trust_entries_from_status(cls, status: FigureRecipeState):
         return figure_code_trust_entries(status, location_prefix="figure")
 
+    @classmethod
+    def _fit_sources_from_saved_dataset(
+        cls, ds: xr.Dataset
+    ) -> dict[str, FigureFitSourceSnapshot]:
+        return {
+            name: FigureFitSourceSnapshot.from_payload(payload)
+            for name, payload in json.loads(
+                ds.attrs.get("figure_composer_fit_sources", "{}")
+            ).items()
+        }
+
+    def _code_trust_payload_entries(self):
+        from erlab.interactive._figurecomposer._trust import figure_source_entries
+
+        return figure_source_entries(
+            self._document.source_payloads, location_prefix="figure"
+        )
+
+    @classmethod
+    def _code_trust_payload_entries_from_saved_dataset(cls, ds: xr.Dataset):
+        from erlab.interactive._figurecomposer._trust import figure_source_entries
+
+        if _SOURCE_MANIFEST_ATTR in ds.attrs:
+            manifest = json.loads(ds.attrs[_SOURCE_MANIFEST_ATTR])
+            references = cls._saved_tool_data_references(ds)
+            native_slots: set[str] = set()
+            for entry in manifest.get("sources", {}).values():
+                try:
+                    spec = source_spec_for_kind(entry["kind"])
+                except KeyError:
+                    continue
+                if spec.trust_entries is not None:
+                    native_slots.update(entry.get("arrays", {}).values())
+            if native_slots.intersection(references):
+                raise ValueError("Executable source data must be stored in the figure.")
+            arrays = cls._tool_data_items_from_dataset(
+                ds,
+                source_parent_data=None,
+                reference_resolver=None,
+                variable_names=native_slots,
+            )
+            if native_slots.difference(arrays):
+                raise ValueError("Executable source data is missing from the figure.")
+            payloads = decode_source_bundle(
+                manifest,
+                arrays,
+                skip_missing_arrays=True,
+            )
+        else:
+            payloads = cls._fit_sources_from_saved_dataset(ds)
+        return figure_source_entries(payloads, location_prefix="figure")
+
     def _code_trust_changed(self) -> None:
         if hasattr(self, "_document"):
             _render_preview(self, show_window=True)
@@ -394,6 +494,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         recipe: FigureRecipeState | None = None,
         source_data: Mapping[str, xr.DataArray] | None = None,
+        source_payloads: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__()
         self._options_getter: Callable[[], AppOptions] | None = None
@@ -418,9 +519,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._flush_pending_figure_resize_history_write
         )
         self._figure_resize_history_state: FigureRecipeState | None = None
-        self._figure_resize_history_source_data: (
-            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]] | None
-        ) = None
+        self._figure_resize_history_source_data: dict[str, object] | None = None
         self._preview_pixmap_cache: QtGui.QPixmap | None = None
         self._preview_pixmap_generation = 0
         self._preview_thumbnail_cache: dict[
@@ -437,8 +536,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_refresh_label_callback: Callable[[str], str | None] | None = None
         self._source_reveal_available_callback: Callable[[str], bool] | None = None
         self._source_reveal_callback: Callable[[Sequence[str]], bool] | None = None
-        self._source_add_available_callback: Callable[[], bool] | None = None
-        self._source_add_callback: Callable[[], bool] | None = None
+        self._source_add_available_callback: (
+            Callable[[tuple[str, ...] | None], bool] | None
+        ) = None
+        self._source_add_callback: Callable[[tuple[str, ...] | None], bool] | None = (
+            None
+        )
         self._source_drop_available_callback: (
             Callable[[QtCore.QMimeData], bool] | None
         ) = None
@@ -451,7 +554,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             else self._default_recipe(data)
         )
         initial_source_data = {} if source_data is None else dict(source_data)
-        if source_data is None:
+        if source_data is None and source_payloads is None:
             if initial_recipe.primary_source in {
                 source.name for source in initial_recipe.sources
             }:
@@ -459,14 +562,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             else:
                 source_name = _source_name(data)
             initial_source_data[source_name] = data
-        if initial_recipe.primary_source not in initial_source_data and (
-            source_data is None or initial_recipe.sources
+        if (
+            initial_recipe.primary_source not in (source_payloads or {})
+            and initial_recipe.primary_source not in initial_source_data
+            and (source_data is None or initial_recipe.sources)
         ):
             initial_source_data[initial_recipe.primary_source] = data
         self._source_free_data = _source_free_tool_data()
+        initial_payloads = dict(source_payloads or {})
+        initial_payloads.update(
+            {
+                name: ArraySourcePayload(value)
+                for name, value in initial_source_data.items()
+            }
+        )
         self._document = FigureDocument(
             initial_recipe,
-            source_data=initial_source_data,
+            source_payloads=initial_payloads,
             changed_callback=self._document_changed,
         )
         self._code_trust_recipe_entries = figure_code_trust_entries(
@@ -479,12 +591,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
         self._connected_step_clipboard: QtGui.QClipboard | None = None
         self._step_clipboard_tool_id = uuid.uuid4().hex
-        self._prev_source_data_states: collections.deque[
-            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]
-        ] = collections.deque(maxlen=self._prev_states.maxlen)
-        self._next_source_data_states: collections.deque[
-            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]
-        ] = collections.deque(maxlen=self._next_states.maxlen)
+        self._prev_source_data_states: collections.deque[dict[str, object]] = (
+            collections.deque(maxlen=self._prev_states.maxlen)
+        )
+        self._next_source_data_states: collections.deque[dict[str, object]] = (
+            collections.deque(maxlen=self._next_states.maxlen)
+        )
 
         self._normalize_operation_source_selections()
         self._build_ui()
@@ -596,6 +708,60 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             sources=(source,),
             operations=(_default_plot_operation(source_name, data, setup=setup),),
             primary_source=source_name,
+        )
+
+    @classmethod
+    def from_source_payloads(
+        cls,
+        source_payloads: Mapping[str, object],
+        *,
+        sources: tuple[FigureSourceState, ...],
+        operations: tuple[FigureOperationState, ...] | None = None,
+        setup: FigureSubplotsState | None = None,
+        primary_source: str | None = None,
+    ) -> FigureComposerTool:
+        """Create a figure from registered source payloads."""
+        if not source_payloads:
+            raise ValueError("At least one figure source is required")
+        setup = setup or FigureSubplotsState()
+        if operations is None:
+            default_operations = []
+            for name, payload in source_payloads.items():
+                spec = source_spec_for_payload(payload)
+                if spec.default_operation is not None:
+                    default_operations.append(spec.default_operation(name))
+                elif _is_array_source_payload(payload) and payload.data is not None:
+                    default_operations.append(
+                        _default_plot_operation(name, payload.data, setup=setup)
+                    )
+            operations = tuple(default_operations)
+        return cls(
+            _source_free_tool_data(),
+            recipe=FigureRecipeState(
+                sources=sources,
+                setup=setup,
+                operations=operations,
+                primary_source=primary_source or next(iter(source_payloads)),
+            ),
+            source_data={},
+            source_payloads=source_payloads,
+        )
+
+    @classmethod
+    def from_fit_sources(
+        cls,
+        fit_source_data: Mapping[str, FigureFitSourceSnapshot],
+        *,
+        sources: tuple[FigureSourceState, ...],
+        operations: tuple[FigureOperationState, ...] | None = None,
+        setup: FigureSubplotsState | None = None,
+    ) -> FigureComposerTool:
+        """Create a figure from captured fit results."""
+        return cls.from_source_payloads(
+            fit_source_data,
+            sources=sources,
+            setup=setup,
+            operations=operations,
         )
 
     @classmethod
@@ -1546,11 +1712,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 selected_axes_state=self._selected_axes_state,
                 source_display_name=self._source_display_name,
                 source_tooltip=self._source_tooltip,
+                can_add_source=self._source_add_available,
                 first_live_axis=self._editor_first_live_axis,
                 subplot_parameter_default=self._editor_subplot_parameter_default,
                 rendered_value=self._editor_rendered_value,
                 styled_rcparams_value=self._editor_styled_rcparams_value,
             )
+        )
+        self.operation_editor.add_source_requested.connect(
+            self._request_add_source_from_editor
         )
         self.operation_editor.edit_requested.connect(self._apply_operation_edit_request)
         self.operation_editor.validation_changed.connect(
@@ -1606,8 +1776,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _set_source_add_callbacks(
         self,
         *,
-        can_add_sources: Callable[[], bool] | None = None,
-        add_sources: Callable[[], bool] | None = None,
+        can_add_sources: Callable[[tuple[str, ...] | None], bool] | None = None,
+        add_sources: Callable[[tuple[str, ...] | None], bool] | None = None,
         can_drop_sources: Callable[[QtCore.QMimeData], bool] | None = None,
         drop_sources: Callable[[QtCore.QMimeData], bool] | None = None,
     ) -> None:
@@ -1623,14 +1793,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 drop=self._add_sources_from_mime,
             )
         self._refresh_source_controls()
+        self._update_source_section()
 
-    def _source_add_available(self) -> bool:
+    @QtCore.Slot(object)
+    def _request_add_source_from_editor(self, kinds: tuple[str, ...] | None) -> None:
+        callback = self._source_add_callback
+        if callback is None or not self._source_add_available(kinds):
+            return
+        before = dict(self._document.source_payloads)
+        if not callback(kinds):
+            return
+        added = [
+            name
+            for name, payload in self._document.source_payloads.items()
+            if (name not in before or before[name] is not payload)
+            and (kinds is None or source_payload_kind(payload) in kinds)
+        ]
+        current = self._current_operation()
+        if added and current is not None:
+            index, operation = current
+            accepted = _registry.spec_for(operation.kind).accepted_source_kinds
+            if (
+                accepted is not None
+                and source_payload_kind(self._document.source_payloads[added[-1]])
+                not in accepted
+            ):
+                return
+            self._replace_operation(
+                index,
+                operation.model_copy(update={"sources": (added[-1],)}),
+                rebuild_editor=True,
+            )
+
+    def _source_add_available(self, kinds: tuple[str, ...] | None = None) -> bool:
         if self._source_add_callback is None:
             return False
         if self._source_add_available_callback is None:
             return True
         with contextlib.suppress(LookupError, RuntimeError, ValueError):
-            return bool(self._source_add_available_callback())
+            return bool(self._source_add_available_callback(kinds))
         return False
 
     @QtCore.Slot()
@@ -1639,7 +1840,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if callback is None or not self._source_add_available():
             self._refresh_source_controls()
             return
-        callback()
+        callback(None)
         self._refresh_source_controls()
 
     def _source_drop_available(self, mime: QtCore.QMimeData | None) -> bool:
@@ -1675,11 +1876,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     display=_source_display_label(source, name),
                     tooltip=self._source_tooltip(name),
                     data=self._document.source_data.get(name),
-                    missing=name not in self._document.source_data,
+                    missing=not self._source_payload_available(name),
+                    kind=source.kind,
+                    payload_label=self._source_type_label(source.kind),
                     used=name in used_sources,
                 )
             )
-        for name, data in self._document.source_data.items():
+        for name, payload in self._document.source_payloads.items():
             if name in shown:
                 continue
             rows.append(
@@ -1687,8 +1890,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     name=name,
                     display=_source_display_label(source_by_name.get(name), name),
                     tooltip=self._source_tooltip(name),
-                    data=data,
+                    data=self._document.source_data.get(name),
                     missing=name not in source_by_name,
+                    kind=source_payload_kind(payload),
+                    payload_label=self._source_type_label(source_payload_kind(payload)),
                     used=name in used_sources,
                 )
             )
@@ -2031,11 +2236,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_name = self.source_panel.current_name()
         if source_name in self._document.source_names():
             return source_name
-        if self._document.recipe.primary_source in self._document.source_data:
+        if self._document.recipe.primary_source in self._document.source_payloads:
             return self._document.recipe.primary_source
         if self._document.recipe.sources:
             return self._document.recipe.sources[0].name
-        return next(iter(self._document.source_data), None)
+        return next(iter(self._document.source_payloads), None)
+
+    @staticmethod
+    def _source_type_label(kind: str) -> str:
+        with contextlib.suppress(KeyError):
+            return source_spec_for_kind(kind).label or kind
+        return f"Unsupported source ({kind})"
+
+    def _source_supports_selection(self, name: str) -> bool:
+        source = self._document.source_by_name().get(name)
+        if source is not None:
+            with contextlib.suppress(KeyError):
+                return source_spec_for_kind(source.kind).supports_selection
+        return False
 
     def _refresh_source_detail_panel(self) -> None:
         selected_names = self.source_panel.selected_names()
@@ -2052,6 +2270,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 usage_count=self._document.source_usage_count(target),
                 origin=self._source_refresh_label(target) or "",
                 alias_enabled=target in self._document.source_by_name(),
+                supports_selection=self._source_supports_selection(target),
+                kind=self._document.source_by_name()
+                .get(target, FigureSourceState(name=target))
+                .kind,
             ),
             selection_count=1,
         )
@@ -2063,6 +2285,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
 
         source_by_name = self._document.source_by_name()
+        if any(
+            not self._source_supports_selection(name)
+            for name in selected_names
+            if name in source_by_name
+        ):
+            self.source_panel.set_selection_editor(())
+            self.source_panel.source_selection_controls.setVisible(False)
+            return
         available_names = tuple(
             name
             for name in selected_names
@@ -2227,7 +2457,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._write_state()
 
     def _normalize_operation_source_selections(self) -> bool:
-        """Normalize legacy selections as one recipe-and-data transaction."""
+        """Reconcile operation sources as one recipe-and-data transaction."""
         operations: list[FigureOperationState] = []
         source_list = list(self._document.recipe.sources)
         source_by_name = {source.name: source for source in source_list}
@@ -2239,16 +2469,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         reserved.update(source_data)
         changed = False
         for operation in self._document.recipe.operations:
-            if not operation.map_selections:
-                operations.append(operation)
-                continue
-            updated = self._operation_with_legacy_source_selections(
-                operation,
-                source_list=source_list,
-                source_by_name=source_by_name,
-                reserved=reserved,
-                source_data=source_data,
-                selection_base_data=selection_base_data,
+            updated = operation
+            if operation.map_selections:
+                updated = self._operation_with_legacy_source_selections(
+                    operation,
+                    source_list=source_list,
+                    source_by_name=source_by_name,
+                    reserved=reserved,
+                    source_data=source_data,
+                    selection_base_data=selection_base_data,
+                )
+            updated = _registry.spec_for(updated.kind).reconcile_sources(
+                self._document, updated
             )
             operations.append(updated)
             changed = changed or updated != operation
@@ -2829,10 +3061,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         spec = _registry.spec_for(operation.kind)
         if spec.has_invalid_target(self._document, operation):
             issues.append(("invalid_target", spec.target_text(self, operation)))
+        available = (
+            self._available_source_names()
+            if _registry.source_names_compatible(self._document, operation)
+            else ()
+        )
         missing_sources = tuple(
             source
             for source in declared_operation_source_names(operation)
-            if source not in self._document.source_data
+            if source not in available
         )
         if missing_sources:
             issues.append(
@@ -3523,19 +3760,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             with contextlib.suppress(TypeError, RuntimeError):
                 clipboard.dataChanged.disconnect(self._update_step_action_buttons)
 
-    def _source_data_history_state(
-        self,
-    ) -> tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]:
-        return dict(self._document.source_data), dict(
-            self._document.source_selection_base_data
-        )
+    def _source_data_history_state(self) -> dict[str, object]:
+        return dict(self._document.source_payloads)
 
-    def _restore_source_data_history_state(
-        self,
-        state: tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]],
-    ) -> None:
-        source_data, selection_base_data = state
-        self._document.replace_source_payloads(source_data, selection_base_data)
+    def _restore_source_data_history_state(self, state: Mapping[str, object]) -> None:
+        self._document.replace_payloads(state)
         self._mark_preview_pixmap_stale()
 
     def _clear_pending_figure_resize_history_write(self) -> None:
@@ -3562,16 +3791,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _append_history_state(
         self,
         state: FigureRecipeState | None = None,
-        source_data: (
-            tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]] | None
-        ) = None,
+        source_data: (dict[str, object] | None) = None,
     ) -> bool:
         curr_state = self.tool_status if state is None else state
         curr_source_data = (
             self._source_data_history_state() if source_data is None else source_data
         )
         last_state = self._prev_states[-1] if self._prev_states else None
-        if self._history_state_equal(last_state, curr_state):
+        last_payloads = (
+            self._prev_source_data_states[-1] if self._prev_source_data_states else {}
+        )
+        if self._history_state_equal(
+            last_state, curr_state
+        ) and FigureDocument._mapping_values_are_identical(
+            last_payloads, curr_source_data
+        ):
             return False
         self._prev_states.append(curr_state)
         self._prev_source_data_states.append(curr_source_data)
@@ -3623,10 +3857,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _undo_recorded_state(self) -> None:
         """Move recipe and source-data history to the previous state."""
         target_state = self._prev_states[-2]
-        output_changes = self._history_transition_affects_provenance(target_state)
         self._next_states.append(self._prev_states.pop())
         self._next_source_data_states.append(self._prev_source_data_states.pop())
-        if output_changes:
+        if not FigureDocument._mapping_values_are_identical(
+            self._document.source_payloads, self._prev_source_data_states[-1]
+        ):
             self._restore_source_data_history_state(self._prev_source_data_states[-1])
         self.tool_status = target_state
 
@@ -3634,10 +3869,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         """Move recipe and source-data history to the next state."""
         next_state = self._next_states.pop()
         next_source_data = self._next_source_data_states.pop()
-        output_changes = self._history_transition_affects_provenance(next_state)
         self._prev_states.append(next_state)
         self._prev_source_data_states.append(next_source_data)
-        if output_changes:
+        if not FigureDocument._mapping_values_are_identical(
+            self._document.source_payloads, next_source_data
+        ):
             self._restore_source_data_history_state(next_source_data)
         self.tool_status = next_state
 
@@ -3732,12 +3968,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if source is None:
             lines.append("This source is missing from the recipe")
         else:
+            payload = self._document.source_payloads.get(name)
+            if payload is not None and not isinstance(payload, OpaqueSourcePayload):
+                spec = source_spec_for_payload(payload)
+                lines.append(spec.label or spec.kind)
+                lines.extend(spec.describe(payload))
+            if source.provider_selection:
+                lines.append(
+                    "Pinned selection: "
+                    + ", ".join(
+                        f"{key}={value}"
+                        for key, value in source.provider_selection.items()
+                    )
+                )
             if source.selection_source is not None and source.selection_source != name:
                 lines.append(f"Selected from {source.selection_source}")
             if origin := self._source_refresh_label(name):
-                lines.append(f"From ImageTool {origin}")
+                lines.append(f"From {origin}")
             elif source.node_uid is not None:
-                lines.append("Original ImageTool is no longer available")
+                lines.append("Original tool is no longer available")
         usage_count = self._document.source_usage_count(name)
         if usage_count:
             suffix = "step" if usage_count == 1 else "steps"
@@ -3747,16 +3996,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(lines)
 
     def _source_tooltip(self, name: str) -> str:
-        lines = [
-            source_metadata_tooltip(
-                self._document.source_by_name().get(name),
-                name,
-                self._document.source_data.get(name),
-            ),
-            *self._source_detail_context_lines(name),
-        ]
+        source = self._document.source_by_name().get(name)
+        data = self._document.source_data.get(name)
+        metadata = (
+            source_metadata_tooltip(source, name, data)
+            if data is not None
+            else _source_display_label(source, name)
+        )
+        lines = [metadata, *self._source_detail_context_lines(name)]
         if self._source_refresh_available(name):
-            lines.append("Can refresh from the linked ImageTool")
+            lines.append("Can refresh from the linked tool")
         return "\n".join(lines)
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
@@ -3864,8 +4113,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         tuple[
             tuple[FigureOperationState, ...],
             tuple[FigureSourceState, ...],
-            dict[str, xr.DataArray],
-            dict[str, xr.DataArray],
+            dict[str, object],
         ]
         | None
     ):
@@ -3897,27 +4145,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_by_name.get(source_name, FigureSourceState(name=source_name))
             for source_name in source_names
         )
-        source_data = {
-            source_name: self._document.source_data[source_name].copy(deep=False)
-            for source_name in source_names
-            if source_name in self._document.source_data
-        }
-        selection_base_data = {
-            source_name: self._document.source_selection_base_data[source_name].copy(
-                deep=False
-            )
-            for source_name in source_names
-            if source_name in self._document.source_selection_base_data
+        source_payloads = {
+            name: duplicate_source_payload(self._document.source_payloads[name])
+            for name in source_names
+            if name in self._document.source_payloads
         }
         clipboard = self._clipboard()
         if clipboard is None:
             return None
         clipboard.setMimeData(
             _FigureComposerStepMimeData(
-                _step_clipboard_payload_text(operations, sources),
+                _step_clipboard_payload_text(operations, sources, source_payloads),
                 _step_clipboard_code_text(self, operations),
-                source_data,
-                selection_base_data,
+                source_payloads,
                 cut_source_tool_id=self._step_clipboard_tool_id if cut else None,
             )
         )
@@ -3944,7 +4184,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         payload = _step_clipboard_payload(mime)
         if payload is None:
             return
-        operations, sources, source_data, selection_base_data = payload
+        operations, sources, source_payloads = payload
         indices = self._selected_operation_indices()
         current = self._current_operation()
         if indices:
@@ -3957,8 +4197,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             insert_index,
             operations,
             sources,
-            source_data,
-            selection_base_data,
+            source_payloads=source_payloads,
             preserve_existing=(
                 getattr(mime, "figure_composer_cut_source_tool_id", None)
                 == self._step_clipboard_tool_id
@@ -4109,6 +4348,132 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
         self._write_state()
 
+    def source_payloads(self) -> dict[str, object]:
+        """Return captured payloads indexed by recipe alias."""
+        return dict(self._document.source_payloads)
+
+    def source_payload(
+        self, name: str, payload_type: type[_SourcePayloadT]
+    ) -> _SourcePayloadT | None:
+        return self._document.source_payload(name, payload_type)
+
+    def source_kind_names(self, kind: str) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name in self._document.source_kind_names(kind)
+            if self._source_payload_available(name)
+        )
+
+    def _source_payload_available(self, name: str) -> bool:
+        payload = self._document.source_payloads.get(name)
+        if payload is None or isinstance(payload, OpaqueSourcePayload):
+            return False
+        return source_spec_for_payload(payload).is_available(payload)
+
+    def _available_source_names(self) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name in self._document.source_payloads
+            if self._source_payload_available(name)
+        )
+
+    def _source_value(self, name: str, *, evaluate: bool = False) -> object:
+        payload = self._document.source_payloads.get(name)
+        if payload is None or isinstance(payload, OpaqueSourcePayload):
+            raise FigureComposerInputError(
+                f"Source {name!r} is unavailable or its type is not supported."
+            )
+        spec = source_spec_for_payload(payload)
+        if not spec.is_available(payload):
+            raise FigureComposerInputError(f"Source {name!r} is unavailable.")
+        if not evaluate or spec.materialize is None:
+            return spec.safe_value(payload)
+        from erlab.interactive._code_trust import execute_with_capability
+
+        entries = (
+            ()
+            if spec.trust_entries is None
+            else spec.trust_entries(payload, name, "figure")
+        )
+        capability = self._issue_code_execution_capability(entries, focus_on_block=True)
+        executed, result = execute_with_capability(
+            capability, entries, functools.partial(spec.materialize, payload)
+        )
+        if not executed:
+            raise FigureComposerInputError("Source execution requires approval.")
+        return result
+
+    def replace_source_payload(
+        self, alias: str, source: FigureSourceState, payload: object
+    ) -> bool:
+        if _is_array_source_payload(payload):
+            data = (
+                payload.selection_base
+                if payload.selection_base is not None
+                else payload.data
+            )
+            return data is not None and self.replace_source(alias, source, data)
+        existing = self._document.source_by_name().get(alias)
+        if (
+            existing is None
+            or existing.kind != source_payload_kind(payload)
+            or source.kind != existing.kind
+        ):
+            return False
+        payloads = dict(self._document.source_payloads)
+        payloads[alias] = payload
+        sources = tuple(
+            self._document.source_with_name(source, alias)
+            if candidate.name == alias
+            else candidate
+            for candidate in self._document.recipe.sources
+        )
+        with self._document.mutation_transaction():
+            self._document.replace_recipe_and_payloads(
+                self._document.recipe.model_copy(update={"sources": sources}), payloads
+            )
+            self._normalize_operation_source_selections()
+        self._refresh_source_list()
+        self._update_operation_editor_safely()
+        self._maybe_redraw_plot()
+        self.sigInfoChanged.emit()
+        self._write_state()
+        return True
+
+    def add_source_payloads(
+        self, sources: Sequence[FigureSourceState], payloads: Mapping[str, object]
+    ) -> FigureSourceAddResult:
+        with self._document.mutation_transaction():
+            result = self._document.add_source_payloads(sources, payloads)
+            if result:
+                self._normalize_operation_source_selections()
+        skipped_details = tuple(detail for _name, detail in result.skipped)
+        if not result:
+            if result.skipped:
+                self._set_source_panel_status(
+                    "Could not update source data for: " + ", ".join(skipped_details)
+                )
+            return result
+        self._refresh_source_list()
+        self._update_operation_editor_safely()
+        self._maybe_redraw_plot()
+        self.sigInfoChanged.emit()
+        self._write_state()
+        self._set_source_panel_status(
+            "Could not update source data for: " + ", ".join(skipped_details)
+            if result.skipped
+            else None
+        )
+        return result
+
+    def add_fit_sources(
+        self,
+        sources: Sequence[FigureSourceState],
+        fit_source_data: Mapping[str, FigureFitSourceSnapshot],
+    ) -> FigureSourceAddResult:
+        """Add captured fit results through the registered source lifecycle."""
+        return self.add_source_payloads(sources, fit_source_data)
+
     def add_sources(
         self,
         sources: Sequence[FigureSourceState],
@@ -4122,26 +4487,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         identifies accepted additions and linked-source updates, including the stored
         recipe name chosen for each requested source.
         """
-        result = self._document.add_sources(sources, source_data)
-        skipped_details = tuple(detail for _name, detail in result.skipped)
-        if not result:
-            if result.skipped:
-                self._set_source_panel_status(
-                    "Could not update source data for: " + ", ".join(skipped_details)
-                )
-            return result
-        self._normalize_operation_source_selections()
-        self._refresh_source_list()
-        self._update_source_section()
-        self._maybe_redraw_plot()
-        self.sigInfoChanged.emit()
-        self._write_state()
-        self._set_source_panel_status(
-            "Could not update source data for: " + ", ".join(skipped_details)
-            if result.skipped
-            else None
+        return self.add_source_payloads(
+            sources,
+            {name: ArraySourcePayload(data) for name, data in source_data.items()},
         )
-        return result
 
     def replace_source(
         self,
@@ -4237,11 +4586,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.operation_editor.set_source_status(f"Render error: {render_error}")
             return
         selected_sources = self._selected_sources_for_operation(operation)
-        missing = [
-            source
-            for source in selected_sources
-            if source not in self._document.source_data
-        ]
+        available = (
+            self._available_source_names()
+            if _registry.source_names_compatible(self._document, operation)
+            else ()
+        )
+        missing = [source for source in selected_sources if source not in available]
         if missing:
             self.operation_editor.set_source_status(
                 "Missing sources: " + ", ".join(self._source_display_names(missing))
@@ -4371,7 +4721,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._schedule_queued_operation_editor_update()
             return
         self._operation_editor_update_pending = False
+        invalid_operations = tuple(
+            operation
+            for operation in self._document.recipe.operations
+            if self.operation_editor.has_input_error(operation)
+        )
         self._update_operation_editor()
+        if any(
+            not self.operation_editor.has_input_error(operation)
+            for operation in invalid_operations
+        ):
+            # A source refresh can remove an invalid control after the first redraw.
+            self._maybe_redraw_plot()
 
     def generated_code(self) -> str:
         self._flush_restore_work()
@@ -4415,6 +4776,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     self._document.recipe,
                     operation_index,
                     location_prefix="figure",
+                    source_payloads=self._document.source_payloads,
                 ),
                 focus_on_block=True,
             ):
@@ -4465,7 +4827,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if sources:
                 self._ensure_primary_source_data()
             else:
-                self._document.replace_source_payloads({}, {})
+                self._document.replace_payloads({})
             self._normalize_operation_source_selections()
             self._apply_recipe_to_controls()
         source_data_changed = self._document.source_revision != previous_source_revision
@@ -4537,6 +4899,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             or not self._document.source_data
         ):
             return
+        if (
+            primary := self._recipe_source(self._document.recipe.primary_source)
+        ) is not None and primary.kind != "array":
+            return
         recipe_sources = {source.name for source in self._document.recipe.sources}
         source_data = dict(self._document.source_data)
         fallback_name, fallback_data = next(iter(self._document.source_data.items()))
@@ -4562,7 +4928,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             return None
         source = self._recipe_source(source_name)
-        if source is None or source.node_uid is None:
+        if source is None or source.node_uid is None or not source.use_node_data:
             return None
         allowed_uids = self._save_tool_data_reference_node_uids
         if allowed_uids is not None and source.node_uid not in allowed_uids:
@@ -4598,24 +4964,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             and reference.get("kind") == "manager_node"
         )
 
+    def _persistence_source_bundle(self) -> SourceBundle:
+        payloads = dict(self._document.source_payloads)
+        for source_name, payload in payloads.items():
+            if _is_array_source_payload(payload) and payload.data is not None:
+                data, _already_selected = self._persistence_source_data(source_name)
+                payloads[source_name] = ArraySourcePayload(data)
+        return encode_source_bundle(
+            payloads, primary_source=self._document.recipe.primary_source
+        )
+
     def _persistence_data_items(self) -> Mapping[str, xr.DataArray]:
-        primary_source = self._document.recipe.primary_source
-        if primary_source in self._document.source_data:
-            primary_data, _already_selected = self._persistence_source_data(
-                primary_source
-            )
-        else:
-            primary_data = self.tool_data
-        items = {_persistence_constants.SAVED_TOOL_DATA_NAME: primary_data}
-        for source_name in self._document.source_data:
-            if source_name == self._document.recipe.primary_source:
-                continue
-            if source_name == _persistence_constants.SAVED_TOOL_DATA_NAME:
-                raise ValueError(
-                    "Figure source names cannot use the reserved saved-tool data name"
-                )
-            data, _already_selected = self._persistence_source_data(source_name)
-            items[source_name] = data
+        items = dict(self._persistence_source_bundle().arrays)
+        primary = self._recipe_source(self._document.recipe.primary_source)
+        items.setdefault(
+            _persistence_constants.SAVED_TOOL_DATA_NAME,
+            self._source_free_data
+            if primary is not None and primary.kind != "array"
+            else self.tool_data,
+        )
         return items
 
     def _persistence_source_data(self, source_name: str) -> tuple[xr.DataArray, bool]:
@@ -4694,12 +5061,36 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _restore_persistence_data_items(
         self, data_items: Mapping[str, xr.DataArray], ds: xr.Dataset
     ) -> None:
+        payloads = dict(self._document.source_payloads)
+        if _SOURCE_MANIFEST_ATTR in ds.attrs:
+            decoded = decode_source_bundle(
+                json.loads(ds.attrs[_SOURCE_MANIFEST_ATTR]),
+                data_items,
+                skip_missing_arrays=True,
+            )
+            payloads.update(
+                (name, payload)
+                for name, payload in decoded.items()
+                if not _is_array_source_payload(payload)
+            )
         source_data = dict(self._document.source_data)
+        primary = self._recipe_source(self._document.recipe.primary_source)
+        if primary is not None and primary.kind != "array":
+            source_data = {
+                name: data
+                for name, data in source_data.items()
+                if (source := self._recipe_source(name)) is not None
+                and source.kind == "array"
+            }
         selection_base_data = dict(self._document.source_selection_base_data)
         embedded_selected_names = self._persisted_selected_source_names(ds)
         source_by_name = self._document.source_by_name()
         persisted_inputs: dict[str, tuple[xr.DataArray, bool]] = {}
-        changed = False
+        changed = set(self._document.source_data) != set(
+            source_data
+        ) or not FigureDocument._mapping_values_are_identical(
+            self._document.source_payloads, payloads
+        )
 
         def persisted_data(source: FigureSourceState) -> xr.DataArray | None:
             variable_name = (
@@ -4723,6 +5114,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return data.rename(tool_data_name)
 
         for source in self._document.recipe.sources:
+            if source.kind != "array":
+                source_data.pop(source.name, None)
+                selection_base_data.pop(source.name, None)
+                continue
             data = persisted_data(source)
             if data is None:
                 continue
@@ -4766,7 +5161,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     continue
                 for source in self._document.recipe.sources:
                     if (
-                        source.name in resolved
+                        source.kind != "array"
+                        or source.name in resolved
                         or source.selection_source != parent_name
                         or source.name == parent_name
                     ):
@@ -4859,7 +5255,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._restore_persisted_preview_cache(ds)
             self._queue_post_restore_redraw_if_needed(ds)
             return
-        self._document.replace_source_payloads(source_data, selection_base_data)
+        payloads = {
+            name: payload
+            for name, payload in payloads.items()
+            if not _is_array_source_payload(payload)
+        }
+        for name in source_data.keys() | selection_base_data.keys():
+            payloads[name] = ArraySourcePayload(
+                source_data.get(name), selection_base_data.get(name)
+            )
+        self._document.replace_payloads(payloads)
         self._refresh_source_list()
         self._mark_preview_pixmap_stale()
         self._normalize_operation_source_selections()
@@ -4909,6 +5314,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return QtGui.QPixmap(preview)
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        ds = ds.copy(deep=False)
+        ds.attrs[_SOURCE_MANIFEST_ATTR] = json.dumps(
+            self._persistence_source_bundle().manifest
+        )
         selected_names = self._embedded_selected_source_names(ds)
         if selected_names:
             ds = ds.copy(deep=False)
@@ -4960,6 +5369,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        if _SOURCE_MANIFEST_ATTR in ds.attrs:
+            restored = decode_source_bundle(
+                json.loads(ds.attrs[_SOURCE_MANIFEST_ATTR]),
+                {},
+                skip_missing_arrays=True,
+            )
+        else:
+            restored = self._fit_sources_from_saved_dataset(ds)
+        payloads = dict(self._document.source_payloads)
+        for name, payload in tuple(payloads.items()):
+            if _is_array_source_payload(payload) and (
+                (
+                    payload.data is not None
+                    and _SOURCE_FREE_DATA_DIM in payload.data.dims
+                )
+                or (
+                    (source := self._recipe_source(name)) is not None
+                    and source.kind != "array"
+                )
+            ):
+                payloads.pop(name)
+        payloads.update(restored)
+        self._document.replace_payloads(payloads)
+        self._refresh_source_list()
         self._restore_persisted_preview_cache(ds)
 
     @property
@@ -5218,6 +5651,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         used_names: set[str],
     ) -> str:
+        if source.kind != "array":
+            return _source_unique_name(source.name, used_names)
         candidates: list[str] = []
         data = self._document.source_data.get(source.name)
         if data is not None and isinstance(data.name, str):

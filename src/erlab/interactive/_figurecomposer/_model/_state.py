@@ -118,24 +118,44 @@ class FigureGridSpecLayoutState(pydantic.BaseModel):
 
 
 _SLICE_MARKER_KEY = "__erlab_figure_composer_slice__"
+_TUPLE_MARKER_KEY = "__erlab_figure_composer_tuple__"
 _LEGACY_SLICE_INDEXER_KIND = "slice"
 _LEGACY_SLICE_INDEXER_KEYS = frozenset(("kind", "start", "stop", "step"))
 
 
-def _jsonable_slice_value(value: typing.Any) -> typing.Any:
+def _jsonable_slice_value(
+    value: typing.Any, *, preserve_tuples: bool = False
+) -> typing.Any:
     if isinstance(value, slice):
         return {_SLICE_MARKER_KEY: [value.start, value.stop, value.step]}
     if isinstance(value, Mapping):
-        return {key: _jsonable_slice_value(item) for key, item in value.items()}
+        return {
+            key: _jsonable_slice_value(item, preserve_tuples=preserve_tuples)
+            for key, item in value.items()
+        }
     if isinstance(value, tuple):
+        if preserve_tuples:
+            return {
+                _TUPLE_MARKER_KEY: [
+                    _jsonable_slice_value(item, preserve_tuples=True) for item in value
+                ]
+            }
         return tuple(_jsonable_slice_value(item) for item in value)
     if isinstance(value, list):
-        return [_jsonable_slice_value(item) for item in value]
+        return [
+            _jsonable_slice_value(item, preserve_tuples=preserve_tuples)
+            for item in value
+        ]
     return value
 
 
-def _jsonable_slice_mapping(value: Mapping[str, typing.Any]) -> dict[str, typing.Any]:
-    return {key: _jsonable_slice_value(item) for key, item in value.items()}
+def _jsonable_slice_mapping(
+    value: Mapping[str, typing.Any], *, preserve_tuples: bool = False
+) -> dict[str, typing.Any]:
+    return {
+        key: _jsonable_slice_value(item, preserve_tuples=preserve_tuples)
+        for key, item in value.items()
+    }
 
 
 def _is_legacy_slice_indexer_marker(
@@ -147,36 +167,57 @@ def _is_legacy_slice_indexer_marker(
 
 
 def _restore_slice_value(
-    value: typing.Any, *, allow_legacy: bool = False
+    value: typing.Any, *, allow_legacy: bool = False, preserve_tuples: bool = False
 ) -> typing.Any:
     if isinstance(value, Mapping):
         if set(value) == {_SLICE_MARKER_KEY}:
             parts = value[_SLICE_MARKER_KEY]
             if isinstance(parts, list | tuple) and len(parts) == 3:
                 return slice(*parts)
+        if preserve_tuples and set(value) == {_TUPLE_MARKER_KEY}:
+            parts = value[_TUPLE_MARKER_KEY]
+            if isinstance(parts, list | tuple):
+                return tuple(
+                    _restore_slice_value(
+                        item, allow_legacy=allow_legacy, preserve_tuples=True
+                    )
+                    for item in parts
+                )
         if allow_legacy and _is_legacy_slice_indexer_marker(value):
             return slice(value.get("start"), value.get("stop"), value.get("step"))
         return {
-            key: _restore_slice_value(item, allow_legacy=allow_legacy)
+            key: _restore_slice_value(
+                item, allow_legacy=allow_legacy, preserve_tuples=preserve_tuples
+            )
             for key, item in value.items()
         }
     if isinstance(value, tuple):
         return tuple(
-            _restore_slice_value(item, allow_legacy=allow_legacy) for item in value
+            _restore_slice_value(
+                item, allow_legacy=allow_legacy, preserve_tuples=preserve_tuples
+            )
+            for item in value
         )
     if isinstance(value, list):
-        return [_restore_slice_value(item, allow_legacy=allow_legacy) for item in value]
+        return [
+            _restore_slice_value(
+                item, allow_legacy=allow_legacy, preserve_tuples=preserve_tuples
+            )
+            for item in value
+        ]
     return value
 
 
 def _restore_slice_mapping(
-    value: typing.Any, *, allow_legacy: bool = False
+    value: typing.Any, *, allow_legacy: bool = False, preserve_tuples: bool = False
 ) -> typing.Any:
     if value is None:
         return {}
     if isinstance(value, Mapping):
         return {
-            str(key): _restore_slice_value(item, allow_legacy=allow_legacy)
+            str(key): _restore_slice_value(
+                item, allow_legacy=allow_legacy, preserve_tuples=preserve_tuples
+            )
             for key, item in value.items()
         }
     return value
@@ -186,6 +227,10 @@ class FigureSourceState(pydantic.BaseModel):
     """A named data source used by a figure recipe."""
 
     name: str
+    kind: str = "array"
+    provider_id: str | None = None
+    provider_selection: dict[str, typing.Any] | None = None
+    use_node_data: bool = False
     label: str = ""
     isel: dict[str, typing.Any] = pydantic.Field(
         default_factory=dict, exclude_if=lambda value: not value
@@ -214,6 +259,22 @@ class FigureSourceState(pydantic.BaseModel):
     def _normalize_source_defaults(cls, value: typing.Any) -> typing.Any:
         if not isinstance(value, Mapping):
             return value
+        if "fit_selection" in value:
+            value = dict(value)
+            value.setdefault("provider_selection", value.pop("fit_selection"))
+            value.setdefault("provider_id", "fit")
+        elif value.get("kind") == "fit" and "provider_id" not in value:
+            value = dict(value)
+            value["provider_id"] = "fit"
+        if value.get("kind", "array") == "array" and value.get("node_uid") is not None:
+            value = dict(value)
+            value.setdefault("provider_id", "array")
+            if value.get("provider_id") in (None, "array"):
+                value.setdefault("use_node_data", True)
+                value.setdefault(
+                    "provider_selection",
+                    {"data_role": value.get("data_role", "displayed")},
+                )
         if "label" not in value or value.get("label") is None:
             value = dict(value)
             value["label"] = value.get("name")
@@ -248,13 +309,17 @@ class FigureSourceState(pydantic.BaseModel):
     def to_script_input(
         self,
     ) -> ScriptInput | None:
-        if self.node_uid is None and self.provenance_spec is None:
+        if (
+            self.node_uid is None or not self.use_node_data
+        ) and self.provenance_spec is None:
             return None
         return ScriptInput(
             name=self.name,
             label=self.label,
-            node_uid=self.node_uid,
-            node_snapshot_token=self.node_snapshot_token,
+            node_uid=self.node_uid if self.use_node_data else None,
+            node_snapshot_token=None
+            if not self.use_node_data
+            else self.node_snapshot_token,
             data_role=self.data_role,
             provenance_spec=self.provenance_spec,
         )
@@ -406,6 +471,7 @@ class FigureOperationKind(enum.StrEnum):
     PLOT_ARRAY = "plot_array"
     PLOT_SLICES = "plot_slices"
     LINE = "line"
+    FIT_PLOT = "fit_plot"
     BZ_OVERLAY = "bz_overlay"
     PHOTON_ENERGY_OVERLAY = "photon_energy_overlay"
     METHOD = "method"
@@ -580,6 +646,21 @@ class FigureOperationState(pydantic.BaseModel):
     )
 
     sources: tuple[str, ...] = ()
+    fit_numpoints: int | None = pydantic.Field(default=None, ge=2)
+    fit_sigma: float | None = pydantic.Field(default=None, gt=0.0, allow_inf_nan=False)
+    show_data: bool = True
+    show_fit: bool = True
+    show_components: bool = False
+    fit_show_yerr: bool = True
+    fit_data_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    fit_line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    fit_band_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    fit_component_kw: dict[str, dict[str, typing.Any]] = pydantic.Field(
+        default_factory=dict
+    )
+    fit_component_band_kw: dict[str, dict[str, typing.Any]] = pydantic.Field(
+        default_factory=dict
+    )
     # Legacy source selections. Live recipes normalize the usual single-selection
     # form into source-level selections; the multi-profile Line compatibility form
     # remains nonempty so it can round-trip without losing cursor multiplicity.
@@ -729,6 +810,18 @@ class FigureOperationState(pydantic.BaseModel):
     def _restore_slice_kwargs(cls, value: typing.Any) -> typing.Any:
         return _restore_slice_mapping(value)
 
+    @pydantic.field_validator(
+        "fit_data_kw",
+        "fit_line_kw",
+        "fit_band_kw",
+        "fit_component_kw",
+        "fit_component_band_kw",
+        mode="before",
+    )
+    @classmethod
+    def _restore_fit_kwargs(cls, value: typing.Any) -> typing.Any:
+        return _restore_slice_mapping(value, preserve_tuples=True)
+
     @pydantic.field_validator("line_selection", mode="before")
     @classmethod
     def _restore_line_selection(cls, value: typing.Any) -> typing.Any:
@@ -759,6 +852,19 @@ class FigureOperationState(pydantic.BaseModel):
         self, value: dict[str, typing.Any]
     ) -> dict[str, typing.Any]:
         return _jsonable_slice_mapping(value)
+
+    @pydantic.field_serializer(
+        "fit_data_kw",
+        "fit_line_kw",
+        "fit_band_kw",
+        "fit_component_kw",
+        "fit_component_band_kw",
+        when_used="json",
+    )
+    def _serialize_fit_kwargs(
+        self, value: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        return _jsonable_slice_mapping(value, preserve_tuples=True)
 
     @pydantic.field_serializer("method_args", when_used="json")
     def _serialize_slice_args(
@@ -829,6 +935,21 @@ class FigureOperationState(pydantic.BaseModel):
             kind=FigureOperationKind.LINE,
             label=label,
             line_source=source,
+            axes=axes or FigureAxesSelectionState(),
+        )
+
+    @classmethod
+    def fit_plot(
+        cls,
+        *,
+        label: str = "Fit plot",
+        source: str,
+        axes: FigureAxesSelectionState | None = None,
+    ) -> FigureOperationState:
+        return cls(
+            kind=FigureOperationKind.FIT_PLOT,
+            label=label,
+            sources=(source,),
             axes=axes or FigureAxesSelectionState(),
         )
 

@@ -102,6 +102,7 @@ class OperationEditorBinding:
         [FigureOperationState, Callable[[Sequence[Axes]], typing.Any]], typing.Any
     ]
     styled_rcparams_value: Callable[[str], typing.Any]
+    can_add_source: Callable[[tuple[str, ...] | None], bool] = lambda _kinds: False
 
 
 class _FigureComposerStepEditorScroll(QtWidgets.QScrollArea):
@@ -197,6 +198,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
     """Own operation-editor pages, navigation, and deferred Qt cleanup."""
 
     edit_requested = QtCore.Signal(object)
+    add_source_requested = QtCore.Signal(object)
     validation_changed = QtCore.Signal()
 
     def __init__(
@@ -429,6 +431,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
             self.navigator_layout.insertWidget(index, button)
             self._section_buttons[section.key] = button
 
+        self._reconcile_input_errors()
         existing_key = self._current_section_key
         keys = self.section_keys
         key = existing_key if existing_key in keys else keys[0] if keys else ""
@@ -633,6 +636,9 @@ class FigureOperationEditor(QtWidgets.QWidget):
 
     def rebuild_must_wait(self) -> bool:
         """Return whether a live popup or interaction makes rebuilding unsafe."""
+        # A dialog can process queued rebuilds before its sender's callback returns.
+        if self._active_signal_widget is not None:
+            return True
         if self._combo_popup_guard_tokens or self._tracked_combo_popup_is_visible():
             return True
         popup = QtWidgets.QApplication.activePopupWidget()
@@ -1279,7 +1285,55 @@ class FigureOperationEditor(QtWidgets.QWidget):
         object_name = widget.objectName()
         if object_name:
             return object_name
+        for child in widget.findChildren(
+            QtWidgets.QWidget,
+            options=QtCore.Qt.FindChildOption.FindDirectChildrenOnly,
+        ):
+            if object_name := child.objectName():
+                return object_name
         return f"anonymous:{id(widget)}"
+
+    def _reconcile_input_errors(self) -> None:
+        """Discard errors for controls absent from the rebuilt operation editor."""
+        if not self._input_errors:
+            return
+        from erlab.interactive._figurecomposer._operations import _registry
+
+        operations = {
+            operation.operation_id: operation
+            for operation in self.context.recipe.operations
+        }
+        if not operations:
+            return
+        editable_ids = set(self.binding.editable_operation_ids())
+        # Inactive sections still apply. Retired controls from old generations do not.
+        keys = {
+            self._input_error_key(widget)
+            for section in self._sections
+            for widget in (section.page, *section.page.findChildren(QtWidgets.QWidget))
+            if widget.property("figure_composer_editor_generation") == self._generation
+        }
+
+        def applies(operation_id: str, key: str) -> bool:
+            operation = operations.get(operation_id)
+            if operation is None:
+                return True
+            return _registry.spec_for(operation.kind).input_error_applies(
+                self.context, operation, key
+            ) and (
+                operation_id not in editable_ids or len(editable_ids) > 1 or key in keys
+            )
+
+        self.set_input_errors(
+            {
+                operation_id: {
+                    key: message
+                    for key, message in errors.items()
+                    if applies(operation_id, key)
+                }
+                for operation_id, errors in self._input_errors.items()
+            }
+        )
 
     def _operation_ids_for_error(self) -> tuple[str, ...]:
         editable_ids = self.binding.editable_operation_ids()

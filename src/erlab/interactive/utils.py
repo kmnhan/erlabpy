@@ -103,6 +103,7 @@ if typing.TYPE_CHECKING:
         CodeTrustEntrySource,
         CodeTrustManifest,
     )
+    from erlab.interactive._figurecomposer._providers import FigureSourceProvider
     from erlab.interactive.imagetool._provenance._model import (
         ScriptInput,
         ToolProvenanceOperation,
@@ -1822,6 +1823,7 @@ def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
 
 
 def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
+    import lmfit
     import xarray_lmfit
 
     from erlab.interactive.imagetool import _serialization
@@ -1830,6 +1832,24 @@ def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
         io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()),
         engine="h5netcdf",
     )
+
+    def restore_model_components(model: lmfit.Model) -> None:
+        if isinstance(model, lmfit.model.CompositeModel):
+            restore_model_components(model.left)
+            restore_model_components(model.right)
+        elif type(model) is lmfit.Model and isinstance(
+            model.func, erlab.analysis.fit.functions.MultiPeakFunction
+        ):
+            # lmfit restores the callable and model state, but loses the subclass
+            # that supplies separate peak and background components.
+            model.__class__ = erlab.analysis.fit.models.MultiPeakModel
+
+    for name, variable in restored.data_vars.items():
+        if str(name).endswith("modelfit_results"):
+            for result in variable.values.flat:
+                if isinstance(result, lmfit.model.ModelResult):
+                    restore_model_components(result.model)
+
     private_coord_data_name = _fit_dataset_private_coord_data_name(restored)
     if private_coord_data_name is not None:
         restored = _serialization.restore_private_coords(
@@ -3474,6 +3494,13 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     __tool_display_name: str = ""
 
     StateModel: type[M]
+
+    def figure_source_providers(self) -> tuple[FigureSourceProvider, ...]:
+        """Return outputs available to Figure Composer.
+
+        .. versionadded:: 3.28.0
+        """
+        return ()
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
     sigStateChanged = QtCore.Signal()  #: :meta private:
