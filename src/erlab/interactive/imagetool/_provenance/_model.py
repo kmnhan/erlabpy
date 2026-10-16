@@ -1941,33 +1941,22 @@ def _normalize_legacy_display_operation(
     value: ToolProvenanceOperation | Mapping[str, typing.Any],
     dimension_mapping: Mapping[Hashable, Hashable],
 ) -> ToolProvenanceOperation:
-    """Use the recorded physical dimensions for one released transform."""
+    """Use physical dimension names for supported released operations."""
     operation = parse_tool_provenance_operation(value)
-    # Only these released dialogs ran transforms against the renderer's index axes.
+    # Averaging and coordinate edits retain their meaning after dimension renaming.
     fields = {
-        "rotate": "axes",
         "average": "dims",
         "qsel_aggregate": "dims",
-        "symmetrize": "dim",
-        "symmetrize_nfold": "axes",
         "assign_coords": "coord_name",
     }
     field = fields.get(getattr(operation, "op", ""))
     if not dimension_mapping or field is None:
         return operation
     original = getattr(operation, field)
-    if field in {"axes", "dims"}:
+    if field == "dims":
         replacement = tuple(dimension_mapping.get(dim, dim) for dim in original)
     else:
         replacement = dimension_mapping.get(original, original)
-    if (
-        _operation_is(operation, "rotate", "symmetrize", "symmetrize_nfold")
-        and replacement != original
-    ):
-        raise ValueError(
-            "Saved rotation or symmetrization uses display coordinates and cannot "
-            "be replayed with physical coordinates"
-        )
     return operation.model_copy(update={field: replacement})
 
 
