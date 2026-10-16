@@ -7,9 +7,10 @@ import dataclasses
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from erlab.interactive._figurecomposer import _sources
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._document import FigureDocument
 from erlab.interactive._figurecomposer._model._state import (
     FigureOperationState,
@@ -407,6 +408,145 @@ def test_third_source_type_generated_code(curve_type, qtbot):
         assert "source_spec_for" not in code
     finally:
         plt.close(figure)
+
+
+def test_executable_source_value_requires_approval(curve_type, qtbot, monkeypatch):
+    from erlab.interactive._code_trust import (
+        approve_document_trust,
+        create_payload_entry,
+        untrusted_document_trust,
+    )
+
+    code = "lambda curve: curve * 2"
+    calls = []
+    spec = source_spec_for_kind("test-curve")
+    monkeypatch.setitem(
+        _sources._SOURCE_SPECS,
+        "test-curve",
+        dataclasses.replace(
+            spec,
+            materialize=lambda payload: calls.append(payload) or payload.data * 2,
+            trust_entries=lambda payload, alias, prefix: (
+                create_payload_entry(
+                    "test.curve-transform",
+                    f"{prefix}/sources/{alias}",
+                    code,
+                    code.encode(),
+                    {},
+                ),
+            ),
+        ),
+    )
+    tool = FigureComposerTool.from_source_payloads(
+        {"curve": curve_type},
+        sources=(FigureSourceState(name="curve", kind="test-curve"),),
+        operations=(),
+    )
+    qtbot.addWidget(tool)
+    tool.set_document_trust(
+        untrusted_document_trust(tool._current_code_trust_manifest()), notify=False
+    )
+    xr.testing.assert_identical(tool._source_value("curve"), curve_type.data)
+    with pytest.raises(FigureComposerInputError, match="requires approval"):
+        tool._source_value("curve", evaluate=True)
+    assert calls == []
+
+    tool.set_document_trust(
+        approve_document_trust(
+            tool._document_trust, tool._current_code_trust_manifest()
+        ),
+        notify=False,
+    )
+    xr.testing.assert_identical(
+        tool._source_value("curve", evaluate=True), curve_type.data * 2
+    )
+    assert calls == [curve_type]
+
+
+def test_unavailable_source_types_remain_inspectable(qtbot, tmp_path):
+    unknown = OpaqueSourcePayload("future-source", EncodedSourcePayload({"version": 2}))
+    tool = FigureComposerTool.from_source_payloads(
+        {"unknown": unknown, "missing": ArraySourcePayload(None)},
+        sources=(
+            FigureSourceState(name="unknown", kind="future-source"),
+            FigureSourceState(name="missing"),
+        ),
+        operations=(),
+    )
+    qtbot.addWidget(tool)
+    assert tool.source_kind_names("array") == ()
+    assert tool._available_source_names() == ()
+    for name in ("unknown", "missing", "absent"):
+        with pytest.raises(FigureComposerInputError, match="unavailable"):
+            tool._source_value(name, evaluate=True)
+
+    panel = tool.source_panel
+    panel.set_selected_names(("unknown",), current_name="unknown")
+    tool._refresh_source_detail_panel()
+    assert not panel.source_alias_controls.isHidden()
+    assert panel.source_alias_edit.text() == "unknown"
+    assert not panel.source_editor_state_label.isHidden()
+    assert panel.source_inspector.isHidden()
+    assert panel.source_selection_controls.isHidden()
+    assert tool.source_payload("unknown", OpaqueSourcePayload) is unknown
+
+    panel.source_alias_edit.setText("retained")
+    panel.source_alias_edit.editingFinished.emit()
+    assert tool.source_payload("retained", OpaqueSourcePayload) is unknown
+    restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
+    assert restored.source_payload("retained", OpaqueSourcePayload) == unknown
+
+
+@pytest.mark.parametrize("fit_storage", ["live", "serialized"])
+def test_legacy_clipboard_keeps_mixed_source_snapshots(qtbot, monkeypatch, fit_storage):
+    import json
+    import types
+
+    from lmfit.models import LinearModel
+
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive._figurecomposer._tool import _STEPS_CLIPBOARD_MIME
+
+    base = xr.DataArray(np.arange(7.0), dims="x", coords={"x": np.arange(7.0)})
+    selected = base.isel(x=slice(1, 4))
+    fit = FigureFitSourceSnapshot.from_dataset(base.xlm.modelfit("x", LinearModel()))
+    sources = (
+        FigureSourceState(name="signal", isel={"x": slice(1, 4)}),
+        FigureSourceState(name="fit", kind="fit"),
+    )
+    operations = (
+        FigureOperationState.line(label="Signal", source="signal"),
+        FigureOperationState.fit_plot(source="fit"),
+    )
+    payload = {
+        "type": "erlab.figure_composer.steps",
+        "version": 1,
+        "sources": [source.model_dump(mode="json") for source in sources],
+        "operations": [operation.model_dump(mode="json") for operation in operations],
+    }
+    mime = QtCore.QMimeData()
+    mime.figure_composer_source_data = {"signal": selected}
+    mime.figure_composer_selection_base_data = {"signal": base}
+    if fit_storage == "live":
+        mime.figure_composer_fit_source_data = {"fit": fit}
+    else:
+        payload["fit_sources"] = {"fit": fit.to_payload()}
+    mime.setData(_STEPS_CLIPBOARD_MIME, json.dumps(payload).encode())
+    destination = FigureComposerTool.empty()
+    qtbot.addWidget(destination)
+    monkeypatch.setattr(
+        destination, "_clipboard", lambda: types.SimpleNamespace(mimeData=lambda: mime)
+    )
+    destination._paste_operations_from_clipboard()
+    captured = destination.source_payload("signal", ArraySourcePayload)
+    assert captured is not None
+    xr.testing.assert_identical(captured.data, selected)
+    xr.testing.assert_identical(captured.selection_base, base)
+    captured_fit = destination.source_payload("fit", FigureFitSourceSnapshot)
+    assert captured_fit is not None
+    assert captured_fit.blob == fit.blob
+    assert destination.tool_status.operations[0].line_source == "signal"
+    assert destination.tool_status.operations[1].sources == ("fit",)
 
 
 def test_third_source_type_native_clipboard(curve_type, qtbot):

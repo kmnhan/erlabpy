@@ -1282,6 +1282,102 @@ def test_fit_plot_editor_extra_properties_and_defaults(qtbot, fit_snapshot):
     assert tool.tool_status.operations[0].fit_line_kw == {"linestyle": ":"}
 
 
+def test_fit_plot_editor_rejects_invalid_sizes_and_opacity(qtbot, fit_snapshot):
+    styles = {"linewidth": 2.0, "alpha": 0.6, "zorder": -1.0}
+    tool = _tool(
+        qtbot,
+        fit_snapshot,
+        FigureOperationState.fit_plot(source="edc_fit").model_copy(
+            update={"fit_line_kw": styles}
+        ),
+    )
+    editor = tool.operation_editor
+    editor.select_section("fit_line")
+    page = editor.current_page
+    prefix = "figureComposerFitPlotBestFit"
+    for suffix, invalid, valid in (
+        ("Linewidth", "nan", "2"),
+        ("Linewidth", "inf", "2"),
+        ("Linewidth", "-0.1", "2"),
+        ("Alpha", "1.1", "0.6"),
+        ("Alpha", "-0.1", "0.6"),
+        ("Zorder", "invalid", "-1"),
+    ):
+        _set_text(page, prefix + suffix, invalid)
+        assert tool.tool_status.operations[0].fit_line_kw == styles
+        assert editor.has_input_error(tool.tool_status.operations[0])
+        _set_text(page, prefix + suffix, valid)
+        assert not editor.has_input_error(tool.tool_status.operations[0])
+    line = _render(tool).lines[0]
+    assert line.get_linewidth() == 2.0
+    assert line.get_alpha() == 0.6
+    assert line.get_zorder() == -1.0
+
+
+def test_fit_components_editor_can_reset_all_style_overrides(qtbot, component_snapshot):
+    operation = FigureOperationState.fit_plot(source="edc_fit").model_copy(
+        update={
+            "show_components": True,
+            "fit_sigma": 1.0,
+            "fit_component_kw": {
+                "peak_": {"lw": 2.0, "marker": "$p$"},
+                "bg_": {"color": "red"},
+            },
+            "fit_component_band_kw": {
+                "peak_": {"fc": "cyan", "ec": "black", "hatch": "//"}
+            },
+        }
+    )
+    tool = _tool(qtbot, component_snapshot, operation)
+    editor = tool.operation_editor
+    editor.select_section("fit_components")
+    page = _component_page(editor, "peak_")
+    marker = _style_control(
+        page, QtWidgets.QComboBox, "figureComposerFitPlotComponentLineMarker"
+    )
+    assert marker.currentText() == "$p$"
+    _set_text(page, "figureComposerFitPlotComponentLineLinewidth", "")
+    _activate_combo(page, marker.objectName(), "default")
+    _set_text(page, "figureComposerFitPlotComponentBandColor", "")
+    _set_text(page, "figureComposerFitPlotComponentBandEdgecolor", "")
+    _set_kwargs(page, "figureComposerFitPlotComponentBand", "")
+    updated = tool.tool_status.operations[0]
+    assert updated.fit_component_kw == {"bg_": {"color": "red"}}
+    assert updated.fit_component_band_kw == {}
+    assert not editor.has_input_error(updated)
+    original = _render(tool)
+    namespace = _exec_generated_code(
+        tool.generated_code(), {"edc_fit": component_snapshot.result_dataset()}
+    )
+    _assert_equal_artists(original, namespace["fig"].axes[0])
+
+
+def test_fit_plot_editor_validates_errorbar_stride_and_resets_order(
+    qtbot, fit_snapshot
+):
+    tool = _tool(qtbot, fit_snapshot, FigureOperationState.fit_plot(source="edc_fit"))
+    editor = tool.operation_editor
+    editor.select_section("fit_data")
+    page = editor.current_page
+    prefix = "figureComposerFitPlotError"
+    for invalid in ("True", "(1,", "-1", "(0, 0)", "(0.5, 2)", "other"):
+        _set_text(page, prefix + "Errorevery", invalid)
+        assert "errorevery" not in tool.tool_status.operations[0].fit_data_kw
+        assert editor.has_input_error(tool.tool_status.operations[0])
+    _set_text(page, prefix + "Errorevery", "3")
+    assert tool.tool_status.operations[0].fit_data_kw["errorevery"] == 3
+    assert not editor.has_input_error(tool.tool_status.operations[0])
+    _activate_combo(page, prefix + "Barsabove", "below")
+    assert tool.tool_status.operations[0].fit_data_kw["barsabove"] is False
+    _activate_combo(page, prefix + "Barsabove", "default")
+    assert "barsabove" not in tool.tool_status.operations[0].fit_data_kw
+    bars = _render(tool).containers[0].lines[2][0]
+    segments = np.asarray(bars.get_segments())
+    expected_x = fit_snapshot.native_dataset.energy.values[::3]
+    np.testing.assert_allclose(segments[:, 0, 0], expected_x)
+    np.testing.assert_allclose(segments[:, 1, 1] - segments[:, 0, 1], 0.12)
+
+
 def test_fit_plot_editor_batch_styles_preserve_distinct_properties(qtbot, fit_snapshot):
     operations = tuple(
         FigureOperationState.fit_plot(source="edc_fit").model_copy(

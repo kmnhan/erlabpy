@@ -176,6 +176,120 @@ def test_manager_discovers_and_refreshes_multiple_nonfit_outputs(
         assert not workflow._figure_node_is_source(
             manager._node_for_target(producer_uid)
         )
+        unavailable_picker = _dialogs._FigureSourcePickerDialog(
+            manager, prechecked_uids=(producer_uid,)
+        )
+        qtbot.addWidget(unavailable_picker)
+        unavailable = [
+            item
+            for item in unavailable_picker._tree_items()
+            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) in (first, second)
+        ]
+        assert len(unavailable) == 2
+        assert all(
+            not item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable
+            for item in unavailable
+        )
+        assert unavailable_picker.selected_targets() == ()
+        assert not unavailable_picker.button_box.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        ).isEnabled()
+
+
+def test_source_picker_filters_individual_outputs_and_drops_removed_tools(
+    qtbot, manager_context, monkeypatch
+):
+    from erlab.interactive._figurecomposer._providers import FigureSourceTarget
+
+    data = xr.DataArray(np.arange(4.0), dims="x", coords={"x": np.arange(4.0)})
+    with manager_context() as manager:
+        erlab.interactive.itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        producer = _ProviderTool(data)
+        producer.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        producer_uid = manager.add_childtool(
+            producer, script_inputs={"data": 0}, show=False
+        )
+        first, second = producer.figure_source_providers()
+        second.payload_kind = "fit"
+        monkeypatch.setattr(
+            producer, "figure_source_providers", lambda: (first, second)
+        )
+        picker = _dialogs._FigureSourcePickerDialog(
+            manager, source_kinds=("array",), prechecked_uids=(producer_uid,)
+        )
+        qtbot.addWidget(picker)
+        selected = FigureSourceTarget(producer_uid, "first")
+        assert picker.selected_targets() == (selected,)
+        workflow = manager._figure_workflows
+        figure_uid = workflow.create_figure_from_targets(
+            picker.selected_targets(), show=False
+        )
+        composer = manager._child_node(figure_uid).tool_window
+        [source] = composer.source_states()
+        assert source.provider_id == "first"
+        snapshot = composer.source_payloads()[source.name].data
+        manager._remove_childtool(producer_uid)
+        assert picker.selected_targets() == ()
+        assert not workflow._can_refresh_figure_source(figure_uid, source.name)
+        assert not workflow._refresh_figure_source(figure_uid, source.name)
+        assert not workflow._can_reveal_figure_source(figure_uid, source.name)
+        xr.testing.assert_identical(
+            composer.source_payloads()[source.name].data, snapshot
+        )
+
+
+def test_provider_capture_deduplicates_outputs_and_rejects_incompatible_payload(
+    qtbot, manager_context, monkeypatch
+):
+    from erlab.interactive._figurecomposer._providers import FigureSourceTarget
+
+    data = xr.DataArray(np.arange(4.0), dims="x", coords={"x": np.arange(4.0)})
+    with manager_context() as manager:
+        erlab.interactive.itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        producer = _ProviderTool(data)
+        producer.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        producer_uid = manager.add_childtool(
+            producer, script_inputs={"data": 0}, show=False
+        )
+        first = FigureSourceTarget(producer_uid, "first")
+        workflow = manager._figure_workflows
+        figure_uid = workflow.create_figure_from_targets(
+            (producer_uid, first), show=False
+        )
+        composer = manager._child_node(figure_uid).tool_window
+        assert [source.provider_id for source in composer.source_states()] == [
+            "first",
+            "second",
+        ]
+        assert len(composer.tool_status.operations) == 2
+        initial = composer.tool_status
+        snapshots = composer.source_payloads()
+        [provider, _] = producer.figure_source_providers()
+        provider.payload_kind = "fit"
+        monkeypatch.setattr(producer, "figure_source_providers", lambda: (provider,))
+        assert not workflow._can_refresh_figure_source(
+            figure_uid, composer.source_states()[0].name
+        )
+        assert not workflow._refresh_figure_source(
+            figure_uid, composer.source_states()[0].name
+        )
+        with pytest.raises(ValueError, match="incompatible payload"):
+            workflow.create_figure_from_targets((first,), show=False)
+        with pytest.raises(ValueError, match="incompatible payload"):
+            workflow.append_figure_from_targets(
+                (first,),
+                figure_uid=figure_uid,
+                axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+                show=False,
+            )
+        assert tuple(manager._figure_uids()) == (figure_uid,)
+        assert composer.tool_status == initial
+        for name, payload in snapshots.items():
+            xr.testing.assert_identical(
+                composer.source_payloads()[name].data, payload.data
+            )
 
 
 @pytest.mark.parametrize("action", ["create", "append"])
@@ -645,6 +759,111 @@ def test_explicit_fit_creation_preserves_existing_source_aliases(
             assert composer.source_states()[0].node_uid == fit_uids[0]
             np.testing.assert_allclose(
                 composer.figure.axes[0].lines[1].get_ydata(), data.values
+            )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        _dialogs._FIGURE_DIALOG_NEW,
+        _dialogs._FIGURE_DIALOG_ADD_STEP,
+        _dialogs._FIGURE_DIALOG_ADD_SOURCE,
+        _dialogs._FIGURE_DIALOG_REPLACE_SOURCE,
+        "cancel",
+    ],
+)
+def test_fit_action_destination_preserves_snapshot_and_recipe(
+    qtbot, manager_context, accept_dialog, action
+):
+    from erlab.analysis.fit.models import PolynomialModel
+
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(2 * x + 3 + 0.01 * np.cos(5 * x), dims="x", coords={"x": x})
+    with manager_context() as manager:
+        erlab.interactive.itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        fit_tools = []
+        fit_uids = []
+        for offset in (0.0, 1.0):
+            tool = erlab.interactive.ftool(
+                data + offset, model=PolynomialModel(degree=1), execute=False
+            )
+            tool.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+            fit_uids.append(
+                manager.add_childtool(tool, script_inputs={"data": 0}, show=False)
+            )
+            fitted = (data + offset).xlm.modelfit(
+                "x", model=tool._model, params=tool._params
+            )
+            tool._set_fit_ds(fitted, 0.0)
+            fit_tools.append(tool)
+        workflow = manager._figure_workflows
+        figure_uid = manager.create_figure_from_targets((fit_uids[0],), show=False)
+        composer = manager._child_node(figure_uid).tool_window
+        initial = composer.tool_status
+        [original] = composer.source_states()
+        original_snapshot = composer.source_payloads()[original.name].native_dataset
+        select_child_tool(manager, figure_uid)
+
+        def choose_destination(dialog):
+            assert isinstance(dialog, _dialogs._AppendFigureTargetDialog)
+            assert dialog.figure_uid() == figure_uid
+            assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_ADD_STEP
+            if action != "cancel":
+                dialog.action_combo.setCurrentIndex(
+                    dialog.action_combo.findData(action)
+                )
+            if action == _dialogs._FIGURE_DIALOG_REPLACE_SOURCE:
+                assert dialog.selected_source_alias() == original.name
+            assert dialog._ok_button().isEnabled()
+
+        returned = []
+        accept_dialog(
+            lambda: returned.append(workflow.add_fit_to_figure(fit_tools[1])),
+            pre_call=choose_destination,
+            accept_call=(lambda dialog: dialog.reject())
+            if action == "cancel"
+            else None,
+        )
+        if action == "cancel":
+            assert returned == [None]
+            assert tuple(manager._figure_uids()) == (figure_uid,)
+            assert composer.tool_status == initial
+        else:
+            target_uid = returned[0]
+            assert target_uid is not None
+            target = manager._child_node(target_uid).tool_window
+            source = next(
+                source
+                for source in target.source_states()
+                if source.node_uid == fit_uids[1]
+            )
+            xr.testing.assert_allclose(
+                target.source_payloads()[source.name].native_dataset.modelfit_best_fit,
+                fitted.modelfit_best_fit,
+            )
+            assert workflow._can_refresh_figure_source(target_uid, source.name)
+            if action == _dialogs._FIGURE_DIALOG_NEW:
+                assert target_uid != figure_uid
+                assert composer.tool_status == initial
+                assert len(target.tool_status.operations) == 1
+            else:
+                assert target_uid == figure_uid
+                if action == _dialogs._FIGURE_DIALOG_ADD_STEP:
+                    assert target.tool_status.operations[0] == initial.operations[0]
+                    assert target.tool_status.operations[-1].sources == (source.name,)
+                    assert len(target.source_states()) == 2
+                else:
+                    assert target.tool_status.operations == initial.operations
+                    assert len(target.source_states()) == (
+                        1 if action == _dialogs._FIGURE_DIALOG_REPLACE_SOURCE else 2
+                    )
+                if action == _dialogs._FIGURE_DIALOG_REPLACE_SOURCE:
+                    assert source.name == original.name
+        if action != _dialogs._FIGURE_DIALOG_REPLACE_SOURCE:
+            xr.testing.assert_identical(
+                composer.source_payloads()[original.name].native_dataset,
+                original_snapshot,
             )
 
 

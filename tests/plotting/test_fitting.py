@@ -378,6 +378,7 @@ def test_plot_fit_visibility(linear_fit_result):
 @pytest.mark.parametrize(
     "options",
     [
+        {"numpoints": True},
         {"numpoints": 1},
         {"numpoints": 2.5},
         {"sigma": 0},
@@ -421,6 +422,82 @@ def test_plot_fit_unavailable_uncertainty(linear_fit_result, missing):
             plot_fit(result, ax, sigma=0.95)
         assert not ax.lines
         assert not ax.collections
+    finally:
+        plt.close(fig)
+
+
+def test_plot_fit_rejects_weights_with_another_dimension(linear_fit_result):
+    from erlab.plotting import plot_fit
+
+    result = linear_fit_result.assign(
+        modelfit_weights=xr.DataArray([1.0, 2.0], dims="other")
+    )
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="weights must be scalar or match"):
+            plot_fit(result, ax)
+        assert not ax.lines
+        assert not ax.collections
+        assert not ax.containers
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("invalid", ["nonfinite", "shape"])
+@pytest.mark.parametrize("evaluation", ["fit", "uncertainty", "components"])
+def test_plot_fit_rejects_invalid_model_output_before_drawing(
+    linear_fit_result, monkeypatch, evaluation, invalid
+):
+    from erlab.plotting import plot_fit
+
+    model_result = linear_fit_result.modelfit_results.item()
+    values = np.full(31 if evaluation == "fit" else 21, np.nan)
+    if invalid == "shape":
+        values = np.ones(3)
+    if evaluation == "components":
+        method = "eval_components"
+        output = {"component": values}
+        options = {"show_components": True}
+    elif evaluation == "uncertainty":
+        method = "eval_uncertainty"
+        output = values
+        options = {"sigma": 1}
+    else:
+        method = "eval"
+        output = values
+        options = {"numpoints": 31}
+    monkeypatch.setattr(model_result, method, lambda **_: output)
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match=r"did not return.*finite"):
+            plot_fit(linear_fit_result, ax, **options)
+        assert not ax.lines
+        assert not ax.collections
+        assert not ax.containers
+    finally:
+        plt.close(fig)
+
+
+def test_plot_fit_rejects_inconsistent_component_uncertainty(
+    composite_fit_result, monkeypatch
+):
+    import lmfit.model
+
+    from erlab.plotting import plot_fit
+
+    def eval_uncertainty(self, **kwargs):
+        delta = np.full(np.asarray(kwargs["x"]).shape, 0.1)
+        self.dely_comps = {"unknown": delta}
+        return delta
+
+    monkeypatch.setattr(lmfit.model.ModelResult, "eval_uncertainty", eval_uncertainty)
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="did not match evaluated components"):
+            plot_fit(composite_fit_result, ax, show_components=True, sigma=1)
+        assert not ax.lines
+        assert not ax.collections
+        assert not ax.containers
     finally:
         plt.close(fig)
 

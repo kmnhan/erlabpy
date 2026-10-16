@@ -84,6 +84,157 @@ from ._common import (
 )
 
 
+@pytest.mark.parametrize(
+    ("manifest", "error", "message"),
+    [
+        ({"version": 2}, ValueError, "manifest version"),
+        ({"version": 1, "sources": []}, TypeError, "source manifest"),
+        ({"version": 1, "sources": {42: {}}}, TypeError, "source entry"),
+        ({"version": 1, "sources": {"array": []}}, TypeError, "source entry"),
+        (
+            {"version": 1, "sources": {"array": {"arrays": []}}},
+            TypeError,
+            "array slots",
+        ),
+        (
+            {"version": 1, "sources": {"array": {"array_names": []}}},
+            TypeError,
+            "array slots",
+        ),
+    ],
+)
+def test_source_bundle_rejects_corrupt_manifest(manifest, error, message):
+    from erlab.interactive._figurecomposer._source_storage import decode_source_bundle
+
+    with pytest.raises(error, match=message):
+        decode_source_bundle(manifest, {})
+
+
+def test_source_bundle_missing_array_recovery_preserves_complete_sources():
+    from erlab.interactive._figurecomposer._source_storage import decode_source_bundle
+    from erlab.interactive._figurecomposer._sources import ArraySourcePayload
+
+    data = xr.DataArray(np.arange(3.0), dims="x", name="measurement")
+    manifest = {
+        "version": 1,
+        "sources": {
+            name: {"kind": "array", "payload": {}, "arrays": {"data": variable}}
+            for name, variable in (("complete", "present"), ("partial", "missing"))
+        },
+    }
+    with pytest.raises(ValueError, match=r"'partial'.*unavailable"):
+        decode_source_bundle(manifest, {"present": data})
+    recovered = decode_source_bundle(
+        manifest, {"present": data}, skip_missing_arrays=True
+    )
+    assert set(recovered) == {"complete"}
+    assert isinstance(recovered["complete"], ArraySourcePayload)
+    xr.testing.assert_identical(recovered["complete"].data, data)
+
+
+def test_source_bundle_native_slot_collision_and_unknown_type_roundtrip():
+    from erlab.interactive._figurecomposer._source_storage import (
+        decode_source_bundle,
+        encode_source_bundle,
+    )
+    from erlab.interactive._figurecomposer._sources import (
+        ArraySourcePayload,
+        EncodedSourcePayload,
+        OpaqueSourcePayload,
+    )
+
+    data = xr.DataArray(np.arange(3.0), dims="x", name=("signal", 2))
+    reserved_alias = "__figure_source_0_0"
+    unknown = OpaqueSourcePayload(
+        "future-source", EncodedSourcePayload({"unit": "eV"}, {"native": data})
+    )
+    bundle = encode_source_bundle(
+        {"future": unknown, reserved_alias: ArraySourcePayload(data + 10)},
+        primary_source=reserved_alias,
+    )
+    entries = bundle.manifest["sources"]
+    native_variable = entries["future"]["arrays"]["native"]
+    assert native_variable != reserved_alias
+    assert entries[reserved_alias]["arrays"]["data"] == (
+        _persistence_constants.SAVED_TOOL_DATA_NAME
+    )
+    restored = decode_source_bundle(
+        json.loads(json.dumps(bundle.manifest)), bundle.arrays
+    )
+    assert isinstance(restored["future"], OpaqueSourcePayload)
+    assert restored["future"].encoded.metadata == {"unit": "eV"}
+    xr.testing.assert_identical(restored["future"].encoded.arrays["native"], data)
+    xr.testing.assert_identical(restored[reserved_alias].data, data + 10)
+
+
+def test_source_registry_rejects_ambiguous_registrations_and_unknown_payload(
+    monkeypatch,
+):
+    import dataclasses
+
+    from erlab.interactive._figurecomposer import _sources
+
+    monkeypatch.setattr(_sources, "_SOURCE_SPECS", dict(_sources._SOURCE_SPECS))
+    initial_kinds = set(_sources._SOURCE_SPECS)
+    array_spec = _sources.source_spec_for_kind("array")
+    for kind in ("", "array"):
+        with pytest.raises(ValueError, match="registered or empty"):
+            _sources.register_source_spec(dataclasses.replace(array_spec, kind=kind))
+    with pytest.raises(ValueError, match=r"Payload type.*already registered"):
+        _sources.register_source_spec(dataclasses.replace(array_spec, kind="other"))
+    with pytest.raises(TypeError, match="Unregistered Figure Composer payload"):
+        _sources.source_payload_kind(object())
+    assert set(_sources._SOURCE_SPECS) == initial_kinds
+
+
+def test_document_source_refresh_recovers_valid_inputs_without_losing_payloads():
+    from erlab.interactive._figurecomposer._model._document import FigureDocument
+    from erlab.interactive._figurecomposer._sources import (
+        ArraySourcePayload,
+        EncodedSourcePayload,
+        OpaqueSourcePayload,
+    )
+
+    data = xr.DataArray(np.arange(4.0), dims="x")
+    array = ArraySourcePayload(data)
+    future = OpaqueSourcePayload("future-source", EncodedSourcePayload({"value": 2}))
+    states = (
+        FigureSourceState(name="array"),
+        FigureSourceState(name="future", kind="future-source"),
+        FigureSourceState(name="unavailable"),
+    )
+    changes = []
+    document = FigureDocument(
+        FigureRecipeState(sources=states, primary_source="array"),
+        source_payloads={"array": array, "future": future},
+        changed_callback=lambda recipe, payloads: changes.append((recipe, payloads)),
+    )
+    initial_recipe = document.recipe
+    initial_revision = document.source_revision
+    rejected = document.update_source_payloads({"array": future, "unknown": array})
+    assert not rejected
+    assert tuple(name for name, _ in rejected.skipped) == ("array", "unknown")
+    assert not document.add_sources((states[1],), {"future": data})
+    assert not document.replace_source("array", states[1], data)
+    assert document.recipe is initial_recipe
+    assert document.source_revision == initial_revision
+    assert changes == []
+    assert document.source_payloads == {"array": array, "future": future}
+
+    refreshed = ArraySourcePayload(data + 10)
+    accepted = document.update_source_payloads({"array": refreshed, "future": array})
+    assert accepted.updated == ("array",)
+    assert tuple(name for name, _ in accepted.skipped) == ("future",)
+    assert document.source_payloads["array"] is refreshed
+    assert document.source_payloads["future"] is future
+    assert changes == [(False, True)]
+
+    assert document.duplicate_sources(("unavailable",)) == ("unavailable_copy",)
+    assert "unavailable_copy" in document.source_names()
+    assert "unavailable_copy" not in document.source_payloads
+    assert changes[-1] == (True, False)
+
+
 def test_figure_composer_empty_figure_promotes_first_added_source(qtbot) -> None:
     data = xr.DataArray(
         np.arange(3.0),
