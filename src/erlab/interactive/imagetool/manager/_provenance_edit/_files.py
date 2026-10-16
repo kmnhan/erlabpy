@@ -466,15 +466,14 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             return ()
         peers: list[_FileLoadBatchPeer] = []
         for row in range(self.batch_peer_tree.topLevelItemCount()):
-            item = self.batch_peer_tree.topLevelItem(row)
-            if item is None:
-                continue
+            item = typing.cast(
+                "QtWidgets.QTreeWidgetItem", self.batch_peer_tree.topLevelItem(row)
+            )
             if item.checkState(0) == QtCore.Qt.CheckState.Checked:
                 target_id = typing.cast(
                     "str", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
                 )
-                if peer := self._batch_peers_by_target_id.get(target_id):
-                    peers.append(peer)
+                peers.append(self._batch_peers_by_target_id[target_id])
         return tuple(peers)
 
     def provenance_spec(
@@ -555,14 +554,12 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._updating_batch_peer_paths = True
         try:
             for row in range(self.batch_peer_tree.topLevelItemCount()):
-                item = self.batch_peer_tree.topLevelItem(row)
-                if item is None:
-                    continue
+                item = typing.cast(
+                    "QtWidgets.QTreeWidgetItem", self.batch_peer_tree.topLevelItem(row)
+                )
                 target_id = typing.cast(
                     "str", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
                 )
-                if target_id not in self._batch_peers_by_target_id:
-                    continue
                 if target_id not in self._manual_batch_peer_paths:
                     peer = self._batch_peers_by_target_id[target_id]
                     self._batch_peer_paths[target_id] = self._auto_peer_path(peer)
@@ -577,8 +574,6 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         if column != 2 or self._updating_batch_peer_paths:
             return
         target_id = typing.cast("str", item.data(0, QtCore.Qt.ItemDataRole.UserRole))
-        if target_id not in self._batch_peers_by_target_id:
-            return
         self._manual_batch_peer_paths.add(target_id)
         self._batch_peer_paths[target_id] = pathlib.Path(item.text(2)).expanduser()
 

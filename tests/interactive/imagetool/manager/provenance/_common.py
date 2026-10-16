@@ -293,7 +293,8 @@ def _fake_edit_controller(
             lambda entries, **_kwargs: _authorize_execution(entries)
         ),
     )
-    manager = types.SimpleNamespace(
+    manager = QtWidgets.QWidget()
+    manager.__dict__.update(
         _metadata_node_uid=metadata_uid,
         _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
@@ -369,7 +370,10 @@ def _fake_edit_node(
         source_auto_update=True,
         materialize_pending_workspace_payload=lambda: True,
         slicer_area=types.SimpleNamespace(
-            _accepted_filter_provenance_operation=active_filter
+            _accepted_filter_provenance_operation=active_filter,
+            _filter_operation_result_for_replacement=lambda data, operation: (
+                operation.apply(data)
+            ),
         ),
     )
     node.resolved_replay_source_data = lambda: node.replay_source_data

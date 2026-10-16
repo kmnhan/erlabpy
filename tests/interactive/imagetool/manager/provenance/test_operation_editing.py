@@ -67,6 +67,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _editors as provenance_editors,
 )
+from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 from erlab.interactive.kspace import KspaceTool
 from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
@@ -1902,8 +1903,15 @@ def test_manager_extension_operation_uses_extension_executor_for_filter_and_repl
         controller._reorder_replay_unavailable_reason(node, "display", spec)
         == "extension unavailable"
     )
+    closed_node = _ManagedWindowNode(
+        controller._manager,
+        "closed",
+        None,
+        None,
+        window_kind="imagetool",
+    )
     controller._validate_filter_operation(
-        node,
+        closed_node,
         parent_data,
         operation,
         where="validating filter",

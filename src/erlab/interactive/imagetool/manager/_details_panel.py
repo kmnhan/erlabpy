@@ -55,8 +55,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
     _MetadataField,
-    _preview_curve_for_node,
-    _preview_image_for_node,
+    _preview_curve_from_imagetool,
 )
 
 if typing.TYPE_CHECKING:
@@ -244,9 +243,6 @@ class _DetailsPanelController:
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
 
-    def _notes_ui_available(self) -> bool:
-        return hasattr(self._manager, "notes_editor")
-
     def _selected_note_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
         targets: list[int | str] = []
         targets.extend(self._manager._selected_imagetool_targets())
@@ -277,8 +273,6 @@ class _DetailsPanelController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode | None,
     ) -> None:
-        if not self._notes_ui_available():
-            return
         if node is None:
             self._manager._commit_note_editor()
             self._manager._notes_node_uid = None
@@ -311,8 +305,6 @@ class _DetailsPanelController:
         self._update_note_actions()
 
     def _update_note_actions(self) -> None:
-        if not self._notes_ui_available():
-            return
         node = self._selected_or_current_note_node()
         can_edit = node is not None
         has_note = bool(node is not None and node.has_note)
@@ -321,16 +313,12 @@ class _DetailsPanelController:
         self._manager.clear_note_action.setEnabled(has_note)
 
     def _schedule_note_commit(self) -> None:
-        if not self._notes_ui_available():
-            return
         if self._manager._updating_note_editor:
             return
         self._note_editor_dirty = True
         self._manager._note_commit_timer.start()
 
     def _commit_note_editor(self) -> None:
-        if not self._notes_ui_available():
-            return
         self._manager._note_commit_timer.stop()
         if self._manager._updating_note_editor:
             return
@@ -349,8 +337,6 @@ class _DetailsPanelController:
         self._update_note_actions()
 
     def _edit_selected_note(self) -> None:
-        if not self._notes_ui_available():
-            return
         node = self._selected_note_node()
         if node is None:
             return
@@ -359,8 +345,6 @@ class _DetailsPanelController:
         self._manager.notes_editor.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
 
     def _copy_selected_note(self) -> None:
-        if not self._notes_ui_available():
-            return
         self._commit_note_editor()
         node = self._selected_or_current_note_node()
         if node is None or not node.note:
@@ -368,8 +352,6 @@ class _DetailsPanelController:
         erlab.interactive.utils.copy_to_clipboard(node.note)
 
     def _clear_selected_note(self) -> None:
-        if not self._notes_ui_available():
-            return
         self._commit_note_editor()
         node = self._selected_or_current_note_node()
         if node is None:
@@ -1862,13 +1844,13 @@ class _DetailsPanelController:
                             self._manager.preview_widget.setPixmap(pending_preview[1])
                         self._manager.preview_widget.setVisible(True)
                         return
-                    if (curve := _preview_curve_for_node(node)) is not None:
+                    if (
+                        curve := _preview_curve_from_imagetool(node.imagetool)
+                    ) is not None:
                         self._manager.preview_widget.setCurve(*curve)
                         self._manager.preview_widget.setVisible(True)
                         return
-                    self._manager.preview_widget.setPixmap(
-                        _preview_image_for_node(node)[1]
-                    )
+                    self._manager.preview_widget.setPixmap(node._preview_image[1])
                     self._manager.preview_widget.setVisible(True)
                     return
 

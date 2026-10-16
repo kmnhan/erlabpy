@@ -850,55 +850,6 @@ def test_file_load_edit_dialog_repair_checks_required_and_preserves_peer_loader(
     assert str(old_dir / "b.h5") not in relinked.seed_code
 
 
-def test_file_load_edit_dialog_batch_defensive_branches(
-    qtbot,
-    tmp_path: pathlib.Path,
-) -> None:
-    current_spec = _manager_replay_file_spec(tmp_path / "a.h5")
-    assert current_spec.file_load_source is not None
-    peer_spec = _manager_replay_file_spec(tmp_path / "b.h5")
-    peer_node = types.SimpleNamespace(uid="peer", display_text="Peer")
-    peer = provenance_edit_files._FileLoadBatchPeer(
-        node=typing.cast("typing.Any", peer_node),
-        scope="display",
-        spec=peer_spec,
-        original_path=tmp_path / "b.h5",
-        loader_summary="xarray.load_dataarray",
-    )
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    dialog = provenance_edit_files._FileLoadEditDialog(
-        current_spec.file_load_source,
-        parent,
-        batch_peers=(peer,),
-    )
-    qtbot.addWidget(dialog)
-    dialog.batch_apply_check.setChecked(True)
-
-    class _MissingUidItem:
-        def checkState(self, _column: int) -> QtCore.Qt.CheckState:
-            return QtCore.Qt.CheckState.Checked
-
-        def data(self, _column: int, _role: QtCore.Qt.ItemDataRole) -> str:
-            return "missing"
-
-        def setText(self, _column: int, _text: str) -> None:
-            pytest.fail("unknown batch peer rows should not be updated")
-
-    class _SparseTree:
-        def topLevelItemCount(self) -> int:
-            return 2
-
-        def topLevelItem(self, row: int) -> _MissingUidItem | None:
-            return None if row == 0 else _MissingUidItem()
-
-    dialog.batch_peer_tree = typing.cast("typing.Any", _SparseTree())
-
-    assert dialog.selected_batch_peers() == ()
-    dialog._update_batch_peer_paths()
-    dialog._batch_peer_item_changed(typing.cast("typing.Any", _MissingUidItem()), 2)
-
-
 def test_file_load_edit_dialog_rejects_stale_batch_peer(qtbot) -> None:
     current_spec = _manager_replay_file_spec(pathlib.Path("a.h5"))
     assert current_spec.file_load_source is not None

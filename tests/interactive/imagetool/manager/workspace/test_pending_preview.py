@@ -483,7 +483,7 @@ def test_manager_pending_memory_sidebar_renders_partial_preview_without_material
         assert wrapper.pending_workspace_memory_payload is not None
         assert wrapper.imagetool is None
         assert not manager.is_workspace_modified
-        cached = manager_wrapper._preview_image_for_node(wrapper)
+        cached = wrapper._preview_image
         assert not cached[1].isNull()
 
 
@@ -923,21 +923,6 @@ def test_manager_wrapper_preview_curve_handles_unavailable_live_items(
     assert curve is not None
     np.testing.assert_allclose(curve[0], np.arange(3.0))
     np.testing.assert_allclose(curve[1], np.arange(3.0))
-
-    class _RaisingPendingCurve:
-        pending_workspace_memory_payload = object()
-
-        def pending_workspace_preview_curve(self) -> None:
-            raise RuntimeError
-
-    assert manager_wrapper._preview_curve_for_node(_RaisingPendingCurve()) is None
-
-    class _RaisingImageToolNode:
-        @property
-        def imagetool(self) -> None:
-            raise RuntimeError
-
-    assert manager_wrapper._preview_curve_for_node(_RaisingImageToolNode()) is None
 
 
 def test_pending_toolwindow_metadata_and_preview_helpers(
@@ -1529,7 +1514,7 @@ def test_hidden_2d_workspace_preview_does_not_build_invalid_secondary_plots(
         assert loaded_node.imagetool is None
         assert constructed_display_axes == []
 
-        ratio, pixmap = manager_wrapper._preview_image_for_node(loaded_node)
+        ratio, pixmap = loaded_node._preview_image
         assert isinstance(ratio, float)
         assert isinstance(pixmap, QtGui.QPixmap)
         assert np.isnan(ratio)

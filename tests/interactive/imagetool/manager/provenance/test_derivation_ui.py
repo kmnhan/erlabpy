@@ -880,13 +880,15 @@ def test_manager_multi_selection_projects_shared_provenance_without_loading(
             )
         monkeypatch.setattr(
             manager_details_panel,
-            "_preview_curve_for_node",
+            "_preview_curve_from_imagetool",
             lambda _node: pytest.fail("multi-selection must not render previews"),
         )
         monkeypatch.setattr(
-            manager_details_panel,
-            "_preview_image_for_node",
-            lambda _node: pytest.fail("multi-selection must not render previews"),
+            type(roots[0]),
+            "_preview_image",
+            property(
+                lambda _node: pytest.fail("multi-selection must not render previews")
+            ),
         )
 
         selection_model = manager.tree_view.selectionModel()

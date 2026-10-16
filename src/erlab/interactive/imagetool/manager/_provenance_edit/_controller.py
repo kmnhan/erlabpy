@@ -3041,15 +3041,13 @@ class _ProvenanceEditController:
                     exc,
                 ) from exc
 
-        manager: object = self._manager
-        dialog_parent = manager if isinstance(manager, QtWidgets.QWidget) else None
         temp_tool = None
         try:
             if issubclass(dialog_match.dialog_cls, dialogs.SelectionDialog):
                 selection_dialog_cls = dialog_match.dialog_cls
                 dialog = selection_dialog_cls(
                     provenance_edit_mode=True,
-                    dialog_parent=dialog_parent,
+                    dialog_parent=self._manager,
                     source_data=prefix_data,
                 )
             else:
@@ -3058,7 +3056,7 @@ class _ProvenanceEditController:
                 dialog = dialog_match.dialog_cls(
                     temp_tool.slicer_area,
                     provenance_edit_mode=True,
-                    dialog_parent=dialog_parent,
+                    dialog_parent=self._manager,
                 )
             self._restore_native_edit_dialog(dialog, operations, dialog_match.focus)
             if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
@@ -3436,14 +3434,10 @@ class _ProvenanceEditController:
         where: str,
     ) -> None:
         try:
-            slicer_area = getattr(node, "slicer_area", None)
-            filter_result = getattr(
-                slicer_area,
-                "_filter_operation_result_for_replacement",
-                None,
-            )
-            if node.imagetool is not None and callable(filter_result):
-                filter_result(data, operation)
+            if node.imagetool is not None:
+                node.slicer_area._filter_operation_result_for_replacement(
+                    data, operation
+                )
                 return
             if isinstance(operation, ExtensionRoutineOperation):
                 self._manager._extensions.execution.run_operation(operation, data)

@@ -35,7 +35,6 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ManagedWindowNode,
     _NodeProvenanceOwnerSnapshot,
     _preview_from_imagetool,
-    _preview_image_for_node,
 )
 
 
@@ -403,48 +402,6 @@ def test_wrapper_note_coercion_and_setter_validation(
         assert not wrapper.has_note
         with pytest.raises(TypeError, match="note must be a string"):
             wrapper.note = typing.cast("str", object())
-
-
-def test_preview_image_for_node_handles_legacy_preview_nodes(monkeypatch) -> None:
-    rendered = QtGui.QPixmap(4, 6)
-    rendered.fill(QtGui.QColor("blue"))
-    image_tool = object()
-    calls: list[object | None] = []
-
-    def _preview_from_imagetool_probe(
-        imagetool,
-        fallback_ratio: float,
-        fallback_pixmap: QtGui.QPixmap,
-    ) -> tuple[float, QtGui.QPixmap]:
-        calls.append(imagetool)
-        assert not np.isfinite(fallback_ratio)
-        assert fallback_pixmap.isNull()
-        return 2.0, rendered
-
-    monkeypatch.setattr(
-        "erlab.interactive.imagetool.manager._wrapper._preview_from_imagetool",
-        _preview_from_imagetool_probe,
-    )
-
-    class _LegacyNode:
-        @property
-        def imagetool(self) -> object:
-            return image_tool
-
-    class _BrokenPreviewNode(_LegacyNode):
-        @property
-        def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-            raise AttributeError("_preview_image")
-
-    class _CachedPreviewNode:
-        @property
-        def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-            return 3.0, rendered
-
-    assert _preview_image_for_node(_LegacyNode()) == (2.0, rendered)
-    assert _preview_image_for_node(_BrokenPreviewNode()) == (2.0, rendered)
-    assert _preview_image_for_node(_CachedPreviewNode()) == (3.0, rendered)
-    assert calls == [image_tool, image_tool]
 
 
 def test_wrapper_loader_code_and_metadata_helper_branches(

@@ -256,48 +256,6 @@ def _preview_curve_from_imagetool(
     return _curve_preview_data(x_values, y_values)
 
 
-def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
-    fallback = (float("NaN"), QtGui.QPixmap())
-    dynamic_node = typing.cast("typing.Any", node)
-    try:
-        preview = dynamic_node._preview_image
-    except AttributeError:
-        preview = None
-    if (
-        isinstance(preview, tuple)
-        and len(preview) == 2
-        and isinstance(preview[1], QtGui.QPixmap)
-    ):
-        with contextlib.suppress(TypeError, ValueError):
-            return float(preview[0]), preview[1]
-
-    try:
-        imagetool = dynamic_node.imagetool
-    except (AttributeError, RuntimeError, ValueError):
-        return fallback
-    try:
-        return _preview_from_imagetool(
-            typing.cast("ImageTool | None", imagetool),
-            fallback[0],
-            fallback[1],
-        )
-    except (AttributeError, RuntimeError, ValueError):
-        return fallback
-
-
-def _preview_curve_for_node(node: object) -> tuple[np.ndarray, np.ndarray] | None:
-    dynamic_node = typing.cast("typing.Any", node)
-    if getattr(dynamic_node, "pending_workspace_memory_payload", None) is not None:
-        with contextlib.suppress(AttributeError, RuntimeError, ValueError):
-            return dynamic_node.pending_workspace_preview_curve()
-        return None
-    try:
-        imagetool = dynamic_node.imagetool
-    except (AttributeError, RuntimeError, ValueError):
-        return None
-    return _preview_curve_from_imagetool(typing.cast("ImageTool | None", imagetool))
-
-
 @dataclass(frozen=True)
 class _MetadataField:
     label: str
@@ -3480,16 +3438,8 @@ class _ImageToolWrapper(_ManagedWindowNode):
             )
 
     @property
-    def info_text(self) -> str:
-        return super().info_text
-
-    @property
     def display_text(self) -> str:
         return self.label_text
-
-    @property
-    def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-        return super()._preview_image
 
     @property
     def window(self) -> QtWidgets.QWidget | None:
