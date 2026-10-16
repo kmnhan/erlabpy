@@ -34,6 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
     _direct_replay_source_name,
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
+    parse_script_inputs,
     parse_tool_provenance_operation,
     parse_tool_provenance_spec,
     strip_partial_operation_groups,
@@ -187,9 +188,7 @@ def _provenance_step_clipboard_payload(
                 return None
             if primary_input is not None:
                 ScriptInput(name=primary_input)
-            script_inputs = tuple(
-                ScriptInput.model_validate(item) for item in raw_inputs
-            )
+            script_inputs = parse_script_inputs(raw_inputs)
             names = {item.name for item in script_inputs}
             if len(names) != len(script_inputs) or primary_input in names:
                 return None
@@ -734,18 +733,12 @@ class _DetailsPanelController:
         node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> list[_ProvenanceDisplayRow]:
         spec = node.passive_displayed_provenance_spec
-        rows = getattr(node, "derivation_display_rows", None)
-        if rows is None:
-            rows = [
-                _ProvenanceDisplayRow(entry)
-                for entry in getattr(node, "derivation_entries", ())
-            ]
         return [
             self._current_derivation_display_row(
                 row,
                 spec,
             )
-            for row in rows
+            for row in node.derivation_display_rows
         ]
 
     @staticmethod
@@ -1239,12 +1232,7 @@ class _DetailsPanelController:
             "list[QtWidgets.QTreeWidgetItem]",
             list(self._manager.metadata_derivation_list.selectedItems()),
         )
-        display_order = getattr(
-            self._manager.metadata_derivation_list,
-            "display_order",
-            self._manager.metadata_derivation_list.row,
-        )
-        return sorted(items, key=display_order)
+        return sorted(items, key=self._manager.metadata_derivation_list.display_order)
 
     def _selected_derivation_scopes(
         self,
@@ -1568,7 +1556,7 @@ class _DetailsPanelController:
         )
         paste_enabled, paste_reason = (
             self._manager._provenance_edit_controller.can_paste_steps(
-                None if paste_payload is None else paste_payload.steps
+                None if paste_payload is None else paste_payload.spec
             )
         )
         self._manager._metadata_paste_steps_action.setEnabled(paste_enabled)
@@ -1631,11 +1619,7 @@ class _DetailsPanelController:
             )
             return
         self._manager._provenance_edit_controller.paste_steps(
-            payload.steps,
-            active_name=payload.active_name,
-            provenance_spec=payload.spec,
-            primary_input=payload.primary_input,
-            script_inputs=payload.script_inputs,
+            payload.spec,
             source_manager_id=payload.source_manager_id,
         )
 
@@ -1644,7 +1628,7 @@ class _DetailsPanelController:
     ) -> str:
         unavailable_labels: list[str] = []
         replayable_input_labels = self._replayable_script_input_labels(
-            getattr(node, "displayed_provenance_spec", None)
+            node.displayed_provenance_spec
         )
         rows = self._flatten_derivation_rows(
             self._current_derivation_display_rows(node)

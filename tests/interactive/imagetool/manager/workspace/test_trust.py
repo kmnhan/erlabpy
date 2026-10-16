@@ -2156,7 +2156,7 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
         second_node = manager._node_for_target(1)
         shared_candidate = manager._provenance_revisions.normalize_provenance(
             shared,
-            replay_source_revision_id=second_node.provenance_spec.script_inputs[
+            replay_source_revision_id=second_node.provenance_spec.replay_inputs[
                 0
             ].revision_id,
         )
@@ -2185,7 +2185,7 @@ def test_local_provenance_edit_does_not_authorize_equal_code_at_another_node(
         first_node = manager._node_for_target(0)
         first_local = manager._provenance_revisions.normalize_provenance(
             first_local,
-            replay_source_revision_id=first_node.provenance_spec.script_inputs[
+            replay_source_revision_id=first_node.provenance_spec.replay_inputs[
                 0
             ].revision_id,
         )

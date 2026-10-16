@@ -29,6 +29,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ScriptInput,
+    _ProvenanceDisplayRow,
     compose_full_provenance,
     file_load,
     full_data,
@@ -4782,7 +4783,11 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
 
     details = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
-            derivation_entries=(start_entry, unavailable_entry, unavailable_entry),
+            derivation_display_rows=tuple(
+                _ProvenanceDisplayRow(entry)
+                for entry in (start_entry, unavailable_entry, unavailable_entry)
+            ),
+            displayed_provenance_spec=None,
             passive_displayed_provenance_spec=None,
         )
     )
@@ -4790,14 +4795,17 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
 
     fallback = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
-            derivation_entries=(start_entry,),
+            derivation_display_rows=(_ProvenanceDisplayRow(start_entry),),
+            displayed_provenance_spec=None,
             passive_displayed_provenance_spec=None,
         )
     )
     assert fallback
 
     no_spec_node = types.SimpleNamespace(
-        derivation_entries=(start_entry, unavailable_entry),
+        derivation_display_rows=tuple(
+            _ProvenanceDisplayRow(entry) for entry in (start_entry, unavailable_entry)
+        ),
         displayed_provenance_spec=None,
         passive_displayed_provenance_spec=None,
     )

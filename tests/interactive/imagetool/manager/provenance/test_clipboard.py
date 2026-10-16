@@ -80,6 +80,47 @@ from ._common import (
 )
 
 
+def test_released_clipboard_keeps_resolved_input_fallback() -> None:
+    complete = script(
+        start_label="Correction",
+        active_name="correction",
+        seed_code="correction = xr.DataArray([1.0, 2.0, 3.0], dims='x')",
+    )
+    source = full_data(IselOperation(kwargs={"x": slice(1, 4)}))
+    step = ReplayStep(
+        operation=ScriptCodeOperation(
+            label="Add correction", code="derived = data + correction"
+        )
+    )
+    mime = QtCore.QMimeData()
+    mime.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        json.dumps(
+            {
+                "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+                "version": 2,
+                "active_name": "derived",
+                "primary_input": "data",
+                "steps": [step.model_dump(mode="json")],
+                "script_inputs": [
+                    {
+                        "name": "correction",
+                        "source_spec": source.model_dump(mode="json"),
+                        "provenance_spec": complete.model_dump(mode="json"),
+                    }
+                ],
+            }
+        ).encode(),
+    )
+    payload = manager_details_panel._provenance_step_clipboard_payload(mime)
+    assert payload is not None
+    data = xr.DataArray([10.0, 20.0, 30.0], dims="x")
+    result = replay_script_provenance(
+        payload.spec, {"data": data}, authorize=_authorize_execution
+    )
+    xr.testing.assert_identical(result, xr.DataArray([11.0, 22.0, 33.0], dims="x"))
+
+
 def test_manager_provenance_step_clipboard_payload_validation() -> None:
     operation_payload = AverageOperation(dims=("z",)).model_dump(mode="json")
     valid_payload = {
@@ -1026,7 +1067,6 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
     node = types.SimpleNamespace(
         displayed_provenance_spec=spec,
         passive_displayed_provenance_spec=spec,
-        derivation_entries=spec.derivation_entries(),
         derivation_display_rows=spec.display_rows(),
     )
     controller = manager_details_panel._DetailsPanelController(
@@ -1086,8 +1126,11 @@ def test_manager_paste_steps_validation_error_branches(
     unavailable: list[str] = []
     monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
     controller.paste_steps(
-        (ReplayStep(operation=AverageOperation(dims=("x",))),),
-        active_name="derived",
+        script(
+            AverageOperation(dims=("x",)),
+            start_label="Copied average",
+            active_name="derived",
+        ),
     )
     assert unavailable
 
@@ -1096,12 +1139,6 @@ def test_manager_paste_steps_validation_error_branches(
         parent_uid="parent",
         source_display_spec=full_data(),
     )
-    with pytest.raises(TypeError, match="Only live provenance operations"):
-        controller._paste_structured_steps(
-            node,
-            (ScriptCodeOperation(label="script", code="derived = data"),),
-        )
-
     parent = _fake_edit_node(full_data(), uid="parent")
     parent.current_source_data = lambda: xr.DataArray([1.0], dims=("x",))
     controller = _fake_edit_controller(node, parent=parent)
@@ -1145,7 +1182,10 @@ def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
 
     assert controller._paste_target_nodes() == [editable, pending]
     assert controller.can_paste_steps(
-        (AssignAttrsOperation(attrs={"copied": "yes"}),)
+        script(
+            AssignAttrsOperation(attrs={"copied": "yes"}),
+            start_label="Copied attribute",
+        )
     ) == (True, "")
 
 
@@ -2688,10 +2728,13 @@ def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
 
         manager._provenance_edit_controller._paste_steps_into_node(
             node,
-            (step,),
-            active_name="shifted",
-            primary_input="data",
-            script_inputs=(portable_shift,),
+            script(
+                start_label="Copied shift",
+                steps=(step,),
+                active_name="shifted",
+                primary_input="data",
+                script_inputs=(ScriptInput(name="data"), portable_shift),
+            ),
             source_manager_id="another-manager",
         )
 
@@ -2715,14 +2758,18 @@ def test_manager_paste_foreign_bound_shift_uses_recorded_fallback(
         with pytest.raises(ReplayGraphError, match="no portable recorded provenance"):
             manager._provenance_edit_controller._paste_steps_into_node(
                 node,
-                (step,),
-                active_name="shifted",
-                primary_input="data",
-                script_inputs=(
-                    ScriptInput(
-                        name="shift",
-                        label="Unavailable shift",
-                        node_uid="foreign-shift",
+                script(
+                    start_label="Copied shift",
+                    steps=(step,),
+                    active_name="shifted",
+                    primary_input="data",
+                    script_inputs=(
+                        ScriptInput(name="data"),
+                        ScriptInput(
+                            name="shift",
+                            label="Unavailable shift",
+                            node_uid="foreign-shift",
+                        ),
                     ),
                 ),
                 source_manager_id="another-manager",
@@ -2961,8 +3008,11 @@ def test_manager_paste_steps_starts_from_public_target_data(
 
         manager._provenance_edit_controller._paste_steps_into_node(
             node,
-            tuple(ReplayStep(operation=operation) for operation in operations),
-            active_name="derived",
+            script(
+                *operations,
+                start_label="Copied operations",
+                active_name="derived",
+            ),
         )
 
         xr.testing.assert_identical(tool.slicer_area._data, expected)

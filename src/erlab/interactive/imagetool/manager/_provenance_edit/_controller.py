@@ -739,9 +739,9 @@ class _ProvenanceEditController:
 
     def can_paste_steps(
         self,
-        operations: Sequence[ToolProvenanceOperation | ReplayStep] | None,
+        spec: ToolProvenanceSpec | None,
     ) -> tuple[bool, str]:
-        if not operations:
+        if spec is None:
             return False, "The clipboard does not contain copied ImageTool steps."
         if not self._paste_target_nodes():
             return False, "Select an available ImageTool row to paste provenance."
@@ -749,15 +749,11 @@ class _ProvenanceEditController:
 
     def paste_steps(
         self,
-        operations: Sequence[ToolProvenanceOperation | ReplayStep],
+        spec: ToolProvenanceSpec,
         *,
-        active_name: str,
-        primary_input: str | None = None,
-        script_inputs: Sequence[ScriptInput] = (),
         source_manager_id: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
     ) -> None:
-        paste_enabled, paste_reason = self.can_paste_steps(operations)
+        paste_enabled, paste_reason = self.can_paste_steps(spec)
         if not paste_enabled:
             self._show_unavailable(paste_reason)
             return
@@ -768,12 +764,8 @@ class _ProvenanceEditController:
             try:
                 self._paste_steps_into_node(
                     node,
-                    operations,
-                    active_name=active_name,
-                    primary_input=primary_input,
-                    script_inputs=script_inputs,
+                    spec,
                     source_manager_id=source_manager_id,
-                    provenance_spec=provenance_spec,
                 )
             except _TrustedProvenanceReplayCancelled:
                 return
@@ -899,47 +891,15 @@ class _ProvenanceEditController:
     def _paste_steps_into_node(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        steps: Sequence[ToolProvenanceOperation | ReplayStep],
+        spec: ToolProvenanceSpec,
         *,
-        active_name: str,
-        primary_input: str | None = None,
-        script_inputs: Sequence[ScriptInput] = (),
         source_manager_id: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
     ) -> None:
-        replay_steps = tuple(
-            item if isinstance(item, ReplayStep) else ReplayStep(operation=item)
-            for item in steps
-        )
-        if provenance_spec is None or provenance_spec.replay_primary_input is None:
-            has_bound_inputs = any(step.input_bindings for step in replay_steps)
-            if has_bound_inputs and primary_input is None:
-                raise ValueError("Bound provenance steps need a primary input")
-            if primary_input is not None or script_inputs:
-                primary_name = primary_input or "data"
-                provenance_spec = script(
-                    start_label="Start from current ImageTool data",
-                    active_name=active_name or "derived",
-                    steps=replay_steps,
-                    script_inputs=(
-                        ScriptInput(name=primary_name),
-                        *(item for item in script_inputs if item.name != primary_name),
-                    ),
-                    primary_input=primary_name,
-                )
-        if provenance_spec is not None:
-            live_steps = self._live_workflow_steps(provenance_spec)
-            if live_steps is not None:
-                # Live operations keep the destination's existing source binding.
-                replay_steps = live_steps
-                provenance_spec = None
-        if (
-            provenance_spec is not None
-            and provenance_spec.replay_primary_input is not None
-        ):
+        live_steps = self._live_workflow_steps(spec)
+        if live_steps is None and spec.replay_primary_input is not None:
             local = self._rebind_pasted_workflow(
                 node,
-                provenance_spec,
+                spec,
                 portable_inputs=(
                     source_manager_id != self._manager._manager_record.internal_id
                 ),
@@ -951,6 +911,8 @@ class _ProvenanceEditController:
             )
             return
 
+        # Live operations keep the destination's existing source binding.
+        replay_steps = spec.steps if live_steps is None else live_steps
         operations = restamp_operation_groups(
             tuple(step.operation for step in replay_steps)
         )
@@ -962,7 +924,7 @@ class _ProvenanceEditController:
                 node,
                 script(
                     start_label="Start from current ImageTool data",
-                    active_name=active_name or "derived",
+                    active_name=spec.active_name or "derived",
                     steps=tuple(
                         step.model_copy(update={"operation": operation})
                         for step, operation in zip(
@@ -980,10 +942,6 @@ class _ProvenanceEditController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         operations: tuple[ToolProvenanceOperation, ...],
     ) -> None:
-        for operation in operations:
-            if not operation.live_applicable:
-                raise TypeError("Only live provenance operations can be pasted here")
-
         if node.parent_uid is not None and node.displayed_source_spec is not None:
             candidate = node.displayed_source_spec.append_replacement_operations(
                 *operations
@@ -3605,14 +3563,6 @@ class _ProvenanceEditController:
                 )
             )
         return tuple(peers)
-
-    def _replay_candidate(
-        self,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        scope: typing.Literal["display", "source"],
-        spec: ToolProvenanceSpec,
-    ) -> xr.DataArray:
-        return self._replay_candidate_result(node, scope, spec).data
 
     def _replay_candidate_result(
         self,

@@ -662,9 +662,9 @@ def test_workspace_save_preserves_watched_root_replay(
         assert restored._provenance_spec is None
         assert restored.has_replay_source
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 restored, "display", restored.provenance_spec
-            ),
+            ).data,
             data,
         )
 
@@ -679,9 +679,9 @@ def test_workspace_save_preserves_watched_root_replay(
         manager._update_info(uid=restored.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 restored, "display", restored.provenance_spec
-            ),
+            ).data,
             data.assign_attrs(sample="reference").assign_coords(angle=1.5),
         )
 

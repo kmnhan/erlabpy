@@ -2214,11 +2214,11 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
         )
         assert root.provenance_spec is not None
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 root,
                 "display",
                 root.provenance_spec,
-            ),
+            ).data,
             tool.slicer_area._data,
         )
 

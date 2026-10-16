@@ -1657,17 +1657,10 @@ class _ManagedWindowNode(QtCore.QObject):
     def _remap_provenance_value(
         provenance_spec: ToolProvenanceSpec | None,
         remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
-        *,
-        live_source: bool = False,
     ) -> ToolProvenanceSpec | None:
         if provenance_spec is None:
             return None
-        remapped = remap(provenance_spec)
-        if not isinstance(remapped, ToolProvenanceSpec):
-            raise TypeError("A provenance remap must return a ToolProvenanceSpec")
-        if live_source:
-            return require_live_source_spec(remapped)
-        return remapped
+        return remap(provenance_spec)
 
     @classmethod
     def _remap_script_input(
@@ -1678,9 +1671,7 @@ class _ManagedWindowNode(QtCore.QObject):
         """Remap both provenance values owned by one named tool input."""
         source_spec = script_input.parsed_source_spec()
         provenance_spec = script_input.parsed_provenance_spec()
-        remapped_source = cls._remap_provenance_value(
-            source_spec, remap, live_source=True
-        )
+        remapped_source = cls._remap_provenance_value(source_spec, remap)
         remapped_provenance = cls._remap_provenance_value(provenance_spec, remap)
         if remapped_source == source_spec and remapped_provenance == provenance_spec:
             return script_input
@@ -1757,9 +1748,7 @@ class _ManagedWindowNode(QtCore.QObject):
         :meth:`commit_provenance_owner_remap` for each changed node.
         """
         before = self._provenance_owner_snapshot()
-        node_source_spec = self._remap_provenance_value(
-            before.node_source_spec, remap, live_source=True
-        )
+        node_source_spec = self._remap_provenance_value(before.node_source_spec, remap)
         node_provenance_spec = self._remap_provenance_value(
             before.node_provenance_spec, remap
         )

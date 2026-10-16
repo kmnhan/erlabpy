@@ -2455,9 +2455,9 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
             source,
         )
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 restored, "display", restored.provenance_spec
-            ),
+            ).data,
             expected,
         )
         select_tools(manager, [0])

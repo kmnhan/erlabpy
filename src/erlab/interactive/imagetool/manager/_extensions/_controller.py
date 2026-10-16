@@ -60,6 +60,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._provenance._model import (
         FileLoadSource,
         FileReplayCall,
+        ToolProvenanceSpec,
     )
     from erlab.interactive.imagetool._provenance._operations import (
         ExtensionRoutineOperation,
@@ -1392,7 +1393,7 @@ class _ExtensionController(QtCore.QObject):
         """Remap one workspace source after it is saved with a new filename."""
         previous_key = _script_name_key(previous_name)
 
-        def remap_spec(spec: typing.Any) -> typing.Any:
+        def remap_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
             candidate = spec
             for ref, operation in reversed(tuple(iter_operation_refs(spec))):
                 if (
@@ -1443,7 +1444,9 @@ class _ExtensionController(QtCore.QObject):
             ):
                 candidate = candidate.model_copy(
                     update={
-                        "file_load_source": load_source.model_copy(
+                        "file_load_source": typing.cast(
+                            "FileLoadSource", load_source
+                        ).model_copy(
                             update={
                                 "replay_call": replay_call.model_copy(
                                     update={"target": registered_name}

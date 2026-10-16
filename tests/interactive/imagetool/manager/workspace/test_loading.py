@@ -1174,7 +1174,7 @@ def test_managed_tool_rebuilds_input_provenance_from_parent(
             manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
             source_spec,
         )
-        assert child.script_inputs[0].parsed_provenance_spec() == expected
+        assert child.script_inputs[0].resolved_provenance_spec() == expected
         current = child.current_provenance_spec()
         assert current is not None
         assert "attacker" not in current.display_code()

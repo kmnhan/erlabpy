@@ -56,21 +56,14 @@ def test_reapplying_workspace_link_state_keeps_color_cache_valid() -> None:
     assert node._workspace_link_colors is False
 
 
-def test_wrapper_provenance_value_remap_requires_valid_specs() -> None:
+def test_wrapper_provenance_value_remap_updates_input_specs() -> None:
     provenance = full_data()
 
     assert _ManagedWindowNode._remap_provenance_value(None, lambda value: value) is None
     assert (
-        _ManagedWindowNode._remap_provenance_value(
-            provenance, lambda value: value, live_source=True
-        )
+        _ManagedWindowNode._remap_provenance_value(provenance, lambda value: value)
         == provenance
     )
-    with pytest.raises(TypeError, match="ToolProvenanceSpec"):
-        _ManagedWindowNode._remap_provenance_value(
-            provenance, lambda _value: typing.cast("ToolProvenanceSpec", object())
-        )
-
     script_input = ScriptInput(
         name="data",
         source_spec=provenance.model_dump(mode="json"),
