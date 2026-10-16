@@ -6321,16 +6321,20 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         )
 
 
+@pytest.mark.parametrize("nonuniform", [False, True])
 def test_manager_file_backed_replace_current_keeps_file_provenance(
     qtbot,
     monkeypatch,
     accept_dialog,
     tmp_path: pathlib.Path,
     test_data,
+    nonuniform: bool,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    if nonuniform:
+        test_data = test_data.assign_coords(alpha=[0.0, 0.25, 1.1, 3.0, 10.0])
     file_path = tmp_path / "scan.h5"
     test_data.to_netcdf(file_path, engine="h5netcdf")
 
@@ -6366,7 +6370,9 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         assert root.provenance_spec is not None
         assert root.provenance_spec.kind == "file"
         assert [op.op for op in root.provenance_spec.operations] == ["qsel_aggregate"]
-        assert [step.input_policy for step in root.provenance_spec.steps] == ["current"]
+        assert [step.input_policy for step in root.provenance_spec.steps] == [
+            "restored"
+        ]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
         assert any("Aggregate" in entry.label for entry in entries)

@@ -1174,15 +1174,19 @@ def test_manager_recorded_input_edit_uses_captured_data_and_open_input_is_indepe
         )
 
 
+@pytest.mark.parametrize("nonuniform", [False, True])
 def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
     qtbot,
     accept_dialog,
     tmp_path: pathlib.Path,
     test_data,
+    nonuniform: bool,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    if nonuniform:
+        test_data = test_data.assign_coords(alpha=[0.0, 0.25, 1.1, 3.0, 10.0])
     file_path = tmp_path / "scan.h5"
     test_data.to_netcdf(file_path, engine="h5netcdf")
 
@@ -1219,7 +1223,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         assert provenance_payload["kind"] == "file"
         assert provenance_payload["operations"] == []
         assert len(provenance_payload["steps"]) == 1
-        assert provenance_payload["steps"][0]["input_policy"] == "current"
+        assert provenance_payload["steps"][0]["input_policy"] == "restored"
         assert provenance_payload["steps"][0]["operation"]["op"] == "qsel_aggregate"
         assert (
             provenance_payload["file_load_source"]["replay_call"]["target"]

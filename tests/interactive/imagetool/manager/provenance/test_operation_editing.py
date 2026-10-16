@@ -3122,7 +3122,6 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
         spec._prefix_through_ref(script_input_ref)
     assert spec._prefix_before_ref(start_ref).operations == ()
     assert spec._prefix_before_ref(first_ref).operations == ()
-    assert spec._streamlined_operations("selection", spec.operations) == spec.operations
 
     file_spec = _manager_provenance_file_spec(
         pathlib.Path("scan.h5")
