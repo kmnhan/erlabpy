@@ -131,6 +131,22 @@ def _exec_generated_code(
     return namespace
 
 
+def _selected_script_scope(
+    code: str,
+    input_name: str,
+    output_name: str,
+    links: dict[str, int],
+) -> SelectedProvenanceScope:
+    return SelectedProvenanceScope(
+        selected_steps_spec(
+            (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+            input_name=input_name,
+            output_name=output_name,
+        ),
+        links,
+    )
+
+
 def test_captured_input_trust_inventory_matches_replay_bindings() -> None:
     source = xr.DataArray([1.0, 2.0], dims="x")
     original = source.copy(deep=True)
@@ -6796,6 +6812,39 @@ def test_selected_notebook_scopes_restore_retained_function_globals(
     )
     assert ".copy(" not in code
     assert "_itool_replay_" not in code
+
+
+def test_selected_notebook_scopes_restore_recursive_function_alias_globals() -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    code = selected_provenance_code(
+        (
+            _selected_script_scope(
+                "def normalize(values, count=1):\n"
+                "    if count:\n"
+                "        return normalize(values + 1, count - 1)\n"
+                "    return values\n"
+                "normalize_saved = normalize\nprepared = normalize(data)",
+                "data",
+                "prepared",
+                {},
+            ),
+            _selected_script_scope(
+                "normalize = offsets * 0\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            _selected_script_scope(
+                "result = normalize_saved(prepared) + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    namespace = _exec_generated_code(code, {"data": source, "offsets": source + 100})
+
+    xr.testing.assert_identical(namespace["result"], source + 2)
 
 
 @pytest.mark.parametrize("replace_function", [False, True])

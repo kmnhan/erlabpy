@@ -327,7 +327,6 @@ def _symbol_table_dependencies(
             symbol.is_global()
             or (symbol.is_free() and symbol.get_name() not in enclosing_bound)
         )
-        and (table.get_type() != "function" or symbol.get_name() != table.get_name())
     }
     supplied = enclosing_bound
     if table.get_type() not in {"module", "class"}:
