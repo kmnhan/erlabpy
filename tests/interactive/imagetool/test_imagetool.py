@@ -2471,10 +2471,8 @@ def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> N
         "data", 0, (0, 2)
     )
     assert ".qsel.mean((" in expr
-    result = _exec_data_fragment(win.slicer_area.data, expr)
-    expected = erlab.utils.array._restore_nonuniform_dims(
-        win.slicer_area.data.copy(deep=False)
-    ).isel({'a"b': slice(1, 4), "c": slice(1, 4)})
+    result = _exec_data_fragment(data, expr)
+    expected = data.isel({'a"b': slice(1, 4), "c": slice(1, 4)})
     expected = expected.qsel.mean(('a"b', "c"))
     xarray.testing.assert_identical(result, expected)
 
@@ -2655,17 +2653,11 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
 
 
 def test_figure_composer_operation_reports_uneditable_plot_slices_details(
+    qtbot,
     monkeypatch,
 ) -> None:
-    class _PlotWithSelectionPlan:
-        is_image = True
-        display_axis = (0, 1)
-        slicer_area = types.SimpleNamespace(
-            data=types.SimpleNamespace(ndim=3, dims=("alpha", "beta", "eV")),
-            displayed_data=types.SimpleNamespace(dims=("alpha", "beta", "eV")),
-            n_cursors=1,
-        )
-        array_slicer = types.SimpleNamespace(_nonuniform_axes=set())
+    win = itool(_TEST_DATA["3D"], execute=False)
+    qtbot.addWidget(win)
 
     for plan, detail in (
         (
@@ -2688,9 +2680,11 @@ def test_figure_composer_operation_reports_uneditable_plot_slices_details(
         )
         with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
             build_figure_composer_operation(
-                _PlotWithSelectionPlan(), source_name="data"
+                win.slicer_area.main_image, source_name="data"
             )
         assert detail in str(exc_info.value)
+
+    win.close()
 
 
 def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
@@ -9587,7 +9581,7 @@ def test_1d_profile_ftool_copy_code_omits_slicer_only_selection(
     profile = win.slicer_area.profiles[0]
 
     source_spec = profile.make_tool_source_spec(squeeze=True)
-    assert source_spec.operations == (SqueezeOperation(),)
+    assert source_spec.operations == ()
     resolved = source_spec.apply(win.slicer_area.displayed_data)
     xr.testing.assert_identical(resolved, data)
 
