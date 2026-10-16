@@ -392,22 +392,11 @@ def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
 
     assert calls == ["flush", "No fit result: There is no fit result to save."]
 
-    class _FakeFitResults:
-        def compute(self):
-            return self
-
-        def item(self):
-            return object()
-
-    fake_result_ds = typing.cast(
-        "xr.Dataset",
-        typing.cast("object", type("FakeResultDataset", (), {})()),
-    )
-    fake_result_ds.modelfit_results = _FakeFitResults()
+    restored_result_ds = xr.Dataset({"modelfit_results": xr.DataArray(object())})
     monkeypatch.setattr(
         fit1d_module,
         "_load_lmfit_for_ftool_restore",
-        lambda load, **_kwargs: fake_result_ds,
+        lambda load, **_kwargs: restored_result_ds,
     )
     monkeypatch.setattr(win, "_set_fit_stats", lambda _result: calls.append("stats"))
     monkeypatch.setattr(win, "_update_fit_curve", lambda: calls.append("curve"))
@@ -420,6 +409,7 @@ def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
     win._restore_persisted_fit_result_blob(blob, fit_is_current=True)
     win._restore_persisted_fit_result_blob(blob, fit_is_current=False)
 
+    assert win._last_result_ds is restored_result_ds
     assert calls[-6:] == ["stats", "curve", "fresh", "stats", "curve", "stale"]
 
 

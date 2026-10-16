@@ -4185,6 +4185,7 @@ class Fit2DTool(Fit1DTool):
             model_kwargs=model_kwargs,
             parameters=parameters,
             method=self.method_combo.currentText(),
+            max_nfev=self.nfev_spin.value() or None,
             parameter=param_name,
             output=output,
             broadcast_dim=self._y_dim_name,

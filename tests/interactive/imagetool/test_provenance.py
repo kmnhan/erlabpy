@@ -8909,6 +8909,58 @@ def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     assert np.isfinite(stderr.values).all()
 
 
+@pytest.mark.parametrize("max_nfev", [None, 2])
+def test_model_fit_operation_preserves_evaluation_limit(max_nfev) -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        1.0 + 2.0 * x + 0.01 * np.sin(4.0 * x),
+        dims="x",
+        coords={"x": x},
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(value=0.0),
+        },
+        method="leastsq",
+        max_nfev=max_nfev,
+        parameter="c1",
+    )
+    expected_fit = data.xlm.modelfit(
+        "x",
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
+        method="leastsq",
+        max_nfev=max_nfev,
+    )
+    actual_fit = operation._fit_result(data, uncertainty=None)
+    actual_result = actual_fit.modelfit_results.item()
+    expected_result = expected_fit.modelfit_results.item()
+    assert actual_result.aborted == expected_result.aborted == (max_nfev is not None)
+    assert actual_result.nfev == expected_result.nfev
+    xr.testing.assert_identical(
+        actual_fit.modelfit_best_fit, expected_fit.modelfit_best_fit
+    )
+    expected = expected_fit.modelfit_coefficients.sel(param="c1", drop=True).rename(
+        "c1_values"
+    )
+    xr.testing.assert_identical(operation.apply(data), expected)
+    code = operation.replay_code("data", output_name="parameter_values")
+    assert ("max_nfev=" in code) == (max_nfev is not None)
+    namespace = _exec_generated_code(code, {"data": data, "era": erlab.analysis})
+    xr.testing.assert_identical(namespace["parameter_values"], expected)
+
+    payload = operation.model_dump(mode="json")
+    assert parse_tool_provenance_operation(payload) == operation
+    if max_nfev is None:
+        del payload["max_nfev"]
+        assert parse_tool_provenance_operation(payload) == operation
+
+
 @pytest.mark.parametrize("weighted", [False, True])
 @pytest.mark.parametrize("output", ["value", "stderr", "value_valid_stderr"])
 def test_model_fit_operation_normalization_skips_unusable_means(weighted, output):
@@ -9223,6 +9275,8 @@ def test_model_fit_parameter_spec_rejects_invalid_state(
         ({"fit_dim": ""}, ValueError, "dimension must not be empty"),
         ({"broadcast_dim": "x"}, ValueError, "dimensions must differ"),
         ({"method": " "}, ValueError, "method must not be empty"),
+        ({"max_nfev": 0}, ValueError, "greater than 0"),
+        ({"max_nfev": -1}, ValueError, "greater than 0"),
         ({"parameter": ""}, ValueError, "output parameter must not be empty"),
         ({"parameters": {}}, ValueError, "parameters must not be empty"),
         (

@@ -4558,9 +4558,16 @@ def test_ktool_overlay_undo_redo_shortcuts(qtbot, anglemap, focus_numeric, commi
         qtbot.wait_until(lambda: len(win._prev_states) == 3)
         assert win.overlays.state.pockets[0].center[0] == 0.2
     focus = spin if focus_numeric else win.overlays.add_button
+    # Window activation can change while the pending history timer is processed.
+    # QTest sends keys directly, so wait for the shortcut context to be active.
+    win.activateWindow()
     focus.setFocus()
+    qtbot.wait_until(lambda: win.isActiveWindow() and focus.hasFocus())
     QtTest.QTest.keySequence(focus, win.undo_action.shortcut())
     assert win.tool_status == initial
+    win.activateWindow()
+    focus.setFocus()
+    qtbot.wait_until(lambda: win.isActiveWindow() and focus.hasFocus())
     QtTest.QTest.keySequence(focus, win.redo_action.shortcut())
     assert win.overlays.state.pockets[0].center[0] == 0.2
 

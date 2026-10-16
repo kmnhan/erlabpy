@@ -4305,6 +4305,7 @@ def test_fit2d_mixed_slice_ranges_copy_and_output_provenance(
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
+    win.timeout_spin.setValue(30.0)
 
     fit_ranges = [(-1.0, 0.0), (0.0, 1.0)]
     _fit_slices_with_ranges(win, fit_ranges)
@@ -4926,8 +4927,10 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert win.output_imagetool_provenance(missing_id, values) is None
 
 
+@pytest.mark.parametrize("max_nfev", [0, 2])
 def test_fit2d_parameter_output_provenance_preserves_managed_uncertainty(
     qtbot,
+    max_nfev,
 ) -> None:
     x = np.linspace(-1.0, 1.0, 9)
     y = np.array([0.0, 1.0])
@@ -4957,6 +4960,7 @@ def test_fit2d_parameter_output_provenance_preserves_managed_uncertainty(
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
+    win.nfev_spin.setValue(max_nfev)
     win.set_script_inputs(
         (ScriptInput(name="data"), ScriptInput(name="uncertainty")),
         primary_input="data",
@@ -4977,6 +4981,7 @@ def test_fit2d_parameter_output_provenance_preserves_managed_uncertainty(
         weights=1.0 / uncertainty,
         method=win.method_combo.currentText(),
         scale_covar=True,
+        max_nfev=max_nfev or None,
     ).load()
     expected_values = expected_fit.modelfit_coefficients.sel(
         param="c1", drop=True
@@ -5010,6 +5015,7 @@ def test_fit2d_parameter_output_provenance_preserves_managed_uncertainty(
         assert spec is not None
         operation = spec.operations[-1]
         assert isinstance(operation, ModelFitOperation)
+        assert operation.max_nfev == (max_nfev or None)
         assert operation.weighting == "uncertainty"
         assert operation.output == expected_operation_outputs[output]
         assert spec.primary_input == "data"
@@ -5217,29 +5223,38 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
 def test_fit2d_parameter_output_provenance_preserves_standalone_data_name(
     qtbot,
 ) -> None:
-    source_spectrum = _make_2d_data()
+    x = np.linspace(-1.0, 1.0, 11)
+    slopes = np.array([2.0, 3.0, 4.0])
+    source_spectrum = xr.DataArray(
+        np.arange(1.0, 4.0)[:, None] + slopes[:, None] * x + 0.01 * x**2,
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": x},
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
     win = erlab.interactive.ftool(
         source_spectrum,
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
         data_name="source_spectrum",
         execute=False,
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    center_name = "p0_center"
-    params = win._params.copy()
-    _seed_fit2d_param_results(
-        win,
-        [params.copy() for _ in range(len(win._params_full))],
-    )
-    win.param_plot_combo.setCurrentText(center_name)
+    for index in range(source_spectrum.sizes["y"]):
+        win._set_current_index(index)
+        assert win._run_fit()
+        qtbot.waitUntil(lambda: win._fit_thread is None, timeout=10000)
+        assert win._last_result_ds.modelfit_results.item().success
+    win.param_plot_combo.setCurrentText("c1")
     values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
     assert values is not None
+    np.testing.assert_allclose(values, slopes)
 
     spec = win.output_imagetool_provenance(
         Fit2DTool._parameter_output_id(
             Fit2DTool.Output.PARAMETER_VALUES,
-            center_name,
+            "c1",
         ),
         values,
     )
@@ -5248,9 +5263,7 @@ def test_fit2d_parameter_output_provenance_preserves_standalone_data_name(
     assert code is not None
     assert "source_spectrum.isel" in code
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        namespace = _exec_generated_code(code, source_spectrum=source_spectrum)
+    namespace = _exec_generated_code(code, source_spectrum=source_spectrum)
     assert spec.active_name is not None
     actual = namespace[spec.active_name]
     assert isinstance(actual, xr.DataArray)

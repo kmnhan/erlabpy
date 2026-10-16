@@ -272,6 +272,7 @@ class ModelFitOperation(ToolProvenanceOperation):
     model_kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
     parameters: dict[str, _ModelFitParameterSpec]
     method: str
+    max_nfev: int | None = pydantic.Field(default=None, gt=0)
     parameter: str
     output: typing.Literal["value", "stderr", "value_valid_stderr"] = "value"
     broadcast_dim: NullableProvenanceHashable = None
@@ -408,6 +409,7 @@ class ModelFitOperation(ToolProvenanceOperation):
         )
         if not execution_capability_allows(authorization, entries):
             raise PermissionError("Model-fit parameter expressions are not authorized")
+        fit_kwargs = {} if self.max_nfev is None else {"max_nfev": self.max_nfev}
         return fit_data.xlm.modelfit(
             self.fit_dim,
             model=self._model(),
@@ -415,6 +417,7 @@ class ModelFitOperation(ToolProvenanceOperation):
             method=self.method,
             weights=weights,
             scale_covar=self.scale_covar,
+            **fit_kwargs,
         )
 
     def _output_from_fit(self, fit_result: xr.Dataset) -> xr.DataArray:
@@ -547,6 +550,8 @@ class ModelFitOperation(ToolProvenanceOperation):
         lines.extend(f"    {line}" for line in parameter_lines[1:-1])
         lines.append(f"    {parameter_lines[-1]},")
         lines.append(f"    method={self.method!r},")
+        if self.max_nfev is not None:
+            lines.append(f"    max_nfev={self.max_nfev!r},")
         if uncertainty_name is not None:
             uncertainty_expression = self._uncertainty_expression_code(
                 input_name,
