@@ -39,27 +39,35 @@ class _CurvePayload:
     unit: str
 
 
-@pytest.fixture
-def curve_type(monkeypatch):
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _ArrayCurvePayload(ArraySourcePayload):
+    unit: str
+
+
+@pytest.fixture(
+    params=(_CurvePayload, _ArrayCurvePayload), ids=("independent", "array-subclass")
+)
+def curve_type(request, monkeypatch):
+    payload_type = request.param
     monkeypatch.setattr(_sources, "_SOURCE_SPECS", dict(_sources._SOURCE_SPECS))
     register_source_spec(
         SourceSpec(
             kind="test-curve",
             label="Curve",
-            payload_type=_CurvePayload,
+            payload_type=payload_type,
             duplicate=lambda payload: dataclasses.replace(
                 payload, data=payload.data.copy(deep=False)
             ),
             encode=lambda payload: EncodedSourcePayload(
                 {"unit": payload.unit}, {"curve": payload.data}
             ),
-            decode=lambda encoded: _CurvePayload(
-                encoded.arrays["curve"], encoded.metadata["unit"]
+            decode=lambda encoded: payload_type(
+                data=encoded.arrays["curve"], unit=encoded.metadata["unit"]
             ),
             safe_value=lambda payload: payload.data,
         )
     )
-    return _CurvePayload(xr.DataArray(np.arange(4.0), dims="x"), "eV")
+    return payload_type(data=xr.DataArray(np.arange(4.0), dims="x"), unit="eV")
 
 
 def test_third_source_type_lifecycle_and_codec(curve_type):
@@ -76,15 +84,18 @@ def test_third_source_type_lifecycle_and_codec(curve_type):
         source_payloads={"curve": curve_type},
         changed_callback=lambda recipe, payloads: changes.append((recipe, payloads)),
     )
+    assert source_payload_kind(curve_type) == "test-curve"
     assert document.source_kind_names("test-curve") == ("curve",)
     assert document.source_data == {}
-    assert document.source_payload("curve", _CurvePayload) is curve_type
-    assert document.source_payload("curve", ArraySourcePayload) is None
+    assert document.source_payload("curve", type(curve_type)) is curve_type
+    assert document.source_payload("curve", ArraySourcePayload) is (
+        curve_type if isinstance(curve_type, ArraySourcePayload) else None
+    )
     assert document.rename_source("curve", "renamed")
     assert document.recipe.primary_source == "renamed"
     assert document.source_payloads == {"renamed": curve_type}
     assert document.duplicate_sources(("renamed",)) == ("renamed_copy",)
-    duplicate = document.source_payload("renamed_copy", _CurvePayload)
+    duplicate = document.source_payload("renamed_copy", type(curve_type))
     assert duplicate is not None
     assert duplicate is not curve_type
     xr.testing.assert_identical(duplicate.data, curve_type.data)
@@ -92,7 +103,7 @@ def test_third_source_type_lifecycle_and_codec(curve_type):
     assert encoded.metadata == {"unit": "eV"}
     assert encoded.arrays["curve"] is duplicate.data
     restored = decode_source_payload("test-curve", encoded)
-    assert isinstance(restored, _CurvePayload)
+    assert isinstance(restored, type(curve_type))
     xr.testing.assert_identical(restored.data, curve_type.data)
     assert document.remove_sources(("renamed",)) == ("renamed",)
     assert document.recipe.primary_source == "renamed_copy"
@@ -126,7 +137,7 @@ def test_third_source_type_add_refresh_and_paste(curve_type):
     )
     assert pasted.source_data_changed
     assert document.recipe.operations[0].sources == ("curve_copy",)
-    assert isinstance(document.source_payloads["curve_copy"], _CurvePayload)
+    assert isinstance(document.source_payloads["curve_copy"], type(curve_type))
     assert len(document.source_payloads) == 2
 
 
@@ -255,7 +266,7 @@ def test_third_source_type_tool_roundtrip(curve_type, qtbot, tmp_path, primary_s
     assert "figure_composer_fit_sources" not in saved.attrs
     restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
     assert set(restored.source_payloads()) == {"curve", "array"}
-    captured = restored._document.source_payload("curve", _CurvePayload)
+    captured = restored._document.source_payload("curve", type(curve_type))
     assert captured is not None
     assert captured.unit == curve_type.unit
     xr.testing.assert_identical(captured.data, curve_type.data)
@@ -266,17 +277,22 @@ def test_third_source_type_tool_roundtrip(curve_type, qtbot, tmp_path, primary_s
 def test_third_source_type_payload_refresh_undo_redo(curve_type, qtbot):
     source = FigureSourceState(name="curve", kind="test-curve")
     tool = FigureComposerTool.from_source_payloads(
-        {"curve": curve_type}, sources=(source,), operations=()
+        {"curve": curve_type}, sources=(source,)
     )
     qtbot.addWidget(tool)
+    assert tool.tool_status.operations == ()
+    assert tool.source_data() == {}
     tool._reset_history_stack()
-    refreshed = dataclasses.replace(curve_type, data=curve_type.data + 10)
+    refreshed = dataclasses.replace(curve_type, data=curve_type.data + 10, unit="meV")
     assert tool.replace_source_payload("curve", source, refreshed)
     xr.testing.assert_identical(tool._source_value("curve"), refreshed.data)
+    assert tool.source_payload("curve", type(curve_type)).unit == "meV"
     tool._undo_recorded_state()
     xr.testing.assert_identical(tool._source_value("curve"), curve_type.data)
+    assert tool.source_payload("curve", type(curve_type)).unit == "eV"
     tool._redo_recorded_state()
     xr.testing.assert_identical(tool._source_value("curve"), refreshed.data)
+    assert tool.source_payload("curve", type(curve_type)).unit == "meV"
 
 
 def test_legacy_provider_state_migrates_without_fit_specific_fields():
@@ -570,7 +586,7 @@ def test_third_source_type_native_clipboard(curve_type, qtbot):
     _select_operation_rows(source, (0,))
     assert source._write_selected_operations_to_clipboard() == (0,)
     destination._paste_operations_from_clipboard()
-    captured = destination.source_payload("curve_copy", _CurvePayload)
+    captured = destination.source_payload("curve_copy", type(curve_type))
     assert captured is not None
     assert captured.unit == curve_type.unit
     xr.testing.assert_identical(captured.data, curve_type.data)

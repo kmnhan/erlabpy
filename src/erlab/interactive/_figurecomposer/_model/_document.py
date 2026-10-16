@@ -40,6 +40,7 @@ from erlab.interactive._figurecomposer._model._state import (
 )
 from erlab.interactive._figurecomposer._sources import (
     ArraySourcePayload,
+    _is_array_source_payload,
     duplicate_source_payload,
     source_payload_kind,
 )
@@ -198,7 +199,7 @@ class FigureDocument:
             {
                 name: payload.data
                 for name, payload in self._source_payloads.items()
-                if isinstance(payload, ArraySourcePayload) and payload.data is not None
+                if _is_array_source_payload(payload) and payload.data is not None
             }
         )
 
@@ -209,7 +210,7 @@ class FigureDocument:
             {
                 name: payload.selection_base
                 for name, payload in self._source_payloads.items()
-                if isinstance(payload, ArraySourcePayload)
+                if _is_array_source_payload(payload)
                 and payload.selection_base is not None
             }
         )
@@ -328,10 +329,11 @@ class FigureDocument:
         payloads = {
             name: payload
             for name, payload in self._source_payloads.items()
-            if not isinstance(payload, ArraySourcePayload)
+            if not _is_array_source_payload(payload)
         }
         for name in dict.fromkeys((*source_data, *selection_base_data)):
-            current = self.source_payload(name, ArraySourcePayload)
+            payload = self._source_payloads.get(name)
+            current = payload if _is_array_source_payload(payload) else None
             data = source_data.get(name)
             base = selection_base_data.get(name)
             payloads[name] = (
@@ -1439,9 +1441,7 @@ class FigureDocument:
         array_sources = tuple(
             source
             for source in sources
-            if isinstance(
-                payload := source_payloads.get(source.name), ArraySourcePayload
-            )
+            if _is_array_source_payload(payload := source_payloads.get(source.name))
             and payload.selection_base is None
         )
         if not array_sources:
@@ -1459,7 +1459,7 @@ class FigureDocument:
                     name: payload.data
                     for name, payload in source_payloads.items()
                     if name in array_names
-                    and isinstance(payload, ArraySourcePayload)
+                    and _is_array_source_payload(payload)
                     and payload.data is not None
                 },
             )

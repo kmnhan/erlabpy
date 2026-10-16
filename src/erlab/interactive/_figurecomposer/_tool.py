@@ -155,6 +155,7 @@ from erlab.interactive._figurecomposer._sources import (
     ArraySourcePayload,
     EncodedSourcePayload,
     OpaqueSourcePayload,
+    _is_array_source_payload,
     decode_source_payload,
     duplicate_source_payload,
     source_payload_kind,
@@ -729,9 +730,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 spec = source_spec_for_payload(payload)
                 if spec.default_operation is not None:
                     default_operations.append(spec.default_operation(name))
-                elif (
-                    isinstance(payload, ArraySourcePayload) and payload.data is not None
-                ):
+                elif _is_array_source_payload(payload) and payload.data is not None:
                     default_operations.append(
                         _default_plot_operation(name, payload.data, setup=setup)
                     )
@@ -4407,7 +4406,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def replace_source_payload(
         self, alias: str, source: FigureSourceState, payload: object
     ) -> bool:
-        if isinstance(payload, ArraySourcePayload):
+        if _is_array_source_payload(payload):
             data = (
                 payload.selection_base
                 if payload.selection_base is not None
@@ -4968,7 +4967,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _persistence_source_bundle(self) -> SourceBundle:
         payloads = dict(self._document.source_payloads)
         for source_name, payload in payloads.items():
-            if isinstance(payload, ArraySourcePayload) and payload.data is not None:
+            if _is_array_source_payload(payload) and payload.data is not None:
                 data, _already_selected = self._persistence_source_data(source_name)
                 payloads[source_name] = ArraySourcePayload(data)
         return encode_source_bundle(
@@ -5072,7 +5071,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             payloads.update(
                 (name, payload)
                 for name, payload in decoded.items()
-                if not isinstance(payload, ArraySourcePayload)
+                if not _is_array_source_payload(payload)
             )
         source_data = dict(self._document.source_data)
         primary = self._recipe_source(self._document.recipe.primary_source)
@@ -5259,7 +5258,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         payloads = {
             name: payload
             for name, payload in payloads.items()
-            if not isinstance(payload, ArraySourcePayload)
+            if not _is_array_source_payload(payload)
         }
         for name in source_data.keys() | selection_base_data.keys():
             payloads[name] = ArraySourcePayload(
@@ -5380,7 +5379,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             restored = self._fit_sources_from_saved_dataset(ds)
         payloads = dict(self._document.source_payloads)
         for name, payload in tuple(payloads.items()):
-            if isinstance(payload, ArraySourcePayload) and (
+            if _is_array_source_payload(payload) and (
                 (
                     payload.data is not None
                     and _SOURCE_FREE_DATA_DIM in payload.data.dims

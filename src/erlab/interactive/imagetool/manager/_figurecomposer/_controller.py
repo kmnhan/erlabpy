@@ -933,7 +933,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         setup: FigureSubplotsState | None,
     ) -> tuple[FigureOperationState, ...]:
         from erlab.interactive._figurecomposer._sources import (
-            ArraySourcePayload,
+            _is_array_source_payload,
             source_spec_for_kind,
         )
 
@@ -943,20 +943,19 @@ class _FigureComposerWorkflowController(QtCore.QObject):
                 {
                     name: payload.data
                     for name, payload in payloads.items()
-                    if isinstance(payload, ArraySourcePayload)
-                    and payload.data is not None
+                    if _is_array_source_payload(payload) and payload.data is not None
                 },
             )
         array_sources = tuple(
             source
             for source in sources
-            if isinstance(payloads[source.name], ArraySourcePayload)
+            if _is_array_source_payload(payloads[source.name])
             and source_spec_for_kind(source.kind).default_operation is None
         )
         array_data = {
             source.name: payload.data
             for source in array_sources
-            if isinstance(payload := payloads[source.name], ArraySourcePayload)
+            if _is_array_source_payload(payload := payloads[source.name])
             and payload.data is not None
         }
         image_targets = tuple(
@@ -1025,7 +1024,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         from erlab.interactive._figurecomposer._exceptions import (
             FigureComposerPlotSlicesSelectionError,
         )
-        from erlab.interactive._figurecomposer._sources import ArraySourcePayload
+        from erlab.interactive._figurecomposer._sources import _is_array_source_payload
 
         sources, payloads, name_map = self._capture_figure_sources(targets)
         if not sources:
@@ -1033,7 +1032,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         source_data = {
             name: payload.data
             for name, payload in payloads.items()
-            if isinstance(payload, ArraySourcePayload) and payload.data is not None
+            if _is_array_source_payload(payload) and payload.data is not None
         }
         requested = operation
         if custom_code is not None:
@@ -1107,7 +1106,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         from erlab.interactive._figurecomposer._exceptions import (
             FigureComposerPlotSlicesSelectionError,
         )
-        from erlab.interactive._figurecomposer._sources import ArraySourcePayload
+        from erlab.interactive._figurecomposer._sources import _is_array_source_payload
 
         if not self._host._is_figure_uid(figure_uid):
             return False
@@ -1139,7 +1138,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
             array_data = {
                 name: payload.data
                 for name, payload in payloads.items()
-                if isinstance(payload, ArraySourcePayload) and payload.data is not None
+                if _is_array_source_payload(payload) and payload.data is not None
             }
             bz_operation = self._figure_bz_overlay_operation_from_targets(
                 tuple(

@@ -1,3 +1,4 @@
+import dataclasses
 from unittest.mock import patch
 
 import numpy as np
@@ -194,6 +195,119 @@ def test_manager_discovers_and_refreshes_multiple_nonfit_outputs(
         assert not unavailable_picker.button_box.button(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
         ).isEnabled()
+
+
+def test_manager_preserves_registered_array_subclass(
+    qtbot, manager_context, monkeypatch
+):
+    from erlab.interactive._figurecomposer import _sources
+    from erlab.interactive._figurecomposer._providers import FigureSourceTarget
+    from erlab.interactive._figurecomposer._rendering import _render_into_figure
+    from erlab.interactive._figurecomposer._sources import (
+        ArraySourcePayload,
+        EncodedSourcePayload,
+        SourceSpec,
+        encode_source_payload,
+        register_source_spec,
+    )
+
+    @dataclasses.dataclass(frozen=True)
+    class TaggedArray(ArraySourcePayload):
+        unit: str = "eV"
+
+    class TaggedProvider(_ArrayProvider):
+        payload_kind = "test-tagged-array"
+
+        def capture(self, selection=None):
+            capture = super().capture(selection)
+            return dataclasses.replace(
+                capture, payload=TaggedArray(capture.payload.data, unit=self._tool.unit)
+            )
+
+    monkeypatch.setattr(_sources, "_SOURCE_SPECS", dict(_sources._SOURCE_SPECS))
+    register_source_spec(
+        SourceSpec(
+            kind=TaggedProvider.payload_kind,
+            payload_type=TaggedArray,
+            duplicate=lambda payload: dataclasses.replace(
+                payload, data=payload.data.copy(deep=False)
+            ),
+            encode=lambda payload: EncodedSourcePayload(
+                {"unit": payload.unit}, {"values": payload.data}
+            ),
+            decode=lambda encoded: TaggedArray(
+                encoded.arrays["values"], unit=encoded.metadata["unit"]
+            ),
+            safe_value=lambda payload: payload.data,
+            default_operation=lambda alias: FigureOperationState.custom(
+                label="tagged array", code=f"ax.plot({alias}.values.ravel())"
+            ).model_copy(update={"sources": (alias,)}),
+        )
+    )
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("y", "x"))
+    with manager_context() as manager:
+        erlab.interactive.itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        producer = _ProviderTool(data)
+        producer.unit = "eV"
+        producer.set_script_inputs((ScriptInput(name="data"),), primary_input="data")
+        monkeypatch.setattr(
+            producer,
+            "figure_source_providers",
+            lambda: tuple(
+                TaggedProvider(producer, name) for name in ("first", "second")
+            ),
+        )
+        producer_uid = manager.add_childtool(
+            producer, script_inputs={"data": 0}, show=False
+        )
+        workflow = manager._figure_workflows
+        first, second = (
+            FigureSourceTarget(producer_uid, name) for name in ("first", "second")
+        )
+        figure_uid = workflow.create_figure_from_targets((first, second), show=False)
+        composer = manager._child_node(figure_uid).tool_window
+        assert composer.source_data() == {}
+        assert composer.tool_status.setup.nrows == 1
+        assert [source.kind for source in composer.source_states()] == [
+            TaggedProvider.payload_kind,
+            TaggedProvider.payload_kind,
+        ]
+        assert len(composer.tool_status.operations) == 2
+        assert all(
+            operation.kind == FigureOperationKind.CUSTOM
+            for operation in composer.tool_status.operations
+        )
+        assert workflow.append_figure_from_targets(
+            (second,),
+            figure_uid=figure_uid,
+            axes_selection=FigureAxesSelectionState(axes=((0, 0),)),
+            show=False,
+        )
+        assert len(composer.source_states()) == 2
+        assert len(composer.tool_status.operations) == 3
+        assert composer.tool_status.operations[-1].kind == FigureOperationKind.CUSTOM
+
+        producer._data = data + 2.0
+        producer.unit = "meV"
+        assert workflow._refresh_figure_source(figure_uid, "first")
+        refreshed = composer.source_payloads()["first"]
+        assert isinstance(refreshed, TaggedArray)
+        assert encode_source_payload(refreshed).metadata == {"unit": "meV"}
+        xr.testing.assert_identical(refreshed.data, data + 2.0)
+        sources, payloads, _ = workflow._capture_figure_sources((second,))
+        assert workflow._replace_figure_source_payload(
+            figure_uid, "first", sources[0], payloads["second"]
+        )
+        assert composer.source_states()[0].provider_id == "second"
+        assert isinstance(composer.source_payloads()["first"], TaggedArray)
+        assert composer.source_data() == {}
+        _render_into_figure(composer, composer.figure, sync_visible=False)
+        assert not composer._operation_render_errors
+        assert len(composer.figure.axes[0].lines) == 3
+        np.testing.assert_array_equal(
+            composer.figure.axes[0].lines[0].get_ydata(), (data + 2.0).values.ravel()
+        )
 
 
 def test_source_picker_filters_individual_outputs_and_drops_removed_tools(

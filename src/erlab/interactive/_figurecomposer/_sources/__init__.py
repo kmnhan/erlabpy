@@ -93,9 +93,22 @@ def source_spec_for_kind(kind: str) -> SourceSpec[object]:
 def source_spec_for_payload(payload: object) -> SourceSpec[object]:
     """Resolve a payload through explicit type registrations."""
     for spec in _SOURCE_SPECS.values():
+        if type(payload) is spec.payload_type:
+            return spec
+    for spec in _SOURCE_SPECS.values():
         if isinstance(payload, spec.payload_type):
             return spec
     raise TypeError(f"Unregistered Figure Composer payload type: {type(payload)!r}.")
+
+
+def _is_array_source_payload(
+    payload: object,
+) -> typing.TypeGuard[ArraySourcePayload]:
+    """Identify payloads that use the built-in array source handling."""
+    return (
+        isinstance(payload, ArraySourcePayload)
+        and source_spec_for_payload(payload).kind == "array"
+    )
 
 
 def source_payload_kind(payload: object) -> str:
