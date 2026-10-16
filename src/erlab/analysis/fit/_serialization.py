@@ -40,8 +40,6 @@ _MODEL_CLASSES = {
 _MODEL_CLASSES.update(
     (f"lmfit.{name}", getattr(lmfit.models, name))
     for name in (
-        "ConstantModel",
-        "ComplexConstantModel",
         "LinearModel",
         "QuadraticModel",
         "SineModel",
