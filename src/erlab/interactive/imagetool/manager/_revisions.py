@@ -6,7 +6,6 @@ import copy
 import json
 import typing
 import uuid
-from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
@@ -70,34 +69,9 @@ class _BoundProvenanceRevision:
 
 
 def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
-    if spec is None:
-        return frozenset()
-    ids: set[str] = set()
-
-    def _visit(payload: object) -> None:
-        if isinstance(payload, Mapping):
-            inputs = payload.get("script_inputs", ())
-            if isinstance(inputs, (list, tuple)):
-                for item in inputs:
-                    if isinstance(item, Mapping):
-                        for field in ("revision_id", "resolved_revision_id"):
-                            revision_id = item.get(field)
-                            if isinstance(revision_id, str) and revision_id:
-                                ids.add(revision_id)
-            root = payload.get("root_input")
-            if isinstance(root, Mapping):
-                for field in ("revision_id", "resolved_revision_id"):
-                    revision_id = root.get(field)
-                    if isinstance(revision_id, str) and revision_id:
-                        ids.add(revision_id)
-            for value in payload.values():
-                _visit(value)
-        elif isinstance(payload, (list, tuple)):
-            for value in payload:
-                _visit(value)
-
-    _visit(spec.model_dump(mode="python"))
-    return frozenset(ids)
+    return (
+        frozenset() if spec is None else _script_input_revision_ids(spec.replay_inputs)
+    )
 
 
 def _same_bound_provenance(
@@ -142,13 +116,16 @@ def requires_legacy_replay_source(spec: ToolProvenanceSpec | None) -> bool:
 
 def _script_input_revision_ids(inputs: Iterable[ScriptInput]) -> frozenset[str]:
     ids: set[str] = set()
-    for item in inputs:
+    pending = list(inputs)
+    while pending:
+        item = pending.pop()
         if item.revision_id is not None:
             ids.add(item.revision_id)
         if item.resolved_revision_id is not None:
             ids.add(item.resolved_revision_id)
-        ids.update(_spec_revision_ids(item.parsed_provenance_spec()))
-        ids.update(_spec_revision_ids(item.parsed_source_spec()))
+        nested = item.parsed_provenance_spec()
+        if nested is not None:
+            pending.extend(nested.replay_inputs)
     return frozenset(ids)
 
 
@@ -263,9 +240,8 @@ class _ProvenanceRevisionStore:
         if record.checkpoint is None:
             raise ValueError(f"Revision {revision_id!r} has no data checkpoint")
         if revision_id not in self._data:
-            if record.checkpoint.source is None:
-                raise ValueError(f"Revision {revision_id!r} has no captured data")
-            data = record.checkpoint.source.read_data()
+            source = typing.cast("_RevisionCheckpointSource", record.checkpoint.source)
+            data = source.read_data()
             self._data[revision_id] = data.copy(deep=True)
         return self._data[revision_id].copy(deep=True)
 
@@ -345,10 +321,6 @@ class _ProvenanceRevisionStore:
     ) -> ToolProvenanceSpec | None:
         if spec is None:
             return None
-        if replay_source_revision_id is not None and not self.has_data(
-            replay_source_revision_id
-        ):
-            raise ValueError("Legacy replay source revision has no checkpoint")
         inputs = []
         for item in spec.replay_inputs:
             normalized = self.normalize_input(item)

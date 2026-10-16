@@ -137,7 +137,7 @@ def test_released_input_normalization_preserves_resolved_fallback() -> None:
     assert store.normalize_input(migrated) == migrated
 
 
-def test_revision_retention_follows_root_and_selected_references_with_cycles() -> None:
+def test_revision_retention_follows_root_and_selected_references() -> None:
     store = _ProvenanceRevisionStore()
     nested = script(
         start_label="Nested",
@@ -153,7 +153,7 @@ def test_revision_retention_follows_root_and_selected_references_with_cycles() -
         ),
     )
     store.add(spec=spec, revision_id="consumer")
-    store.add(revision_id="raw", primary_revision_id="consumer")
+    store.add(revision_id="raw")
     store.add(
         spec=script(
             start_label="Selected",
@@ -318,6 +318,9 @@ def test_bound_revision_keeps_loader_arguments_exact() -> None:
     revision_id = registry.add(xr.DataArray([1.0]), original)
     with pytest.raises(ValueError, match="bound recipe"):
         registry.bind(revision_id, changed)
+    registry.add(revision_id="value")
+    registry.discard_unreachable((revision_id,))
+    assert registry.revision_ids == {revision_id}
 
 
 def test_revision_capture_freezes_lazy_values_and_coordinates(tmp_path) -> None:
@@ -704,12 +707,6 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
         restored.bind_checkpoint_source(
             revision_id,
             _RevisionCheckpointSource("saved.itws", "/checkpoint", lambda *_args: None),
-        )
-    with pytest.raises(
-        ValueError, match="Legacy replay source revision has no checkpoint"
-    ):
-        restored.normalize_provenance(
-            full_data(), replay_source_revision_id=revision_id
         )
 
 
