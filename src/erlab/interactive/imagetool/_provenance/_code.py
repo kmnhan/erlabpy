@@ -340,6 +340,31 @@ def _symbol_table_dependencies(
     return dependencies
 
 
+def _deferred_symbol_table_dependencies(
+    table: symtable.SymbolTable, enclosing_bound: frozenset[str] = frozenset()
+) -> set[str]:
+    """Keep deferred child reads across eagerly evaluated comprehension scopes."""
+    dependencies: set[str] = set()
+    named_scopes = {
+        namespace
+        for symbol in table.get_symbols()
+        for namespace in symbol.get_namespaces()
+    }
+    for child in table.get_children():
+        if (
+            child not in named_scopes
+            and child.get_type() == "function"
+            and child.get_name() in {"listcomp", "setcomp", "dictcomp"}
+        ):
+            supplied = enclosing_bound.union(
+                symbol.get_name() for symbol in child.get_symbols() if symbol.is_local()
+            )
+            dependencies.update(_deferred_symbol_table_dependencies(child, supplied))
+        else:
+            dependencies.update(_symbol_table_dependencies(child, enclosing_bound))
+    return dependencies
+
+
 _OPAQUE_NAMESPACE_NAMES = {
     "globals",
     "locals",
@@ -620,8 +645,11 @@ class _CodeBindingEffects:
         self._read_callback = read
         self._require_binding_callback = require_binding
         self._functions = functions or {}
+        self._local_names: set[str] = set()
 
     def _read(self, name: str, state: _BindingState) -> _BindingState:
+        if name in self._local_names:
+            return state
         if name not in state.replaced:
             self.incoming_reads.add(name)
         return (
@@ -672,15 +700,7 @@ class _CodeBindingEffects:
         if isinstance(
             node, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
         ):
-            names = _CurrentScopeNames()
-            names.visit(node)
-            for name in sorted(names.loads):
-                state = self._read(name, state)
-            return (
-                state
-                if isinstance(node, ast.GeneratorExp)
-                else self._bind(state, names.writes, definite=False)
-            )
+            return self._comprehension(node, state)
         if isinstance(node, ast.IfExp):
             state = self._expression(node.test, state)
             return _merge_binding_states(
@@ -712,10 +732,47 @@ class _CodeBindingEffects:
             state = self._expression(child, state)
         return state
 
+    def _comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        state: _BindingState,
+    ) -> _BindingState:
+        state = self._expression(node.generators[0].iter, state)
+        entry = state
+        previous_locals = self._local_names
+        self._local_names = previous_locals | {
+            target.id
+            for generator in node.generators
+            for target in ast.walk(generator.target)
+            if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)
+        }
+        try:
+            for index, generator in enumerate(node.generators):
+                if index:
+                    state = self._expression(generator.iter, state)
+                state = self._target(generator.target, state)
+                for condition in generator.ifs:
+                    state = self._expression(condition, state)
+            if isinstance(node, ast.DictComp):
+                state = self._expression(node.key, state)
+                state = self._expression(node.value, state)
+            else:
+                state = self._expression(node.elt, state)
+        finally:
+            self._local_names = previous_locals
+        # The body can run zero times. Generator body writes remain deferred.
+        return (
+            entry
+            if isinstance(node, ast.GeneratorExp)
+            else _merge_binding_states([entry, state])
+        )
+
     def _target(
         self, target: ast.AST, state: _BindingState, *, delete: bool = False
     ) -> _BindingState:
         if isinstance(target, ast.Name):
+            if target.id in self._local_names:
+                return state
             if delete:
                 if target.id not in state.replaced:
                     self.incoming_bindings.add(target.id)
@@ -962,12 +1019,7 @@ class _CodeAnalyzer:
                 frozenset(effects.incoming_bindings),
                 final.replaced,
                 final.bound,
-                frozenset().union(
-                    *(
-                        _symbol_table_dependencies(child)
-                        for child in symbols.get_children()
-                    )
-                ),
+                frozenset(_deferred_symbol_table_dependencies(symbols)),
                 frozenset(_symbol_table_dependencies(symbols)),
                 _has_opaque_namespace_access(module, symbols),
             )

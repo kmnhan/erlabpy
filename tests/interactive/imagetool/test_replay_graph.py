@@ -7706,6 +7706,110 @@ def test_code_analysis_separates_deletion_presence_from_value_reads() -> None:
     assert not _code_uses_name_any_scope("def cleanup():\n    del era", "era")
 
 
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "values = [(saved := prepared + item) + saved for item in [1]]\n"
+        "result = values[0]",
+        "values = {(saved := item) + saved for item in [1]}\n"
+        "result = prepared * 2 + values.pop()",
+        "values = {(saved := item): prepared + saved for item in [1]}\n"
+        "result = values[1] * 2",
+        "values = [saved + saved for item in [1] "
+        "if (saved := prepared + item) is not None]\nresult = values[0]",
+        "values = [value + saved for item in [1] "
+        "if (saved := prepared + item) is not None for value in [saved]]\n"
+        "result = values[0]",
+        "values = [[(saved := prepared + inner) + saved for inner in [item]][0] "
+        "for item in [1]]\nresult = values[0]",
+    ],
+    ids=["list", "set", "dict", "filter", "later-iterable", "nested"],
+)
+def test_selected_code_keeps_eager_comprehension_binding_order(
+    body: str, composed: bool
+) -> None:
+    consumer = _selected_script_scope(body, "prepared", "result", {"prepared": 0})
+    assert {item.name for item in consumer.spec.script_inputs} == {"prepared"}
+    analysis = _CodeAnalyzer()(body)
+    assert analysis.incoming_reads == {"prepared"}
+    assert not analysis.deferred_reads
+    available = {"prepared"}
+    assert not _validate_script_code_names(body, available, {})
+    assert not {"item", "inner", "value"} & available
+    code = (
+        selected_provenance_code(
+            (
+                _selected_script_scope(
+                    "saved = data\ndel saved\nprepared = data + 1",
+                    "data",
+                    "prepared",
+                    {},
+                ),
+                consumer,
+            )
+        )
+        if composed
+        else selected_steps_code(
+            consumer.spec.steps, input_name="prepared", output_name="result"
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source, "prepared": source + 1})
+
+    xr.testing.assert_identical(namespace["result"], (source + 2) * 2)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "values = [(saved := prepared + item) + saved for item in saved]",
+        "values = [saved + saved for item in [1] "
+        "if flag or (saved := prepared + item) is not None]",
+    ],
+    ids=["first-iterable", "short-circuit-filter"],
+)
+def test_selected_scopes_keep_incoming_comprehension_reads(body: str) -> None:
+    assert "saved" in _CodeAnalyzer()(body).incoming_reads
+    assert not _validate_script_code_names(body, {"prepared", "flag", "saved"}, {})
+    with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+        selected_provenance_code(
+            (
+                _selected_script_scope(
+                    "saved = data\ndel saved\nprepared = data + 1",
+                    "data",
+                    "prepared",
+                    {},
+                ),
+                _selected_script_scope(
+                    body + "\nresult = values[0]",
+                    "prepared",
+                    "result",
+                    {"prepared": 0},
+                ),
+            )
+        )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(
+        body, {"prepared": source + 1, "saved": [1], "flag": False}
+    )
+
+    xr.testing.assert_identical(namespace["values"][0], (source + 2) * 2)
+
+
+@pytest.mark.parametrize(
+    "function_name", ["normalize", "listcomp", "setcomp", "dictcomp"]
+)
+def test_code_analysis_keeps_deferred_function_reads(function_name: str) -> None:
+    code = f"def {function_name}():\n    return data + 1\nresult = {function_name}()"
+    analysis = _CodeAnalyzer()(code)
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert analysis.deferred_reads == {"data"}
+
+
 def test_trusted_script_replay_initializes_implicit_alias_needed_by_deletion() -> None:
     spec = script(
         start_label="Delete alias",
