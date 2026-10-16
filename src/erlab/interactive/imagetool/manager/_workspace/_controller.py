@@ -57,6 +57,7 @@ from erlab.interactive._code_trust._application import (
     load_imported_document_trust,
     save_document_trust,
 )
+from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._ui import confirm_code_trust
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
@@ -79,7 +80,11 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._code_trust._api import _DocumentTrust
-    from erlab.interactive._code_trust._core import CodeTrustEntry, CodeTrustEntrySource
+    from erlab.interactive._code_trust._core import (
+        CodeTrustEntry,
+        CodeTrustEntrySource,
+        CodeTrustManifest,
+    )
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
@@ -150,6 +155,18 @@ class _WorkspaceController:
         self._workspace_gc_requested = False
         self._code_trust_manifest_binding_depth = 0
         self._code_trust_manifest_binding_pending = False
+        self._local_provenance_changes: (
+            list[
+                tuple[
+                    CodeTrustEntrySource,
+                    CodeTrustEntrySource,
+                    Mapping[str, Iterable[str]]
+                    | Callable[[], Mapping[str, Iterable[str]]],
+                    bool,
+                ]
+            ]
+            | None
+        ) = None
 
     def _loaded_workspace_code_trust(
         self,
@@ -403,28 +420,77 @@ class _WorkspaceController:
         focus_on_block: bool = False,
     ) -> Iterator[object | None]:
         """Authorize one explicit local edit and commit lineage on success."""
-        state = self._manager._workspace_state
-        previous = state.code_trust
-        previous_revision_ids = self._manager._provenance_revisions.revision_ids
-        node_paths = {
-            uid: self.saving._workspace_node_path(uid)
-            for uid in self._manager._tool_graph.nodes
-        }
         resolved_execution_entries = tuple(
             execution_entries() if callable(execution_entries) else execution_entries
         )
         resolved_edited_entries = tuple(
             edited_entries() if callable(edited_entries) else edited_entries
         )
-        prospective, capability = issue_local_edit_capability(
-            previous,
+        _prospective, capability = issue_local_edit_capability(
+            self._manager._workspace_state.code_trust,
             resolved_execution_entries,
             edited_entries=resolved_edited_entries,
         )
         if not execution_capability_allows(capability, resolved_edited_entries):
             capability = None
+        if capability is None and focus_on_block:
+            self._manager.code_trust_banner.setFocus()
+        previous_capability = self._local_edit_capability
+        with self.local_provenance_change(
+            edited_entries=resolved_edited_entries,
+            execution_entries=resolved_execution_entries,
+            adopt_derived_entries=True,
+        ):
+            self._local_edit_capability = capability
+            try:
+                yield capability
+            finally:
+                self._local_edit_capability = previous_capability
+
+    @contextlib.contextmanager
+    def local_provenance_change(
+        self,
+        *,
+        edited_entries: CodeTrustEntrySource = (),
+        source_owners: Mapping[str, Iterable[str]]
+        | Callable[[], Mapping[str, Iterable[str]]]
+        | None = None,
+        execution_entries: CodeTrustEntrySource = (),
+        adopt_derived_entries: bool = False,
+    ) -> Iterator[None]:
+        """Publish owned provenance once, after the complete local action succeeds."""
+        change = (
+            edited_entries,
+            execution_entries,
+            {} if source_owners is None else source_owners,
+            adopt_derived_entries,
+        )
+        if self._local_provenance_changes is not None:
+            start = len(self._local_provenance_changes)
+            try:
+                yield
+            except Exception:
+                del self._local_provenance_changes[start:]
+                raise
+            self._local_provenance_changes.append(change)
+            return
+        # Loading establishes its own incoming policy. It cannot author code.
+        if (
+            self._code_trust_manifest_binding_depth
+            or self._manager._workspace_state.closing_document
+        ):
+            yield
+            return
+        state = self._manager._workspace_state
+        previous = state.code_trust
+        if previous.reason in {
+            CodeTrustReason.LOCAL_LINEAGE,
+            CodeTrustReason.TRUSTED_LOCATION,
+        }:
+            yield
+            return
         previous_manifest = previous.manifest
-        if prospective != previous and (
+        if (
             previous_manifest is None
             or previous_manifest.domain != workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN
             or previous_manifest.policy_version
@@ -433,53 +499,113 @@ class _WorkspaceController:
             previous_manifest = workspace_trust.current_workspace_code_trust_manifest(
                 self._manager
             )
-        if capability is None and focus_on_block:
-            self._manager.code_trust_banner.setFocus()
-        previous_capability = self._local_edit_capability
-        self._local_edit_capability = capability
+        previous_revision_ids = self._manager._provenance_revisions.revision_ids
+        node_paths = {
+            uid: self.saving._workspace_node_path(uid)
+            for uid in self._manager._tool_graph.nodes
+        }
+        revision_caches = {
+            uid: (node._current_revision_id, node._revision_ids_by_role.copy())
+            for uid, node in self._manager._tool_graph.nodes.items()
+        }
+        previous_pending = self._code_trust_manifest_binding_pending
+        self._local_provenance_changes = []
+        self._code_trust_manifest_binding_depth += 1
         try:
-            yield capability
+            yield
+            self._local_provenance_changes.append(change)
+            if state.code_trust == previous:
+                authored: list[CodeTrustEntry] = []
+                executed: list[CodeTrustEntry] = []
+                sources: dict[str, set[str]] = {}
+                adopt_derived = False
+                for edits, execution, owners, derived in self._local_provenance_changes:
+                    authored.extend(edits() if callable(edits) else edits)
+                    executed.extend(execution() if callable(execution) else execution)
+                    for uid, inputs in (
+                        owners() if callable(owners) else owners
+                    ).items():
+                        sources.setdefault(uid, set()).update(inputs)
+                    adopt_derived |= derived
+                self._commit_provenance_change(
+                    previous,
+                    previous_manifest,
+                    previous_revision_ids,
+                    node_paths,
+                    authored,
+                    executed,
+                    sources,
+                    adopt_derived_entries=adopt_derived,
+                )
+        except Exception:
+            # A failed action must not retain checkpoint copies that were never
+            # published. Their immutable records can be collected when unreachable.
+            for uid, (current, roles) in revision_caches.items():
+                node = self._manager._tool_graph.nodes.get(uid)
+                if node is not None:
+                    node._current_revision_id = current
+                    node._revision_ids_by_role = roles
+            raise
         finally:
-            self._local_edit_capability = previous_capability
-        if prospective != previous and state.code_trust == previous:
-            try:
-                manifest = workspace_trust.current_workspace_code_trust_manifest(
-                    self._manager
-                )
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Edited workspace Python content could not be inspected",
-                    exc_info=True,
-                )
-                return
-            prior_entries = (
-                () if previous_manifest is None else previous_manifest.entries
+            self._local_provenance_changes = None
+            self._code_trust_manifest_binding_depth -= 1
+            self._code_trust_manifest_binding_pending = previous_pending
+        self._bind_current_workspace_manifest_if_review_needed()
+
+    def _commit_provenance_change(
+        self,
+        previous: _DocumentTrust,
+        previous_manifest: CodeTrustManifest,
+        previous_revision_ids: frozenset[str],
+        node_paths: Mapping[str, str],
+        edited_entries: Collection[CodeTrustEntry],
+        execution_entries: Iterable[CodeTrustEntry],
+        source_owners: Mapping[str, Iterable[str]],
+        *,
+        adopt_derived_entries: bool,
+    ) -> None:
+        try:
+            manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
             )
-            captured_entries = workspace_trust.captured_revision_code_trust_entries(
-                self._manager,
-                previous_revision_ids=previous_revision_ids,
-                node_paths=node_paths,
-                previous_entries=prior_entries,
-                execution_entries=resolved_execution_entries,
-                edited_entries=resolved_edited_entries,
-                previous_trust=previous,
+        except (TypeError, ValueError):
+            logger.warning(
+                "Edited workspace Python content could not be inspected", exc_info=True
             )
-            publication_entries = (*resolved_edited_entries, *captured_entries)
-            _prospective, publication_capability = issue_local_edit_capability(
-                previous,
-                (*resolved_execution_entries, *captured_entries),
-                edited_entries=publication_entries,
-            )
-            committed = commit_local_edit_trust(
-                previous,
-                publication_capability,
-                prior_entries,
-                manifest.entries,
-                edited_entries=publication_entries,
-                document_manifest=manifest,
-            )
-            if committed != previous:
-                self._set_workspace_code_trust(committed)
+            return
+        if (
+            not edited_entries
+            and manifest.canonical_bytes() == previous_manifest.canonical_bytes()
+        ):
+            return
+        owned_entries = workspace_trust.owned_provenance_code_trust_entries(
+            self._manager,
+            previous_revision_ids=previous_revision_ids,
+            node_paths=node_paths,
+            previous_entries=previous_manifest.entries,
+            execution_entries=execution_entries,
+            edited_entries=edited_entries,
+            previous_trust=previous,
+            manifest_entries=manifest.entries,
+            source_owners=source_owners,
+        )
+        publication_entries = (*edited_entries, *owned_entries)
+        _prospective, capability = issue_local_edit_capability(
+            previous,
+            (*execution_entries, *publication_entries),
+            edited_entries=publication_entries,
+        )
+        committed = commit_local_edit_trust(
+            previous,
+            capability,
+            previous_manifest.entries,
+            manifest.entries,
+            edited_entries=publication_entries,
+            document_manifest=manifest,
+            adopt_derived_entries=adopt_derived_entries,
+        )
+        if committed != previous:
+            self._set_workspace_code_trust(committed)
 
     def _refresh_code_trust_ui(self) -> None:
         trust = self._manager._workspace_state.code_trust

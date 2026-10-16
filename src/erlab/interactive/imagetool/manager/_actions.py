@@ -1015,26 +1015,29 @@ class _ActionsController:
         )
         duplicated: int | str | None = None
         uid_map: dict[str, str] = {}
-        try:
-            with self._manager._workspace_load_context():
-                duplicated = self._duplicate_subtree(
-                    target,
-                    uid_map=uid_map,
-                )
-                self._manager._lineage_controller._rebase_node_dependency_refs(
-                    uid_map.values(),
-                    uid_map,
-                )
-            self._finish_duplicated_subtree(duplicated)
-        except Exception:
+        with self._manager._workspace_controller.local_provenance_change(
+            source_owners=lambda: {new: (old,) for old, new in uid_map.items()}
+        ):
             try:
-                if duplicated is not None:
-                    with self._manager._workspace_load_context():
-                        self._discard_duplicated_subtree(duplicated)
-            finally:
-                self._manager._workspace_state.restore(workspace_state_snapshot)
-                self._manager._update_workspace_window_title()
-            raise
+                with self._manager._workspace_load_context():
+                    duplicated = self._duplicate_subtree(
+                        target,
+                        uid_map=uid_map,
+                    )
+                    self._manager._lineage_controller._rebase_node_dependency_refs(
+                        uid_map.values(),
+                        uid_map,
+                    )
+                self._finish_duplicated_subtree(duplicated)
+            except Exception:
+                try:
+                    if duplicated is not None:
+                        with self._manager._workspace_load_context():
+                            self._discard_duplicated_subtree(duplicated)
+                finally:
+                    self._manager._workspace_state.restore(workspace_state_snapshot)
+                    self._manager._update_workspace_window_title()
+                raise
         return duplicated
 
     def _duplicate_subtree(
@@ -1870,13 +1873,14 @@ class _ActionsController:
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
-        if (
+        imported = (
             provenance_spec is None
             and source_spec is None
             and source_binding is None
             and output_id is None
             and tool.provenance_spec is not None
-        ):
+        )
+        if imported:
             self._manager._workspace_controller.adopt_external_code(
                 provenance_code_trust_entries(
                     tool.provenance_spec,
@@ -1884,49 +1888,54 @@ class _ActionsController:
                 )
             )
         parent_node = self._manager._node_for_target(parent)
-        if source_spec is None and source_binding is not None:
-            source_spec = source_binding.materialize(parent_node.current_source_data())
-            source_binding = None
-        elif source_spec is not None:
-            source_binding = None
-        if provenance_spec is None and source_spec is not None:
-            provenance_spec = compose_display_provenance(
-                parent_node.displayed_provenance_spec,
-                source_spec,
-                parent_data=parent_node.current_source_data(),
+        with self._manager._workspace_controller.local_provenance_change(
+            source_owners=lambda: {} if imported else {node.uid: (parent_node.uid,)}
+        ):
+            if source_spec is None and source_binding is not None:
+                source_spec = source_binding.materialize(
+                    parent_node.current_source_data()
+                )
+                source_binding = None
+            elif source_spec is not None:
+                source_binding = None
+            if provenance_spec is None and source_spec is not None:
+                provenance_spec = compose_display_provenance(
+                    parent_node.displayed_provenance_spec,
+                    source_spec,
+                    parent_data=parent_node.current_source_data(),
+                )
+            if provenance_spec is not None:
+                tool.set_provenance_spec(provenance_spec)
+            node = _ManagedWindowNode(
+                self._manager,
+                self._manager._next_node_uid(uid),
+                parent_node.uid,
+                tool,
+                provenance_spec=provenance_spec,
+                source_spec=source_spec,
+                source_binding=source_binding,
+                source_auto_update=source_auto_update,
+                source_state=source_state,
+                output_id=output_id,
+                replay_source_data=replay_source_data,
+                snapshot_token=snapshot_token,
+                source_snapshot_token=source_snapshot_token,
+                created_time=created_time,
+                note=note,
             )
-        if provenance_spec is not None:
-            tool.set_provenance_spec(provenance_spec)
-        node = _ManagedWindowNode(
-            self._manager,
-            self._manager._next_node_uid(uid),
-            parent_node.uid,
-            tool,
-            provenance_spec=provenance_spec,
-            source_spec=source_spec,
-            source_binding=source_binding,
-            source_auto_update=source_auto_update,
-            source_state=source_state,
-            output_id=output_id,
-            replay_source_data=replay_source_data,
-            snapshot_token=snapshot_token,
-            source_snapshot_token=source_snapshot_token,
-            created_time=created_time,
-            note=note,
-        )
-        self._manager._register_child_node(node)
-        if output_id is not None and parent_node.tool_window is not None:
-            parent_node.tool_window._register_output_imagetool_target(
-                output_id, node.uid
-            )
-        self._manager.tree_view.childtool_added(node.uid, parent)
-        self._manager._mark_node_added(node.uid)
-        self._manager._update_actions()
-        if show:
-            node.show()
-        if activate and node.window is not None:
-            node.window.activateWindow()
-            node.window.raise_()
+            self._manager._register_child_node(node)
+            if output_id is not None and parent_node.tool_window is not None:
+                parent_node.tool_window._register_output_imagetool_target(
+                    output_id, node.uid
+                )
+            self._manager.tree_view.childtool_added(node.uid, parent)
+            self._manager._mark_node_added(node.uid)
+            self._manager._update_actions()
+            if show:
+                node.show()
+            if activate and node.window is not None:
+                node.window.activateWindow()
+                node.window.raise_()
         return node.uid
 
     def index_from_slicer_area(

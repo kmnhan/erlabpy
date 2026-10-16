@@ -595,17 +595,35 @@ class _LineageController:
         tool = erlab.interactive.itool(data, manager=False, execute=False)
         if not isinstance(tool, ImageTool):
             return None
-        return self._manager.add_imagetool(
-            tool,
-            show=True,
-            activate=True,
-            provenance_spec=self._multi_input_script_provenance(
-                input_targets,
-                operation_label=operation_label,
-                operation_code=operation_code,
-                data_role=data_role,
-            ),
+        controller = self._manager._workspace_controller
+        source_uids = tuple(
+            self._manager._node_for_target(target).uid for target in input_targets
         )
+        with controller.local_provenance_change(
+            edited_entries=lambda: controller._locate_imagetool_code_trust_entries(
+                provenance_code_trust_entries(
+                    tool.provenance_spec,
+                    location_prefix="runtime",
+                    include_inputs=False,
+                ),
+                node_getter=lambda: self._manager._node_for_target(created),
+            ),
+            source_owners=lambda: {
+                self._manager._node_for_target(created).uid: source_uids
+            },
+        ):
+            created = self._manager.add_imagetool(
+                tool,
+                show=True,
+                activate=True,
+                provenance_spec=self._multi_input_script_provenance(
+                    input_targets,
+                    operation_label=operation_label,
+                    operation_code=operation_code,
+                    data_role=data_role,
+                ),
+            )
+        return created
 
     def _live_script_input_node(
         self,

@@ -26,6 +26,7 @@ from erlab.interactive._code_trust import (
     document_trust_has_trusted_lineage,
     document_trust_is_trusted,
     execution_capability_allows,
+    issue_complete_execution_capability,
     new_document_trust,
     trusted_location_document_trust,
     untrusted_document_trust,
@@ -52,9 +53,11 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     full_data,
     script,
+    selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
+    IselOperation,
     ModelFitOperation,
     ScriptCodeOperation,
     _ModelFitParameterSpec,
@@ -2016,6 +2019,303 @@ def test_trusted_workspace_local_code_edit_does_not_scan_manifest(
             assert execution_capability_allows(capability, (edited_entry,))
 
         assert manager._workspace_state.code_trust == trust
+
+
+@pytest.mark.parametrize(
+    "capture",
+    [
+        "source",
+        "typed-child",
+        "typed-child-capture",
+        "concat-cached",
+        "concat-new",
+        "console-code",
+        "console-named-code",
+        "console-copy",
+        "console-replace",
+        "console-set-item",
+        "duplicate",
+        "close",
+        "reindex",
+    ],
+)
+def test_saved_concat_keeps_trust_after_owned_change(
+    qtbot, accept_dialog, tmp_path, manager_context, capture
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": np.arange(4)},
+    )
+    workspace = tmp_path / "concat.itws"
+    with manager_context() as manager:
+        for offset in (0, 1):
+            manager.add_imagetool(
+                ImageTool(
+                    (data + offset).assign_coords(beta=offset, gamma=offset),
+                    _in_manager=True,
+                ),
+                show=False,
+            )
+        select_tools(manager, [0, 1])
+        accept_dialog(
+            manager.concat_action.trigger,
+            pre_call=lambda dialog: dialog._dim_line.setText("beta"),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3)
+        controller = manager._workspace_controller
+        if capture.startswith("console-"):
+            cached = manager._node_for_target(2)
+            cached.revision_id_for_role("source")
+            cached.revision_id_for_role("displayed")
+        elif capture == "close":
+            manager.duplicate_imagetool(2)
+        controller.saving._save_workspace_document(workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+        parent = manager._node_for_target(2)
+        target = 2
+        expected = parent.current_source_data()
+        if capture.startswith("typed-child"):
+            expected = expected.isel(x=slice(0, 2))
+            target = manager.add_imagetool_child(
+                ImageTool(expected, _in_manager=True),
+                2,
+                source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
+                show=False,
+            )
+        elif capture.startswith("concat-"):
+            sources = [0, 1]
+            if capture == "concat-new":
+                sources = [
+                    manager.add_imagetool(
+                        ImageTool(
+                            (data + offset).assign_coords(gamma=offset),
+                            _in_manager=True,
+                        ),
+                        show=False,
+                    )
+                    for offset in (2, 3)
+                ]
+            manager.tree_view.clearSelection()
+            select_tools(manager, sources)
+            target = manager.ntools
+            accept_dialog(
+                manager.concat_action.trigger,
+                pre_call=lambda dialog: dialog._dim_line.setText("gamma"),
+            )
+            expected = manager._node_for_target(target).current_source_data()
+        elif capture.startswith("console-"):
+            from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+            tools = ToolsNamespace(manager)
+            target = manager.ntools
+            if capture == "console-code":
+                expression = tools[2] + 1
+                assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+                tools.itool(expression)
+                expected = expected + 1
+            elif capture == "console-named-code":
+                intermediate = tools[2] + 1
+                intermediate._set_console_name("intermediate")
+                expression = intermediate + 1
+                assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+                tools.itool(expression)
+                expected = expected + 2
+            elif capture == "console-replace":
+                target = 2
+                expression = tools[2] + 1
+                assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+                tools[2].data = expression
+                expected = expected + 1
+            elif capture == "console-set-item":
+                target = 2
+                tools[2][0, 0, 0] = -1
+                expected = expected.copy(deep=True)
+                expected.values[0, 0, 0] = -1
+            else:
+                tools.itool(tools[2])
+        elif capture == "duplicate":
+            target = manager.duplicate_imagetool(2)
+        elif capture == "close":
+            manager.remove_imagetool(2)
+            target = 3
+        elif capture == "reindex":
+            manager.remove_imagetool(0)
+            manager.reindex()
+            target = parent.index
+        parent = manager._node_for_target(target)
+        revision_id = (
+            parent.revision_id_for_role("source")
+            if capture in {"source", "typed-child-capture"}
+            else None
+        )
+        controller.saving._save_workspace_document(workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        node = manager._node_for_target(target)
+        xr.testing.assert_identical(node.current_source_data(), expected)
+        runtime = provenance_code_trust_entries(
+            node.provenance_spec, location_prefix="runtime"
+        )
+        assert runtime
+        assert node.slicer_area._stored_code_authorizer(runtime) is not None
+        if revision_id is not None:
+            record = manager._provenance_revisions.get(revision_id)
+            assert record is not None
+            entries = provenance_code_trust_entries(
+                record.provenance_spec,
+                location_prefix=f"revisions/{revision_id}/provenance",
+            )
+            assert entries
+            assert (
+                manager._workspace_controller.issue_code_execution_capability(entries)
+                is not None
+            )
+
+
+@pytest.mark.parametrize(
+    "copy_kind", ["capture", "duplicate", "console", "child", "external-child"]
+)
+def test_owned_capture_keeps_partial_approval_at_its_source(
+    manager_context, copy_kind
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("y", "x"))
+    spec = full_data(ScriptCodeOperation(label="Offset", code="derived = derived + 1"))
+    with manager_context() as manager:
+        for _ in range(2):
+            manager.add_imagetool(
+                ImageTool(data + 1, _in_manager=True),
+                provenance_spec=spec,
+                replay_source_data=data,
+                show=False,
+            )
+        controller = manager._workspace_controller
+        controller._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        approved = manager._node_for_target(0)
+        entries = provenance_code_trust_entries(
+            approved.provenance_spec, location_prefix="0/provenance"
+        )
+        with controller.local_code_edit(entries, edited_entries=entries):
+            pass
+
+        for source in (0, 1):
+            target = source
+            if copy_kind == "duplicate":
+                target = manager.duplicate_imagetool(source)
+            elif copy_kind == "console":
+                from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+                target = manager.ntools
+                tools = ToolsNamespace(manager)
+                tools.itool(tools[source])
+            elif copy_kind == "child":
+                target = manager.add_imagetool_child(
+                    ImageTool((data + 1).isel(x=slice(0, 2)), _in_manager=True),
+                    source,
+                    source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
+                    show=False,
+                )
+            elif copy_kind == "external-child":
+                imported = ImageTool(data + 1, _in_manager=True)
+                imported.set_provenance_spec(
+                    manager._node_for_target(source).provenance_spec
+                )
+                target = manager.add_imagetool_child(imported, source, show=False)
+            node = manager._node_for_target(target)
+            revision_id = node.revision_id_for_role("source")
+            record = manager._provenance_revisions.get(revision_id)
+            assert record is not None
+            captured = provenance_code_trust_entries(
+                record.provenance_spec,
+                location_prefix=f"revisions/{revision_id}/provenance",
+            )
+            assert captured
+            assert (
+                controller.issue_code_execution_capability(captured) is not None
+            ) is (source == 0 and copy_kind != "external-child")
+            runtime = provenance_code_trust_entries(
+                node.provenance_spec, location_prefix="runtime"
+            )
+            assert (node.slicer_area._stored_code_authorizer(runtime) is not None) is (
+                source == 0 and copy_kind != "external-child"
+            )
+            owner = manager._node_for_target(source)
+            original = provenance_code_trust_entries(
+                owner.provenance_spec, location_prefix="runtime"
+            )
+            original_allowed = (
+                owner.slicer_area._stored_code_authorizer(original) is not None
+            )
+            assert original_allowed is (source == 0)
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+
+
+def test_owned_capture_does_not_commit_failed_code_edit(
+    tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("y", "x"),
+        coords={"y": np.arange(2), "x": np.arange(3)},
+    )
+    spec = full_data(ScriptCodeOperation(label="Offset", code="derived = derived + 1"))
+    workspace = tmp_path / "capture.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            ImageTool(data + 1, _in_manager=True),
+            provenance_spec=spec,
+            replay_source_data=data,
+            show=False,
+        )
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(workspace)
+        previous = manager._workspace_state.code_trust
+        assert _trust_uses_saved_signature(previous)
+        node = manager._node_for_target(target)
+        entries = provenance_code_trust_entries(
+            node.provenance_spec, location_prefix=f"{target}/provenance"
+        )
+        candidate = tuple(
+            create_entry(
+                entry.feature,
+                entry.location,
+                "derived = derived + 2",
+                entry.context,
+            )
+            for entry in entries
+        )
+
+        def fail_edit() -> None:
+            with controller.local_code_edit(
+                (*entries, *candidate), edited_entries=candidate
+            ):
+                node.revision_id_for_role("source")
+                raise RuntimeError("cancel edit")
+
+        with pytest.raises(RuntimeError, match="cancel edit"):
+            fail_edit()
+        assert manager._workspace_state.code_trust == previous
+        controller.saving._save_workspace_document(workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        trust = manager._workspace_state.code_trust
+        assert _trust_uses_saved_signature(trust)
+        _trust, capability = issue_complete_execution_capability(trust, candidate)
+        assert capability is None
+        node = manager._node_for_target(target)
+        xr.testing.assert_identical(node.current_source_data(), data + 1)
+        runtime = provenance_code_trust_entries(
+            node.provenance_spec, location_prefix="runtime"
+        )
+        assert node.slicer_area._stored_code_authorizer(runtime) is not None
 
 
 def test_workspace_partial_capability_requires_explicit_graph_request(

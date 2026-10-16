@@ -15,6 +15,7 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
@@ -43,7 +44,7 @@ import erlab.interactive.utils
 from erlab.interactive.imagetool import _kspace_conversion
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from IPython.core.interactiveshell import (
         ExecutionInfo,
@@ -51,6 +52,7 @@ if typing.TYPE_CHECKING:
         InteractiveShell,
     )
 
+    from erlab.interactive._code_trust._core import CodeTrustEntry
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import (
@@ -81,6 +83,40 @@ def _resolve_console_namespace(
 
 def _tool_data_name(index: int) -> str:
     return f"data_{index}"
+
+
+def _is_local_console_input(script_input: ScriptInput) -> bool:
+    return script_input.node_uid is None and script_input.revision_id is None
+
+
+def _console_source_owners(spec: ToolProvenanceSpec) -> set[str]:
+    # Fresh console recipes contain runtime tool inputs or named local expressions.
+    owners: set[str] = set()
+    pending = list(spec.replay_inputs)
+    while pending:
+        script_input = pending.pop()
+        if script_input.node_uid is not None:
+            owners.add(script_input.node_uid)
+        elif _is_local_console_input(script_input):
+            nested = script_input.parsed_provenance_spec()
+            if nested is not None:
+                pending.extend(nested.replay_inputs)
+    return owners
+
+
+def _console_authored_entries(
+    manager: ImageToolManager,
+    node: _ImageToolWrapper | _ManagedWindowNode,
+    provenance_spec: ToolProvenanceSpec | None,
+) -> tuple[CodeTrustEntry, ...]:
+    return manager._workspace_controller._locate_imagetool_code_trust_entries(
+        provenance_code_trust_entries(
+            provenance_spec,
+            location_prefix="runtime",
+            include_inputs=_is_local_console_input,
+        ),
+        node_getter=lambda: node,
+    )
 
 
 def _dedupe_script_inputs(
@@ -1218,31 +1254,50 @@ class ToolNamespace(_ConsoleDataHandleBase):
 
     @data.setter
     def data(self, value: xr.DataArray | _ConsoleDataHandleBase) -> None:
+        manager = self._wrapper.manager
         provenance_spec = None
-        if isinstance(value, _ConsoleDataHandleBase):
-            raw_value = value.data
-            provenance_spec = value._console_provenance_spec(
-                active_name=self._console_input_name,
-                label=f"Replace {self._console_label} data from console",
-            )
-        else:
-            raw_value = value
-        if provenance_spec is not None:
-            provenance_spec = provenance_spec.with_replay_inputs(
-                tuple(
-                    script_input.model_copy(
-                        update={"node_uid": None, "node_snapshot_token": None}
-                    )
-                    if script_input.node_uid == self.uid
-                    else script_input
-                    for script_input in provenance_spec.replay_inputs
+        source_owners: set[str] = set()
+        with manager._workspace_controller.local_provenance_change(
+            edited_entries=lambda: (
+                _console_authored_entries(
+                    manager,
+                    self._wrapper,
+                    provenance_spec,
                 )
-            )
-            self._wrapper.set_detached_provenance(
-                provenance_spec,
-                replay_source_data=None,
-            )
-        self.tool.slicer_area.replace_source_data(raw_value, emit_edited=True)
+                if isinstance(value, _DerivedDataNamespace)
+                else ()
+            ),
+            source_owners=lambda: {self.uid: source_owners},
+        ):
+            if isinstance(value, _ConsoleDataHandleBase):
+                raw_value = value.data
+                provenance_spec = value._console_provenance_spec(
+                    active_name=self._console_input_name,
+                    label=f"Replace {self._console_label} data from console",
+                )
+            else:
+                raw_value = value
+            if provenance_spec is not None:
+                if isinstance(value, ToolNamespace):
+                    if value._wrapper.manager is manager:
+                        source_owners.add(value.uid)
+                elif isinstance(value, _DerivedDataNamespace):
+                    source_owners.update(_console_source_owners(provenance_spec))
+                provenance_spec = provenance_spec.with_replay_inputs(
+                    tuple(
+                        script_input.model_copy(
+                            update={"node_uid": None, "node_snapshot_token": None}
+                        )
+                        if script_input.node_uid == self.uid
+                        else script_input
+                        for script_input in provenance_spec.replay_inputs
+                    )
+                )
+                self._wrapper.set_detached_provenance(
+                    provenance_spec,
+                    replay_source_data=None,
+                )
+            self.tool.slicer_area.replace_source_data(raw_value, emit_edited=True)
 
     @property
     def children(self) -> _ToolChildren:
@@ -1324,61 +1379,68 @@ class ToolNamespace(_ConsoleDataHandleBase):
         return self._wrapper.displayed_provenance_spec
 
     def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
-        key_operand = _operand_from_value(key)
-        value_operand = _operand_from_value(value)
-        self_operand = self._console_operand()
-        script_inputs, copyable, code_prelude = _merge_operands(
-            self_operand, key_operand, value_operand
-        )
-        target_name = self._console_input_name
-        code = _script_code(
-            code_prelude,
-            "\n".join(
-                (
-                    f"{target_name} = {self_operand.code}.copy(deep=True)",
-                    f"{target_name}[{key_operand.code}] = {value_operand.code}",
-                )
+        manager = self._wrapper.manager
+        with manager._workspace_controller.local_provenance_change(
+            edited_entries=lambda: _console_authored_entries(
+                manager, self._wrapper, provenance_spec
             ),
-        )
-        provenance_spec = script(
-            ScriptCodeOperation(
-                label=f"Set {self._console_label} data item from console",
-                code=code,
-                copyable=copyable,
-            ),
-            start_label="Run ImageTool manager console code",
-            active_name=target_name,
-            script_inputs=script_inputs,
-        )
-        prepared_data = self._prepare_data_item_assignment(
-            key_operand.value, value_operand.value
-        )
-        if prepared_data is None:
-            self._set_data_item(
-                key_operand.value,
-                value_operand.value,
-                emit_signals=False,
+            source_owners=lambda: {self.uid: _console_source_owners(provenance_spec)},
+        ):
+            key_operand = _operand_from_value(key)
+            value_operand = _operand_from_value(value)
+            self_operand = self._console_operand()
+            script_inputs, copyable, code_prelude = _merge_operands(
+                self_operand, key_operand, value_operand
             )
+            target_name = self._console_input_name
+            code = _script_code(
+                code_prelude,
+                "\n".join(
+                    (
+                        f"{target_name} = {self_operand.code}.copy(deep=True)",
+                        f"{target_name}[{key_operand.code}] = {value_operand.code}",
+                    )
+                ),
+            )
+            provenance_spec = script(
+                ScriptCodeOperation(
+                    label=f"Set {self._console_label} data item from console",
+                    code=code,
+                    copyable=copyable,
+                ),
+                start_label="Run ImageTool manager console code",
+                active_name=target_name,
+                script_inputs=script_inputs,
+            )
+            prepared_data = self._prepare_data_item_assignment(
+                key_operand.value, value_operand.value
+            )
+            if prepared_data is None:
+                self._set_data_item(
+                    key_operand.value,
+                    value_operand.value,
+                    emit_signals=False,
+                )
+                self._wrapper.set_detached_provenance(
+                    provenance_spec,
+                    replay_source_data=None,
+                )
+                slicer_area = self.tool.slicer_area
+                slicer_area.sigSourceDataChanged.emit()
+                slicer_area.sigSourceDataReplaced.emit(
+                    slicer_area._tool_source_parent_data()
+                )
+                slicer_area.sigDataEdited.emit()
+                return
             self._wrapper.set_detached_provenance(
                 provenance_spec,
                 replay_source_data=None,
             )
-            slicer_area = self.tool.slicer_area
-            slicer_area.sigSourceDataChanged.emit()
-            slicer_area.sigSourceDataReplaced.emit(
-                slicer_area._tool_source_parent_data()
+            self._set_data_item(
+                key_operand.value,
+                value_operand.value,
+                prepared_data=prepared_data,
             )
-            slicer_area.sigDataEdited.emit()
-            return
-        self._wrapper.set_detached_provenance(
-            provenance_spec,
-            replay_source_data=None,
-        )
-        self._set_data_item(
-            key_operand.value,
-            value_operand.value,
-            prepared_data=prepared_data,
-        )
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):
@@ -1934,6 +1996,9 @@ class ToolsNamespace:
         self,
         data: xr.DataArray,
         provenance_spec: ToolProvenanceSpec,
+        *,
+        authored: bool = False,
+        source_owners: Iterable[str] = (),
         **kwargs,
     ) -> bool:
         display_kwargs = dict(kwargs)
@@ -1943,12 +2008,25 @@ class ToolsNamespace:
         )
         if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
             return False
-        self._manager.add_imagetool(
-            tool,
-            show=True,
-            activate=True,
-            provenance_spec=provenance_spec,
-        )
+        manager = self._manager
+        with manager._workspace_controller.local_provenance_change(
+            edited_entries=lambda: (
+                _console_authored_entries(
+                    manager,
+                    manager._node_for_target(index),
+                    provenance_spec,
+                )
+                if authored
+                else ()
+            ),
+            source_owners=lambda: {manager._node_for_target(index).uid: source_owners},
+        ):
+            index = manager.add_imagetool(
+                tool,
+                show=True,
+                activate=True,
+                provenance_spec=provenance_spec,
+            )
         return True
 
     def _show_handle(
@@ -1965,8 +2043,22 @@ class ToolsNamespace:
         )
         if provenance_spec is None:
             return False
+        authored = isinstance(handle, _DerivedDataNamespace)
+        if authored:
+            source_owners = _console_source_owners(provenance_spec)
+        elif (
+            isinstance(handle, ToolNamespace)
+            and handle._wrapper.manager is self._manager
+        ):
+            source_owners = {handle.uid}
+        else:
+            source_owners = set()
         return self._show_dataarray_with_provenance(
-            handle.data, provenance_spec, **kwargs
+            handle.data,
+            provenance_spec,
+            authored=authored,
+            source_owners=source_owners,
+            **kwargs,
         )
 
     def itool(

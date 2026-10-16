@@ -2077,30 +2077,31 @@ class _ManagedWindowNode(QtCore.QObject):
             if source is not None and source[0] == token:
                 self._revision_ids_by_role[data_role] = source
                 return source[1]
-        base_spec = self.provenance_spec
-        watched_source = (
-            isinstance(self, _ImageToolWrapper)
-            and self.watched
-            and self._provenance_spec is None
-        )
-        if requires_legacy_replay_source(base_spec) and not watched_source:
-            normalized = self._normalize_provenance(
-                base_spec, self.resolved_replay_source_data()
+        with self.manager._workspace_controller.local_provenance_change():
+            base_spec = self.provenance_spec
+            watched_source = (
+                isinstance(self, _ImageToolWrapper)
+                and self.watched
+                and self._provenance_spec is None
             )
-            if normalized != base_spec:
-                self.set_displayed_provenance(normalized, advance_snapshot=False)
-        spec = self.provenance_for_role(data_role)
-        revision_id = self.manager._provenance_revisions.add(
-            self.data_for_role(data_role),
-            spec,
-            source_owner_uid=self.uid,
-            primary_revision_id=(
-                self._current_revision_id if data_role == "source" else None
-            ),
-        )
-        self._revision_ids_by_role[data_role] = (token, revision_id)
-        if data_role == "source":
-            self._current_revision_id = revision_id
+            if requires_legacy_replay_source(base_spec) and not watched_source:
+                normalized = self._normalize_provenance(
+                    base_spec, self.resolved_replay_source_data()
+                )
+                if normalized != base_spec:
+                    self.set_displayed_provenance(normalized, advance_snapshot=False)
+            spec = self.provenance_for_role(data_role)
+            revision_id = self.manager._provenance_revisions.add(
+                self.data_for_role(data_role),
+                spec,
+                source_owner_uid=self.uid,
+                primary_revision_id=(
+                    self._current_revision_id if data_role == "source" else None
+                ),
+            )
+            self._revision_ids_by_role[data_role] = (token, revision_id)
+            if data_role == "source":
+                self._current_revision_id = revision_id
         return revision_id
 
     def provenance_for_role(
@@ -2269,16 +2270,17 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
         replay_source_data: xr.DataArray | None = None,
     ) -> None:
-        self._provenance_spec = self._normalize_provenance(
-            parse_tool_provenance_spec(provenance_spec), replay_source_data
-        )
-        self._replay_source_data = None
-        self._mark_provenance_changed()
-        self.manager._mark_node_state_dirty(self.uid)
-        if self.imagetool is not None:
-            self.imagetool.set_provenance_spec(self.provenance_spec)
-        if advance_snapshot:
-            self._advance_snapshot_token()
+        with self.manager._workspace_controller.local_provenance_change():
+            self._provenance_spec = self._normalize_provenance(
+                parse_tool_provenance_spec(provenance_spec), replay_source_data
+            )
+            self._replay_source_data = None
+            self._mark_provenance_changed()
+            self.manager._mark_node_state_dirty(self.uid)
+            if self.imagetool is not None:
+                self.imagetool.set_provenance_spec(self.provenance_spec)
+            if advance_snapshot:
+                self._advance_snapshot_token()
 
     @property
     def derivation_entries(

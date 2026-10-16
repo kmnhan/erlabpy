@@ -3714,6 +3714,9 @@ def test_remove_imagetool_removes_childtools() -> None:
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
         _provenance_revisions=_ProvenanceRevisionStore(),
+        _workspace_controller=types.SimpleNamespace(
+            local_provenance_change=contextlib.nullcontext
+        ),
         _bulk_remove_depth=0,
         _cancel_managed_node_change=canceled_node_change_uids.append,
         _mark_removed_subtree_dirty=lambda _uid: None,

@@ -1491,26 +1491,27 @@ class ImageToolManager(_ImageToolManagerBase):
         subtree = self._tool_graph.subtree_uids(uid)
         if preflight and not self._prepare_managed_nodes_for_close(subtree):
             return set()
-        subtree.reverse()
-        removed_uids: set[str] = set()
-        for child_uid in subtree:
-            child = self._tool_graph.nodes.get(child_uid)
-            if child is None or isinstance(child, _ImageToolWrapper):
-                continue
-            if any(
-                descendant_uid in self._tool_graph.nodes
-                for descendant_uid in child._childtool_indices
-            ):
-                continue
-            if not child.dispose():
-                continue
-            self._mark_removed_subtree_dirty(child_uid)
-            if update_view and child.parent_uid is not None:
-                self.tree_view.childtool_removed(child_uid)
-            self._unregister_node(child_uid)
-            child.deleteLater()
-            removed_uids.add(child_uid)
-        return removed_uids
+        with self._workspace_controller.local_provenance_change():
+            subtree.reverse()
+            removed_uids: set[str] = set()
+            for child_uid in subtree:
+                child = self._tool_graph.nodes.get(child_uid)
+                if child is None or isinstance(child, _ImageToolWrapper):
+                    continue
+                if any(
+                    descendant_uid in self._tool_graph.nodes
+                    for descendant_uid in child._childtool_indices
+                ):
+                    continue
+                if not child.dispose():
+                    continue
+                self._mark_removed_subtree_dirty(child_uid)
+                if update_view and child.parent_uid is not None:
+                    self.tree_view.childtool_removed(child_uid)
+                self._unregister_node(child_uid)
+                child.deleteLater()
+                removed_uids.add(child_uid)
+            return removed_uids
 
     def _figure_uids(self) -> list[str]:
         return [
@@ -1659,14 +1660,15 @@ class ImageToolManager(_ImageToolManagerBase):
     @QtCore.Slot()
     def reindex(self) -> None:
         """Reset indices of ImageTool windows to be consecutive in display order."""
-        with self._reindex_lock:
-            self._tool_graph.reindex_roots()
+        with self._workspace_controller.local_provenance_change():
+            with self._reindex_lock:
+                self._tool_graph.reindex_roots()
 
-        self.tree_view.refresh()
-        self._figure_workflows._refresh_figure_source_controls()
-        if self._metadata_node_uid is not None:
-            self._schedule_details_refresh(self._metadata_node_uid)
-        self._mark_workspace_structure_dirty("Reindexed root windows")
+            self.tree_view.refresh()
+            self._figure_workflows._refresh_figure_source_controls()
+            if self._metadata_node_uid is not None:
+                self._schedule_details_refresh(self._metadata_node_uid)
+            self._mark_workspace_structure_dirty("Reindexed root windows")
 
     def _remove_imagetool(
         self,
@@ -1681,64 +1683,67 @@ class ImageToolManager(_ImageToolManagerBase):
         subtree_uids = self._tool_graph.subtree_uids(wrapper.uid)
         if preflight and not self._prepare_managed_nodes_for_close(subtree_uids):
             return False
-        figure_uids = set(self._tool_graph.figure_uids).intersection(subtree_uids)
-        link_keys_by_uid = {
-            node_uid: node.workspace_link_key
-            for node_uid in subtree_uids
-            if (node := self._tool_graph.nodes.get(node_uid)) is not None
-            and node.workspace_link_key is not None
-        }
-        descendant_uids = list(wrapper._childtool_indices)
-        removed_uids: set[str] = set()
+        with self._workspace_controller.local_provenance_change():
+            figure_uids = set(self._tool_graph.figure_uids).intersection(subtree_uids)
+            link_keys_by_uid = {
+                node_uid: node.workspace_link_key
+                for node_uid in subtree_uids
+                if (node := self._tool_graph.nodes.get(node_uid)) is not None
+                and node.workspace_link_key is not None
+            }
+            descendant_uids = list(wrapper._childtool_indices)
+            removed_uids: set[str] = set()
 
-        def reconcile_removed_nodes() -> None:
-            if not removed_uids or self._workspace_state.closing_document:
-                return
-            self._mark_singleton_workspace_link_groups_dirty(
-                {
-                    link_keys_by_uid[uid]
-                    for uid in removed_uids
-                    if uid in link_keys_by_uid
-                }
-            )
-            if removed_uids & figure_uids:
-                self._figure_collection.sync()
-
-        for uid in list(descendant_uids):
-            removed_uids.update(
-                self._remove_uid_target(
-                    uid,
-                    update_view=update_view,
-                    preflight=False,
+            def reconcile_removed_nodes() -> None:
+                if not removed_uids or self._workspace_state.closing_document:
+                    return
+                self._mark_singleton_workspace_link_groups_dirty(
+                    {
+                        link_keys_by_uid[uid]
+                        for uid in removed_uids
+                        if uid in link_keys_by_uid
+                    }
                 )
-            )
+                if removed_uids & figure_uids:
+                    self._figure_collection.sync()
 
-        if any(uid in self._tool_graph.nodes for uid in descendant_uids):
-            reconcile_removed_nodes()
-            return False
+            for uid in list(descendant_uids):
+                removed_uids.update(
+                    self._remove_uid_target(
+                        uid,
+                        update_view=update_view,
+                        preflight=False,
+                    )
+                )
 
-        if not wrapper.dispose():
-            reconcile_removed_nodes()
-            return False
+            if any(uid in self._tool_graph.nodes for uid in descendant_uids):
+                reconcile_removed_nodes()
+                return False
 
-        self._mark_removed_subtree_dirty(wrapper.uid)
-        if update_view:
-            self.tree_view.imagetool_removed(index)
+            if not wrapper.dispose():
+                reconcile_removed_nodes()
+                return False
 
-        self._tool_graph.unregister_root(index)
-        removed_uids.add(wrapper.uid)
-        self._cancel_managed_node_change(wrapper.uid)
-        self._dependency_tracker.clear_uid(wrapper.uid)
-        if wrapper.workspace_link_key is not None:
-            self._invalidate_workspace_link_color_cache()
-        if not self._workspace_state.closing_document:
-            reconcile_removed_nodes()
-            self._refresh_dependency_dependents(wrapper.uid)
-            self._figure_workflows._refresh_figure_source_controls()
-        wrapper.deleteLater()
-        if self._workspace_state.loading_depth == 0:
-            self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
-        return True
+            self._mark_removed_subtree_dirty(wrapper.uid)
+            if update_view:
+                self.tree_view.imagetool_removed(index)
+
+            self._tool_graph.unregister_root(index)
+            removed_uids.add(wrapper.uid)
+            self._cancel_managed_node_change(wrapper.uid)
+            self._dependency_tracker.clear_uid(wrapper.uid)
+            if wrapper.workspace_link_key is not None:
+                self._invalidate_workspace_link_color_cache()
+            if not self._workspace_state.closing_document:
+                reconcile_removed_nodes()
+                self._refresh_dependency_dependents(wrapper.uid)
+                self._figure_workflows._refresh_figure_source_controls()
+            wrapper.deleteLater()
+            if self._workspace_state.loading_depth == 0:
+                self._provenance_revisions.discard_unreachable(
+                    retained_revision_ids(self)
+                )
+            return True
 
     @QtCore.Slot(int)
     def remove_imagetool(self, index: int, *, update_view: bool = True) -> None:
