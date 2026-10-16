@@ -13,6 +13,7 @@ from collections.abc import Mapping
 
 from erlab.interactive._code_trust import create_entry
 from erlab.interactive._fit_code_trust import (
+    lmfit_model_default_parameter_expressions,
     lmfit_parameter_expression_entries,
     lmfit_result_code_entry,
 )
@@ -75,10 +76,16 @@ def provenance_operation_code_trust_entries(
     location_prefix: str,
 ):
     """Return executable lmfit content stored by one operation."""
+    expressions = _model_fit_parameter_expressions(operation)
     entries = lmfit_parameter_expression_entries(
-        _model_fit_parameter_expressions(operation),
+        expressions,
         feature="erlab.provenance.model-fit-parameter-expression",
         location_prefix=f"{location_prefix}/parameters",
+        safe_expressions=(
+            lmfit_model_default_parameter_expressions(operation._model())
+            if expressions
+            else None
+        ),
     )
     payload = _opaque_fit_dataset_payload(operation)
     if payload is None:

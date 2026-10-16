@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import io
 import json
 import sys
 import typing
@@ -516,6 +517,114 @@ def test_workspace_manifest_includes_serialized_fit_callables(qtbot) -> None:
     assert features[0] == "erlab.fit.serialized-model"
     assert "erlab.fit.parameter-expression" in features
     assert features[-1] == "erlab.fit.serialized-result"
+
+
+@pytest.mark.parametrize("dimensions", [1, 2])
+@pytest.mark.parametrize("saved_kind", ["current", "released", "released-expression"])
+def test_saved_builtin_fit_state_normalizes_authorized_model(
+    qtbot, tmp_path, monkeypatch, manager_context, dimensions, saved_kind
+) -> None:
+    import xarray_lmfit
+
+    from erlab.analysis.fit.models import PolynomialModel
+    from erlab.interactive._fit1d import Fit1DTool
+    from erlab.interactive._fit2d import Fit2DTool
+
+    model = PolynomialModel(degree=1)
+    model.set_param_hint("c1", value=1.25, min=0.2, max=3.0)
+    released = saved_kind != "current"
+    expression = saved_kind == "released-expression"
+    if expression:
+        model.set_param_hint("c0", expr="2 * c1")
+    angles = np.linspace(-1.0, 1.0, 11)
+    data = xr.DataArray(
+        1.25 * angles + (2.5 if expression else 0.2),
+        dims="alpha",
+        coords={"alpha": angles},
+    )
+    tool_type = Fit1DTool
+    if dimensions == 2:
+        data = xr.concat([data, data + 1], dim="slice").assign_coords(slice=[0, 1])
+        tool_type = Fit2DTool
+    workspace = tmp_path / "builtin-fit.itws"
+    monkeypatch.setattr(workspace_trust, "workspace_path_is_trusted", lambda _: False)
+    with manager_context() as manager:
+        manager.add_imagetool(ImageTool(data, _in_manager=True), show=False)
+        tool = tool_type(data, model=model)
+        qtbot.addWidget(tool)
+        job = tool._fit_job()
+        fitted = tool._fit_data().xlm.modelfit(
+            "alpha", model=tool._model, params=tool._params, guess=False
+        )
+        tool._set_fit_ds(tool._fit_result_for_job(fitted, job), 0.0)
+        expected_curve = tool._last_result_ds.modelfit_best_fit.copy(deep=True)
+        if released:
+            reference = tool.tool_status.model_state[0]
+            legacy = (reference, model.dumps())
+            tool._serialized_model_state = legacy
+            buffer = io.BytesIO()
+            xarray_lmfit.save_fit(
+                tool._fit_result_dataset_for_persistence(),
+                buffer,
+                engine="h5netcdf",
+                invalid_netcdf=True,
+            )
+            tool._serialized_fit_result_blob = np.frombuffer(
+                buffer.getvalue(), dtype=np.uint8
+            ).copy()
+        uid = add_source_childtool(manager, tool, 0, show=False)
+        assert bool(current_workspace_code_trust_manifest(manager).entries) is released
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        assert document_trust_is_trusted(manager._workspace_state.code_trust)
+        assert manager.code_trust_banner.isHidden()
+        node = manager._child_node(uid)
+        assert node.materialize_pending_workspace_payload()
+        restored = node.tool_window
+        assert isinstance(restored, tool_type)
+        restored._flush_restore_work()
+        assert restored._code_trust_banner.isHidden()
+        assert restored._pending_fit_status is None
+        assert restored._pending_persisted_fit_is_current is None
+        assert restored._current_fit_execution_allowed()
+        xr.testing.assert_identical(
+            restored._last_result_ds.modelfit_best_fit, expected_curve
+        )
+        assert restored._model.param_hints["c1"] == model.param_hints["c1"]
+        assert restored._params["c1"].min == 0.2
+        assert restored._params["c1"].max == 3.0
+        if released:
+            assert restored.tool_status.model_state != legacy
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert document_trust_is_trusted(manager._workspace_state.code_trust)
+        entries = current_workspace_code_trust_manifest(manager).entries
+        assert bool(entries) is expression
+    if not expression:
+        reset_saved_code_trust(domain="erlab.workspace")
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        assert document_trust_is_trusted(manager._workspace_state.code_trust)
+        assert manager.code_trust_banner.isHidden()
+        entries = current_workspace_code_trust_manifest(manager).entries
+        assert bool(entries) is expression
+        node = manager._child_node(uid)
+        assert node.materialize_pending_workspace_payload()
+        restored = node.tool_window
+        restored._flush_restore_work()
+        assert restored._code_trust_banner.isHidden()
+        assert restored._current_fit_execution_allowed()
+        xr.testing.assert_identical(
+            restored._last_result_ds.modelfit_best_fit, expected_curve
+        )
+    if expression:
+        reset_saved_code_trust(domain="erlab.workspace")
+        with manager_context() as manager:
+            assert _load_workspace(manager, workspace)
+            assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+            assert manager.code_trust_banner.isVisible()
 
 
 def test_trusting_legacy_pending_fit_payload_completes_manifest_before_save(

@@ -1801,55 +1801,74 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     return None
 
 
-def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
-    import xarray_lmfit
+def _fit_dataset_to_blob(ds: xr.Dataset) -> np.ndarray:
+    buffer = io.BytesIO()
+    ds.to_netcdf(buffer, engine="h5netcdf", invalid_netcdf=True)
+    return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
 
+
+def _normalize_fit_dataset_blob(blob: npt.ArrayLike, ds: xr.Dataset) -> np.ndarray:
+    from erlab.analysis.fit._serialization import dumps_result
+
+    serialized = xr.load_dataset(
+        io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()), engine="h5netcdf"
+    )
+    changed = False
+    for name in serialized.data_vars:
+        if str(name).endswith("modelfit_results"):
+            normalized = np.vectorize(
+                lambda result, original: dumps_result(result, serialized=original),
+                otypes=[object],
+            )(ds[name].values, serialized[name].values)
+            changed |= not np.array_equal(normalized, serialized[name].values)
+            serialized[name] = serialized[name].copy(data=normalized)
+    if not changed:
+        return np.array(blob, dtype=np.uint8, copy=True)
+    return _fit_dataset_to_blob(serialized)
+
+
+def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
+    from xarray_lmfit._io import _patch_encode4js
+
+    from erlab.analysis.fit._serialization import dumps_result
     from erlab.interactive.imagetool import _serialization
 
-    serialized = ds.copy()
+    serialized = ds.compute()
     private_coord_data_name = _fit_dataset_private_coord_data_name(serialized)
     if private_coord_data_name is not None:
         serialized = _serialization.encode_private_coords(
             serialized, private_coord_data_name
         )
-    buffer = io.BytesIO()
-    xarray_lmfit.save_fit(
-        serialized,
-        buffer,
-        engine="h5netcdf",
-        invalid_netcdf=True,
-    )
-    return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
+    with _patch_encode4js():
+        for name in serialized.data_vars:
+            if str(name).endswith("modelfit_results"):
+                serialized[name] = xr.apply_ufunc(
+                    dumps_result,
+                    serialized[name],
+                    vectorize=True,
+                    output_dtypes=[object],
+                    keep_attrs=True,
+                )
+    return _fit_dataset_to_blob(serialized)
 
 
 def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
-    import lmfit
-    import xarray_lmfit
-
+    from erlab.analysis.fit._serialization import loads_result
     from erlab.interactive.imagetool import _serialization
 
-    restored = xarray_lmfit.load_fit(
+    restored = xr.load_dataset(
         io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()),
         engine="h5netcdf",
     )
-
-    def restore_model_components(model: lmfit.Model) -> None:
-        if isinstance(model, lmfit.model.CompositeModel):
-            restore_model_components(model.left)
-            restore_model_components(model.right)
-        elif type(model) is lmfit.Model and isinstance(
-            model.func, erlab.analysis.fit.functions.MultiPeakFunction
-        ):
-            # lmfit restores the callable and model state, but loses the subclass
-            # that supplies separate peak and background components.
-            model.__class__ = erlab.analysis.fit.models.MultiPeakModel
-
-    for name, variable in restored.data_vars.items():
+    for name in restored.data_vars:
         if str(name).endswith("modelfit_results"):
-            for result in variable.values.flat:
-                if isinstance(result, lmfit.model.ModelResult):
-                    restore_model_components(result.model)
-
+            restored[name] = xr.apply_ufunc(
+                loads_result,
+                restored[name],
+                vectorize=True,
+                output_dtypes=[object],
+                keep_attrs=True,
+            )
     private_coord_data_name = _fit_dataset_private_coord_data_name(restored)
     if private_coord_data_name is not None:
         restored = _serialization.restore_private_coords(

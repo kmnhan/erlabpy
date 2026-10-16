@@ -23,6 +23,7 @@ import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.analysis.fit._serialization as fit_serialization
 import erlab.interactive.utils
 from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive._fit_code_trust import (
@@ -1297,14 +1298,15 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         _REGISTERED_MODEL_CLASSES[_model_class_reference(model_class)] = model_class
 
     @classmethod
-    def _serialize_model_state(cls, model: lmfit.Model) -> tuple[str, str]:
+    def _serialize_model_state(
+        cls, model: lmfit.Model, *, serialized: str | None = None
+    ) -> tuple[str, str]:
         """Serialize a model only at a locally authorized mutation boundary."""
         model_class = type(model)
         cls._register_model_class(model_class)
-        return (
-            _model_class_reference(model_class),
-            model.dumps(),
-        )
+        serialized = fit_serialization.dumps_model(model, serialized=serialized)
+        reference = fit_serialization.inspect_model_reference(json.loads(serialized))
+        return reference or _model_class_reference(model_class), serialized
 
     def __init__(
         self,
@@ -2787,13 +2789,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 if not execution_capability_allows(capability, candidate_entries):
                     self._sync_model_display()
                     return
-                model_loader = lmfit.model.Model(lambda x: x)
                 loaded_model = _load_lmfit_for_ftool_restore(
-                    lambda: model_loader.loads(serialized)
+                    lambda: fit_serialization.loads_model(serialized)
                 )
-                loaded_model_state = (
-                    _model_class_reference(type(loaded_model)),
-                    serialized,
+                loaded_model_state = self._serialize_model_state(
+                    loaded_model, serialized=serialized
                 )
                 if not self._set_model_from_local_edit(
                     loaded_model,
@@ -2953,6 +2953,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         capability: object | None,
         *,
         local_edit: bool,
+        restore_parameter_groups: Callable[[list[str]], None] | None = None,
     ) -> None:
         """Apply one status after its complete executable inventory is authorized."""
         if self._fit_running():
@@ -3001,10 +3002,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 else None
             )
             try:
-                model = lmfit.model.Model(lambda x: x)
                 cls_info, model_state = status.model_state
                 model = _load_lmfit_for_ftool_restore(
-                    lambda: model.loads(model_state),
+                    lambda: fit_serialization.loads_model(model_state),
                     params=restored_params,
                 )
             except Exception:
@@ -3013,62 +3013,95 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     raise _FitCodeEditRejected from None
                 model = self._model
                 restored_model_state = self._serialized_model_state
+                normalized_entries = entries
             else:
-                restored_model_state = status.model_state
                 model_class = _REGISTERED_MODEL_CLASSES.get(cls_info)
-                if model_class is not None:
+                if model_class is not None and (
+                    type(model) is lmfit.Model or issubclass(model_class, type(model))
+                ):
                     with contextlib.suppress(TypeError):
                         model.__class__ = model_class
-
-            if restored_params is None or len(restored_params) == 0:
-                self._apply_model(
-                    model,
-                    model_state=restored_model_state,
-                    model_load_path=status.model_load_path,
+                restored_model_state = self._serialize_model_state(
+                    model, serialized=model_state
                 )
+                normalized_status = status.model_copy(
+                    update={"model_state": restored_model_state}
+                )
+                normalized_entries = tuple(
+                    type(self)._code_trust_entries_from_status(normalized_status)
+                )
+
+            def apply_restored_model() -> None:
+                if restored_params is None or len(restored_params) == 0:
+                    self._apply_model(
+                        model,
+                        model_state=restored_model_state,
+                        model_load_path=status.model_load_path,
+                        refresh_views=False,
+                    )
+                else:
+                    # Saved params are authoritative during restore; generating model
+                    # defaults here can evaluate incomplete deserialized model state.
+                    self._model = model
+                    self._sanitize_model_convolution_for_x()
+                    self._model_load_path = status.model_load_path
+                    self._params = restored_params
+                    self._initial_params = self._params.copy()
+                    self._sync_model_display()
+                    self._sync_model_specific_controls()
+
+                self._serialized_model_state = restored_model_state
+                self.components_check.setChecked(status.show_components)
+                self.refit_on_source_update_check.setChecked(
+                    status.refit_on_source_update
+                )
+                self._scale_covar_default = status.scale_covar
+                self._normalize_residuals_default = status.normalize_residuals
+                self._uncertainty_name = status.uncertainty_name
+                self._direct_weights_name = status.weights_name
+                with QtCore.QSignalBlocker(self.scale_covar_check):
+                    self.scale_covar_check.setChecked(status.scale_covar)
+                with QtCore.QSignalBlocker(self.normalize_residuals_check):
+                    self.normalize_residuals_check.setChecked(
+                        status.normalize_residuals
+                    )
+                self._update_residual_axis_label()
+                self.timeout_spin.setValue(status.timeout)
+                self.nfev_spin.setValue(status.max_nfev)
+                self.method_combo.setCurrentText(status.method)
+                with QtCore.QSignalBlocker(self.normalize_check):
+                    self.normalize_check.setChecked(status.normalize_mean)
+
+                self._slider_widths = dict(status.slider_widths)
+
+                self._params_from_coord = self._sanitize_params_from_coord(
+                    status.params_from_coord
+                )
+                if restore_parameter_groups is not None:
+                    restore_parameter_groups(repaired_bounds)
+                self._refresh_fit_code_entries()
+                if self._fit_code_entries == entries:
+                    self._fit_execution_capability = capability
+                self.param_model.set_params(
+                    self._params, self._params_from_coord, emit_changed=False
+                )
+                self._update_fit_curve()
+                self._fit_configuration_changed()
+                self._refresh_slider_from_model()
+                self._mark_fit_stale()
+
+                if warn_repaired_bounds:
+                    self._show_repaired_parameter_bounds_warning(repaired_bounds)
+
+            if normalized_entries == entries:
+                apply_restored_model()
             else:
-                # Saved params are authoritative during restore; generating model
-                # defaults here can evaluate incomplete deserialized model state.
-                self._model = model
-                self._sanitize_model_convolution_for_x()
-                self._model_load_path = status.model_load_path
-                self._params = restored_params
-                self._initial_params = self._params.copy()
-                self._sync_model_display()
-                self._sync_model_specific_controls()
-
-            self._serialized_model_state = restored_model_state
-            self.components_check.setChecked(status.show_components)
-            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
-            self._scale_covar_default = status.scale_covar
-            self._normalize_residuals_default = status.normalize_residuals
-            self._uncertainty_name = status.uncertainty_name
-            self._direct_weights_name = status.weights_name
-            with QtCore.QSignalBlocker(self.scale_covar_check):
-                self.scale_covar_check.setChecked(status.scale_covar)
-            with QtCore.QSignalBlocker(self.normalize_residuals_check):
-                self.normalize_residuals_check.setChecked(status.normalize_residuals)
-            self._update_residual_axis_label()
-            self.timeout_spin.setValue(status.timeout)
-            self.nfev_spin.setValue(status.max_nfev)
-            self.method_combo.setCurrentText(status.method)
-            with QtCore.QSignalBlocker(self.normalize_check):
-                self.normalize_check.setChecked(status.normalize_mean)
-
-            self._slider_widths = dict(status.slider_widths)
-
-            self._params_from_coord = self._sanitize_params_from_coord(
-                status.params_from_coord
-            )
-            self._refresh_fit_code_entries()
-            if self._fit_code_entries == entries:
-                self._fit_execution_capability = capability
-            self.param_model.set_params(self._params, self._params_from_coord)
-            self._refresh_slider_from_model()
-            self._mark_fit_stale()
-
-            if warn_repaired_bounds:
-                self._show_repaired_parameter_bounds_warning(repaired_bounds)
+                self._apply_local_code_inventory_change(
+                    entries,
+                    normalized_entries,
+                    normalized_entries,
+                    apply_restored_model,
+                )
 
     def _saved_tool_status(self) -> StateModel:
         """Preserve blocked saved state until the document is approved."""
@@ -4176,8 +4209,26 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         result_ds = _load_lmfit_for_ftool_restore(
             lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
         )
-        self._apply_restored_fit_result(result_ds, fit_is_current=fit_is_current)
-        self._pending_persisted_fit_is_current = None
+        normalized_blob = erlab.interactive.utils._normalize_fit_dataset_blob(
+            blob, result_ds
+        )
+        normalized_entry = self._fit_result_code_trust_entry(normalized_blob)
+
+        def apply_restored_result() -> None:
+            self._serialized_fit_result_blob = normalized_blob
+            self._pending_persisted_fit_is_current = None
+            self._apply_restored_fit_result(result_ds, fit_is_current=fit_is_current)
+
+        if normalized_entry == entry:
+            apply_restored_result()
+        else:
+            normalized_entries = () if normalized_entry is None else (normalized_entry,)
+            self._apply_local_code_inventory_change(
+                () if entry is None else (entry,),
+                normalized_entries,
+                normalized_entries,
+                apply_restored_result,
+            )
 
     def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
         if self._PERSISTED_FIT_RESULT_VAR not in ds:

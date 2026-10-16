@@ -7,7 +7,6 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._rendering as rendering
-from erlab.interactive._code_trust import approve_document_trust
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureOperationState,
@@ -227,12 +226,7 @@ def test_fit_components_render_codegen_and_restore(
     saved = tool.to_dataset()
     restored = ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
-    restored.set_document_trust(
-        approve_document_trust(
-            restored._document_trust, restored._current_code_trust_manifest()
-        ),
-        notify=False,
-    )
+    assert restored._code_trust_banner.isHidden()
     assert restored.tool_status.operations == tool.tool_status.operations
     assert (
         restored.source_payload("edc_fit", FigureFitSourceSnapshot).component_names
@@ -833,12 +827,7 @@ def test_fit_source_refresh_reconciles_styles_and_history(
     restored = ToolWindow.from_dataset(tool.to_dataset())
     qtbot.addWidget(restored)
     assert restored.tool_status.operations[0] == updated
-    restored.set_document_trust(
-        approve_document_trust(
-            restored._document_trust, restored._current_code_trust_manifest()
-        ),
-        notify=False,
-    )
+    assert restored._code_trust_banner.isHidden()
     _assert_equal_artists(_render(tool), _render(restored))
 
 
@@ -942,12 +931,7 @@ def test_fit_components_preserve_multipeak_names_in_editor_and_code(qtbot, numpo
         np.testing.assert_allclose(line.get_ydata(), values)
     restored = ToolWindow.from_dataset(tool.to_dataset())
     qtbot.addWidget(restored)
-    restored.set_document_trust(
-        approve_document_trust(
-            restored._document_trust, restored._current_code_trust_manifest()
-        ),
-        notify=False,
-    )
+    assert restored._code_trust_banner.isHidden()
     _assert_equal_artists(original, _render(restored))
 
 
@@ -987,7 +971,7 @@ def test_fit_component_editor_uses_safe_metadata_and_preserves_styles(
     assert updated.fit_component_band_kw == {}
 
 
-def test_fit_components_require_model_execution_trust(
+def test_fit_components_require_trust_for_custom_parameter_expression(
     qtbot, component_snapshot, monkeypatch
 ):
     from erlab.interactive._code_trust import untrusted_document_trust
@@ -996,16 +980,17 @@ def test_fit_components_require_model_execution_trust(
         figure_source_entries,
     )
 
+    result = component_snapshot.result_dataset()
+    result.modelfit_results.item().params["bg_intercept"].expr = "2 * bg_slope"
+    snapshot = FigureFitSourceSnapshot.from_dataset(result)
     tool = _tool(
         qtbot,
-        component_snapshot,
+        snapshot,
         FigureOperationState.fit_plot(source="edc_fit").model_copy(
             update={"show_components": True}
         ),
     )
-    expected = figure_source_entries(
-        {"edc_fit": component_snapshot}, location_prefix="figure"
-    )
+    expected = figure_source_entries({"edc_fit": snapshot}, location_prefix="figure")
     assert expected
     assert (
         figure_operation_execution_entries(
@@ -1095,13 +1080,7 @@ def test_fit_plot_roundtrip_retains_model_and_options(
     restored = ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
     assert isinstance(restored, FigureComposerTool)
-    # GaussianModel includes saved expressions for its derived parameters.
-    restored.set_document_trust(
-        approve_document_trust(
-            restored._document_trust, restored._current_code_trust_manifest()
-        ),
-        notify=False,
-    )
+    assert restored._code_trust_banner.isHidden()
     assert restored.tool_status.operations == tool.tool_status.operations
     validated = FigureRecipeState.model_validate_json(
         tool.tool_status.model_dump_json()

@@ -1,8 +1,6 @@
-import base64
 import contextlib
 import gc
 import json
-import pickle
 import threading
 import typing
 import weakref
@@ -20,8 +18,8 @@ import xarray_lmfit
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.analysis.fit import _serialization as fit_serialization
 from erlab.interactive import _fit1d as fit1d
-from erlab.interactive import _fit_code_trust as fit_code_trust
 from erlab.interactive._code_trust import (
     authorize_document_execution,
     create_entry,
@@ -1037,13 +1035,13 @@ def test_fit1d_saved_builtin_model_restores_without_approval(
     saved = source.to_dataset()
     saved_status = Fit1DTool.StateModel.model_validate_json(saved.attrs["tool_state"])
     calls: list[str] = []
-    original_loads = lmfit.model.Model.loads
+    original_loads = fit1d.fit_serialization.loads_model
 
-    def tracked_loads(model, state, **kwargs):
+    def tracked_loads(state, **kwargs):
         calls.append(state)
-        return original_loads(model, state, **kwargs)
+        return original_loads(state, **kwargs)
 
-    monkeypatch.setattr(lmfit.model.Model, "loads", tracked_loads)
+    monkeypatch.setattr(fit1d.fit_serialization, "loads_model", tracked_loads)
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
@@ -1052,6 +1050,24 @@ def test_fit1d_saved_builtin_model_restores_without_approval(
     assert calls == [saved_status.model_state[1]]
     assert restored._pending_fit_status is None
     assert restored._fit_code_entries == ()
+
+
+def test_fit1d_registered_builtin_subclass_survives_restore(qtbot) -> None:
+    class CustomMultiPeakModel(erlab.analysis.fit.models.MultiPeakModel):
+        pass
+
+    model = CustomMultiPeakModel(fd=False, convolve=False, background="none")
+    source = erlab.interactive.ftool(_make_1d_data(), model=model, execute=False)
+    qtbot.addWidget(source)
+    _set_signed_fit_trust(source)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        source.to_dataset(), _code_trust=source._document_trust
+    )
+    qtbot.addWidget(restored)
+
+    assert type(restored._model) is CustomMultiPeakModel
+    assert restored._current_fit_execution_allowed()
+    assert restored._serialized_model_state == source._serialized_model_state
 
 
 @pytest.mark.parametrize("ndim", [1, 2])
@@ -1142,6 +1158,12 @@ def test_fit1d_saved_model_class_does_not_import_document_target(
     ("model", "expected_code"),
     [
         pytest.param(lmfit.models.ExponentialModel(), None, id="lmfit-library"),
+        pytest.param(
+            lmfit.models.GaussianModel(prefix="peak_")
+            + lmfit.models.LinearModel(prefix="background_"),
+            None,
+            id="prefixed-composite",
+        ),
         pytest.param(erlab.analysis.fit.models.TLLModel(), None, id="erlab-library"),
         pytest.param(
             erlab.analysis.fit.models.MultiPeakModel(),
@@ -1219,10 +1241,16 @@ def test_fit1d_saved_model_class_does_not_import_document_target(
     ],
 )
 def test_lmfit_code_trust_classifies_models_without_loading(
-    model: lmfit.Model, expected_code: str | None
+    model: lmfit.Model, expected_code: str | None, monkeypatch
 ) -> None:
+    serialized = fit_serialization.dumps_model(model)
+
+    def unexpected_load(*_args, **_kwargs):
+        pytest.fail("Trust inventory must not deserialize a saved model")
+
+    monkeypatch.setattr(lmfit.Model, "loads", unexpected_load)
     entry = lmfit_model_code_entry(
-        model.dumps(),
+        serialized,
         feature="test.lmfit-model",
         location="model",
         model_reference=fit1d._model_class_reference(type(model)),
@@ -1235,260 +1263,43 @@ def test_lmfit_code_trust_classifies_models_without_loading(
         assert expected_code in entry.code
 
 
-def test_lmfit_code_trust_rejects_modified_embedded_library_model() -> None:
-    model = erlab.analysis.fit.models.MultiPeakModel(
-        2,
-        "voigt voigt",
-        fd=False,
-        background="none",
-        convolve=False,
+@pytest.mark.parametrize(
+    "case", ["legacy", "unknown-descriptor", "wrong-reference", "invalid-options"]
+)
+def test_lmfit_code_trust_requires_explicit_builtin_definitions(case: str) -> None:
+    model = (
+        lmfit.models.GaussianModel()
+        if case == "invalid-options"
+        else erlab.analysis.fit.models.MultiPeakModel(
+            2, "voigt voigt", fd=False, background="none", convolve=False
+        )
     )
     reference = fit1d._model_class_reference(type(model))
-    serialized = json.loads(model.dumps())
-    serialized["value"][0]["funcdef"]["value"] += "modified"
+    serialized = (
+        model.dumps() if case == "legacy" else fit_serialization.dumps_model(model)
+    )
+    if case == "unknown-descriptor":
+        value = json.loads(serialized)
+        value["value"][0]["funcdef"]["__erlab_builtin_model__"] = "UnknownModel"
+        serialized = json.dumps(value)
+    elif case == "wrong-reference":
+        reference = "lmfit.model:Model"
+    elif case == "invalid-options":
+        value = json.loads(serialized)
+        value["value"][0]["opts"] = {"__class__": "Dict", "sigma": 1.0}
+        serialized = json.dumps(value)
 
     entry = lmfit_model_code_entry(
-        json.dumps(serialized),
+        serialized,
         feature="test.lmfit-model",
         location="model",
         model_reference=reference,
     )
-    wrong_reference_entry = lmfit_model_code_entry(
-        model.dumps(),
-        feature="test.lmfit-model",
-        location="model",
-        model_reference="lmfit.model:Model",
-    )
 
     assert entry is not None
-    assert wrong_reference_entry is not None
-    assert "serialized-callable" in entry.code
-    assert "serialized-callable" in wrong_reference_entry.code
-
-
-def test_lmfit_code_trust_serialized_helper_guards() -> None:
-    class EmptySerializedModel:
-        def dumps(self) -> str:
-            return "{}"
-
-    assert fit_code_trust._wrapped_list({"__class__": "List", "value": ()}) is None
-    assert fit_code_trust._serialized_model_dict(object()) is None
-    assert fit_code_trust._serialized_model_dict(EmptySerializedModel()) is None
-    assert fit_code_trust._common_model_kwargs({}) is None
-
-
-@pytest.mark.parametrize(
-    "state",
-    [
-        {"oversample": None},
-        {"other": 3},
-    ],
-)
-def test_lmfit_code_trust_rejects_non_scalar_pickle_state(
-    state: dict[str, object],
-) -> None:
-    payload = base64.b64encode(pickle.dumps(state)).decode()
-
-    assert fit_code_trust._pickle_scalar_after_key(payload, "oversample") is None
-
-
-@pytest.mark.parametrize(
-    "case",
-    [
-        "non-string-callable",
-        "non-string-name",
-        "no-peaks",
-        "non-contiguous-peaks",
-        "unknown-shape",
-        "partial-fermi-dirac",
-        "non-contiguous-polynomial",
-        "high-degree-polynomial",
-    ],
-)
-def test_lmfit_code_trust_rejects_invalid_multipeak_options(case: str) -> None:
-    model = erlab.analysis.fit.models.MultiPeakModel(
-        1,
-        "voigt",
-        fd=False,
-        background="none",
-        convolve=False,
-    )
-    item = json.loads(model.dumps())["value"][0]
-    names = item["param_root_names"]["value"]
-
-    if case == "non-string-callable":
-        item["funcdef"]["value"] = 1
-    elif case == "non-string-name":
-        names.append(1)
-    elif case == "no-peaks":
-        names.clear()
-    elif case == "non-contiguous-peaks":
-        names[:] = [name.replace("p0_", "p1_") for name in names]
-    elif case == "unknown-shape":
-        names[:] = ["p0_center"]
-        item["param_hints"].clear()
-    elif case == "partial-fermi-dirac":
-        names.append("temp")
-    elif case == "non-contiguous-polynomial":
-        names.append("c1")
-    elif case == "high-degree-polynomial":
-        names.extend(f"c{index}" for index in range(12))
-
-    assert fit_code_trust._multipeak_candidate_options(item) is None
-
-
-def test_lmfit_code_trust_known_model_candidate_guards() -> None:
-    common = {"name": "model", "prefix": "", "nan_policy": "raise"}
-    wrapped = {"__class__": "List", "value": ["c0", "c1"]}
-
-    assert not list(
-        fit_code_trust._known_model_candidates({"funcname": "PolynomialFunction"})
-    )
-    assert not list(
-        fit_code_trust._known_model_candidates(
-            {**common, "funcname": "PolynomialFunction"}
-        )
-    )
-    assert not list(
-        fit_code_trust._known_model_candidates(
-            {
-                **common,
-                "funcname": "PolynomialFunction",
-                "param_root_names": {
-                    "__class__": "List",
-                    "value": ["c0", "c2"],
-                },
-            }
-        )
-    )
-    assert not list(
-        fit_code_trust._known_model_candidates(
-            {
-                **common,
-                "funcname": "PolynomialFunction",
-                "param_root_names": {
-                    "__class__": "List",
-                    "value": [f"c{index}" for index in range(22)],
-                },
-            }
-        )
-    )
-    assert not list(
-        fit_code_trust._known_model_candidates(
-            {**common, "funcname": "FermiEdge2dFunction"}
-        )
-    )
-    assert not list(
-        fit_code_trust._known_model_candidates(
-            {
-                **common,
-                "funcname": "FermiEdge2dFunction",
-                "param_root_names": {"__class__": "List", "value": []},
-            }
-        )
-    )
-    assert not list(
-        fit_code_trust._known_model_candidates(
-            {
-                **common,
-                "funcname": "FermiEdge2dFunction",
-                "param_root_names": {
-                    "__class__": "List",
-                    "value": [f"c{index}" for index in range(22)],
-                },
-            }
-        )
-    )
-    candidates = list(
-        fit_code_trust._known_model_candidates(
-            {
-                **common,
-                "funcname": "FermiEdge2dFunction",
-                "param_root_names": wrapped,
-            }
-        )
-    )
-
-    assert len(candidates) == 1
-    assert isinstance(candidates[0], erlab.analysis.fit.models.FermiEdge2dModel)
-
-
-@pytest.mark.parametrize("serialized", ["{", "[]"])
-def test_lmfit_code_trust_known_model_match_rejects_invalid_json(
-    serialized: str,
-) -> None:
-    assert fit_code_trust._compute_known_model_match(serialized, None) is None
-
-
-def test_lmfit_code_trust_known_model_match_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raise_candidate_error(_item: dict[str, object]):
-        raise RuntimeError("candidate construction failed")
-
-    monkeypatch.setattr(
-        fit_code_trust, "_known_model_candidates", raise_candidate_error
-    )
-
-    assert fit_code_trust._compute_known_model_match("{}", None) is None
-
-
-def test_lmfit_code_trust_payload_match_uses_serialized_memo_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    item = {"funcdef": {}}
-    serialized_item = json.dumps(
-        item,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    match = ("test:Model", ())
-    memo = {(serialized_item, None): (item, match)}
-
-    def unexpected_match(*_args):
-        pytest.fail("The exact payload memo entry was not used")
-
-    monkeypatch.setattr(fit_code_trust, "_known_model_match", unexpected_match)
-
-    assert fit_code_trust._payload_model_match(item, None, memo) == match
-
-
-def test_lmfit_code_trust_payload_match_stores_serialized_memo_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    item = {"funcdef": {}}
-    serialized_item = json.dumps(
-        item,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    match = ("test:Model", ())
-    memo = {}
-
-    monkeypatch.setattr(fit_code_trust, "_known_model_match", lambda *_args: match)
-
-    assert fit_code_trust._payload_model_match(item, None, memo) == match
-    assert memo == {(serialized_item, None): (item, match)}
-
-
-def test_lmfit_code_trust_rejects_non_json_model_items() -> None:
-    payload_item = {"funcdef": {"value": "callable"}, "bad": float("nan")}
-    serialized_item = {
-        "funcname": "CustomFunction",
-        "funcdef": {},
-        "param_hints": {},
-        "bad": float("nan"),
-    }
-
-    assert fit_code_trust._payload_model_match(payload_item, None, {}) is None
-    assert fit_code_trust._safe_model_matches(
-        None,
-        serialized_items=(("root", serialized_item, None),),
-    ) == ({}, frozenset())
+    assert (
+        "serialized-callable" if case == "legacy" else "unrecognized-builtin-model"
+    ) in entry.code
 
 
 def test_lmfit_code_trust_omits_exact_model_parameter_hints() -> None:
@@ -1499,8 +1310,11 @@ def test_lmfit_code_trust_omits_exact_model_parameter_hints() -> None:
         background="none",
         convolve=False,
     )
+    model.set_param_hint("p0_sigma", min=0.01, max=2.0, value=0.2, vary=False)
     reference = fit1d._model_class_reference(type(model))
-    safe_expressions = lmfit_model_safe_parameter_expressions(model.dumps(), reference)
+    safe_expressions = lmfit_model_safe_parameter_expressions(
+        fit_serialization.dumps_model(model), reference
+    )
     expressions = [
         *((name, param.expr) for name, param in model.make_params().items()),
         ("p1_sigma", "p0_sigma"),
@@ -1516,6 +1330,51 @@ def test_lmfit_code_trust_omits_exact_model_parameter_hints() -> None:
     assert [(entry.location, entry.code) for entry in entries] == [
         ("parameters/p1_sigma", "p0_sigma")
     ]
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("numeric-hints", None),
+        ("evaluated", None),
+        ("user-expression", "2 * p1_sigma"),
+        ("custom-function-attribute", "serialized-callable"),
+        ("subclass", "serialized-callable"),
+    ],
+)
+def test_lmfit_builtin_metadata_keeps_custom_code_visible(case, expected_code) -> None:
+    class CustomMultiPeakModel(erlab.analysis.fit.models.MultiPeakModel):
+        pass
+
+    model_class = (
+        CustomMultiPeakModel
+        if case == "subclass"
+        else erlab.analysis.fit.models.MultiPeakModel
+    )
+    model = model_class(2, "voigt voigt", fd=False, background="none", convolve=False)
+    model.set_param_hint("p0_sigma", value=0.2, min=0.01, max=2.0, vary=False)
+    if case == "evaluated":
+        model.eval(model.make_params(), x=np.linspace(-1.0, 1.0, 11))
+    elif case == "user-expression":
+        model.set_param_hint("p0_sigma", expr="2 * p1_sigma")
+    elif case == "custom-function-attribute":
+        model.func.callback = lambda: None
+
+    entry = lmfit_model_code_entry(
+        fit_serialization.dumps_model(model),
+        feature="test.lmfit-model",
+        location="model",
+        model_reference=fit1d._model_class_reference(type(model)),
+    )
+
+    if expected_code is None:
+        assert entry is None
+    else:
+        assert entry is not None
+        assert expected_code in entry.code
+        if case == "user-expression":
+            assert "p0_fwhm" not in entry.code
+            assert "p0_height" not in entry.code
 
 
 def test_expression_model_local_entry_matches_saved_model_identity() -> None:
@@ -1678,9 +1537,9 @@ def test_lmfit_code_trust_classifies_result_payload_without_loading_it() -> None
     model = lmfit.models.ExponentialModel()
     params = model.make_params(amplitude=1.0, decay=1.0)
     result = model.fit(np.exp(-x), params, x=x)
-    payload = xr.Dataset({"modelfit_results": xr.DataArray(result.dumps())}).to_netcdf(
-        path=None, engine="h5netcdf"
-    )
+    payload = xr.Dataset(
+        {"modelfit_results": xr.DataArray(fit_serialization.dumps_result(result))}
+    ).to_netcdf(path=None, engine="h5netcdf")
 
     entry = lmfit_result_code_entry(
         bytes(payload),
@@ -1691,39 +1550,7 @@ def test_lmfit_code_trust_classifies_result_payload_without_loading_it() -> None
     assert entry is None
 
 
-def test_lmfit_code_trust_accepts_exact_local_multipeak_result() -> None:
-    x = np.linspace(-1.0, 1.0, 21)
-    model = erlab.analysis.fit.models.MultiPeakModel(
-        1,
-        "voigt",
-        fd=False,
-        background="none",
-        convolve=False,
-    )
-    params = model.make_params(
-        p0_center=0.0,
-        p0_sigma=0.2,
-        p0_gamma=0.2,
-        p0_amplitude=1.0,
-    )
-    result = model.fit(model.eval(params, x=x), params, x=x)
-    payload = xr.Dataset({"modelfit_results": xr.DataArray(result.dumps())}).to_netcdf(
-        path=None, engine="h5netcdf"
-    )
-
-    entry = lmfit_result_code_entry(
-        bytes(payload),
-        feature="test.lmfit-result",
-        location="fit-result",
-    )
-
-    assert entry is None
-
-
-@pytest.mark.parametrize("transient_miss", [False, True])
-def test_lmfit_result_code_trust_memoizes_confirmed_model_match(
-    monkeypatch, transient_miss: bool
-) -> None:
+def test_lmfit_code_trust_accepts_declarative_multipeak_result() -> None:
     x = np.linspace(-1.0, 1.0, 21)
     model = erlab.analysis.fit.models.MultiPeakModel(
         1,
@@ -1740,62 +1567,7 @@ def test_lmfit_result_code_trust_memoizes_confirmed_model_match(
     )
     result = model.fit(model.eval(params, x=x), params, x=x)
     payload = xr.Dataset(
-        {"modelfit_results": xr.DataArray([result.dumps()] * 10, dims="row")}
-    ).to_netcdf(path=None, engine="h5netcdf")
-    expressions = tuple(
-        (name, expression)
-        for name, param in model.make_params().items()
-        if isinstance((expression := param._expr), str) and expression.strip()
-    )
-    match = (fit1d._model_class_reference(type(model)), expressions)
-    calls: list[tuple[str, str | None]] = []
-
-    def model_match(serialized_item: str, model_reference: str | None):
-        calls.append((serialized_item, model_reference))
-        if transient_miss and len(calls) > 1:
-            return match
-        return None
-
-    monkeypatch.setattr(fit_code_trust, "_known_model_match", model_match)
-
-    entry = lmfit_result_code_entry(
-        bytes(payload),
-        feature="test.lmfit-result",
-        location="fit-result",
-    )
-
-    assert len(calls) == 2
-    assert (entry is None) is transient_miss
-
-
-@pytest.mark.parametrize("tampered_first", [False, True])
-def test_lmfit_result_code_trust_memo_requires_exact_model_match(
-    tampered_first: bool,
-) -> None:
-    x = np.linspace(-1.0, 1.0, 21)
-    model = erlab.analysis.fit.models.MultiPeakModel(
-        1,
-        "voigt",
-        fd=False,
-        background="none",
-        convolve=False,
-    )
-    params = model.make_params(
-        p0_center=0.0,
-        p0_sigma=0.2,
-        p0_gamma=0.2,
-        p0_amplitude=1.0,
-    )
-    result = model.fit(model.eval(params, x=x), params, x=x)
-    serialized = result.dumps()
-    tampered = json.loads(serialized)
-    tampered["model"]["value"][0]["funcdef"]["pyversion"] = "modified"
-    serialized_tampered = json.dumps(tampered)
-    results = [serialized_tampered, serialized]
-    if not tampered_first:
-        results.reverse()
-    payload = xr.Dataset(
-        {"modelfit_results": xr.DataArray(results, dims="row")}
+        {"modelfit_results": xr.DataArray(fit_serialization.dumps_result(result))}
     ).to_netcdf(path=None, engine="h5netcdf")
 
     entry = lmfit_result_code_entry(
@@ -1804,8 +1576,7 @@ def test_lmfit_result_code_trust_memo_requires_exact_model_match(
         location="fit-result",
     )
 
-    assert entry is not None
-    assert "serialized-callable" in entry.code
+    assert entry is None
 
 
 def test_lmfit_code_trust_fails_closed_for_invalid_result_payloads() -> None:

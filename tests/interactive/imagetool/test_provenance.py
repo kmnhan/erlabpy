@@ -9529,6 +9529,42 @@ def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> Non
     assert all(namespace[name] is sentinel for name in reserved_names)
 
 
+def test_model_fit_operation_omits_only_installed_default_constraints() -> None:
+    kwargs = {
+        "npeaks": 2,
+        "peak_shapes": "voigt voigt",
+        "fd": False,
+        "background": "none",
+        "convolve": False,
+    }
+    model = erlab.analysis.fit.models.MultiPeakModel(**kwargs)
+    parameters = {
+        name: _ModelFitParameterSpec(expr=param.expr)
+        if param.expr
+        else _ModelFitParameterSpec(value=param.value)
+        for name, param in model.make_params().items()
+    }
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="MultiPeakModel",
+        model_kwargs=kwargs,
+        parameters=parameters,
+        method="leastsq",
+        parameter="p0_sigma",
+    )
+
+    assert (
+        provenance_operation_code_trust_entries(operation, location_prefix="fit") == ()
+    )
+    parameters["p1_sigma"] = _ModelFitParameterSpec(expr="2 * p0_sigma")
+    edited = operation.model_copy(update={"parameters": parameters})
+    entries = provenance_operation_code_trust_entries(edited, location_prefix="fit")
+
+    assert [(entry.location, entry.code) for entry in entries] == [
+        ("fit/parameters/p1_sigma", "2 * p0_sigma")
+    ]
+
+
 def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     x = np.linspace(-1.0, 1.0, 21)
     data = xr.DataArray(

@@ -919,6 +919,11 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
         win_restored.tool_status = status
 
     assert win_restored.tool_status.params == status.params
+    assert win_restored.tool_status.state2d.params_full == status.state2d.params_full
+    assert (
+        win_restored.tool_status.state2d.initial_params_full
+        == status.state2d.initial_params_full
+    )
     assert [
         win_restored.param_plot_combo.itemText(i)
         for i in range(win_restored.param_plot_combo.count())
@@ -934,6 +939,13 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     qtbot.addWidget(win_roundtripped)
     assert isinstance(win_roundtripped, Fit2DTool)
     assert win_roundtripped.tool_status.params == status.params
+    assert (
+        win_roundtripped.tool_status.state2d.params_full == status.state2d.params_full
+    )
+    assert (
+        win_roundtripped.tool_status.state2d.initial_params_full
+        == status.state2d.initial_params_full
+    )
     assert win_roundtripped.param_plot_combo.count() == 0
     assert not win_roundtripped.param_plot_combo.isEnabled()
     assert not win_roundtripped.param_plot_overlay_check.isChecked()
