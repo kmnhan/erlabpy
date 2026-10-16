@@ -3950,9 +3950,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
                 source = source.to_replay_spec()
             graph = compile_replay_graph(source, display=True)
-            output_name = source.active_name
-            if output_name is None:  # pragma: no cover - model validation guard.
-                return None
+            output_name = typing.cast("str", source.active_name)
         except ReplayGraphError:
             return None
         else:

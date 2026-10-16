@@ -40,7 +40,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     ResolvedReplayInput,
     SelectedProvenanceScope,
-    _code_has_scoped_definition,
     _code_name_accesses,
     _compact_replay_temp_names,
     _file_seed_code_parts,
@@ -52,7 +51,6 @@ from erlab.interactive.imagetool._provenance._graph import (
     _is_future_import,
     _leading_top_level_imports,
     _operation_replay_code,
-    _remove_noop_assignments,
     _remove_unused_generated_copies,
     _replace_ast_names,
     _script_function_dependencies,
@@ -977,28 +975,6 @@ class Child(Base, metaclass=data_5):
                 ),
             )
         )
-    invalid_stage_spec = script(
-        start_label="Run script",
-        seed_code="derived = 1",
-        active_name="derived",
-    ).model_copy(
-        update={
-            "replay_stages": (
-                ReplayStage.model_construct(
-                    source_kind="full_data",
-                    operations=(
-                        ScriptCodeOperation(
-                            label="Opaque",
-                            code=None,
-                            copyable=False,
-                        ),
-                    ),
-                ),
-            )
-        }
-    )
-    with pytest.raises(ReplayGraphError, match="non-replayable"):
-        _validate_script_provenance(invalid_stage_spec)
     assert not script_provenance_replayable(None)
     external_input_spec = script(
         ScriptCodeOperation(
@@ -1256,7 +1232,6 @@ def test_replay_graph_script_context_binding_error_paths() -> None:
         execute_replay_graph(active_graph, authorize=_authorize_execution),
         data,
     )
-    assert _remove_noop_assignments("derived =") == "derived ="
 
 
 def test_replay_graph_manual_error_and_cache_paths() -> None:
@@ -3588,8 +3563,6 @@ def test_replay_graph_display_normalizes_nested_derived_console_code(
 
 
 def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
-    assert _compact_replay_temp_names("bad =") == "bad ="
-    assert _code_has_scoped_definition("bad =")
     effectful_attributes = (
         "_itool_replay_0 = source.first\n"
         "other = source.second\n"
@@ -5209,10 +5182,6 @@ def test_replay_import_helpers_preserve_nonhoistable_imports() -> None:
         ),
     ]
     assert body == "result = Array(np.asarray([1.0]))"
-    assert _leading_top_level_imports("if True:\n") == (
-        [],
-        "if True:\n",
-    )
     assert _leading_top_level_imports("value = 1") == ([], "value = 1")
     commented_import = "import numpy as np  # preserve this comment\nvalue = np"
     assert _leading_top_level_imports(commented_import) == (

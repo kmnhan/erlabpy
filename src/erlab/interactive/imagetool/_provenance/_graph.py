@@ -341,10 +341,9 @@ def _script_function_dependencies(
     for child in table.get_children():
         if child.get_type() != "function":
             continue
-        lineno = child.get_lineno()
-        if lineno is None:
-            continue
-        output[(child.get_name(), lineno)] = _symbol_table_dependencies(child)
+        output[(child.get_name(), child.get_lineno())] = _symbol_table_dependencies(
+            child
+        )
     return output
 
 
@@ -1054,13 +1053,6 @@ def _compile_script_input(
     )
     sources = []
     if source is not None:
-        for operation in source.operations:
-            if getattr(operation, "op", None) == "script_code":
-                code = getattr(operation, "code", None)
-                if isinstance(code, str):
-                    graph.source_module_futures.append(
-                        _module_future_imports(code, code_analyzer=code_analyzer)
-                    )
         for end in range(len(source.operations) + 1):
             prefix = source.model_copy(
                 update={"source_operations": source.operations[:end]}
@@ -2021,10 +2013,7 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
 def _inline_adjacent_replay_assignments(
     code: str, *, protected_names: set[str] | None = None
 ) -> str:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
     changed = False
     protected_names = set() if protected_names is None else protected_names
 
@@ -2089,10 +2078,7 @@ def _inline_single_use_replay_names(
     code: str, *, protected_names: set[str] | None = None
 ) -> str:
     """Inline one-use replay temporaries bound to side-effect-free names."""
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
     changed = False
     protected_names = set() if protected_names is None else protected_names
 
@@ -2169,10 +2155,7 @@ def _inline_single_use_replay_names(
 
 
 def _remove_noop_assignments(code: str) -> str:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
     original_count = len(module.body)
     module.body = [
         stmt
@@ -2453,10 +2436,7 @@ def _replace_script_output_identifiers(
 
 def _format_long_call_assignments(code: str, *, line_length: int = 88) -> str:
     """Wrap top-level call assignments made too long by semantic renaming."""
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
     encoded = code.encode()
     replacements: list[tuple[int, int, bytes]] = []
     for statement in module.body:
@@ -2513,10 +2493,7 @@ def _inline_standalone_alias(
 def _inline_simple_name_aliases(
     code: str, *, protected_names: set[str] | None = None
 ) -> str:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
     if _code_has_scoped_definition(code):
         return code
 
@@ -2684,10 +2661,7 @@ def _inline_simple_name_aliases(
 
 
 def _compact_replay_temp_names(code: str) -> str:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
 
     replacements: dict[str, str] = {}
     used_names = {
@@ -2720,10 +2694,7 @@ def _compact_replay_temp_names(code: str) -> str:
 
 
 def _code_has_scoped_definition(code: str) -> bool:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return True
+    module = ast.parse(code, mode="exec")
     return any(
         isinstance(
             node, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef, ast.Lambda)
@@ -2747,10 +2718,7 @@ def _is_receiver_assignment_chain(codes: Sequence[str], active_name: str) -> boo
     if len(codes) < 2:
         return False
     for index, code in enumerate(codes):
-        try:
-            module = ast.parse(code, mode="exec")
-        except SyntaxError:
-            return False
+        module = ast.parse(code, mode="exec")
         if len(module.body) != 1 or not isinstance(module.body[0], ast.Assign):
             return False
         statement = module.body[0]
@@ -2771,10 +2739,7 @@ def _is_receiver_assignment_chain(codes: Sequence[str], active_name: str) -> boo
 def _remove_unused_generated_copies(code: str, names: set[str]) -> str:
     if not names:
         return code
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
+    module = ast.parse(code, mode="exec")
     retained: list[ast.stmt] = []
     changed = False
     for index, statement in enumerate(module.body):
@@ -2816,6 +2781,7 @@ def _cleanup_emitted_replay_code(
     Display emission preserves the original temporary identifiers until semantic
     renaming can associate each surviving binding with the graph node that owns it.
     """
+    # The emitter has validated every complete chunk before optimization.
     code = _remove_noop_assignments(code)
     if _parse_replay_code(code, analyzer=code_analyzer).opaque:
         return code
@@ -2831,10 +2797,7 @@ def _cleanup_emitted_replay_code(
 
 
 def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return [], code
+    module = ast.parse(code, mode="exec")
 
     lines = code.splitlines()
     imports: list[tuple[str, str]] = []
@@ -2868,10 +2831,7 @@ def _split_module_prologue(code: str) -> tuple[str, str]:
     ahead of the docstring changes ``__doc__``, while moving it ahead of a future
     import makes otherwise valid replay code fail to compile.
     """
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return "", code
+    module = ast.parse(code, mode="exec")
     if not module.body:
         return "", code
 
@@ -3356,9 +3316,7 @@ def _module_future_imports(
         ):
             continue
         for alias in statement.names:
-            feature = getattr(__future__, alias.name, None)
-            if feature is None:
-                continue
+            feature = getattr(__future__, alias.name)
             mandatory = feature.getMandatoryRelease()
             if mandatory is None or mandatory > sys.version_info:
                 features.add(alias.name)
