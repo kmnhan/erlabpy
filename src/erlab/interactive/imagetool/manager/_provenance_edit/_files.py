@@ -31,7 +31,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
@@ -66,31 +66,33 @@ class _MissingProvenanceSourceFileError(FileNotFoundError):
         self.source_path = source_path
 
 
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    pending = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        pending.extend(
+            nested
+            for nested in (
+                current.__context__,
+                current.__cause__,
+                getattr(current, "cause", None),
+            )
+            if isinstance(nested, BaseException)
+        )
+
+
 def _missing_source_file_error_from_exception(
     exc: BaseException,
 ) -> _MissingProvenanceSourceFileError | None:
-    seen: set[int] = set()
-
-    def visit(
-        current: BaseException | None,
-    ) -> _MissingProvenanceSourceFileError | None:
-        if current is None or id(current) in seen:
-            return None
-        seen.add(id(current))
-        if isinstance(current, _MissingProvenanceSourceFileError):
-            return current
-        for nested in (
-            getattr(current, "cause", None),
-            current.__cause__,
-            current.__context__,
-        ):
-            if not isinstance(nested, BaseException):
-                continue
-            if missing := visit(nested):
-                return missing
-        return None
-
-    return visit(exc)
+    for error in _iter_exception_chain(exc):
+        if isinstance(error, _MissingProvenanceSourceFileError):
+            return error
+    return None
 
 
 def _file_not_found_path_from_exception(exc: BaseException) -> pathlib.Path | None:
@@ -649,8 +651,6 @@ def _replace_file_load_fields(
     spec: ToolProvenanceSpec,
     replacement: ToolProvenanceSpec,
 ) -> ToolProvenanceSpec:
-    if replacement.kind != "file" or replacement.file_load_source is None:
-        raise RuntimeError("Replacement is not a file load provenance spec")
     return spec.model_copy(
         update={
             "start_label": replacement.start_label,

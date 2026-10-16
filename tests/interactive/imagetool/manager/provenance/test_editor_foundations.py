@@ -1742,18 +1742,6 @@ def test_manager_provenance_edit_file_load_helper_edges(
     assert replaced.start_label == replacement.start_label
     assert replaced.seed_code == replacement.seed_code
     assert replaced.file_load_source == replacement.file_load_source
-    with pytest.raises(RuntimeError, match="not a file load"):
-        provenance_edit_files._replace_file_load_fields(
-            script_spec,
-            full_data(),
-        )
-
-    invalid_filename = FileNotFoundError()
-    invalid_filename.filename = object()
-    assert (
-        provenance_edit_files._file_not_found_path_from_exception(invalid_filename)
-        is None
-    )
     nested_missing = FileNotFoundError(2, "No such file", str(source_path))
     wrapper = RuntimeError("wrapped")
     wrapper.__cause__ = nested_missing

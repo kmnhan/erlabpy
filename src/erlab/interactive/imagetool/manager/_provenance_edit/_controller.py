@@ -75,6 +75,7 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
     _file_not_found_path_from_exception,
     _FileLoadBatchPeer,
     _FileLoadEditDialog,
+    _iter_exception_chain,
     _loader_summary,
     _missing_source_file_error_from_exception,
     _MissingProvenanceSourceFileError,
@@ -180,26 +181,10 @@ class _ProvenanceReplayFailure(RuntimeError):
 def _spreadsheet_metadata_error_from_exception(
     exc: BaseException,
 ) -> erlab.io.metadata.SpreadsheetMetadataError | None:
-    seen: set[int] = set()
-
-    def visit(
-        current: BaseException | None,
-    ) -> erlab.io.metadata.SpreadsheetMetadataError | None:
-        if current is None or id(current) in seen:
-            return None
-        seen.add(id(current))
-        if isinstance(current, erlab.io.metadata.SpreadsheetMetadataError):
-            return current
-        for nested in (
-            getattr(current, "cause", None),
-            current.__cause__,
-            current.__context__,
-        ):
-            if isinstance(nested, BaseException) and (error := visit(nested)):
-                return error
-        return None
-
-    return visit(exc)
+    for error in _iter_exception_chain(exc):
+        if isinstance(error, erlab.io.metadata.SpreadsheetMetadataError):
+            return error
+    return None
 
 
 class _ProvenanceEditController:
