@@ -1258,7 +1258,9 @@ class _ManagedWindowNode(QtCore.QObject):
             self.imagetool.setWindowTitle(self.label_text)
             return
         slicer_area._data = slicer_area._data.rename(data_name)
-        slicer_area.array_slicer._obj = slicer_area.array_slicer._obj.rename(data_name)
+        slicer_area.array_slicer.set_array(
+            slicer_area.array_slicer._obj.rename(data_name), validate=False
+        )
         if slicer_area._accepted_filter_data is not None:
             slicer_area._accepted_filter_data = (
                 slicer_area._accepted_filter_data.rename(data_name)

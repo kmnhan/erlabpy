@@ -594,7 +594,6 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
         },
         name="map",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.plot_slices(
         label="plot_slices",
         sources=("data",),
@@ -604,7 +603,7 @@ def test_figure_composer_opens_plot_slices_selection_on_nonuniform_data(
     )
 
     tool = FigureComposerTool.from_sources(
-        {"data": internal},
+        {"data": public},
         sources=(FigureSourceState(name="data", label="map"),),
         operations=(operation,),
         setup=FigureSubplotsState(),
@@ -4795,3 +4794,58 @@ def test_figure_composer_explicit_norm_codegen_executes(qtbot) -> None:
     assert right_norm.gamma == 0.75
     assert right_norm.vmin == 0.0
     assert right_norm.vmax == 20.0
+
+
+@pytest.mark.parametrize("promoted", [False, True], ids=["squeezed-5d", "promoted-1d"])
+def test_imagetool_selection_uses_physical_source_layout(qtbot, promoted) -> None:
+    if promoted:
+        data = xr.DataArray(
+            [1.0, 2.0, 3.0], dims=("x",), coords={"x": [0.0, 0.2, 1.0]}, name="scan"
+        )
+    else:
+        data = xr.DataArray(
+            np.arange(120.0).reshape(1, 2, 3, 4, 5),
+            dims=("singleton", "w", "x", "y", "z"),
+            coords={
+                "singleton": [7],
+                "w": [0.0, 1.0],
+                "x": [0.0, 0.2, 1.0],
+                "y": np.arange(4.0),
+                "z": np.arange(5.0),
+            },
+            name="scan",
+        )
+    tool = erlab.interactive.itool(data, manager=False, execute=False)
+    qtbot.addWidget(tool)
+    source = tool.slicer_area.images[0]
+    public = tool.slicer_area._tool_source_parent_data()
+    spec = source.make_tool_source_spec()
+    expected = source.current_data
+    xr.testing.assert_identical(spec.apply(public), expected)
+    code = source.get_selection_code()
+    namespace = {"data": public}
+    exec(f"selected = {code}", namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["selected"], expected)
+    assert "x_idx" not in code
+    assert "stack_dim" not in code
+    assert "restore_nonuniform" not in spec.model_dump_json()
+    if not promoted:
+        operation = figurecomposer_adapter.build_figure_composer_operation(
+            source, source_name="data"
+        )
+        assert operation.map_selections[0].isel["singleton"] == 0
+        assert "x_idx" not in operation.model_dump_json()
+        tool.slicer_area.add_cursor()
+        hidden_axis = next(
+            axis
+            for axis in range(tool.slicer_area.data.ndim)
+            if axis not in source.display_axis
+        )
+        tool.slicer_area.set_index(hidden_axis, 0, cursor=0)
+        tool.slicer_area.set_index(hidden_axis, 1, cursor=1)
+        multi = figurecomposer_adapter.build_figure_composer_operation(
+            source, source_name="data"
+        )
+        assert len(multi.map_selections) == 2
+        assert all(item.isel["singleton"] == 0 for item in multi.map_selections)
+    tool.close()

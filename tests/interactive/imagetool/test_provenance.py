@@ -43,7 +43,6 @@ from erlab.interactive.imagetool._provenance._code import (
     _migrate_legacy_nonuniform_restore_code,
     _provenance_value_code,
     _replace_code_identifiers,
-    _restore_nonuniform_dims_expression,
     _simplify_display_code,
     _statement_load_count,
     _statement_store_count,
@@ -167,7 +166,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     RemoveMeshOperation,
     RenameDimsCoordsOperation,
     RenameOperation,
-    RestoreNonuniformDimsOperation,
     RotateOperation,
     ScriptCodeOperation,
     SelectCoordOperation,
@@ -549,7 +547,6 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         TransposeOperation(dims=("y", "x", "z")),
         SqueezeOperation(),
         RenameOperation(name="renamed"),
-        RestoreNonuniformDimsOperation(),
         RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
         ShiftOperation(shift=0.5, negate=True, along="x"),
         AverageOperation(dims=("x",)),
@@ -1041,14 +1038,20 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         )
 
 
-def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
+@pytest.mark.parametrize(
+    "helper_path",
+    [
+        "erlab.interactive.imagetool.slicer.restore_nonuniform_dims",
+        "erlab.utils.array._restore_nonuniform_dims",
+    ],
+)
+def test_tool_provenance_migrates_legacy_nonuniform_restore_code(helper_path) -> None:
     public = xr.DataArray(
         np.arange(6.0).reshape(3, 2),
         dims=("x", "y"),
         coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
     )
-    uniform = erlab.utils.array._make_dims_uniform(public)
-    legacy_call = "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)"
+    legacy_call = f"{helper_path}(data)"
     payload = {
         "schema_version": 2,
         "kind": "script",
@@ -1066,14 +1069,15 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     spec = parse_tool_provenance_spec(payload)
 
     assert spec is not None
-    migrated_code = spec.derivation_code()
+    migrated_code = spec.seed_code
+    assert migrated_code is not None
     assert "erlab.interactive.imagetool.slicer.restore_nonuniform_dims" not in (
         migrated_code
     )
-    assert "erlab.utils.array._restore_nonuniform_dims(data)" in migrated_code
+    assert "restore_nonuniform_dims" not in migrated_code
     namespace = _exec_generated_code(
         migrated_code,
-        {"data": uniform, "erlab": erlab},
+        {"data": public, "erlab": erlab},
     )
     xr.testing.assert_identical(namespace["derived"], public)
 
@@ -1089,7 +1093,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     )
     assert seed_spec is not None
     assert seed_spec.seed_code is not None
-    assert "erlab.utils.array._restore_nonuniform_dims(data)" in seed_spec.seed_code
+    assert "restore_nonuniform_dims" not in seed_spec.seed_code
 
     file_source = FileLoadSource.model_validate(
         {
@@ -1101,7 +1105,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
         }
     )
     assert file_source.load_code is not None
-    assert "erlab.utils.array._restore_nonuniform_dims(data)" in file_source.load_code
+    assert "restore_nonuniform_dims" not in file_source.load_code
 
     preserved_code = (
         f'# café: keep "{legacy_call}" as documentation\n'
@@ -1109,7 +1113,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     )
     assert _migrate_legacy_nonuniform_restore_code(preserved_code) == (
         f'# café: keep "{legacy_call}" as documentation\n'
-        "derived  =  erlab.utils.array._restore_nonuniform_dims(data)  "
+        "derived  =  (data)  "
         "# keep formatting\n"
     )
 
@@ -1675,87 +1679,6 @@ def test_generated_provenance_code_preserves_seed_load_before_effectful_call() -
         xr.testing.assert_identical(namespace["data"], replacement)
 
 
-@pytest.mark.parametrize("record_mapping", [False, True])
-def test_nonuniform_restore_statement_code_is_safe_to_reingest(
-    record_mapping: bool,
-) -> None:
-    public = xr.DataArray(
-        np.arange(6.0).reshape(3, 2),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
-    )
-    internal = erlab.utils.array._make_dims_uniform(public)
-    operation = RestoreNonuniformDimsOperation(
-        dimension_mapping=(
-            erlab.utils.array._nonuniform_dim_mapping(internal)
-            if record_mapping
-            else None
-        )
-    )
-
-    with pytest.raises(NotImplementedError):
-        operations_expression_code((operation,), "data")
-
-    code = operation.replay_code("data", output_name="derived")
-    spec = script(
-        start_label="Restore ImageTool dimensions",
-        seed_code=code,
-        active_name="derived",
-    )
-
-    assert "lambda" not in code
-    assert provenance_requires_code_trust(spec, external_input_names={"data"})
-    xr.testing.assert_identical(
-        replay_script_provenance(
-            spec, {"data": internal}, authorize=_authorize_execution
-        ),
-        public,
-    )
-
-
-def test_nonuniform_restore_expression_is_linear_and_restores_applicable_dims() -> None:
-    public = xr.DataArray(
-        np.arange(9.0).reshape(3, 3),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 0.4, 2.0]},
-    )
-    internal = erlab.utils.array._make_dims_uniform(public)
-    recorded_mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
-    mapping = {**recorded_mapping, "missing_idx": "missing"}
-    code = _restore_nonuniform_dims_expression("data", mapping)
-
-    attributes = tuple(
-        node.attr
-        for node in ast.walk(ast.parse(code))
-        if isinstance(node, ast.Attribute)
-    )
-    assert attributes.count("swap_dims") == 1
-    assert attributes.count("drop_vars") == 1
-    assert len(code) < 5_000
-
-    partially_restored = erlab.utils.array._restore_nonuniform_dims(
-        internal, {"x_idx": "x"}
-    )
-    namespace = _exec_generated_code(
-        f"result = {code}",
-        {"data": partially_restored},
-    )
-    xr.testing.assert_identical(namespace["result"], public)
-
-
-def test_nonuniform_restore_expression_preserves_inapplicable_coordinates() -> None:
-    data = xr.DataArray(
-        np.arange(3.0),
-        dims=("x",),
-        coords={"x": [0.0, 1.0, 2.0], "x_idx": ("x", [10, 11, 12])},
-    )
-    code = _restore_nonuniform_dims_expression("data", {"x_idx": "x"})
-
-    namespace = _exec_generated_code(f"result = {code}", {"data": data})
-
-    xr.testing.assert_identical(namespace["result"], data)
-
-
 def test_statement_operation_replay_code_mutates_working_copy() -> None:
     data = _kspace_data()
     operation = KspaceWorkFunctionOperation(work_function=4.2)
@@ -1890,7 +1813,6 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         },
         name="data",
     )
-    nonuniform = erlab.utils.array._make_dims_uniform(nonuniform_public)
     selection_spec = selection(
         QSelOperation(kwargs={"beta": 2.0}),
         IselOperation(kwargs={"alpha": slice(1, 3)}),
@@ -1898,7 +1820,7 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     assert [operation.op for operation in selection_spec.operations] == ["qsel", "isel"]
     xr.testing.assert_identical(
-        selection_spec.apply(nonuniform),
+        selection_spec.apply(nonuniform_public),
         nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
@@ -2831,7 +2753,6 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
         coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
         name="data",
     )
-    uniform = erlab.utils.array._make_dims_uniform(public)
 
     spec = public_data(
         CoarsenOperation(
@@ -2847,73 +2768,14 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     assert reparsed is not None
     assert reparsed.kind == "public_data"
     xr.testing.assert_identical(
-        reparsed.apply(uniform),
+        reparsed.apply(public),
         public.coarsen(x=2, boundary="trim", side="left", coord_func="mean").mean(),
     )
 
-    display_code = reparsed.display_code(parent_data=uniform)
+    display_code = reparsed.display_code(parent_data=public)
     assert display_code is not None
     assert "coarsen(x=2" in display_code
     assert "x_idx" not in display_code
-
-    restored_spec = full_data(
-        AverageOperation(dims=("y",)),
-        RestoreNonuniformDimsOperation(
-            dimension_mapping=erlab.utils.array._nonuniform_dim_mapping(uniform)
-        ),
-    )
-    reparsed_restored = parse_tool_provenance_spec(
-        restored_spec.model_dump(mode="json")
-    )
-
-    assert reparsed_restored is not None
-    xr.testing.assert_identical(
-        reparsed_restored.apply(uniform),
-        public.qsel.mean("y"),
-    )
-    restored_code = reparsed_restored.display_code(parent_data=uniform)
-    assert restored_code is not None
-    assert "restore_nonuniform_dims" not in restored_code
-    assert ".swap_dims(" in restored_code
-    assert ".drop_vars(" in restored_code
-    restored_namespace = _exec_generated_code(restored_code, {"data": uniform})
-    xr.testing.assert_identical(restored_namespace["derived"], public.qsel.mean("y"))
-
-
-def test_recorded_nonuniform_mapping_is_not_restored_after_rotation_drops_coord() -> (
-    None
-):
-    public = xr.DataArray(
-        np.arange(20.0).reshape(5, 4),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4.0)},
-        name="scan",
-    )
-    internal = erlab.utils.array._make_dims_uniform(public)
-    mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
-    rotation = RotateOperation(
-        angle=10.0,
-        axes=("x_idx", "y"),
-        center=(0.0, 0.0),
-    )
-    rotated = rotation.apply(internal)
-    expected = erlab.utils.array._restore_nonuniform_dims(rotated)
-    spec = full_data(
-        rotation,
-        RestoreNonuniformDimsOperation(dimension_mapping=mapping),
-    )
-
-    assert "x_idx" in rotated.dims
-    assert "x" not in rotated.coords
-    assert expected.dims == ("x_idx", "y")
-    xr.testing.assert_identical(spec.apply(internal), expected)
-
-    code = typing.cast("str", spec.display_code(parent_data=internal))
-    namespace = _exec_generated_code(code, {"data": internal})
-
-    assert "erlab.utils.array._restore_nonuniform_dims" not in code
-    assert "erlab.interactive.imagetool.slicer" not in code
-    xr.testing.assert_identical(namespace["derived"], expected)
 
 
 def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
@@ -3160,13 +3022,11 @@ def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None
     spec = full_data(
         TransposeOperation(dims=("x", "y", "z")),
         SqueezeOperation(),
-        RestoreNonuniformDimsOperation(),
     )
     assert [entry.label for entry in spec.display_entries()] == [
         "Start from current parent ImageTool data",
         "transpose(('x', 'y', 'z'))",
         "squeeze()",
-        "Restore nonuniform dimensions",
     ]
     unknown_code = typing.cast("str", spec.display_code())
     assert ".transpose(" in unknown_code
@@ -3185,14 +3045,9 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     data = _base_data()
     context_cls = _ProvenanceDisplayContext
 
-    context = context_cls.from_source("full_data", data)
+    context = context_cls.from_source(data)
     assert context.dims == data.dims
     assert context.sizes == dict(data.sizes)
-    nonuniform_data = xr.DataArray(np.ones(2), dims=("x_idx",), name="scan")
-    assert context_cls.from_source("public_data", nonuniform_data).dims is None
-    assert context_cls.dims_may_restore_nonuniform(("x_idx",))
-    assert not context_cls.dims_may_restore_nonuniform(("x",))
-
     indexer_size = context_cls._isel_indexer_size
     assert indexer_size(slice(None, None, 2), 5) == (True, 3)
     assert indexer_size(True, 5) == (False, None)
@@ -3212,11 +3067,6 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     assert context.advance(RenameOperation(name="renamed")) == context
     assert context.advance(_SourceViewOperation(source_kind="full_data")) == context
     assert context.advance(_SourceViewOperation(source_kind="public_data")) == context
-    nonuniform_context = context_cls(("x_idx", "y"), {"x_idx": 3, "y": 4})
-    assert (
-        nonuniform_context.advance(_SourceViewOperation(source_kind="public_data")).dims
-        is None
-    )
     assert context.advance(QSelOperation()) == context
     assert context.advance(QSelOperation(kwargs={"x": 1.0})).dims is None
     assert context.advance(SelOperation()) == context
@@ -3245,7 +3095,7 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
 
     assert context.advance(SqueezeOperation(dims=("missing",))).dims is None
     mixed_squeeze_context = context_cls.from_source(
-        "full_data", xr.DataArray(np.ones((1, 2)), dims=("x", "z"), name="scan")
+        xr.DataArray(np.ones((1, 2)), dims=("x", "z"), name="scan")
     )
     assert mixed_squeeze_context.advance(SqueezeOperation(dims=("x", "z"))).dims is None
     assert (
@@ -3254,8 +3104,6 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     )
     assert mixed_squeeze_context.advance(SqueezeOperation(dims=("x",))).dims == ("z",)
     assert mixed_squeeze_context.advance(SqueezeOperation()).dims == ("z",)
-    assert context.advance(RestoreNonuniformDimsOperation()) == context
-    assert nonuniform_context.advance(RestoreNonuniformDimsOperation()).dims is None
     assert context.advance(AverageOperation(dims=("x",))).dims is None
 
 
@@ -5831,8 +5679,7 @@ def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     )
     assert full_view.derivation_label() == "Start from current parent ImageTool data"
     assert full_view.expression_code("data") == "data.copy(deep=False)"
-    with pytest.raises(NotImplementedError):
-        selection_view.expression_code("data")
+    assert selection_view.expression_code("data") == "data.copy(deep=False)"
     assert tuple(iter_operation_refs(None)) == ()
 
 
@@ -6272,11 +6119,10 @@ def test_compose_operation_free_restored_source_preserves_nonuniform_dimensions(
         coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
         name="scan",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
 
     if parent_kind == "file":
         path = tmp_path / "nonuniform.nc"
-        internal.to_netcdf(path)
+        public.to_netcdf(path)
         parent = file_load(
             start_label="Load nonuniform data",
             seed_code=(
@@ -6291,7 +6137,7 @@ def test_compose_operation_free_restored_source_preserves_nonuniform_dimensions(
             seed_code="derived = data",
             active_name="derived",
         )
-        replay_inputs = {"data": internal}
+        replay_inputs = {"data": public}
 
     composed = compose_full_provenance(parent, source_builder())
 
@@ -10010,3 +9856,149 @@ def test_untrusted_compiler_does_not_inherit_framework_future_flags() -> None:
 
     assert not compiled.co_flags & __future__.annotations.compiler_flag
     xr.testing.assert_identical(namespace["derived"], source + 1)
+
+
+@pytest.mark.parametrize("kind", ["full_data", "script", "file"])
+def test_released_display_restore_steps_normalize_to_physical_data(
+    kind, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
+    )
+    path = tmp_path / "nonuniform.nc"
+    data.to_netcdf(path)
+    operation = {"op": "qsel_aggregate", "dims": ["x_idx"], "func": "sum"}
+    restore = {
+        "op": "restore_nonuniform_dims",
+        "dimension_mapping": {"x_idx": "x"},
+    }
+    if kind == "full_data":
+        payload = {"kind": kind, "operations": [operation, restore]}
+    else:
+        base = (
+            script(
+                start_label="Use data",
+                seed_code="derived = data",
+                active_name="derived",
+            )
+            if kind == "script"
+            else file_load(
+                start_label="Load nonuniform data",
+                seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+                file_load_source=_file_replay_source(path),
+            )
+        )
+        payload = base.model_dump(mode="json")
+        payload["steps"] = [{"operation": item} for item in (operation, restore)]
+    spec = parse_tool_provenance_spec(payload)
+    assert spec is not None
+    assert len(spec.operations) == 1
+    assert spec.operations[0].dims == ("x",)
+    assert "restore_nonuniform_dims" not in spec.model_dump_json()
+    assert "x_idx" not in spec.model_dump_json()
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"],
+        data.qsel.sum("x"),
+    )
+
+
+def test_released_display_mapping_does_not_rename_unrelated_user_dimensions() -> None:
+    spec = parse_tool_provenance_spec(
+        {
+            "kind": "full_data",
+            "operations": [
+                {"op": "qsel_aggregate", "dims": ["user_idx"], "func": "sum"},
+                {"op": "restore_nonuniform_dims", "dimension_mapping": {"x_idx": "x"}},
+            ],
+        }
+    )
+    assert spec is not None
+    assert spec.operations[0].dims == ("user_idx",)
+
+
+@pytest.mark.parametrize("kind", ["full_data", "script"])
+def test_released_display_mapping_stops_at_its_restore_step(kind) -> None:
+    operations = [
+        {"op": "assign_coords", "coord_name": "x_idx", "values": [0.0, 0.2, 1.0]},
+        {"op": "restore_nonuniform_dims", "dimension_mapping": {"x_idx": "x"}},
+        {
+            "op": "assign_coord_1d",
+            "coord_name": "user_index",
+            "dim": "y",
+            "values": [10, 11],
+        },
+        {"op": "rename_dims_coords", "mapping": {"y": "x_idx"}},
+        {"op": "assign_coords", "coord_name": "x_idx", "values": [4.0, 5.0]},
+    ]
+    if kind == "full_data":
+        payload = {"kind": kind, "operations": operations}
+    else:
+        payload = {
+            "kind": "script",
+            "start_label": "Use data",
+            "seed_code": "derived = data",
+            "active_name": "derived",
+            "steps": [{"operation": item} for item in operations],
+        }
+    spec = parse_tool_provenance_spec(payload)
+    assert spec is not None
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.5, 2.0], "y": [0.0, 1.0]},
+    )
+    expected = (
+        data.assign_coords(x=[0.0, 0.2, 1.0], user_index=("y", [10, 11]))
+        .rename({"y": "x_idx"})
+        .assign_coords(x_idx=[4.0, 5.0])
+    )
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"], expected
+    )
+
+
+@pytest.mark.parametrize("container", ["source", "steps", "legacy_stage"])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"op": "rotate", "angle": 15.0, "axes": ["x_idx", "y"], "center": [1.0, 2.0]},
+        {"op": "symmetrize", "dim": "x_idx", "center": 1.0},
+        {
+            "op": "symmetrize_nfold",
+            "fold": 4,
+            "axes": ["x_idx", "y"],
+            "center": [1.0, 2.0],
+        },
+    ],
+)
+def test_released_pixel_transforms_do_not_reinterpret_coordinate_units(
+    container, operation
+) -> None:
+    operations = [
+        operation,
+        {"op": "restore_nonuniform_dims", "dimension_mapping": {"x_idx": "x"}},
+    ]
+    if container == "source":
+        payload = {"kind": "full_data", "operations": operations}
+    else:
+        payload = {
+            "kind": "script",
+            "start_label": "Use data",
+            "seed_code": "derived = data",
+            "active_name": "derived",
+        }
+        if container == "steps":
+            payload["steps"] = [{"operation": item} for item in operations]
+        else:
+            payload["schema_version"] = 2
+            payload["replay_stages"] = [
+                {"source_kind": "full_data", "operations": operations}
+            ]
+    with pytest.raises(ValueError, match="uses display coordinates"):
+        parse_tool_provenance_spec(payload)

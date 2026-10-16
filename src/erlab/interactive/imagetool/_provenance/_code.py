@@ -18,17 +18,13 @@ import erlab.utils.misc
 if typing.TYPE_CHECKING:
     import types
 
-_LEGACY_NONUNIFORM_RESTORE_PATH = (
-    "erlab",
+_LEGACY_NONUNIFORM_RESTORE_PATHS = {
     (
-        "interactive",
-        "imagetool",
-        "slicer",
-        "restore_nonuniform_dims",
+        "erlab",
+        ("interactive", "imagetool", "slicer", "restore_nonuniform_dims"),
     ),
-)
-
-_PRIVATE_NONUNIFORM_RESTORE_EXPRESSION = "erlab.utils.array._restore_nonuniform_dims"
+    ("erlab", ("utils", "array", "_restore_nonuniform_dims")),
+}
 
 _SLICE_MARKER = "__erlab_slice__"
 
@@ -158,151 +154,6 @@ def _format_selection_expr(
 
 def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -> str:
     return f"derived = {_format_selection_expr('derived', method, kwargs)}"
-
-
-def _nonuniform_dim_mapping_condition(
-    array_name: str,
-    index_code: str,
-    restored_code: str,
-) -> str:
-    return (
-        f"{index_code} in {array_name}.dims and "
-        f"{restored_code} in {array_name}.coords and "
-        f"{array_name}.coords[{restored_code}].ndim == 1 and "
-        f"{array_name}.coords[{restored_code}].dims == ({index_code},) and "
-        f"{array_name}.coords[{restored_code}].size == "
-        f"{array_name}.sizes[{index_code}]"
-    )
-
-
-def _restore_nonuniform_dims_expression(
-    input_name: str,
-    dimension_mapping: Mapping[Hashable, Hashable],
-) -> str:
-    """Emit a self-contained expression restoring recorded index dimensions.
-
-    This is used for concise copied selection expressions whose receiver is a stable
-    data variable. Applicable dimensions are restored together so expression size grows
-    linearly with the recorded mapping instead of nesting the preceding expression for
-    every dimension. Structured provenance operations use statement code when the
-    receiver itself may need single evaluation.
-    """
-    if not dimension_mapping:
-        return input_name
-
-    receiver = _expression_receiver_code(input_name)
-    mapping_items = ", ".join(
-        f"({_provenance_value_code(index_dim)}, {_provenance_value_code(restored_dim)})"
-        for index_dim, restored_dim in dimension_mapping.items()
-    )
-    mapping_code = f"({mapping_items},)"
-    condition = _nonuniform_dim_mapping_condition(
-        receiver, "index_dimension", "dimension"
-    )
-    applicable_mapping = (
-        "{index_dimension: dimension "
-        f"for index_dimension, dimension in {mapping_code} if {condition}}}"
-    )
-    obsolete_dimensions = (
-        "[index_dimension "
-        f"for index_dimension, dimension in {mapping_code} if {condition}]"
-    )
-    return (
-        f"{receiver}.swap_dims({applicable_mapping}).drop_vars("
-        f'{obsolete_dimensions}, errors="ignore")'
-    )
-
-
-def _known_nonuniform_restore_statement_code(
-    input_name: str,
-    *,
-    output_name: str,
-    dimension_mapping: Mapping[Hashable, Hashable],
-) -> str:
-    """Emit public xarray statements restoring recorded index dimensions."""
-    lines = (
-        []
-        if input_name == output_name and dimension_mapping
-        else [f"{output_name} = {input_name}"]
-    )
-    for index_dim, restored_dim in dimension_mapping.items():
-        index_code = _provenance_value_code(index_dim)
-        restored_code = _provenance_value_code(restored_dim)
-        condition = _nonuniform_dim_mapping_condition(
-            output_name, index_code, restored_code
-        )
-        lines.extend(
-            (
-                f"if {condition}:",
-                f"    {output_name} = {output_name}.swap_dims("
-                f"{{{index_code}: {restored_code}}}).drop_vars("
-                f'{index_code}, errors="ignore")',
-            )
-        )
-    return "\n".join(lines)
-
-
-_NONUNIFORM_RESTORE_FUNCTION_NAME = "_restore_image_tool_dimensions"
-
-
-def _nonuniform_restore_support_code(
-    function_name: str = _NONUNIFORM_RESTORE_FUNCTION_NAME,
-) -> str:
-    """Emit standalone public-API code for detecting ImageTool index dimensions."""
-    return f'''def {function_name}(array):
-    """Restore nonuniform dimensions replaced for ImageTool rendering."""
-    import numpy as np
-
-    dimension_mapping = {{}}
-    for index_dimension in array.dims:
-        if not str(index_dimension).endswith("_idx"):
-            continue
-        dimension = str(index_dimension).removesuffix("_idx")
-        coordinate = array.coords.get(dimension)
-        if coordinate is None:
-            continue
-        if (
-            coordinate.ndim != 1
-            or coordinate.dims != (index_dimension,)
-            or coordinate.size != array.sizes[index_dimension]
-        ):
-            continue
-        try:
-            values = coordinate.values.astype(np.float64)
-        except (TypeError, ValueError):
-            continue
-        if values.size == 1:
-            continue
-        differences = np.diff(values)
-        if differences[0] == 0.0 or not np.allclose(
-            differences,
-            differences[0],
-            rtol=3e-5,
-            atol=3e-5,
-            equal_nan=True,
-        ):
-            dimension_mapping[index_dimension] = dimension
-    if not dimension_mapping:
-        return array
-    return array.swap_dims(dimension_mapping).drop_vars(
-        tuple(dimension_mapping), errors="ignore"
-    )'''
-
-
-def _dynamic_nonuniform_restore_replay_code(
-    input_name: str,
-    *,
-    output_name: str,
-    copy_input: bool = False,
-) -> str:
-    """Emit a standalone dynamic restore for legacy derivation-code fallbacks."""
-    input_expression = f"{input_name}.copy(deep=False)" if copy_input else input_name
-    return "\n".join(
-        (
-            _nonuniform_restore_support_code(),
-            f"{output_name} = {_NONUNIFORM_RESTORE_FUNCTION_NAME}({input_expression})",
-        )
-    )
 
 
 def _validate_active_name(value: typing.Any) -> str | None:
@@ -1766,7 +1617,7 @@ def _receiver_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
 
 
 def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
-    """Rewrite the removed public restore helper in persisted executable code."""
+    """Remove the released display conversion from persisted generated code."""
     if code is None or "restore_nonuniform_dims" not in code:
         return code
     try:
@@ -1779,23 +1630,22 @@ def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
     for line in encoded.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
 
-    replacements: list[tuple[int, int]] = []
+    replacements: list[tuple[int, int, bytes]] = []
     for node in ast.walk(module):
-        if not isinstance(node, ast.Attribute):
+        if not isinstance(node, ast.Call):
             continue
-        if _receiver_path(node) != _LEGACY_NONUNIFORM_RESTORE_PATH:
+        if _receiver_path(node.func) not in _LEGACY_NONUNIFORM_RESTORE_PATHS:
+            continue
+        if len(node.args) != 1 or node.keywords:
             continue
         start = line_starts[node.lineno - 1] + node.col_offset
         end = line_starts[typing.cast("int", node.end_lineno) - 1] + typing.cast(
             "int", node.end_col_offset
         )
-        replacements.append((start, end))
+        argument = ast.get_source_segment(code, node.args[0])
+        replacements.append((start, end, f"({argument})".encode()))
 
-    if not replacements:
-        return code
-
-    replacement = _PRIVATE_NONUNIFORM_RESTORE_EXPRESSION.encode()
-    for start, end in sorted(replacements, reverse=True):
+    for start, end, replacement in sorted(replacements, reverse=True):
         encoded = encoded[:start] + replacement + encoded[end:]
     return encoded.decode()
 

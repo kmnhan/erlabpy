@@ -1255,11 +1255,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _public_source_dims_for_current_layout(self) -> tuple[Hashable, ...]:
         """Merge the saved slicer order with source-only singleton dimensions."""
-        layout = erlab.utils.array._restore_nonuniform_dims(self.data)
-        layout = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
-            layout, self._data
+        layout_dims = tuple(
+            dim
+            for dim in self.array_slicer.physical_dims
+            if dim != "stack_dim" or dim in self._data.dims
         )
-        layout_dims = tuple(layout.dims)
         if any(dim not in self._data.dims for dim in layout_dims):
             raise ValueError(
                 "Slicer layout contains a dimension absent from source data"
@@ -1273,7 +1273,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _restore_public_source_layout(self, data: xr.DataArray) -> xr.DataArray:
         """Undo slicer-only dimension normalization for a public data result."""
-        public = erlab.utils.array._restore_nonuniform_dims(data)
+        public = self.array_slicer._to_physical_data(data)
         public = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
             public, self._data
         )
@@ -1297,8 +1297,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return public.copy(deep=False)
 
     def _tool_source_parent_data(self) -> xr.DataArray:
-        """Return the current slicer view used for source-bound child tools."""
-        return self._accepted_data_for_dims(tuple(self.data.dims)).copy(deep=False)
+        """Return physical data for source-bound analysis tools."""
+        return self.displayed_data
+
+    def _tool_source_singleton_indexers(self) -> dict[Hashable, int]:
+        """Select source dimensions omitted from the displayed axes."""
+        return {
+            dim: 0
+            for dim, size in self._data.sizes.items()
+            if size == 1 and dim not in self.array_slicer.physical_dims
+        }
 
     @property
     def has_active_filter(self) -> bool:
@@ -1432,8 +1440,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             copy_values=False,
         )
         if erlab.interactive.imagetool.slicer.check_cursors_compatible(
-            self.data,
-            validated,
+            self.displayed_data,
+            data,
         ):
             return tuple(self.data.dims)
         return tuple(validated.dims)
@@ -2183,9 +2191,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         This slot is triggered from the parent widget when the menubar containing the
         actions is about to be shown.
         """
-        self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
+        self.ktool_act.setEnabled(self.displayed_data.kspace._interactive_compatible)
         self.meshtool_act.setEnabled(
-            all(dim in self.data.dims for dim in {"alpha", "eV"})
+            all(dim in self.displayed_data.dims for dim in {"alpha", "eV"})
         )
 
     def connect_axes_signals(self) -> None:
@@ -2245,7 +2253,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 return
             coord_dims, target_coord, _ = coord_info
             if axes is not None and not any(
-                self.data.dims[ax] in coord_dims for ax in axes
+                self.array_slicer._dim_indices.get(dim) in axes for dim in coord_dims
             ):
                 return
 
@@ -3456,7 +3464,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
 
         self.array_slicer.set_array(
-            filtered,
+            self.array_slicer._to_physical_data(filtered),
             reset=False,
             copy_values=False,
             preserve_dims=tuple(filtered.dims),
@@ -4253,7 +4261,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         manager = self._manager_instance if self._in_manager else None
 
         tool = erlab.interactive.ktool(
-            self.data,
+            self.displayed_data,
             cmap=cmap,
             gamma=gamma,
             data_name=self.watched_data_name,
@@ -4276,7 +4284,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def open_in_meshtool(self) -> None:
         """Open the interactive mesh removal tool."""
         tool = erlab.interactive.meshtool(
-            self.data, data_name=self.watched_data_name, execute=False
+            self.displayed_data, data_name=self.watched_data_name, execute=False
         )
         self._declare_full_data_tool_input(tool)
         self.add_tool_window(tool)

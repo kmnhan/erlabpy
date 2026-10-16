@@ -10,10 +10,10 @@ set of source forms:
      ImageTool's current array exactly as shown to the caller.
 
    - Use :func:`public_data` when the derived tool should begin from the parent
-     ImageTool's public data model, including restoration of non-uniform dimensions.
+     ImageTool's physical data model.
 
    - Use :func:`selection` when the derived tool should begin from the public
-     ImageTool selection model, including restoration of non-uniform dimensions.
+     ImageTool selection model with physical coordinates.
 
 2. Durable replay specs.
 
@@ -143,7 +143,6 @@ from erlab.interactive.imagetool._provenance._code import (
     _SLICE_MARKER,
     _TUPLE_MARKER,
     _CodeAnalyzer,
-    _dynamic_nonuniform_restore_replay_code,
     _expression_receiver_code,
     _migrate_legacy_nonuniform_restore_code,
     _receiver_path,
@@ -280,20 +279,11 @@ class _ProvenanceDisplayContext:
     @classmethod
     def from_source(
         cls,
-        source_kind: _SourceKind,
         parent_data: xr.DataArray | None,
     ) -> _ProvenanceDisplayContext:
         if parent_data is None:
             return cls()
-        if source_kind != "full_data" and cls.dims_may_restore_nonuniform(
-            parent_data.dims
-        ):
-            return cls()
         return cls(tuple(parent_data.dims), dict(parent_data.sizes))
-
-    @staticmethod
-    def dims_may_restore_nonuniform(dims: Sequence[Hashable]) -> bool:
-        return any(isinstance(dim, str) and dim.endswith("_idx") for dim in dims)
 
     @staticmethod
     def _isel_indexer_size(indexer: typing.Any, size: int) -> tuple[bool, int | None]:
@@ -335,12 +325,7 @@ class _ProvenanceDisplayContext:
         if operation_name == "rename":
             return self
         if operation_name == "source_view":
-            if self.dims is not None and (
-                getattr(operation, "source_kind", None) == "full_data"
-                or not self.dims_may_restore_nonuniform(self.dims)
-            ):
-                return self
-            return type(self)()
+            return self
         if operation_name in {"qsel", "sel"}:
             return (
                 self if not getattr(operation, "decoded_kwargs", {}) else type(self)()
@@ -401,12 +386,6 @@ class _ProvenanceDisplayContext:
             return self._with_dims(
                 dim for dim in self.dims if dim not in singleton_dims
             )
-        if operation_name == "restore_nonuniform_dims":
-            if self.dims is not None and not self.dims_may_restore_nonuniform(
-                self.dims
-            ):
-                return self
-            return type(self)()
         return type(self)()
 
 
@@ -662,15 +641,6 @@ def _coerce_float_sequence(value: typing.Any) -> list[float]:
     if not isinstance(value, Sequence) or isinstance(value, str):
         raise TypeError("expected an array-like sequence")
     return [float(item) for item in value]
-
-
-def _starting_data_for_source_kind(
-    source_kind: _SourceKind,
-    parent_data: xr.DataArray,
-) -> xr.DataArray:
-    if source_kind == "full_data":
-        return parent_data.copy(deep=False)
-    return erlab.utils.array._restore_nonuniform_dims(parent_data.copy(deep=False))
 
 
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
@@ -1967,6 +1937,75 @@ def parse_tool_provenance_operation(
     return operation_type.model_validate(payload)
 
 
+def _normalize_legacy_display_operation(
+    value: ToolProvenanceOperation | Mapping[str, typing.Any],
+    dimension_mapping: Mapping[Hashable, Hashable],
+) -> ToolProvenanceOperation:
+    """Use the recorded physical dimensions for one released transform."""
+    operation = parse_tool_provenance_operation(value)
+    # Only these released dialogs ran transforms against the renderer's index axes.
+    fields = {
+        "rotate": "axes",
+        "average": "dims",
+        "qsel_aggregate": "dims",
+        "symmetrize": "dim",
+        "symmetrize_nfold": "axes",
+        "assign_coords": "coord_name",
+    }
+    field = fields.get(getattr(operation, "op", ""))
+    if not dimension_mapping or field is None:
+        return operation
+    original = getattr(operation, field)
+    if field in {"axes", "dims"}:
+        replacement = tuple(dimension_mapping.get(dim, dim) for dim in original)
+    else:
+        replacement = dimension_mapping.get(original, original)
+    if (
+        _operation_is(operation, "rotate", "symmetrize", "symmetrize_nfold")
+        and replacement != original
+    ):
+        raise ValueError(
+            "Saved rotation or symmetrization uses display coordinates and cannot "
+            "be replayed with physical coordinates"
+        )
+    return operation.model_copy(update={field: replacement})
+
+
+def _normalize_legacy_display_operation_refs(
+    values: Sequence[ToolProvenanceOperation | Mapping[str, typing.Any]],
+) -> tuple[tuple[int, ToolProvenanceOperation], ...]:
+    """Normalize each released transform interval ending at its renderer repair."""
+    normalized: list[tuple[int, ToolProvenanceOperation]] = []
+    start = 0
+    for stop, value in enumerate(values):
+        if (
+            not isinstance(value, Mapping)
+            or value.get("op") != "restore_nonuniform_dims"
+        ):
+            continue
+        recorded = value.get("dimension_mapping")
+        mapping = {} if recorded is None else _coerce_hashable_mapping_field(recorded)
+        normalized.extend(
+            (index, _normalize_legacy_display_operation(values[index], mapping))
+            for index in range(start, stop)
+        )
+        start = stop + 1
+    normalized.extend(
+        (index, parse_tool_provenance_operation(values[index]))
+        for index in range(start, len(values))
+    )
+    return tuple(normalized)
+
+
+def _normalize_legacy_display_operations(
+    values: Sequence[ToolProvenanceOperation | Mapping[str, typing.Any]],
+) -> tuple[ToolProvenanceOperation, ...]:
+    return tuple(
+        operation
+        for _index, operation in _normalize_legacy_display_operation_refs(values)
+    )
+
+
 def _is_legacy_coord_order_cleanup(
     operation: ToolProvenanceOperation,
 ) -> bool:
@@ -1976,6 +2015,41 @@ def _is_legacy_coord_order_cleanup(
     return _operation_is(operation, "script_code") and (
         operation.derivation_entry().label == _SORT_COORD_ORDER_DERIVATION_LABEL
     )
+
+
+def _normalize_legacy_display_script(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+    """Fold released generated renderer assignments into the script source."""
+    if spec.kind != "script":
+        return spec
+    seed_code = spec.seed_code
+    steps: list[ReplayStep] = []
+    for step in spec.steps:
+        operation = step.operation
+        if (
+            _operation_is(operation, "script_code")
+            and getattr(operation, "label", None) == "Restore nonuniform dimensions"
+        ):
+            code = getattr(operation, "code", None)
+            if code is not None:
+                statements = ast.parse(code).body
+                if len(statements) == 1 and isinstance(statements[0], ast.Assign):
+                    assignment = statements[0]
+                    if (
+                        len(assignment.targets) == 1
+                        and isinstance(assignment.targets[0], ast.Name)
+                        and isinstance(assignment.value, ast.Name)
+                    ):
+                        if assignment.targets[0].id == assignment.value.id:
+                            continue
+                        if (
+                            not steps
+                            and seed_code is None
+                            and spec.replay_primary_input is None
+                        ):
+                            seed_code = code
+                            continue
+        steps.append(step)
+    return spec.model_copy(update={"seed_code": seed_code, "steps": tuple(steps)})
 
 
 def _normalize_script_code_operations(
@@ -2198,12 +2272,7 @@ class ReplayStage(pydantic.BaseModel):
             return ()
         if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
             raise TypeError("Serialized replay stage operations must be a sequence")
-        operations = tuple(
-            parse_tool_provenance_operation(
-                typing.cast("ToolProvenanceOperation | Mapping[str, typing.Any]", item)
-            )
-            for item in value
-        )
+        operations = _normalize_legacy_display_operations(value)
         return tuple(
             operation
             for operation in operations
@@ -2234,7 +2303,7 @@ class _SourceViewOperation(ToolProvenanceOperation):
     source_kind: _SourceKind
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return _starting_data_for_source_kind(self.source_kind, data)
+        return data.copy(deep=False)
 
     def derivation_label(self) -> str:
         if self.source_kind == "selection":
@@ -2246,23 +2315,7 @@ class _SourceViewOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        input_expression = f"{input_name}.copy(deep=False)"
-        if self.source_kind == "full_data":
-            return input_expression
-        raise NotImplementedError
-
-    def statement_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        source_name: str | None = None,
-    ) -> str:
-        return _dynamic_nonuniform_restore_replay_code(
-            input_name,
-            output_name=output_name,
-            copy_input=True,
-        )
+        return f"{input_name}.copy(deep=False)"
 
 
 class _LegacyReplayContext(pydantic.BaseModel):
@@ -2912,8 +2965,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raw_operations, Sequence
             ):
                 raise TypeError("Serialized provenance operations must be a sequence")
-            for index, raw_operation in enumerate(raw_operations):
-                operation = parse_tool_provenance_operation(raw_operation)
+            for index, operation in _normalize_legacy_display_operation_refs(
+                raw_operations
+            ):
                 step: dict[str, typing.Any] = {
                     "operation": operation,
                     "context_names": bindings_by_index.get(index, ()),
@@ -2959,12 +3013,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return ()
         if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
             raise TypeError("Serialized provenance operations must be a sequence")
-        operations = tuple(
-            parse_tool_provenance_operation(
-                typing.cast("ToolProvenanceOperation | Mapping[str, typing.Any]", item)
-            )
-            for item in value
-        )
+        operations = _normalize_legacy_display_operations(value)
         return tuple(
             operation
             for operation in operations
@@ -2978,10 +3027,23 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return ()
         if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
             raise TypeError("Serialized replay steps must be a sequence")
-        steps = tuple(
-            item if isinstance(item, ReplayStep) else ReplayStep.model_validate(item)
+        if not all(isinstance(item, ReplayStep | Mapping) for item in value):
+            raise TypeError("Serialized replay steps must be mappings")
+        raw_operations = tuple(
+            item.operation if isinstance(item, ReplayStep) else item.get("operation")
             for item in value
         )
+        steps: list[ReplayStep] = []
+        for index, operation in _normalize_legacy_display_operation_refs(
+            raw_operations
+        ):
+            item = value[index]
+            if isinstance(item, ReplayStep):
+                steps.append(item.model_copy(update={"operation": operation}))
+            else:
+                steps.append(
+                    ReplayStep.model_validate({**item, "operation": operation})
+                )
         return tuple(
             step for step in steps if not _is_legacy_coord_order_cleanup(step.operation)
         )
@@ -3735,15 +3797,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
 
     @staticmethod
-    def _starting_data_for_kind(
-        source_kind: _SourceKind,
-        parent_data: xr.DataArray,
-    ) -> xr.DataArray:
-        return _starting_data_for_source_kind(source_kind, parent_data)
-
-    @staticmethod
     def _streamlined_operations(
-        source_kind: typing.Literal["full_data", "public_data", "selection"],
         operations: Sequence[ToolProvenanceOperation],
         *,
         parent_data: xr.DataArray | None = None,
@@ -3751,7 +3805,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return tuple(
             operation
             for _, operation in ToolProvenanceSpec._streamlined_operation_refs(
-                source_kind,
                 operations,
                 parent_data=parent_data,
             )
@@ -3759,12 +3812,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     @staticmethod
     def _streamlined_operation_refs(
-        source_kind: typing.Literal["full_data", "public_data", "selection"],
         operations: Sequence[ToolProvenanceOperation],
         *,
         parent_data: xr.DataArray | None = None,
     ) -> tuple[tuple[int, ToolProvenanceOperation], ...]:
-        context = _ProvenanceDisplayContext.from_source(source_kind, parent_data)
+        context = _ProvenanceDisplayContext.from_source(parent_data)
 
         streamlined: list[tuple[int, ToolProvenanceOperation]] = []
         for index, operation in enumerate(operations):
@@ -3816,12 +3868,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     hide_operation = not any(
                         context.sizes.get(dim) == 1 for dim in operation_dims
                     )
-            # Rule 5: drop nonuniform restoration when it would not change dimensions.
-            elif (
-                _operation_is(operation, "restore_nonuniform_dims")
-                and context.dims is not None
-            ):
-                hide_operation = not context.dims_may_restore_nonuniform(context.dims)
             if not hide_operation:
                 streamlined.append((index, operation))
 
@@ -3838,10 +3884,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if self.kind in {"script", "file"}:
             raise TypeError("Script and file provenance use custom display filtering")
         return self._streamlined_operations(
-            typing.cast(
-                "typing.Literal['full_data', 'public_data', 'selection']",
-                self.kind,
-            ),
             self.operations,
             parent_data=parent_data,
         )
@@ -3882,13 +3924,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """Apply live operations with extension and stored-code authorization."""
         self._check_kind_fields()
         require_live_source_spec(self)
-        data = self._starting_data_for_kind(
-            typing.cast(
-                "typing.Literal['full_data', 'public_data', 'selection']",
-                self.kind,
-            ),
-            parent_data,
-        )
+        data = parent_data.copy(deep=False)
         for operation in self.operations:
             if (
                 extension_executor is not None
@@ -4091,9 +4127,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     _children_factory=children_factory,
                 )
 
-            displayed_operations = self._streamlined_operation_refs(
-                "full_data", self.operations
-            )
+            displayed_operations = self._streamlined_operation_refs(self.operations)
             if self.primary_input is not None:
                 primary_index = next(
                     index
@@ -4180,7 +4214,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 on_primary_chain=_on_primary_chain,
             )
             for operation_index, operation in self._streamlined_operation_refs(
-                "full_data" if self.kind == "file" else self.kind,
                 self.operations,
                 parent_data=parent_data,
             )
@@ -4222,7 +4255,9 @@ def parse_tool_provenance_spec(
         return None
     if isinstance(value, ToolProvenanceSpec):
         return value
-    return _normalize_script_code_operations(ToolProvenanceSpec.model_validate(value))
+    return _normalize_script_code_operations(
+        _normalize_legacy_display_script(ToolProvenanceSpec.model_validate(value))
+    )
 
 
 def has_file_load_source(
@@ -4412,14 +4447,9 @@ def compose_display_provenance(
             if saw_synthetic_cleanup:
                 return parent_spec
 
-    source_kind = typing.cast(
-        "typing.Literal['full_data', 'public_data', 'selection']",
-        source.kind,
-    )
     display_operations = tuple(
         operation
         for _, operation in ToolProvenanceSpec._streamlined_operation_refs(
-            source_kind,
             source.operations,
             parent_data=parent_data,
         )
@@ -4430,8 +4460,6 @@ def compose_display_provenance(
         seed_code=_DEFAULT_REPLAY_SEED_CODE,
         active_name="derived",
         # Display provenance is already rooted at the displayed parent expression.
-        # Source restoration belongs to executable full provenance, not this
-        # streamlined projection.
         steps=tuple(
             ReplayStep(operation=operation) for operation in display_operations
         ),

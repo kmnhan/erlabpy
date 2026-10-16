@@ -47,7 +47,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceConvertOperation,
     KspaceSetNormalOperation,
     KspaceWorkFunctionOperation,
-    RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
     SortByOperation,
@@ -163,6 +162,56 @@ def test_released_clipboard_keeps_resolved_input_fallback() -> None:
     xr.testing.assert_identical(result, xr.DataArray([11.0, 22.0, 33.0], dims="x"))
 
 
+@pytest.mark.parametrize("version", [1, 2])
+def test_released_clipboard_normalizes_whole_display_operation_sequence(
+    version,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("energy", "y"),
+        coords={"energy": [0.0, 0.2, 0.8, 1.4], "y": np.arange(3.0)},
+    )
+    operations = [
+        AverageOperation(dims=("energy_idx",)).model_dump(mode="json"),
+        {
+            "op": "restore_nonuniform_dims",
+            "dimension_mapping": {"energy_idx": "energy"},
+        },
+    ]
+    serialized = {
+        "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
+        "version": version,
+        "active_name": "derived",
+    }
+    if version == 1:
+        serialized["operations"] = operations
+    else:
+        serialized.update(
+            primary_input="data",
+            script_inputs=[],
+            steps=[
+                {"operation": operation, "input_bindings": {}}
+                for operation in operations
+            ],
+        )
+    mime = QtCore.QMimeData()
+    mime.setData(
+        manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_MIME,
+        json.dumps(serialized).encode(),
+    )
+    payload = manager_details_panel._provenance_step_clipboard_payload(mime)
+    assert payload is not None
+    assert payload.operations == (AverageOperation(dims=("energy",)),)
+    pasted = full_data(*payload.operations)
+    code = pasted.display_code(parent_data=data)
+    assert code is not None
+    assert "energy_idx" not in code
+    assert "restore_nonuniform" not in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"], data.qsel.mean("energy")
+    )
+
+
 def test_manager_provenance_step_clipboard_payload_validation() -> None:
     operation_payload = AverageOperation(dims=("z",)).model_dump(mode="json")
     valid_payload = {
@@ -267,6 +316,8 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
         },
         {**valid_payload, "steps": []},
         {**valid_payload, "steps": {}},
+        {**valid_payload, "steps": [{}]},
+        {**valid_payload, "steps": [None]},
         {**valid_payload, "steps": [{"operation": {"op": "unknown"}}]},
         {**valid_payload, "script_inputs": {}},
         {**valid_payload, "primary_input": 1},
@@ -1559,23 +1610,20 @@ def test_manager_copy_paste_structured_provenance_steps(
         xr.testing.assert_identical(dest_tool.slicer_area._data, before)
 
 
-def test_manager_copied_steps_use_public_code_and_keep_exact_replay(
+def test_manager_copied_nonuniform_steps_use_physical_inputs(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
     data = _provenance_paste_test_data().assign_coords(x=[0.0, 0.2, 1.0])
-    operations = (
-        RestoreNonuniformDimsOperation(),
-        AverageOperation(dims=("z",)),
-    )
+    operations = (AverageOperation(dims=("z",)),)
     spec = script(
         *operations,
         start_label="Start from notebook data",
         seed_code="derived = data",
         active_name="derived",
     )
-    expected = operations[1].apply(data)
+    expected = operations[0].apply(data)
 
     with manager_context() as manager:
         tool = itool(expected, manager=False, execute=False)
@@ -1583,14 +1631,15 @@ def test_manager_copied_steps_use_public_code_and_keep_exact_replay(
         index = manager.add_imagetool(tool, show=False, provenance_spec=spec)
         select_tools(manager, [index])
         manager._update_info()
-        select_metadata_rows(manager, [1, 2])
+        select_metadata_rows(manager, [1])
         manager._copy_selected_derivation_code()
 
         clipboard = QtWidgets.QApplication.clipboard()
         code = clipboard.text()
         copied = _exec_generated_code(code, {"data": data})
         xr.testing.assert_identical(copied["derived"], expected)
-        assert "restore_image_tool_dimensions" not in code
+        assert "restore_nonuniform" not in code
+        assert "_idx" not in code
         assert ".copy(" not in code
         payload = manager_details_panel._provenance_step_clipboard_payload(
             clipboard.mimeData()
@@ -1603,19 +1652,12 @@ def test_manager_copied_steps_use_public_code_and_keep_exact_replay(
             active_name=payload.active_name,
             steps=payload.steps,
         )
-        internal = erlab.utils.array._make_dims_uniform(data)
         xr.testing.assert_identical(
             replay_script_provenance(
-                replay_spec, {"data": internal}, authorize=_authorize_execution
+                replay_spec, {"data": data}, authorize=_authorize_execution
             ),
             expected,
         )
-
-        select_metadata_rows(manager, [1])
-        assert manager._selected_derivation_code() is None
-        menu = manager._build_metadata_derivation_menu()
-        assert menu is not None
-        assert not manager._metadata_copy_selected_action.isEnabled()
 
 
 @pytest.mark.parametrize("selected_rows", [(1,), (1, 2)])
@@ -1821,14 +1863,12 @@ def test_manager_nested_copied_steps_keep_pinned_shift_after_source_closes(
         [0.0, 0.05, -0.05], dims="x", coords={"x": data.x}, name="offsets"
     )
     primary_spec = script(
-        RestoreNonuniformDimsOperation(),
         AverageOperation(dims=("z",)),
         start_label="Use sample data",
         seed_code="prepared = sample",
         active_name="prepared",
     )
     auxiliary_spec = script(
-        RestoreNonuniformDimsOperation(),
         ScriptCodeOperation(
             label="Scale correction", code="correction = correction * 2"
         ),

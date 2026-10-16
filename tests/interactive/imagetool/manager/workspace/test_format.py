@@ -1215,3 +1215,25 @@ def test_workspace_manifest_attrs_reject_invalid_entries(caplog) -> None:
         workspace_format._restore_workspace_manifest_attrs({})
     with pytest.raises(TypeError, match="entry is invalid"):
         workspace_format._restore_workspace_manifest_attrs([["too-short"]])
+
+
+@pytest.mark.parametrize("saved_version", ["3.1.9", "3.2.0", "3.27.3"])
+def test_nonuniform_file_normalization_uses_the_saved_version(saved_version) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("scan_idx", "y"),
+        coords={
+            "scan_idx": [0.0, 1.0, 2.0],
+            "scan": ("scan_idx", [0.0, 0.2, 1.0]),
+            "y": [0.0, 1.0],
+        },
+    )
+    restored = imagetool_serialization.restore_legacy_nonuniform_data(
+        data, saved_version
+    )
+    if saved_version == "3.1.9":
+        xr.testing.assert_identical(
+            restored, data.swap_dims({"scan_idx": "scan"}).drop_vars("scan_idx")
+        )
+    else:
+        assert restored is data

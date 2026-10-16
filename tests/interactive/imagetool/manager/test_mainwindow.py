@@ -68,7 +68,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
     NormalizeOperation,
     RenameOperation,
-    RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
     TransposeOperation,
@@ -3684,7 +3683,6 @@ def test_batch_operation_metadata_matches_launcher() -> None:
         for operation_type in operation_types
         if not operation_type.batch_available
     ] == []
-    assert RestoreNonuniformDimsOperation.batch_available
 
 
 def test_weighted_ftool_action_routes_assigned_targets(
@@ -5017,8 +5015,9 @@ def test_batch_add_coord_duplicate_target_aborts_all_unchanged(
         )
 
 
-def test_batch_nonuniform_restore_is_target_specific(
+def test_batch_nonuniform_inputs_keep_physical_data_and_provenance(
     qtbot,
+    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -5043,19 +5042,42 @@ def test_batch_nonuniform_restore_is_target_specific(
 
         assert manager.apply_batch_transform_dialog(dialog, "nest")
 
-        uniform_child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
-        nonuniform_child_uid = manager._tool_graph.root_wrappers[1]._childtool_indices[
-            0
-        ]
-        uniform_source_spec = manager._child_node(uniform_child_uid).source_spec
-        nonuniform_source_spec = manager._child_node(nonuniform_child_uid).source_spec
-        assert uniform_source_spec is not None
-        assert nonuniform_source_spec is not None
-        assert [op.op for op in uniform_source_spec.operations] == ["qsel_aggregate"]
-        assert [op.op for op in nonuniform_source_spec.operations] == [
-            "qsel_aggregate",
-            "restore_nonuniform_dims",
-        ]
+        checkpoints = []
+        for index, source in enumerate((uniform, nonuniform)):
+            parent = manager._tool_graph.root_wrappers[index]
+            child = manager._child_node(parent._childtool_indices[0])
+            spec = child.source_spec
+            assert spec is not None
+            assert [op.op for op in spec.operations] == ["qsel_aggregate"]
+            expected = source.qsel.mean("y")
+            xr.testing.assert_identical(parent.current_source_data(), source)
+            xr.testing.assert_identical(child.current_source_data(), expected)
+            code = spec.display_code(parent_data=source)
+            assert code is not None
+            assert "_idx" not in code
+            assert "restore_nonuniform" not in code
+            assert "restore_nonuniform" not in spec.model_dump_json()
+            xr.testing.assert_identical(
+                _exec_generated_code(code, {"data": source})["derived"], expected
+            )
+            for node, data in ((parent, source), (child, expected)):
+                revision_id = node.revision_id_for_role("source")
+                xr.testing.assert_identical(
+                    manager._provenance_revisions.resolve_data(revision_id), data
+                )
+                checkpoints.append((node.uid, revision_id, data))
+
+        workspace_path = tmp_path / "physical-nonuniform-inputs.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        for uid, revision_id, expected in checkpoints:
+            node = manager._node_for_target(uid)
+            xr.testing.assert_identical(node.current_source_data(), expected)
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(revision_id), expected
+            )
 
 
 def test_manager_metadata_full_code_generated_only_when_copied(
@@ -7372,6 +7394,7 @@ def test_manager_rename_updates_accepted_filter_data(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         root_tool = manager.get_imagetool(0)
         root_tool.slicer_area.apply_filter_operation(operation)
+        selected = root_tool.slicer_area.main_image.current_data
 
         manager.rename_imagetool(0, "filtered scan")
 
@@ -7379,6 +7402,10 @@ def test_manager_rename_updates_accepted_filter_data(
         assert root_tool.slicer_area._accepted_filter_data is not None
         assert root_tool.slicer_area._accepted_filter_data.name == "filtered scan"
         assert root_tool.slicer_area.array_slicer._obj.name == "filtered scan"
+        xr.testing.assert_identical(
+            root_tool.slicer_area.main_image.current_data,
+            selected.rename("filtered scan"),
+        )
 
 
 def test_manager_reload_selected_preserves_manual_child_imagetool_name(

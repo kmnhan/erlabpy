@@ -27,7 +27,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignCoord1DOperation,
     AssignScalarCoordOperation,
     ImageToolSelectionSourceBinding,
-    RestoreNonuniformDimsOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
@@ -624,19 +623,13 @@ class _ActionsController:
         self,
         dialog: typing.Any,
         operations: Iterable[ToolProvenanceOperation],
-        *,
-        extra_types: tuple[
-            type[ToolProvenanceOperation],
-            ...,
-        ] = (),
     ) -> None:
         declared_types = dialog.batch_operation_types
         if declared_types is None:
             declared_types = dialog.operation_types
         declared_types = tuple(declared_types)
-        accepted_types = declared_types + extra_types
         for operation in operations:
-            if accepted_types and not isinstance(operation, accepted_types):
+            if declared_types and not isinstance(operation, declared_types):
                 raise TypeError(
                     f"{type(dialog).__name__} produced unsupported batch operation "
                     f"{type(operation).__name__}."
@@ -746,18 +739,10 @@ class _ActionsController:
             try:
                 node = self._manager._node_for_target(target)
                 slicer_area = self._manager.get_imagetool(target).slicer_area
-                input_name = slicer_area.data.name
-                source_spec = dialog.source_spec_for_data(slicer_area.data)
-                self._validate_batch_operations(
-                    dialog,
-                    source_spec.operations,
-                    extra_types=(RestoreNonuniformDimsOperation,),
-                )
-                source_data = slicer_area.data
-                if source_spec.kind == "public_data":
-                    source_data = erlab.utils.array._restore_nonuniform_dims(
-                        source_data
-                    )
+                source_data = slicer_area.displayed_data
+                input_name = source_data.name
+                source_spec = dialog.source_spec_for_data(source_data)
+                self._validate_batch_operations(dialog, source_spec.operations)
                 self._validate_batch_target_operations(
                     dialog,
                     source_spec.operations,
@@ -771,6 +756,7 @@ class _ActionsController:
                         node,
                         slicer_area,
                         input_name,
+                        source_data,
                         source_spec,
                     )
                 )
@@ -788,12 +774,13 @@ class _ActionsController:
             node,
             slicer_area,
             input_name,
+            source_data,
             source_spec,
         ) in preflight_plan:
             try:
                 processed = self._manager._apply_provenance(
                     source_spec,
-                    slicer_area.data,
+                    source_data,
                     reason="apply this batch operation",
                 ).rename(input_name)
                 erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(

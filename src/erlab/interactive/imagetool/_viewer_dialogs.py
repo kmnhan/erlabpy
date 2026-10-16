@@ -31,7 +31,14 @@ class _AssociatedCoordsDialog(QtWidgets.QDialog):
             self._checks[name].setChecked(
                 name in slicer_area.array_slicer.twin_coord_names
             )
-            dim_label = ", ".join(str(dim) for dim in dims)
+            dim_label = ", ".join(
+                str(
+                    slicer_area.array_slicer.physical_dims[
+                        slicer_area.array_slicer._dim_indices[dim]
+                    ]
+                )
+                for dim in dims
+            )
             self._layout.addRow(self._checks[name], QtWidgets.QLabel(f"({dim_label})"))
 
         self._button_box = QtWidgets.QDialogButtonBox(
@@ -92,7 +99,7 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
         if not slicer_area:  # pragma: no cover
             return None
         coord_name = self.coord_combo.currentText()
-        for dim_name in slicer_area.data.dims:
+        for dim_name in slicer_area.array_slicer.physical_dims:
             if coord_name == str(dim_name):
                 return (dim_name,), dim_name
         for name, dims in slicer_area.array_slicer.associated_coord_dims.items():
@@ -121,11 +128,12 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
         self.coord_combo = QtWidgets.QComboBox()
         coord_layout.addRow("Coordinate", self.coord_combo)
 
-        for name in slicer_area.data.dims:
+        for name in slicer_area.array_slicer.physical_dims:
             self.coord_combo.addItem(str(name))
 
         for name in slicer_area.array_slicer.associated_coord_dims:
-            self.coord_combo.addItem(str(name))
+            if name not in slicer_area.array_slicer.physical_dims:
+                self.coord_combo.addItem(str(name))
 
         # Colormap selection
         cmap_group = QtWidgets.QGroupBox("Colormap parameters", self)

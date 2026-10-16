@@ -27,6 +27,7 @@ def test_nonuniform_axes_ignores_user_idx_dim(qtbot) -> None:
     slicer = ArraySlicer(data, parent=QtCore.QObject())
 
     assert slicer._nonuniform_axes == []
+    assert slicer.physical_dims == data.dims
 
 
 def test_nonuniform_axes_detects_generated_idx_dim(qtbot) -> None:
@@ -40,6 +41,39 @@ def test_nonuniform_axes_detects_generated_idx_dim(qtbot) -> None:
 
     assert str(slicer._obj.dims[0]).endswith("_idx")
     assert slicer._nonuniform_axes == [0]
+    assert slicer.physical_dims == data.dims
+    np.testing.assert_array_equal(slicer.coords[0], data.x.values)
+
+
+def test_physical_dimensions_follow_display_transpose_and_coordinate_changes(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("energy", "scan_idx"),
+        coords={"energy": [0.0, 0.2, 0.8, 1.5], "scan_idx": [1.0, 2.0, 3.0]},
+    )
+    owner = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=owner)
+    slicer.swap_axes(0, 1)
+
+    assert slicer._obj.dims == ("scan_idx", "energy_idx")
+    assert slicer.physical_dims == ("scan_idx", "energy")
+    assert slicer.isel_args(0, (0,), int_if_one=True) == {
+        "energy": slicer.get_indices(0)[1]
+    }
+    code = "result = data" + slicer.qsel_code(0, (0,))
+    namespace = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        namespace["result"], data.isel(energy=slicer.get_indices(0)[1])
+    )
+
+    updated = data.assign_coords(energy=[0.0, 0.5, 1.0, 1.5])
+    slicer.set_array(updated, preserve_dims=("scan_idx", "energy"))
+
+    assert slicer.physical_dims == ("scan_idx", "energy")
+    assert slicer._nonuniform_axes == []
 
 
 def test_restore_nonuniform_dims_ignores_user_idx_dim() -> None:
@@ -58,6 +92,38 @@ def test_restore_nonuniform_dims_ignores_user_idx_dim() -> None:
     xr.testing.assert_identical(restored, data)
 
 
+@pytest.mark.parametrize("disp", [(0,), (1,)])
+@pytest.mark.parametrize("width", [1, 3])
+def test_xslice_uses_physical_coordinates_and_shared_values(qtbot, disp, width) -> None:
+    data = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(5.0)},
+    )
+    owner = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=owner)
+    slicer.set_bin(0, 0, width, update=False)
+
+    result = slicer.xslice(0, disp)
+
+    assert not any(str(name).endswith("_idx") for name in result.coords)
+    assert np.shares_memory(slicer._physical_obj.data, slicer._obj.data)
+    if disp == (1,):
+        center = slicer.get_index(0, 0)
+        expected = data.isel(x=slice(center - width // 2, center + width // 2 + 1))
+        if width > 1:
+            expected = expected.qsel.mean("x")
+    else:
+        expected = data.isel(y=slicer.get_index(0, 1))
+    xr.testing.assert_identical(result, expected)
+
+    slicer.swap_axes(0, 1)
+    assert slicer._physical_obj.dims == ("y", "x")
+    replacement = data.assign_coords(x=[0.0, 0.3, 0.9, 1.8])
+    slicer.set_array(replacement, copy_values=False)
+    xr.testing.assert_identical(slicer._physical_obj, replacement)
+
+
 def test_check_cursors_compatible_normalizes_promoted_1d_stack_dim() -> None:
     data = xr.DataArray(
         np.arange(4.0),
@@ -74,19 +140,24 @@ def test_check_cursors_compatible_normalizes_promoted_1d_stack_dim() -> None:
     )
 
 
-def test_check_cursors_compatible_normalizes_nonuniform_idx_dims() -> None:
-    public = xr.DataArray(
+def test_user_idx_dimension_with_associated_coordinate_stays_physical(qtbot) -> None:
+    data = xr.DataArray(
         np.arange(12.0).reshape(4, 3),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(3.0)},
+        dims=("scan_idx", "y"),
+        coords={
+            "scan_idx": np.arange(4.0),
+            "scan": ("scan_idx", [0.0, 0.2, 0.8, 1.5]),
+            "y": np.arange(3.0),
+        },
     )
-    internal = ArraySlicer.validate_array(public, copy_values=False)
+    owner = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=owner)
 
-    assert internal.dims == ("x_idx", "y")
-    assert check_cursors_compatible(internal, public)
-    assert check_cursors_compatible(public, internal)
+    assert slicer.physical_dims == data.dims
+    assert slicer._nonuniform_axes == []
+    xr.testing.assert_identical(slicer._to_physical_data(slicer._obj), data)
     assert not check_cursors_compatible(
-        internal, public.assign_coords(x=[0.0, 0.2, 0.9, 1.5])
+        data, data.assign_coords(scan_idx=[0.0, 1.0, 2.0, 4.0])
     )
 
 

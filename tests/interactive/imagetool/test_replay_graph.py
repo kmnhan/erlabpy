@@ -23,7 +23,6 @@ from erlab.interactive.imagetool._provenance._code import (
     _code_uses_name,
     _code_uses_name_any_scope,
     _CodeAnalyzer,
-    _nonuniform_restore_support_code,
     _replace_code_identifiers,
     _simplify_display_code,
     _symbol_table_dependencies,
@@ -99,7 +98,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceWorkFunctionOperation,
     QSelOperation,
     RenameOperation,
-    RestoreNonuniformDimsOperation,
     RotateOperation,
     ScriptCodeOperation,
     SelOperation,
@@ -3893,100 +3891,8 @@ def test_replay_graph_display_hides_internal_source_view_restore_only(
     )
 
 
-def test_replay_graph_display_restores_dimensions_left_by_recorded_mapping(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "internal.nc"
-    source = xr.DataArray(
-        np.arange(12.0).reshape(3, 4),
-        dims=("x_idx", "y_idx"),
-        coords={
-            "x": ("x_idx", [0.0, 0.2, 1.0]),
-            "y": ("y_idx", [0.0, 0.4, 1.5, 3.0]),
-        },
-    )
-    source.to_netcdf(path)
-    spec = script(
-        start_label="Load ImageTool rendering data",
-        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        active_name="derived",
-        replay_stages=(
-            ReplayStage(
-                source_kind="full_data",
-                operations=(
-                    RestoreNonuniformDimsOperation(dimension_mapping={"x_idx": "x"}),
-                ),
-            ),
-            ReplayStage(source_kind="public_data"),
-        ),
-    )
-
-    runtime_graph = compile_replay_graph(spec, trusted_user_code=True)
-    display_graph = compile_replay_graph(spec, display=True)
-    display_code = emit_replay_code(display_graph, output_name="derived")
-    runtime_expected = source.swap_dims({"x_idx": "x", "y_idx": "y"}).drop_vars(
-        ("x_idx", "y_idx"), errors="ignore"
-    )
-    copied_expected = source.swap_dims({"x_idx": "x"}).drop_vars(
-        "x_idx", errors="ignore"
-    )
-
-    assert "def _restore_image_tool_dimensions" not in display_code
-    xr.testing.assert_identical(
-        execute_replay_graph(runtime_graph, authorize=_authorize_execution),
-        runtime_expected,
-    )
-    xr.testing.assert_identical(
-        _exec_generated_code(display_code, {"xr": xr})["derived"],
-        copied_expected,
-    )
-
-
-@pytest.mark.parametrize("source_kind", ["public_data", "selection"])
-def test_replay_graph_runtime_restores_script_seeded_internal_source_views(
-    source_kind: str,
-    tmp_path: pathlib.Path,
-) -> None:
-    source = xr.DataArray(
-        np.arange(6.0).reshape(3, 2),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
-    )
-    path = tmp_path / "source.nc"
-    source.to_netcdf(path)
-    source_spec = {"public_data": public_data, "selection": selection}[source_kind](
-        QSelOperation(kwargs={"x": 0.2})
-    )
-    spec = script(
-        start_label="Create ImageTool rendering dimensions",
-        seed_code="derived = erlab.utils.array._make_dims_uniform(data_0)",
-        active_name="derived",
-        script_inputs=(
-            ScriptInput(
-                name="data_0",
-                label="Source data",
-                provenance_spec=_file_spec(path),
-            ),
-        ),
-        replay_stages=(ReplayStage.from_source_spec(source_spec),),
-    )
-
-    graph = compile_replay_graph(spec)
-    code = emit_replay_code(graph, output_name="derived")
-    namespace = _exec_generated_code(code, {"erlab": erlab})
-
-    assert code.count("def _restore_image_tool_dimensions") == 1
-    assert "erlab.utils.array._restore_nonuniform_dims" not in code
-    assert "erlab.interactive.imagetool.slicer" not in code
-    xr.testing.assert_identical(
-        execute_replay_graph(graph, authorize=_authorize_execution),
-        source.qsel(x=0.2),
-    )
-    xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2))
-
-
 @pytest.mark.parametrize("display", [False, True])
-def test_replay_graph_restore_support_preserves_module_prologue(
+def test_replay_graph_source_view_preserves_module_prologue(
     display: bool,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -4073,69 +3979,6 @@ def scale(data: xr.DataArray) -> xr.DataArray:
     assert namespace["__doc__"] == "Generated extension workflow."
     assert namespace["__annotations__"] == {"annotation": "MissingType | None"}
     xr.testing.assert_identical(namespace["result"], xr.DataArray([6.0]))
-
-
-def test_extension_binding_named_like_internal_restore_helper(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    script_path = tmp_path / "_restore_image_tool_dimensions.py"
-    script_path.write_text(
-        """import xarray as xr
-from erlab.extensions import routine
-
-@routine()
-def scale(data: xr.DataArray) -> xr.DataArray:
-    return data * 2.0
-"""
-    )
-    monkeypatch.setattr(
-        extension_api,
-        "_resolve_registered_script_capability",
-        lambda *_args: _registered_routine(script_path),
-    )
-    source = xr.DataArray(
-        [1.0, 2.0, 3.0],
-        dims=("x_idx",),
-        coords={"x": ("x_idx", [0.0, 0.2, 1.0])},
-    )
-    source_dict = source.to_dict()
-    extension_operation = ExtensionRoutineOperation(
-        script_name=script_path.name,
-        source_hash="a" * 64,
-        routine_id="scale",
-        routine_name="Scale",
-        parameters={},
-    )
-    spec = ToolProvenanceSpec(
-        kind="script",
-        start_label="Create data",
-        seed_code=(
-            f"import xarray as xr\nresult = xr.DataArray.from_dict({source_dict!r})"
-        ),
-        active_name="result",
-    ).append_replay_stage(
-        full_data(extension_operation, RestoreNonuniformDimsOperation())
-    )
-
-    code = emit_replay_code(
-        compile_replay_graph(spec, display=True),
-        output_name="result",
-    )
-    namespace = _exec_generated_code(code)
-    scale_call = next(
-        node
-        for node in ast.walk(ast.parse(code))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "scale"
-    )
-    scale_call_source = ast.get_source_segment(code, scale_call)
-
-    assert scale_call_source is not None
-    assert "\n" not in scale_call_source
-    assert "def _restore_image_tool_dimensions" not in code
-    xr.testing.assert_identical(namespace["result"], source * 2.0)
 
 
 def test_extension_code_preserves_external_framework_alias_input(
@@ -4406,71 +4249,6 @@ def test_replay_graph_preserves_user_restore_named_function(
     assert "def _restore_image_tool_dimensions_2(array):" not in code
     assert code.count("def _restore_image_tool_dimensions(array):") == 1
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2) + 1)
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        xr.DataArray(
-            np.arange(3.0),
-            dims=("x_idx",),
-            coords={"x": ("x_idx", [0.0, 0.2, 1.0])},
-        ),
-        xr.DataArray(
-            np.arange(3.0),
-            dims=("x_idx",),
-            coords={"x": ("x_idx", [0.0, 1.0, 2.0])},
-        ),
-        xr.DataArray(
-            [1.0],
-            dims=("x_idx",),
-            coords={"x": ("x_idx", [0.0])},
-        ),
-        xr.DataArray(np.arange(3.0), dims=("x_idx",)),
-        xr.DataArray(
-            np.arange(6.0).reshape(3, 2),
-            dims=("x_idx", "y"),
-            coords={"x": ("y", [0.0, 0.5])},
-        ),
-        xr.DataArray(
-            np.arange(3.0),
-            dims=("x_idx",),
-            coords={"x": ("x_idx", ["left", "middle", "right"])},
-        ),
-        xr.DataArray(
-            np.arange(9.0).reshape(3, 3),
-            dims=("x_idx", "y_idx"),
-            coords={
-                "x": ("x_idx", [0.0, 0.0, 1.0]),
-                "y": ("y_idx", [1.0, 0.4, -0.8]),
-            },
-        ),
-    ],
-    ids=(
-        "nonuniform",
-        "uniform-user-dimension",
-        "singleton",
-        "missing-coordinate",
-        "wrong-coordinate-dimension",
-        "non-numeric-coordinate",
-        "multiple-constant-and-descending",
-    ),
-)
-def test_generated_nonuniform_restore_matches_runtime(source: xr.DataArray) -> None:
-    function_name = "restore_image_tool_dimensions"
-    code = "\n".join(
-        (
-            _nonuniform_restore_support_code(function_name),
-            f"derived = {function_name}(data)",
-        )
-    )
-
-    namespace = _exec_generated_code(code, {"data": source})
-
-    xr.testing.assert_identical(
-        namespace["derived"],
-        erlab.utils.array._restore_nonuniform_dims(source),
-    )
 
 
 def test_replay_graph_display_keeps_scoped_bindings_and_inlines_rebound_inputs(

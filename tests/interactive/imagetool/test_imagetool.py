@@ -2782,6 +2782,60 @@ def test_figure_composer_operation_uses_transposed_source_axis_order(qtbot) -> N
     win.close()
 
 
+@pytest.mark.parametrize("descending", [False, True])
+@pytest.mark.parametrize(
+    "profile_index", [None, 0, 1], ids=["image", "profile-x", "profile-y"]
+)
+def test_figure_composer_crop_uses_physical_nonuniform_bounds(
+    qtbot, descending, profile_index
+) -> None:
+    x = np.array([0.0, 0.2, 1.0, 3.0])
+    y = np.array([5.0, 7.0, 11.0, 12.0])
+    if descending:
+        x, y = x[::-1], y[::-1]
+    data = xr.DataArray(
+        np.arange(16.0).reshape(4, 4),
+        dims=("x", "y"),
+        coords={"x": x, "y": y},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_manual_limits({"x_idx": [0.5, 2.5], "y_idx": [0.5, 2.5]})
+    source = (
+        win.slicer_area.main_image
+        if profile_index is None
+        else win.slicer_area.profiles[profile_index]
+    )
+    operation = build_figure_composer_operation(source, source_name="data")
+    coordinate = (x, y)[source.display_axis[0]]
+    expected_xlim = tuple(np.interp([0.5, 2.5], np.arange(4.0), coordinate))
+    assert operation.xlim == pytest.approx(expected_xlim)
+    if profile_index is None:
+        assert operation.ylim == pytest.approx(
+            tuple(np.interp([0.5, 2.5], np.arange(4.0), y))
+        )
+
+    from matplotlib import pyplot as plt
+
+    from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
+
+    composer = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(composer)
+    code = composer.generated_code()
+    assert "x_idx" not in code
+    namespace = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].get_xlim() == pytest.approx(expected_xlim)
+    plt.close(namespace["fig"])
+    composer.close()
+    win.close()
+
+
 def test_cursor_colors_follow_coordinate(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
@@ -2825,6 +2879,55 @@ def test_cursor_colors_follow_coordinate(qtbot) -> None:
         )
 
     win.close()
+
+
+def test_nonuniform_axis_controls_show_physical_names_and_values(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(15.0).reshape(5, 3),
+        dims=("energy", "scan_idx"),
+        coords={
+            "energy": [0.0, 0.2, 0.8, 1.4, 2.0],
+            "scan_idx": np.arange(3.0),
+            "temperature": ("energy", np.arange(5.0) + 20.0),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    win.mnb._populate_invert_axis_menu()
+    actions = win.mnb.menu_dict["invertAxisMenu"].actions()
+    assert [action.text() for action in actions] == list(data.dims)
+    qtbot.waitUntil(
+        lambda: (
+            [label.text() for label in win.cursor_controls.label_dim] == list(data.dims)
+        )
+    )
+    actions[0].trigger()
+    assert area.axis_inversions == {"energy_idx": True}
+
+    associated = _AssociatedCoordsDialog(area)
+    qtbot.addWidget(associated)
+    assert "energy_idx" not in " ".join(
+        label.text() for label in associated.findChildren(QtWidgets.QLabel)
+    )
+    dialog = _CursorColorCoordDialog(area)
+    qtbot.addWidget(dialog)
+    names = [dialog.coord_combo.itemText(i) for i in range(dialog.coord_combo.count())]
+    assert names == ["energy", "scan_idx", "temperature"]
+    dialog.main_group.setChecked(True)
+    dialog.choose_coord("energy")
+    dialog.cmap_combo.setCurrentText("viridis")
+    dialog.start_spin.setValue(0.0)
+    dialog.stop_spin.setValue(1.0)
+    assert dialog.get_checked_coord_name() == (("energy",), "energy")
+    dialog.accept()
+    area.set_index(axis=0, value=1)
+    _, values, value = area.array_slicer.cursor_color_coord(0, ("energy",), "energy")
+    np.testing.assert_array_equal(values, data.energy.values)
+    assert value == pytest.approx(0.2)
+    cmap = erlab.interactive.colors.pg_colormap_from_name("viridis")
+    expected = cmap.map(0.1, mode=cmap.QCOLOR).name()
+    assert area.cursor_colors[0].name() == expected
 
 
 def test_cursor_colors_from_associated_coord(qtbot) -> None:
@@ -5566,19 +5669,27 @@ def test_standalone_child_tool_refreshes_from_displayed_filter(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("nonuniform", [False, True])
 def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
     qtbot,
+    nonuniform,
 ) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["alpha", "eV"],
-        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+        coords={
+            "alpha": np.arange(5, dtype=float),
+            "eV": [0.0, 0.2, 0.8, 1.5, 3.0]
+            if nonuniform
+            else np.arange(5, dtype=float),
+        },
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data)
 
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    xarray.testing.assert_identical(win.slicer_area.main_image.current_data, data)
     win.slicer_area.apply_filter_operation(operation)
 
     win.slicer_area.images[0].open_in_new_window()
@@ -5588,7 +5699,7 @@ def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
     )
     child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
 
-    xarray.testing.assert_identical(child.slicer_area.data, expected)
+    xarray.testing.assert_identical(child.slicer_area.displayed_data, expected)
     assert child.provenance_spec is not None
     display_code = child.provenance_spec.display_code()
     assert display_code is not None
@@ -9240,10 +9351,14 @@ def test_itool_from_file_recovers_legacy_spaced_associated_coord(
     win.close()
 
 
-def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None:
+@pytest.mark.parametrize("data_key", ["3D", "3D_nonuniform"])
+def test_itool_open_in_ktool_uses_active_cursor_seed(
+    qtbot, monkeypatch, data_key
+) -> None:
     options_model = erlab.interactive.options.model.model_copy(deep=True)
     options_model.ktool.bz.default_a = 8.1
-    win = itool(_TEST_DATA["3D"].copy(), execute=False, options_model=options_model)
+    data = _TEST_DATA[data_key].copy()
+    win = itool(data, execute=False, options_model=options_model)
     qtbot.addWidget(win)
 
     captured: dict[str, object] = {}
@@ -9256,16 +9371,42 @@ def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None
 
     monkeypatch.setattr(erlab.interactive, "ktool", fake_ktool)
 
-    win.slicer_area.set_value(0, 1.0)
+    win.slicer_area.set_index(0, 1)
     win.slicer_area.set_value(2, 4.0)
     win.slicer_area.open_in_ktool()
 
-    assert captured["data"] is win.slicer_area.data
-    assert captured["kwargs"]["initial_normal_emission"] == (1.0, 4.0)
+    xr.testing.assert_identical(captured["data"], win.slicer_area.displayed_data)
+    assert captured["kwargs"]["initial_normal_emission"] == (
+        float(data.alpha.values[1]),
+        4.0,
+    )
     assert captured["kwargs"]["initial_delta"] is None
     assert captured["kwargs"]["options_model"] is options_model
 
     win.close()
+
+
+def test_itool_open_in_meshtool_receives_physical_filtered_data(
+    qtbot, monkeypatch
+) -> None:
+    data = _TEST_DATA["2D"].astype(float).assign_coords(alpha=[0.0, 0.2, 0.8, 1.4, 2.0])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    operation = NormalizeOperation(dims=("eV",), mode="min")
+    win.slicer_area.apply_filter_operation(operation)
+    captured = []
+    original = erlab.interactive.meshtool
+
+    def capture(data, **kwargs):
+        captured.append(data)
+        return original(data, **kwargs)
+
+    monkeypatch.setattr(erlab.interactive, "meshtool", capture)
+    win.slicer_area.open_in_meshtool()
+    assert len(captured) == 1
+    xr.testing.assert_identical(captured[0], operation.apply(data))
+    child = win.slicer_area._associated_tools_list[-1]
+    xr.testing.assert_identical(child.tool_data, captured[0])
 
 
 def test_itool_open_in_ktool_uses_scalar_beta_for_angle_energy_cut(
@@ -9288,7 +9429,7 @@ def test_itool_open_in_ktool_uses_scalar_beta_for_angle_energy_cut(
     win.slicer_area.set_value(0, 2.0)
     win.slicer_area.open_in_ktool()
 
-    assert captured["data"] is win.slicer_area.data
+    xr.testing.assert_identical(captured["data"], win.slicer_area.displayed_data)
     assert captured["kwargs"]["initial_normal_emission"] == (2.0, 3.0)
     assert captured["kwargs"]["initial_delta"] is None
 
@@ -9314,7 +9455,7 @@ def test_itool_open_in_ktool_ignores_nonscalar_beta_coord(qtbot, monkeypatch) ->
     win.slicer_area.set_value(0, 2.0)
     win.slicer_area.open_in_ktool()
 
-    assert captured["data"] is win.slicer_area.data
+    xr.testing.assert_identical(captured["data"], win.slicer_area.displayed_data)
     assert captured["kwargs"]["initial_normal_emission"] is None
     assert captured["kwargs"]["initial_delta"] is None
 
@@ -9464,9 +9605,8 @@ def test_1d_profile_ftool_copy_code_omits_slicer_only_selection(
 
     source_spec = profile.make_tool_source_spec(squeeze=True)
     assert source_spec.operations == (SqueezeOperation(),)
-    resolved = source_spec.apply(win.slicer_area.data)
-    assert resolved.coords["stack_dim"].ndim == 0
-    xr.testing.assert_identical(resolved.drop_vars("stack_dim"), data)
+    resolved = source_spec.apply(win.slicer_area.displayed_data)
+    xr.testing.assert_identical(resolved, data)
 
     profile.open_in_ftool()
     child = win.slicer_area._associated_tools_list[-1]
@@ -9799,7 +9939,7 @@ def test_crop_to_view_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
 
     dialog = CropToViewDialog(win.slicer_area)
     qtbot.addWidget(dialog)
-    dialog.dim_checks["x_idx"].setChecked(True)
+    dialog.dim_checks["x"].setChecked(True)
     dialog.dim_checks["y"].setChecked(True)
 
     expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
@@ -9814,7 +9954,7 @@ def test_crop_to_view_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
         dialog.process_data(public_data).rename(None), expected.rename(None)
     )
     xarray.testing.assert_identical(
-        source_spec.apply(win.slicer_area.data).rename(None), expected.rename(None)
+        source_spec.apply(public_data).rename(None), expected.rename(None)
     )
     xarray.testing.assert_identical(
         _exec_data_fragment(data, code).rename(None), expected.rename(None)
@@ -9843,7 +9983,7 @@ def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) 
     qtbot.addWidget(dialog)
     dialog.cursor_combos[0].setCurrentIndex(0)
     dialog.cursor_combos[1].setCurrentIndex(1)
-    dialog.dim_checks["x_idx"].setChecked(True)
+    dialog.dim_checks["x"].setChecked(True)
     dialog.dim_checks["y"].setChecked(True)
 
     expected = data.isel(x=slice(1, 4)).sel(y=slice(0.0, 2.0))
@@ -9857,7 +9997,7 @@ def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) 
         dialog.process_data(public_data).rename(None), expected.rename(None)
     )
     xarray.testing.assert_identical(
-        source_spec.apply(win.slicer_area.data).rename(None), expected.rename(None)
+        source_spec.apply(public_data).rename(None), expected.rename(None)
     )
     xarray.testing.assert_identical(
         _exec_data_fragment(data, code).rename(None), expected.rename(None)
@@ -9865,6 +10005,23 @@ def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) 
 
     dialog.close()
     win.close()
+
+
+def test_crop_preserves_user_idx_dimension(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("sample_idx", "y"),
+        coords={"sample_idx": np.arange(5.0), "y": np.arange(5.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_manual_limits({"sample_idx": [1.0, 3.0]})
+    dialog = CropToViewDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["sample_idx"].setChecked(True)
+    expected = data.sel(sample_idx=slice(1.0, 3.0))
+    xr.testing.assert_identical(dialog.source_spec().apply(data), expected)
+    xr.testing.assert_identical(_exec_data_fragment(data, dialog.make_code()), expected)
 
 
 def test_itool_roi_lifecycle(qtbot) -> None:
@@ -10083,6 +10240,66 @@ def test_itool_roi_edit_dialog_updates_points(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("descending", [False, True])
+def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
+    qtbot, descending
+) -> None:
+    x = np.array([0.0, 0.2, 1.0, 3.0])
+    y = np.array([5.0, 7.0, 11.0, 12.0])
+    if descending:
+        x, y = x[::-1], y[::-1]
+    data = xr.DataArray(
+        np.arange(16.0).reshape(4, 4), dims=("x", "y"), coords={"x": x, "y": y}
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    plot = win.slicer_area.main_image
+    assert plot._get_label_unit(0) == ("x", "")
+    assert plot._get_label_unit(1) == ("y", "")
+    plot.add_roi()
+    roi = plot._roi_list[0]
+    original_points = [(-0.5, 1.5), (3.5, 2.0)]
+    roi.setPoints(original_points, closed=False)
+    dialog = _PolyROIEditDialog(roi)
+    qtbot.addWidget(dialog)
+    assert [dialog.table.horizontalHeaderItem(i).text() for i in range(2)] == [
+        "x",
+        "y",
+    ]
+    np.testing.assert_allclose(
+        [[float(dialog.table.item(i, j).text()) for j in range(2)] for i in range(2)],
+        [
+            [x[0] - (x[1] - x[0]) / 2, (y[1] + y[2]) / 2],
+            [x[3] + (x[3] - x[2]) / 2, y[2]],
+        ],
+    )
+    dialog.accept()
+    np.testing.assert_allclose(
+        [[float(point[0]), float(point[1])] for point in roi.getState()["points"]],
+        original_points,
+    )
+    dialog = _PolyROIEditDialog(roi)
+    qtbot.addWidget(dialog)
+    expected = np.array(
+        [
+            [x[0] - 0.75 * (x[1] - x[0]), y[3] + 0.5 * (y[3] - y[2])],
+            [x[3] + 0.25 * (x[3] - x[2]), y[0] - 0.5 * (y[1] - y[0])],
+        ]
+    )
+    for row in range(2):
+        for column in range(2):
+            dialog.table.item(row, column).setText(str(expected[row, column]))
+    dialog.accept()
+    np.testing.assert_allclose(
+        [[float(point[0]), float(point[1])] for point in roi.getState()["points"]],
+        [[-0.75, 3.5], [3.25, -0.5]],
+    )
+    np.testing.assert_allclose(
+        np.column_stack(tuple(roi._get_vertices().values())), expected
+    )
+    win.close()
+
+
 def test_itool_roi_edit_dialog_invalid_values(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
@@ -10263,54 +10480,76 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     win.close()
 
 
-def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> None:
+@pytest.mark.parametrize("reducer", ["mean", "sum"])
+@pytest.mark.parametrize("dim", ["x", "y"])
+def test_aggregate_uses_physical_nonuniform_dimensions(qtbot, reducer, dim) -> None:
     data = xr.DataArray(
-        np.arange(20).reshape((5, 4)).astype(float),
-        dims=["x", "y"],
-        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        np.arange(20.0).reshape(5, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4.0)},
         name="scan",
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-
-    assert win.slicer_area.data.dims == ("x_idx", "y")
-    dialog = AverageDialog(win.slicer_area)
+    dialog = AggregateDialog(win.slicer_area)
     qtbot.addWidget(dialog)
-    dialog.dim_checks["y"].setChecked(True)
+    assert tuple(dialog.dim_checks) == data.dims
+    dialog.dim_checks[dim].setChecked(True)
+    _set_combo_data(dialog.reducer_combo, reducer)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
 
+    expected = getattr(data.qsel, reducer)(dim)
     spec = dialog.source_spec()
-    expected = erlab.utils.array._restore_nonuniform_dims(
-        dialog.process_data(win.slicer_area.data)
+    assert spec.kind == "public_data"
+    assert [op.op for op in spec.operations] == ["qsel_aggregate"]
+    xr.testing.assert_identical(spec.apply(data), expected)
+    xr.testing.assert_identical(_exec_data_fragment(data, dialog.make_code()), expected)
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    assert "x_idx" not in code
+    assert "swap_dims" not in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"], expected
     )
-    refreshed = spec.apply(win.slicer_area.data)
 
-    assert spec.kind == "full_data"
-    assert [op.op for op in spec.operations] == [
-        "qsel_aggregate",
-        "restore_nonuniform_dims",
-    ]
-    assert refreshed.dims == ("x",)
-    xarray.testing.assert_identical(refreshed, expected)
+    dialog.accept()
+    xr.testing.assert_identical(win.slicer_area._data, expected)
 
-    display_code = spec.display_code(parent_data=win.slicer_area.data)
-    assert display_code is not None
-    assert "restore_nonuniform_dims" not in display_code
-    assert ".swap_dims(" in display_code
-    assert ".drop_vars(" in display_code
-    display_namespace = _exec_generated_code(
-        display_code,
-        {"data": win.slicer_area.data.copy(deep=True)},
+
+def test_filter_and_symmetrize_selectors_use_physical_nonuniform_data(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(20.0).reshape(5, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4.0)},
     )
-    derived = display_namespace["derived"]
-    assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_index(axis=0, value=2)
+    normalize = NormalizeDialog(win.slicer_area)
+    qtbot.addWidget(normalize)
+    assert tuple(normalize.dim_checks) == data.dims
+    normalize.dim_checks["x"].setChecked(True)
+    normalize.opts[2].setChecked(True)
+    expected = data - data.min("x")
+    xr.testing.assert_identical(normalize.process_data(data), expected)
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, normalize.make_code()), expected
+    )
+    symmetrize = SymmetrizeDialog(win.slicer_area)
+    qtbot.addWidget(symmetrize)
+    assert [
+        symmetrize._dim_combo.itemText(i) for i in range(symmetrize._dim_combo.count())
+    ] == list(data.dims)
+    assert symmetrize._center_spin.value() == pytest.approx(0.8)
+    code = symmetrize.make_code()
+    assert "x_idx" not in code
+    with pytest.raises(ValueError, match="uniformly spaced"):
+        _exec_data_fragment(data, code)
 
-    dialog.close()
-    win.close()
 
-
-def test_rotation_keeps_initial_and_replayed_nonuniform_results_identical(
-    qtbot,
+@pytest.mark.parametrize("dialog_type", [RotationDialog, SymmetrizeNfoldDialog])
+def test_rotation_uses_physical_axes_and_rejects_nonuniform_plane(
+    qtbot, dialog_type
 ) -> None:
     data = xr.DataArray(
         np.arange(20.0).reshape(5, 4),
@@ -10320,76 +10559,17 @@ def test_rotation_keeps_initial_and_replayed_nonuniform_results_identical(
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-    dialog = RotationDialog(win.slicer_area)
+    dialog = dialog_type(win.slicer_area)
     qtbot.addWidget(dialog)
-    dialog.angle_spin.setValue(10.0)
-    dialog.reshape_check.setChecked(True)
-    dialog.launch_mode_combo.setCurrentText("Replace Current")
-
-    internal = win.slicer_area.data.copy(deep=True)
-    dimension_mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
-    rotated = dialog.process_data(internal)
-    expected = erlab.utils.array._restore_nonuniform_dims(rotated, dimension_mapping)
-    source_spec = dialog.source_spec()
-
-    assert "x" not in rotated.coords
-    assert expected.dims == ("x_idx", "y")
-    xarray.testing.assert_identical(source_spec.apply(internal), expected)
-
-    display_code = source_spec.display_code(parent_data=internal)
-    assert display_code is not None
-    display_namespace = _exec_generated_code(display_code, {"data": internal})
-    xarray.testing.assert_identical(display_namespace["derived"], expected)
-
-    dialog.accept()
-
-    assert win.slicer_area.data.dims == expected.dims
-    xarray.testing.assert_allclose(win.slicer_area.data, expected)
-    win.close()
-
-
-def test_aggregate_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> None:
-    data = xr.DataArray(
-        np.arange(20).reshape((5, 4)).astype(float),
-        dims=["x", "y"],
-        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
-        name="scan",
-    )
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-
-    assert win.slicer_area.data.dims == ("x_idx", "y")
-    dialog = AggregateDialog(win.slicer_area)
-    qtbot.addWidget(dialog)
-    dialog.dim_checks["y"].setChecked(True)
-    _set_combo_data(dialog.reducer_combo, "sum")
-
-    spec = dialog.source_spec()
-    expected = erlab.utils.array._restore_nonuniform_dims(
-        dialog.process_data(win.slicer_area.data)
-    )
-    refreshed = spec.apply(win.slicer_area.data)
-
-    assert spec.kind == "full_data"
-    assert [op.op for op in spec.operations] == [
-        "qsel_aggregate",
-        "restore_nonuniform_dims",
-    ]
-    assert refreshed.dims == ("x",)
-    xarray.testing.assert_identical(refreshed, expected)
-
-    display_code = spec.display_code(parent_data=win.slicer_area.data)
-    assert display_code is not None
-    namespace = _exec_generated_code(
-        display_code,
-        {"data": win.slicer_area.data.copy(deep=True)},
-    )
-    derived = namespace["derived"]
-    assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
-
-    dialog.close()
-    win.close()
+    operation = dialog.source_transform_operation()
+    assert set(operation.axes) == set(data.dims)
+    code = dialog.make_code()
+    assert "x_idx" not in code
+    with pytest.raises(ValueError, match="evenly spaced"):
+        dialog.process_data(dialog.data)
+    with pytest.raises(ValueError, match="evenly spaced"):
+        _exec_data_fragment(data, code)
+    xr.testing.assert_identical(win.slicer_area._data, data)
 
 
 def test_itool_average_marks_incompatible_child_tools_unavailable(
@@ -11885,7 +12065,9 @@ def test_selection_dialog_uses_public_nonuniform_dimensions(qtbot) -> None:
     )
     spec = dialog.source_spec()
     assert spec.kind == "public_data"
-    xarray.testing.assert_identical(spec.apply(win.slicer_area.data), expected)
+    xarray.testing.assert_identical(
+        spec.apply(win.slicer_area.displayed_data), expected
+    )
 
     dialog.close()
     win.close()
@@ -12169,6 +12351,31 @@ def test_itool_interpolate_exact_generated_coordinates(qtbot, accept_dialog) -> 
     win.close()
 
 
+def test_selection_dialog_maps_cursors_to_physical_dims_with_singletons(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(1, 4, 3, 1, 1),
+        dims=("a", "energy", "x", "b", "c"),
+        coords={"energy": [0.0, 0.2, 0.8, 1.4], "x": np.arange(3.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_index(axis=0, value=2)
+    dialog = SelectionDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    assert tuple(row.dim for row in dialog.rows) == data.dims
+    assert tuple(
+        dialog._current_selection_index(axis) for axis in range(data.ndim)
+    ) == (0, 2, 1, 0, 0)
+    assert len(dialog._selection_bin_values()) == data.ndim
+    assert len(dialog._selection_binned()) == data.ndim
+    row = dialog.rows[1]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    expected = data.isel(energy=2)
+    xr.testing.assert_identical(dialog.source_spec().apply(data), expected)
+    xr.testing.assert_identical(_exec_data_fragment(data, dialog.make_code()), expected)
+
+
 def test_itool_interpolate_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(6).reshape((3, 2)).astype(float),
@@ -12309,7 +12516,7 @@ def test_itool_sortby_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     win.close()
 
 
-def test_sortby_dialog_public_dim_order_and_coord_filters(qtbot, monkeypatch) -> None:
+def test_sortby_dialog_public_dim_order_and_coord_filters(qtbot) -> None:
     data = xr.DataArray(
         np.arange(12).reshape((4, 3)).astype(float),
         dims=("x", "y"),
@@ -12324,16 +12531,7 @@ def test_sortby_dialog_public_dim_order_and_coord_filters(qtbot, monkeypatch) ->
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-    restore_nonuniform_dims = erlab.utils.array._restore_nonuniform_dims
-
-    def restore_transposed(source: xr.DataArray) -> xr.DataArray:
-        return restore_nonuniform_dims(source).transpose("y", "x")
-
-    monkeypatch.setattr(
-        erlab.utils.array,
-        "_restore_nonuniform_dims",
-        restore_transposed,
-    )
+    win.slicer_area.swap_axes(0, 1)
 
     dialog = SortByDialog(win.slicer_area)
     qtbot.addWidget(dialog)
@@ -12343,7 +12541,7 @@ def test_sortby_dialog_public_dim_order_and_coord_filters(qtbot, monkeypatch) ->
         if (item := dialog.key_table.item(row, 0)) is not None
     ]
 
-    assert keys[:2] == ["x", "y"]
+    assert keys[:2] == ["y", "x"]
     assert "temperature" in keys
     assert "sample_id" not in keys
     assert "mesh" not in keys
@@ -13439,6 +13637,54 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
+
+
+def test_assign_coords_uses_physical_data_for_selectors_and_provenance(
+    qtbot, accept_dialog
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("energy", "scan_idx"),
+        coords={"energy": [0.0, 0.2, 0.8, 1.4], "scan_idx": np.arange(3.0)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    assert win.slicer_area.data.dims == ("energy_idx", "scan_idx")
+    expected = data.assign_coords(energy=data.energy * 2.0 + 1.0)
+
+    def configure(dialog: AssignCoordsDialog) -> None:
+        assert [
+            dialog._coord_combo.itemText(i) for i in range(dialog._coord_combo.count())
+        ] == list(data.dims)
+        references = {
+            dialog._add_ref_combo.itemData(i)
+            for i in range(dialog._add_ref_combo.count())
+        }
+        assert references == set(data.dims)
+        dialog._coord_combo.setCurrentText("energy")
+        dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
+        dialog.coord_widget.scale_spin.setValue(2.0)
+        dialog.coord_widget.offset_spin.setValue(1.0)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+        xr.testing.assert_identical(
+            _exec_data_fragment(data, dialog.make_code()), expected
+        )
+        assert "energy_idx" not in dialog.make_code()
+
+    accept_dialog(win.mnb._assign_coords, pre_call=configure)
+    xr.testing.assert_identical(win.slicer_area._data, expected)
+    assert win.provenance_spec is not None
+    assert [operation.op for operation in win.provenance_spec.operations] == [
+        "affine_coord"
+    ]
+    code = win.provenance_spec.display_code(parent_data=data)
+    assert code is not None
+    assert "energy_idx" not in code
+    assert "swap_dims" not in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"], expected
+    )
 
 
 def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
@@ -15102,14 +15348,20 @@ def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) ->
     win.close()
 
 
-def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> None:
+@pytest.mark.parametrize("nonuniform", [False, True])
+def test_apply_filter_operation_caches_dask_accepted_filter_lazily(
+    qtbot, nonuniform
+) -> None:
     da = pytest.importorskip("dask.array")
     from dask.callbacks import Callback
 
     data = xr.DataArray(
         da.from_array(np.arange(12, dtype=float).reshape((3, 4)), chunks=(2, 2)),
         dims=["x", "y"],
-        coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
+        coords={
+            "x": [0.0, 0.2, 1.0] if nonuniform else np.arange(3, dtype=float),
+            "y": np.arange(4, dtype=float),
+        },
     )
     operation = NormalizeOperation(
         dims=("x",),
@@ -15138,6 +15390,10 @@ def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> Non
     assert cached.chunks is not None
     xarray.testing.assert_identical(
         cached.compute(),
+        operation.apply(data).compute(),
+    )
+    xarray.testing.assert_identical(
+        win.slicer_area.main_image.current_data.compute(),
         operation.apply(data).compute(),
     )
     win.close()

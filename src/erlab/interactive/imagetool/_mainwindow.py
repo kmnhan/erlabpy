@@ -286,7 +286,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(
-            ds[_persistence_constants.ITOOL_DATA_NAME].rename(name),
+            _serialization.restore_legacy_nonuniform_data(
+                ds[_persistence_constants.ITOOL_DATA_NAME].rename(name), saved_version
+            ),
             state=json.loads(ds.attrs["itool_state"]),
             _saved_window_state=ds.attrs.get("itool_window_state"),
             _legacy_window_rect=ds.attrs.get("itool_rect"),
@@ -1000,7 +1002,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _edit_menu_visibility(self) -> None:
         self.action_dict["kspaceConversionAct"].setEnabled(
-            self.slicer_area.data.kspace._interactive_compatible
+            self.slicer_area.displayed_data.kspace._interactive_compatible
         )
 
     @QtCore.Slot()
@@ -1015,7 +1017,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         menu.clear()
         for i, dim in enumerate(self.slicer_area.data.dims):
             dim_name = str(dim)
-            action = QtGui.QAction(dim_name, menu)
+            action = QtGui.QAction(
+                str(self.slicer_area.array_slicer.physical_dims[i]), menu
+            )
             action.setObjectName(f"itool_invert_axis_{i}_action")
             action.setData(dim_name)
             action.setCheckable(True)

@@ -350,10 +350,7 @@ def _execute_replay_graph(
             data = values[node.parents[0]].copy(deep=False)
         elif node.kind == "source_view":
             parent_data = values[node.parents[0]]
-            data = ToolProvenanceSpec._starting_data_for_kind(
-                node.payload["source_kind"],
-                parent_data,
-            )
+            data = parent_data.copy(deep=False)
         elif node.kind == "operation":
             operation = node.payload["operation"]
             if extension_executor is not None and operation.op == "extension_routine":

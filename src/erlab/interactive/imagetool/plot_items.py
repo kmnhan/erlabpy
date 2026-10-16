@@ -18,9 +18,6 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
-    _restore_nonuniform_dims_expression,
-)
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
@@ -1125,14 +1122,10 @@ class ItoolPlotItem(pg.PlotItem):
                     roi.setState(s)
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, str | None]:
-        dim_list: list[str] = [
-            str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
-        ]
-
-        if not uniform and self.array_slicer._nonuniform_axes:
-            for i, ax in enumerate(self.display_axis):
-                if ax in self.array_slicer._nonuniform_axes:
-                    dim_list[i] = dim_list[i].removesuffix("_idx")
+        source_dims = (
+            self.slicer_area.data.dims if uniform else self.array_slicer.physical_dims
+        )
+        dim_list = [str(source_dims[axis]) for axis in self.display_axis]
 
         dims = typing.cast("tuple[str] | tuple[str, str]", tuple(dim_list))
         if not self.is_image:
@@ -1208,7 +1201,10 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         data = self._current_data_cropped if alt_pressed else self._current_data
-        data = erlab.utils.array._restore_nonuniform_dims(data.copy(deep=False))
+        data = self.array_slicer._to_physical_data(data.copy(deep=False))
+        data = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
+            data, self.slicer_area._data
+        )
 
         return erlab.utils.array.sort_coord_order(
             data, self.slicer_area._data.coords.keys()
@@ -1221,6 +1217,28 @@ class ItoolPlotItem(pg.PlotItem):
         the current slice of data based on the current cursor location and bin size.
         """
         sel_code = self.array_slicer.qsel_code(cursor, self.display_axis)
+        public_dims = set(self.slicer_area._tool_source_parent_data().dims)
+        if sel_code.startswith(".qsel"):
+            kwargs = {
+                key: value
+                for key, value in self.array_slicer.qsel_args(
+                    cursor, self.display_axis
+                ).items()
+                if key in public_dims
+                or (isinstance(key, str) and key.removesuffix("_width") in public_dims)
+            }
+            arguments = erlab.interactive.utils.format_kwargs(kwargs)
+            sel_code = f".qsel({arguments})" if kwargs else ""
+        elif sel_code.startswith(".isel"):
+            indexers = {
+                key: value
+                for key, value in self.array_slicer.isel_args(
+                    cursor, self.display_axis, int_if_one=True
+                ).items()
+                if key in public_dims
+            }
+            arguments = erlab.interactive.utils.format_kwargs(indexers)
+            sel_code = f".isel({arguments})" if indexers else ""
         # sel_code will be ".qsel(...)" or ".isel(...)" or empty string
 
         if (
@@ -1229,9 +1247,16 @@ class ItoolPlotItem(pg.PlotItem):
         ):
             sel_indexers = self._crop_indexers
             isel_indexers: dict[Hashable, slice] = {}
-            for k in list(sel_indexers.keys()):
-                if isinstance(k, str) and k.endswith("_idx"):
-                    isel_indexers[k.removesuffix("_idx")] = sel_indexers.pop(k)
+            dimensions = dict(
+                zip(
+                    self.slicer_area.data.dims,
+                    self.array_slicer.physical_dims,
+                    strict=True,
+                )
+            )
+            for k in list(sel_indexers):
+                if dimensions[k] != k:
+                    isel_indexers[dimensions[k]] = sel_indexers.pop(k)
 
             if sel_code.startswith(".qsel"):
                 qsel_kw = self.array_slicer.qsel_args(cursor, self.display_axis)
@@ -1283,13 +1308,11 @@ class ItoolPlotItem(pg.PlotItem):
         sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
         if not data_name:
             return sel_code
-        selection_expr = data_name
-        if self.array_slicer._nonuniform_axes:
-            selection_expr = _restore_nonuniform_dims_expression(
-                selection_expr,
-                erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
-            )
-        return f"{selection_expr}{sel_code}"
+        singleton_indexers = self.slicer_area._tool_source_singleton_indexers()
+        if singleton_indexers:
+            arguments = erlab.interactive.utils.format_kwargs(singleton_indexers)
+            data_name += f".isel({arguments})"
+        return f"{data_name}{sel_code}"
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
@@ -1318,29 +1341,21 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         parent_data = self.slicer_area._tool_source_parent_data()
-        selection_data = ToolProvenanceSpec._starting_data_for_kind(
-            "selection", parent_data
-        )
+        selection_data = parent_data.copy(deep=False)
         operations: list[ToolProvenanceOperation] = []
         selection_code = self.selection_code_for_cursor(cursor)
         selection_indexers = self.array_slicer.isel_args(
             cursor, self.display_axis, int_if_one=True
         )
         public_dims = set(self.slicer_area.displayed_data.dims)
-        slicer_only_selection_dims = {
-            dim
-            for dim in selection_indexers
-            if (
-                dim in selection_data.dims
-                and dim not in public_dims
-                and selection_data.sizes[dim] == 1
-            )
-        }
+        slicer_only_selection_dims = set(selection_indexers) - public_dims
         selection_indexers = {
             dim: indexer
             for dim, indexer in selection_indexers.items()
-            if dim not in slicer_only_selection_dims
+            if dim in public_dims
         }
+        if singleton_indexers := self.slicer_area._tool_source_singleton_indexers():
+            operations.append(IselOperation(kwargs=singleton_indexers))
         if selection_indexers and selection_code.startswith(".qsel"):
             binned = self.array_slicer.get_binned(cursor)
             selection_binned_dims: list[Hashable] = []
@@ -1380,8 +1395,9 @@ class ItoolPlotItem(pg.PlotItem):
                     )
                     lower, upper = sorted((start, stop))
                     index_selector = slice(lower, upper + 1, selector.step)
-                if isinstance(key, str) and key.endswith("_idx"):
-                    crop_isel_indexers[key.removesuffix("_idx")] = index_selector
+                physical_dim = self.array_slicer.physical_dims[axis_idx]
+                if physical_dim != key:
+                    crop_isel_indexers[physical_dim] = index_selector
                 else:
                     crop_sel_indexers[key] = index_selector
 
@@ -2356,11 +2372,9 @@ class ItoolPlotItem(pg.PlotItem):
     def _get_label_unit(self, index: int | None = None):
         if index is None:
             return "", ""
-        dim = self.slicer_area.data.dims[self.display_axis[index]]
+        dim = self.array_slicer.physical_dims[self.display_axis[index]]
         if dim == "eV":
             return dim, "eV"
-        # if dim in ("kx", "ky", "phi", "theta", "beta", "alpha", "chi"):
-        # return dim
         return dim, ""
 
     def set_active_cursor(self, index: int) -> None:
@@ -2723,18 +2737,9 @@ class ItoolPolyLineROI(pg.PolyLineROI):
         for ax, dim, values in zip(
             self.plot_item.display_axis, self.plot_item.axis_dims, raw_xy, strict=True
         ):
-            decimals: int = array_slicer.get_significant(ax, uniform=uniform)
-            if not uniform and ax in array_slicer._nonuniform_axes:
-                # Convert from index to true coordinates
-                vertices[dim] = (
-                    np.interp(
-                        values, array_slicer.coords_uniform[ax], array_slicer.coords[ax]
-                    )
-                    .round(decimals)
-                    .tolist()
-                )
-            else:
-                vertices[dim] = values.round(decimals).tolist()
+            if not uniform:
+                values = array_slicer.to_physical_values(ax, values)
+            vertices[dim] = values.tolist()
 
         return vertices
 
@@ -2750,7 +2755,7 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
 
         self.table = QtWidgets.QTableWidget(self)
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(self.roi.plot_item.axis_dims_uniform)
+        self.table.setHorizontalHeaderLabels(self.roi.plot_item.axis_dims)
         hdr = self.table.horizontalHeader()
         if hdr:  # pragma: no branch
             hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -2787,7 +2792,7 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
         self._populate_table()
 
     def _populate_table(self) -> None:
-        values = np.column_stack(tuple(self.roi._get_vertices(uniform=True).values()))
+        values = np.column_stack(tuple(self.roi._get_vertices().values()))
         self.table.setRowCount(len(values))
         for i in range(values.shape[0]):
             for j in range(2):
@@ -2839,6 +2844,10 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
                     f"Invalid value at row {i + 1}. Please enter numeric values.",
                 )
                 return
+        values = np.asarray(points, dtype=float).reshape(-1, 2)
+        array_slicer = self.roi.plot_item.array_slicer
+        for column, axis in enumerate(self.roi.plot_item.display_axis):
+            values[:, column] = array_slicer.to_uniform_values(axis, values[:, column])
         self.roi.slicer_area.sigWriteHistory.emit()
-        self.roi.setPoints(points, closed=self.closed_check.isChecked())
+        self.roi.setPoints(values.tolist(), closed=self.closed_check.isChecked())
         super().accept()

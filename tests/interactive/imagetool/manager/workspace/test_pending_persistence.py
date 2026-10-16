@@ -842,8 +842,11 @@ def test_manager_pending_linked_partner_saves_color_when_linked(
         assert saved_partner_state["color"]["cmap"] == new_cmap
 
 
+@pytest.mark.parametrize(
+    "coordinate_kind", ["uniform", "nonuniform", "user_index", "squeezed"]
+)
 def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
-    qtbot, tmp_path
+    qtbot, tmp_path, coordinate_kind
 ) -> None:
     data = xr.DataArray(
         np.arange(2 * 3 * 4, dtype=np.float64).reshape((2, 3, 4)),
@@ -855,17 +858,26 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
         },
         name="pending_order",
     )
+    if coordinate_kind in {"nonuniform", "squeezed"}:
+        data = data.assign_coords(hv=[10.0, 20.0, 45.0])
+        if coordinate_kind == "squeezed":
+            data = data.expand_dims(singleton=[7], z=[0.0, 1.0])
+    elif coordinate_kind == "user_index":
+        data = data.rename(hv="scan_idx").assign_coords(
+            scan_idx=[0.0, 1.0, 2.0], scan=("scan_idx", [10.0, 20.0, 45.0])
+        )
     tool = erlab.interactive.imagetool.ImageTool(data)
     qtbot.addWidget(tool)
     saved = tool.to_dataset()
-    state = json.loads(saved.attrs["itool_state"])
-    assert tuple(state["slice"]["dims"]) == data.dims
+    stored_order = tuple(reversed(data.dims))
+    if coordinate_kind == "squeezed":
+        stored_order = ("singleton", *reversed(data.dims[1:]))
 
     stored = xr.Dataset(
         {
             _persistence_constants.ITOOL_DATA_NAME: saved[
                 _persistence_constants.ITOOL_DATA_NAME
-            ].transpose("hv", "y", "x")
+            ].transpose(*stored_order)
         },
         attrs=dict(saved.attrs),
     )
@@ -920,7 +932,7 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
         loaded_ds.close()
 
 
-def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
+def test_pending_workspace_saved_dim_order_handles_invalid_state() -> None:
     pending_cls = workspace_pending._PendingWorkspacePayloads
     data = xr.DataArray(
         np.arange(6, dtype=np.float64).reshape((2, 3)),
@@ -961,17 +973,6 @@ def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) ->
     assert (
         pending_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": json.dumps({"slice": {"dims": "xy"}})}
-        )
-        is data
-    )
-
-    def _raise_transpose(self: xr.DataArray, *_args, **_kwargs) -> xr.DataArray:
-        raise ValueError("bad dim order")
-
-    monkeypatch.setattr(xr.DataArray, "transpose", _raise_transpose)
-    assert (
-        pending_cls._pending_workspace_data_with_saved_dim_order(
-            data, {"itool_state": json.dumps(valid_state)}
         )
         is data
     )

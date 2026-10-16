@@ -26,7 +26,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     IselOperation,
-    RestoreNonuniformDimsOperation,
+    RenameOperation,
     ScriptCodeOperation,
     SortByOperation,
 )
@@ -1158,7 +1158,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
         scope="source",
     )
 
-    unsupported_spec = full_data(RestoreNonuniformDimsOperation())
+    unsupported_spec = full_data(RenameOperation(name="renamed"))
     controller = _fake_edit_controller(
         _fake_edit_node(
             full_data(),
@@ -3509,7 +3509,7 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
         controller._edit_operation_row(
             typing.cast(
                 "typing.Any",
-                _fake_edit_node(full_data(RestoreNonuniformDimsOperation())),
+                _fake_edit_node(full_data(RenameOperation(name="renamed"))),
             ),
             operation_row,
         )

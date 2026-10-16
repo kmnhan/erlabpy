@@ -35,7 +35,6 @@ from erlab.interactive.imagetool._provenance._model import (
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
     parse_script_inputs,
-    parse_tool_provenance_operation,
     parse_tool_provenance_spec,
     strip_partial_operation_groups,
 )
@@ -166,13 +165,7 @@ def _provenance_step_clipboard_payload(
             operations_payload = payload.get("operations")
             if not isinstance(operations_payload, list):
                 return None
-            operations = strip_partial_operation_groups(
-                tuple(
-                    parse_tool_provenance_operation(operation)
-                    for operation in operations_payload
-                )
-            )
-            steps = tuple(ReplayStep(operation=operation) for operation in operations)
+            raw_steps = [{"operation": operation} for operation in operations_payload]
             primary_input = None
             script_inputs = ()
             source_manager_id = None
@@ -181,7 +174,6 @@ def _provenance_step_clipboard_payload(
             raw_inputs = payload.get("script_inputs", [])
             if not isinstance(raw_steps, list) or not isinstance(raw_inputs, list):
                 return None
-            steps = tuple(ReplayStep.model_validate(step) for step in raw_steps)
             primary_input = payload.get("primary_input")
             if primary_input is not None and not isinstance(primary_input, str):
                 return None
@@ -191,35 +183,45 @@ def _provenance_step_clipboard_payload(
             names = {item.name for item in script_inputs}
             if len(names) != len(script_inputs) or primary_input in names:
                 return None
-            available_names = names | ({primary_input} if primary_input else set())
-            if any(
-                name not in available_names
-                for step in steps
-                for name in step.input_bindings.values()
-            ):
-                return None
             source_manager_id = payload.get("source_manager_id")
             if source_manager_id is not None and not isinstance(source_manager_id, str):
                 return None
         active_name = payload.get("active_name")
         if not isinstance(active_name, str) or not active_name:
             active_name = "derived"
-        if not steps:
-            return None
-        return _ProvenanceStepsClipboardPayload(
-            ToolProvenanceSpec(
-                kind="script",
-                start_label="Apply selected provenance steps",
-                active_name=active_name,
-                primary_input=primary_input,
-                script_inputs=(
+        spec = parse_tool_provenance_spec(
+            {
+                "kind": "script",
+                "start_label": "Apply selected provenance steps",
+                "active_name": active_name,
+                "primary_input": primary_input,
+                "script_inputs": (
                     *((ScriptInput(name=primary_input),) if primary_input else ()),
                     *script_inputs,
                 ),
-                steps=steps,
-            ),
-            source_manager_id,
+                "steps": raw_steps,
+            }
         )
+        if spec is None or not spec.steps:
+            return None
+        if version == 1:
+            operations = strip_partial_operation_groups(spec.operations)
+            spec = spec.model_copy(
+                update={
+                    "steps": tuple(
+                        ReplayStep(operation=operation) for operation in operations
+                    )
+                }
+            )
+        else:
+            available_names = names | ({primary_input} if primary_input else set())
+            if any(
+                name not in available_names
+                for step in spec.steps
+                for name in step.input_bindings.values()
+            ):
+                return None
+        return _ProvenanceStepsClipboardPayload(spec, source_manager_id)
     except (
         TypeError,
         ValueError,

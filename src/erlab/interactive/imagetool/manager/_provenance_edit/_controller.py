@@ -3644,13 +3644,7 @@ class _ProvenanceEditController:
             parent_data = node.resolved_replay_source_data()
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-        data = ToolProvenanceSpec._starting_data_for_kind(
-            typing.cast(
-                "typing.Literal['full_data', 'public_data', 'selection']",
-                spec.kind,
-            ),
-            parent_data,
-        )
+        data = parent_data.copy(deep=False)
         replay_spec = script(
             *spec.operations,
             start_label="Replay live provenance",

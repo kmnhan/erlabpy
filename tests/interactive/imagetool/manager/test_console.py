@@ -1315,6 +1315,11 @@ def test_manager_console_child_window_divide_uses_public_nonuniform_dims(
         assert tools[0].children[0].data.dims == ("sample_temp", "eV")
         assert "sample_temp_idx" not in tools[0].data.dims
         assert "sample_temp_idx" not in tools[0].children[0].data.dims
+        xr.testing.assert_identical(parent.current_source_data(), data)
+        child = manager._child_node(child_uid)
+        xr.testing.assert_identical(
+            child.current_source_data(), tools[0].children[0].data
+        )
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -3517,7 +3522,7 @@ def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
     assert dialogs == ["An error occurred while opening reloaded data."]
 
 
-def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
+def test_manager_reload_script_inputs_use_physical_nonuniform_dims(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[
@@ -3529,7 +3534,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         dims=("x", "y"),
         coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(3.0)},
     )
-    operation_code = "derived = erlab.utils.array._restore_nonuniform_dims(data_0) + 1"
+    operation_code = "derived = data_0 + 1"
 
     with manager_context() as manager:
         manager.show()
@@ -3540,13 +3545,19 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
             manager._lineage_controller._show_multi_input_script_result(
                 data + 1.0,
                 (0,),
-                operation_label="Offset restored input",
+                operation_label="Offset input",
                 operation_code=operation_code,
             )
             == 1
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert manager.get_imagetool(1).slicer_area.data.dims == ("x_idx", "y")
+        derived = manager._tool_graph.root_wrappers[1]
+        assert derived.displayed_provenance_spec is not None
+        assert (
+            "restore_nonuniform"
+            not in derived.displayed_provenance_spec.model_dump_json()
+        )
 
         updated = data + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated)
@@ -3566,9 +3577,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         manager.reload_selected()
 
         xr.testing.assert_identical(
-            erlab.utils.array._restore_nonuniform_dims(
-                manager.get_imagetool(1).slicer_area.data
-            ),
+            manager.get_imagetool(1).slicer_area.displayed_data,
             updated + 1.0,
         )
         assert manager.dependency_status_for_uid(derived_uid) == "current"
