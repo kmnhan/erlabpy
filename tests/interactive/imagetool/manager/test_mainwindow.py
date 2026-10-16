@@ -5824,25 +5824,6 @@ def test_load_source_details_controller_skips_edit_when_node_disappears(
     assert events == ["exec"]
 
 
-def test_details_panel_selected_derivation_row_rejects_unexpected_item_data(
-    qtbot,
-) -> None:
-    derivation_list = manager_widgets._MetadataDerivationListWidget()
-    qtbot.addWidget(derivation_list)
-    item = QtWidgets.QTreeWidgetItem(["row"])
-    item.setData(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE, object())
-    derivation_list.addItem(item)
-    item.setSelected(True)
-
-    manager = types.SimpleNamespace(metadata_derivation_list=derivation_list)
-    controller = _DetailsPanelController(
-        typing.cast("manager_mainwindow.ImageToolManager", manager)
-    )
-    manager._selected_derivation_items = controller._selected_derivation_items
-
-    assert controller._selected_derivation_row() is None
-
-
 def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:
     workspace_path = (tmp_path / "workspace.itws").resolve()
     workspace_path.write_bytes(b"itws")

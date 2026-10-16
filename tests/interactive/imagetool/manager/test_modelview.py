@@ -2580,10 +2580,6 @@ def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
 
         assert manager.metadata_derivation_list.topLevelItem(0) is first_item
 
-        invalid_item = QtWidgets.QTreeWidgetItem()
-        manager._details_panel._populate_metadata_derivation_item_children(invalid_item)
-        assert invalid_item.childCount() == 0
-
         manager._details_panel._flush_debounced_details_refreshes({wrapper.uid})
         assert manager._metadata_node_uid == wrapper.uid
 

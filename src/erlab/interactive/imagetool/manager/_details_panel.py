@@ -802,22 +802,19 @@ class _DetailsPanelController:
         expanded: set[_ProvenanceDisplayRow] = set()
 
         def collect(item: QtWidgets.QTreeWidgetItem) -> None:
-            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-            if isinstance(row, _ProvenanceDisplayRow):
-                if item.isSelected():
-                    selected.add(row)
-                if item.isExpanded():
-                    expanded.add(row)
+            row = typing.cast(
+                "_ProvenanceDisplayRow", item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            )
+            if item.isSelected():
+                selected.add(row)
+            if item.isExpanded():
+                expanded.add(row)
             for index in range(item.childCount()):
-                child = item.child(index)
-                if child is not None:  # pragma: no branch - valid Qt row
-                    collect(child)
+                collect(typing.cast("QtWidgets.QTreeWidgetItem", item.child(index)))
 
         tree = self._manager.metadata_derivation_list
         for index in range(tree.topLevelItemCount()):
-            item = tree.topLevelItem(index)
-            if item is not None:  # pragma: no branch - valid Qt row
-                collect(item)
+            collect(typing.cast("QtWidgets.QTreeWidgetItem", tree.topLevelItem(index)))
         return frozenset(selected), frozenset(expanded)
 
     def _restore_metadata_derivation_item_state(
@@ -847,11 +844,14 @@ class _DetailsPanelController:
     ) -> None:
         if item.childCount() != 0:
             return
-        row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-        if not isinstance(row, _ProvenanceDisplayRow):
-            return
-        target_rows = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
-        if isinstance(target_rows, tuple) and len(target_rows) >= 2:
+        row = typing.cast(
+            "_ProvenanceDisplayRow", item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+        )
+        target_rows = typing.cast(
+            "tuple[tuple[str, _ProvenanceDisplayRow], ...]",
+            item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE),
+        )
+        if len(target_rows) >= 2:
             rows_by_node: list[
                 tuple[
                     _ImageToolWrapper | _ManagedWindowNode,
@@ -860,7 +860,7 @@ class _DetailsPanelController:
             ] = []
             for uid, target_row in target_rows:
                 node = self._manager._tool_graph.nodes.get(uid)
-                if node is None or not isinstance(target_row, _ProvenanceDisplayRow):
+                if node is None:
                     return
                 current_rows = tuple(
                     self._current_derivation_display_row(
@@ -1345,9 +1345,9 @@ class _DetailsPanelController:
                 0, _METADATA_DERIVATION_CODE_ROLE
             ):
                 continue
-            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-            if not isinstance(row, _ProvenanceDisplayRow):
-                continue
+            row = typing.cast(
+                "_ProvenanceDisplayRow", item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            )
             uid = self._manager._metadata_node_uid
             targets = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
             if targets:
@@ -1433,10 +1433,9 @@ class _DetailsPanelController:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return None
-        row = items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
-        if isinstance(row, _ProvenanceDisplayRow):
-            return row
-        return None
+        return typing.cast(
+            "_ProvenanceDisplayRow", items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
+        )
 
     def _selected_derivation_target_rows(
         self,
@@ -1444,24 +1443,17 @@ class _DetailsPanelController:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return ()
-        target_rows = items[0].data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
-        if (
-            isinstance(target_rows, tuple)
-            and target_rows
-            and all(
-                isinstance(target, tuple)
-                and len(target) == 2
-                and isinstance(target[0], str)
-                and isinstance(target[1], _ProvenanceDisplayRow)
-                for target in target_rows
-            )
-        ):
+        target_rows = typing.cast(
+            "tuple[tuple[str, _ProvenanceDisplayRow], ...]",
+            items[0].data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE),
+        )
+        if target_rows:
             return target_rows
-        row = items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
+        row = typing.cast(
+            "_ProvenanceDisplayRow", items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
+        )
         uid = self._manager._metadata_node_uid
-        if uid is not None and isinstance(row, _ProvenanceDisplayRow):
-            return ((uid, row),)
-        return ()
+        return () if uid is None else ((uid, row),)
 
     def _build_metadata_derivation_menu(
         self, *, include_row_actions: bool = True
