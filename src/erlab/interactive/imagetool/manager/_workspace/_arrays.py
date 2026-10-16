@@ -401,8 +401,7 @@ class WorkspaceFileManager(CachingFileManager):
                 raise RuntimeError("Workspace reader is already attached to a store")
             if store.closed:
                 raise RuntimeError("Workspace store closed before reader attachment")
-            if hasattr(self, "_ref_counter"):
-                super().close(needs_lock=False)
+            super().close(needs_lock=False)
             self._store = store
             self._workspace_id = store.workspace_id
             store.register_reader(self)
@@ -740,8 +739,6 @@ class _WorkspaceBackendArray(BackendArray):
 
     def _getitem(self, key: typing.Any) -> typing.Any:
         manager = self.datastore._manager
-        if not isinstance(manager, WorkspaceFileManager):
-            raise TypeError("Workspace backend requires a WorkspaceFileManager")
         if manager._serialized_worker:
             return manager._read_bounded_variable(self.variable_name, key)
         with manager.read_session(allow_during_write=True):

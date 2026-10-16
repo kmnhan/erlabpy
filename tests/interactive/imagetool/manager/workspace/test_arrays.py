@@ -884,15 +884,6 @@ def test_workspace_file_manager_lifecycle_guards(tmp_path) -> None:
     assert worker.__dask_tokenize__()[1] == str(path)
     worker.close()
 
-    backend = workspace_arrays._WorkspaceBackendArray(
-        "data",
-        types.SimpleNamespace(_manager=object()),
-        shape=(1,),
-        dtype=np.dtype(float),
-    )
-    with pytest.raises(TypeError, match="WorkspaceFileManager"):
-        backend._getitem(slice(None))
-
 
 def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> None:
     path = tmp_path / "workspace.itws"
