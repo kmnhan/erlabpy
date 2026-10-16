@@ -64,6 +64,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
     ReplayGraphError,
+    ResolvedReplayInput,
     SelectedProvenanceScope,
     compile_replay_graph,
     emit_replay_code,
@@ -6946,7 +6947,9 @@ def test_selected_primary_display_does_not_claim_raw_revision(tmp_path, with_fal
     assert all(row.on_primary_chain for row in rows)
     graph = compile_replay_graph(
         spec,
-        live_input_resolver=(None if with_fallback else lambda item: (raw, item)),
+        live_input_resolver=(
+            None if with_fallback else lambda item: ResolvedReplayInput(raw, item)
+        ),
     )
     expected = raw.isel(x=slice(0, 2)).mean("y")
     xr.testing.assert_identical(execute_replay_graph(graph), expected)
@@ -7024,8 +7027,7 @@ def test_replay_cache_uses_resolved_input_revision() -> None:
         graph = compile_replay_graph(
             spec,
             live_input_resolver=lambda _, data=data, resolved_input=resolved_input: (
-                data,
-                resolved_input,
+                ResolvedReplayInput(data, resolved_input)
             ),
         )
         xr.testing.assert_identical(

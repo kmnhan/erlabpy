@@ -38,6 +38,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
     ReplayGraphError,
+    ResolvedReplayInput,
     SelectedProvenanceScope,
     _code_has_scoped_definition,
     _code_name_accesses,
@@ -180,7 +181,11 @@ def test_captured_input_trust_inventory_matches_replay_bindings() -> None:
     )
 
     def resolve(item: ScriptInput):
-        return (source, item) if item.revision_id == "captured" else None
+        return (
+            ResolvedReplayInput(source, item)
+            if item.revision_id == "captured"
+            else None
+        )
 
     entries = provenance_code_trust_entries(
         spec, location_prefix="copied", live_input_resolver=resolve
@@ -1308,7 +1313,14 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         script_key = script_graph.add_node(
             f"script-{message}",
             "script",
-            payload={"bindings": (), "codes": codes, "active_name": "derived"},
+            payload={
+                "bindings": (),
+                "codes": codes,
+                "active_name": "derived",
+                "external_names": ((),),
+                "hoist_imports": (False,),
+                "uses_implicit_framework_imports": (False,),
+            },
         )
         script_graph.output_key = script_key
         with pytest.raises(ReplayGraphError, match=message):
@@ -1381,7 +1393,9 @@ def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
             "bindings": (("cached", external_key),),
             "codes": ("derived = cached + 1",),
             "document_codes": ("derived = cached + 1",),
+            "external_names": ((),),
             "hoist_imports": (False,),
+            "uses_implicit_framework_imports": (False,),
         },
     )
     graph.output_key = local_key
@@ -1518,7 +1532,7 @@ def test_rebuild_script_inputs_controls_recorded_fallback(
 
     resolved, refreshed = rebuild_script_inputs(
         (script_input,),
-        live_input_resolver=lambda item: (expected, item),
+        live_input_resolver=lambda item: ResolvedReplayInput(expected, item),
         authorize=lambda *_args: pytest.fail(
             "live input must not authorize recorded provenance"
         ),
@@ -1607,7 +1621,7 @@ def test_rebuild_script_provenance_cache_separates_live_inputs(
 
     def resolve_live(script_input):
         data = data_by_ref.get((script_input.node_uid, script_input.data_role))
-        return None if data is None else (data, script_input)
+        return None if data is None else ResolvedReplayInput(data, script_input)
 
     result, _ = rebuild_script_provenance(
         spec,
@@ -1654,7 +1668,7 @@ def test_rebuild_cache_separates_live_input_source_transforms() -> None:
     def resolve_live(script_input: ScriptInput):
         if script_input.node_uid != "shared-node":
             return None
-        return source, script_input
+        return ResolvedReplayInput(source, script_input)
 
     result, _ = rebuild_script_provenance(
         spec,
@@ -1694,7 +1708,7 @@ def test_replay_cache_uses_resolved_live_input_snapshot() -> None:
         )
         graph = compile_replay_graph(
             spec,
-            live_input_resolver=lambda _item: (data, resolved_input),
+            live_input_resolver=lambda _item: ResolvedReplayInput(data, resolved_input),
         )
         return execute_replay_graph(graph, cache=replay_cache)
 
@@ -2161,12 +2175,12 @@ def test_rebuild_cache_separates_detached_recorded_inputs(
     replay_cache: dict[str, xr.DataArray] = {}
     source_result, _ = rebuild_script_provenance(
         nested(source_path),
-        live_input_resolver=lambda item: (source, item),
+        live_input_resolver=lambda item: ResolvedReplayInput(source, item),
         cache=replay_cache,
     )
     displayed_result, _ = rebuild_script_provenance(
         nested(displayed_path),
-        live_input_resolver=lambda item: (displayed, item),
+        live_input_resolver=lambda item: ResolvedReplayInput(displayed, item),
         cache=replay_cache,
     )
 
@@ -2337,8 +2351,8 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     def resolve_live(_script_input):
         nonlocal live_calls
         live_calls += 1
-        return data, live_input.model_copy(
-            update={"node_snapshot_token": current_marker}
+        return ResolvedReplayInput(
+            data, live_input.model_copy(update={"node_snapshot_token": current_marker})
         )
 
     live_rebuilt, live_rebuilt_spec = rebuild_script_provenance(
@@ -2402,8 +2416,11 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
         resolved_data = (
             source_data if script_input.data_role == "source" else displayed_data
         )
-        return resolved_data, script_input.model_copy(
-            update={"node_snapshot_token": f"current-{script_input.data_role}"}
+        return ResolvedReplayInput(
+            resolved_data,
+            script_input.model_copy(
+                update={"node_snapshot_token": f"current-{script_input.data_role}"}
+            ),
         )
 
     mixed_role_result, mixed_role_rebuilt = rebuild_script_provenance(
@@ -3728,6 +3745,8 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("result = data_0",),
             "active_name": "result",
             "bindings": (("data_0", source_key),),
+            "external_names": ((),),
+            "hoist_imports": (False,),
             "uses_implicit_framework_imports": (False,),
         },
     )
@@ -3755,6 +3774,8 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("bad =",),
             "active_name": "derived",
             "bindings": (),
+            "external_names": ((),),
+            "hoist_imports": (False,),
             "uses_implicit_framework_imports": (False,),
         },
     )
@@ -5224,23 +5245,6 @@ def test_replay_import_helpers_preserve_nonhoistable_imports() -> None:
     assert not _is_future_import("import numpy as np")
 
 
-def test_replay_import_helpers_preserve_imports_without_ast_locations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import_node = ast.Import(names=[ast.alias(name="numpy")])
-    import_node.lineno = 1
-    import_node.col_offset = 0
-    import_node.end_lineno = None
-    import_node.end_col_offset = None
-    module = ast.Module(body=[import_node], type_ignores=[])
-    monkeypatch.setattr(_graph.ast, "parse", lambda *_args, **_kwargs: module)
-
-    assert _leading_top_level_imports("import numpy") == (
-        [],
-        "import numpy",
-    )
-
-
 def test_replay_import_helpers_track_names_bound_by_python_constructs() -> None:
     accessed, rebound = _code_name_accesses(
         textwrap.dedent(
@@ -5649,9 +5653,9 @@ def test_live_inputs_bypass_unreachable_unsafe_fallback() -> None:
 
     def resolve_live(script_input: ScriptInput):
         if script_input is left_input:
-            return left, script_input
+            return ResolvedReplayInput(left, script_input)
         if script_input is right_input:
-            return right, script_input
+            return ResolvedReplayInput(right, script_input)
         return None
 
     assert script_provenance_replayable(spec)
@@ -5695,7 +5699,7 @@ def test_replay_rejects_unresolved_recorded_input(
         rebuild_script_provenance(
             spec,
             live_input_resolver=lambda item: (
-                (left, item) if item.name == "left" else None
+                ResolvedReplayInput(left, item) if item.name == "left" else None
             ),
         )
 
@@ -5746,7 +5750,7 @@ def test_live_input_resolution_uses_exact_input_across_nested_scopes() -> None:
 
     def resolve_live(script_input: ScriptInput):
         if script_input is outer_shared_input:
-            return live_shared, script_input
+            return ResolvedReplayInput(live_shared, script_input)
         return None
 
     assert not script_provenance_replayable(recorded_shared)
@@ -5789,7 +5793,7 @@ def test_rebuild_nested_live_inputs_uses_first_resolution() -> None:
         if calls[script_input.name] > 1:
             return None
         data = left if script_input.name == "left" else right
-        return data, script_input
+        return ResolvedReplayInput(data, script_input)
 
     result, _rebuilt = rebuild_script_provenance(
         spec,
@@ -5816,7 +5820,11 @@ def test_live_input_bypasses_invalid_recorded_fallback() -> None:
     )
 
     def resolve_live(script_input: ScriptInput):
-        return (data, script_input) if script_input is live_input else None
+        return (
+            ResolvedReplayInput(data, script_input)
+            if script_input is live_input
+            else None
+        )
 
     assert script_provenance_replayable(
         spec,
@@ -6001,7 +6009,7 @@ def test_live_input_classification_supports_deep_replay() -> None:
 
     def resolve_live(script_input: ScriptInput):
         if script_input.node_uid in {"left", "right"}:
-            return data, script_input
+            return ResolvedReplayInput(data, script_input)
         return None
 
     assert script_provenance_replayable(
@@ -6015,17 +6023,6 @@ def test_live_input_classification_supports_deep_replay() -> None:
     )
     xr.testing.assert_identical(result, data + data)
     assert rebuilt.kind == "script"
-
-
-def test_replay_rejects_recorded_input_cycle() -> None:
-    spec = script(
-        start_label="Use child",
-        active_name="child",
-        primary_input="child",
-        script_inputs=(ScriptInput(name="child"),),
-    )
-    with pytest.raises(ReplayGraphError, match="input cycle"):
-        rebuild_script_provenance(spec, _input_provenance_resolver=lambda _item: spec)
 
 
 def test_rebuild_preflight_work_scales_linearly(

@@ -24,8 +24,6 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 
-import xarray as xr
-
 from erlab.interactive.imagetool._provenance._code import (
     _NONUNIFORM_RESTORE_FUNCTION_NAME,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
@@ -58,6 +56,8 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 
 if typing.TYPE_CHECKING:
+    import xarray as xr
+
     from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 
 
@@ -231,9 +231,7 @@ class ResolvedReplayInput(typing.NamedTuple):
     data_role: typing.Literal["raw", "resolved"] = "raw"
 
 
-LiveInputResolver = Callable[
-    [typing.Any], tuple[xr.DataArray, typing.Any] | ResolvedReplayInput | None
-]
+LiveInputResolver = Callable[[ScriptInput], ResolvedReplayInput | None]
 _REPLAY_ALIASES = {
     "era": "erlab.analysis",
     "eri": "erlab.interactive",
@@ -1020,10 +1018,7 @@ def _compile_script_input(
         and (resolved := live_input_resolver(script_input)) is not None
     ):
         live_resolved = True
-        if isinstance(resolved, ResolvedReplayInput):
-            live_data, refreshed, value_role = resolved
-        else:
-            live_data, refreshed = resolved
+        live_data, refreshed, value_role = resolved
     if external or live_resolved:
         raw_key = graph.add_node(
             f"live_input:{uuid.uuid4().hex}",
@@ -1647,7 +1642,6 @@ def compile_replay_graph(
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
     allow_unresolved_inputs: bool = False,
-    _input_provenance_resolver: InputProvenanceResolver | None = None,
 ) -> ReplayGraph:
     """Compile provenance for code output or structured runtime execution.
 
@@ -1657,11 +1651,7 @@ def compile_replay_graph(
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
-    resolve_input_provenance = (
-        _memoized_input_provenance_resolver()
-        if _input_provenance_resolver is None
-        else _input_provenance_resolver
-    )
+    resolve_input_provenance = _memoized_input_provenance_resolver()
     resolve_live = (
         None
         if live_input_resolver is None
@@ -2227,16 +2217,16 @@ def _standalone_statement_span(
     code: str, statement: ast.stmt
 ) -> tuple[int, int] | None:
     """Return the byte span of a statement that occupies complete source lines."""
-    if statement.end_lineno is None or statement.end_col_offset is None:
-        return None
     encoded = code.encode()
     line_starts = [0]
     for line in encoded.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
     start = line_starts[statement.lineno - 1] + statement.col_offset
-    end = line_starts[statement.end_lineno - 1] + statement.end_col_offset
+    end = line_starts[typing.cast("int", statement.end_lineno) - 1] + typing.cast(
+        "int", statement.end_col_offset
+    )
     line_start = line_starts[statement.lineno - 1]
-    line_end = line_starts[statement.end_lineno]
+    line_end = line_starts[typing.cast("int", statement.end_lineno)]
     if encoded[line_start:start].strip() or encoded[end:line_end].strip():
         return None
     return line_start, line_end
@@ -2257,14 +2247,13 @@ def _replace_statement_load_name(
     spans = sorted(
         (
             line_starts[node.lineno - 1] + node.col_offset,
-            line_starts[node.end_lineno - 1] + node.end_col_offset,
+            line_starts[typing.cast("int", node.end_lineno) - 1]
+            + typing.cast("int", node.end_col_offset),
         )
         for node in ast.walk(statement)
         if isinstance(node, ast.Name)
         and isinstance(node.ctx, ast.Load)
         and node.id == target_name
-        and node.end_lineno is not None
-        and node.end_col_offset is not None
     )
     replacement = source_name.encode()
     for start, end in reversed(spans):
@@ -2286,14 +2275,12 @@ def _replace_ast_names(
     spans = [
         (
             line_starts[node.lineno - 1] + node.col_offset,
-            line_starts[node.end_lineno - 1] + node.end_col_offset,
+            line_starts[typing.cast("int", node.end_lineno) - 1]
+            + typing.cast("int", node.end_col_offset),
             replacements[node.id].encode(),
         )
         for node in ast.walk(module)
-        if isinstance(node, ast.Name)
-        and node.id in replacements
-        and node.end_lineno is not None
-        and node.end_col_offset is not None
+        if isinstance(node, ast.Name) and node.id in replacements
     ]
     tokens = iter(tokenize.generate_tokens(io.StringIO(code).readline))
     for token in tokens:
@@ -2320,11 +2307,7 @@ def _replace_ast_names(
         if not isinstance(statement, ast.Import | ast.ImportFrom):
             continue
         for alias in statement.names:
-            if (
-                alias.name == "*"
-                or alias.end_lineno is None
-                or alias.end_col_offset is None
-            ):
+            if alias.name == "*":
                 continue
             bound_name = alias.asname or (
                 alias.name.partition(".")[0]
@@ -2334,7 +2317,9 @@ def _replace_ast_names(
             replacement = replacements.get(bound_name)
             if replacement is None:
                 continue
-            alias_end = line_starts[alias.end_lineno - 1] + alias.end_col_offset
+            alias_end = line_starts[
+                typing.cast("int", alias.end_lineno) - 1
+            ] + typing.cast("int", alias.end_col_offset)
             if alias.asname is not None:
                 spans.append(
                     (
@@ -2453,12 +2438,7 @@ def _replace_script_output_identifiers(
             target = binding_statement.target
 
         statement_span = _standalone_statement_span(code, binding_statement)
-        if (
-            target is None
-            or target.end_lineno is None
-            or target.end_col_offset is None
-            or statement_span is None
-        ):
+        if target is None or statement_span is None:
             statement_start = statement_span[0] if statement_span is not None else 0
             encoded = code.encode()
             renamed.append(
@@ -2475,7 +2455,9 @@ def _replace_script_output_identifiers(
         for line in encoded.splitlines(keepends=True):
             line_starts.append(line_starts[-1] + len(line))
         target_start = line_starts[target.lineno - 1] + target.col_offset
-        target_end = line_starts[target.end_lineno - 1] + target.end_col_offset
+        target_end = line_starts[
+            typing.cast("int", target.end_lineno) - 1
+        ] + typing.cast("int", target.end_col_offset)
         statement_start, statement_end = statement_span
         statement = encoded[statement_start:statement_end]
         relative_start = target_start - statement_start
@@ -2508,15 +2490,12 @@ def _format_long_call_assignments(code: str, *, line_length: int = 88) -> str:
             or not isinstance(statement.value, ast.Call)
         ):
             continue
-        statement_code = ast.get_source_segment(code, statement)
-        expression_code = ast.get_source_segment(code, statement.value)
+        statement_code = typing.cast("str", ast.get_source_segment(code, statement))
+        expression_code = typing.cast(
+            "str", ast.get_source_segment(code, statement.value)
+        )
         span = _standalone_statement_span(code, statement)
-        if (
-            statement_code is None
-            or expression_code is None
-            or span is None
-            or max(map(len, statement_code.splitlines())) <= line_length
-        ):
+        if span is None or max(map(len, statement_code.splitlines())) <= line_length:
             continue
         formatted = _assignment_code(
             statement.targets[0].id,
@@ -2564,7 +2543,6 @@ def _inline_simple_name_aliases(
     if _code_has_scoped_definition(code):
         return code
 
-    changed = False
     protected_names = set() if protected_names is None else protected_names
 
     class SimpleAliasInliner(ast.NodeTransformer):
@@ -2686,82 +2664,45 @@ def _inline_simple_name_aliases(
                         del module.body[idx]
                         code = ast.unparse(ast.fix_missing_locations(module))
                         module = ast.parse(code, mode="exec")
-                    changed = True
                     break
 
-            rewrite_end: int | None = None
-            can_rewrite = True
-            for later_idx, later_stmt in enumerate(
-                module.body[idx + 1 :],
-                start=idx + 1,
-            ):
-                if statement_rebinds_name(later_stmt, source_name):
-                    can_rewrite = False
-                    break
-                if not statement_rebinds_name(later_stmt, target_name):
-                    continue
-                if (
-                    isinstance(later_stmt, ast.Assign)
-                    and len(later_stmt.targets) == 1
-                    and isinstance(later_stmt.targets[0], ast.Name)
-                    and later_stmt.targets[0].id == target_name
-                    and _statement_load_count(
-                        later_stmt,
-                        target_name,
-                    )
-                ):
-                    rewrite_end = later_idx
-                else:
-                    can_rewrite = False
-                break
-            if rewrite_end != idx + 1 or not can_rewrite:
-                continue
-            if any(
-                statement_rebinds_name(intervening, target_name)
-                for intervening in module.body[idx + 1 : rewrite_end]
-            ):
-                continue
-            rewrite_statements = module.body[idx + 1 : rewrite_end + 1]
-            if any(
-                _statement_load_count(item, target_name)
-                != inline_load_count(item, target_name)
-                for item in rewrite_statements
+            next_statement = module.body[idx + 1]
+            if (
+                statement_rebinds_name(next_statement, source_name)
+                or not isinstance(next_statement, ast.Assign)
+                or len(next_statement.targets) != 1
+                or not isinstance(next_statement.targets[0], ast.Name)
+                or next_statement.targets[0].id != target_name
+                or not _statement_load_count(next_statement, target_name)
+                or _statement_load_count(next_statement, target_name)
+                != inline_load_count(next_statement, target_name)
             ):
                 continue
 
             inlined_code = _inline_standalone_alias(
                 code,
                 stmt,
-                rewrite_statements[0],
+                next_statement,
                 target_name=target_name,
                 source_name=source_name,
             )
             if inlined_code is not None:
                 code = inlined_code
                 module = ast.parse(code, mode="exec")
-                changed = True
                 break
 
             inliner = SimpleAliasInliner(target_name, source_name)
-            rewritten: list[ast.stmt] = []
-            for item in rewrite_statements:
-                cloned = ast.parse(ast.unparse(item), mode="exec").body[0]
-                rewritten.append(
-                    ast.fix_missing_locations(
-                        typing.cast("ast.stmt", inliner.visit(cloned))
-                    )
-                )
-            module.body[idx + 1 : rewrite_end + 1] = rewritten
+            cloned = ast.parse(ast.unparse(next_statement), mode="exec").body[0]
+            module.body[idx + 1] = ast.fix_missing_locations(
+                typing.cast("ast.stmt", inliner.visit(cloned))
+            )
             del module.body[idx]
             code = ast.unparse(ast.fix_missing_locations(module))
             module = ast.parse(code, mode="exec")
-            changed = True
             break
         else:
             break
 
-    if not changed:
-        return code
     return code
 
 
@@ -2924,13 +2865,11 @@ def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
     for statement in module.body:
         if not isinstance(statement, ast.Import | ast.ImportFrom):
             break
-        if statement.end_lineno is None or statement.end_col_offset is None:
-            break
         start_index = statement.lineno - 1
-        end_index = statement.end_lineno - 1
+        end_index = typing.cast("int", statement.end_lineno) - 1
         if (
             lines[start_index][: statement.col_offset].strip()
-            or lines[end_index][statement.end_col_offset :].strip()
+            or lines[end_index][typing.cast("int", statement.end_col_offset) :].strip()
         ):
             break
         source = "\n".join(lines[start_index : end_index + 1]).strip()
@@ -2979,20 +2918,18 @@ def _split_module_prologue(code: str) -> tuple[str, str]:
         prologue_end = statement
         statement_index += 1
 
-    if (
-        prologue_end is None
-        or prologue_end.end_lineno is None
-        or prologue_end.end_col_offset is None
-    ):
+    if prologue_end is None:
         return "", code
 
     encoded = code.encode()
     line_starts = [0]
     for line in encoded.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
-    split_at = line_starts[prologue_end.end_lineno - 1] + prologue_end.end_col_offset
+    split_at = line_starts[
+        typing.cast("int", prologue_end.end_lineno) - 1
+    ] + typing.cast("int", prologue_end.end_col_offset)
 
-    line_end = line_starts[prologue_end.end_lineno]
+    line_end = line_starts[typing.cast("int", prologue_end.end_lineno)]
     line_suffix = encoded[split_at:line_end]
     if not line_suffix.strip() or line_suffix.lstrip().startswith(b"#"):
         split_at = line_end
@@ -3864,7 +3801,7 @@ def emit_replay_code(
             external_names_by_code = list(
                 typing.cast(
                     "tuple[tuple[str, ...], ...]",
-                    node.payload.get("external_names", ((),) * len(codes)),
+                    node.payload["external_names"],
                 )
             )
             implicit_imports_by_code = list(
@@ -3876,7 +3813,7 @@ def emit_replay_code(
             hoist_imports = list(
                 typing.cast(
                     "tuple[bool, ...]",
-                    node.payload.get("hoist_imports", (False,) * len(codes)),
+                    node.payload["hoist_imports"],
                 )
             )
             active_name = typing.cast("str", node.payload["active_name"])

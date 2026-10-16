@@ -54,7 +54,10 @@ from erlab.interactive._figurecomposer._ui import (
     _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
 from erlab.interactive.imagetool._provenance._execution import execute_replay_graph
-from erlab.interactive.imagetool._provenance._graph import compile_replay_graph
+from erlab.interactive.imagetool._provenance._graph import (
+    ResolvedReplayInput,
+    compile_replay_graph,
+)
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceSpec,
@@ -3213,7 +3216,9 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     live_selected_graph = compile_replay_graph(
         live_selected_spec,
         live_input_resolver=lambda script_input: (
-            (base_data, script_input) if script_input.node_uid == "live-node" else None
+            ResolvedReplayInput(base_data, script_input)
+            if script_input.node_uid == "live-node"
+            else None
         ),
     )
     xr.testing.assert_identical(
@@ -4139,11 +4144,11 @@ def test_figure_composer_provenance_replays_transitive_selected_source_chain(
 
     def resolve_live(
         script_input: ScriptInput,
-    ) -> tuple[xr.DataArray, ScriptInput] | None:
+    ) -> ResolvedReplayInput | None:
         if script_input.node_uid != "base-node":
             return None
         resolved_names.append(script_input.name)
-        return base, script_input
+        return ResolvedReplayInput(base, script_input)
 
     selected_graph = compile_replay_graph(
         selected_spec,

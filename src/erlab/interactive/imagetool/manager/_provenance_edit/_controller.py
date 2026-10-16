@@ -23,7 +23,10 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_script_provenance,
     script_provenance_replayable,
 )
-from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    ResolvedReplayInput,
+)
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     ReplayStep,
@@ -577,14 +580,16 @@ class _ProvenanceEditController:
         if external_input_names and not node.has_replay_source:
             return "The original replay source is no longer available."
 
-        def resolve_recorded(script_input: ScriptInput):
+        def resolve_recorded(script_input: ScriptInput) -> ResolvedReplayInput | None:
             if (
                 script_input.revision_id is not None
                 and self._manager._provenance_revisions.has_data(
                     script_input.revision_id
                 )
             ):
-                return typing.cast("xr.DataArray", None), script_input
+                return ResolvedReplayInput(
+                    typing.cast("xr.DataArray", None), script_input
+                )
             return None
 
         if not script_provenance_replayable(

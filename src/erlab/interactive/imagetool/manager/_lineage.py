@@ -27,11 +27,9 @@ from erlab.interactive.imagetool._provenance._execution import (
     rebuild_script_provenance,
 )
 from erlab.interactive.imagetool._provenance._graph import (
-    InputProvenanceResolver,
     LiveInputResolver,
     ReplayGraphError,
     ResolvedReplayInput,
-    _memoized_by_identity,
 )
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
@@ -755,9 +753,6 @@ class _LineageController:
         )
         return typing.cast("LiveInputResolver", resolver)
 
-    def _input_provenance_resolver(self) -> InputProvenanceResolver:
-        return _memoized_by_identity(ScriptInput.parsed_provenance_spec)
-
     def _input_resolution_plan(
         self,
         script_inputs: Sequence[ScriptInput],
@@ -805,7 +800,7 @@ class _LineageController:
                     )
                     or item.node_uid in live_uids
                 ):
-                    return typing.cast("xr.DataArray", None), item
+                    return ResolvedReplayInput(typing.cast("xr.DataArray", None), item)
                 return None
 
             validation = _script_replay_validation(spec, live_input_resolver=resolve)
@@ -1206,7 +1201,6 @@ class _LineageController:
                     _capture_input_revision=functools.partial(
                         self._capture_rebuilt_script_input, revisions
                     ),
-                    _input_provenance_resolver=self._input_provenance_resolver(),
                 )
                 with node._suspend_descendant_propagation():
                     updated = tool._apply_inputs(
@@ -1307,7 +1301,6 @@ class _LineageController:
                 _capture_input_revision=functools.partial(
                     self._capture_rebuilt_script_input, revisions
                 ),
-                _input_provenance_resolver=self._input_provenance_resolver(),
             )
         except _TrustedProvenanceReplayCancelled:
             raise
@@ -1400,7 +1393,7 @@ class _LineageController:
                         is not None
                     )
                 ):
-                    return typing.cast("xr.DataArray", None), item
+                    return ResolvedReplayInput(typing.cast("xr.DataArray", None), item)
                 return None
 
             validation = _script_replay_validation(

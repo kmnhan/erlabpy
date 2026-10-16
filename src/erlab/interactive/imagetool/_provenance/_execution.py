@@ -966,7 +966,6 @@ def rebuild_script_provenance(
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
     authorize: ExecutionAuthorizer | None = None,
-    _input_provenance_resolver: InputProvenanceResolver | None = None,
     _capture_input_revision: Callable[[xr.DataArray, ScriptInput], ScriptInput]
     | None = None,
 ) -> tuple[xr.DataArray, typing.Any]:
@@ -978,7 +977,6 @@ def rebuild_script_provenance(
         live_input_resolver=live_input_resolver,
         trusted_user_code=True,
         structured_file_replay=True,
-        _input_provenance_resolver=_input_provenance_resolver,
     )
     _validate_replay_graph_file_sources(graph)
     data, rebuilt, _resolved = _execute_rebuilt_graph(
@@ -1003,7 +1001,6 @@ def rebuild_script_inputs(
     | None = None,
     extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
     authorize: ExecutionAuthorizer | None = None,
-    _input_provenance_resolver: InputProvenanceResolver | None = None,
     _capture_input_revision: Callable[[xr.DataArray, ScriptInput], ScriptInput]
     | None = None,
 ) -> tuple[dict[str, xr.DataArray], tuple[ScriptInput, ...]]:
@@ -1030,7 +1027,6 @@ def rebuild_script_inputs(
         live_input_resolver=resolve_live,
         trusted_user_code=True,
         structured_file_replay=True,
-        _input_provenance_resolver=_input_provenance_resolver,
     )
     _validate_replay_graph_file_sources(graph)
     _data, rebuilt, resolved = _execute_rebuilt_graph(

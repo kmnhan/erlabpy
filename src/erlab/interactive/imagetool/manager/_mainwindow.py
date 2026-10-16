@@ -108,6 +108,7 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
     from erlab.interactive.imagetool._provenance._model import (
         ScriptInput,
         ScriptInputDataRole,
@@ -2760,7 +2761,7 @@ class ImageToolManager(_ImageToolManagerBase):
         script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> tuple[xr.DataArray, ScriptInput] | None:
+    ) -> ResolvedReplayInput | None:
         return self._lineage_controller._resolve_live_script_input_for_reload(
             script_input,
             target_node_uid=target_node_uid,

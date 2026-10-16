@@ -1101,11 +1101,6 @@ def _statement_store_count(
     )
 
 
-class _NameReplacer(_ScopedNameReplacer):
-    def __init__(self, target: str, replacement: ast.expr) -> None:
-        super().__init__(target, replacement)
-
-
 def _clone_expr(node: ast.expr) -> ast.expr:
     return ast.parse(ast.unparse(node), mode="eval").body
 
@@ -1678,31 +1673,16 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
                 and not reassigns_target_immediately
             ):
                 continue
-            replacement_load_names = {
-                node.id
-                for node in ast.walk(stmt.value)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
             if (
                 len(next_stmt.targets) != 1
                 or not isinstance(next_stmt.targets[0], ast.Name)
                 or _statement_load_count(next_stmt, target) != 1
-                or any(
-                    _statement_store_count(intervening, target)
-                    for intervening in body[idx + 1 : next_idx]
-                )
-                or any(
-                    _statement_store_count(intervening, name)
-                    or _statement_load_count(intervening, name)
-                    for intervening in body[idx + 1 : next_idx]
-                    for name in replacement_load_names
-                )
             ):
                 continue
 
             new_stmt = typing.cast(
                 "ast.stmt",
-                _NameReplacer(target, _clone_expr(stmt.value)).visit(
+                _ScopedNameReplacer(target, _clone_expr(stmt.value)).visit(
                     _clone_stmt(next_stmt)
                 ),
             )
@@ -1810,10 +1790,10 @@ def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
             continue
         if _receiver_path(node) != _LEGACY_NONUNIFORM_RESTORE_PATH:
             continue
-        if node.end_lineno is None or node.end_col_offset is None:
-            continue  # pragma: no cover - populated by supported Python versions
         start = line_starts[node.lineno - 1] + node.col_offset
-        end = line_starts[node.end_lineno - 1] + node.end_col_offset
+        end = line_starts[typing.cast("int", node.end_lineno) - 1] + typing.cast(
+            "int", node.end_col_offset
+        )
         replacements.append((start, end))
 
     if not replacements:

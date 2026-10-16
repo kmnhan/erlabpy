@@ -144,73 +144,40 @@ def test_multi_input_script_provenance_rejects_mismatched_input_names() -> None:
         )
 
 
-def test_resolve_captured_input_applies_source_spec() -> None:
+@pytest.mark.parametrize("checkpoint_role", ["raw", "resolved"])
+def test_resolve_captured_input_applies_source_spec(checkpoint_role: str) -> None:
     data = xr.DataArray(np.arange(4), dims="x")
     source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
+    expected = source_spec.apply(data)
     store = _ProvenanceRevisionStore()
     script_input = ScriptInput(
         name="data",
         revision_id=store.add(data),
+        resolved_revision_id=(
+            store.add(expected) if checkpoint_role == "resolved" else None
+        ),
         follow_source=False,
-        source_spec=source_spec.model_dump(mode="json"),
-    )
-    manager = types.SimpleNamespace(
-        _provenance_revisions=store,
-        _extensions=types.SimpleNamespace(
-            execution=types.SimpleNamespace(run_operation=None)
-        ),
-        _workspace_controller=types.SimpleNamespace(
-            issue_code_execution_capability=lambda *_args, **_kwargs: (
-                _authorize_execution(())
-            )
-        ),
-        _tool_graph=types.SimpleNamespace(nodes={}),
-    )
-    controller = manager_lineage._LineageController(manager)
-    resolved = controller._resolve_live_script_input_for_reload(script_input)
-    assert resolved is not None
-    resolved_data, resolved_input = resolved
-    xr.testing.assert_identical(resolved_data, source_spec.apply(data))
-    assert resolved_input is script_input
-    missing = script_input.model_copy(update={"revision_id": "missing"})
-    assert controller._resolve_live_script_input_for_reload(missing) is None
-
-
-def test_rebased_captured_input_does_not_apply_source_spec_twice() -> None:
-    from erlab.interactive.imagetool._provenance._model import (
-        compose_full_provenance,
-        rebase_script_input_node_uids,
-    )
-
-    data = xr.DataArray(np.arange(12).reshape(4, 3), dims=("x", "y"))
-    source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
-    store = _ProvenanceRevisionStore()
-    original = script(
-        ScriptCodeOperation(label="Use source", code="derived = data.copy()"),
-        start_label="Calculation",
-        primary_input="data",
-        active_name="derived",
-        script_inputs=(
-            ScriptInput(name="data", node_uid="original", revision_id=store.add(data)),
-        ),
-    )
-    complete = compose_full_provenance(original, source_spec)
-    expected = source_spec.apply(data)
-    revision_id = store.add(expected, complete)
-    rebound = rebase_script_input_node_uids(complete, {"original": "imported"})
-    script_input = ScriptInput(
-        name="selected",
-        revision_id=revision_id,
-        provenance_spec=rebound.model_dump(mode="json"),
         source_spec=source_spec.model_dump(mode="json"),
     )
     controller = manager_lineage._LineageController(
         types.SimpleNamespace(_provenance_revisions=store)
     )
-    resolved = controller._resolve_recorded_script_input(script_input)
+    resolved = controller._resolve_live_script_input_for_reload(script_input)
     assert resolved is not None
-    xr.testing.assert_identical(resolved[0], expected)
-    assert store.get(revision_id).provenance_spec == complete
+    assert resolved.data_role == checkpoint_role
+    assert resolved.script_input is script_input
+    xr.testing.assert_identical(
+        resolved.data, expected if checkpoint_role == "resolved" else data
+    )
+    rebuilt, _refreshed = rebuild_script_inputs(
+        (script_input,),
+        live_input_resolver=controller._resolve_live_script_input_for_reload,
+    )
+    xr.testing.assert_identical(rebuilt["data"], expected)
+    missing = script_input.model_copy(
+        update={"revision_id": "missing", "resolved_revision_id": None}
+    )
+    assert controller._resolve_live_script_input_for_reload(missing) is None
 
 
 def test_duplicated_subtree_history_keeps_duplicated_source(
@@ -3060,11 +3027,11 @@ def test_live_managed_input_fallback_includes_source_transform(
             script_input
         )
         assert resolved is not None
-        live_data, refreshed_input = resolved
+        assert resolved.data_role == "raw"
+        xr.testing.assert_equal(resolved.data, data)
         expected = source_spec.apply(data)
-        xr.testing.assert_equal(live_data, expected)
 
-        recorded_input = refreshed_input.model_copy(
+        recorded_input = resolved.script_input.model_copy(
             update={"node_uid": None, "node_snapshot_token": None}
         )
         rebuilt, _refreshed = rebuild_script_inputs((recorded_input,))
