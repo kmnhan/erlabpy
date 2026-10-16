@@ -7040,6 +7040,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
                 )
             )
             self._workspace_controller = types.SimpleNamespace(
+                local_provenance_change=lambda **_kwargs: contextlib.nullcontext(),
                 _configure_tool_code_trust=lambda _tool, **_kwargs: None,
                 _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
             )

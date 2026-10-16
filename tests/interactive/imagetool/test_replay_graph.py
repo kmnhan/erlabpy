@@ -5,7 +5,6 @@ import re
 import symtable
 import sys
 import textwrap
-import types
 import typing
 from collections.abc import Collection, Mapping
 
@@ -96,6 +95,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageDerivativeOperation,
     IselOperation,
     KspaceWorkFunctionOperation,
+    ModelFitOperation,
     QSelOperation,
     RenameOperation,
     RotateOperation,
@@ -1338,11 +1338,13 @@ def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     graph = ReplayGraph()
     input_key = graph.add_node("input", "live_input", payload={"data": data})
-    external_operation = types.SimpleNamespace(
-        op="model_fit",
-        parameters={
-            "dependent": types.SimpleNamespace(expr="2 * independent"),
-        },
+    external_operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={"c0": {"value": 1.0}, "c1": {"expr": "2 * c0"}},
+        method="least_squares",
+        parameter="c1",
     )
     external_key = graph.add_node(
         "external-expression",

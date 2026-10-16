@@ -3455,6 +3455,9 @@ def test_manager_reload_script_derived_target_honors_trust_cancel(
 
     manager = types.SimpleNamespace(
         _dependency_tracker=types.SimpleNamespace(),
+        _workspace_controller=types.SimpleNamespace(
+            local_provenance_change=lambda **_kwargs: contextlib.nullcontext()
+        ),
         _node_for_target=lambda _target: node,
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(
@@ -3488,6 +3491,9 @@ def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
     dialogs: list[str] = []
     manager = types.SimpleNamespace(
         _dependency_tracker=types.SimpleNamespace(),
+        _workspace_controller=types.SimpleNamespace(
+            local_provenance_change=lambda **_kwargs: contextlib.nullcontext()
+        ),
         _node_for_target=lambda _target: node,
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(

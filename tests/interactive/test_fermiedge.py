@@ -17,7 +17,6 @@ import xarray_lmfit as xlm
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive._fit1d as fit1d_module
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive.fermiedge import (
     EdgeFitSignals,
@@ -367,7 +366,12 @@ def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
     win._restore_persistence_payload(empty)
     assert win._append_persistence_payload(empty) is empty
 
-    blob = np.array([1, 2, 3], dtype=np.uint8)
+    restored_result_ds = (
+        win._fit_data()
+        .xlm.modelfit(win._coord_name, model=win._model, params=win._params, max_nfev=2)
+        .load()
+    )
+    blob = erlab.interactive.utils._serialize_fit_dataset_blob(restored_result_ds)
     win._serialized_fit_result_blob = blob
     win._pending_persisted_fit_is_current = True
     appended = win._append_persistence_payload(empty)
@@ -392,24 +396,21 @@ def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:
 
     assert calls == ["flush", "No fit result: There is no fit result to save."]
 
-    restored_result_ds = xr.Dataset({"modelfit_results": xr.DataArray(object())})
-    monkeypatch.setattr(
-        fit1d_module,
-        "_load_lmfit_for_ftool_restore",
-        lambda load, **_kwargs: restored_result_ds,
-    )
     monkeypatch.setattr(win, "_set_fit_stats", lambda _result: calls.append("stats"))
     monkeypatch.setattr(win, "_update_fit_curve", lambda: calls.append("curve"))
     monkeypatch.setattr(win, "_mark_fit_fresh", lambda: calls.append("fresh"))
     monkeypatch.setattr(win, "_mark_fit_stale", lambda: calls.append("stale"))
-    payload_entry = win._fit_result_code_trust_entry(blob)
-    assert payload_entry is not None
-    win._saved_code_payload_entries = (payload_entry,)
-
     win._restore_persisted_fit_result_blob(blob, fit_is_current=True)
     win._restore_persisted_fit_result_blob(blob, fit_is_current=False)
 
-    assert win._last_result_ds is restored_result_ds
+    assert win._last_result_ds is not None
+    xr.testing.assert_identical(
+        win._last_result_ds.modelfit_data, restored_result_ds.modelfit_data
+    )
+    np.testing.assert_allclose(
+        win._last_result_ds.modelfit_results.item().best_fit,
+        restored_result_ds.modelfit_results.item().best_fit,
+    )
     assert calls[-6:] == ["stats", "curve", "fresh", "stats", "curve", "stale"]
 
 
