@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 import datetime
+import json
 import logging
 import pathlib
 import types
@@ -13,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui
 
 import erlab
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import (
     _load_code_from_file_details,
@@ -182,6 +184,8 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         _pending_workspace_payload=None,
         _pending_workspace_payload_kind=None,
         _pending_workspace_payload_attrs=None,
+        _workspace_tool_data_references={},
+        _set_workspace_tool_data_references=lambda _references: None,
         _source_spec=None,
         _provenance_spec=None,
         _mark_provenance_changed=lambda **_kwargs: None,
@@ -204,6 +208,7 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         node_provenance_spec=None,
         tool_input_state=state,
         pending_payload_attrs=None,
+        workspace_tool_data_references={},
     )
 
     _ManagedWindowNode._apply_provenance_owner_snapshot(
@@ -217,6 +222,59 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
     assert changed == [None]
     tool._input_state().pending.commit()
     assert changed == [None, "commit"]
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_wrapper_remaps_saved_data_references(
+    tmp_path, manager_context, pending: bool
+) -> None:
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    original = full_data().model_dump(mode="json")
+    replacement = ToolProvenanceSpec(kind="public_data")
+    workspace = tmp_path / "references.itws"
+    data_key = _persistence_constants.SAVED_TOOL_DATA_NAME
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        tool = erlab.interactive.derivative.DerivativeTool(data)
+        tool.set_script_inputs(
+            (ScriptInput(name="data", source_spec=original),), primary_input="data"
+        )
+        uid = manager.add_childtool(
+            tool, script_inputs={"data": 0}, parent=0, show=False
+        )
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        if pending:
+            assert manager._workspace_controller.loading._load_workspace_file(
+                workspace, replace=True, associate=False, mark_dirty=False, select=False
+            )
+        node = manager._child_node(uid)
+        before = node._provenance_owner_snapshot()
+        if not pending:
+            assert (
+                before.workspace_tool_data_references[data_key]["source_spec"]
+                == original
+            )
+
+        snapshot, changed = node.remap_provenance_owners(lambda _spec: replacement)
+
+        assert changed
+        if pending:
+            references = json.loads(
+                node.pending_workspace_payload_attrs[
+                    _persistence_constants.TOOL_DATA_REFERENCES_ATTR
+                ]
+            )
+            assert references[data_key]["source_spec"] == replacement.model_dump(
+                mode="json"
+            )
+        else:
+            assert node._workspace_tool_data_references[data_key]["source_spec"] == (
+                replacement.model_dump(mode="json")
+            )
+        node.restore_provenance_owners(snapshot)
+        assert node._provenance_owner_snapshot() == before
 
 
 def test_wrapper_parent_refresh_marks_missing_output_unavailable() -> None:

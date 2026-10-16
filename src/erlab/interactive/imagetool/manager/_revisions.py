@@ -24,7 +24,7 @@ from erlab.interactive.imagetool._provenance._trust import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
 
 @dataclass(frozen=True)
@@ -206,6 +206,30 @@ class _ProvenanceRevisionStore:
         if record is None:
             return None
         return replace(record, provenance_spec=copy.deepcopy(record.provenance_spec))
+
+    def remap_provenance_specs(
+        self, remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec]
+    ) -> Mapping[str, _ProvenanceRevision]:
+        """Normalize recipe representations without changing checkpoint identities."""
+        previous = self._records
+        self._records = {
+            revision_id: replace(
+                record,
+                provenance_spec=(
+                    None
+                    if record.provenance_spec is None
+                    else remap(record.provenance_spec)
+                ),
+            )
+            for revision_id, record in previous.items()
+        }
+        return previous
+
+    def restore_provenance_specs(
+        self, snapshot: Mapping[str, _ProvenanceRevision]
+    ) -> None:
+        """Restore the records returned by :meth:`remap_provenance_specs`."""
+        self._records = dict(snapshot)
 
     def bind(
         self, revision_id: str, provenance_spec: ToolProvenanceSpec | None

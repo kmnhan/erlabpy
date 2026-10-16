@@ -1807,8 +1807,8 @@ def _fit_dataset_to_blob(ds: xr.Dataset) -> np.ndarray:
     return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
 
 
-def _normalize_fit_dataset_blob(blob: npt.ArrayLike, ds: xr.Dataset) -> np.ndarray:
-    from erlab.analysis.fit._serialization import dumps_result
+def _normalize_fit_dataset_blob(blob: npt.ArrayLike) -> np.ndarray:
+    from erlab.analysis.fit._serialization import normalize_result
 
     serialized = xr.load_dataset(
         io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()), engine="h5netcdf"
@@ -1816,10 +1816,9 @@ def _normalize_fit_dataset_blob(blob: npt.ArrayLike, ds: xr.Dataset) -> np.ndarr
     changed = False
     for name in serialized.data_vars:
         if str(name).endswith("modelfit_results"):
-            normalized = np.vectorize(
-                lambda result, original: dumps_result(result, serialized=original),
-                otypes=[object],
-            )(ds[name].values, serialized[name].values)
+            normalized = np.vectorize(normalize_result, otypes=[object])(
+                serialized[name].values
+            )
             changed |= not np.array_equal(normalized, serialized[name].values)
             serialized[name] = serialized[name].copy(data=normalized)
     if not changed:

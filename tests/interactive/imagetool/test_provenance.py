@@ -185,6 +185,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     _ModelFitParameterSpec,
 )
 from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_payload_normalizer,
     provenance_code_trust_entries,
     provenance_operation_code_trust_entries,
     provenance_requires_code_trust,
@@ -7652,6 +7653,138 @@ def test_opaque_fit_result_decode_requires_explicit_authorization(
         decoded,
     )
     assert calls == ["serialized-result"]
+
+
+def test_fit_provenance_normalization_preserves_unauthorized_and_live_values(
+    monkeypatch,
+) -> None:
+    import base64
+    import io
+
+    import xarray_lmfit
+
+    from erlab.analysis.fit import _serialization as fit_serialization
+    from erlab.analysis.fit.models import PolynomialModel
+
+    x = np.linspace(-1.0, 1.0, 9)
+    data = xr.DataArray(0.03 * x + 0.06, dims="alpha", coords={"alpha": x})
+    models = (PolynomialModel(1), PolynomialModel(1))
+    models[1].set_param_hint("c0", expr="2 * c1")
+    operations = []
+    results = []
+    blobs = []
+    for model in models:
+        result = data.xlm.modelfit("alpha", model=model)
+        buffer = io.BytesIO()
+        xarray_lmfit.save_fit(result, buffer, engine="h5netcdf", invalid_netcdf=True)
+        blob = buffer.getvalue()
+        operations.append(
+            CorrectWithEdgeOperation(
+                edge_fit={_FIT_DATASET_MARKER: base64.b64encode(blob).decode("ascii")}
+            )
+        )
+        results.append(result)
+        blobs.append(blob)
+    payloads = [
+        full_data(operation).model_dump(mode="json") for operation in operations
+    ]
+    payloads.append(copy.deepcopy(payloads[0]))
+    original = copy.deepcopy(payloads)
+    entries = provenance_operation_code_trust_entries(
+        operations[0], location_prefix="operation"
+    )
+    capability = _authorize_execution(entries)
+    calls = []
+    normalize_blob = erlab.interactive.utils._normalize_fit_dataset_blob
+
+    def tracked_normalize(blob):
+        raw = np.asarray(blob, dtype=np.uint8).tobytes()
+        assert raw == blobs[0], "Unapproved result content must stay opaque"
+        calls.append(raw)
+        return normalize_blob(blob)
+
+    def unexpected_load(*_args, **_kwargs):
+        pytest.fail("Normalization must not decode or evaluate saved fit results")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            erlab.interactive.utils, "_normalize_fit_dataset_blob", tracked_normalize
+        )
+        patch.setattr(fit_serialization, "loads_result", unexpected_load)
+        normalize = provenance_code_payload_normalizer(authorization=capability)
+        normalized = normalize(payloads)
+        assert normalize(payloads[0]) == normalized[0]
+        assert (
+            provenance_code_payload_normalizer(authorization=None)(normalized)
+            == normalized
+        )
+    assert len(calls) == 1
+    assert payloads == original
+    assert normalized[0] != original[0]
+    assert normalized[0] == normalized[2]
+    assert normalized[1] == original[1]
+    restored = parse_tool_provenance_spec(normalized[0])
+    assert provenance_code_trust_entries(restored, location_prefix="fit") == ()
+    xr.testing.assert_identical(
+        restored.operations[0].decoded_edge_fit.drop_vars("modelfit_results"),
+        results[0].drop_vars("modelfit_results"),
+    )
+
+
+def test_approved_custom_fit_provenance_stays_opaque(monkeypatch) -> None:
+    import base64
+    import io
+
+    import lmfit
+    import xarray_lmfit
+
+    from erlab.analysis.fit import _serialization as fit_serialization
+
+    x = np.linspace(-1.0, 1.0, 9)
+    data = xr.DataArray(0.03 * x + 0.06, dims="alpha", coords={"alpha": x})
+    model = lmfit.Model(lambda x, c0=0.06, c1=0.03: c0 + c1 * x)
+    result = data.xlm.modelfit("alpha", model=model)
+    buffer = io.BytesIO()
+    xarray_lmfit.save_fit(result, buffer, engine="h5netcdf", invalid_netcdf=True)
+    operation = CorrectWithEdgeOperation(
+        edge_fit={
+            _FIT_DATASET_MARKER: base64.b64encode(buffer.getvalue()).decode("ascii")
+        }
+    )
+    payload = full_data(operation).model_dump(mode="json")
+    entries = provenance_operation_code_trust_entries(
+        operation, location_prefix="operation"
+    )
+    capability = _authorize_execution(entries)
+
+    def unexpected_load(*_args, **_kwargs):
+        pytest.fail("Custom fit code must remain opaque during normalization")
+
+    monkeypatch.setattr(fit_serialization, "loads_result", unexpected_load)
+    monkeypatch.setattr(lmfit.jsonutils, "decode4js", unexpected_load)
+    normalize = provenance_code_payload_normalizer(authorization=capability)
+    assert normalize(payload) == payload
+
+
+def test_approved_unreadable_fit_provenance_stays_opaque() -> None:
+    import base64
+
+    operation = CorrectWithEdgeOperation(
+        edge_fit={
+            _FIT_DATASET_MARKER: base64.b64encode(b"unreadable fit dataset").decode(
+                "ascii"
+            )
+        }
+    )
+    payload = full_data(operation).model_dump(mode="json")
+    entries = provenance_operation_code_trust_entries(
+        operation, location_prefix="operation"
+    )
+    capability = _authorize_execution(entries)
+    normalize = provenance_code_payload_normalizer(authorization=capability)
+    assert normalize(payload) == payload
+    with pytest.raises((OSError, ValueError)):
+        operation._decode_edge_fit(capability)
 
 
 @pytest.mark.parametrize(

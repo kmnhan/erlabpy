@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import functools
 import json
+import sys
 import typing
+import warnings
 
 import lmfit
 import lmfit.jsonutils
@@ -212,15 +214,37 @@ def _builtin_name(model: lmfit.Model) -> str | None:
             return name
     if type(model) is not lmfit.Model:
         return None
+    return _builtin_function_name(model.func)
+
+
+def _builtin_function_name(func: typing.Any) -> str | None:
     for func_class, name in zip(
         _DYNAMIC_CLASSES,
         ("MultiPeakModel", "PolynomialModel", "FermiEdge2dModel"),
         strict=True,
     ):
-        if type(model.func) is func_class:
+        if type(func) is func_class:
             return name
     return next(
-        (name for name, func in _static_functions() if model.func is func), None
+        (name for name, function in _static_functions() if func is function), None
+    )
+
+
+def _is_saved_builtin_callable(definition: dict[str, typing.Any]) -> bool:
+    importer = definition.get("importer")
+    name = definition["__name__"]
+    if importer is None:
+        return name in {
+            "MultiPeakFunction",
+            "PolynomialFunction",
+            "FermiEdge2dFunction",
+            "_lin_broad_fd",
+            "_broadFermiDirac",
+            "_step_linbkg_broad",
+        }
+    module = sys.modules.get(importer)
+    return module is not None and any(
+        vars(module).get(name) is func for _model_name, func in _static_functions()
     )
 
 
@@ -282,16 +306,70 @@ def _normalize_state(state: typing.Any, model: lmfit.Model) -> bool:
     if name is None:
         return False
     item = _state_parts(state)[0]
-    descriptor = {_MARKER: name, "config": _config(name, model.func)}
+    return _normalize_builtin_function(item, model.func, name)
+
+
+def _normalize_builtin_function(
+    item: dict[str, typing.Any], func: typing.Any, name: str
+) -> bool:
+    descriptor = {_MARKER: name, "config": _config(name, func)}
     candidate_item = {**item, "funcdef": descriptor}
     try:
         candidate = inspect_descriptor(candidate_item)
     except (TypeError, ValueError):
         return False
-    if candidate is None or not _same_state(model.func, candidate.func):
+    if candidate is None or not _same_state(func, candidate.func):
         return False
     item["funcdef"] = descriptor
     return True
+
+
+def _normalize_saved_state(state: typing.Any) -> bool:
+    left, right, op = _state_parts(state)
+    if right is not None or op is not None:
+        normalized_left = _normalize_saved_state(left)
+        normalized_right = _normalize_saved_state(right)
+        return normalized_left or normalized_right
+    definition = left.get("funcdef")
+    if (
+        not isinstance(definition, dict)
+        or definition.get("__class__") != "Callable"
+        or not _is_saved_builtin_callable(definition)
+    ):
+        return False
+    normalized = False
+    caught: list[warnings.WarningMessage] = []
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            func = lmfit.jsonutils.decode4js(copy.deepcopy(definition))
+            name = _builtin_function_name(func)
+            normalized = name is not None and _normalize_builtin_function(
+                left, func, name
+            )
+    finally:
+        expected_warning = (
+            "Could not unpack dill-encoded callable "
+            f"'{definition['__name__']}', saved with Python version "
+        )
+        for warning in caught:
+            if normalized and str(warning.message).startswith(expected_warning):
+                continue
+            warnings.warn_explicit(
+                warning.message,
+                warning.category,
+                warning.filename,
+                warning.lineno,
+                registry=None,
+                source=warning.source,
+            )
+    return normalized
+
+
+def normalize_result(serialized: str) -> str:
+    """Normalize approved legacy model definitions without loading fit results."""
+    value = json.loads(serialized)
+    return json.dumps(value) if _normalize_saved_state(value["model"]) else serialized
 
 
 def dumps_model(model: lmfit.Model, *, serialized: str | None = None) -> str:
@@ -302,12 +380,9 @@ def dumps_model(model: lmfit.Model, *, serialized: str | None = None) -> str:
     return json.dumps(value) if _normalize_state(value, model) else serialized
 
 
-def dumps_result(
-    result: lmfit.model.ModelResult, *, serialized: str | None = None
-) -> str:
+def dumps_result(result: lmfit.model.ModelResult) -> str:
     """Serialize a result with data-only built-in model definitions."""
-    if serialized is None:
-        serialized = result.dumps()
+    serialized = result.dumps()
     value = json.loads(serialized)
     return (
         json.dumps(value)

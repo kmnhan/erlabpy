@@ -298,6 +298,7 @@ class _NodeProvenanceOwnerSnapshot:
     node_provenance_spec: ToolProvenanceSpec | None
     tool_input_state: _ToolInputState | None
     pending_payload_attrs: dict[str, typing.Any] | None
+    workspace_tool_data_references: dict[str, dict[str, typing.Any]]
 
 
 def _format_chunk_summary(data: xr.DataArray) -> str:
@@ -1611,6 +1612,10 @@ class _ManagedWindowNode(QtCore.QObject):
                 if self._pending_workspace_payload_attrs is None
                 else dict(self._pending_workspace_payload_attrs)
             ),
+            workspace_tool_data_references={
+                name: dict(reference)
+                for name, reference in self._workspace_tool_data_references.items()
+            },
         )
 
     @staticmethod
@@ -1650,6 +1655,22 @@ class _ManagedWindowNode(QtCore.QObject):
             }
         )
 
+    @staticmethod
+    def _remap_tool_data_references(
+        references: Mapping[str, Mapping[str, typing.Any]],
+        remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+    ) -> dict[str, dict[str, typing.Any]]:
+        remapped = {}
+        for name, reference in references.items():
+            replacement = dict(reference)
+            source_spec = parse_tool_provenance_spec(reference.get("source_spec"))
+            if source_spec is not None:
+                remapped_source = remap(source_spec)
+                if remapped_source != source_spec:
+                    replacement["source_spec"] = remapped_source.model_dump(mode="json")
+            remapped[name] = replacement
+        return remapped
+
     def _apply_provenance_owner_snapshot(
         self, snapshot: _NodeProvenanceOwnerSnapshot
     ) -> None:
@@ -1667,10 +1688,14 @@ class _ManagedWindowNode(QtCore.QObject):
             or self._provenance_spec != snapshot.node_provenance_spec
         )
         provenance_attr_keys = (
+            _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+            _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+            _persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR,
             _persistence_constants.TOOL_SOURCE_SPEC_ATTR,
             _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
             _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR,
             _persistence_constants.TOOL_PRIMARY_INPUT_ATTR,
+            _persistence_constants.TOOL_DATA_REFERENCES_ATTR,
         )
         current_attrs = self._pending_workspace_payload_attrs or {}
         replacement_attrs = snapshot.pending_payload_attrs or {}
@@ -1680,6 +1705,13 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         self._source_spec = snapshot.node_source_spec
         self._provenance_spec = snapshot.node_provenance_spec
+        references_changed = (
+            self._workspace_tool_data_references
+            != snapshot.workspace_tool_data_references
+        )
+        self._set_workspace_tool_data_references(
+            snapshot.workspace_tool_data_references
+        )
         if snapshot.pending_payload_attrs is None:
             self._pending_workspace_payload_attrs = None
         elif self._pending_workspace_payload is not None:
@@ -1693,7 +1725,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
         if snapshot.imagetool is not None and node_provenance_changed:
             snapshot.imagetool.set_provenance_spec(self.provenance_spec)
-        if node_provenance_changed or pending_attrs_changed:
+        if node_provenance_changed or pending_attrs_changed or references_changed:
             self._mark_provenance_changed(refresh_display=True)
 
     def remap_provenance_owners(
@@ -1719,6 +1751,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 lambda script_input: self._remap_script_input(script_input, remap)
             )
         )
+        workspace_tool_data_references = self._remap_tool_data_references(
+            before.workspace_tool_data_references, remap
+        )
 
         attrs = (
             None
@@ -1726,9 +1761,33 @@ class _ManagedWindowNode(QtCore.QObject):
             else dict(before.pending_payload_attrs)
         )
         pending_attrs_changed = False
+        if attrs is not None:
+            for key in (
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+                _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+                _persistence_constants.MANAGER_LIVE_SOURCE_SPEC_ATTR,
+                _persistence_constants.TOOL_SOURCE_SPEC_ATTR,
+                _persistence_constants.TOOL_INPUT_PROVENANCE_SPEC_ATTR,
+            ):
+                if key not in attrs:
+                    continue
+                spec = parse_tool_provenance_spec(json.loads(attrs[key]))
+                if spec is not None:
+                    replacement = remap(spec)
+                    if replacement != spec:
+                        attrs[key] = json.dumps(replacement.model_dump(mode="json"))
+                        pending_attrs_changed = True
         if attrs is not None and before.pending_payload_kind == "tool":
+            tool_cls = erlab.interactive.utils.ToolWindow
+            references = tool_cls._saved_tool_data_references_from_metadata(attrs)
+            remapped_references = self._remap_tool_data_references(references, remap)
+            if remapped_references != references:
+                attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+                    remapped_references
+                )
+                pending_attrs_changed = True
             pending_inputs, pending_primary_input = (
-                erlab.interactive.utils.ToolWindow._saved_script_input_metadata(attrs)
+                tool_cls._saved_script_input_metadata(attrs)
             )
             remapped_pending_inputs = tuple(
                 self._remap_script_input(script_input, remap)
@@ -1736,7 +1795,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
             if remapped_pending_inputs != pending_inputs:
                 attrs.update(
-                    erlab.interactive.utils.ToolWindow._saved_script_input_attrs(
+                    tool_cls._saved_script_input_attrs(
                         remapped_pending_inputs, pending_primary_input
                     )
                 )
@@ -1748,6 +1807,7 @@ class _ManagedWindowNode(QtCore.QObject):
             node_source_spec != before.node_source_spec
             or node_provenance_spec != before.node_provenance_spec
             or tool_input_state != before.tool_input_state
+            or workspace_tool_data_references != before.workspace_tool_data_references
             or pending_attrs_changed
         )
         if not changed:
@@ -1762,6 +1822,7 @@ class _ManagedWindowNode(QtCore.QObject):
             node_provenance_spec=node_provenance_spec,
             tool_input_state=tool_input_state,
             pending_payload_attrs=attrs,
+            workspace_tool_data_references=workspace_tool_data_references,
         )
         try:
             self._apply_provenance_owner_snapshot(after)

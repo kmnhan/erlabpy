@@ -2019,7 +2019,7 @@ def test_fit_dataset_blob_preserves_model_data_and_code_boundary(kind, released)
                 parameter.expr,
                 parameter.vary,
             )
-        normalized = erlab.interactive.utils._normalize_fit_dataset_blob(blob, restored)
+        normalized = erlab.interactive.utils._normalize_fit_dataset_blob(blob)
         if kind == "callable":
             np.testing.assert_array_equal(normalized, blob)
         normalized_entry = lmfit_result_code_entry(

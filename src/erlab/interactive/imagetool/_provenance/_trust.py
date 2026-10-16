@@ -6,12 +6,13 @@ Code-generation hints, including implicit imports, do not affect this inventory.
 from __future__ import annotations
 
 import base64
+import functools
 import itertools
 import json
 import typing
 from collections.abc import Mapping
 
-from erlab.interactive._code_trust import create_entry
+from erlab.interactive._code_trust import create_entry, execution_capability_allows
 from erlab.interactive._fit_code_trust import (
     lmfit_model_default_parameter_expressions,
     lmfit_parameter_expression_entries,
@@ -106,6 +107,53 @@ def provenance_operation_requires_code_trust(operation: typing.Any) -> bool:
             location_prefix="operation",
         )
     )
+
+
+def provenance_code_payload_normalizer(
+    *, authorization: object | None
+) -> Callable[[typing.Any], typing.Any]:
+    """Normalize approved fit metadata with one cache for all document owners."""
+    if authorization is None:
+        return lambda value: value
+    import numpy as np
+
+    import erlab.interactive.utils
+
+    @functools.cache
+    def normalize_fit(encoded: str) -> str:
+        blob = base64.b64decode(encoded.encode("ascii"), validate=True)
+        entry = lmfit_result_code_entry(
+            blob,
+            feature="erlab.provenance.lmfit-result",
+            location="fit-result",
+        )
+        if entry is None or not execution_capability_allows(authorization, (entry,)):
+            return encoded
+        original = np.frombuffer(blob, dtype=np.uint8)
+        try:
+            normalized = erlab.interactive.utils._normalize_fit_dataset_blob(original)
+        except (OSError, ValueError, TypeError, KeyError):
+            # Opaque content can be approved and retained without being replayable.
+            return encoded
+        return (
+            encoded
+            if np.array_equal(original, normalized)
+            else base64.b64encode(normalized.tobytes()).decode("ascii")
+        )
+
+    def normalize(item: typing.Any) -> typing.Any:
+        if isinstance(item, dict):
+            return {
+                key: normalize_fit(part)
+                if key == _FIT_DATASET_MARKER
+                else normalize(part)
+                for key, part in item.items()
+            }
+        if isinstance(item, list):
+            return [normalize(part) for part in item]
+        return item
+
+    return normalize
 
 
 def provenance_replay_node_code_trust_entries(

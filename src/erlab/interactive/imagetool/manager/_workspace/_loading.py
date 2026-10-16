@@ -883,6 +883,7 @@ class _WorkspaceLoader:
 
     def _finish_workspace_file_load(self, loaded: bool) -> bool:
         if loaded:
+            self._controller._normalize_approved_workspace_provenance()
             self._show_missing_workspace_colormap_warning()
             self._show_skipped_workspace_node_warning()
         return loaded

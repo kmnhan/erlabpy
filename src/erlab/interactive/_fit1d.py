@@ -4209,9 +4209,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         result_ds = _load_lmfit_for_ftool_restore(
             lambda: erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
         )
-        normalized_blob = erlab.interactive.utils._normalize_fit_dataset_blob(
-            blob, result_ds
-        )
+        normalized_blob = erlab.interactive.utils._normalize_fit_dataset_blob(blob)
         normalized_entry = self._fit_result_code_trust_entry(normalized_blob)
 
         def apply_restored_result() -> None:

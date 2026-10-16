@@ -59,6 +59,10 @@ from erlab.interactive._code_trust._application import (
 )
 from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._ui import confirm_code_trust
+from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_payload_normalizer,
+)
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -366,6 +370,54 @@ class _WorkspaceController:
         self._set_workspace_code_trust(
             approve_document_trust(self._manager._workspace_state.code_trust, manifest)
         )
+        self._normalize_approved_workspace_provenance()
+
+    def _normalize_approved_workspace_provenance(self) -> None:
+        """Adopt data-only fit payloads across all approved provenance owners."""
+        previous = self._manager._workspace_state.code_trust
+        if not document_trust_has_trusted_lineage(previous):
+            return
+        try:
+            manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
+            )
+        except (TypeError, ValueError):
+            return
+        _trust, capability = issue_complete_execution_capability(
+            previous, manifest.entries
+        )
+        if capability is None:
+            return
+        normalize_payload = provenance_code_payload_normalizer(authorization=capability)
+
+        def remap(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+            encoded = spec.model_dump(mode="json")
+            normalized = normalize_payload(encoded)
+            if normalized == encoded:
+                return spec
+            return ToolProvenanceSpec.model_validate(normalized)
+
+        revisions = self._manager._provenance_revisions
+        previous_records = None
+        applied: list[tuple[typing.Any, typing.Any]] = []
+        try:
+            with self.local_provenance_change(
+                execution_entries=manifest.entries, adopt_derived_entries=True
+            ):
+                previous_records = revisions.remap_provenance_specs(remap)
+                for node in tuple(self._manager._tool_graph.nodes.values()):
+                    snapshot, changed = node.remap_provenance_owners(remap)
+                    if changed:
+                        applied.append((node, snapshot))
+                for node, _snapshot in applied:
+                    node.commit_provenance_owner_remap()
+        except Exception:
+            if previous_records is not None:
+                revisions.restore_provenance_specs(previous_records)
+            for node, snapshot in reversed(applied):
+                node.restore_provenance_owners(snapshot)
+            self._set_workspace_code_trust(previous)
+            raise
 
     def issue_code_execution_capability(
         self,
@@ -489,16 +541,9 @@ class _WorkspaceController:
         }:
             yield
             return
-        previous_manifest = previous.manifest
-        if (
-            previous_manifest is None
-            or previous_manifest.domain != workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN
-            or previous_manifest.policy_version
-            != workspace_trust.WORKSPACE_CODE_TRUST_POLICY_VERSION
-        ):
-            previous_manifest = workspace_trust.current_workspace_code_trust_manifest(
-                self._manager
-            )
+        previous_manifest = workspace_trust.current_workspace_code_trust_manifest(
+            self._manager
+        )
         previous_revision_ids = self._manager._provenance_revisions.revision_ids
         node_paths = {
             uid: self.saving._workspace_node_path(uid)
