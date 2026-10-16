@@ -23,14 +23,13 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_display_provenance,
+    operations_expression_code,
     public_data,
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
-    QSelOperation,
     SelectCoordOperation,
-    SelOperation,
     SqueezeOperation,
     TransposeOperation,
 )
@@ -1176,18 +1175,23 @@ class ItoolPlotItem(pg.PlotItem):
         return False
 
     @property
-    def _crop_indexers(self) -> dict[Hashable, slice]:
-        """Returns argument to `DataArray.sel` for cropping to current view limits."""
-        return {
-            k: v
-            for k, v in self.slicer_area.make_slice_dict().items()
-            if k in self._current_data.dims
-        }
+    def _crop_operations(self) -> tuple[ToolProvenanceOperation, ...]:
+        """Physical selections for the manual limits on this plot's axes."""
+        limits = self.slicer_area.make_slice_dict()
+        indexers: dict[Hashable, slice] = {}
+        for axis in self.display_axis:
+            display_dim = self.slicer_area.data.dims[axis]
+            if display_dim in limits:
+                indexers[display_dim] = limits[display_dim]
+        return self.array_slicer.crop_selection(indexers)
 
     @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
-        return self._current_data.sel(self._crop_indexers)
+        data = self._current_data
+        for operation in self._crop_operations:
+            data = operation.apply(data)
+        return data
 
     @property
     def current_data(self) -> xr.DataArray:
@@ -1210,83 +1214,25 @@ class ItoolPlotItem(pg.PlotItem):
             data, self.slicer_area._data.coords.keys()
         )
 
-    def selection_code_for_cursor(self, cursor: int) -> str:
-        """Get the selection code for the data.
-
-        Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
-        the current slice of data based on the current cursor location and bin size.
-        """
-        sel_code = self.array_slicer.qsel_code(cursor, self.display_axis)
-        public_dims = set(self.slicer_area._tool_source_parent_data().dims)
-        if sel_code.startswith(".qsel"):
-            kwargs = {
-                key: value
-                for key, value in self.array_slicer.qsel_args(
-                    cursor, self.display_axis
-                ).items()
-                if key in public_dims
-                or (isinstance(key, str) and key.removesuffix("_width") in public_dims)
-            }
-            arguments = erlab.interactive.utils.format_kwargs(kwargs)
-            sel_code = f".qsel({arguments})" if kwargs else ""
-        elif sel_code.startswith(".isel"):
-            indexers = {
-                key: value
-                for key, value in self.array_slicer.isel_args(
-                    cursor, self.display_axis, int_if_one=True
-                ).items()
-                if key in public_dims
-            }
-            arguments = erlab.interactive.utils.format_kwargs(indexers)
-            sel_code = f".isel({arguments})" if indexers else ""
-        # sel_code will be ".qsel(...)" or ".isel(...)" or empty string
-
+    def _selection_operations(self, cursor: int) -> tuple[ToolProvenanceOperation, ...]:
+        operations: list[ToolProvenanceOperation] = []
+        if singleton_indexers := self.slicer_area._tool_source_singleton_indexers():
+            operations.append(IselOperation(kwargs=singleton_indexers))
+        operations.extend(
+            self.array_slicer.selection_operations(cursor, self.display_axis)
+        )
         if (
             QtCore.Qt.KeyboardModifier.AltModifier
             in QtWidgets.QApplication.queryKeyboardModifiers()
         ):
-            sel_indexers = self._crop_indexers
-            isel_indexers: dict[Hashable, slice] = {}
-            dimensions = dict(
-                zip(
-                    self.slicer_area.data.dims,
-                    self.array_slicer.physical_dims,
-                    strict=True,
-                )
-            )
-            for k in list(sel_indexers):
-                if dimensions[k] != k:
-                    isel_indexers[dimensions[k]] = sel_indexers.pop(k)
+            operations.extend(self._crop_operations)
+        return tuple(operations)
 
-            if sel_code.startswith(".qsel"):
-                qsel_kw = self.array_slicer.qsel_args(cursor, self.display_axis)
-                qsel_kw = qsel_kw | sel_indexers
-
-                sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
-                sel_code = f".qsel({sel_code})"
-
-                if isel_indexers:
-                    isel_code = erlab.interactive.utils.format_kwargs(isel_indexers)
-                    sel_code = sel_code + f".isel({isel_code})"
-
-                return sel_code
-
-            isel_kw: dict[Hashable, slice | int] = {}
-            if sel_code.startswith(".isel"):
-                isel_kw = self.array_slicer.isel_args(
-                    cursor, self.display_axis, int_if_one=True
-                )
-
-            if isel_kw or isel_indexers:
-                isel_kw.update(isel_indexers)
-                sel_code = erlab.interactive.utils.format_kwargs(isel_kw)
-                sel_code = f".isel({sel_code})"
-
-            if sel_indexers:
-                crop_code = erlab.interactive.utils.format_kwargs(sel_indexers)
-                sel_code = sel_code + f".sel({crop_code})"
-
-        return sel_code
+    def selection_code_for_cursor(self, cursor: int) -> str:
+        """Return the physical cursor selection as chained xarray operations."""
+        return operations_expression_code(
+            self._selection_operations(cursor), "data"
+        ).removeprefix("data")
 
     def get_selection_code(self, placeholder: str = "data") -> str:
         """Get selection code for the current cursor and display axis.
@@ -1305,22 +1251,22 @@ class ItoolPlotItem(pg.PlotItem):
         data_name = self.slicer_area.watched_data_name
         if not data_name:
             data_name = placeholder
-        sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
         if not data_name:
-            return sel_code
-        singleton_indexers = self.slicer_area._tool_source_singleton_indexers()
-        if singleton_indexers:
-            arguments = erlab.interactive.utils.format_kwargs(singleton_indexers)
-            data_name += f".isel({arguments})"
-        return f"{data_name}{sel_code}"
+            return self.selection_code_for_cursor(self.slicer_area.current_cursor)
+        operations = self._selection_operations(self.slicer_area.current_cursor)
+        return (
+            operations_expression_code(operations, data_name)
+            if operations
+            else data_name
+        )
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
     ) -> ToolProvenanceSpec:
         """Return a source spec for the current plot selection.
 
-        The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
-        parent data. Copied code, derivation display, manager refresh, and saved
+        The spec records physical cursor selections, bin averages, and optional crops.
+        Copied code, derivation display, manager refresh, and saved
         workspaces use this form directly.
 
         Parameters
@@ -1335,100 +1281,13 @@ class ItoolPlotItem(pg.PlotItem):
         ToolProvenanceSpec
             Source spec for the current parent data.
         """
-        cursor = self.slicer_area.current_cursor
-        alt_pressed: bool = (
-            QtCore.Qt.KeyboardModifier.AltModifier
-            in QtWidgets.QApplication.queryKeyboardModifiers()
-        )
-        parent_data = self.slicer_area._tool_source_parent_data()
-        selection_data = parent_data.copy(deep=False)
-        operations: list[ToolProvenanceOperation] = []
-        selection_code = self.selection_code_for_cursor(cursor)
-        selection_indexers = self.array_slicer.isel_args(
-            cursor, self.display_axis, int_if_one=True
-        )
-        public_dims = set(self.slicer_area.displayed_data.dims)
-        slicer_only_selection_dims = set(selection_indexers) - public_dims
-        selection_indexers = {
-            dim: indexer
-            for dim, indexer in selection_indexers.items()
-            if dim in public_dims
-        }
-        if singleton_indexers := self.slicer_area._tool_source_singleton_indexers():
-            operations.append(IselOperation(kwargs=singleton_indexers))
-        if selection_indexers and selection_code.startswith(".qsel"):
-            binned = self.array_slicer.get_binned(cursor)
-            selection_binned_dims: list[Hashable] = []
-            for dim in selection_indexers:
-                axis_idx = self.array_slicer._dim_indices.get(dim)
-                if axis_idx is None:
-                    axis_idx = self.array_slicer._obj.dims.index(dim)
-                if binned[axis_idx]:
-                    selection_binned_dims.append(dim)
-            operations.append(
-                QSelOperation(
-                    kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
-                        selection_data,
-                        selection_indexers,
-                        tuple(selection_binned_dims),
-                    )
-                )
-            )
-        elif selection_indexers:
-            operations.append(IselOperation(kwargs=selection_indexers))
-
-        crop_sel_indexers: dict[Hashable, slice] = {}
-        crop_isel_indexers: dict[Hashable, slice] = {}
-        if alt_pressed:
-            for key, selector in self._crop_indexers.items():
-                axis_idx = self.array_slicer._dim_indices.get(key)
-                if axis_idx is None:
-                    axis_idx = self.array_slicer._obj.dims.index(key)
-                if selector.start is None or selector.stop is None:
-                    index_selector = selector
-                else:
-                    start = self.array_slicer.index_of_value(
-                        axis_idx, selector.start, uniform=True
-                    )
-                    stop = self.array_slicer.index_of_value(
-                        axis_idx, selector.stop, uniform=True
-                    )
-                    lower, upper = sorted((start, stop))
-                    index_selector = slice(lower, upper + 1, selector.step)
-                physical_dim = self.array_slicer.physical_dims[axis_idx]
-                if physical_dim != key:
-                    crop_isel_indexers[physical_dim] = index_selector
-                else:
-                    crop_sel_indexers[key] = index_selector
-
-        if crop_sel_indexers:
-            crop_sel_kwargs: dict[Hashable, typing.Any] = {}
-            for dim, selector in crop_sel_indexers.items():
-                if dim not in selection_data.dims:
-                    raise ValueError(f"Dimension `{dim}` not found in data")
-                coord = selection_data[dim][selector].values
-                if isinstance(selector, slice):
-                    if coord.size == 0:
-                        raise ValueError(f"Selection for dimension `{dim}` is empty")
-                    crop_sel_kwargs[dim] = slice(
-                        erlab.utils.misc._convert_to_native(coord[0]),
-                        erlab.utils.misc._convert_to_native(coord[-1]),
-                    )
-                else:
-                    crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
-            operations.append(SelOperation(kwargs=crop_sel_kwargs))
-
-        if crop_isel_indexers:
-            operations.append(IselOperation(kwargs=crop_isel_indexers))
+        operations = list(self._selection_operations(self.slicer_area.current_cursor))
 
         if transpose:
             operations.append(
                 TransposeOperation(dims=tuple(reversed(self.current_data.dims)))
             )
-        if squeeze and (
-            slicer_only_selection_dims
-            or any(size == 1 for size in self.current_data.shape)
-        ):
+        if squeeze and any(size == 1 for size in self.current_data.shape):
             operations.append(SqueezeOperation())
         return selection(*operations)
 

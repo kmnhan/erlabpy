@@ -3464,7 +3464,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
 
         self.array_slicer.set_array(
-            self.array_slicer._to_physical_data(filtered),
+            self._restore_public_source_layout(filtered),
             reset=False,
             copy_values=False,
             preserve_dims=tuple(filtered.dims),
@@ -3606,16 +3606,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if k not in self.data.dims:
                 continue
             ax_idx = self.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            bounds = (
-                float(np.round(v[0], sig_digits)),
-                float(np.round(v[1], sig_digits)),
-            )
-            start, end = min(bounds), max(bounds)
+            start, end = min(v), max(v)
             if self.array_slicer.incs_uniform[ax_idx] < 0:
                 start, end = end, start
-            if sig_digits == 0:
-                start, end = int(start), int(end)
             slice_dict[k] = slice(start, end)
         return slice_dict
 

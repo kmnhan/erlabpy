@@ -6,6 +6,7 @@ import xarray as xr
 from qtpy import QtCore
 
 import erlab.utils.array
+from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.slicer import (
     ArraySlicer,
     _display_safe_float,
@@ -110,9 +111,12 @@ def test_xslice_uses_physical_coordinates_and_shared_values(qtbot, disp, width) 
     assert np.shares_memory(slicer._physical_obj.data, slicer._obj.data)
     if disp == (1,):
         center = slicer.get_index(0, 0)
-        expected = data.isel(x=slice(center - width // 2, center + width // 2 + 1))
         if width > 1:
-            expected = expected.qsel.mean("x")
+            expected = data.isel(
+                x=slice(center - width // 2, center + width // 2 + 1)
+            ).qsel.mean("x")
+        else:
+            expected = data.isel(x=center)
     else:
         expected = data.isel(y=slicer.get_index(0, 1))
     xr.testing.assert_identical(result, expected)
@@ -872,3 +876,88 @@ def test_isel_code_uses_call_kwargs_formatting(qtbot) -> None:
     slicer.set_indices(0, [1, 2, 3], update=False)
 
     assert slicer.isel_code(0, (0, 1)) == ".isel(z=3)"
+
+
+def test_selection_plan_averages_all_hidden_binned_dimensions(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(360.0).reshape(3, 4, 5, 6),
+        dims=("x", "y", "z", "t"),
+        coords={
+            "x": np.arange(3.0),
+            "y": np.arange(4.0),
+            "z": [0.0, 0.2, 0.8, 1.6, 3.0],
+            "t": np.arange(6.0),
+        },
+    )
+    owner = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=owner)
+    slicer.set_indices(0, [1, 2, 2, 3], update=False)
+    slicer.set_bin(0, 2, 3, update=False)
+    slicer.set_bin(0, 3, 2, update=False)
+    expected = data.isel(z=slice(1, 4), t=slice(2, 4)).qsel.mean(("z", "t"))
+
+    xr.testing.assert_identical(slicer.xslice(0, (0, 1)), expected)
+    replayed = data
+    for operation in slicer.selection_operations(0, (0, 1)):
+        replayed = operation.apply(replayed)
+    xr.testing.assert_identical(replayed, expected)
+    for code in (slicer.qsel_code(0, (0, 1)), slicer.isel_code(0, (0, 1))):
+        namespace = {"data": data}
+        exec(f"selected = data{code}", namespace)  # noqa: S102
+        xr.testing.assert_identical(namespace["selected"], expected)
+        assert "z_idx" not in code
+
+
+@pytest.mark.parametrize("width", [1, 3])
+def test_nonuniform_plot_selection_replays_displayed_bin(
+    qtbot, manager_context, tmp_path, width
+) -> None:
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5),
+        dims=("x", "y", "z"),
+        coords={
+            "x": np.arange(3.0),
+            "y": np.arange(4.0),
+            "z": [0.0, 0.2, 0.8, 1.6, 3.0],
+        },
+    )
+    path = tmp_path / "nonuniform.h5"
+    data.to_netcdf(path, engine="h5netcdf")
+    tool = erlab.interactive.itool(
+        data,
+        execute=False,
+        manager=False,
+        file_path=path,
+        load_func=(
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.slicer_area.set_index(axis=2, value=2, cursor=0)
+    tool.slicer_area.set_bin(axis=2, value=width, cursor=0)
+    image = tool.slicer_area.images[0]
+    expected = data.isel(z=2) if width == 1 else data.isel(z=slice(1, 4)).qsel.mean("z")
+    source_spec = image.make_tool_source_spec()
+    xr.testing.assert_identical(image.current_data, expected)
+    xr.testing.assert_identical(
+        source_spec.apply(tool.slicer_area._tool_source_parent_data()), expected
+    )
+    code = image.get_selection_code()
+    namespace = {"data": data}
+    exec(f"selected = {code}", namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["selected"], expected)
+    assert "z_idx" not in code
+    assert "z_idx" not in source_spec.model_dump_json()
+
+    with manager_context() as manager:
+        manager.add_imagetool(tool, show=False)
+        image.open_in_new_window()
+        child_uid = manager._node_for_target(0)._childtool_indices[0]
+        child = manager.get_imagetool(child_uid)
+        xr.testing.assert_identical(child.slicer_area.displayed_data, expected)
+        child_node = manager.node_from_slicer_area(child.slicer_area)
+        assert child_node is not None
+        assert child_node.reload_source_data()
+        xr.testing.assert_identical(child.slicer_area.displayed_data, expected)

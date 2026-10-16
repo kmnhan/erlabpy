@@ -849,8 +849,10 @@ def test_empty_selection_code_placeholder_returns_suffix(
     )
 
 
-def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> None:
-    data = _TEST_DATA["3D_nonuniform"].copy()
+def test_selection_code_applies_cursor_and_inclusive_crop_on_alt(
+    qtbot, monkeypatch
+) -> None:
+    data = _TEST_DATA["3D_nonuniform"].astype(float)
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
@@ -864,7 +866,13 @@ def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> Non
     sel_code = main_image.selection_code_for_cursor(
         main_image.slicer_area.current_cursor
     )
-    assert sel_code == ".qsel(beta=2.0, eV=slice(1.0, 3.0)).isel(alpha=slice(0, 2))"
+    expected = data.isel(alpha=slice(0, 3), beta=2).sel(eV=slice(1.0, 3.0))
+    assert "alpha_idx" not in sel_code
+    xr.testing.assert_identical(_exec_data_fragment(data, sel_code), expected)
+    xr.testing.assert_identical(main_image.current_data, expected)
+    xr.testing.assert_identical(
+        main_image.make_tool_source_spec().apply(data), expected
+    )
     win.close()
 
 
@@ -6014,11 +6022,7 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
     qtbot.addWidget(win)
 
     image = win.slicer_area.images[0]
-    monkeypatch.setattr(
-        type(image),
-        "_crop_indexers",
-        property(lambda self: {"alpha": slice(1, 4)}),
-    )
+    win.slicer_area.set_manual_limits({"alpha": [1.0, 4.0]})
 
     monkeypatch.setattr(
         QtWidgets.QApplication,
@@ -6030,6 +6034,10 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
     sel_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
 
     assert sel_kwargs == {"alpha": slice(1, 4)}
+    xr.testing.assert_identical(
+        spec.apply(win.slicer_area.displayed_data),
+        win.slicer_area.displayed_data.sel(alpha=slice(1, 4)),
+    )
 
     win.close()
 
@@ -6046,11 +6054,7 @@ def test_itool_make_tool_source_spec_uses_index_crop_for_nonuniform_dim(
     qtbot.addWidget(win)
 
     image = win.slicer_area.images[0]
-    monkeypatch.setattr(
-        type(image),
-        "_crop_indexers",
-        property(lambda self: {"x_idx": slice(None, None)}),
-    )
+    win.slicer_area.set_manual_limits({"x_idx": [1.0, 2.0]})
     monkeypatch.setattr(
         QtWidgets.QApplication,
         "queryKeyboardModifiers",
@@ -6061,43 +6065,11 @@ def test_itool_make_tool_source_spec_uses_index_crop_for_nonuniform_dim(
     crop_isel_kwargs = [
         op.decoded_kwargs
         for op in spec.operations
-        if op.op == "isel" and op.decoded_kwargs == {"x": slice(None, None)}
+        if op.op == "isel" and op.decoded_kwargs == {"x": slice(1, 3)}
     ]
 
-    assert crop_isel_kwargs == [{"x": slice(None, None)}]
-
-    win.close()
-
-
-def test_itool_make_tool_source_spec_falls_back_to_dim_lookup(
-    qtbot, monkeypatch
-) -> None:
-    win = itool(_TEST_DATA["3D"].copy(), execute=False)
-    qtbot.addWidget(win)
-
-    image = win.slicer_area.images[0]
-    image.array_slicer._dim_indices = {}
-    monkeypatch.setattr(
-        type(image),
-        "_crop_indexers",
-        property(lambda self: {"alpha": slice(1, 4)}),
-    )
-    monkeypatch.setattr(
-        QtWidgets.QApplication,
-        "queryKeyboardModifiers",
-        staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
-    )
-
-    spec = image.make_tool_source_spec()
-    selection_kwargs = next(
-        op.decoded_kwargs
-        for op in spec.operations
-        if op.op in {"qsel", "isel"} and "beta" in op.decoded_kwargs
-    )
-    crop_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
-
-    assert selection_kwargs["beta"] == _TEST_DATA["3D"].coords["beta"][2].item()
-    assert crop_kwargs == {"alpha": slice(1, 4)}
+    assert crop_isel_kwargs == [{"x": slice(1, 3)}]
+    xr.testing.assert_identical(spec.apply(data), data.isel(x=slice(1, 3)))
 
     win.close()
 
@@ -9959,7 +9931,6 @@ def test_crop_to_view_nonuniform_source_spec_uses_public_indices(qtbot) -> None:
     code = dialog.make_code()
 
     assert source_spec.kind == "public_data"
-    assert CropToViewDialog._nonuniform_isel_slice(slice(3, 1, -1)) == slice(3, 0, -1)
     assert "x_idx" not in code
     xarray.testing.assert_identical(
         dialog.process_data(public_data).rename(None), expected.rename(None)
@@ -10018,21 +9989,121 @@ def test_crop_between_cursors_nonuniform_source_spec_uses_public_indices(qtbot) 
     win.close()
 
 
-def test_crop_preserves_user_idx_dimension(qtbot) -> None:
+@pytest.mark.parametrize("dialog_type", [CropToViewDialog, CropDialog])
+def test_crop_preserves_user_idx_dimension(qtbot, dialog_type) -> None:
     data = xr.DataArray(
         np.arange(25.0).reshape(5, 5),
         dims=("sample_idx", "y"),
-        coords={"sample_idx": np.arange(5.0), "y": np.arange(5.0)},
+        coords={
+            "sample_idx": np.arange(5.0),
+            "sample": ("sample_idx", [10.0, 12.0, 18.0, 30.0, 31.0]),
+            "y": np.arange(5.0),
+        },
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.set_manual_limits({"sample_idx": [1.0, 3.0]})
-    dialog = CropToViewDialog(win.slicer_area)
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_index(axis=0, value=1, cursor=0)
+    win.slicer_area.set_index(axis=0, value=3, cursor=1)
+    dialog = dialog_type(win.slicer_area)
     qtbot.addWidget(dialog)
+    for check in dialog.dim_checks.values():
+        check.setChecked(False)
     dialog.dim_checks["sample_idx"].setChecked(True)
     expected = data.sel(sample_idx=slice(1.0, 3.0))
     xr.testing.assert_identical(dialog.source_spec().apply(data), expected)
+    xr.testing.assert_identical(dialog.process_data(data), expected)
     xr.testing.assert_identical(_exec_data_fragment(data, dialog.make_code()), expected)
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+@pytest.mark.parametrize("descending", [False, True])
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("fractional", [False, True])
+def test_view_crop_has_one_physical_selection_for_data_code_and_provenance(
+    qtbot, monkeypatch, nonuniform, descending, transpose, fractional
+) -> None:
+    x = np.array([0.0, 0.2, 0.8, 1.4, 2.0]) if nonuniform else np.arange(5.0)
+    y = np.arange(5.0)
+    if descending:
+        x, y = x[::-1], y[::-1]
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": x, "y": y},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    if transpose:
+        area.swap_axes(0, 1)
+    x_limits = [1.0, 3.0] if nonuniform else [float(x[1]), float(x[3])]
+    y_limits = [float(y[0]), float(y[2])]
+    if fractional:
+        direction = -1.0 if descending else 1.0
+        x_direction = 1.0 if nonuniform else direction
+        x_limits = [x_limits[0] + 0.125 * x_direction, x_limits[1] + 0.1 * x_direction]
+        y_limits = [y_limits[0] + 0.125 * direction, y_limits[1] + 0.1 * direction]
+    area.set_manual_limits(
+        {"x_idx" if nonuniform else "x": sorted(x_limits), "y": sorted(y_limits)}
+    )
+    image = area.main_image
+    source = area._tool_source_parent_data()
+    expected = data.isel(
+        x=slice(2 if fractional else 1, 4),
+        y=slice(1 if fractional else 0, 3),
+    ).transpose(*source.dims)
+    xr.testing.assert_identical(image._current_data_cropped, expected)
+    image.normalize_to_current_view()
+    np.testing.assert_allclose(area.levels, (expected.min(), expected.max()))
+
+    _press_alt(monkeypatch)
+    code = image.get_selection_code()
+    spec = image.make_tool_source_spec()
+    assert "x_idx" not in code
+    assert "x_idx" not in spec.model_dump_json()
+    xr.testing.assert_identical(image.current_data, expected)
+    xr.testing.assert_identical(_exec_data_fragment(source, code), expected)
+    xr.testing.assert_identical(spec.apply(source), expected)
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+@pytest.mark.parametrize("use_dask", [False, True])
+def test_promoted_1d_crop_keeps_only_physical_data_and_selection(
+    qtbot, monkeypatch, nonuniform, use_dask
+) -> None:
+    data = xr.DataArray(
+        np.arange(5.0),
+        dims="x",
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0] if nonuniform else np.arange(5.0)},
+    )
+    if use_dask:
+        data = data.chunk({"x": 3})
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    area.apply_filter_operation(operation)
+    area.set_manual_limits(
+        {"x_idx" if nonuniform else "x": [1.0, 3.0], "stack_dim": [-0.5, 0.5]}
+    )
+    _press_alt(monkeypatch)
+    expected = operation.apply(data).isel(x=slice(1, 4))
+    for plot in (area.main_image, area.profiles[0]):
+        code = plot.get_selection_code()
+        spec = plot.make_tool_source_spec()
+        assert "stack_dim" not in code
+        assert "stack_dim" not in spec.model_dump_json()
+        assert "stack_dim" not in plot.current_data.coords
+        xr.testing.assert_identical(plot.current_data, expected)
+        xr.testing.assert_identical(
+            spec.apply(area._tool_source_parent_data()), expected
+        )
+        xr.testing.assert_identical(
+            _exec_data_fragment(area._tool_source_parent_data(), code), expected
+        )
 
 
 def test_itool_roi_lifecycle(qtbot) -> None:

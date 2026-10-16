@@ -4885,37 +4885,10 @@ class _BaseCropDialog(DataTransformDialog):
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         raise NotImplementedError
 
-    @staticmethod
-    def _nonuniform_isel_slice(selector: slice) -> slice:
-        start = None if selector.start is None else int(selector.start)
-        stop = None if selector.stop is None else int(selector.stop)
-        step = selector.step
-        if stop is not None:
-            if step is not None and step < 0:
-                stop -= 1
-            else:
-                stop += 1
-        return slice(start, stop, step)
-
     def source_operations(
         self,
     ) -> list[ToolProvenanceOperation]:
-        sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
-        isel_kwargs: dict[Hashable, slice] = {}
-        operations: list[ToolProvenanceOperation] = []
-
-        mapping = erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data)
-        for key in list(sel_kwargs):
-            if key in mapping:
-                isel_kwargs[mapping[key]] = self._nonuniform_isel_slice(
-                    sel_kwargs.pop(key)
-                )
-
-        if sel_kwargs:
-            operations.append(SelOperation(kwargs=sel_kwargs))
-        if isel_kwargs:
-            operations.append(IselOperation(kwargs=isel_kwargs))
-        return operations
+        return list(self.array_slicer.crop_selection(self._slice_kwargs))
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         for operation in self.source_operations():
@@ -4952,13 +4925,14 @@ class CropToViewDialog(_BaseCropDialog):
 
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
-        mapping = erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data)
-        return {
-            key: value
-            for key, value in self.slicer_area.make_slice_dict().items()
-            if (check := self.dim_checks.get(mapping.get(key, key))) is not None
-            and check.isChecked()
-        }
+        limits = self.slicer_area.make_slice_dict()
+        indexers: dict[Hashable, slice] = {}
+        for physical_dim, check in self.dim_checks.items():
+            if check.isChecked():
+                axis = self.array_slicer.physical_dims.index(physical_dim)
+                display_dim = self.slicer_area.data.dims[axis]
+                indexers[display_dim] = limits[display_dim]
+        return indexers
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -5003,19 +4977,11 @@ class CropDialog(_BaseCropDialog):
         for dim in self._enabled_dims:
             ax_idx = self.array_slicer.physical_dims.index(dim)
             k = self.slicer_area.data.dims[ax_idx]
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-
             start = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
             end = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
 
             if start > end:
                 start, end = end, start
-
-            start = float(np.round(start, sig_digits))
-            end = float(np.round(end, sig_digits))
-
-            if sig_digits == 0:
-                start, end = int(start), int(end)
 
             slice_dict[k] = slice(start, end)
 
