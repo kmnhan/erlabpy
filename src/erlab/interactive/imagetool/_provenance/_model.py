@@ -2686,41 +2686,16 @@ def _normalize_legacy_script_input(item: ScriptInput) -> ScriptInput:
     """Convert a saved complete fallback to an explicit provider result role."""
     if item.input_version == 2:
         return item
-    updates: dict[str, typing.Any] = {"input_version": 2}
-    source = item.parsed_source_spec()
-    if source is None:
-        return item.model_copy(update=updates)
-    fallback = item.parsed_provenance_spec()
-    if fallback is not None:
-        suffix = ReplayStep.from_source_spec(source)
-        if (
-            fallback.kind == "script"
-            and fallback.root_input is None
-            and fallback.seed_code is None
-            and fallback.primary_input is not None
-            and len(fallback.script_inputs) == 1
-            and fallback.script_inputs[0].name == fallback.primary_input
-            and fallback.script_inputs[0].source_spec is None
-            and fallback.steps == suffix
-        ):
-            raw = _normalize_legacy_script_input(fallback.script_inputs[0])
-            updates.update(
-                revision_id=raw.revision_id,
-                resolved_revision_id=item.revision_id,
-                follow_source=item.follow_source and raw.follow_source,
-                provenance_spec=raw.provenance_spec,
-            )
-        elif (
-            fallback.kind in {"file", "script"}
-            and suffix
-            and fallback.steps[-len(suffix) :] == suffix
-        ):
-            updates["provenance_spec"] = fallback._prefix_with_steps(
-                fallback.steps[: -len(suffix)]
-            ).model_dump(mode="json")
-        elif suffix:
-            updates["fallback_role"] = "resolved"
-    return item.model_copy(update=updates)
+    return item.model_copy(
+        update={
+            "input_version": 2,
+            "fallback_role": (
+                "resolved"
+                if item.source_spec is not None and item.provenance_spec is not None
+                else "raw"
+            ),
+        }
+    )
 
 
 def parse_script_inputs(value: typing.Any) -> tuple[ScriptInput, ...]:

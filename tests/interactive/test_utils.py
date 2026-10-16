@@ -5685,7 +5685,8 @@ def test_tool_window_legacy_input_fallback_replays_source_transform_once(
 
     xr.testing.assert_identical(resolved["data"], expected)
     assert restored.script_inputs[0].input_version == 2
-    assert restored.script_inputs[0].parsed_provenance_spec() == parent_spec
+    assert restored.script_inputs[0].parsed_provenance_spec() == complete_fallback
+    assert restored.script_inputs[0].fallback_role == "resolved"
     roundtrip_inputs, _ = restored._saved_script_input_metadata(
         restored.to_dataset().attrs
     )

@@ -5275,14 +5275,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             _normalize_legacy_script_input,
         )
 
-        # Revision roles need the Manager store. Standalone inputs have no
-        # checkpoint references and can normalize their stored fallback directly.
-        return tuple(
-            _normalize_legacy_script_input(item)
-            if item.revision_id is None and item.resolved_revision_id is None
-            else item
-            for item in script_inputs
-        )
+        return tuple(_normalize_legacy_script_input(item) for item in script_inputs)
 
     @staticmethod
     def _saved_script_input_attrs(

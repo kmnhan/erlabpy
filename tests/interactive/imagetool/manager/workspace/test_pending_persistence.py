@@ -28,7 +28,6 @@ from erlab.interactive.imagetool._provenance._model import (
     compose_full_provenance,
     full_data,
     parse_script_inputs,
-    script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
@@ -1468,60 +1467,6 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
         assert isinstance(skipped[0][1], TypeError)
 
 
-@pytest.mark.parametrize("checkpoint_role", ["raw", "resolved"])
-def test_workspace_named_tool_inputs_normalize_checkpoint_roles(
-    manager_context,
-    checkpoint_role,
-) -> None:
-    raw = script(
-        start_label="Raw", seed_code="derived = data + 1", active_name="derived"
-    )
-    source = full_data(IselOperation(kwargs={"x": slice(1, None)}))
-    complete = compose_full_provenance(raw, source)
-    with manager_context() as manager:
-        store = manager._provenance_revisions
-        store.add(
-            spec=raw if checkpoint_role == "raw" else complete, revision_id="saved"
-        )
-        old_input = ScriptInput(
-            input_version=1,
-            name="data",
-            revision_id="saved",
-            source_spec=source,
-            provenance_spec=complete,
-        )
-        dataset = xr.Dataset(
-            attrs={
-                _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR: json.dumps(
-                    [old_input.model_dump(mode="json")]
-                ),
-                _persistence_constants.TOOL_PRIMARY_INPUT_ATTR: "data",
-            }
-        )
-        loader = manager._workspace_controller.loading
-        normalized = loader._workspace_tool_dataset_with_canonical_inputs(
-            dataset,
-            parent_target=None,
-        )
-        migrated = parse_script_inputs(
-            normalized.attrs[_persistence_constants.TOOL_SCRIPT_INPUTS_ATTR]
-        )[0]
-        assert migrated.input_version == 2
-        assert migrated.parsed_provenance_spec() == raw
-        assert migrated.parsed_source_spec() == source
-        assert migrated.revision_id == ("saved" if checkpoint_role == "raw" else None)
-        assert migrated.resolved_revision_id == (
-            "saved" if checkpoint_role == "resolved" else None
-        )
-        assert (
-            loader._workspace_tool_dataset_with_canonical_inputs(
-                normalized,
-                parent_target=None,
-            )
-            is normalized
-        )
-
-
 def test_pending_toolwindow_legacy_binding_is_materialized_by_saved_input_decoder(
     qtbot,
     manager_context: Callable[
@@ -1643,7 +1588,7 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
         child = manager._child_node(child_uid)
         assert child.tool_window is not None
         script_input = child.tool_window.script_inputs[0]
-        fallback = script_input.parsed_provenance_spec()
+        fallback = script_input.resolved_provenance_spec()
         assert fallback == compose_full_provenance(parent_provenance, source_spec)
 
         monkeypatch.setattr(
@@ -1978,9 +1923,9 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
         manager._update_info(uid=promoted_node.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 promoted_node, "display", promoted_node.provenance_spec
-            ),
+            ).data,
             child_data,
         )
 
@@ -2502,10 +2447,7 @@ def test_manager_save_as_repoints_imported_pending_payload(
 def test_import_retains_reachable_revision_checkpoint_source(
     qtbot, monkeypatch, tmp_path, manager_context, finish
 ) -> None:
-    from erlab.interactive.imagetool._provenance._model import (
-        ScriptInput,
-        ToolProvenanceSpec,
-    )
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._workspace import (
         _storage as workspace_storage,
     )

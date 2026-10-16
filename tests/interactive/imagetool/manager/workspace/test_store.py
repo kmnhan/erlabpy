@@ -22,8 +22,8 @@ from erlab.interactive.imagetool._provenance._execution import replay_script_pro
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
     ScriptInput,
-    compose_full_provenance,
     full_data,
+    parse_script_inputs,
     public_data,
     script,
     selection,
@@ -114,157 +114,24 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     assert restored.attrs["nested"]["value"] == 1
 
 
-@pytest.mark.parametrize("reverse", [False, True])
-@pytest.mark.parametrize("external_raw", [False, True])
-def test_revision_migration_resolves_later_raw_references(
-    reverse, external_raw
-) -> None:
-    references = _ProvenanceRevisionStore()
-    staged = references.stage()
-    raw = script(start_label="Raw", seed_code="derived = data + 1")
-    source = selection(IselOperation(kwargs={"x": slice(1, None)}))
-    complete = compose_full_provenance(raw, source)
-    old_input = ScriptInput(
-        input_version=1,
-        name="data",
-        revision_id="raw",
-        source_spec=source,
-        provenance_spec=complete,
-        data_role="source",
-    )
-    consumer = script(
-        start_label="Consumer",
-        active_name="data",
-        primary_input="data",
-        script_inputs=(old_input,),
-    )
-    entries = [("consumer", consumer), ("raw", raw)]
-    if reverse:
-        entries.reverse()
-    for revision_id, spec in entries:
-        target = references if external_raw and revision_id == "raw" else staged
-        target.add(spec=spec, revision_id=revision_id, normalize=False)
-    staged.normalize_records(references=references)
-    migrated = staged.get("consumer").provenance_spec.replay_inputs[0]
-    assert migrated.input_version == 2
-    assert migrated.fallback_role == "raw"
-    assert migrated.revision_id == "raw"
-    assert migrated.resolved_revision_id is None
-    assert migrated.data_role == "source"
-    assert migrated.parsed_provenance_spec() == raw
-    assert migrated.parsed_source_spec() == source
-    before = staged.get("consumer")
-    staged.normalize_records(references=references)
-    assert staged.get("consumer") == before
-    assert old_input.input_version == 1
-    assert old_input.parsed_provenance_spec() == complete
-    loaded = references.copy()
-    manifest = {
-        "provenance_revisions": [
-            {
-                "revision_id": revision_id,
-                "provenance_spec": spec.model_dump(mode="json"),
-            }
-            for revision_id, spec in entries
-            if not external_raw or revision_id != "raw"
-        ]
-    }
-    workspace_revisions.restore_revision_store(loaded, manifest, "incoming.itws")
-    assert loaded.get("consumer").provenance_spec.replay_inputs[0] == migrated
-    workspace_revisions.restore_revision_store(loaded, manifest, "incoming.itws")
-    assert loaded.get("consumer").provenance_spec.replay_inputs[0] == migrated
-
-
-@pytest.mark.parametrize("reverse", [False, True])
-@pytest.mark.parametrize("external_selected", [False, True])
-def test_revision_migration_keeps_raw_and_selected_wrapper_checkpoints(
-    reverse, external_selected
-) -> None:
+def test_released_input_normalization_preserves_resolved_fallback() -> None:
     store = _ProvenanceRevisionStore()
-    references = _ProvenanceRevisionStore()
-    raw = script(start_label="Raw", seed_code="derived = data + 1")
-    source = selection(IselOperation(kwargs={"x": slice(1, None)}))
-    raw_input = ScriptInput(
-        input_version=1,
-        name="raw_data",
-        revision_id="raw",
-        follow_source=False,
-        provenance_spec=raw,
-    )
-    complete = script(
-        start_label="Use source input",
-        active_name="derived",
-        primary_input="raw_data",
-        script_inputs=(raw_input,),
-        steps=ReplayStep.from_source_spec(source),
-    )
-    outer = ScriptInput(
-        input_version=1,
-        name="selected",
-        label="Selected source",
-        node_uid="owner",
-        data_role="source",
-        revision_id="selected",
-        source_spec=source,
-        provenance_spec=complete,
-    )
-    consumer = script(
-        start_label="Consumer",
-        active_name="selected",
-        primary_input="selected",
-        script_inputs=(outer,),
-    )
-    entries = [("consumer", consumer), ("selected", complete), ("raw", raw)]
-    if reverse:
-        entries.reverse()
-    for revision_id, spec in entries:
-        target = (
-            references if external_selected and revision_id == "selected" else store
-        )
-        target.add(
-            spec=spec,
-            revision_id=revision_id,
-            normalize=external_selected and revision_id == "selected",
-        )
-    store.normalize_records(references=references)
-    migrated = store.get("consumer").provenance_spec.replay_inputs[0]
-    assert migrated.revision_id == "raw"
-    assert migrated.resolved_revision_id == "selected"
-    assert not migrated.follow_source
-    assert (migrated.name, migrated.label, migrated.node_uid, migrated.data_role) == (
-        "selected",
-        "Selected source",
-        "owner",
-        "source",
-    )
-    assert migrated.parsed_provenance_spec() == raw
-    assert migrated.parsed_source_spec() == source
-    selected = (store.get("selected") or references.get("selected")).provenance_spec
-    assert selected.root_input is not None
-    assert selected.root_input.revision_id == "raw"
-    assert {record.revision_id for record in store.reachable(["consumer"])} == {
-        "consumer",
-        "raw",
-    } | (set() if external_selected else {"selected"})
-
-
-def test_revision_migration_keeps_unseparated_resolved_fallback() -> None:
-    store = _ProvenanceRevisionStore()
-    raw = script(start_label="Raw", seed_code="derived = data + 1")
     complete = script(start_label="Resolved", seed_code="derived = data.isel(x=0)")
     source = selection(IselOperation(kwargs={"x": 0}))
-    store.add(spec=raw, revision_id="raw")
-    item = ScriptInput(
-        input_version=1,
-        name="selected",
-        revision_id="raw",
-        source_spec=source,
-        provenance_spec=complete,
-    )
+    item = parse_script_inputs(
+        [
+            {
+                "name": "selected",
+                "source_spec": source.model_dump(mode="json"),
+                "provenance_spec": complete.model_dump(mode="json"),
+            }
+        ]
+    )[0]
     migrated = store.normalize_input(item)
     assert migrated.input_version == 2
     assert migrated.fallback_role == "resolved"
-    assert migrated.revision_id == "raw"
+    assert migrated.revision_id is None
+    assert migrated.resolved_revision_id is None
     assert migrated.parsed_source_spec() == source
     assert migrated.resolved_provenance_spec() == complete
     assert store.normalize_input(migrated) == migrated
@@ -287,13 +154,20 @@ def test_revision_retention_follows_root_and_selected_references_with_cycles() -
     )
     store.add(spec=spec, revision_id="consumer")
     store.add(revision_id="raw", primary_revision_id="consumer")
-    store.add(revision_id="selected", extra_input_revisions={"lost": "missing"})
+    store.add(
+        spec=script(
+            start_label="Selected",
+            script_inputs=(ScriptInput(name="lost", revision_id="missing"),),
+        ),
+        revision_id="selected",
+    )
     store.add(revision_id="nested-raw")
     orphan = store.add()
-    store.normalize_records()
     store.discard_unreachable(["consumer"])
     assert store.revision_ids == {"consumer", "raw", "selected", "nested-raw"}
-    assert store.get("selected").extra_input_revisions == (("lost", "missing"),)
+    assert (
+        store.get("selected").provenance_spec.replay_inputs[0].revision_id == "missing"
+    )
     assert orphan not in store
 
 
@@ -395,7 +269,6 @@ def test_bound_revision_requires_explicit_legacy_normalization_seed() -> None:
     with pytest.raises(ValueError, match="bound recipe does not match"):
         registry.bind(revision_id, legacy)
     assert registry.bind(revision_id, normalized).provenance_spec == normalized
-    assert registry.get(revision_id).extra_input_revisions == ()
     assert registry.revision_ids == before
 
 
@@ -544,11 +417,6 @@ def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -
         da.from_delayed(dask.delayed(_fail_read)(), shape=(2, 3), dtype=float),
         dims=("x", "eV"),
     )
-    with pytest.raises(ValueError, match="must be unique"):
-        registry.add(data, extra_input_revisions=(("data", "a"), ("data", "b")))
-    assert not reads
-    assert registry.revision_ids == frozenset()
-    assert not registry._data
     with pytest.raises(OSError, match="Source is unavailable"):
         registry.add(data)
     assert reads == [True]
@@ -574,19 +442,6 @@ def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -
             },
             "Supply revision data or a checkpoint source",
         ),
-        (
-            {"extra_input_revisions": [("data", "first"), ("data", "second")]},
-            "must be unique",
-        ),
-        (
-            {
-                "data": xr.DataArray([1]),
-                "extra_input_revisions": [("data", "first"), ("data", "second")],
-            },
-            "must be unique",
-        ),
-        ({"extra_input_revisions": {"": "source"}}, "require a name and revision ID"),
-        ({"extra_input_revisions": {"data": ""}}, "require a name and revision ID"),
     ],
 )
 def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
@@ -597,14 +452,6 @@ def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
         registry.add(**kwargs)
     assert registry.revision_ids == frozenset()
     assert not registry._data
-
-
-@pytest.mark.parametrize(
-    ("file_path", "group_path"), [("", "/checkpoint"), ("a.itws", "")]
-)
-def test_checkpoint_source_requires_a_complete_owner(file_path, group_path) -> None:
-    with pytest.raises(ValueError, match="requires a file and a group path"):
-        _RevisionCheckpointSource(file_path, group_path, lambda *_args: None)
 
 
 def test_checkpoint_source_rebinds_reader_and_owner_together() -> None:
@@ -627,18 +474,6 @@ def test_checkpoint_source_rebinds_reader_and_owner_together() -> None:
     xr.testing.assert_equal(registry.resolve_data(revision_id), xr.DataArray([2.0]))
     xr.testing.assert_equal(copied.resolve_data(revision_id), xr.DataArray([1.0]))
     assert calls == [("original.itws", "/old"), ("copy.itws", "/new")]
-
-
-def test_invalid_checkpoint_source_does_not_change_owned_capture() -> None:
-    registry = _ProvenanceRevisionStore()
-    data = xr.DataArray([1.0])
-    revision_id = registry.add(data)
-    with pytest.raises(TypeError, match="must be a checkpoint source"):
-        registry.bind_checkpoint_source(revision_id, object())
-    assert registry.get(revision_id).checkpoint.source is None
-    xr.testing.assert_identical(registry.resolve_data(revision_id), data)
-    with pytest.raises(TypeError, match="reader must be callable"):
-        _RevisionCheckpointSource("source.itws", "/checkpoint", None)
 
 
 def test_workspace_revision_restore_validates_all_records_before_adoption() -> None:
@@ -752,14 +587,6 @@ def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> Non
     checkpoint = registry.get(revision_id).checkpoint
     assert checkpoint.source is saved_source
 
-    invalid_id = registry.add(
-        source=_RevisionCheckpointSource(
-            "invalid.itws", "/checkpoint", lambda _file, _group: np.arange(2)
-        )
-    )
-    with pytest.raises(TypeError, match="must provide a DataArray"):
-        registry.resolve_data(invalid_id)
-
 
 def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:
     registry = _ProvenanceRevisionStore()
@@ -801,16 +628,6 @@ def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:
             "not canonical",
         ),
         (
-            [{"revision_id": "source", "input_revisions": []}],
-            TypeError,
-            "must map names",
-        ),
-        (
-            [{"revision_id": "source", "input_revisions": {"data": 2}}],
-            TypeError,
-            "must map names",
-        ),
-        (
             [{"revision_id": "source", "primary_revision_id": []}],
             TypeError,
             "primary reference",
@@ -849,11 +666,13 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
     recipe = script(
         ScriptCodeOperation(label="Derived", code="derived = data + 1"),
         start_label="Unavailable data",
-        script_inputs=(ScriptInput(name="data", revision_id="missing-source"),),
+        script_inputs=(
+            ScriptInput(name="data", revision_id="missing-source"),
+            ScriptInput(name="other", revision_id="missing-source"),
+        ),
     )
     revision_id = registry.add(
         spec=recipe,
-        extra_input_revisions={"data": "missing-source", "other": "missing-source"},
         primary_revision_id="missing-prior",
     )
     records = registry.reachable([revision_id])
@@ -878,12 +697,6 @@ def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
     )
     assert restored.revision_ids == frozenset({revision_id})
     assert restored.get(revision_id).provenance_spec == recipe
-    assert restored.get(revision_id).extra_input_revisions == (
-        ("other", "missing-source"),
-    )
-    assert workspace_revisions.revision_manifest_entry(restored.get(revision_id))[
-        "input_revisions"
-    ] == {"data": "missing-source", "other": "missing-source"}
     assert not restored.has_data(revision_id)
     with pytest.raises(ValueError, match="has no data checkpoint"):
         restored.resolve_data(revision_id)
@@ -1050,7 +863,6 @@ def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None
     revision_id = registry.add(
         spec=spec,
         source=source,
-        extra_input_revisions={"data": "source", "shift": "shift-source"},
         primary_revision_id="prior",
         source_owner_uid="owner",
     )
@@ -1064,9 +876,6 @@ def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None
         spec
     )
     assert spec.script_inputs[0].node_snapshot_token == owner_snapshot
-    assert registry.get(revision_id).extra_input_revisions == ()
-    manifest["provenance_revisions"][0].pop("input_revisions")
-    workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
 
     manifest["provenance_revisions"][0]["provenance_spec"]["steps"][0]["operation"][
         "cval"
@@ -1125,53 +934,21 @@ def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
     assert restored.get(revision_id).source_owner_uid == "owner"
 
 
-def test_legacy_input_edges_preserve_conflicting_names_without_replay() -> None:
-    registry = _ProvenanceRevisionStore()
-    data = registry.add(xr.DataArray([1.0]))
-    extra = registry.add(xr.DataArray([2.0]))
-    spec = script(
-        ScriptCodeOperation(label="Identity", code="derived = data"),
-        start_label="Saved",
-        primary_input="data",
-        script_inputs=(ScriptInput(name="data", revision_id=data),),
-    )
-    revision_id = registry.add(
-        spec=spec,
-        extra_input_revisions={"data": extra, "unavailable": "missing-input"},
-    )
-    records = registry.reachable([revision_id])
-    assert {record.revision_id for record in records} == {data, extra, revision_id}
-    manifest = {
-        "provenance_revisions": [
-            workspace_revisions.revision_manifest_entry(record) for record in records
-        ]
-    }
-    restored = _ProvenanceRevisionStore()
-    workspace_revisions.restore_revision_store(restored, manifest, "unused.itws")
-    workspace_revisions.restore_revision_store(restored, manifest, "unused.itws")
-    record = restored.get(revision_id)
-    assert record.provenance_spec == spec
-    assert record.extra_input_revisions == (
-        ("data", extra),
-        ("unavailable", "missing-input"),
-    )
-    assert {record.revision_id for record in restored.reachable([revision_id])} == {
-        data,
-        extra,
-        revision_id,
-    }
-
-
 def test_revision_retention_preserves_unavailable_input_references() -> None:
     registry = _ProvenanceRevisionStore()
     current = registry.add(
         xr.DataArray([1.0], dims="x"),
-        extra_input_revisions={"unavailable": "missing-input"},
+        spec=script(
+            start_label="Unavailable",
+            script_inputs=(
+                ScriptInput(name="unavailable", revision_id="missing-input"),
+            ),
+        ),
         primary_revision_id="missing-prior",
     )
     records = registry.reachable([current])
     assert len(records) == 1
-    assert records[0].extra_input_revisions == (("unavailable", "missing-input"),)
+    assert records[0].provenance_spec.replay_inputs[0].revision_id == "missing-input"
     assert records[0].primary_revision_id == "missing-prior"
     registry.discard_unreachable([current])
     assert registry.has_data(current)
@@ -1320,7 +1097,6 @@ def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None
         ]
     }
     workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
-    assert registry.get(result).extra_input_revisions == ()
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,6 @@ from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
 from erlab.interactive.imagetool.manager._revisions import (
-    _provenance_input_revisions,
     _ProvenanceRevision,
     _ProvenanceRevisionStore,
     _RevisionCheckpointSource,
@@ -57,10 +56,6 @@ def revision_manifest_entry(record: _ProvenanceRevision) -> dict[str, typing.Any
             record.checkpoint_object_id if record.checkpoint is not None else None
         ),
         "provenance_spec": (None if spec is None else spec.model_dump(mode="json")),
-        "input_revisions": {
-            **_provenance_input_revisions(spec),
-            **dict(record.extra_input_revisions),
-        },
         "primary_revision_id": record.primary_revision_id,
         "source_owner_uid": record.source_owner_uid,
     }
@@ -168,12 +163,6 @@ def restore_revision_store(
                 _read_revision_checkpoint,
                 None if source_access is None else source_access(path),
             )
-        inputs = entry.get("input_revisions", {})
-        if not isinstance(inputs, Mapping) or any(
-            not isinstance(name, str) or not isinstance(ref, str)
-            for name, ref in inputs.items()
-        ):
-            raise TypeError("Workspace revision inputs must map names to revision IDs")
         primary = entry.get("primary_revision_id")
         if primary is not None and not isinstance(primary, str):
             raise TypeError(
@@ -182,9 +171,10 @@ def restore_revision_store(
         source_owner_uid = entry.get("source_owner_uid")
         if source_owner_uid is not None and not isinstance(source_owner_uid, str):
             raise TypeError("Workspace revision source owner must be a node UID")
-        spec = parse_tool_provenance_spec(entry.get("provenance_spec"))
-        inputs = {**_provenance_input_revisions(spec), **inputs}
-        existing = staged.get(revision_id)
+        spec = store.normalize_provenance(
+            parse_tool_provenance_spec(entry.get("provenance_spec"))
+        )
+        existing = staged.get(revision_id) or store.get(revision_id)
         if existing is not None:
             existing_metadata = revision_manifest_entry(existing)
             loaded_metadata = {
@@ -193,7 +183,6 @@ def restore_revision_store(
                 "provenance_spec": None
                 if spec is None
                 else spec.model_dump(mode="json"),
-                "input_revisions": inputs,
                 "primary_revision_id": primary,
                 "source_owner_uid": source_owner_uid,
             }
@@ -206,34 +195,8 @@ def restore_revision_store(
         staged.add(
             spec=spec,
             revision_id=revision_id,
-            extra_input_revisions=inputs,
             primary_revision_id=primary,
             source_owner_uid=source_owner_uid,
             source=source,
-            normalize=False,
         )
-    staged.normalize_records(references=store)
-    additions = store.stage()
-    for record in staged.reachable(staged.revision_ids):
-        existing = store.get(record.revision_id)
-        if existing is not None:
-            if json.dumps(
-                revision_manifest_entry(existing), sort_keys=True
-            ) != json.dumps(revision_manifest_entry(record), sort_keys=True):
-                raise ValueError("Conflicting workspace provenance revision ID")
-            continue
-        additions.add(
-            data=(
-                staged.resolve_data(record.revision_id)
-                if record.checkpoint is not None and record.checkpoint.source is None
-                else None
-            ),
-            spec=record.provenance_spec,
-            revision_id=record.revision_id,
-            extra_input_revisions=record.extra_input_revisions,
-            primary_revision_id=record.primary_revision_id,
-            source_owner_uid=record.source_owner_uid,
-            source=None if record.checkpoint is None else record.checkpoint.source,
-            normalize=False,
-        )
-    store.merge(additions)
+    store.merge(staged)
