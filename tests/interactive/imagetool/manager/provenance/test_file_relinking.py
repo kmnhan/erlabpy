@@ -1239,7 +1239,7 @@ def test_manager_provenance_edit_nested_script_input_operation(
     replaced: list[ToolProvenanceSpec] = []
     monkeypatch.setattr(
         controller,
-        "_replay_candidate",
+        "_replay_candidate_result",
         lambda *_args, **_kwargs: pytest.fail("editing must not replay on open"),
     )
     monkeypatch.setattr(
