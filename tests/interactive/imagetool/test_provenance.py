@@ -7356,6 +7356,37 @@ def test_provenance_code_trust_entries_capture_unrestricted_graph() -> None:
     assert provenance_code_trust_entries(safe, location_prefix="safe")
 
 
+def test_provenance_code_trust_can_exclude_inherited_operations() -> None:
+    spec = None
+    for _ in range(3):
+        spec = script(
+            ScriptCodeOperation(label="Offset", code="derived = data + 1"),
+            start_label="Calculate",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(
+                ScriptInput(
+                    name="data",
+                    label="Input",
+                    provenance_spec=(
+                        None if spec is None else spec.model_dump(mode="json")
+                    ),
+                ),
+            ),
+        )
+    entries = provenance_code_trust_entries(spec, location_prefix="0/provenance")
+    own_entries = provenance_code_trust_entries(
+        spec,
+        location_prefix="0/provenance",
+        include_inputs=False,
+    )
+
+    assert len(entries) == 3
+    assert len({entry.execution_identity() for entry in entries}) == 1
+    assert len({entry.location for entry in entries}) == 3
+    assert own_entries == (entries[-1],)
+
+
 def test_provenance_code_trust_omits_compiler_proven_input_relay() -> None:
     relay = script(
         start_label="Use live input",
@@ -7393,6 +7424,9 @@ def test_provenance_code_trust_entries_capture_live_unrestricted_code() -> None:
     entries = provenance_code_trust_entries(unsafe, location_prefix="nodes/0")
 
     assert len(entries) == 1
+    assert entries == provenance_code_trust_entries(
+        unsafe, location_prefix="nodes/0", include_inputs=False
+    )
     assert entries[0].feature == "erlab.provenance.script-code"
     assert entries[0].location == "nodes/0/operations/0"
     assert entries[0].context == {
@@ -9534,6 +9568,11 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     assert not can_reload_without_trust(spec)
     assert len(entries) == 1
     assert entries[0].feature == ("erlab.provenance.model-fit-parameter-expression")
+    assert entries == provenance_code_trust_entries(
+        spec,
+        location_prefix="nodes/0/provenance",
+        include_inputs=False,
+    )
     assert entries[0].code == "2 * c2"
     assert entries[0].context["parameter"] == "c1"
 

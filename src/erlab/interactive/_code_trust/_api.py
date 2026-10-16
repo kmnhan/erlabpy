@@ -486,6 +486,7 @@ def commit_local_edit_trust(
     *,
     edited_entries: CodeTrustEntrySource,
     document_manifest: CodeTrustManifest | None = None,
+    adopt_derived_entries: bool = True,
 ) -> _DocumentTrust:
     """Commit local lineage only when the full document remains authorized.
 
@@ -527,11 +528,12 @@ def commit_local_edit_trust(
     # Validation can create derived entries. Adopt only content that is new by
     # location-free execution identity. A location-only move of external content
     # must not become a local edit.
-    local_identities.update(
-        entry.document_identity()
-        for entry in resolved_document_entries
-        if entry.execution_identity() not in previous_execution_identities
-    )
+    if adopt_derived_entries:
+        local_identities.update(
+            entry.document_identity()
+            for entry in resolved_document_entries
+            if entry.execution_identity() not in previous_execution_identities
+        )
     local_identities.intersection_update(current_identities)
 
     if trust.reason == CodeTrustReason.SIGNATURE:

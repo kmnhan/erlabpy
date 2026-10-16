@@ -914,7 +914,10 @@ def test_cancelled_local_edit_does_not_change_partial_trust() -> None:
     assert not code_trust.authorize_document_execution(cancelled, (candidate,))[1]
 
 
-def test_local_edit_commit_adopts_transaction_derived_identities() -> None:
+@pytest.mark.parametrize("adopt_derived_entries", [False, True])
+def test_local_edit_commit_adopts_transaction_derived_identities(
+    adopt_derived_entries,
+) -> None:
     external_entry = _entry(code="external()", location="external")
     edited_entry = _entry(code="edited()", location="edited")
     derived_entry = _entry(code="derived()", location="derived")
@@ -933,12 +936,15 @@ def test_local_edit_commit_adopts_transaction_derived_identities() -> None:
         (external_entry,),
         (external_entry, edited_entry, derived_entry),
         edited_entries=(edited_entry,),
+        adopt_derived_entries=adopt_derived_entries,
     )
 
     assert code_trust.document_trust_needs_review(mixed)
-    assert code_trust.authorize_document_execution(
-        mixed, (edited_entry, derived_entry)
-    )[1]
+    assert code_trust.authorize_document_execution(mixed, (edited_entry,))[1]
+    assert (
+        code_trust.authorize_document_execution(mixed, (derived_entry,))[1]
+        == adopt_derived_entries
+    )
     assert not code_trust.authorize_document_execution(mixed, (external_entry,))[1]
 
 

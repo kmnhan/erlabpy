@@ -23,7 +23,10 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
     from erlab.interactive.imagetool._provenance._graph import LiveInputResolver
+    from erlab.interactive.imagetool._provenance._model import ScriptInput
 
 
 def _model_fit_parameter_expressions(
@@ -133,11 +136,26 @@ def provenance_replay_graph_code_trust_entries(
     graph: typing.Any,
     *,
     location_prefix: str,
+    include_inputs: bool | Callable[[ScriptInput], bool] = True,
 ):
     """Return entries attached to all executable nodes in a replay graph."""
+    inherited_keys: set[str] = set()
+    if include_inputs is not True:
+        nodes_by_key = {node.key: node for node in graph.nodes}
+        pending = [
+            boundary.output_key
+            for boundary in graph.input_boundaries
+            if not callable(include_inputs) or not include_inputs(boundary.original)
+        ]
+        while pending:
+            key = pending.pop()
+            if key not in inherited_keys:
+                inherited_keys.add(key)
+                pending.extend(nodes_by_key[key].parents)
     return tuple(
         entry
         for index, node in enumerate(graph.nodes)
+        if node.key not in inherited_keys
         for entry in provenance_replay_node_code_trust_entries(
             node,
             location_prefix=f"{location_prefix}/nodes/{index}",
@@ -149,6 +167,7 @@ def _stored_spec_code_trust_entries(
     spec: typing.Any,
     *,
     location_prefix: str,
+    include_inputs: bool | Callable[[ScriptInput], bool] = True,
 ):
     """Conservatively inventory stored code when a graph cannot compile."""
     parsed = parse_tool_provenance_spec(spec)
@@ -196,10 +215,15 @@ def _stored_spec_code_trust_entries(
                 )
             )
     for index, script_input in enumerate(parsed.replay_inputs):
+        if not (
+            include_inputs(script_input) if callable(include_inputs) else include_inputs
+        ):
+            continue
         entries.extend(
             _stored_spec_code_trust_entries(
                 script_input.parsed_provenance_spec(),
                 location_prefix=f"{location_prefix}/inputs/{index}:{script_input.name}",
+                include_inputs=include_inputs,
             )
         )
         entries.extend(
@@ -208,6 +232,7 @@ def _stored_spec_code_trust_entries(
                 location_prefix=(
                     f"{location_prefix}/inputs/{index}:{script_input.name}/source"
                 ),
+                include_inputs=include_inputs,
             )
         )
     return tuple(entries)
@@ -249,6 +274,7 @@ def provenance_code_trust_entries(
     location_prefix: str,
     external_input_names: set[str] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
+    include_inputs: bool | Callable[[ScriptInput], bool] = True,
 ):
     """Return stored code that can reach a provenance execution boundary."""
     from erlab.interactive.imagetool._provenance._graph import (
@@ -276,10 +302,12 @@ def provenance_code_trust_entries(
         return _stored_spec_code_trust_entries(
             parsed,
             location_prefix=location_prefix,
+            include_inputs=include_inputs,
         )
     return provenance_replay_graph_code_trust_entries(
         graph,
         location_prefix=location_prefix,
+        include_inputs=include_inputs,
     )
 
 
