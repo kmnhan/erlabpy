@@ -2881,12 +2881,17 @@ def test_cursor_colors_follow_coordinate(qtbot) -> None:
     win.close()
 
 
-def test_nonuniform_axis_controls_show_physical_names_and_values(qtbot) -> None:
+@pytest.mark.parametrize("nonuniform", [False, True])
+def test_axis_controls_distinguish_nonuniform_display_and_physical_values(
+    qtbot, nonuniform
+) -> None:
     data = xr.DataArray(
         np.arange(15.0).reshape(5, 3),
         dims=("energy", "scan_idx"),
         coords={
-            "energy": [0.0, 0.2, 0.8, 1.4, 2.0],
+            "energy": (
+                [0.0, 0.2, 0.8, 1.4, 2.0] if nonuniform else np.linspace(0.0, 2.0, 5)
+            ),
             "scan_idx": np.arange(3.0),
             "temperature": ("energy", np.arange(5.0) + 20.0),
         },
@@ -2894,16 +2899,21 @@ def test_nonuniform_axis_controls_show_physical_names_and_values(qtbot) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     area = win.slicer_area
+    display_dims = ["energy_idx" if nonuniform else "energy", "scan_idx"]
     win.mnb._populate_invert_axis_menu()
     actions = win.mnb.menu_dict["invertAxisMenu"].actions()
-    assert [action.text() for action in actions] == list(data.dims)
+    assert [action.text() for action in actions] == display_dims
     qtbot.waitUntil(
         lambda: (
-            [label.text() for label in win.cursor_controls.label_dim] == list(data.dims)
+            [label.text() for label in win.cursor_controls.label_dim] == display_dims
         )
     )
+    assert [label.text() for label in win.binning_controls.labels] == display_dims
+    area.main_image.refresh_labels()
+    assert area.main_image.getAxis("bottom").labelText == display_dims[0]
+    assert area.main_image.getAxis("left").labelText == display_dims[1]
     actions[0].trigger()
-    assert area.axis_inversions == {"energy_idx": True}
+    assert area.axis_inversions == {display_dims[0]: True}
 
     associated = _AssociatedCoordsDialog(area)
     qtbot.addWidget(associated)
@@ -2924,9 +2934,10 @@ def test_nonuniform_axis_controls_show_physical_names_and_values(qtbot) -> None:
     area.set_index(axis=0, value=1)
     _, values, value = area.array_slicer.cursor_color_coord(0, ("energy",), "energy")
     np.testing.assert_array_equal(values, data.energy.values)
-    assert value == pytest.approx(0.2)
+    assert value == pytest.approx(float(data.energy[1]))
+    assert win.cursor_controls.spin_val[0].value() == pytest.approx(value)
     cmap = erlab.interactive.colors.pg_colormap_from_name("viridis")
-    expected = cmap.map(0.1, mode=cmap.QCOLOR).name()
+    expected = cmap.map(value / 2.0, mode=cmap.QCOLOR).name()
     assert area.cursor_colors[0].name() == expected
 
 
@@ -10254,8 +10265,8 @@ def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     plot = win.slicer_area.main_image
-    assert plot._get_label_unit(0) == ("x", "")
-    assert plot._get_label_unit(1) == ("y", "")
+    assert plot._get_label_unit(0) == ("x_idx", "")
+    assert plot._get_label_unit(1) == ("y_idx", "")
     plot.add_roi()
     roi = plot._roi_list[0]
     original_points = [(-0.5, 1.5), (3.5, 2.0)]

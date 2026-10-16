@@ -1017,9 +1017,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         menu.clear()
         for i, dim in enumerate(self.slicer_area.data.dims):
             dim_name = str(dim)
-            action = QtGui.QAction(
-                str(self.slicer_area.array_slicer.physical_dims[i]), menu
-            )
+            action = QtGui.QAction(dim_name, menu)
             action.setObjectName(f"itool_invert_axis_{i}_action")
             action.setData(dim_name)
             action.setCheckable(True)

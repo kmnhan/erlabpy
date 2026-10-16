@@ -2372,7 +2372,7 @@ class ItoolPlotItem(pg.PlotItem):
     def _get_label_unit(self, index: int | None = None):
         if index is None:
             return "", ""
-        dim = self.array_slicer.physical_dims[self.display_axis[index]]
+        dim = self.slicer_area.data.dims[self.display_axis[index]]
         if dim == "eV":
             return dim, "eV"
         return dim, ""

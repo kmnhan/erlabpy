@@ -691,7 +691,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
 
-            self.label_dim[i].setText(str(self.array_slicer.physical_dims[i]))
+            self.label_dim[i].setText(str(self.data.dims[i]))
 
             # update spinbox properties to match new data
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
