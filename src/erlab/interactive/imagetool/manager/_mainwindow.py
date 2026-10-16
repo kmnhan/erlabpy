@@ -58,6 +58,7 @@ from erlab.interactive.imagetool.manager._registry import (
     reserve_manager_record,
     unregister_manager_record,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._widgets import (
     _LINKER_COLORS,
@@ -74,6 +75,9 @@ from erlab.interactive.imagetool.manager._widgets import (
 )
 from erlab.interactive.imagetool.manager._workspace._controller import (
     _WorkspaceController,
+)
+from erlab.interactive.imagetool.manager._workspace._revisions import (
+    retained_revision_ids,
 )
 from erlab.interactive.imagetool.manager._workspace._state import _ManagerWorkspaceState
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -104,6 +108,7 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool._provenance._graph import ResolvedReplayInput
     from erlab.interactive.imagetool._provenance._model import (
         ScriptInput,
         ScriptInputDataRole,
@@ -120,7 +125,7 @@ if typing.TYPE_CHECKING:
         _WatcherServer,
     )
     from erlab.interactive.imagetool.manager._widgets import (
-        _ScriptRebuildResult,
+        _ProvenanceReplayResult,
         _WorkspaceDocumentAccess,
     )
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
@@ -301,6 +306,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         self._workspace_state = _ManagerWorkspaceState()
+        self._provenance_revisions = _ProvenanceRevisionStore()
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
         self._retired_windows: dict[int, QtWidgets.QWidget] = {}
@@ -1336,7 +1342,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.console.deleteLater()
 
             logger.debug("Releasing workspace lock...")
-            self._workspace_controller._release_imported_workspace_accesses()
+            self._provenance_revisions.discard_unreachable(())
             self._workspace_controller._release_workspace_lock()
 
             logger.debug("Closing dask client (if any)...")
@@ -1417,7 +1423,6 @@ class ImageToolManager(_ImageToolManagerBase):
         uid: str,
         *,
         refresh_dependents: bool = True,
-        release_workspace_accesses: bool = True,
     ) -> None:
         node = self._tool_graph.unregister_node(uid)
         if node is None:
@@ -1429,8 +1434,9 @@ class ImageToolManager(_ImageToolManagerBase):
         if refresh_dependents and not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
             self._figure_workflows._refresh_figure_source_controls()
-        if release_workspace_accesses and self._workspace_state.loading_depth == 0:
-            self._workspace_controller._release_unused_imported_workspace_accesses()
+        node._workspace_sources.clear()
+        if refresh_dependents and self._workspace_state.loading_depth == 0:
+            self._provenance_revisions.discard_unreachable(retained_revision_ids(self))
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1479,40 +1485,33 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         update_view: bool = True,
         preflight: bool = True,
-        release_workspace_accesses: bool = True,
     ) -> set[str]:
         if uid not in self._tool_graph.nodes:
             return set()
         subtree = self._tool_graph.subtree_uids(uid)
         if preflight and not self._prepare_managed_nodes_for_close(subtree):
             return set()
-        subtree.reverse()
-        removed_uids: set[str] = set()
-        for child_uid in subtree:
-            child = self._tool_graph.nodes.get(child_uid)
-            if child is None or isinstance(child, _ImageToolWrapper):
-                continue
-            if any(
-                descendant_uid in self._tool_graph.nodes
-                for descendant_uid in child._childtool_indices
-            ):
-                continue
-            if not child.dispose():
-                continue
-            self._mark_removed_subtree_dirty(child_uid)
-            if update_view and child.parent_uid is not None:
-                self.tree_view.childtool_removed(child_uid)
-            self._unregister_node(child_uid, release_workspace_accesses=False)
-            child.deleteLater()
-            removed_uids.add(child_uid)
-        if (
-            removed_uids
-            and release_workspace_accesses
-            and self._bulk_remove_depth == 0
-            and self._workspace_state.loading_depth == 0
-        ):
-            self._workspace_controller._release_unused_imported_workspace_accesses()
-        return removed_uids
+        with self._workspace_controller.local_provenance_change():
+            subtree.reverse()
+            removed_uids: set[str] = set()
+            for child_uid in subtree:
+                child = self._tool_graph.nodes.get(child_uid)
+                if child is None or isinstance(child, _ImageToolWrapper):
+                    continue
+                if any(
+                    descendant_uid in self._tool_graph.nodes
+                    for descendant_uid in child._childtool_indices
+                ):
+                    continue
+                if not child.dispose():
+                    continue
+                self._mark_removed_subtree_dirty(child_uid)
+                if update_view and child.parent_uid is not None:
+                    self.tree_view.childtool_removed(child_uid)
+                self._unregister_node(child_uid)
+                child.deleteLater()
+                removed_uids.add(child_uid)
+            return removed_uids
 
     def _figure_uids(self) -> list[str]:
         return [
@@ -1661,14 +1660,15 @@ class ImageToolManager(_ImageToolManagerBase):
     @QtCore.Slot()
     def reindex(self) -> None:
         """Reset indices of ImageTool windows to be consecutive in display order."""
-        with self._reindex_lock:
-            self._tool_graph.reindex_roots()
+        with self._workspace_controller.local_provenance_change():
+            with self._reindex_lock:
+                self._tool_graph.reindex_roots()
 
-        self.tree_view.refresh()
-        self._figure_workflows._refresh_figure_source_controls()
-        if self._metadata_node_uid is not None:
-            self._schedule_details_refresh(self._metadata_node_uid)
-        self._mark_workspace_structure_dirty("Reindexed root windows")
+            self.tree_view.refresh()
+            self._figure_workflows._refresh_figure_source_controls()
+            if self._metadata_node_uid is not None:
+                self._schedule_details_refresh(self._metadata_node_uid)
+            self._mark_workspace_structure_dirty("Reindexed root windows")
 
     def _remove_imagetool(
         self,
@@ -1683,74 +1683,67 @@ class ImageToolManager(_ImageToolManagerBase):
         subtree_uids = self._tool_graph.subtree_uids(wrapper.uid)
         if preflight and not self._prepare_managed_nodes_for_close(subtree_uids):
             return False
-        figure_uids = set(self._tool_graph.figure_uids).intersection(subtree_uids)
-        link_keys_by_uid = {
-            node_uid: node.workspace_link_key
-            for node_uid in subtree_uids
-            if (node := self._tool_graph.nodes.get(node_uid)) is not None
-            and node.workspace_link_key is not None
-        }
-        descendant_uids = list(wrapper._childtool_indices)
-        removed_uids: set[str] = set()
+        with self._workspace_controller.local_provenance_change():
+            figure_uids = set(self._tool_graph.figure_uids).intersection(subtree_uids)
+            link_keys_by_uid = {
+                node_uid: node.workspace_link_key
+                for node_uid in subtree_uids
+                if (node := self._tool_graph.nodes.get(node_uid)) is not None
+                and node.workspace_link_key is not None
+            }
+            descendant_uids = list(wrapper._childtool_indices)
+            removed_uids: set[str] = set()
 
-        def reconcile_removed_nodes() -> None:
-            if not removed_uids or self._workspace_state.closing_document:
-                return
-            self._mark_singleton_workspace_link_groups_dirty(
-                {
-                    link_keys_by_uid[uid]
-                    for uid in removed_uids
-                    if uid in link_keys_by_uid
-                }
-            )
-            if removed_uids & figure_uids:
-                self._figure_collection.sync()
-
-        def release_workspace_accesses_for_removed_nodes() -> None:
-            if (
-                removed_uids
-                and self._bulk_remove_depth == 0
-                and self._workspace_state.loading_depth == 0
-            ):
-                self._workspace_controller._release_unused_imported_workspace_accesses()
-
-        for uid in list(descendant_uids):
-            removed_uids.update(
-                self._remove_uid_target(
-                    uid,
-                    update_view=update_view,
-                    preflight=False,
-                    release_workspace_accesses=False,
+            def reconcile_removed_nodes() -> None:
+                if not removed_uids or self._workspace_state.closing_document:
+                    return
+                self._mark_singleton_workspace_link_groups_dirty(
+                    {
+                        link_keys_by_uid[uid]
+                        for uid in removed_uids
+                        if uid in link_keys_by_uid
+                    }
                 )
-            )
+                if removed_uids & figure_uids:
+                    self._figure_collection.sync()
 
-        if any(uid in self._tool_graph.nodes for uid in descendant_uids):
-            reconcile_removed_nodes()
-            release_workspace_accesses_for_removed_nodes()
-            return False
+            for uid in list(descendant_uids):
+                removed_uids.update(
+                    self._remove_uid_target(
+                        uid,
+                        update_view=update_view,
+                        preflight=False,
+                    )
+                )
 
-        if not wrapper.dispose():
-            reconcile_removed_nodes()
-            release_workspace_accesses_for_removed_nodes()
-            return False
+            if any(uid in self._tool_graph.nodes for uid in descendant_uids):
+                reconcile_removed_nodes()
+                return False
 
-        self._mark_removed_subtree_dirty(wrapper.uid)
-        if update_view:
-            self.tree_view.imagetool_removed(index)
+            if not wrapper.dispose():
+                reconcile_removed_nodes()
+                return False
 
-        self._tool_graph.unregister_root(index)
-        removed_uids.add(wrapper.uid)
-        self._cancel_managed_node_change(wrapper.uid)
-        self._dependency_tracker.clear_uid(wrapper.uid)
-        if wrapper.workspace_link_key is not None:
-            self._invalidate_workspace_link_color_cache()
-        if not self._workspace_state.closing_document:
-            reconcile_removed_nodes()
-            self._refresh_dependency_dependents(wrapper.uid)
-            self._figure_workflows._refresh_figure_source_controls()
-        wrapper.deleteLater()
-        release_workspace_accesses_for_removed_nodes()
-        return True
+            self._mark_removed_subtree_dirty(wrapper.uid)
+            if update_view:
+                self.tree_view.imagetool_removed(index)
+
+            self._tool_graph.unregister_root(index)
+            removed_uids.add(wrapper.uid)
+            self._cancel_managed_node_change(wrapper.uid)
+            self._dependency_tracker.clear_uid(wrapper.uid)
+            if wrapper.workspace_link_key is not None:
+                self._invalidate_workspace_link_color_cache()
+            if not self._workspace_state.closing_document:
+                reconcile_removed_nodes()
+                self._refresh_dependency_dependents(wrapper.uid)
+                self._figure_workflows._refresh_figure_source_controls()
+            wrapper.deleteLater()
+            if self._workspace_state.loading_depth == 0:
+                self._provenance_revisions.discard_unreachable(
+                    retained_revision_ids(self)
+                )
+            return True
 
     @QtCore.Slot(int)
     def remove_imagetool(self, index: int, *, update_view: bool = True) -> None:
@@ -1791,8 +1784,6 @@ class ImageToolManager(_ImageToolManagerBase):
             if outermost:
                 self.tree_view.setUpdatesEnabled(True)
                 self.setUpdatesEnabled(True)
-                if self._workspace_state.loading_depth == 0:
-                    self._workspace_controller._release_unused_imported_workspace_accesses()
 
     def _remove_imagetools(
         self,
@@ -2775,7 +2766,7 @@ class ImageToolManager(_ImageToolManagerBase):
         script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> tuple[xr.DataArray, ScriptInput] | None:
+    ) -> ResolvedReplayInput | None:
         return self._lineage_controller._resolve_live_script_input_for_reload(
             script_input,
             target_node_uid=target_node_uid,
@@ -2798,7 +2789,7 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         target_node_uid: str | None = None,
         authorization: object | None = None,
-    ) -> _ScriptRebuildResult:
+    ) -> _ProvenanceReplayResult:
         return self._lineage_controller._rebuild_script_provenance(
             spec,
             target_node_uid=target_node_uid,
@@ -3224,7 +3215,6 @@ class ImageToolManager(_ImageToolManagerBase):
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -3244,7 +3234,6 @@ class ImageToolManager(_ImageToolManagerBase):
             source_state=source_state,
             output_id=output_id,
             replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,
@@ -3325,12 +3314,12 @@ class ImageToolManager(_ImageToolManagerBase):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         index: int | None = None,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
+        _on_commit: Callable[[], None] | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -3386,12 +3375,13 @@ class ImageToolManager(_ImageToolManagerBase):
             source_auto_update=source_auto_update,
             source_state=source_state,
             replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
+        if _on_commit is not None:
+            _on_commit()
         self._register_root_wrapper(wrapper)
         wrapper.update_title()
 

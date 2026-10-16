@@ -1,6 +1,7 @@
 import collections
 import contextlib
 import functools
+import io
 import json
 import os
 import re
@@ -730,22 +731,23 @@ def _lmfit_json_with_callable_pyversion(
 
 
 def _saved_ftool_dataset_with_callable_pyversion(
-    ds: xr.Dataset, callable_name: str, pyversion: str = "0.0"
+    win: Fit2DTool, callable_name: str, pyversion: str = "0.0"
 ) -> xr.Dataset:
-    ds = ds.copy()
+    ds = win.to_dataset()
     state = json.loads(ds.attrs["tool_state"])
     state["model_state"][1] = _lmfit_json_with_callable_pyversion(
-        state["model_state"][1], callable_name, pyversion
+        win._model.dumps(), callable_name, pyversion
     )
     ds.attrs["tool_state"] = json.dumps(state)
 
+    # v3.27.3 used the xarray-lmfit serializer for its saved result payload.
+    results = win._fit_result_dataset_for_persistence()
+    assert results is not None
+    buffer = io.BytesIO()
+    xarray_lmfit.save_fit(results, buffer, engine="h5netcdf", invalid_netcdf=True)
+    buffer.seek(0)
+    sparse = xr.load_dataset(buffer, engine="h5netcdf")
     result_var = Fit2DTool._PERSISTED_FIT_RESULT_VAR
-    if result_var not in ds:
-        return ds
-    sparse = xr.load_dataset(
-        memoryview(np.asarray(ds[result_var].values, dtype=np.uint8).tobytes()),
-        engine="h5netcdf",
-    )
     for var in sparse.data_vars:
         if str(var).endswith("modelfit_results"):
             attrs = sparse[var].attrs.copy()
@@ -760,6 +762,7 @@ def _saved_ftool_dataset_with_callable_pyversion(
             patched.attrs = attrs
             sparse[var] = patched
     blob = sparse.to_netcdf(path=None, engine="h5netcdf", invalid_netcdf=True)
+    ds = ds.drop_vars(result_var)
     ds[result_var] = xr.DataArray(
         np.frombuffer(blob, dtype=np.uint8).copy(),
         dims=(Fit2DTool._PERSISTED_FIT_RESULT_DIM,),
@@ -919,6 +922,11 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
         win_restored.tool_status = status
 
     assert win_restored.tool_status.params == status.params
+    assert win_restored.tool_status.state2d.params_full == status.state2d.params_full
+    assert (
+        win_restored.tool_status.state2d.initial_params_full
+        == status.state2d.initial_params_full
+    )
     assert [
         win_restored.param_plot_combo.itemText(i)
         for i in range(win_restored.param_plot_combo.count())
@@ -934,13 +942,20 @@ def test_fit2d_restore_uses_saved_voigt_params_before_defaults(qtbot) -> None:
     qtbot.addWidget(win_roundtripped)
     assert isinstance(win_roundtripped, Fit2DTool)
     assert win_roundtripped.tool_status.params == status.params
+    assert (
+        win_roundtripped.tool_status.state2d.params_full == status.state2d.params_full
+    )
+    assert (
+        win_roundtripped.tool_status.state2d.initial_params_full
+        == status.state2d.initial_params_full
+    )
     assert win_roundtripped.param_plot_combo.count() == 0
     assert not win_roundtripped.param_plot_combo.isEnabled()
     assert not win_roundtripped.param_plot_overlay_check.isChecked()
 
 
 @pytest.mark.parametrize("case_name", ["multipeak", "polynomial"])
-def test_fit2d_persistence_suppresses_successful_erlab_callable_warning(
+def test_fit2d_restores_released_builtin_callable_payload(
     qtbot, case_name: str
 ) -> None:
     callable_name, model, data, params = _make_erlab_callable_case(case_name)
@@ -962,8 +977,10 @@ def test_fit2d_persistence_suppresses_successful_erlab_callable_warning(
     win._fit_is_current = True
     expected_params = win.tool_status.params
 
-    saved = _saved_ftool_dataset_with_callable_pyversion(
-        win.to_dataset(), callable_name
+    saved = _saved_ftool_dataset_with_callable_pyversion(win, callable_name)
+    assert (
+        win._fit_result_code_trust_entry(saved[win._PERSISTED_FIT_RESULT_VAR].values)
+        is not None
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -980,6 +997,10 @@ def test_fit2d_persistence_suppresses_successful_erlab_callable_warning(
     ] == []
     assert type(restored._model.func) is type(model.func)
     assert restored.tool_status.params == expected_params
+    assert restored._model_code_trust_entry(restored.tool_status.model_state) is None
+    normalized_blob = restored._fit_result_blob_for_persistence()
+    assert normalized_blob is not None
+    assert restored._fit_result_code_trust_entry(normalized_blob) is None
 
     restored_result_ds = restored._result_ds_full[restored._current_idx]
     assert restored_result_ds is not None

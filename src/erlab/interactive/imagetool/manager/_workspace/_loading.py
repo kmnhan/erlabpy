@@ -23,6 +23,7 @@ import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
@@ -50,6 +51,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,
 )
+from erlab.interactive.imagetool.manager._revisions import requires_legacy_replay_source
 from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _strip_workspace_modified_placeholder,
@@ -164,22 +166,30 @@ def _workspace_load_stage(
 
 
 class _WorkspaceReplaceBackup:
-    __slots__ = ("file_path", "snapshot", "tree")
+    __slots__ = ("file_path", "metadata", "snapshot", "sources", "tree")
 
     def __init__(
         self,
         snapshot: _WorkspaceStateSnapshot,
         *,
+        sources: tuple[_WorkspaceDocumentAccess, ...],
+        metadata: dict[str, typing.Any],
         tree: xr.DataTree | None = None,
         file_path: pathlib.Path | None = None,
     ) -> None:
         self.snapshot = snapshot
+        self.sources = sources
+        self.metadata = metadata
         self.tree = tree
         self.file_path = file_path
 
     def close(self) -> None:
-        if self.tree is not None:
-            self.tree.close()
+        try:
+            if self.tree is not None:
+                self.tree.close()
+        finally:
+            for source in self.sources:
+                source.release()
 
 
 def _workspace_dataset_window_visible(
@@ -233,7 +243,7 @@ def _workspace_provenance_file_stems(
             stem = _file_path_stem(current.file_load_source.path)
             if stem not in stems:
                 stems.append(stem)
-        for script_input in current.script_inputs:
+        for script_input in current.replay_inputs:
             collect(script_input.parsed_provenance_spec())
 
     collect(spec)
@@ -288,6 +298,7 @@ class _WorkspaceLoader:
         self.pending = workspace_pending._PendingWorkspacePayloads(self, controller)
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
         self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
+        self._revision_load_roots: set[str] | None = None
 
     @staticmethod
     def _require_workspace_root_tool_is_figure(
@@ -703,9 +714,26 @@ class _WorkspaceLoader:
         *,
         parent_target: int | str | None,
     ) -> xr.Dataset:
-        """Convert released unary ToolWindow metadata to one canonical input."""
+        """Normalize saved ToolWindow inputs with the loaded revision store."""
         inputs_attr = _persistence_constants.TOOL_SCRIPT_INPUTS_ATTR
-        if parent_target is None or inputs_attr in ds.attrs:
+        tool_cls = erlab.interactive.utils.ToolWindow
+        if inputs_attr in ds.attrs:
+            script_inputs, primary_input = tool_cls._saved_script_input_metadata(
+                ds.attrs
+            )
+            normalized = tuple(
+                self._manager._provenance_revisions.normalize_input(item)
+                for item in script_inputs
+            )
+            if normalized == script_inputs:
+                return ds
+            migrated = ds.copy(deep=False)
+            migrated.attrs = dict(ds.attrs)
+            migrated.attrs.update(
+                tool_cls._saved_script_input_attrs(normalized, primary_input)
+            )
+            return migrated
+        if parent_target is None:
             return ds
 
         legacy_attrs = (
@@ -716,7 +744,6 @@ class _WorkspaceLoader:
         if not any(key in ds.attrs for key in legacy_attrs):
             return ds
 
-        tool_cls = erlab.interactive.utils.ToolWindow
         try:
             script_inputs, primary_input = tool_cls._saved_script_input_metadata(
                 ds.attrs
@@ -856,6 +883,7 @@ class _WorkspaceLoader:
 
     def _finish_workspace_file_load(self, loaded: bool) -> bool:
         if loaded:
+            self._controller._normalize_approved_workspace_provenance()
             self._show_missing_workspace_colormap_warning()
             self._show_skipped_workspace_node_warning()
         return loaded
@@ -885,7 +913,12 @@ class _WorkspaceLoader:
         incoming_path: str | os.PathLike[str] | None,
     ) -> _WorkspaceReplaceBackup:
         snapshot = self._controller._workspace_state_snapshot()
+        metadata = self._controller.saving._workspace_metadata_snapshot()
         current_path = self._manager._workspace_state.path
+        sources = tuple(
+            self._controller._workspace_document_access(path)
+            for path in tuple(self._controller._workspace_sources)
+        )
         incoming_resolved = (
             None if incoming_path is None else pathlib.Path(incoming_path).resolve()
         )
@@ -897,10 +930,124 @@ class _WorkspaceLoader:
             and current_path.exists()
             and self._workspace_file_can_restore_replace_backup(current_path)
         ):
-            return _WorkspaceReplaceBackup(snapshot, file_path=current_path)
+            return _WorkspaceReplaceBackup(
+                snapshot,
+                sources=sources,
+                metadata=metadata,
+                file_path=current_path,
+            )
         return _WorkspaceReplaceBackup(
-            snapshot, tree=self._controller.saving._to_datatree()
+            snapshot,
+            sources=sources,
+            metadata=metadata,
+            tree=self._controller.saving._to_datatree(),
         )
+
+    @contextlib.contextmanager
+    def _workspace_node_load(
+        self,
+        *,
+        replace: bool,
+        workspace_path: str | os.PathLike[str] | None,
+        manifest: Mapping[str, typing.Any] | None,
+        profiler: _WorkspaceLoadProfiler,
+    ) -> Iterator[None]:
+        """Commit workspace nodes and their checkpoint sources together."""
+        revisions = self._manager._provenance_revisions
+        previous_revision_ids = revisions.revision_ids
+        incoming_revisions = revisions.stage() if replace else revisions
+        if manifest is not None and workspace_path is not None:
+            workspace_revisions.restore_revision_store(
+                incoming_revisions,
+                manifest,
+                workspace_path,
+                source_access=self._controller._workspace_document_access,
+            )
+        backup = None
+        if replace:
+            with profiler.stage("rollback backup"):
+                backup = self._workspace_replace_backup_for_load(workspace_path)
+        previous_revisions = revisions.copy() if replace else None
+        graph = self._manager._tool_graph
+        previous_bindings = {
+            uid: node.current_revision_id for uid, node in graph.nodes.items()
+        }
+        previous_scripts = self._manager._workspace_state.extension_scripts.copy()
+        previous_roots = self._revision_load_roots
+        incoming_ids = (
+            ()
+            if manifest is None
+            else (
+                entry["revision_id"]
+                for entry in manifest.get("provenance_revisions", ())
+            )
+        )
+        try:
+            with incoming_revisions.retain(incoming_ids) as roots:
+                self._revision_load_roots = roots
+                try:
+                    if replace:
+                        with (
+                            self._controller._workspace_load_context(),
+                            profiler.stage("ui catch-up"),
+                        ):
+                            self._manager._workspace_state.advance_document_identity()
+                            self._manager.remove_all_tools()
+                            self._controller._drain_workspace_restore_events()
+                        manifest_link_id = (
+                            None
+                            if manifest is None
+                            else manifest.get("workspace_link_id")
+                        )
+                        self._manager._workspace_state.link_id = (
+                            str(manifest_link_id)
+                            if manifest_link_id
+                            else uuid.uuid4().hex
+                        )
+                    self._manager._provenance_revisions = incoming_revisions
+                    yield
+                except Exception:
+                    with self._controller._workspace_load_context():
+                        imported_roots = [
+                            index
+                            for index, node in graph.root_wrappers.items()
+                            if replace or node.uid not in previous_bindings
+                        ]
+                        imported_figures = [
+                            uid
+                            for uid in graph.figure_uids
+                            if replace or uid not in previous_bindings
+                        ]
+                        self._manager._remove_imagetools(
+                            imported_roots, child_uids=imported_figures
+                        )
+                        self._controller._drain_workspace_restore_events()
+                        if previous_revisions is not None:
+                            self._manager._provenance_revisions = previous_revisions
+                        if backup is not None:
+                            try:
+                                self._restore_replaced_workspace_backup(backup)
+                            except Exception:
+                                logger.exception("Failed to restore previous workspace")
+                        else:
+                            self._manager._workspace_state.extension_scripts.replace(
+                                previous_scripts
+                            )
+                        if replace:
+                            for uid, revision_id in previous_bindings.items():
+                                node = graph.nodes.get(uid)
+                                if node is not None:
+                                    node.restore_current_revision_id(revision_id)
+                    raise
+        finally:
+            self._revision_load_roots = previous_roots
+            if backup is not None:
+                backup.close()
+            if self._manager._provenance_revisions is incoming_revisions:
+                incoming_revisions.discard_unreachable(
+                    workspace_revisions.retained_revision_ids(self._manager)
+                    | (frozenset() if replace else previous_revision_ids)
+                )
 
     def _restore_workspace_state_snapshot(
         self, snapshot: _WorkspaceStateSnapshot
@@ -985,16 +1132,37 @@ class _WorkspaceLoader:
                         uid,
                         exc_info=True,
                     )
-            replay_source_pending = (
-                _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
-                and pending_workspace_memory_payload is not None
-            )
-            replay_source_data = None
+            if parsed_provenance_spec is None:
+                saved_itool_spec = ds.attrs.get(
+                    _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR
+                )
+                if saved_itool_spec is not None:
+                    with contextlib.suppress(TypeError, ValueError):
+                        parsed_provenance_spec = parse_provenance_spec(
+                            json.loads(saved_itool_spec)
+                        )
+            seed_id = None
             if (
                 _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
-                and not replay_source_pending
+                and requires_legacy_replay_source(parsed_provenance_spec)
             ):
-                replay_source_data = self._workspace_replay_source_data(ds, uid=uid)
+                source_data = self._workspace_replay_source_data(ds, uid=uid)
+                if source_data is not None:
+                    seed_id = self._manager._provenance_revisions.add(source_data)
+                    if self._revision_load_roots is not None:
+                        self._revision_load_roots.add(seed_id)
+            parsed_provenance_spec = (
+                self._manager._provenance_revisions.normalize_provenance(
+                    parsed_provenance_spec, replay_source_revision_id=seed_id
+                )
+            )
+            if parsed_provenance_spec is not None:
+                ds = ds.copy(deep=False)
+                saved_spec = json.dumps(parsed_provenance_spec.model_dump(mode="json"))
+                ds.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = (
+                    saved_spec
+                )
+                ds.attrs[_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR] = saved_spec
             saved_uid = self._workspace_saved_uid_from_dataset(ds)
             kwargs: dict[str, typing.Any] = {
                 "uid": (
@@ -1009,8 +1177,6 @@ class _WorkspaceLoader:
                 "created_time": ds.attrs.get("manager_node_added_at"),
                 "note": ds.attrs.get("manager_node_note"),
                 "provenance_spec": parsed_provenance_spec,
-                "replay_source_data": replay_source_data,
-                "replay_source_pending": replay_source_pending,
                 "source_spec": parsed_source_spec,
                 "source_binding": (
                     parsed_source_binding if parsed_source_spec is None else None
@@ -1566,20 +1732,18 @@ class _WorkspaceLoader:
                     workspace_file_path, payload_path, "itool"
                 ):
                     try:
-                        attrs = _workspace_payload_attrs_h5py(
-                            workspace_file_path, payload_path
+                        pending_ds = self._read_workspace_imagetool_payload_dataset(
+                            workspace_file_path, payload_path, load_data=False
                         )
                     except Exception:
                         logger.debug(
-                            "Failed workspace payload attr read for %s",
+                            "Failed metadata-only workspace payload read for %s",
                             payload_path,
                             exc_info=True,
                         )
                     else:
-                        if attrs is not None and not _workspace_dataset_window_visible(
-                            xr.Dataset(attrs=attrs), "itool"
-                        ):
-                            ds = xr.Dataset(attrs=attrs)
+                        if not _workspace_dataset_window_visible(pending_ds, "itool"):
+                            ds = pending_ds
                             pending_imagetool_payload = (
                                 workspace_file_path,
                                 payload_path,
@@ -2012,6 +2176,15 @@ class _WorkspaceLoader:
                     pending_workspace_tool_payload=pending_payload,
                     reserved_uids=reserved_uids,
                 )
+            revision_id = entry.get("current_revision_id")
+            if revision_id is not None:
+                if not isinstance(revision_id, str):
+                    raise TypeError("Workspace current revision ID must be a string")
+                if revision_id not in self._manager._provenance_revisions:
+                    raise ValueError("Workspace current provenance revision is missing")
+                self._manager._node_for_target(target).restore_current_revision_id(
+                    revision_id
+                )
             for child_path in child_paths[path]:
                 _load_path_or_warn(child_path, target)
             return target
@@ -2047,153 +2220,124 @@ class _WorkspaceLoader:
             finally:
                 _update_load_progress()
 
-        if replace:
-            manifest_workspace_link_id = manifest.get("workspace_link_id")
-            self._manager._workspace_state.link_id = (
-                str(manifest_workspace_link_id)
-                if manifest_workspace_link_id
-                else uuid.uuid4().hex
-            )
-
         maybe_guard = (
             self._controller._workspace_load_context()
             if not mark_dirty
             else contextlib.nullcontext()
         )
-        backup: _WorkspaceReplaceBackup | None = None
-        previous_import_scripts = (
-            self._manager._workspace_state.extension_scripts.copy()
-            if not replace
-            else None
-        )
         extension_scripts_changed = False
         with (
-            maybe_guard,
             erlab.interactive.utils.wait_dialog(
                 self._manager, "Loading workspace..."
             ) as workspace_load_dialog,
+            self._workspace_node_load(
+                replace=replace,
+                workspace_path=fname,
+                manifest=manifest,
+                profiler=profiler,
+            ),
+            maybe_guard,
         ):
             load_dialog_ref = workspace_load_dialog
-            try:
-                if replace:
-                    with profiler.stage("rollback backup"):
-                        backup = self._workspace_replace_backup_for_load(fname)
-                    with profiler.stage("ui catch-up"):
-                        self._manager._workspace_state.advance_document_identity()
-                        self._manager.remove_all_tools()
-                        self._controller._drain_workspace_restore_events()
-                reserved_uids = self._reserve_workspace_uids(
-                    manifest,
+            reserved_uids = self._reserve_workspace_uids(
+                manifest,
+                incoming_extension_state,
+                selected_paths=selected_paths,
+            )
+            if incoming_extension_state is not None:
+                incoming_extension_state = incoming_extension_state.copy()
+                incoming_extension_state.rebase_nodes(reserved_uids)
+                extension_scripts_changed = self._install_extension_scripts(
                     incoming_extension_state,
-                    selected_paths=selected_paths,
+                    replace=replace,
                 )
-                if incoming_extension_state is not None:
-                    incoming_extension_state = incoming_extension_state.copy()
-                    incoming_extension_state.rebase_nodes(reserved_uids)
-                    extension_scripts_changed = self._install_extension_scripts(
-                        incoming_extension_state,
-                        replace=replace,
-                    )
-                loaded_count = 0
-                for root_path in root_paths:
-                    if _load_path_or_warn(root_path) is not None:
-                        loaded_count += 1
-                for figure_path in figure_paths:
-                    if _load_path_or_warn(figure_path) is not None:
-                        loaded_count += 1
-                if loaded_count == 0 and self._skipped_workspace_nodes:
-                    self._raise_no_workspace_windows_loaded()
+            loaded_count = 0
+            for root_path in root_paths:
+                if _load_path_or_warn(root_path) is not None:
+                    loaded_count += 1
+            for figure_path in figure_paths:
+                if _load_path_or_warn(figure_path) is not None:
+                    loaded_count += 1
+            if loaded_count == 0 and self._skipped_workspace_nodes:
+                self._raise_no_workspace_windows_loaded()
+            with profiler.stage("link/layout restore"):
+                self._manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
+                    loaded_targets_by_uid
+                )
+                self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
+            if replace:
                 with profiler.stage("link/layout restore"):
-                    self._manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
-                        loaded_targets_by_uid
-                    )
-                    self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
-                if replace:
-                    with profiler.stage("link/layout restore"):
-                        self._restore_workspace_layout(manifest)
-                        self._restore_workspace_option_overrides(manifest)
-                        self._restore_workspace_loader_state(manifest)
-                        self._restore_acquisition_context(manifest)
-                        self._restore_standalone_apps_state(manifest)
-                if mark_dirty and not replace and extension_scripts_changed:
-                    self._controller._mark_workspace_structure_dirty(
-                        "Imported extension scripts"
-                    )
-                if not mark_dirty:
-                    with profiler.stage("ui catch-up"):
-                        self._controller._drain_workspace_restore_events()
-            except Exception:
-                if backup is not None:
-                    try:
-                        self._restore_replaced_workspace_backup(backup)
-                    except Exception:
-                        logger.exception("Failed to restore previous workspace")
-                elif previous_import_scripts is not None:
-                    self._manager._workspace_state.extension_scripts.replace(
-                        previous_import_scripts
-                    )
-                raise
-            finally:
-                if backup is not None:
-                    backup.close()
-                profiler.log_summary()
+                    self._restore_workspace_metadata(manifest)
+            if mark_dirty and not replace and extension_scripts_changed:
+                self._controller._mark_workspace_structure_dirty(
+                    "Imported extension scripts"
+                )
+            if not mark_dirty:
+                with profiler.stage("ui catch-up"):
+                    self._controller._drain_workspace_restore_events()
+        profiler.log_summary()
         return True
 
     def _restore_replaced_workspace(
         self,
         backup_tree: xr.DataTree,
-        snapshot: _WorkspaceStateSnapshot,
     ) -> None:
-        with self._controller._workspace_load_context():
-            self._manager.remove_all_tools()
-            self._controller._drain_workspace_restore_events()
-            self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
-            self._load_workspace_figures(backup_tree)
-            self._controller._drain_workspace_restore_events()
-        self._restore_workspace_state_snapshot(snapshot)
+        self._manager.remove_all_tools()
+        self._controller._drain_workspace_restore_events()
+        self._load_workspace_roots(backup_tree, [str(key) for key in backup_tree])
+        self._load_workspace_figures(backup_tree)
+        self._controller._drain_workspace_restore_events()
 
-    def _restore_replaced_workspace_file(
-        self, path: pathlib.Path, snapshot: _WorkspaceStateSnapshot
-    ) -> None:
-        with self._controller._workspace_load_context():
-            self._manager.remove_all_tools()
-            self._controller._drain_workspace_restore_events()
-            root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
-            schema_version, manifest = (
-                workspace_format._workspace_file_metadata_from_attrs(root_attrs)
+    def _restore_replaced_workspace_file(self, path: pathlib.Path) -> None:
+        self._manager.remove_all_tools()
+        self._controller._drain_workspace_restore_events()
+        root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
+        schema_version, manifest = workspace_format._workspace_file_metadata_from_attrs(
+            root_attrs
+        )
+        if (
+            workspace_format._workspace_schema_uses_immutable_generations(
+                schema_version
             )
-            if (
-                workspace_format._workspace_schema_uses_immutable_generations(
-                    schema_version
-                )
-                and manifest is not None
-            ):
-                self._from_h5py_workspace_file(
-                    path,
-                    manifest,
-                    replace=False,
-                    mark_dirty=False,
-                )
-            else:
-                tree = workspace_arrays.open_workspace_datatree(path, chunks=None)
-                self._from_datatree(
-                    tree,
-                    replace=False,
-                    mark_dirty=False,
-                    select=False,
-                    workspace_file_path=path,
-                )
-            self._controller._drain_workspace_restore_events()
-        self._restore_workspace_state_snapshot(snapshot)
+            and manifest is not None
+        ):
+            self._from_h5py_workspace_file(
+                path,
+                manifest,
+                replace=False,
+                mark_dirty=False,
+            )
+        else:
+            tree = workspace_arrays.open_workspace_datatree(path, chunks=None)
+            self._from_datatree(
+                tree,
+                replace=False,
+                mark_dirty=False,
+                select=False,
+                workspace_file_path=path,
+            )
+        self._controller._drain_workspace_restore_events()
 
     def _restore_replaced_workspace_backup(
         self, backup: _WorkspaceReplaceBackup
     ) -> None:
-        if backup.tree is not None:
-            self._restore_replaced_workspace(backup.tree, backup.snapshot)
-            return
-        if backup.file_path is not None:
-            self._restore_replaced_workspace_file(backup.file_path, backup.snapshot)
+        with self._controller._workspace_load_context():
+            if backup.tree is not None:
+                self._restore_replaced_workspace(backup.tree)
+            elif backup.file_path is not None:
+                self._restore_replaced_workspace_file(backup.file_path)
+            self._restore_workspace_state_snapshot(backup.snapshot)
+            self._restore_workspace_metadata(backup.metadata)
+            self._controller._drain_workspace_restore_events()
+
+    def _restore_workspace_metadata(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        self._restore_workspace_layout(manifest)
+        self._restore_workspace_option_overrides(manifest)
+        self._restore_workspace_loader_state(manifest)
+        self._restore_acquisition_context(manifest)
+        self._restore_standalone_apps_state(manifest)
 
     def _from_datatree(
         self,
@@ -2234,16 +2378,6 @@ class _WorkspaceLoader:
             manifest_entries_by_path, manifest_direct_children = (
                 self._workspace_manifest_indexes(manifest)
             )
-            if replace:
-                manifest_workspace_link_id = (
-                    None if manifest is None else manifest.get("workspace_link_id")
-                )
-                self._manager._workspace_state.link_id = (
-                    str(manifest_workspace_link_id)
-                    if manifest_workspace_link_id
-                    else uuid.uuid4().hex
-                )
-
             root_keys = workspace_format._workspace_root_keys(tree, manifest)
 
             dialog: _ChooseFromDataTreeDialog | None = None
@@ -2262,83 +2396,61 @@ class _WorkspaceLoader:
                 if not mark_dirty
                 else contextlib.nullcontext()
             )
-            backup: _WorkspaceReplaceBackup | None = None
             loaded_targets_by_uid: dict[str, int | str] = {}
             reserved_uids: dict[str, str] = {}
             with (
-                maybe_guard,
                 erlab.interactive.utils.wait_dialog(
                     self._manager, "Loading workspace..."
                 ),
+                self._workspace_node_load(
+                    replace=replace,
+                    workspace_path=workspace_file_path,
+                    manifest=manifest,
+                    profiler=profiler,
+                ),
+                maybe_guard,
             ):
-                try:
-                    if replace:
-                        with profiler.stage("rollback backup"):
-                            backup = self._workspace_replace_backup_for_load(
-                                workspace_file_path
-                            )
-                        with profiler.stage("ui catch-up"):
-                            self._manager._workspace_state.advance_document_identity()
-                            self._manager.remove_all_tools()
-                            self._controller._drain_workspace_restore_events()
-                        self._manager._workspace_state.extension_scripts.clear()
-                    reserved_uids = self._reserve_workspace_uids(manifest)
-                    root_item = (
-                        None
-                        if dialog is None
-                        else dialog._tree_widget.invisibleRootItem()
+                if replace:
+                    self._manager._workspace_state.extension_scripts.clear()
+                reserved_uids = self._reserve_workspace_uids(manifest)
+                root_item = (
+                    None if dialog is None else dialog._tree_widget.invisibleRootItem()
+                )
+                with profiler.stage("payload read"):
+                    loaded_count = self._load_workspace_roots(
+                        tree,
+                        root_keys,
+                        root_item=root_item,
+                        manifest=manifest,
+                        workspace_file_path=workspace_file_path,
+                        loaded_targets_by_uid=loaded_targets_by_uid,
+                        reserved_uids=reserved_uids,
+                        manifest_entries_by_path=manifest_entries_by_path,
+                        manifest_direct_children=manifest_direct_children,
                     )
-                    with profiler.stage("payload read"):
-                        loaded_count = self._load_workspace_roots(
-                            tree,
-                            root_keys,
-                            root_item=root_item,
-                            manifest=manifest,
-                            workspace_file_path=workspace_file_path,
-                            loaded_targets_by_uid=loaded_targets_by_uid,
-                            reserved_uids=reserved_uids,
-                            manifest_entries_by_path=manifest_entries_by_path,
-                            manifest_direct_children=manifest_direct_children,
-                        )
-                        loaded_count += self._load_workspace_figures(
-                            tree,
-                            root_item=root_item,
-                            manifest=manifest,
-                            workspace_file_path=workspace_file_path,
-                            loaded_targets_by_uid=loaded_targets_by_uid,
-                            reserved_uids=reserved_uids,
-                            manifest_entries_by_path=manifest_entries_by_path,
-                            manifest_direct_children=manifest_direct_children,
-                        )
-                    if loaded_count == 0 and self._skipped_workspace_nodes:
-                        self._raise_no_workspace_windows_loaded()
+                    loaded_count += self._load_workspace_figures(
+                        tree,
+                        root_item=root_item,
+                        manifest=manifest,
+                        workspace_file_path=workspace_file_path,
+                        loaded_targets_by_uid=loaded_targets_by_uid,
+                        reserved_uids=reserved_uids,
+                        manifest_entries_by_path=manifest_entries_by_path,
+                        manifest_direct_children=manifest_direct_children,
+                    )
+                if loaded_count == 0 and self._skipped_workspace_nodes:
+                    self._raise_no_workspace_windows_loaded()
+                with profiler.stage("link/layout restore"):
+                    self._manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
+                        loaded_targets_by_uid
+                    )
+                    self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
+                if replace:
                     with profiler.stage("link/layout restore"):
-                        self._manager._lineage_controller._rebase_loaded_workspace_dependency_refs(
-                            loaded_targets_by_uid
-                        )
-                        self._restore_workspace_link_groups(
-                            manifest, loaded_targets_by_uid
-                        )
-                    if replace:
-                        with profiler.stage("link/layout restore"):
-                            self._restore_workspace_layout(manifest)
-                            self._restore_workspace_option_overrides(manifest)
-                            self._restore_workspace_loader_state(manifest)
-                            self._restore_acquisition_context(manifest)
-                            self._restore_standalone_apps_state(manifest)
-                    if not mark_dirty:
-                        with profiler.stage("ui catch-up"):
-                            self._controller._drain_workspace_restore_events()
-                except Exception:
-                    if backup is not None:
-                        try:
-                            self._restore_replaced_workspace_backup(backup)
-                        except Exception:
-                            logger.exception("Failed to restore previous workspace")
-                    raise
-                finally:
-                    if backup is not None:
-                        backup.close()
+                        self._restore_workspace_metadata(manifest)
+                if not mark_dirty:
+                    with profiler.stage("ui catch-up"):
+                        self._controller._drain_workspace_restore_events()
             return True
         finally:
             tree.close()
@@ -2717,6 +2829,7 @@ class _WorkspaceLoader:
                 slicer_area.set_data(data, auto_compute=False)
                 slicer_area.state = state
                 node._set_name(name, manual=False)
+                self._controller._sync_node_workspace_sources(node)
 
     def _load_workspace_file(
         self,
@@ -2746,16 +2859,16 @@ class _WorkspaceLoader:
             access: _WorkspaceDocumentAccess, loaded: bool
         ) -> bool:
             finished = self._finish_workspace_file_load(loaded)
-            source_is_associated = self._manager._workspace_state.path == access.path
-            if finished and not source_is_associated:
+            if finished:
                 candidate_uids = (
                     frozenset(self._manager._tool_graph.nodes)
                     if replace
                     else frozenset(self._manager._tool_graph.nodes) - nodes_before_load
                 )
-                self._controller._retain_imported_workspace_access(
-                    access, candidate_uids
-                )
+                for uid in candidate_uids:
+                    self._controller._sync_node_workspace_sources(
+                        self._manager._tool_graph.nodes[uid]
+                    )
             return finished
 
         try:
@@ -2928,7 +3041,6 @@ class _WorkspaceLoader:
                     ):
                         fallback_store.close()
         finally:
-            self._controller._release_unused_imported_workspace_accesses()
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes
 

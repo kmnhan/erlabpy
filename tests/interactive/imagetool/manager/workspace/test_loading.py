@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import pathlib
+import shutil
 import types
 import typing
 import weakref
@@ -64,6 +65,7 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_path,
     _edit_current_workspace_payload_attrs,
     _request_workspace_save_and_wait,
+    _request_workspace_save_as_and_wait,
     _workspace_test_file_spec,
     _WorkspaceSweepChildTool,
     _WorkspaceSweepFigureTool,
@@ -1172,7 +1174,7 @@ def test_managed_tool_rebuilds_input_provenance_from_parent(
             manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
             source_spec,
         )
-        assert child.script_inputs[0].parsed_provenance_spec() == expected
+        assert child.script_inputs[0].resolved_provenance_spec() == expected
         current = child.current_provenance_spec()
         assert current is not None
         assert "attacker" not in current.display_code()
@@ -1272,7 +1274,12 @@ def test_legacy_tool_input_provenance_is_not_raw_copied(
             manager._tool_graph.root_wrappers[0].displayed_provenance_spec,
             restored_input.parsed_source_spec(),
         )
-        assert restored_input.parsed_provenance_spec() == expected
+        assert restored_input.parsed_provenance_spec() == (
+            manager._tool_graph.root_wrappers[
+                0
+            ].displayed_provenance_spec.to_replay_spec()
+        )
+        assert restored_input.resolved_provenance_spec() == expected
         current = restored.current_provenance_spec()
         assert current is not None
         assert "attacker" not in current.display_code()
@@ -4703,6 +4710,440 @@ def test_manager_workspace_load_dialog_skips_stale_internal_groups(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
 
+@pytest.mark.parametrize("copied", [False, True])
+def test_workspace_replacement_rehomes_matching_revision_checkpoints(
+    qtbot, monkeypatch, tmp_path, manager_context, copied
+) -> None:
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    destination = tmp_path / "saved.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        historical_id = node.revision_id_for_role("source")
+        node.replace_with_detached_data(expected + 10, None, replay_source_data=None)
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(original)
+        current_id = node.current_revision_id
+        assert controller.loading._load_workspace_file(
+            original, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        incoming = tmp_path / "copy.itws" if copied else original
+        if copied:
+            shutil.copy2(original, incoming)
+        assert controller.loading._load_workspace_file(
+            incoming, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        assert manager._node_for_target(0).current_revision_id == current_id
+        for record in manager._provenance_revisions.reachable([current_id]):
+            assert record.checkpoint.source.file_path == str(incoming)
+            assert record.revision_id not in manager._provenance_revisions._data
+        if copied:
+            lock = workspace_storage._acquire_workspace_document_lock(original)
+            lock.unlock()
+            original.unlink()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        for record in manager._provenance_revisions.reachable([current_id]):
+            assert record.checkpoint.source.file_path == str(destination)
+        incoming.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(historical_id).compute(),
+            expected,
+        )
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(current_id).compute(),
+            expected + 10,
+        )
+
+
+def test_workspace_import_deduplicates_owned_revision_sources(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    incoming = tmp_path / "import.itws"
+    destination = tmp_path / "saved.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        revision_id = manager._node_for_target(target).revision_id_for_role("source")
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(original)
+        assert controller.loading._load_workspace_file(
+            original, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        shutil.copy2(original, incoming)
+        registry = manager._provenance_revisions
+        source = manager._provenance_revisions.get(revision_id).checkpoint.source
+        assert controller.loading._load_workspace_file(
+            incoming, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        assert manager.ntools == 2
+        assert manager._provenance_revisions is registry
+        assert (
+            manager._provenance_revisions.get(revision_id).checkpoint.source is source
+        )
+        for node in manager._tool_graph.root_wrappers.values():
+            if node.pending_workspace_payload is not None:
+                assert (
+                    controller.loading.pending._materialize_pending_workspace_payload(
+                        node
+                    )
+                )
+        assert incoming.resolve() not in controller._workspace_sources
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(original)
+        lock = workspace_storage._acquire_workspace_document_lock(incoming)
+        lock.unlock()
+        incoming.unlink()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        original.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(revision_id).compute(), expected
+        )
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_workspace_imported_history_keeps_each_source_binding(
+    qtbot, monkeypatch, tmp_path, manager_context, multiple, legacy
+) -> None:
+    from tests.interactive.imagetool.manager.helpers import select_tools
+
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1, 2]},
+    )
+    incoming = tmp_path / "incoming.itws"
+    saved = tmp_path / "saved.itws"
+    with manager_context() as manager:
+
+        def add(value, spec=None):
+            return manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value, _in_manager=True),
+                provenance_spec=spec,
+                show=False,
+            )
+
+        def plus_one(node):
+            binding = (
+                ScriptInput(
+                    name="data",
+                    node_uid=node.uid,
+                    node_snapshot_token=node.snapshot_token,
+                )
+                if legacy and node.provenance_spec is None
+                else manager._lineage_controller._script_input_for_node(
+                    node, name="data"
+                )
+            )
+            return script(
+                ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+                start_label="Calculation",
+                primary_input="data",
+                active_name="derived",
+                script_inputs=(binding,),
+            )
+
+        original = manager._node_for_target(add(data))
+        derived = manager._node_for_target(add(data + 1, plus_one(original)))
+        final_spec = plus_one(derived)
+        historical_id = final_spec.script_inputs[0].revision_id
+        final = manager._node_for_target(add(data + 2, final_spec))
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(incoming)
+        canonical = manager._provenance_revisions.get(historical_id)
+        for _ in range(2):
+            assert controller.loading._load_workspace_file(
+                incoming,
+                replace=False,
+                associate=False,
+                mark_dirty=True,
+                select=False,
+            )
+        original.slicer_area.replace_source_data(data + 100)
+        targets = []
+        for source_index, final_index, offset in ((3, 5, 10), (6, 8, 20)):
+            source = manager._node_for_target(source_index)
+            derived_copy = manager._node_for_target(source_index + 1)
+            binding = manager._lineage_controller._script_input_for_node(
+                derived_copy,
+                name="captured",
+                data_role="source",
+            )
+            assert (
+                binding.parsed_provenance_spec().script_inputs[0].node_uid == source.uid
+            )
+            manager.get_imagetool(source_index).slicer_area.replace_source_data(
+                data + offset
+            )
+            target = manager._node_for_target(final_index)
+            row = next(
+                row
+                for row in target.derivation_display_rows
+                if row.on_primary_chain and row.revision_id == historical_id
+            )
+            targets.append((target, row, source, offset))
+        editor = manager._provenance_edit_controller
+        monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(
+            editor, "_show_failed", lambda title, exc: pytest.fail(f"{title}: {exc}")
+        )
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        if multiple:
+            select_tools(manager, [node.index for node, _, _, _ in targets])
+            manager._update_info()
+            editor.revert_rows(tuple((node.uid, row) for node, row, _, _ in targets))
+            manager.tree_view.clearSelection()
+        else:
+            for node, row, _, _ in targets:
+                select_tools(manager, [node.index])
+                manager._update_info()
+                assert editor.can_revert_row(row)[0]
+                editor.revert_row(row)
+                manager.tree_view.clearSelection()
+        for node, _, source, offset in targets:
+            xr.testing.assert_identical(node.current_source_data(), data + 1)
+            assert node.provenance_spec.script_inputs[0].node_uid == source.uid
+            select_tools(manager, [node.index])
+            manager._update_info()
+            assert manager.reload_action.isEnabled()
+            manager.reload_action.trigger()
+            xr.testing.assert_identical(node.current_source_data(), data + offset + 1)
+            manager.tree_view.clearSelection()
+        assert manager._provenance_revisions.get(historical_id) == canonical
+        xr.testing.assert_identical(final.current_source_data(), data + 2)
+        controller.saving._save_workspace_document(saved)
+        assert controller.loading._load_workspace_file(
+            saved, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        for source_index, final_index, offset in ((3, 5, 10), (6, 8, 20)):
+            target = manager._node_for_target(final_index)
+            assert (
+                target.provenance_spec.script_inputs[0].node_uid
+                == manager._node_for_target(source_index).uid
+            )
+            xr.testing.assert_identical(target.current_source_data(), data + offset + 1)
+
+
+@pytest.mark.parametrize("close_source", [False, True])
+def test_workspace_open_captured_input_keeps_imported_recipe(
+    qtbot, monkeypatch, tmp_path, manager_context, close_source
+) -> None:
+    from tests.interactive.imagetool.manager.helpers import select_tools
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+
+        def add(value, spec=None):
+            return manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(value, _in_manager=True),
+                provenance_spec=spec,
+                show=False,
+            )
+
+        def plus_one(binding, primary=None):
+            return script(
+                ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+                start_label="Calculation",
+                active_name="derived",
+                primary_input=primary,
+                script_inputs=(binding,),
+            )
+
+        original = manager._node_for_target(add(data))
+        derived = manager._node_for_target(
+            add(
+                data + 1,
+                plus_one(
+                    manager._lineage_controller._script_input_for_node(
+                        original, name="data"
+                    ),
+                    primary="data",
+                ),
+            )
+        )
+        binding = manager._lineage_controller._script_input_for_node(
+            derived, name="data"
+        )
+        add(data + 2, plus_one(binding))
+        path = tmp_path / "captured.itws"
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(path)
+        assert controller.loading._load_workspace_file(
+            path, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        imported_source = manager._node_for_target(3)
+        source_uid = imported_source.uid
+        original.slicer_area.replace_source_data(data + 100)
+        if close_source:
+            manager.remove_imagetool(3)
+        select_tools(manager, [5])
+        manager._update_info()
+        target = manager._node_for_target(5)
+        row = next(
+            row
+            for row in target.derivation_display_rows
+            if row.replay_ref is not None and row.replay_ref.kind == "script_input"
+        )
+        editor = manager._provenance_edit_controller
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        assert editor.can_open_input_row(row)[0]
+        editor.open_input_row(row)
+        opened = manager._node_for_target(max(manager._tool_graph.root_wrappers))
+        xr.testing.assert_identical(opened.current_source_data(), data + 1)
+        assert opened.provenance_spec.script_inputs[0].node_uid == source_uid
+
+
+@pytest.mark.parametrize("remove_before_node", [1, 2])
+def test_workspace_load_retains_unregistered_incoming_revisions(
+    qtbot, monkeypatch, tmp_path, manager_context, remove_before_node
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    incoming = tmp_path / "incoming.itws"
+    expected_revisions = {}
+    with manager_context() as manager:
+        for offset in (0, 10):
+            target = manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data + offset, _in_manager=True),
+                show=False,
+            )
+            manager._node_for_target(target).revision_id_for_role("source")
+        manager._workspace_controller.saving._save_workspace_document(incoming)
+        for revision_id in manager._provenance_revisions.revision_ids:
+            expected_revisions[revision_id] = (
+                manager._provenance_revisions.resolve_data(revision_id).compute()
+            )
+    with manager_context() as manager:
+        for offset in (100, 200):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data + offset, _in_manager=True),
+                show=False,
+            )
+        previous_uids = frozenset(manager._tool_graph.nodes)
+        loader = manager._workspace_controller.loading
+        load_dataset = loader._load_workspace_imagetool_dataset
+        calls = 0
+
+        def _remove_unrelated_before_registration(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == remove_before_node:
+                manager.remove_imagetool(1)
+                assert (
+                    set(expected_revisions)
+                    <= manager._provenance_revisions.revision_ids
+                )
+            return load_dataset(*args, **kwargs)
+
+        monkeypatch.setattr(
+            loader,
+            "_load_workspace_imagetool_dataset",
+            _remove_unrelated_before_registration,
+        )
+        assert loader._load_workspace_file(
+            incoming, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        assert calls == 2
+        assert manager.ntools == 3
+        assert len(frozenset(manager._tool_graph.nodes) - previous_uids) == 2
+        for revision_id, expected in expected_revisions.items():
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(revision_id).compute(),
+                expected,
+            )
+
+
+@pytest.mark.parametrize(
+    ("replace", "memory_backup", "associated"),
+    [
+        (False, False, True),
+        (True, False, True),
+        (True, True, True),
+        (True, True, False),
+    ],
+)
+def test_workspace_failed_load_restores_revision_ownership(
+    qtbot, monkeypatch, tmp_path, manager_context, replace, memory_backup, associated
+) -> None:
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    incoming = tmp_path / "incoming.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        historical_id = node.revision_id_for_role("source")
+        node.replace_with_detached_data(expected + 10, None, replay_source_data=None)
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(original)
+        current_id = node.current_revision_id
+        assert controller.loading._load_workspace_file(
+            original, replace=True, associate=associated, mark_dirty=False, select=False
+        )
+        if memory_backup:
+            controller._mark_node_state_dirty(manager._node_for_target(0).uid)
+        shutil.copy2(original, incoming)
+        restore_links = controller.loading._restore_workspace_link_groups
+        failed = False
+
+        def _fail_after_nodes_load(*args, **kwargs):
+            nonlocal failed
+            if not failed:
+                failed = True
+                assert any(
+                    node.pending_workspace_payload is not None
+                    and node.pending_workspace_payload[0] == incoming.resolve()
+                    for node in manager._tool_graph.nodes.values()
+                )
+                raise RuntimeError("Load failed after node registration")
+            return restore_links(*args, **kwargs)
+
+        monkeypatch.setattr(
+            controller.loading, "_restore_workspace_link_groups", _fail_after_nodes_load
+        )
+        with pytest.raises(RuntimeError, match="after node registration"):
+            controller.loading._load_workspace_file(
+                incoming,
+                replace=replace,
+                associate=replace,
+                mark_dirty=False,
+                select=False,
+            )
+        assert manager.ntools == 1
+        assert manager._node_for_target(0).current_revision_id == current_id
+        assert manager._workspace_state.path == (
+            original.resolve() if associated else None
+        )
+        if not associated:
+            assert original.resolve() in controller._workspace_sources
+        for record in manager._provenance_revisions.reachable([current_id]):
+            assert record.checkpoint.source.file_path == str(original)
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(original)
+        lock = workspace_storage._acquire_workspace_document_lock(incoming)
+        lock.unlock()
+        incoming.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(historical_id).compute(),
+            expected,
+        )
+
+
 def test_manager_workspace_replace_load_failure_restores_previous_workspace(
     qtbot,
     tmp_path,
@@ -5178,3 +5619,224 @@ def test_manager_workspace_validates_angle_calculator_state(manager_context):
         validate = manager._workspace_controller._validated_standalone_app_state
         assert validate("angle_calculator", {"geometry": "invalid"}) is None
         assert validate("angle_calculator", {}) is not None
+
+
+@pytest.mark.parametrize("memory_backup", [False, True])
+@pytest.mark.parametrize("original_visible", [False, True])
+def test_failed_workspace_replacement_restores_standalone_app_backup(
+    qtbot, monkeypatch, tmp_path, manager_context, memory_backup, original_visible
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = tmp_path / "original.itws"
+    incoming = tmp_path / "incoming.itws"
+
+    def _set_metadata(manager, label, widths):
+        directory = tmp_path / label
+        directory.mkdir(exist_ok=True)
+        manager.resize(720, 600)
+        QtWidgets.QApplication.processEvents()
+        manager.main_splitter.setSizes(widths)
+        manager._workspace_controller.loading._restore_workspace_loader_state(
+            {
+                "loader_state": {
+                    "recent_directory": str(directory),
+                    "recent_name_filter": label,
+                    "manager_loader_kwargs_by_filter": {label: {"sentinel": label}},
+                }
+            }
+        )
+        QtWidgets.QApplication.processEvents()
+
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 10, _in_manager=True),
+            show=False,
+        )
+        manager.set_workspace_option_override(
+            "angle_calculator.show_laser_arpes_controls", True
+        )
+        _configure_workspace_app(manager, "ptable")
+        _set_metadata(manager, "incoming-loader", [540, 180])
+        manager._workspace_controller.saving._save_workspace_document(incoming)
+
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        node = manager._node_for_target(index)
+        revision_id = node.revision_id_for_role("source")
+        manager.set_workspace_option_override(
+            "angle_calculator.show_laser_arpes_controls", False
+        )
+        _configure_workspace_app(manager, "angle_calculator")
+        if not original_visible:
+            manager._close_standalone_app("angle_calculator")
+        controller = manager._workspace_controller
+        _set_metadata(manager, "original-loader", [180, 540])
+        controller.saving._save_workspace_document(original)
+        adopt_workspace_path(manager, original)
+        _set_metadata(manager, "original-loader", [180, 540])
+        controller._mark_workspace_clean()
+        if memory_backup:
+            # Closed app settings can differ from the last saved workspace.
+            _configure_workspace_app(manager, "angle_calculator")
+            widget = manager._standalone_app_windows["angle_calculator"]
+            widget.inputs["photon_energy"].setValue(38.4)
+            assert manager.is_workspace_modified
+            if not original_visible:
+                manager._close_standalone_app("angle_calculator")
+        expected_metadata = controller.saving._workspace_metadata_snapshot()
+        expected_apps = expected_metadata["standalone_apps"]
+        expected_splitter_sizes = manager.main_splitter.sizes()
+        expected_modified = manager.is_workspace_modified
+        expected_node_uid = node.uid
+        backup_modes = []
+        create_backup = controller.loading._workspace_replace_backup_for_load
+
+        def _record_backup(*args, **kwargs):
+            backup = create_backup(*args, **kwargs)
+            backup_modes.append(backup.tree is not None)
+            return backup
+
+        monkeypatch.setattr(
+            controller.loading, "_workspace_replace_backup_for_load", _record_backup
+        )
+        apply_state = manager._apply_standalone_app_state
+        failed = False
+
+        def _fail_incoming_app(key, *args):
+            nonlocal failed
+            if key == "ptable" and not failed:
+                failed = True
+                assert key in manager._standalone_app_windows
+                raise RuntimeError("Incoming app restore failed")
+            return apply_state(key, *args)
+
+        monkeypatch.setattr(manager, "_apply_standalone_app_state", _fail_incoming_app)
+        with pytest.raises(RuntimeError, match="Incoming app restore failed"):
+            controller.loading._load_workspace_file(
+                incoming,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+        assert backup_modes == [memory_backup]
+        assert manager.ntools == 1
+        restored_node = manager._node_for_target(index)
+        assert restored_node.uid == expected_node_uid
+        assert restored_node.current_revision_id == revision_id
+        assert manager.is_workspace_modified == expected_modified
+        assert manager._workspace_state.path == original.resolve()
+        assert (
+            controller.saving._workspace_loader_state_snapshot()
+            == (expected_metadata["loader_state"])
+        )
+        assert manager.main_splitter.sizes() == expected_splitter_sizes
+        assert (
+            controller.saving._workspace_layout_snapshot()["main_splitter"]
+            == (expected_metadata["manager_layout"]["main_splitter"])
+        )
+        assert (
+            manager.workspace_option_overrides()
+            == (expected_metadata["interactive_option_overrides"]["overrides"])
+        )
+        assert set(manager._standalone_app_windows) == (
+            {"angle_calculator"} if original_visible else set()
+        )
+        assert set(manager._standalone_app_pending_states) == {"angle_calculator"}
+        restored_apps = controller.saving._workspace_standalone_apps_snapshot()
+        if original_visible:
+            restored_app = restored_apps["apps"]["angle_calculator"]
+            expected_app = expected_apps["apps"]["angle_calculator"]
+            assert restored_app["window_state"]["visible"]
+            assert _standalone_app_settings(restored_app) == _standalone_app_settings(
+                expected_app
+            )
+        else:
+            assert restored_apps == expected_apps
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(revision_id).compute(), data
+        )
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(original)
+        lock = workspace_storage._acquire_workspace_document_lock(incoming)
+        lock.unlock()
+        reopened = manager._show_standalone_app("angle_calculator")
+        assert not reopened._show_laser_arpes_controls
+        assert _standalone_app_settings(reopened.workspace_state_payload()) == (
+            _standalone_app_settings(expected_apps["apps"]["angle_calculator"])
+        )
+
+
+@pytest.mark.parametrize("follow_source", [False, True])
+def test_workspace_import_keeps_closed_sources_detached(
+    qtbot, tmp_path, manager_context, follow_source
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    path = tmp_path / "closed-source.itws"
+    with manager_context() as manager:
+        source_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        source = manager._node_for_target(source_index)
+        source_uid = source.uid
+        captured = manager._lineage_controller._script_input_for_node(
+            source, name="data"
+        ).model_copy(update={"follow_source": follow_source})
+        derived_spec = script(
+            ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+            start_label="Calculation",
+            primary_input="data",
+            active_name="derived",
+            script_inputs=(captured,),
+        )
+        derived_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 1, _in_manager=True),
+            show=False,
+            provenance_spec=derived_spec,
+        )
+        derived = manager._node_for_target(derived_index)
+        final_spec = script(
+            ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+            start_label="Calculation",
+            primary_input="data",
+            active_name="derived",
+            script_inputs=(
+                manager._lineage_controller._script_input_for_node(
+                    derived, name="data"
+                ),
+            ),
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 2, _in_manager=True),
+            show=False,
+            provenance_spec=final_spec,
+        )
+        manager.remove_imagetool(source_index)
+        manager._workspace_controller.saving._save_workspace_document(path)
+
+    with manager_context() as manager:
+        unrelated_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data + 100, _in_manager=True),
+            show=False,
+            uid=source_uid,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        derived = manager._node_for_target(1)
+        closed = derived.provenance_spec.script_inputs[0]
+        nested = (
+            manager._node_for_target(2)
+            .provenance_spec.script_inputs[0]
+            .parsed_provenance_spec()
+        )
+        assert closed.node_uid != source_uid
+        assert closed.node_uid not in manager._tool_graph.nodes
+        assert nested.script_inputs[0].node_uid == closed.node_uid
+        assert manager._lineage_controller._reload_script_derived_target(1)
+        xr.testing.assert_identical(derived.current_source_data(), data + 1)
+        xr.testing.assert_identical(
+            manager._node_for_target(unrelated_index).current_source_data(), data + 100
+        )

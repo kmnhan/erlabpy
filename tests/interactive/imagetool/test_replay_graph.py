@@ -2,8 +2,9 @@ import ast
 import hashlib
 import pathlib
 import re
+import symtable
+import sys
 import textwrap
-import types
 import typing
 from collections.abc import Collection, Mapping
 
@@ -20,8 +21,10 @@ from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name,
     _code_uses_name_any_scope,
-    _nonuniform_restore_support_code,
+    _CodeAnalyzer,
     _replace_code_identifiers,
+    _simplify_display_code,
+    _symbol_table_dependencies,
 )
 from erlab.interactive.imagetool._provenance._execution import (
     execute_replay_graph,
@@ -33,17 +36,20 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
     ReplayGraphError,
-    _code_has_scoped_definition,
+    ResolvedReplayInput,
+    SelectedProvenanceScope,
     _code_name_accesses,
     _compact_replay_temp_names,
     _file_seed_code_parts,
     _group_framework_imports,
     _import_binding_targets,
+    _inline_adjacent_replay_assignments,
+    _inline_simple_name_aliases,
     _inline_single_use_replay_names,
     _is_future_import,
     _leading_top_level_imports,
     _operation_replay_code,
-    _remove_noop_assignments,
+    _remove_unused_generated_copies,
     _replace_ast_names,
     _script_function_dependencies,
     _script_seed_file_load_parts,
@@ -55,7 +61,9 @@ from erlab.interactive.imagetool._provenance._graph import (
     compile_replay_graph,
     emit_replay_code,
     script_inputs_code,
+    selected_provenance_code,
     selected_steps_code,
+    selected_steps_spec,
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -87,9 +95,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageDerivativeOperation,
     IselOperation,
     KspaceWorkFunctionOperation,
+    ModelFitOperation,
     QSelOperation,
     RenameOperation,
-    RestoreNonuniformDimsOperation,
     RotateOperation,
     ScriptCodeOperation,
     SelOperation,
@@ -99,6 +107,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     TransposeOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_trust_entries,
     provenance_replay_graph_code_trust_entries,
     provenance_requires_code_trust,
 )
@@ -117,6 +126,90 @@ def _exec_generated_code(
     namespace = dict(namespace_items or {})
     exec(code, namespace, namespace)  # noqa: S102
     return namespace
+
+
+def _selected_script_scope(
+    code: str,
+    input_name: str,
+    output_name: str,
+    links: dict[str, int],
+) -> SelectedProvenanceScope:
+    return SelectedProvenanceScope(
+        selected_steps_spec(
+            (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+            input_name=input_name,
+            output_name=output_name,
+        ),
+        links,
+    )
+
+
+def test_captured_input_trust_inventory_matches_replay_bindings() -> None:
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    original = source.copy(deep=True)
+    spec = script(
+        start_label="Apply copied script",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                revision_id="captured",
+                follow_source=False,
+                provenance_spec=script(
+                    ScriptCodeOperation(
+                        label="Previous script", code="result = derived + 1"
+                    ),
+                    start_label="Previous data",
+                    seed_code="derived = data",
+                    active_name="result",
+                ),
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset", code="result = derived + 2"
+                ),
+                context_names=("derived",),
+            ),
+        ),
+    )
+
+    def resolve(item: ScriptInput):
+        return (
+            ResolvedReplayInput(source, item)
+            if item.revision_id == "captured"
+            else None
+        )
+
+    entries = provenance_code_trust_entries(
+        spec, location_prefix="copied", live_input_resolver=resolve
+    )
+    authorization = _authorize_execution(entries)
+    graph = compile_replay_graph(spec, live_input_resolver=resolve)
+    actual = execute_replay_graph(graph, authorize=lambda _entries: authorization)
+    xr.testing.assert_identical(actual, source + 2)
+    xr.testing.assert_identical(source, original)
+
+    changed = spec.model_copy(
+        update={
+            "steps": (
+                spec.steps[0].model_copy(
+                    update={
+                        "operation": ScriptCodeOperation(
+                            label="Changed", code="result = derived + 3"
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(ReplayGraphError, match="not trusted"):
+        execute_replay_graph(
+            compile_replay_graph(changed, live_input_resolver=resolve),
+            authorize=lambda _entries: authorization,
+        )
 
 
 def test_concrete_bound_input_operation_replays_without_stored_code() -> None:
@@ -334,27 +427,23 @@ def test_replay_graph_rejects_unavailable_bound_and_nonlive_inputs() -> None:
     class _NonLiveOperation(ToolProvenanceOperation):
         live_applicable: typing.ClassVar[bool] = False
 
-    bound = recipe(
-        ReplayStep(
-            operation=ShiftFromInputOperation(along="x"),
-            input_bindings={"shift": "shift"},
+    bound = script(
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Discard shift", code="del shift")
+            ),
+            ReplayStep(
+                operation=ShiftFromInputOperation(along="x"),
+                input_bindings={"shift": "shift"},
+            ),
         ),
         start_label="Shift",
         active_name="shifted",
         script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
         primary_input="data",
     )
-    unavailable_bound = types.SimpleNamespace(
-        kind="script",
-        active_name=bound.active_name,
-        primary_input=bound.primary_input,
-        seed_code=None,
-        script_inputs=(ScriptInput(name="data"),),
-        script_context_bindings=(),
-        steps=bound.steps,
-    )
     with pytest.raises(ReplayGraphError, match="input binding is unavailable"):
-        _validate_script_provenance(unavailable_bound)
+        _validate_script_provenance(bound, strict_replay_code=False)
 
     nonlive = script(
         start_label="Non-live operation",
@@ -808,9 +897,7 @@ class Child(Base, metaclass=data_5):
     with pytest.raises(ReplayGraphError, match="Expected script"):
         _validate_script_provenance(full_data(SqueezeOperation()))
     with pytest.raises(ReplayGraphError, match="without active_name"):
-        _validate_script_provenance(
-            types.SimpleNamespace(kind="script", active_name=None)
-        )
+        _validate_script_provenance(script(start_label="Run script"))
     with pytest.raises(ReplayGraphError, match="unsupported Import"):
         _validate_script_provenance(
             script(
@@ -886,28 +973,6 @@ class Child(Base, metaclass=data_5):
                 ),
             )
         )
-    invalid_stage_spec = script(
-        start_label="Run script",
-        seed_code="derived = 1",
-        active_name="derived",
-    ).model_copy(
-        update={
-            "replay_stages": (
-                ReplayStage.model_construct(
-                    source_kind="full_data",
-                    operations=(
-                        ScriptCodeOperation(
-                            label="Opaque",
-                            code=None,
-                            copyable=False,
-                        ),
-                    ),
-                ),
-            )
-        }
-    )
-    with pytest.raises(ReplayGraphError, match="non-replayable"):
-        _validate_script_provenance(invalid_stage_spec)
     assert not script_provenance_replayable(None)
     external_input_spec = script(
         ScriptCodeOperation(
@@ -1165,7 +1230,6 @@ def test_replay_graph_script_context_binding_error_paths() -> None:
         execute_replay_graph(active_graph, authorize=_authorize_execution),
         data,
     )
-    assert _remove_noop_assignments("derived =") == "derived ="
 
 
 def test_replay_graph_manual_error_and_cache_paths() -> None:
@@ -1216,7 +1280,14 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         script_key = script_graph.add_node(
             f"script-{message}",
             "script",
-            payload={"bindings": (), "codes": codes, "active_name": "derived"},
+            payload={
+                "bindings": (),
+                "codes": codes,
+                "active_name": "derived",
+                "external_names": ((),),
+                "hoist_imports": (False,),
+                "uses_implicit_framework_imports": (False,),
+            },
         )
         script_graph.output_key = script_key
         with pytest.raises(ReplayGraphError, match=message):
@@ -1267,11 +1338,13 @@ def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     graph = ReplayGraph()
     input_key = graph.add_node("input", "live_input", payload={"data": data})
-    external_operation = types.SimpleNamespace(
-        op="model_fit",
-        parameters={
-            "dependent": types.SimpleNamespace(expr="2 * independent"),
-        },
+    external_operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={"c0": {"value": 1.0}, "c1": {"expr": "2 * c0"}},
+        method="least_squares",
+        parameter="c1",
     )
     external_key = graph.add_node(
         "external-expression",
@@ -1289,7 +1362,9 @@ def test_replay_graph_partial_capability_reuses_cached_numeric_data() -> None:
             "bindings": (("cached", external_key),),
             "codes": ("derived = cached + 1",),
             "document_codes": ("derived = cached + 1",),
+            "external_names": ((),),
             "hoist_imports": (False,),
+            "uses_implicit_framework_imports": (False,),
         },
     )
     graph.output_key = local_key
@@ -1426,7 +1501,7 @@ def test_rebuild_script_inputs_controls_recorded_fallback(
 
     resolved, refreshed = rebuild_script_inputs(
         (script_input,),
-        live_input_resolver=lambda item: (expected, item),
+        live_input_resolver=lambda item: ResolvedReplayInput(expected, item),
         authorize=lambda *_args: pytest.fail(
             "live input must not authorize recorded provenance"
         ),
@@ -1515,7 +1590,7 @@ def test_rebuild_script_provenance_cache_separates_live_inputs(
 
     def resolve_live(script_input):
         data = data_by_ref.get((script_input.node_uid, script_input.data_role))
-        return None if data is None else (data, script_input)
+        return None if data is None else ResolvedReplayInput(data, script_input)
 
     result, _ = rebuild_script_provenance(
         spec,
@@ -1562,10 +1637,7 @@ def test_rebuild_cache_separates_live_input_source_transforms() -> None:
     def resolve_live(script_input: ScriptInput):
         if script_input.node_uid != "shared-node":
             return None
-        source_spec = script_input.parsed_source_spec()
-        if source_spec is None:
-            return source, script_input
-        return source_spec.apply(source), script_input
+        return ResolvedReplayInput(source, script_input)
 
     result, _ = rebuild_script_provenance(
         spec,
@@ -1605,7 +1677,7 @@ def test_replay_cache_uses_resolved_live_input_snapshot() -> None:
         )
         graph = compile_replay_graph(
             spec,
-            live_input_resolver=lambda _item: (data, resolved_input),
+            live_input_resolver=lambda _item: ResolvedReplayInput(data, resolved_input),
         )
         return execute_replay_graph(graph, cache=replay_cache)
 
@@ -1725,6 +1797,170 @@ def test_display_graph_validates_input_name_overrides() -> None:
         )
     with pytest.raises(ReplayGraphError, match="cannot use the requested name"):
         emit_replay_code(graph, input_name_overrides={left_key: "np"})
+
+
+@pytest.mark.parametrize(
+    "input_names",
+    [
+        {"left": "left", "right": "right", "reference": "reference"},
+        {"left": "right", "right": "left", "reference": "reference"},
+        {"left": "right", "right": "reference", "reference": "left"},
+        {"left": "reference", "right": "left", "reference": "right"},
+        {"left": "right", "right": "reference", "reference": "offsets"},
+    ],
+    ids=["identity", "swap", "cycle", "reverse-cycle", "chain"],
+)
+@pytest.mark.parametrize(
+    "binding_scope", ["expression", "global", "default", "rebind", "self_assignment"]
+)
+@pytest.mark.parametrize("external_inputs", [False, True])
+def test_display_graph_publishes_renamed_inputs_together(
+    input_names: dict[str, str], binding_scope: str, external_inputs: bool
+) -> None:
+    expression = "left - right + reference * 10"
+    if binding_scope == "expression":
+        code = f"result = {expression}"
+    elif binding_scope == "rebind":
+        code = "left = right + 1\nresult = left + reference * 10"
+    elif binding_scope == "self_assignment":
+        code = f"left = left\nresult = {expression}"
+    else:
+        arguments = (
+            "left=left, right=right, reference=reference"
+            if binding_scope == "default"
+            else ""
+        )
+        code = f"def combine({arguments}):\n    return {expression}\nresult = combine()"
+    graph = compile_replay_graph(
+        script(
+            ScriptCodeOperation(label="Combine inputs", code=code),
+            start_label="Use caller inputs",
+            active_name="result",
+            script_inputs=(
+                tuple(ScriptInput(name=name) for name in input_names)
+                if external_inputs
+                else ()
+            ),
+        ),
+        display=True,
+    )
+    overrides = {
+        key: input_names[name]
+        for name in input_names
+        for key in graph.required_input_keys(name)
+    }
+    emitted = emit_replay_code(
+        graph, output_name="result", input_name_overrides=overrides
+    )
+    namespace = {
+        name: xr.DataArray(np.full((3, 2), value), dims=("x", "y"))
+        for name, value in {
+            "left": 10.0,
+            "right": 3.0,
+            "reference": 2.0,
+            "offsets": 100.0,
+        }.items()
+    }
+    expected = (
+        namespace[input_names["right"]] + 1 + namespace[input_names["reference"]] * 10
+        if binding_scope == "rebind"
+        else namespace[input_names["left"]]
+        - namespace[input_names["right"]]
+        + namespace[input_names["reference"]] * 10
+    )
+    actual = _exec_generated_code(emitted, namespace)
+
+    xr.testing.assert_identical(actual["result"], expected)
+    assert ".copy(" not in emitted
+    assert "_itool_replay_" not in emitted
+
+
+@pytest.mark.parametrize("reverse_inputs", [False, True])
+@pytest.mark.parametrize("external_inputs", [False, True])
+def test_display_graph_captures_inputs_before_alias_chains(
+    reverse_inputs: bool, external_inputs: bool
+) -> None:
+    input_names = {
+        "left": "offsets",
+        "right": "left",
+        "reference": "right",
+        "offsets": "reference",
+    }
+    if reverse_inputs:
+        input_names = dict(reversed(tuple(input_names.items())))
+    graph = compile_replay_graph(
+        script(
+            ScriptCodeOperation(
+                label="Combine inputs",
+                code="left = right + 1\nresult = left + reference * 10 + offsets * 100",
+            ),
+            start_label="Use caller inputs",
+            active_name="result",
+            script_inputs=(
+                tuple(ScriptInput(name=name) for name in input_names)
+                if external_inputs
+                else ()
+            ),
+        ),
+        display=True,
+    )
+    overrides = {
+        key: input_names[name]
+        for name in input_names
+        for key in graph.required_input_keys(name)
+    }
+    emitted = emit_replay_code(
+        graph, output_name="result", input_name_overrides=overrides
+    )
+    namespace = {
+        name: xr.DataArray(np.full((3, 2), value), dims=("x", "y"))
+        for name, value in {
+            "left": 10.0,
+            "right": 3.0,
+            "reference": 2.0,
+            "offsets": 100.0,
+        }.items()
+    }
+    expected = (
+        namespace["left"] + 1 + namespace["right"] * 10 + namespace["reference"] * 100
+    )
+    actual = _exec_generated_code(emitted, namespace)
+
+    xr.testing.assert_identical(actual["result"], expected)
+    assert ".copy(" not in emitted
+    assert "_itool_replay_" not in emitted
+
+
+@pytest.mark.parametrize("external_inputs", [False, True])
+def test_display_graph_publishes_swapped_output_aliases_together(
+    external_inputs: bool,
+) -> None:
+    graph = compile_replay_graph(
+        script(
+            ScriptCodeOperation(label="Combine", code="result = left - right"),
+            start_label="Use caller inputs",
+            active_name="result",
+            script_inputs=(
+                (ScriptInput(name="left"), ScriptInput(name="right"))
+                if external_inputs
+                else ()
+            ),
+        ),
+        display=True,
+    )
+    (left_key,) = graph.required_input_keys("left")
+    (right_key,) = graph.required_input_keys("right")
+    graph.add_alias("left", right_key)
+    graph.add_alias("right", left_key)
+    code = emit_replay_code(graph, output_name="result", include_all_aliases=True)
+    left = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "y"))
+    right = left / 2
+    actual = _exec_generated_code(code, {"left": left, "right": right})
+
+    xr.testing.assert_identical(actual["result"], left - right)
+    xr.testing.assert_identical(actual["left"], right)
+    xr.testing.assert_identical(actual["right"], left)
+    assert ".copy(" not in code
 
 
 def test_display_graph_disambiguates_and_overrides_external_input_names() -> None:
@@ -1908,12 +2144,12 @@ def test_rebuild_cache_separates_detached_recorded_inputs(
     replay_cache: dict[str, xr.DataArray] = {}
     source_result, _ = rebuild_script_provenance(
         nested(source_path),
-        live_input_resolver=lambda item: (source, item),
+        live_input_resolver=lambda item: ResolvedReplayInput(source, item),
         cache=replay_cache,
     )
     displayed_result, _ = rebuild_script_provenance(
         nested(displayed_path),
-        live_input_resolver=lambda item: (displayed, item),
+        live_input_resolver=lambda item: ResolvedReplayInput(displayed, item),
         cache=replay_cache,
     )
 
@@ -2056,8 +2292,6 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     xr.testing.assert_identical(rebuilt, data + 1.0)
     assert rebuilt_spec.script_inputs[0].node_uid is None
 
-    with pytest.raises(ReplayGraphError, match="maximum reload depth"):
-        rebuild_script_provenance(script_spec, depth=21)
     missing_spec = script(
         ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
         start_label="Run script",
@@ -2086,8 +2320,8 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     def resolve_live(_script_input):
         nonlocal live_calls
         live_calls += 1
-        return data, live_input.model_copy(
-            update={"node_snapshot_token": current_marker}
+        return ResolvedReplayInput(
+            data, live_input.model_copy(update={"node_snapshot_token": current_marker})
         )
 
     live_rebuilt, live_rebuilt_spec = rebuild_script_provenance(
@@ -2151,8 +2385,11 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
         resolved_data = (
             source_data if script_input.data_role == "source" else displayed_data
         )
-        return resolved_data, script_input.model_copy(
-            update={"node_snapshot_token": f"current-{script_input.data_role}"}
+        return ResolvedReplayInput(
+            resolved_data,
+            script_input.model_copy(
+                update={"node_snapshot_token": f"current-{script_input.data_role}"}
+            ),
         )
 
     mixed_role_result, mixed_role_rebuilt = rebuild_script_provenance(
@@ -2227,7 +2464,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
             ),
         ),
     )
-    with pytest.raises(ReplayGraphError, match="not self-contained"):
+    with pytest.raises(ReplayGraphError, match="reloadable script or file"):
         rebuild_script_provenance(full_data_spec)
 
 
@@ -3326,8 +3563,6 @@ def test_replay_graph_display_normalizes_nested_derived_console_code(
 
 
 def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
-    assert _compact_replay_temp_names("bad =") == "bad ="
-    assert _code_has_scoped_definition("bad =")
     effectful_attributes = (
         "_itool_replay_0 = source.first\n"
         "other = source.second\n"
@@ -3477,6 +3712,8 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("result = data_0",),
             "active_name": "result",
             "bindings": (("data_0", source_key),),
+            "external_names": ((),),
+            "hoist_imports": (False,),
             "uses_implicit_framework_imports": (False,),
         },
     )
@@ -3504,6 +3741,8 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
             "codes": ("bad =",),
             "active_name": "derived",
             "bindings": (),
+            "external_names": ((),),
+            "hoist_imports": (False,),
             "uses_implicit_framework_imports": (False,),
         },
     )
@@ -3654,100 +3893,8 @@ def test_replay_graph_display_hides_internal_source_view_restore_only(
     )
 
 
-def test_replay_graph_display_restores_dimensions_left_by_recorded_mapping(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "internal.nc"
-    source = xr.DataArray(
-        np.arange(12.0).reshape(3, 4),
-        dims=("x_idx", "y_idx"),
-        coords={
-            "x": ("x_idx", [0.0, 0.2, 1.0]),
-            "y": ("y_idx", [0.0, 0.4, 1.5, 3.0]),
-        },
-    )
-    source.to_netcdf(path)
-    spec = script(
-        start_label="Load ImageTool rendering data",
-        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        active_name="derived",
-        replay_stages=(
-            ReplayStage(
-                source_kind="full_data",
-                operations=(
-                    RestoreNonuniformDimsOperation(dimension_mapping={"x_idx": "x"}),
-                ),
-            ),
-            ReplayStage(source_kind="public_data"),
-        ),
-    )
-
-    runtime_graph = compile_replay_graph(spec, trusted_user_code=True)
-    display_graph = compile_replay_graph(spec, display=True)
-    display_code = emit_replay_code(display_graph, output_name="derived")
-    runtime_expected = source.swap_dims({"x_idx": "x", "y_idx": "y"}).drop_vars(
-        ("x_idx", "y_idx"), errors="ignore"
-    )
-    copied_expected = source.swap_dims({"x_idx": "x"}).drop_vars(
-        "x_idx", errors="ignore"
-    )
-
-    assert "def _restore_image_tool_dimensions" not in display_code
-    xr.testing.assert_identical(
-        execute_replay_graph(runtime_graph, authorize=_authorize_execution),
-        runtime_expected,
-    )
-    xr.testing.assert_identical(
-        _exec_generated_code(display_code, {"xr": xr})["derived"],
-        copied_expected,
-    )
-
-
-@pytest.mark.parametrize("source_kind", ["public_data", "selection"])
-def test_replay_graph_runtime_restores_script_seeded_internal_source_views(
-    source_kind: str,
-    tmp_path: pathlib.Path,
-) -> None:
-    source = xr.DataArray(
-        np.arange(6.0).reshape(3, 2),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
-    )
-    path = tmp_path / "source.nc"
-    source.to_netcdf(path)
-    source_spec = {"public_data": public_data, "selection": selection}[source_kind](
-        QSelOperation(kwargs={"x": 0.2})
-    )
-    spec = script(
-        start_label="Create ImageTool rendering dimensions",
-        seed_code="derived = erlab.utils.array._make_dims_uniform(data_0)",
-        active_name="derived",
-        script_inputs=(
-            ScriptInput(
-                name="data_0",
-                label="Source data",
-                provenance_spec=_file_spec(path),
-            ),
-        ),
-        replay_stages=(ReplayStage.from_source_spec(source_spec),),
-    )
-
-    graph = compile_replay_graph(spec)
-    code = emit_replay_code(graph, output_name="derived")
-    namespace = _exec_generated_code(code, {"erlab": erlab})
-
-    assert code.count("def _restore_image_tool_dimensions") == 1
-    assert "erlab.utils.array._restore_nonuniform_dims" not in code
-    assert "erlab.interactive.imagetool.slicer" not in code
-    xr.testing.assert_identical(
-        execute_replay_graph(graph, authorize=_authorize_execution),
-        source.qsel(x=0.2),
-    )
-    xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2))
-
-
 @pytest.mark.parametrize("display", [False, True])
-def test_replay_graph_restore_support_preserves_module_prologue(
+def test_replay_graph_source_view_preserves_module_prologue(
     display: bool,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -3834,69 +3981,6 @@ def scale(data: xr.DataArray) -> xr.DataArray:
     assert namespace["__doc__"] == "Generated extension workflow."
     assert namespace["__annotations__"] == {"annotation": "MissingType | None"}
     xr.testing.assert_identical(namespace["result"], xr.DataArray([6.0]))
-
-
-def test_extension_binding_named_like_internal_restore_helper(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    script_path = tmp_path / "_restore_image_tool_dimensions.py"
-    script_path.write_text(
-        """import xarray as xr
-from erlab.extensions import routine
-
-@routine()
-def scale(data: xr.DataArray) -> xr.DataArray:
-    return data * 2.0
-"""
-    )
-    monkeypatch.setattr(
-        extension_api,
-        "_resolve_registered_script_capability",
-        lambda *_args: _registered_routine(script_path),
-    )
-    source = xr.DataArray(
-        [1.0, 2.0, 3.0],
-        dims=("x_idx",),
-        coords={"x": ("x_idx", [0.0, 0.2, 1.0])},
-    )
-    source_dict = source.to_dict()
-    extension_operation = ExtensionRoutineOperation(
-        script_name=script_path.name,
-        source_hash="a" * 64,
-        routine_id="scale",
-        routine_name="Scale",
-        parameters={},
-    )
-    spec = ToolProvenanceSpec(
-        kind="script",
-        start_label="Create data",
-        seed_code=(
-            f"import xarray as xr\nresult = xr.DataArray.from_dict({source_dict!r})"
-        ),
-        active_name="result",
-    ).append_replay_stage(
-        full_data(extension_operation, RestoreNonuniformDimsOperation())
-    )
-
-    code = emit_replay_code(
-        compile_replay_graph(spec, display=True),
-        output_name="result",
-    )
-    namespace = _exec_generated_code(code)
-    scale_call = next(
-        node
-        for node in ast.walk(ast.parse(code))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "scale"
-    )
-    scale_call_source = ast.get_source_segment(code, scale_call)
-
-    assert scale_call_source is not None
-    assert "\n" not in scale_call_source
-    assert "def _restore_image_tool_dimensions" not in code
-    xr.testing.assert_identical(namespace["result"], source * 2.0)
 
 
 def test_extension_code_preserves_external_framework_alias_input(
@@ -4167,71 +4251,6 @@ def test_replay_graph_preserves_user_restore_named_function(
     assert "def _restore_image_tool_dimensions_2(array):" not in code
     assert code.count("def _restore_image_tool_dimensions(array):") == 1
     xr.testing.assert_identical(namespace["derived"], source.qsel(x=0.2) + 1)
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        xr.DataArray(
-            np.arange(3.0),
-            dims=("x_idx",),
-            coords={"x": ("x_idx", [0.0, 0.2, 1.0])},
-        ),
-        xr.DataArray(
-            np.arange(3.0),
-            dims=("x_idx",),
-            coords={"x": ("x_idx", [0.0, 1.0, 2.0])},
-        ),
-        xr.DataArray(
-            [1.0],
-            dims=("x_idx",),
-            coords={"x": ("x_idx", [0.0])},
-        ),
-        xr.DataArray(np.arange(3.0), dims=("x_idx",)),
-        xr.DataArray(
-            np.arange(6.0).reshape(3, 2),
-            dims=("x_idx", "y"),
-            coords={"x": ("y", [0.0, 0.5])},
-        ),
-        xr.DataArray(
-            np.arange(3.0),
-            dims=("x_idx",),
-            coords={"x": ("x_idx", ["left", "middle", "right"])},
-        ),
-        xr.DataArray(
-            np.arange(9.0).reshape(3, 3),
-            dims=("x_idx", "y_idx"),
-            coords={
-                "x": ("x_idx", [0.0, 0.0, 1.0]),
-                "y": ("y_idx", [1.0, 0.4, -0.8]),
-            },
-        ),
-    ],
-    ids=(
-        "nonuniform",
-        "uniform-user-dimension",
-        "singleton",
-        "missing-coordinate",
-        "wrong-coordinate-dimension",
-        "non-numeric-coordinate",
-        "multiple-constant-and-descending",
-    ),
-)
-def test_generated_nonuniform_restore_matches_runtime(source: xr.DataArray) -> None:
-    function_name = "restore_image_tool_dimensions"
-    code = "\n".join(
-        (
-            _nonuniform_restore_support_code(function_name),
-            f"derived = {function_name}(data)",
-        )
-    )
-
-    namespace = _exec_generated_code(code, {"data": source})
-
-    xr.testing.assert_identical(
-        namespace["derived"],
-        erlab.utils.array._restore_nonuniform_dims(source),
-    )
 
 
 def test_replay_graph_display_keeps_scoped_bindings_and_inlines_rebound_inputs(
@@ -4943,10 +4962,6 @@ def test_replay_import_helpers_preserve_nonhoistable_imports() -> None:
         ),
     ]
     assert body == "result = Array(np.asarray([1.0]))"
-    assert _leading_top_level_imports("if True:\n") == (
-        [],
-        "if True:\n",
-    )
     assert _leading_top_level_imports("value = 1") == ([], "value = 1")
     commented_import = "import numpy as np  # preserve this comment\nvalue = np"
     assert _leading_top_level_imports(commented_import) == (
@@ -4971,23 +4986,6 @@ def test_replay_import_helpers_preserve_nonhoistable_imports() -> None:
     assert _import_binding_targets("import numpy as module, xarray as module") is None
     assert _is_future_import("from __future__ import annotations")
     assert not _is_future_import("import numpy as np")
-
-
-def test_replay_import_helpers_preserve_imports_without_ast_locations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import_node = ast.Import(names=[ast.alias(name="numpy")])
-    import_node.lineno = 1
-    import_node.col_offset = 0
-    import_node.end_lineno = None
-    import_node.end_col_offset = None
-    module = ast.Module(body=[import_node], type_ignores=[])
-    monkeypatch.setattr(_graph.ast, "parse", lambda *_args, **_kwargs: module)
-
-    assert _leading_top_level_imports("import numpy") == (
-        [],
-        "import numpy",
-    )
 
 
 def test_replay_import_helpers_track_names_bound_by_python_constructs() -> None:
@@ -5398,9 +5396,9 @@ def test_live_inputs_bypass_unreachable_unsafe_fallback() -> None:
 
     def resolve_live(script_input: ScriptInput):
         if script_input is left_input:
-            return left, script_input
+            return ResolvedReplayInput(left, script_input)
         if script_input is right_input:
-            return right, script_input
+            return ResolvedReplayInput(right, script_input)
         return None
 
     assert script_provenance_replayable(spec)
@@ -5444,7 +5442,7 @@ def test_replay_rejects_unresolved_recorded_input(
         rebuild_script_provenance(
             spec,
             live_input_resolver=lambda item: (
-                (left, item) if item.name == "left" else None
+                ResolvedReplayInput(left, item) if item.name == "left" else None
             ),
         )
 
@@ -5495,7 +5493,7 @@ def test_live_input_resolution_uses_exact_input_across_nested_scopes() -> None:
 
     def resolve_live(script_input: ScriptInput):
         if script_input is outer_shared_input:
-            return live_shared, script_input
+            return ResolvedReplayInput(live_shared, script_input)
         return None
 
     assert not script_provenance_replayable(recorded_shared)
@@ -5538,7 +5536,7 @@ def test_rebuild_nested_live_inputs_uses_first_resolution() -> None:
         if calls[script_input.name] > 1:
             return None
         data = left if script_input.name == "left" else right
-        return data, script_input
+        return ResolvedReplayInput(data, script_input)
 
     result, _rebuilt = rebuild_script_provenance(
         spec,
@@ -5565,7 +5563,11 @@ def test_live_input_bypasses_invalid_recorded_fallback() -> None:
     )
 
     def resolve_live(script_input: ScriptInput):
-        return (data, script_input) if script_input is live_input else None
+        return (
+            ResolvedReplayInput(data, script_input)
+            if script_input is live_input
+            else None
+        )
 
     assert script_provenance_replayable(
         spec,
@@ -5728,7 +5730,7 @@ def test_missing_later_callable_precedes_any_file_load(
     assert load_calls == []
 
 
-def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
+def test_live_input_classification_supports_deep_replay() -> None:
     data = xr.DataArray([1.0, 2.0], dims="x")
     spec = script(
         ScriptCodeOperation(label="Add inputs", code="result = left + right"),
@@ -5740,7 +5742,7 @@ def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
             ScriptInput(name="right", node_uid="right"),
         ),
     )
-    for level in range(21):
+    for level in range(40):
         spec = script(
             start_label=f"Copy nested input {level}",
             seed_code="result = child",
@@ -5750,18 +5752,20 @@ def test_live_input_classification_enforces_rebuild_depth_limit() -> None:
 
     def resolve_live(script_input: ScriptInput):
         if script_input.node_uid in {"left", "right"}:
-            return data, script_input
+            return ResolvedReplayInput(data, script_input)
         return None
 
-    assert not script_provenance_replayable(
+    assert script_provenance_replayable(
         spec,
         live_input_resolver=resolve_live,
     )
-    with pytest.raises(ReplayGraphError, match="maximum reload depth"):
-        rebuild_script_provenance(
-            spec,
-            live_input_resolver=resolve_live,
-        )
+    result, rebuilt = rebuild_script_provenance(
+        spec,
+        live_input_resolver=resolve_live,
+        authorize=_authorize_execution,
+    )
+    xr.testing.assert_identical(result, data + data)
+    assert rebuilt.kind == "script"
 
 
 def test_rebuild_preflight_work_scales_linearly(
@@ -6379,6 +6383,2329 @@ def test_selected_steps_code_preserves_script_inputs_and_function_scope(
     assert ".copy(" not in code
 
 
+@pytest.mark.parametrize("function_scope", ["global", "default"])
+def test_selected_notebook_scopes_publish_bindings_before_later_functions(
+    function_scope: str,
+) -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    offsets = source + 3.0
+    definition = (
+        "def normalize():\n    return derived + 1"
+        if function_scope == "global"
+        else "def normalize(values=derived):\n    return values + 1"
+    )
+    scopes = (
+        SelectedProvenanceScope(
+            selected_steps_spec(
+                (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Normalize sample",
+                            code=(
+                                "events.append('A')\n"
+                                f"{definition}\n"
+                                "derived = normalize()"
+                            ),
+                        )
+                    ),
+                ),
+                input_name="derived",
+                output_name="derived",
+            ),
+            {},
+        ),
+        SelectedProvenanceScope(
+            selected_steps_spec(
+                (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Prepare correction",
+                            code="events.append('X')\ncorrection = offsets * 2",
+                        )
+                    ),
+                ),
+                input_name="offsets",
+                output_name="correction",
+            ),
+            {},
+        ),
+        SelectedProvenanceScope(
+            selected_steps_spec(
+                (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Scale normalized sample",
+                            code="events.append('B')\nderived = normalize() * 2",
+                        )
+                    ),
+                ),
+                input_name="derived",
+                output_name="derived",
+            ),
+            {"derived": 0},
+        ),
+    )
+    code = selected_provenance_code(scopes)
+    events: list[str] = []
+    namespace = _exec_generated_code(
+        code, {"derived": source, "offsets": offsets, "events": events}
+    )
+
+    expected = (source + (2 if function_scope == "global" else 1)) * 2
+    xr.testing.assert_identical(namespace["derived"], expected)
+    xr.testing.assert_identical(namespace["correction"], offsets * 2)
+    assert events == ["A", "X", "B"]
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_selected_notebook_scopes_bind_current_or_recorded_inputs(
+    recorded: bool,
+) -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    correction = source + 100.0
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample",
+                    code="derived_input = data * 10\nderived = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Apply correction", code="shifted = data + derived"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="shifted",
+        script_inputs=(
+            (
+                ScriptInput(
+                    name="derived", revision_id="correction", follow_source=False
+                ),
+            )
+            if recorded
+            else ()
+        ),
+    )
+    code = selected_provenance_code(
+        (SelectedProvenanceScope(first, {}), SelectedProvenanceScope(last, {"data": 0}))
+    )
+    namespace = _exec_generated_code(code, {"data": source, "derived": correction})
+
+    expected_input = correction if recorded else source + 1
+    xr.testing.assert_identical(namespace["shifted"], source + 1 + expected_input)
+    xr.testing.assert_identical(namespace["derived_input"], source * 10)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize("output_name", ["derived", "result"])
+@pytest.mark.parametrize("correction_code", ["derived * 0", "derived - derived"])
+def test_selected_notebook_scopes_restore_retained_function_globals(
+    output_name: str,
+    correction_code: str,
+) -> None:
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+
+    def scope(code, input_name, output_name, links, input_alias=None):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+                input_alias=input_alias,
+            ),
+            links,
+        )
+
+    scopes = (
+        scope(
+            "def normalize():\n    return derived + 1\nderived = normalize()",
+            "data",
+            "derived",
+            {},
+            "derived",
+        ),
+        scope(
+            f"derived = offsets * 10\ncorrection = {correction_code}",
+            "offsets",
+            "correction",
+            {},
+        ),
+        scope(
+            f"{output_name} = normalize() * 2 + correction",
+            "derived",
+            output_name,
+            {"derived": 0, "correction": 1},
+        ),
+    )
+    original_specs = tuple(scope.spec.model_dump(mode="json") for scope in scopes)
+    code = selected_provenance_code(scopes)
+    namespace = _exec_generated_code(code, {"data": source, "offsets": offsets})
+
+    xr.testing.assert_identical(namespace[output_name], (source + 2) * 2)
+    assert (
+        tuple(scope.spec.model_dump(mode="json") for scope in scopes) == original_specs
+    )
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+def test_selected_notebook_scopes_restore_recursive_function_alias_globals() -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    code = selected_provenance_code(
+        (
+            _selected_script_scope(
+                "def normalize(values, count=1):\n"
+                "    if count:\n"
+                "        return normalize(values + 1, count - 1)\n"
+                "    return values\n"
+                "normalize_saved = normalize\nprepared = normalize(data)",
+                "data",
+                "prepared",
+                {},
+            ),
+            _selected_script_scope(
+                "normalize = offsets * 0\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            _selected_script_scope(
+                "result = normalize_saved(prepared) + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    namespace = _exec_generated_code(code, {"data": source, "offsets": source + 100})
+
+    xr.testing.assert_identical(namespace["result"], source + 2)
+
+
+@pytest.mark.parametrize("replace_function", [False, True])
+def test_selected_notebook_scopes_keep_primary_namespace_versions(
+    replace_function: bool,
+) -> None:
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    scopes = (
+        scope(
+            "def normalize():\n    return data + 1\nderived = data + 1",
+            "data",
+            "derived",
+            {},
+        ),
+        scope(
+            "data = offsets * 10\n"
+            + (
+                "normalize = data * 0\ncorrection = normalize - normalize"
+                if replace_function
+                else "correction = data - data"
+            ),
+            "offsets",
+            "correction",
+            {},
+        ),
+        scope(
+            "result = normalize() + correction",
+            "derived",
+            "result",
+            {"derived": 0, "correction": 1},
+        ),
+        scope(
+            "data = data + 5\nfinal = normalize()",
+            "result",
+            "final",
+            {"result": 2},
+        ),
+        scope("data = offsets * 100\nextra = data - data", "offsets", "extra", {}),
+        scope(
+            "last = normalize() + extra",
+            "final",
+            "last",
+            {"final": 3, "extra": 4},
+        ),
+    )
+    original_specs = tuple(scope.spec.model_dump(mode="json") for scope in scopes)
+    code = selected_provenance_code(scopes)
+    namespace = _exec_generated_code(code, {"data": source, "offsets": offsets})
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    xr.testing.assert_identical(namespace["final"], source + 6)
+    xr.testing.assert_identical(namespace["last"], source + 6)
+    assert (
+        tuple(scope.spec.model_dump(mode="json") for scope in scopes) == original_specs
+    )
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+def test_selected_notebook_scopes_restore_globals_and_publish_inputs_together() -> None:
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope(
+                "def normalize():\n    return data + 1\nderived = data + 1",
+                "data",
+                "derived",
+                {},
+            ),
+            scope("data = offsets * 2", "offsets", "data", {}),
+            scope(
+                "result = normalize() + correction",
+                "derived",
+                "result",
+                {"derived": 0, "correction": 1},
+            ),
+        )
+    )
+    namespace = _exec_generated_code(code, {"data": source, "offsets": offsets})
+    xr.testing.assert_identical(namespace["result"], source + 1 + offsets * 2)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize(
+    ("definition", "external_name", "scale", "offset"),
+    [
+        (
+            "def compute():\n"
+            "    edge = data.mean()\n"
+            "    def normalize():\n"
+            "        return data / edge\n"
+            "    return normalize()",
+            None,
+            None,
+            None,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        return edge + 1\n"
+            "    return normalize()",
+            None,
+            1,
+            1,
+        ),
+        ("def compute(edge=data):\n    return (lambda: edge + 1)()", None, 1, 1),
+        (
+            "def compute(edge=data):\n    return sum(edge + item for item in range(2))",
+            None,
+            2,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    return [(lambda: edge + item)() for item in range(2)][1]",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        nonlocal edge\n"
+            "        edge = edge + 1\n"
+            "        return edge\n"
+            "    return normalize()",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    class Normalizer:\n"
+            "        edge = 100\n"
+            "        def normalize(self):\n"
+            "            return edge + 1\n"
+            "    return Normalizer().normalize()",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    class Normalizer:\n"
+            "        def normalize(self):\n"
+            "            return edge + int(__class__.__name__ == 'Normalizer')\n"
+            "    return Normalizer().normalize()",
+            None,
+            1,
+            1,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        global edge\n"
+            "        return edge + 1\n"
+            "    return normalize()",
+            "edge",
+            1,
+            11,
+        ),
+        (
+            "def compute(edge=data):\n"
+            "    def normalize():\n"
+            "        return reference + 1\n"
+            "    return normalize()",
+            "reference",
+            1,
+            21,
+        ),
+        (
+            "def compute():\n"
+            "    class Normalizer:\n"
+            "        edge = 100\n"
+            "        def normalize(self):\n"
+            "            return edge + 1\n"
+            "    return Normalizer().normalize()",
+            "edge",
+            1,
+            11,
+        ),
+    ],
+    ids=[
+        "local",
+        "parameter",
+        "lambda",
+        "generator",
+        "lambda-in-comprehension",
+        "nonlocal",
+        "class-outer-closure",
+        "class-cell",
+        "explicit-global-shadow",
+        "implicit-global",
+        "class-method-global",
+    ],
+)
+def test_selected_notebook_scopes_keep_lexical_closures_out_of_caller_inputs(
+    definition: str, external_name: str | None, scale: int | None, offset: int | None
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    producer = scope(f"{definition}\nprepared = compute()", "data", "prepared", {})
+    expected_inputs = {"data"} | ({external_name} if external_name else set())
+    assert {item.name for item in producer.spec.script_inputs} == expected_inputs
+    code = selected_provenance_code(
+        (
+            producer,
+            scope(
+                "edge = offsets * 0\nreference = offsets * 0\n"
+                "item = offsets * 0\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                "result = compute() + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(1.0, 7.0).reshape(3, 2), dims=("x", "eV"))
+    inputs = {"data": source, "offsets": source + 100}
+    if external_name:
+        inputs[external_name] = source + (10 if external_name == "edge" else 20)
+    namespace = _exec_generated_code(code, inputs)
+    expected = (
+        source / source.mean()
+        if scale is None
+        else source * scale + typing.cast("int", offset)
+    )
+
+    xr.testing.assert_identical(namespace["prepared"], expected)
+    xr.testing.assert_identical(namespace["result"], expected)
+    captures = {
+        statement.targets[0].id
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id.endswith("_input")
+    }
+    assert captures == ({f"{external_name}_input"} if external_name else set())
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "def compute[T](values=data):\n"
+        "    def normalize():\n"
+        "        return values + (T.__name__ == 'T')\n"
+        "    return normalize()",
+        "class Normalizer[T]:\n"
+        "    def normalize(self, values):\n"
+        "        return values + (T.__name__ == 'T')\n"
+        "def compute():\n"
+        "    return Normalizer().normalize(data)",
+    ],
+    ids=["function", "class"],
+)
+def test_selected_notebook_scopes_keep_type_parameters_in_lexical_scopes(
+    definition: str,
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    producer = scope(f"{definition}\nprepared = compute()", "data", "prepared", {})
+    assert {item.name for item in producer.spec.script_inputs} == {"data"}
+    code = selected_provenance_code(
+        (
+            producer,
+            scope(
+                "T = offsets * 0\ncorrection = offsets * 0", "offsets", "correction", {}
+            ),
+            scope(
+                "result = compute() + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source, "offsets": source + 100})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert "T_input" not in code
+    assert ".copy(" not in code
+
+
+def test_symbol_table_dependencies_keep_free_names_of_the_requested_scope() -> None:
+    code = (
+        "def outer(edge):\n"
+        "    def inner():\n"
+        "        return edge + 1\n"
+        "    return inner\n"
+        "result = outer(3)()"
+    )
+    module = symtable.symtable(code, "<closure>", "exec")
+    outer = next(
+        child for child in module.get_children() if child.get_name() == "outer"
+    )
+    inner = next(child for child in outer.get_children() if child.get_name() == "inner")
+    namespace = _exec_generated_code(code)
+
+    assert namespace["result"] == 4
+    assert _symbol_table_dependencies(outer) == set()
+    assert _symbol_table_dependencies(inner) == {"edge"}
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
+def test_symbol_table_dependencies_keep_type_alias_parameters_in_lexical_scope() -> (
+    None
+):
+    code = "type Pair[T] = tuple[T, T]\nresult = Pair.__name__"
+    symbols = symtable.symtable(code, "<type alias>", "exec")
+    namespace = _exec_generated_code(code)
+
+    assert namespace["result"] == "Pair"
+    assert _symbol_table_dependencies(symbols) == {"Pair", "tuple"}
+
+
+def test_selected_notebook_scopes_do_not_capture_unused_inputs() -> None:
+    spec = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Step", code="result = offsets * 2")
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (SelectedProvenanceScope(spec, {}), SelectedProvenanceScope(spec, {}))
+    )
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+    namespace = _exec_generated_code(code, {"offsets": offsets})
+    xr.testing.assert_identical(namespace["result"], offsets * 2)
+    assert "data" not in code
+
+
+@pytest.mark.parametrize(
+    "invalid_code", ["result = (", "data = 1\nglobal data\nresult = data"]
+)
+@pytest.mark.parametrize("seed", [False, True])
+def test_selected_notebook_scopes_report_invalid_code(
+    invalid_code: str, seed: bool
+) -> None:
+    spec = script(
+        start_label="Invalid code",
+        active_name="result",
+        primary_input=None if seed else "data",
+        script_inputs=() if seed else (ScriptInput(name="data"),),
+        seed_code=invalid_code if seed else None,
+        steps=(
+            ()
+            if seed
+            else (
+                ReplayStep(
+                    operation=ScriptCodeOperation(label="Invalid", code=invalid_code)
+                ),
+            )
+        ),
+    )
+    with pytest.raises(
+        ReplayGraphError, match="Script replay code is not valid Python"
+    ):
+        selected_provenance_code((SelectedProvenanceScope(spec, {}),))
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        "globals()['derived'] = offsets",
+        "locals()['derived'] = offsets",
+        "vars()['derived'] = offsets",
+        "exec('derived = offsets')",
+        "namespace = globals\nnamespace()['derived'] = offsets",
+        "from builtins import exec as execute\nexecute('derived = offsets')",
+        "import builtins as runtime\nruntime.exec('derived = offsets')",
+        "def overwrite():\n    global derived\n    derived = offsets\noverwrite()",
+    ],
+)
+def test_selected_notebook_scopes_reject_dynamic_namespace_crossings(
+    overwrite: str,
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    auxiliary = scope(
+        f"{overwrite}\ncorrection = offsets * 2", "offsets", "correction", {}
+    )
+    with pytest.raises(ReplayGraphError, match="opaque namespace"):
+        selected_provenance_code(
+            (
+                scope("derived = data + 1", "data", "derived", {}),
+                auxiliary,
+                scope(
+                    "derived = derived + correction",
+                    "derived",
+                    "derived",
+                    {"derived": 0, "correction": 1},
+                ),
+            )
+        )
+
+    source = xr.DataArray([3.0])
+    code = selected_provenance_code((auxiliary,))
+    namespace = _exec_generated_code(code, {"offsets": source})
+    xr.testing.assert_identical(namespace["correction"], source * 2)
+    independent = scope("result = fresh * 3", "fresh", "result", {})
+    code = selected_provenance_code((auxiliary, independent))
+    namespace = _exec_generated_code(code, {"offsets": source, "fresh": source + 1})
+    xr.testing.assert_identical(namespace["result"], (source + 1) * 3)
+
+
+@pytest.mark.parametrize(
+    "write", ["saved = data + 1", "del saved", "import math as saved"]
+)
+def test_selected_notebook_scopes_reject_deferred_global_writes(write: str) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    definition = f"def prepare():\n    global saved\n    {write}"
+    producer = scope(f"{definition}\nderived = data + 1", "data", "derived", {})
+    auxiliary = scope(
+        "saved = offsets * 10\n"
+        "def correction_fn():\n    return saved * 0\n"
+        "correction = correction_fn()",
+        "offsets",
+        "correction",
+        {},
+    )
+    consumer = scope(
+        "prepare()\nresult = saved + correction",
+        "derived",
+        "result",
+        {"derived": 0, "correction": 1},
+    )
+    with pytest.raises(ReplayGraphError, match="opaque namespace"):
+        selected_provenance_code((producer, auxiliary, consumer))
+
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    code = selected_provenance_code((producer,))
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["derived"], source + 1)
+    assert "saved" not in namespace
+    standalone = scope(
+        f"saved = data\n{definition}\nprepare()\nresult = data + 1",
+        "data",
+        "result",
+        {},
+    )
+    code = selected_provenance_code((standalone,))
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["result"], source + 1)
+
+
+def test_selected_notebook_scopes_allow_read_only_global_declarations() -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Define",
+                    code="def normalize():\n    global data\n    return data + 1\n"
+                    "derived = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Use", code="result = normalize()")
+            ),
+        ),
+        input_name="derived",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(producer, {}),
+            SelectedProvenanceScope(consumer, {"derived": 0}),
+        )
+    )
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["result"], source + 1)
+
+
+@pytest.mark.parametrize(
+    "initialization", ["direct", "conditional", "augmented", "assertion"]
+)
+def test_selected_notebook_scopes_restore_only_live_incoming_names(
+    initialization: str,
+) -> None:
+    conditional = initialization == "conditional"
+
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    producer = scope(
+        "saved = data + 1\n"
+        + ("del saved\n" if initialization == "direct" else "")
+        + "derived = data + 1",
+        "data",
+        "derived",
+        {},
+    )
+    auxiliary = scope(
+        "saved: xr.DataArray = offsets * 10\ncorrection = saved * 0",
+        "offsets",
+        "correction",
+        {},
+    )
+    consumer = scope(
+        (
+            "if flag:\n    saved = derived + 1\n"
+            if conditional
+            else (
+                "saved += 1\n"
+                if initialization == "augmented"
+                else (
+                    "assert True, (saved := derived + 100)\n"
+                    if initialization == "assertion"
+                    else "saved = derived + 1\n"
+                )
+            )
+        )
+        + "result = saved + correction",
+        "derived",
+        "result",
+        {"derived": 0, "correction": 1},
+    )
+    code = selected_provenance_code((producer, auxiliary, consumer))
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": offsets, "flag": False, "xr": xr}
+    )
+    xr.testing.assert_identical(
+        namespace["result"],
+        source + (1 if conditional or initialization == "assertion" else 2),
+    )
+    if initialization == "direct":
+        assert "saved_input" not in code
+        live_consumer = scope(
+            "result = saved + correction",
+            "derived",
+            "result",
+            {"derived": 0, "correction": 1},
+        )
+        with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+            selected_provenance_code((producer, auxiliary, live_consumer))
+        rebound = scope(
+            "saved = data + 1\ndel saved\nsaved = data + 2\nderived = data + 1",
+            "data",
+            "derived",
+            {},
+        )
+        code = selected_provenance_code((rebound, auxiliary, live_consumer))
+        namespace = _exec_generated_code(
+            code, {"data": source, "offsets": offsets, "xr": xr}
+        )
+        xr.testing.assert_identical(namespace["result"], source + 2)
+
+
+def test_selected_notebook_scopes_preserve_bindings_across_bare_annotations() -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope("saved = data + 1\nderived = data + 1", "data", "derived", {}),
+            scope(
+                "saved: xr.DataArray\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                "result = saved + correction",
+                "derived",
+                "result",
+                {"derived": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": offsets, "xr": xr}
+    )
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert "saved_input" not in code
+
+
+@pytest.mark.parametrize("flag", [None, False, True])
+@pytest.mark.parametrize("binding", ["logical", "primary", "auxiliary", "caller"])
+def test_selected_notebook_scopes_restore_bindings_needed_by_deletion(
+    binding: str, flag: bool | None
+) -> None:
+    def scope(code, input_name, output_name, links, script_inputs=()):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+                script_inputs=script_inputs,
+            ),
+            links,
+        )
+
+    target = {"primary": "sample", "auxiliary": "reference"}.get(binding, "saved")
+    deletion = f"del {target}"
+    if flag is not None:
+        deletion = f"if flag:\n    {deletion}"
+    primary_input = "sample" if binding == "primary" else "prepared"
+    links = {primary_input: 0, "correction": 1}
+    if binding == "auxiliary":
+        links["reference"] = 1
+    code = selected_provenance_code(
+        (
+            scope("saved = data + 1\nprepared = data + 1", "data", "prepared", {}),
+            scope("del saved\ncorrection = offsets * 0", "offsets", "correction", {}),
+            scope(
+                f"{deletion}\nresult = correction + 1",
+                primary_input,
+                "result",
+                links,
+                (ScriptInput(name="saved", revision_id="caller-saved"),)
+                if binding == "caller"
+                else (),
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    inputs = {"data": source, "offsets": source + 100, "flag": flag}
+    if binding == "caller":
+        inputs["saved"] = source + 1000
+    namespace = _exec_generated_code(code, inputs)
+
+    xr.testing.assert_identical(namespace["result"], source * 0 + 1)
+    if flag is False:
+        expected = (
+            source * 0
+            if binding == "auxiliary"
+            else source + (1000 if binding == "caller" else 1)
+        )
+        xr.testing.assert_identical(namespace[target], expected)
+    else:
+        assert target not in namespace
+    captures = [
+        statement
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id.endswith("_input")
+    ]
+    assert len(captures) == (1 if binding in {"logical", "caller"} else 0)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize("deletion", ["del saved", "if flag:\n    del saved"])
+@pytest.mark.parametrize("primary_scope", [False, True])
+def test_selected_notebook_scopes_reject_deletion_of_known_missing_bindings(
+    deletion: str, primary_scope: bool
+) -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare",
+                    code="saved = data + 1\ndel saved\nprepared = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Delete", code=f"{deletion}\nresult = prepared + 1"
+                )
+            ),
+        ),
+        input_name="prepared",
+        output_name="result",
+    )
+    with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+        selected_provenance_code(
+            (
+                SelectedProvenanceScope(producer, {}),
+                SelectedProvenanceScope(
+                    consumer, {"prepared": 0} if primary_scope else {}
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize("seed", [False, True])
+def test_selected_code_keeps_explicit_alias_needed_by_deletion(seed: bool) -> None:
+    steps = (
+        ReplayStep(
+            operation=ScriptCodeOperation(
+                label="Delete alias", code="del saved\nresult = data + 1"
+            )
+        ),
+    )
+    spec = (
+        script(
+            start_label="Use alias",
+            active_name="result",
+            seed_code="saved = data",
+            steps=steps,
+        )
+        if seed
+        else selected_steps_spec(
+            steps, input_name="data", output_name="result", input_alias="saved"
+        )
+    )
+    code = selected_provenance_code((SelectedProvenanceScope(spec, {}),))
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert "saved" not in namespace
+    assert ".copy(" not in code
+    assert "_input" not in code
+
+
+@pytest.mark.parametrize("read_alias", [False, True])
+@pytest.mark.parametrize("cleanup", ["adjacent", "single", "simple", "copy", "display"])
+def test_generated_code_cleanup_keeps_bindings_needed_by_deletion(
+    cleanup: str, read_alias: bool
+) -> None:
+    alias = "_itool_replay_0"
+    expression = alias if read_alias else "data"
+    code = f"{alias} = data\nresult = {expression} + 1\ndel {alias}"
+    if cleanup == "copy":
+        cleaned = _remove_unused_generated_copies(code, {alias})
+    elif cleanup == "display":
+        cleaned = _simplify_display_code(code, inline_targets={alias})
+    else:
+        cleaned = {
+            "adjacent": _inline_adjacent_replay_assignments,
+            "single": _inline_single_use_replay_names,
+            "simple": _inline_simple_name_aliases,
+        }[cleanup](code)
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(cleaned, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert alias not in namespace
+
+
+def test_script_name_validation_deletes_function_without_reading_dependencies() -> None:
+    code = "def unused():\n    return missing\ndel unused\nresult = data + 1"
+    available = {"data"}
+    dependencies: dict[str, set[str]] = {}
+    callers = _validate_script_code_names(code, available, dependencies)
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert not callers
+    assert "unused" not in available
+    assert not dependencies
+
+
+def test_code_analysis_separates_deletion_presence_from_value_reads() -> None:
+    code = "del saved\nsaved = data + 1\ndel saved\nresult = data + 1"
+    analysis = _CodeAnalyzer()(code)
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": source, "saved": source + 10})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert analysis.incoming_bindings == {"saved"}
+    assert analysis.incoming_reads == {"data"}
+    assert not _code_uses_name(code, "saved")
+    assert _code_uses_name_any_scope(code, "saved")
+    assert not _code_uses_name_any_scope("def cleanup():\n    del era", "era")
+
+
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "values = [(saved := prepared + item) + saved for item in [1]]\n"
+        "result = values[0]",
+        "values = {(saved := item) + saved for item in [1]}\n"
+        "result = prepared * 2 + values.pop()",
+        "values = {(saved := item): prepared + saved for item in [1]}\n"
+        "result = values[1] * 2",
+        "values = [saved + saved for item in [1] "
+        "if (saved := prepared + item) is not None]\nresult = values[0]",
+        "values = [value + saved for item in [1] "
+        "if (saved := prepared + item) is not None for value in [saved]]\n"
+        "result = values[0]",
+        "values = [[(saved := prepared + inner) + saved for inner in [item]][0] "
+        "for item in [1]]\nresult = values[0]",
+    ],
+    ids=["list", "set", "dict", "filter", "later-iterable", "nested"],
+)
+def test_selected_code_keeps_eager_comprehension_binding_order(
+    body: str, composed: bool
+) -> None:
+    consumer = _selected_script_scope(body, "prepared", "result", {"prepared": 0})
+    assert {item.name for item in consumer.spec.script_inputs} == {"prepared"}
+    analysis = _CodeAnalyzer()(body)
+    assert analysis.incoming_reads == {"prepared"}
+    assert not analysis.deferred_reads
+    available = {"prepared"}
+    assert not _validate_script_code_names(body, available, {})
+    assert not {"item", "inner", "value"} & available
+    code = (
+        selected_provenance_code(
+            (
+                _selected_script_scope(
+                    "saved = data\ndel saved\nprepared = data + 1",
+                    "data",
+                    "prepared",
+                    {},
+                ),
+                consumer,
+            )
+        )
+        if composed
+        else selected_steps_code(
+            consumer.spec.steps, input_name="prepared", output_name="result"
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source, "prepared": source + 1})
+
+    xr.testing.assert_identical(namespace["result"], (source + 2) * 2)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "values = [(saved := prepared + item) + saved for item in saved]",
+        "values = [saved + saved for item in [1] "
+        "if flag or (saved := prepared + item) is not None]",
+    ],
+    ids=["first-iterable", "short-circuit-filter"],
+)
+def test_selected_scopes_keep_incoming_comprehension_reads(body: str) -> None:
+    assert "saved" in _CodeAnalyzer()(body).incoming_reads
+    assert not _validate_script_code_names(body, {"prepared", "flag", "saved"}, {})
+    with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+        selected_provenance_code(
+            (
+                _selected_script_scope(
+                    "saved = data\ndel saved\nprepared = data + 1",
+                    "data",
+                    "prepared",
+                    {},
+                ),
+                _selected_script_scope(
+                    body + "\nresult = values[0]",
+                    "prepared",
+                    "result",
+                    {"prepared": 0},
+                ),
+            )
+        )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(
+        body, {"prepared": source + 1, "saved": [1], "flag": False}
+    )
+
+    xr.testing.assert_identical(namespace["values"][0], (source + 2) * 2)
+
+
+@pytest.mark.parametrize(
+    "function_name", ["normalize", "listcomp", "setcomp", "dictcomp"]
+)
+def test_code_analysis_keeps_deferred_function_reads(function_name: str) -> None:
+    code = f"def {function_name}():\n    return data + 1\nresult = {function_name}()"
+    analysis = _CodeAnalyzer()(code)
+    source = xr.DataArray([1.0, 2.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source + 1)
+    assert analysis.deferred_reads == {"data"}
+
+
+def test_trusted_script_replay_initializes_implicit_alias_needed_by_deletion() -> None:
+    spec = script(
+        start_label="Delete alias",
+        active_name="result",
+        seed_code="del era\nresult = xr.DataArray([1.0, 2.0], dims='x')",
+    )
+    graph = compile_replay_graph(spec, trusted_user_code=True)
+    result = execute_replay_graph(graph, authorize=_authorize_execution)
+
+    xr.testing.assert_identical(result, xr.DataArray([1.0, 2.0], dims="x"))
+
+
+@pytest.mark.parametrize(
+    ("body", "flag", "increment"),
+    [
+        ("if flag:\n    del saved\n    saved = data + 2", True, 2),
+        ("if flag:\n    del saved\n    saved = data + 2", False, 1),
+        ("if flag:\n    del saved", False, 1),
+        ("for item in range(1):\n    del saved\n    saved = data + 2", True, 2),
+        (
+            "for item in range(1):\n    del saved\n    saved = data + 2\n"
+            "    break\n    del saved",
+            True,
+            2,
+        ),
+        (
+            "for item in range(1):\n    del saved\n    saved = data + 2\n"
+            "    continue\n    del saved",
+            True,
+            2,
+        ),
+        ("while flag:\n    del saved\n    saved = data + 2\n    break", True, 2),
+        ("while flag:\n    del saved", False, 1),
+        ("try:\n    pass\nexcept ValueError as saved:\n    pass", True, 1),
+        (
+            "try:\n    raise ValueError()\nexcept ValueError:\n"
+            "    del saved\n    saved = data + 2",
+            True,
+            2,
+        ),
+        ("try:\n    del saved\nfinally:\n    saved = data + 2", True, 2),
+        (
+            "try:\n    raise ValueError()\nexcept ValueError as saved:\n"
+            "    pass\nfinally:\n    saved = data + 2",
+            True,
+            2,
+        ),
+        (
+            "try:\n    del saved\nexcept ValueError:\n    pass\n"
+            "else:\n    saved = data + 2",
+            True,
+            2,
+        ),
+        (
+            "match flag:\n    case True:\n        del saved\n"
+            "        saved = data + 2\n    case False:\n        pass",
+            True,
+            2,
+        ),
+        (
+            "match flag:\n    case _:\n        del saved\n        saved = data + 2",
+            True,
+            2,
+        ),
+    ],
+)
+def test_selected_notebook_scopes_keep_ordered_compound_bindings(
+    body: str, flag: bool, increment: int
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope(
+                f"saved = data + 1\n{body}\nprepared = data + 1",
+                "data",
+                "prepared",
+                {},
+            ),
+            scope(
+                "saved = offsets * 10\ncorrection = saved * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                "result = saved + correction",
+                "prepared",
+                "result",
+                {"prepared": 0, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": source + 10, "flag": flag}
+    )
+    xr.testing.assert_identical(namespace["result"], source + increment)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize(
+    "initialization",
+    [
+        "if flag:\n    saved = derived + 2\nelse:\n    saved = derived + 2",
+        "try:\n    saved = derived + 2\nfinally:\n    pass",
+        "try:\n    pass\nfinally:\n    saved = derived + 2",
+        "match flag:\n    case _:\n        saved = derived + 2",
+        "for item in ():\n    pass\nelse:\n    saved = derived + 2",
+    ],
+)
+def test_selected_notebook_scopes_do_not_restore_replaced_compound_bindings(
+    initialization: str,
+) -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare",
+                    code="saved = data + 1\ndel saved\nderived = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Replace", code=f"{initialization}\nresult = saved + 0"
+                )
+            ),
+        ),
+        input_name="derived",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(producer, {}),
+            SelectedProvenanceScope(consumer, {"derived": 0}),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source, "flag": False})
+    xr.testing.assert_identical(namespace["result"], source + 3)
+    assert "saved_input" not in code
+
+
+@pytest.mark.parametrize(
+    ("body", "flag", "increment"),
+    [
+        ("if flag:\n    saved = prepared + 2", False, 1),
+        ("if flag:\n    saved = prepared + 2", True, 3),
+        ("if flag:\n    del saved", False, 1),
+        ("for item in ():\n    saved = prepared + 2", False, 1),
+        ("values = [(saved := item) for item in ()]", False, 1),
+        ("try:\n    pass\nexcept ValueError as saved:\n    pass", False, 1),
+        ("assert True, (saved := prepared + 2)", False, 1),
+    ],
+)
+def test_selected_notebook_scopes_publish_retained_conditional_bindings(
+    body: str, flag: bool, increment: int
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope("saved = data + 1\nprepared = data + 1", "data", "prepared", {}),
+            scope(
+                "saved = offsets * 5\ncorrection = offsets * 0",
+                "offsets",
+                "correction",
+                {},
+            ),
+            scope(
+                f"{body}\nchild = prepared + 0", "prepared", "child", {"prepared": 0}
+            ),
+            scope(
+                "result = saved + correction",
+                "child",
+                "result",
+                {"child": 2, "correction": 1},
+            ),
+        )
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(
+        code, {"data": source, "offsets": source + 100, "flag": flag}
+    )
+    xr.testing.assert_identical(namespace["result"], source + increment)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize(
+    "recovery",
+    [
+        "conditional",
+        "delete_conditional",
+        "branch_delete",
+        "definite",
+        "branch_definite",
+    ],
+)
+def test_selected_notebook_scopes_do_not_retain_deleted_conditional_bindings(
+    flag: bool, recovery: str
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    initialization = {
+        "conditional": "if flag:\n    saved = prepared + 2\n",
+        "delete_conditional": "del saved\nif flag:\n    saved = prepared + 2\n",
+        "branch_delete": "if flag:\n    saved = prepared + 2\nelse:\n    del saved\n",
+        "definite": "saved = prepared + 2\n",
+        "branch_definite": (
+            "if flag:\n    saved = prepared + 2\nelse:\n    saved = prepared + 2\n"
+        ),
+    }[recovery]
+    scopes = [
+        scope(
+            "saved = data + 1\ndel saved\nprepared = data + 1", "data", "prepared", {}
+        ),
+        scope(
+            "saved = offsets * 5\ncorrection = offsets * 0",
+            "offsets",
+            "correction",
+            {},
+        ),
+        scope(
+            initialization + "child = prepared + 0",
+            "prepared",
+            "child",
+            {"prepared": 0},
+        ),
+    ]
+    if recovery in {"delete_conditional", "branch_delete"}:
+        with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+            selected_provenance_code(scopes)
+        return
+    code = selected_provenance_code(scopes)
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    inputs = {"data": source, "offsets": source + 100, "flag": flag}
+    namespace = _exec_generated_code(code, inputs)
+    xr.testing.assert_identical(namespace["child"], source + 1)
+    assert "saved_input" not in code
+    scopes.append(
+        scope(
+            "result = saved + correction",
+            "child",
+            "result",
+            {"child": 2, "correction": 1},
+        )
+    )
+    if recovery in {"conditional", "delete_conditional", "branch_delete"}:
+        with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+            selected_provenance_code(scopes)
+    else:
+        code = selected_provenance_code(scopes)
+        namespace = _exec_generated_code(code, inputs)
+        xr.testing.assert_identical(namespace["result"], source + 3)
+
+
+@pytest.mark.parametrize(
+    "deletion",
+    [
+        "del saved",
+        "if flag:\n    del saved\nelse:\n    del saved",
+        "try:\n    pass\nfinally:\n    del saved",
+        "try:\n    raise ValueError()\nexcept ValueError as saved:\n    pass",
+        "match flag:\n    case _:\n        del saved",
+    ],
+)
+def test_selected_notebook_scopes_reject_definite_compound_deletions(
+    deletion: str,
+) -> None:
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Delete",
+                    code=f"saved = data + 1\n{deletion}\nderived = data + 1",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="derived",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Use", code="result = saved + 0")
+            ),
+        ),
+        input_name="derived",
+        output_name="result",
+    )
+    with pytest.raises(ReplayGraphError, match="binding 'saved' was deleted"):
+        selected_provenance_code(
+            (
+                SelectedProvenanceScope(producer, {}),
+                SelectedProvenanceScope(consumer, {"derived": 0}),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "code", ["saved: int", "del saved", "if flag:\n    del saved\nelse:\n    del saved"]
+)
+def test_script_name_validation_does_not_create_bindings(code: str) -> None:
+    available = {"int", "flag"} | ({"saved"} if "del saved" in code else set())
+    _validate_script_code_names(code, available, {})
+    assert "saved" not in available
+    with pytest.raises(ReplayGraphError, match="unresolved name 'saved'"):
+        _validate_script_code_names("result = saved", available, {})
+
+
+def test_selected_steps_code_keeps_definition_time_bindings() -> None:
+    code = selected_steps_code(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Define",
+                    code="def helper(value=(saved := data + 2)):\n    return value\n"
+                    "result = saved + helper()",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "eV"))
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["result"], (source + 2) * 2)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "missing"),
+    [("container.value: float", "container"), ("container[index]: float", "index")],
+)
+def test_script_name_validation_reads_annotation_targets(
+    annotation: str, missing: str
+) -> None:
+    available = {"container", "index", "float"}
+    _validate_script_code_names(annotation, available, {})
+    available.remove(missing)
+    with pytest.raises(ReplayGraphError, match=f"unresolved name {missing!r}"):
+        _validate_script_code_names(annotation, available, {})
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["values = ((saved := item) for item in ())", "((saved := item) for item in ())"],
+)
+def test_script_name_validation_keeps_generator_bindings_deferred(
+    statement: str,
+) -> None:
+    available: set[str] = set()
+    code = f"saved = 1\ndel saved\n{statement}"
+    _validate_script_code_names(code, available, {})
+    namespace = _exec_generated_code(code)
+    assert "saved" not in namespace
+    assert "saved" not in available
+    with pytest.raises(ReplayGraphError, match="unresolved name 'saved'"):
+        _validate_script_code_names(
+            f"{code}\nresult = saved", set(), {}, external_name_candidates=None
+        )
+
+
+def test_script_name_validation_does_not_readmit_deleted_callers() -> None:
+    with pytest.raises(ReplayGraphError, match="unresolved name 'saved'"):
+        _validate_script_code_names(
+            "saved = data\ndel saved\nresult = saved",
+            {"data"},
+            {},
+            external_name_candidates=None,
+        )
+
+
+def test_selected_notebook_scope_publishes_input_used_by_dynamic_access() -> None:
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    producer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare", code="prepared = data + 1"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    consumer = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Scale", code="result = globals()['source'] * 2"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(producer, {}),
+            SelectedProvenanceScope(consumer, {"source": 0}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["result"], (source + 1) * 2)
+    assert ".copy(" not in code
+
+
+@pytest.mark.parametrize(
+    ("setup", "overwrite"),
+    [
+        ("import builtins as runtime", "runtime.exec('derived = offsets')"),
+        ("namespace = globals", "namespace()['derived'] = offsets"),
+        ("values = ((saved := item) for item in ())", "next(values)"),
+        ("namespace = globals()", "namespace['derived'] = offsets"),
+        (
+            "namespace = globals()\nnamespace['_scratch'] = None\n"
+            "del namespace['_scratch']",
+            "namespace['derived'] = offsets",
+        ),
+        (
+            "import builtins as runtime\nexecute = runtime.exec",
+            "execute('derived = offsets')",
+        ),
+        (
+            "import builtins as runtime\nexecute = runtime.__dict__['exec']",
+            "execute('derived = offsets')",
+        ),
+        (
+            "import builtins as runtime\nexecute = getattr(runtime, 'exec')",
+            "execute('derived = offsets')",
+        ),
+        (
+            "import builtins as runtime\nnamespace = getattr(runtime, '__dict__')",
+            "namespace['exec']('derived = offsets')",
+        ),
+        (
+            "import builtins as runtime\nnamespace = globals\n"
+            "runtime, namespace = namespace, runtime",
+            "namespace.exec('derived = offsets')",
+        ),
+        (
+            "namespace, shadow = globals, (globals := lambda: None)",
+            "namespace()['derived'] = offsets",
+        ),
+        ("def namespace():\n    return globals()", "namespace()['derived'] = offsets"),
+        ("namespace = lambda: globals()", "namespace()['derived'] = offsets"),
+        (
+            "def namespace(getter=globals):\n    return getter()",
+            "namespace()['derived'] = offsets",
+        ),
+        (
+            "namespace = lambda getter=globals: getter()",
+            "namespace()['derived'] = offsets",
+        ),
+        (
+            "def setup():\n    global namespace\n    namespace = globals()\nsetup()",
+            "namespace['derived'] = offsets",
+        ),
+        (
+            "def setup():\n    global runtime\n    import builtins as runtime\nsetup()",
+            "runtime.exec('derived = offsets')",
+        ),
+    ],
+)
+def test_selected_notebook_scopes_reject_opaque_capability_producers(
+    setup: str, overwrite: str
+) -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    producer = scope(f"{setup}\nderived = data + 1", "data", "derived", {})
+    consumer = scope(
+        "result = derived + correction",
+        "derived",
+        "result",
+        {"derived": 0, "correction": 1},
+    )
+    with pytest.raises(ReplayGraphError, match="opaque namespace"):
+        selected_provenance_code(
+            (
+                producer,
+                scope(
+                    f"{overwrite}\ncorrection = offsets * 2",
+                    "offsets",
+                    "correction",
+                    {},
+                ),
+                consumer,
+            )
+        )
+
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    code = selected_provenance_code((producer,))
+    namespace = _exec_generated_code(code, {"data": source})
+    xr.testing.assert_identical(namespace["derived"], source + 1)
+    with pytest.raises(ReplayGraphError, match="opaque namespace"):
+        selected_provenance_code(
+            (
+                producer,
+                scope("result = derived * 2", "derived", "result", {"derived": 0}),
+            )
+        )
+
+
+def test_selected_notebook_scopes_allow_ordinary_dictionary_methods() -> None:
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    consumer = scope(
+        "result = derived + correction",
+        "derived",
+        "result",
+        {"derived": 0, "correction": 1},
+    )
+    code = selected_provenance_code(
+        (
+            scope("derived = data + 1", "data", "derived", {}),
+            scope(
+                "runtime = {'offset': offsets}\n"
+                "namespace = runtime\n"
+                "execute = namespace.get\n"
+                "correction = execute('offset') * 2",
+                "offsets",
+                "correction",
+                {},
+            ),
+            consumer,
+        )
+    )
+    namespace = _exec_generated_code(code, {"data": source, "offsets": source + 3})
+    xr.testing.assert_identical(namespace["result"], source + 1 + (source + 3) * 2)
+
+
+@pytest.mark.parametrize("output_name", ["derived", "np"])
+def test_selected_notebook_scopes_keep_outputs_across_public_name_reuse(
+    output_name: str,
+) -> None:
+    source = xr.DataArray([10.0])
+    offsets = xr.DataArray([3.0])
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code=f"{output_name} = data + 1"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name=output_name,
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction", code=f"{output_name} = offsets * 10"
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name=output_name,
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Apply correction", code="shifted = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="shifted",
+        script_inputs=(ScriptInput(name="correction", revision_id="correction"),),
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"data": source, "offsets": offsets})
+
+    xr.testing.assert_identical(namespace["shifted"], source + 1 + offsets * 10)
+    xr.testing.assert_identical(namespace[output_name], offsets * 10)
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+def test_selected_notebook_scopes_publish_consumed_metadata_updates() -> None:
+    source = xr.DataArray([10.0])
+    first = selected_steps_spec(
+        (ReplayStep(operation=KspaceWorkFunctionOperation(work_function=4.2)),),
+        input_name="data",
+        output_name="derived",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Scale sample", code="result = data * 2"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (SelectedProvenanceScope(first, {}), SelectedProvenanceScope(last, {"data": 0}))
+    )
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(namespace["result"], source * 2)
+    assert namespace["derived"].kspace.analyzer_work_function == 4.2
+    assert ".copy(" not in code
+
+
+def test_selected_notebook_scopes_preserve_outputs_across_emitted_input_aliases() -> (
+    None
+):
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "y"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+
+    def scope(code, input_name, output_name, links):
+        return SelectedProvenanceScope(
+            selected_steps_spec(
+                (ReplayStep(operation=ScriptCodeOperation(label="Step", code=code)),),
+                input_name=input_name,
+                output_name=output_name,
+            ),
+            links,
+        )
+
+    code = selected_provenance_code(
+        (
+            scope("data = source + 1", "source", "data", {}),
+            scope("original = offsets * 2", "offsets", "original", {}),
+            scope(
+                "def f():\n    return data * 10\ncorrection = f()",
+                "data",
+                "correction",
+                {"data": 1},
+            ),
+            scope(
+                "def g():\n    return original + correction\nresult = g()",
+                "original",
+                "result",
+                {"original": 0, "correction": 2},
+            ),
+            scope(
+                "final = correction + result",
+                "correction",
+                "final",
+                {"correction": 1, "result": 3},
+            ),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": offsets})
+
+    xr.testing.assert_identical(namespace["result"], source + 1 + offsets * 20)
+    xr.testing.assert_identical(
+        namespace["final"], offsets * 2 + source + 1 + offsets * 20
+    )
+    assert ".copy(" not in code
+    assert "_itool_replay_" not in code
+
+
+def test_selected_notebook_scopes_capture_recorded_inputs_before_emitted_aliases() -> (
+    None
+):
+    source = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "y"))
+    recorded = source + 100
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="derived = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="derived",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code="def f():\n    return data * 2\ncorrection = f()",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Apply correction", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="correction",
+        output_name="result",
+        script_inputs=(ScriptInput(name="data", revision_id="recorded"),),
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {"data": 0}),
+            SelectedProvenanceScope(last, {"correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "data": recorded})
+
+    xr.testing.assert_identical(namespace["result"], recorded + (source + 1) * 2)
+    assert ".copy(" not in code
+
+
+def test_selected_notebook_scopes_reserve_emitted_extension_bindings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script_path = tmp_path / "original_input.py"
+    script_path.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n"
+        "@routine(id='scale')\n"
+        "def scale(data: xr.DataArray) -> xr.DataArray:\n    return data * 2\n"
+    )
+    monkeypatch.setattr(
+        extension_api,
+        "_resolve_registered_script_capability",
+        lambda *_args: _registered_routine(script_path),
+    )
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="data = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="data",
+    )
+    extension = selected_steps_spec(
+        (ReplayStep(operation=_extension_routine_operation()),),
+        input_name="other",
+        output_name="scaled",
+    )
+    alias = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Use scaled data",
+                    code="def f():\n    return data + 1\ncorrection = f()",
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine inputs", code="result = original + correction"
+                )
+            ),
+        ),
+        input_name="original",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(extension, {}),
+            SelectedProvenanceScope(alias, {"data": 1}),
+            SelectedProvenanceScope(last, {"original": 0, "correction": 2}),
+            SelectedProvenanceScope(extension, {}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "other": source + 100})
+
+    xr.testing.assert_identical(
+        namespace["result"], source + 1 + (source + 100) * 2 + 1
+    )
+    assert isinstance(namespace["original_input"], erlab.extensions.LoadedScript)
+    xr.testing.assert_identical(namespace["original_input_2"], source + 1)
+    assert ".copy(" not in code
+
+
+def test_selected_notebook_scopes_forward_captured_source_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def expression_code(self, input_name, *, source_name=None):
+        return f"({input_name} + {source_name}).qsel.mean('x')"
+
+    monkeypatch.setattr(AverageOperation, "expression_code", expression_code)
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="derived = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="derived",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction", code="derived = offsets * 2"
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="derived",
+    )
+    last = selected_steps_spec(
+        (ReplayStep(operation=AverageOperation(dims=("x",))),),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": source + 100})
+
+    xr.testing.assert_identical(namespace["result"], ((source + 1) * 2).qsel.mean("x"))
+    assert ".copy(" not in code
+
+
+@pytest.mark.parametrize(
+    "overwrite_code",
+    [
+        "import math as data",
+        "from math import pi as data",
+        "try:\n    raise ValueError()\nexcept ValueError as data:\n    pass",
+        "match offsets.size:\n    case data:\n        pass",
+    ],
+)
+def test_selected_notebook_scopes_preserve_outputs_across_namespace_writes(
+    overwrite_code: str,
+) -> None:
+    source = xr.DataArray(np.arange(6.0).reshape(3, 2), dims=("x", "y"))
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="data = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="data",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code=f"{overwrite_code}\ncorrection = offsets * 2",
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine inputs", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": source + 3})
+
+    xr.testing.assert_identical(namespace["result"], source + 1 + (source + 3) * 2)
+    assert ".copy(" not in code
+
+
+@pytest.mark.parametrize("input_name", ["np", "xr", "len", "load_script"])
+def test_selected_notebook_scopes_reject_protected_external_input_names(
+    input_name: str,
+) -> None:
+    steps = (
+        ReplayStep(
+            operation=ScriptCodeOperation(
+                label="Use input", code=f"result = {input_name}"
+            )
+        ),
+    )
+    with pytest.raises(ReplayGraphError, match="conflicts with a replay global"):
+        selected_steps_code(steps, input_name=input_name, output_name="result")
+
+
+def test_selected_notebook_scopes_ignore_local_bindings_when_capturing_outputs() -> (
+    None
+):
+    source = xr.DataArray([10.0])
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Prepare", code="data = source + 1")
+            ),
+        ),
+        input_name="source",
+        output_name="data",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code="def f(data):\n    return data * 2\ncorrection = f(offsets)",
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(auxiliary, {}),
+            SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"source": source, "offsets": source + 3})
+
+    xr.testing.assert_identical(namespace["result"], source + 1 + (source + 3) * 2)
+    assert "data_input" not in code
+
+
+def test_selected_notebook_scopes_reject_opaque_import_across_bound_values() -> None:
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample", code="array = source + 1"
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="array",
+    )
+    auxiliary = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare correction",
+                    code="from numpy import *\ncorrection = offsets * 2",
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Combine inputs", code="result = data + correction"
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="result",
+    )
+
+    with pytest.raises(ReplayGraphError, match="opaque namespace import"):
+        selected_provenance_code(
+            (
+                SelectedProvenanceScope(first, {}),
+                SelectedProvenanceScope(auxiliary, {}),
+                SelectedProvenanceScope(last, {"data": 0, "correction": 1}),
+            )
+        )
+
+    source = xr.DataArray([10.0])
+    code = selected_steps_code(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Offset sample",
+                    code="from math import *\nresult = source + sqrt(4)",
+                )
+            ),
+        ),
+        input_name="source",
+        output_name="result",
+    )
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"source": source})["result"], source + 2
+    )
+
+
+def test_selected_notebook_scopes_share_framework_imports() -> None:
+    source = xr.DataArray(
+        np.arange(6.0).reshape(3, 2), dims=("x", "y"), coords={"x": [0.0, 1.0, 2.0]}
+    )
+    operation = GaussianFilterOperation(sigma={"x": 0.5})
+    first = selected_steps_spec(
+        (ReplayStep(operation=operation),), input_name="data", output_name="derived"
+    )
+    last = selected_steps_spec(
+        (ReplayStep(operation=operation),), input_name="data", output_name="smoothed"
+    )
+    code = selected_provenance_code(
+        (SelectedProvenanceScope(first, {}), SelectedProvenanceScope(last, {"data": 0}))
+    )
+    namespace = _exec_generated_code(code, {"data": source})
+
+    xr.testing.assert_identical(
+        namespace["smoothed"], operation.apply(operation.apply(source))
+    )
+    assert code.count("import erlab") == 1
+    assert ".copy(" not in code
+
+
+def test_selected_notebook_scopes_share_module_prologues() -> None:
+    source = xr.DataArray([10.0])
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample",
+                    code=(
+                        '"""Prepare the sample."""\n'
+                        "from __future__ import annotations\n"
+                        "def normalize(value: MissingType = derived):\n"
+                        "    return value + 1\n"
+                        "derived = normalize()"
+                    ),
+                )
+            ),
+        ),
+        input_name="derived",
+        output_name="derived",
+    )
+    last = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Scale sample",
+                    code=(
+                        '"""Scale the sample."""\n'
+                        "from __future__ import annotations\n"
+                        "derived = normalize() * 2"
+                    ),
+                )
+            ),
+        ),
+        input_name="derived",
+        output_name="derived",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(last, {"derived": 0}),
+        )
+    )
+    namespace = _exec_generated_code(code, {"derived": source})
+
+    xr.testing.assert_identical(namespace["derived"], (source + 1) * 2)
+    assert namespace["__doc__"] == "Prepare the sample."
+    assert code.count("from __future__ import annotations") == 1
+
+
 def test_selected_steps_code_preserves_input_named_like_output() -> None:
     source = xr.DataArray([8.0])
     reference = xr.DataArray([2.0])
@@ -6432,3 +8759,196 @@ def test_selected_steps_code_preserves_input_before_effectful_property(
 
     xr.testing.assert_identical(namespace["derived"], source + 1.0)
     xr.testing.assert_identical(namespace["data"], xr.DataArray([100.0]))
+
+
+def test_rebuild_captures_raw_and_source_checkpoints_on_cache_hits(
+    tmp_path: pathlib.Path,
+) -> None:
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+
+    data = xr.DataArray(np.arange(12.0).reshape(4, 3), dims=("x", "y"))
+    path = tmp_path / "raw-checkpoint.nc"
+    data.to_netcdf(path)
+    source = selection(
+        IselOperation(kwargs={"x": slice(1, None)}),
+        IselOperation(kwargs={"x": slice(1, None)}),
+    )
+    spec = script(
+        start_label="Use selected source",
+        active_name="data",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data", provenance_spec=_file_spec(path), source_spec=source
+            ),
+        ),
+    )
+    cache = {}
+    for _attempt in range(2):
+        revisions = _ProvenanceRevisionStore()
+
+        def capture(
+            value: xr.DataArray, item: ScriptInput, *, revisions=revisions
+        ) -> ScriptInput:
+            revision_id = revisions.add(
+                value,
+                item.parsed_provenance_spec(),
+                primary_revision_id=item.revision_id,
+            )
+            return item.model_copy(update={"revision_id": revision_id})
+
+        result, rebuilt = rebuild_script_provenance(
+            spec, cache=cache, _capture_input_revision=capture
+        )
+        owner = rebuilt.script_inputs[0]
+        xr.testing.assert_identical(result, data.isel(x=slice(2, None)))
+        xr.testing.assert_identical(revisions.resolve_data(owner.revision_id), data)
+        xr.testing.assert_identical(
+            revisions.resolve_data(owner.resolved_revision_id), result
+        )
+        intermediate = [
+            revisions.resolve_data(record.revision_id)
+            for record in revisions.reachable((owner.resolved_revision_id,))
+        ]
+        assert any(value.sizes["x"] == 3 for value in intermediate)
+        if _attempt == 1:
+            result.values[:] = -1
+            xr.testing.assert_identical(revisions.resolve_data(owner.revision_id), data)
+
+
+def test_composed_primary_source_runs_once(tmp_path: pathlib.Path) -> None:
+    raw = xr.DataArray(np.arange(20.0).reshape(5, 4), dims=("x", "y"))
+    path = tmp_path / "composed-source.nc"
+    raw.to_netcdf(path)
+    local = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average source",
+        active_name="average",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                source_spec=selection(IselOperation(kwargs={"x": slice(1, None)})),
+            ),
+        ),
+    )
+    composed = compose_full_provenance(_file_spec(path), local)
+    expected = raw.isel(x=slice(1, None)).mean("y")
+    xr.testing.assert_identical(
+        execute_replay_graph(compile_replay_graph(composed)), expected
+    )
+    code = emit_replay_code(
+        compile_replay_graph(composed, display=True), output_name="average"
+    )
+    xr.testing.assert_identical(_exec_generated_code(code)["average"], expected)
+
+
+def test_composition_preserves_pinned_root_provider(tmp_path: pathlib.Path) -> None:
+    raw = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    path = tmp_path / "root-source.nc"
+    raw.to_netcdf(path)
+    owner = ScriptInput(
+        name="base",
+        revision_id="captured",
+        follow_source=False,
+        provenance_spec=_file_spec(path),
+    )
+    parent = script(start_label="Use saved input", active_name="base", root_input=owner)
+    local = script(
+        ScriptCodeOperation(label="Offset data", code="result = base + 2"),
+        start_label="Offset data",
+        active_name="result",
+    )
+    composed = compose_full_provenance(parent, local)
+    path.unlink()
+    graph = compile_replay_graph(
+        composed,
+        trusted_user_code=True,
+        live_input_resolver=lambda item: _graph.ResolvedReplayInput(raw, item, "raw"),
+    )
+    xr.testing.assert_identical(
+        execute_replay_graph(graph, authorize=_authorize_execution), raw + 2
+    )
+    assert composed.root_input == owner
+
+
+@pytest.mark.parametrize("root", [False, True])
+def test_input_source_extension_controls_reload_capability(
+    tmp_path: pathlib.Path, root: bool
+) -> None:
+    raw = xr.DataArray([1.0], dims="x")
+    path = tmp_path / "source-capability.nc"
+    raw.to_netcdf(path)
+    source = full_data(
+        ExtensionRoutineOperation(
+            script_name="routine.py",
+            source_hash="a" * 64,
+            routine_id="scale",
+            routine_name="Scale",
+            parameters={},
+        )
+    )
+    item = ScriptInput(
+        name="data", provenance_spec=_file_spec(path), source_spec=source
+    )
+    spec = script(
+        start_label="Use input",
+        active_name="data",
+        **(
+            {"root_input": item}
+            if root
+            else {"primary_input": "data", "script_inputs": (item,)}
+        ),
+    )
+    for status in ("ready", "disabled"):
+        calls = []
+
+        def capability(
+            script_name, source_hash, kind, capability_id, *, status=status, calls=calls
+        ):
+            calls.append((script_name, source_hash, kind, capability_id))
+            return status
+
+        assert _execution.can_reload_without_trust(
+            spec, extension_status_resolver=capability
+        ) == (status == "ready")
+        assert calls == [("routine.py", "a" * 64, "routine", "scale")]
+
+
+def test_raw_provider_replaces_stale_selected_checkpoint_ancestry() -> None:
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+
+    raw = xr.DataArray(np.arange(6.0), dims="x")
+    revisions = _ProvenanceRevisionStore()
+    raw_id = revisions.add(raw)
+    owner = ScriptInput(
+        name="data",
+        revision_id=raw_id,
+        resolved_revision_id="stale-selected",
+        source_spec=selection(IselOperation(kwargs={"x": slice(1, None)})),
+    )
+    spec = script(
+        start_label="Use selected input", active_name="data", root_input=owner
+    )
+    parents = []
+
+    def capture(value: xr.DataArray, item: ScriptInput) -> ScriptInput:
+        parents.append(item.revision_id)
+        revision_id = revisions.add(
+            value, item.parsed_provenance_spec(), primary_revision_id=item.revision_id
+        )
+        return item.model_copy(update={"revision_id": revision_id})
+
+    result, rebuilt = rebuild_script_provenance(
+        spec,
+        live_input_resolver=lambda item: _graph.ResolvedReplayInput(raw, item, "raw"),
+        _capture_input_revision=capture,
+    )
+    xr.testing.assert_identical(result, raw.isel(x=slice(1, None)))
+    assert parents[0] == raw_id
+    assert "stale-selected" not in parents
+    assert rebuilt.root_input.revision_id == raw_id
+    assert raw_id in {
+        record.revision_id
+        for record in revisions.reachable((rebuilt.root_input.resolved_revision_id,))
+    }

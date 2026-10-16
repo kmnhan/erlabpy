@@ -16,10 +16,7 @@ from erlab.interactive._figurecomposer._line_style import (
     line_kw_text,
 )
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
-from erlab.interactive._figurecomposer._model._sources import (
-    _public_source_data,
-    _valid_source_variable,
-)
+from erlab.interactive._figurecomposer._model._sources import _valid_source_variable
 from erlab.interactive._figurecomposer._model._state import (
     FigureOperationKind,
     FigureOperationState,
@@ -102,7 +99,7 @@ def _source_data(
     if data is None:
         source_name = tool._source_display_name(operation.hv_overlay_source)
         raise ValueError(f"Source {source_name!r} is missing")
-    return _public_source_data(data)
+    return data
 
 
 def _source_is_kparallel_kz(data: xr.DataArray) -> bool:

@@ -26,10 +26,7 @@ from erlab.interactive._figurecomposer._line_transform import (
     line_transform_active,
     transform_profiles,
 )
-from erlab.interactive._figurecomposer._model._sources import (
-    _available_source_dims,
-    _public_source_data,
-)
+from erlab.interactive._figurecomposer._model._sources import _available_source_dims
 from erlab.interactive._figurecomposer._model._state import (
     _POWER_NORM_NAME,
     FigureOperationKind,
@@ -1184,7 +1181,7 @@ def _operation_maps(
     context: FigureRecipeContext, operation: FigureOperationState
 ) -> list[xr.DataArray]:
     return [
-        _public_source_data(context.source_data[name])
+        context.source_data[name]
         for name in operation.sources
         if name in context.source_data
     ]

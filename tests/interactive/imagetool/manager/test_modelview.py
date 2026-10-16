@@ -52,6 +52,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
@@ -338,19 +339,16 @@ def test_dependency_tracker_cache_follows_node_identity_and_revision(
     graph = types.SimpleNamespace(nodes={"dependent": node})
     tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
     ref_scans = 0
-    original_refs = manager_dependency.script_input_dependency_refs
+    original_refs = manager_dependency.script_inputs_dependency_refs
 
-    def _record_refs(spec, *, owner_replay_source_available: bool = False):
+    def _record_refs(script_inputs):
         nonlocal ref_scans
         ref_scans += 1
-        return original_refs(
-            spec,
-            owner_replay_source_available=owner_replay_source_available,
-        )
+        return original_refs(script_inputs)
 
     monkeypatch.setattr(
         manager_dependency,
-        "script_input_dependency_refs",
+        "script_inputs_dependency_refs",
         _record_refs,
     )
 
@@ -2582,10 +2580,6 @@ def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
 
         assert manager.metadata_derivation_list.topLevelItem(0) is first_item
 
-        invalid_item = QtWidgets.QTreeWidgetItem()
-        manager._details_panel._populate_metadata_derivation_item_children(invalid_item)
-        assert invalid_item.childCount() == 0
-
         manager._details_panel._flush_debounced_details_refreshes({wrapper.uid})
         assert manager._metadata_node_uid == wrapper.uid
 
@@ -3695,7 +3689,6 @@ def test_remove_imagetool_removes_childtools() -> None:
     removed_uids: list[str] = []
     removed_rows: list[int] = []
     refresh_calls: list[None] = []
-    imported_access_release_calls: list[None] = []
     cleared_dependency_uids: list[str] = []
     canceled_node_change_uids: list[str] = []
 
@@ -3720,6 +3713,10 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
+        _provenance_revisions=_ProvenanceRevisionStore(),
+        _workspace_controller=types.SimpleNamespace(
+            local_provenance_change=contextlib.nullcontext
+        ),
         _bulk_remove_depth=0,
         _cancel_managed_node_change=canceled_node_change_uids.append,
         _mark_removed_subtree_dirty=lambda _uid: None,
@@ -3738,11 +3735,6 @@ def test_remove_imagetool_removes_childtools() -> None:
             closing_document=False,
             loading_depth=0,
         ),
-        _workspace_controller=types.SimpleNamespace(
-            _release_unused_imported_workspace_accesses=lambda: (
-                imported_access_release_calls.append(None)
-            )
-        ),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
         ),
@@ -3752,7 +3744,6 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_uids == [uid]
     assert removed_rows == [0]
     assert refresh_calls == [None]
-    assert imported_access_release_calls == [None]
     assert cleared_dependency_uids == [wrapper.uid]
     assert canceled_node_change_uids == [wrapper.uid]
     assert wrapper.disposed

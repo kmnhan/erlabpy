@@ -11,6 +11,8 @@ import pathlib
 import time
 import typing
 import uuid
+import weakref
+from dataclasses import dataclass
 
 from qtpy import QtCore, QtWidgets
 
@@ -20,6 +22,7 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
@@ -54,7 +57,12 @@ from erlab.interactive._code_trust._application import (
     load_imported_document_trust,
     save_document_trust,
 )
+from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._ui import confirm_code_trust
+from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
+from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_payload_normalizer,
+)
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -64,6 +72,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _show_workspace_file_lock_error,
     _window_title_with_modified_placeholder,
     _WorkspaceDocumentAccess,
+    _WorkspaceDocumentLock,
     _WorkspacePropertiesDialog,
     _WorkspacePropertiesState,
 )
@@ -75,7 +84,11 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._code_trust._api import _DocumentTrust
-    from erlab.interactive._code_trust._core import CodeTrustEntry, CodeTrustEntrySource
+    from erlab.interactive._code_trust._core import (
+        CodeTrustEntry,
+        CodeTrustEntrySource,
+        CodeTrustManifest,
+    )
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
@@ -97,6 +110,15 @@ _WORKSPACE_SAVE_SUFFIX_WARNING = "ImageTool Manager saves workspaces as .itws fi
 
 class _WorkspacePostSaveBindingError(RuntimeError):
     """Raised when a saved workspace cannot be rebound into the live session."""
+
+
+@dataclass(frozen=True)
+class _LiveImageToolSnapshot:
+    node: _ManagedWindowNode
+    data: xr.DataArray
+    state: typing.Any
+    name: str
+    sources: dict[pathlib.Path, _WorkspaceDocumentAccess]
 
 
 def _show_itws_workspace_warning(parent: QtWidgets.QWidget) -> None:
@@ -127,10 +149,9 @@ class _WorkspaceController:
         ) = None
         self._background_save_requested = False
         self._workspace_store: workspace_store.WorkspaceStore | None = None
-        self._imported_workspace_accesses: dict[
-            pathlib.Path, _WorkspaceDocumentAccess
-        ] = {}
-        self._imported_workspace_dependents: dict[pathlib.Path, set[str]] = {}
+        self._workspace_sources: weakref.WeakValueDictionary[
+            pathlib.Path, _WorkspaceDocumentLock
+        ] = weakref.WeakValueDictionary()
         self._workspace_gc_worker: workspace_saving._WorkspaceGcWorker | None = None
         self._workspace_gc_receiver: (
             workspace_saving._WorkspaceGcResultReceiver | None
@@ -138,6 +159,18 @@ class _WorkspaceController:
         self._workspace_gc_requested = False
         self._code_trust_manifest_binding_depth = 0
         self._code_trust_manifest_binding_pending = False
+        self._local_provenance_changes: (
+            list[
+                tuple[
+                    CodeTrustEntrySource,
+                    CodeTrustEntrySource,
+                    Mapping[str, Iterable[str]]
+                    | Callable[[], Mapping[str, Iterable[str]]],
+                    bool,
+                ]
+            ]
+            | None
+        ) = None
 
     def _loaded_workspace_code_trust(
         self,
@@ -337,6 +370,54 @@ class _WorkspaceController:
         self._set_workspace_code_trust(
             approve_document_trust(self._manager._workspace_state.code_trust, manifest)
         )
+        self._normalize_approved_workspace_provenance()
+
+    def _normalize_approved_workspace_provenance(self) -> None:
+        """Adopt data-only fit payloads across all approved provenance owners."""
+        previous = self._manager._workspace_state.code_trust
+        if not document_trust_has_trusted_lineage(previous):
+            return
+        try:
+            manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
+            )
+        except (TypeError, ValueError):
+            return
+        _trust, capability = issue_complete_execution_capability(
+            previous, manifest.entries
+        )
+        if capability is None:
+            return
+        normalize_payload = provenance_code_payload_normalizer(authorization=capability)
+
+        def remap(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+            encoded = spec.model_dump(mode="json")
+            normalized = normalize_payload(encoded)
+            if normalized == encoded:
+                return spec
+            return ToolProvenanceSpec.model_validate(normalized)
+
+        revisions = self._manager._provenance_revisions
+        previous_records = None
+        applied: list[tuple[typing.Any, typing.Any]] = []
+        try:
+            with self.local_provenance_change(
+                execution_entries=manifest.entries, adopt_derived_entries=True
+            ):
+                previous_records = revisions.remap_provenance_specs(remap)
+                for node in tuple(self._manager._tool_graph.nodes.values()):
+                    snapshot, changed = node.remap_provenance_owners(remap)
+                    if changed:
+                        applied.append((node, snapshot))
+                for node, _snapshot in applied:
+                    node.commit_provenance_owner_remap()
+        except Exception:
+            if previous_records is not None:
+                revisions.restore_provenance_specs(previous_records)
+            for node, snapshot in reversed(applied):
+                node.restore_provenance_owners(snapshot)
+            self._set_workspace_code_trust(previous)
+            raise
 
     def issue_code_execution_capability(
         self,
@@ -391,60 +472,185 @@ class _WorkspaceController:
         focus_on_block: bool = False,
     ) -> Iterator[object | None]:
         """Authorize one explicit local edit and commit lineage on success."""
-        state = self._manager._workspace_state
-        previous = state.code_trust
         resolved_execution_entries = tuple(
             execution_entries() if callable(execution_entries) else execution_entries
         )
         resolved_edited_entries = tuple(
             edited_entries() if callable(edited_entries) else edited_entries
         )
-        prospective, capability = issue_local_edit_capability(
-            previous,
+        _prospective, capability = issue_local_edit_capability(
+            self._manager._workspace_state.code_trust,
             resolved_execution_entries,
             edited_entries=resolved_edited_entries,
         )
         if not execution_capability_allows(capability, resolved_edited_entries):
             capability = None
-        previous_manifest = previous.manifest
-        if prospective != previous and (
-            previous_manifest is None
-            or previous_manifest.domain != workspace_trust.WORKSPACE_CODE_TRUST_DOMAIN
-            or previous_manifest.policy_version
-            != workspace_trust.WORKSPACE_CODE_TRUST_POLICY_VERSION
-        ):
-            previous_manifest = workspace_trust.current_workspace_code_trust_manifest(
-                self._manager
-            )
         if capability is None and focus_on_block:
             self._manager.code_trust_banner.setFocus()
         previous_capability = self._local_edit_capability
-        self._local_edit_capability = capability
-        try:
-            yield capability
-        finally:
-            self._local_edit_capability = previous_capability
-        if prospective != previous and state.code_trust == previous:
+        with self.local_provenance_change(
+            edited_entries=resolved_edited_entries,
+            execution_entries=resolved_execution_entries,
+            adopt_derived_entries=True,
+        ):
+            self._local_edit_capability = capability
             try:
-                manifest = workspace_trust.current_workspace_code_trust_manifest(
-                    self._manager
+                yield capability
+            finally:
+                self._local_edit_capability = previous_capability
+
+    @contextlib.contextmanager
+    def local_provenance_change(
+        self,
+        *,
+        edited_entries: CodeTrustEntrySource = (),
+        source_owners: Mapping[str, Iterable[str]]
+        | Callable[[], Mapping[str, Iterable[str]]]
+        | None = None,
+        execution_entries: CodeTrustEntrySource = (),
+        adopt_derived_entries: bool = False,
+    ) -> Iterator[None]:
+        """Publish owned provenance once, after the complete local action succeeds."""
+        change = (
+            edited_entries,
+            execution_entries,
+            {} if source_owners is None else source_owners,
+            adopt_derived_entries,
+        )
+        if self._local_provenance_changes is not None:
+            start = len(self._local_provenance_changes)
+            try:
+                yield
+            except Exception:
+                del self._local_provenance_changes[start:]
+                raise
+            self._local_provenance_changes.append(change)
+            return
+        # Loading establishes its own incoming policy. It cannot author code.
+        if (
+            self._code_trust_manifest_binding_depth
+            or self._manager._workspace_state.closing_document
+        ):
+            yield
+            return
+        state = self._manager._workspace_state
+        previous = state.code_trust
+        if previous.reason in {
+            CodeTrustReason.LOCAL_LINEAGE,
+            CodeTrustReason.TRUSTED_LOCATION,
+        }:
+            yield
+            return
+        previous_manifest = workspace_trust.current_workspace_code_trust_manifest(
+            self._manager
+        )
+        previous_revision_ids = self._manager._provenance_revisions.revision_ids
+        node_paths = {
+            uid: self.saving._workspace_node_path(uid)
+            for uid in self._manager._tool_graph.nodes
+        }
+        revision_caches = {
+            uid: (node._current_revision_id, node._revision_ids_by_role.copy())
+            for uid, node in self._manager._tool_graph.nodes.items()
+        }
+        previous_pending = self._code_trust_manifest_binding_pending
+        self._local_provenance_changes = []
+        self._code_trust_manifest_binding_depth += 1
+        try:
+            yield
+            self._local_provenance_changes.append(change)
+            if state.code_trust == previous:
+                authored: list[CodeTrustEntry] = []
+                executed: list[CodeTrustEntry] = []
+                sources: dict[str, set[str]] = {}
+                adopt_derived = False
+                for edits, execution, owners, derived in self._local_provenance_changes:
+                    authored.extend(edits() if callable(edits) else edits)
+                    executed.extend(execution() if callable(execution) else execution)
+                    for uid, inputs in (
+                        owners() if callable(owners) else owners
+                    ).items():
+                        sources.setdefault(uid, set()).update(inputs)
+                    adopt_derived |= derived
+                self._commit_provenance_change(
+                    previous,
+                    previous_manifest,
+                    previous_revision_ids,
+                    node_paths,
+                    authored,
+                    executed,
+                    sources,
+                    adopt_derived_entries=adopt_derived,
                 )
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Edited workspace Python content could not be inspected",
-                    exc_info=True,
-                )
-                return
-            committed = commit_local_edit_trust(
-                previous,
-                capability,
-                () if previous_manifest is None else previous_manifest.entries,
-                manifest.entries,
-                edited_entries=resolved_edited_entries,
-                document_manifest=manifest,
+        except Exception:
+            # A failed action must not retain checkpoint copies that were never
+            # published. Their immutable records can be collected when unreachable.
+            for uid, (current, roles) in revision_caches.items():
+                node = self._manager._tool_graph.nodes.get(uid)
+                if node is not None:
+                    node._current_revision_id = current
+                    node._revision_ids_by_role = roles
+            raise
+        finally:
+            self._local_provenance_changes = None
+            self._code_trust_manifest_binding_depth -= 1
+            self._code_trust_manifest_binding_pending = previous_pending
+        self._bind_current_workspace_manifest_if_review_needed()
+
+    def _commit_provenance_change(
+        self,
+        previous: _DocumentTrust,
+        previous_manifest: CodeTrustManifest,
+        previous_revision_ids: frozenset[str],
+        node_paths: Mapping[str, str],
+        edited_entries: Collection[CodeTrustEntry],
+        execution_entries: Iterable[CodeTrustEntry],
+        source_owners: Mapping[str, Iterable[str]],
+        *,
+        adopt_derived_entries: bool,
+    ) -> None:
+        try:
+            manifest = workspace_trust.current_workspace_code_trust_manifest(
+                self._manager
             )
-            if committed != previous:
-                self._set_workspace_code_trust(committed)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Edited workspace Python content could not be inspected", exc_info=True
+            )
+            return
+        if (
+            not edited_entries
+            and manifest.canonical_bytes() == previous_manifest.canonical_bytes()
+        ):
+            return
+        owned_entries = workspace_trust.owned_provenance_code_trust_entries(
+            self._manager,
+            previous_revision_ids=previous_revision_ids,
+            node_paths=node_paths,
+            previous_entries=previous_manifest.entries,
+            execution_entries=execution_entries,
+            edited_entries=edited_entries,
+            previous_trust=previous,
+            manifest_entries=manifest.entries,
+            source_owners=source_owners,
+        )
+        publication_entries = (*edited_entries, *owned_entries)
+        _prospective, capability = issue_local_edit_capability(
+            previous,
+            (*execution_entries, *publication_entries),
+            edited_entries=publication_entries,
+        )
+        committed = commit_local_edit_trust(
+            previous,
+            capability,
+            previous_manifest.entries,
+            manifest.entries,
+            edited_entries=publication_entries,
+            document_manifest=manifest,
+            adopt_derived_entries=adopt_derived_entries,
+        )
+        if committed != previous:
+            self._set_workspace_code_trust(committed)
 
     def _refresh_code_trust_ui(self) -> None:
         trust = self._manager._workspace_state.code_trust
@@ -1027,107 +1233,31 @@ class _WorkspaceController:
         if self._workspace_store is not None:
             self._workspace_store.close()
             self._workspace_store = None
-        if self._manager._workspace_state.lock is None:
-            return
-        self._manager._workspace_state.lock.unlock()
-        self._manager._workspace_state.lock = None
-
-    def _release_imported_workspace_accesses(self) -> None:
-        """Release all source documents retained by imported lazy payloads."""
-        accesses = tuple(self._imported_workspace_accesses.values())
-        self._imported_workspace_accesses.clear()
-        self._imported_workspace_dependents.clear()
-        for access in accesses:
+        access = self._manager._workspace_state.access
+        if access is not None:
             access.release()
+            self._manager._workspace_state.access = None
 
-    @staticmethod
-    def _workspace_node_source_paths(
-        node: _ManagedWindowNode,
-    ) -> frozenset[pathlib.Path]:
-        """Return workspace paths directly referenced by one managed node."""
+    def _sync_node_workspace_sources(self, node: _ManagedWindowNode) -> None:
+        """Give one node ownership of the documents its lazy data can read."""
         paths: set[pathlib.Path] = set()
         pending = node.pending_workspace_payload
         if pending is not None:
             paths.add(pending[0].resolve())
-        if node.is_imagetool and node.imagetool is not None:
-            data_backing, source_paths = node.persistence_data_backing()
-            if data_backing in {"dask", "file_lazy"}:
-                paths.update(pathlib.Path(path).resolve() for path in source_paths)
-        paths.update(
-            path.resolve() for path, _group in node._workspace_reference_datasets
-        )
-        return frozenset(paths)
-
-    def _retain_imported_workspace_access(
-        self,
-        access: _WorkspaceDocumentAccess,
-        candidate_uids: Collection[str],
-    ) -> None:
-        """Retain an imported source only when loaded nodes still read from it."""
-        path = access.path.resolve()
-        dependents = {
-            uid
-            for uid in candidate_uids
-            if (
-                (node := self._manager._tool_graph.nodes.get(uid)) is not None
-                and path in self._workspace_node_source_paths(node)
-            )
+        kind, data_paths = node.persistence_data_backing()
+        if kind in {"dask", "file_lazy"}:
+            paths.update(pathlib.Path(path).resolve() for path in data_paths)
+            if kind == "dask" and not data_paths:
+                # Transformations can discard xarray source encodings.
+                paths.update(node._workspace_sources)
+        paths.update(path.resolve() for path, _ in node._workspace_reference_datasets)
+        node._workspace_sources = {
+            path: node._workspace_sources[path]
+            if path in node._workspace_sources
+            else self._workspace_document_access(path)
+            for path in paths
+            if path in self._workspace_sources
         }
-        if not dependents:
-            return
-        self._imported_workspace_dependents.setdefault(path, set()).update(dependents)
-        if path in self._imported_workspace_accesses:
-            return
-        workspace_lock = access.take_lock()
-        if workspace_lock is not None:
-            self._imported_workspace_accesses[path] = _WorkspaceDocumentAccess(
-                path, workspace_lock
-            )
-
-    def _release_unused_imported_workspace_accesses(self) -> None:
-        """Release imported sources after all dependent payloads are rehomed."""
-        for path, access in tuple(self._imported_workspace_accesses.items()):
-            previous_dependents = self._imported_workspace_dependents.get(path, set())
-            dependents: set[str] = set()
-            for uid, node in self._manager._tool_graph.nodes.items():
-                source_paths = self._workspace_node_source_paths(node)
-                if path in source_paths:
-                    dependents.add(uid)
-                    continue
-                if (
-                    uid in previous_dependents
-                    and node.is_imagetool
-                    and node.imagetool is not None
-                    and node.slicer_area._data.chunks is not None
-                    and not source_paths
-                ):
-                    # Some Dask transformations discard xarray's source encoding.
-                    # Keep ownership until a save rebinds or materializes this node.
-                    dependents.add(uid)
-            if dependents:
-                self._imported_workspace_dependents[path] = dependents
-                continue
-            self._imported_workspace_accesses.pop(path, None)
-            self._imported_workspace_dependents.pop(path, None)
-            access.release()
-
-    def _take_imported_workspace_lock(
-        self, path: str | os.PathLike[str]
-    ) -> QtCore.QLockFile | None:
-        """Transfer a retained source lock to the associated workspace document."""
-        resolved = pathlib.Path(path).resolve()
-        access = self._imported_workspace_accesses.pop(resolved, None)
-        self._imported_workspace_dependents.pop(resolved, None)
-        return None if access is None else access.take_lock()
-
-    def _take_workspace_access_lock(
-        self, access: _WorkspaceDocumentAccess
-    ) -> QtCore.QLockFile | None:
-        """Transfer the lock that owns one workspace document."""
-        workspace_lock = access.take_lock()
-        if workspace_lock is None:
-            workspace_lock = self._take_imported_workspace_lock(access.path)
-        return workspace_lock
 
     def _current_workspace_document_path(self) -> pathlib.Path | None:
         path = self._manager._workspace_state.path
@@ -1139,15 +1269,13 @@ class _WorkspaceController:
         self, fname: str | os.PathLike[str]
     ) -> _WorkspaceDocumentAccess:
         workspace_path = pathlib.Path(fname).resolve()
-        workspace_lock = None
-        if (
-            workspace_path != self._manager._workspace_state.path
-            and workspace_path not in self._imported_workspace_accesses
-        ):
-            workspace_lock = workspace_storage._acquire_workspace_document_lock(
-                workspace_path
+        ownership = self._workspace_sources.get(workspace_path)
+        if ownership is None:
+            ownership = _WorkspaceDocumentLock(
+                workspace_storage._acquire_workspace_document_lock(workspace_path)
             )
-        return _WorkspaceDocumentAccess(workspace_path, workspace_lock)
+            self._workspace_sources[workspace_path] = ownership
+        return _WorkspaceDocumentAccess(workspace_path, ownership)
 
     @contextlib.contextmanager
     def _workspace_document_access_context(
@@ -1163,13 +1291,11 @@ class _WorkspaceController:
         self,
         fname: str | os.PathLike[str] | None,
         *,
-        workspace_lock: QtCore.QLockFile | None = None,
+        workspace_access: _WorkspaceDocumentAccess | None = None,
         store: workspace_store.WorkspaceStore | None = None,
     ) -> None:
         workspace_path = None if fname is None else pathlib.Path(fname).resolve()
         if workspace_path == self._manager._workspace_state.path:
-            if workspace_lock is not None:
-                workspace_lock.unlock()
             if store is not None and store is not self._workspace_store:
                 if self._workspace_store is not None:
                     self._workspace_store.close()
@@ -1178,7 +1304,7 @@ class _WorkspaceController:
             self._refresh_manager_record()
             return
 
-        if workspace_path is not None and workspace_lock is None:
+        if workspace_path is not None and workspace_access is None:
             raise RuntimeError(
                 "Changing the workspace path requires a pre-acquired document lock"
             )
@@ -1186,7 +1312,9 @@ class _WorkspaceController:
         if store is self._workspace_store:
             self._workspace_store = None
         self._release_workspace_lock()
-        self._manager._workspace_state.lock = workspace_lock
+        self._manager._workspace_state.access = (
+            None if workspace_access is None else workspace_access.retain()
+        )
         self._workspace_store = store
         self._manager._workspace_state.path = workspace_path
         self._manager._workspace_state.advance_document_identity()
@@ -1255,6 +1383,12 @@ class _WorkspaceController:
         manifest: Mapping[str, typing.Any],
     ) -> None:
         """Apply one committed generation to live manager references."""
+        workspace_revisions.bind_saved_revision_sources(
+            self._manager._provenance_revisions,
+            manifest,
+            workspace_path,
+            source_access=self._workspace_document_access,
+        )
         self._commit_saved_tool_data_references(snapshot)
         store = self._workspace_store
         if store is not None and not store.closed:
@@ -1353,37 +1487,39 @@ class _WorkspaceController:
 
     def _live_imagetool_rebind_snapshot(
         self, uids: Collection[str]
-    ) -> dict[str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]]:
-        snapshot: dict[
-            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
-        ] = {}
+    ) -> dict[str, _LiveImageToolSnapshot]:
+        snapshot: dict[str, _LiveImageToolSnapshot] = {}
         for uid in uids:
             node = self._manager._tool_graph.nodes.get(uid)
             if node is None or node.imagetool is None:
                 continue
-            snapshot[uid] = (
+            snapshot[uid] = _LiveImageToolSnapshot(
                 node,
                 node.slicer_area._data,
                 copy.deepcopy(node.slicer_area.state),
                 node.name,
+                {
+                    path: access.retain()
+                    for path, access in node._workspace_sources.items()
+                },
             )
         return snapshot
 
     def _restore_live_imagetool_rebind_snapshot(
         self,
-        snapshot: Mapping[
-            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
-        ],
+        snapshot: Mapping[str, _LiveImageToolSnapshot],
     ) -> None:
         if not snapshot:
             return
         with self._workspace_load_context():
-            for uid, (node, data, state, name) in snapshot.items():
+            for uid, saved in snapshot.items():
+                node = saved.node
                 if uid not in self._manager._tool_graph.nodes or node.imagetool is None:
                     continue
-                node.slicer_area.set_data(data, auto_compute=False)
-                node.slicer_area.state = state
-                node._set_name(name, manual=False)
+                node.slicer_area.set_data(saved.data, auto_compute=False)
+                node.slicer_area.state = saved.state
+                node._set_name(saved.name, manual=False)
+                node._workspace_sources = saved.sources
 
     @staticmethod
     def _workspace_tool_references_include_uids(
@@ -1605,9 +1741,7 @@ class _WorkspaceController:
         skip_live_data_rebind_uids: Collection[str] = frozenset(),
     ) -> None:
         pending_snapshot = self._pending_workspace_payload_snapshot()
-        live_imagetool_snapshot: dict[
-            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
-        ] = {}
+        live_imagetool_snapshot: dict[str, _LiveImageToolSnapshot] = {}
         source_snapshot: list[tuple[xr.Variable, bool, typing.Any]] = []
         try:
             dask_rebind_uids = self._dask_rebind_uids_after_full_save(
@@ -1647,6 +1781,9 @@ class _WorkspaceController:
                             )
                         )
                         if should_retarget:
+                            live_imagetool_snapshot.update(
+                                self._live_imagetool_rebind_snapshot((uid,))
+                            )
                             source_snapshot.extend(
                                 workspace_arrays._workspace_xarray_source_snapshot(
                                     node.slicer_area._data
@@ -1655,6 +1792,7 @@ class _WorkspaceController:
                             workspace_arrays.set_workspace_xarray_sources(
                                 node.slicer_area._data, workspace_path
                             )
+                            self._sync_node_workspace_sources(node)
             self._refresh_workspace_tool_data_after_full_save(
                 old_workspace_path,
                 workspace_path,
@@ -1683,7 +1821,9 @@ class _WorkspaceController:
         self,
     ) -> dict[str, tuple[str, tuple[str, ...]]] | None:
         """Capture data backing only when imported source ownership is active."""
-        if not self._imported_workspace_accesses:
+        if not any(
+            node._workspace_sources for node in self._manager._tool_graph.nodes.values()
+        ):
             return None
         return self.loading._workspace_data_backing_snapshot()
 
@@ -1696,11 +1836,15 @@ class _WorkspaceController:
     ) -> None:
         """Move imported lazy readers to objects committed by the current save."""
         if backing_snapshot is None:
-            self._release_unused_imported_workspace_accesses()
             return
-        imported_uids: set[str] = set().union(
-            *self._imported_workspace_dependents.values()
-        )
+        imported_uids = {
+            uid
+            for uid, node in self._manager._tool_graph.nodes.items()
+            if any(
+                path != self._manager._workspace_state.path
+                for path in node._workspace_sources
+            )
+        }
         dask_targets = {
             uid
             for uid, (kind, _source_paths) in backing_snapshot.items()
@@ -1735,7 +1879,6 @@ class _WorkspaceController:
                 "Workspace file was saved, but imported lazy data could not be "
                 "rebound to the saved file."
             ) from exc
-        self._release_unused_imported_workspace_accesses()
 
     def _active_managed_window(self) -> QtWidgets.QWidget | None:
         active_window = QtWidgets.QApplication.activeWindow()
@@ -1948,8 +2091,8 @@ class _WorkspaceController:
 
     def _mark_node_data_dirty(self, uid: str) -> bool:
         changed = self._mark_workspace_dirty(uid=uid, data=True)
-        if self._manager._workspace_state.loading_depth == 0:
-            self._release_unused_imported_workspace_accesses()
+        if (node := self._manager._tool_graph.nodes.get(uid)) is not None:
+            self._sync_node_workspace_sources(node)
         return changed
 
     def _mark_node_state_dirty(self, uid: str) -> bool:
@@ -2173,7 +2316,7 @@ class _WorkspaceController:
         *,
         native: bool = True,
         existing_access: _WorkspaceDocumentAccess | None = None,
-    ) -> tuple[str, QtCore.QLockFile | None] | None:
+    ) -> tuple[str, _WorkspaceDocumentAccess] | None:
         self._show_legacy_workspace_upgrade_message(fname)
         converted_fname = self._workspace_save_dialog(
             native=native,
@@ -2195,9 +2338,7 @@ class _WorkspaceController:
                     document_access=existing_access,
                     legacy_source_path=existing_access.path,
                 )
-            return str(existing_access.path), self._take_workspace_access_lock(
-                existing_access
-            )
+            return str(existing_access.path), existing_access.retain()
 
         with self._workspace_document_access_context(converted_fname) as access:
             with erlab.interactive.utils.wait_dialog(
@@ -2207,7 +2348,7 @@ class _WorkspaceController:
                     access.path,
                     document_access=access,
                 )
-            return str(access.path), access.take_lock()
+            return str(access.path), access.retain()
 
     def _associate_loaded_workspace_file(
         self,
@@ -2219,7 +2360,7 @@ class _WorkspaceController:
         rebind_data: bool = True,
     ) -> None:
         associated_fname = fname
-        associated_lock: QtCore.QLockFile | None = None
+        associated_access: _WorkspaceDocumentAccess | None = None
         if workspace_format._workspace_schema_requires_conversion(schema_version):
             converted = self._save_legacy_workspace_as_current(
                 fname, native=native, existing_access=workspace_access
@@ -2230,10 +2371,10 @@ class _WorkspaceController:
                     "Legacy workspace needs conversion"
                 )
                 return
-            associated_fname, associated_lock = converted
+            associated_fname, associated_access = converted
             schema_version = workspace_format._current_workspace_schema_version()
         elif workspace_access is not None:
-            associated_lock = self._take_workspace_access_lock(workspace_access)
+            associated_access = workspace_access
 
         associated_store = None
         if schema_version >= _persistence_constants.WORKSPACE_LEGACY_SCHEMA_VERSION:
@@ -2250,7 +2391,7 @@ class _WorkspaceController:
 
         self._set_workspace_path(
             associated_fname,
-            workspace_lock=associated_lock,
+            workspace_access=associated_access,
             store=associated_store,
         )
         self._manager._workspace_state.schema_version = schema_version
@@ -2446,6 +2587,8 @@ class _WorkspaceController:
                     "Error while saving workspace",
                     "An error occurred while saving the workspace file.",
                 )
+            finally:
+                snapshot.close()
 
         receiver = workspace_saving._WorkspaceSaveResultReceiver(
             callback=_finish,
@@ -2978,7 +3121,7 @@ class _WorkspaceController:
             saved_path = access.path
             self._set_workspace_path(
                 saved_path,
-                workspace_lock=self._take_workspace_access_lock(access),
+                workspace_access=access,
                 store=new_store,
             )
             self._manager._workspace_state.save_as_only = False
@@ -3002,7 +3145,6 @@ class _WorkspaceController:
                 if on_finished is not None:
                     on_finished(False)
                 return
-            self._release_unused_imported_workspace_accesses()
             self._drain_workspace_deferred_events()
             post_save_events = tuple(
                 event

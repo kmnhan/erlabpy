@@ -691,10 +691,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
 
-            if i in self.array_slicer._nonuniform_axes:
-                self.label_dim[i].setText(str(self.data.dims[i]).removesuffix("_idx"))
-            else:
-                self.label_dim[i].setText(str(self.data.dims[i]))
+            self.label_dim[i].setText(str(self.data.dims[i]))
 
             # update spinbox properties to match new data
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)

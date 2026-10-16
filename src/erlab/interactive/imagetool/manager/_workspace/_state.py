@@ -27,12 +27,11 @@ if typing.TYPE_CHECKING:
     import pathlib
     from collections.abc import Collection, Iterable, Iterator, Mapping
 
-    from qtpy import QtCore
-
     from erlab.interactive._code_trust._api import _DocumentTrust
     from erlab.interactive.imagetool.manager._extensions._models import (
         _WorkspaceScriptRequirement,
     )
+    from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
 
 
 @dataclass(frozen=True)
@@ -352,7 +351,7 @@ class _ManagerWorkspaceState:
         self.save_in_progress: bool = False
         self.schema_version: int = _current_workspace_schema_version()
         self.code_trust = new_document_trust()
-        self.lock: QtCore.QLockFile | None = None
+        self.access: _WorkspaceDocumentAccess | None = None
         self.closing_document: bool = False
         self.save_as_only: bool = False
         self.degraded_reasons: tuple[str, ...] = ()

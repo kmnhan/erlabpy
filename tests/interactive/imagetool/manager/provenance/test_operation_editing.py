@@ -67,6 +67,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _editors as provenance_editors,
 )
+from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 from erlab.interactive.kspace import KspaceTool
 from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
@@ -338,67 +339,6 @@ def test_manager_edit_bound_shift_rebinds_without_script_code(
         )
 
 
-def test_manager_bound_step_paste_builds_the_required_provenance_kind(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _BoundScriptCodeOperation(ScriptCodeOperation):
-        def input_slots(self) -> tuple[str, ...]:
-            return ("shift",)
-
-    node = _fake_edit_node(full_data())
-    controller = _fake_edit_controller(node)
-    controller._manager._manager_record = types.SimpleNamespace(internal_id="manager")
-    controller._manager._lineage_controller._script_input_for_node = (
-        lambda _node, *, name, **_kwargs: ScriptInput(name=name)
-    )
-    pasted: list[ToolProvenanceSpec] = []
-    monkeypatch.setattr(
-        controller,
-        "_paste_detached_steps",
-        lambda _node, spec, **_kwargs: pasted.append(spec),
-    )
-    bound_shift = ReplayStep(
-        operation=ShiftFromInputOperation(along="x"),
-        input_bindings={"shift": "shift"},
-    )
-
-    with pytest.raises(ValueError, match="need a primary input"):
-        controller._paste_steps_into_node(
-            node,
-            (bound_shift,),
-            active_name="shifted",
-        )
-
-    bound_script = ReplayStep(
-        operation=_BoundScriptCodeOperation(
-            label="Use bound shift",
-            code="shifted = data + shift",
-        ),
-        input_bindings={"shift": "shift"},
-    )
-    controller._paste_steps_into_node(
-        node,
-        (bound_script,),
-        active_name="shifted",
-        primary_input="data",
-        script_inputs=(ScriptInput(name="shift"),),
-        source_manager_id="manager",
-    )
-    assert isinstance(pasted[-1].steps[0].operation, ScriptCodeOperation)
-
-    controller._paste_steps_into_node(
-        node,
-        (ScriptCodeOperation(label="Use auxiliary", code="derived = auxiliary"),),
-        active_name="derived",
-        script_inputs=(ScriptInput(name="auxiliary"),),
-    )
-    assert pasted[-1].primary_input == "data"
-    assert tuple(item.name for item in pasted[-1].script_inputs) == (
-        "data",
-        "auxiliary",
-    )
-
-
 def test_manager_bound_shift_editability_rejects_invalid_and_multiple_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -487,7 +427,7 @@ def test_manager_bound_shift_edit_rejects_stale_model_state() -> None:
 
     missing_binding_spec = types.SimpleNamespace(
         steps=(types.SimpleNamespace(input_bindings={}),),
-        script_inputs=(),
+        replay_inputs=(),
     )
     node = _fake_edit_node(typing.cast("typing.Any", missing_binding_spec))
     with pytest.raises(RuntimeError, match="has no shift input"):
@@ -501,7 +441,7 @@ def test_manager_bound_shift_edit_rejects_stale_model_state() -> None:
 
     missing_input_spec = types.SimpleNamespace(
         steps=(valid_step,),
-        script_inputs=(),
+        replay_inputs=(),
     )
     with pytest.raises(RuntimeError, match="input is not available"):
         controller._edit_bound_shift_operation_row(
@@ -551,7 +491,7 @@ def test_manager_bound_shift_edit_rejects_invalid_dialog_selection(
     monkeypatch.setattr(
         controller,
         "_replay_candidate_result",
-        lambda *_args: (prefix_data, spec),
+        lambda *_args: manager_widgets._ProvenanceReplayResult(prefix_data, spec),
     )
     monkeypatch.setattr(
         controller,
@@ -674,10 +614,10 @@ def test_manager_multi_provenance_grouped_edit_revert_and_delete(
     ] = []
 
     def capture_candidates(
-        _sessions: typing.Any,
         candidates: typing.Any,
         *,
         where: str,
+        sessions: typing.Any,
     ) -> None:
         captured.append((where, tuple(candidates)))
 
@@ -689,7 +629,7 @@ def test_manager_multi_provenance_grouped_edit_revert_and_delete(
     )
     monkeypatch.setattr(
         controller,
-        "_validate_and_replace_multiple",
+        "_apply_candidates",
         capture_candidates,
     )
 
@@ -1043,9 +983,11 @@ def test_manager_multi_provenance_trust_and_preflight_failures_change_no_target(
         *,
         where: str,
         authorization: object | None,
+        retain_active_filter: bool,
         active_filter_ref: _ProvenanceStepRef | None,
     ) -> typing.Any:
         del active_filter_ref
+        assert retain_active_filter
         assert authorization is authorization_token
         validation_calls.append(node.uid)
         if node.uid == "second":
@@ -1129,7 +1071,7 @@ def test_manager_multi_provenance_rejects_stale_edit_and_cancel(
     monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
     monkeypatch.setattr(
         controller,
-        "_validate_and_replace_multiple",
+        "_apply_candidates",
         lambda *_args, **_kwargs: pytest.fail(
             "a stale or canceled edit must not apply"
         ),
@@ -1280,11 +1222,15 @@ def test_manager_multi_provenance_source_session_stale_guards() -> None:
     controller = _fake_edit_controller(
         parent=parent,
         nodes={"child": child},
-        metadata_uid=None,
+        metadata_uid="child",
         selected_targets=("child",),
     )
     sessions = controller._row_sessions((("child", row),))
     assert controller._row_sessions_current(sessions) == ""
+
+    controller._manager._metadata_node_uid = None
+    assert controller._row_sessions_current(sessions)
+    controller._manager._metadata_node_uid = "child"
 
     child.parent_uid = None
     assert controller._row_sessions_current(sessions)
@@ -1775,15 +1721,17 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return current, candidate
+        return manager_widgets._ProvenanceReplayResult(current, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
         controller,
         "_replace_node_data",
-        lambda _node, _scope, _data, candidate, _filter: replaced.append(candidate),
+        lambda _node, _scope, _data, candidate, _filter, **_kwargs: replaced.append(
+            candidate
+        ),
     )
     monkeypatch.setattr(
         imagetool_dialogs.NormalizeDialog,
@@ -1955,8 +1903,15 @@ def test_manager_extension_operation_uses_extension_executor_for_filter_and_repl
         controller._reorder_replay_unavailable_reason(node, "display", spec)
         == "extension unavailable"
     )
+    closed_node = _ManagedWindowNode(
+        controller._manager,
+        "closed",
+        None,
+        None,
+        window_kind="imagetool",
+    )
     controller._validate_filter_operation(
-        node,
+        closed_node,
         parent_data,
         operation,
         where="validating filter",
@@ -2322,15 +2277,17 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return current, candidate
+        return manager_widgets._ProvenanceReplayResult(current, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
         controller,
         "_replace_node_data",
-        lambda _node, _scope, _data, candidate, _filter: replaced.append(candidate),
+        lambda _node, _scope, _data, candidate, _filter, **_kwargs: replaced.append(
+            candidate
+        ),
     )
     monkeypatch.setattr(
         imagetool_dialogs.AssignCoordsDialog,
@@ -2521,9 +2478,9 @@ def test_manager_affine_coord_edit_falls_back_to_replay(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return replay_data, candidate
+        return manager_widgets._ProvenanceReplayResult(replay_data, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
@@ -2606,9 +2563,9 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed.append(candidate)
-        return replay_data, candidate
+        return manager_widgets._ProvenanceReplayResult(replay_data, candidate)
 
     monkeypatch.setattr(controller, "_replay_candidate_result", replay_candidate_result)
     monkeypatch.setattr(
@@ -2691,9 +2648,9 @@ def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
         _scope: typing.Literal["display", "source"],
         candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed_specs.append(candidate)
-        return data, candidate
+        return manager_widgets._ProvenanceReplayResult(data, candidate)
 
     monkeypatch.setattr(
         controller,
@@ -2829,9 +2786,9 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
         _scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         replayed_specs.append(spec)
-        return data, spec
+        return manager_widgets._ProvenanceReplayResult(data, spec)
 
     monkeypatch.setattr(
         controller,
@@ -2946,10 +2903,10 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
         _scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
         **_kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> manager_widgets._ProvenanceReplayResult:
         nonlocal calls
         calls += 1
-        return data, spec
+        return manager_widgets._ProvenanceReplayResult(data, spec)
 
     monkeypatch.setattr(
         controller,
@@ -2990,9 +2947,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         parent_uid="parent",
         source_display_spec=selection(),
     )
-    replaced: list[
-        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None, bool]
-    ] = []
+    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool, bool]] = []
     source_bindings: list[
         tuple[
             ToolProvenanceSpec,
@@ -3007,7 +2962,6 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         spec,
         *,
         propagate_descendants,
-        replay_source_data,
         preserve_filter,
     ) -> None:
         replaced.append(
@@ -3015,7 +2969,6 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
                 data,
                 spec,
                 propagate_descendants,
-                replay_source_data,
                 preserve_filter,
             )
         )
@@ -3027,13 +2980,14 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
     controller = _fake_edit_controller(node, parent=parent)
     spec = selection(IselOperation(kwargs={"x": 1}))
 
-    data, replayed_spec = controller._replay_candidate_result(
+    result = controller._replay_candidate_result(
         typing.cast("typing.Any", node),
         "source",
         spec,
     )
+    data = result.data
     xr.testing.assert_identical(data, parent_data.isel(x=1))
-    assert replayed_spec == spec
+    assert result.provenance_spec == spec
 
     controller._replace_node_data(
         typing.cast("typing.Any", node),
@@ -3054,7 +3008,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             parent_data=parent_data,
         ),
     )
-    assert replaced[-1][2:] == (True, None, True)
+    assert replaced[-1][2:] == (True, True)
 
     with pytest.raises(RuntimeError, match="Live provenance"):
         controller._replay_candidate_result(
@@ -3168,7 +3122,6 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
         spec._prefix_through_ref(script_input_ref)
     assert spec._prefix_before_ref(start_ref).operations == ()
     assert spec._prefix_before_ref(first_ref).operations == ()
-    assert spec._streamlined_operations("selection", spec.operations) == spec.operations
 
     file_spec = _manager_provenance_file_spec(
         pathlib.Path("scan.h5")
@@ -3351,7 +3304,7 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
     for row in rows:
         if row.replay_ref is not None:
             prefix = spec._prefix_through_ref(row.replay_ref)
-            assert controller._script_spec_replayable_for_node(node, prefix), (
+            assert controller._script_replay_unavailable_reason(node, prefix) is None, (
                 f"{case_name} row {row.replay_ref!r} has a non-replayable prefix"
             )
         if row.edit_ref is None:
@@ -3385,8 +3338,8 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
             block_ref.stop,
             (),
         )
-        should_be_deletable = controller._script_spec_replayable_for_node(
-            node,
-            deletion_candidate,
+        should_be_deletable = (
+            controller._script_replay_unavailable_reason(node, deletion_candidate)
+            is None
         )
         assert controller.can_delete_row(row)[0] is should_be_deletable

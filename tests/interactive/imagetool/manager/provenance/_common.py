@@ -3,7 +3,7 @@ import json
 import pathlib
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import lmfit
 import numpy as np
@@ -23,15 +23,19 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ReplayStep,
+    ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     file_load,
     full_data,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
+from erlab.interactive.imagetool.manager._lineage import _InputResolutionPlan
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+from erlab.interactive.imagetool.manager._widgets import _ProvenanceReplayResult
 
 _register_local_callable_loader(xr.load_dataarray)
 
@@ -184,13 +188,15 @@ def _set_provenance_steps_clipboard(
             "version": (
                 manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION
             ),
-            "active_name": active_name,
-            "steps": [
-                ReplayStep(operation=operation).model_dump(mode="json")
-                for operation in operations
-            ],
-            "script_inputs": [],
-            "primary_input": None,
+            "provenance_spec": {
+                "kind": "script",
+                "start_label": "Apply selected provenance steps",
+                "active_name": active_name,
+                "steps": [
+                    ReplayStep(operation=operation).model_dump(mode="json")
+                    for operation in operations
+                ],
+            },
             "source_manager_id": None,
         },
         separators=(",", ":"),
@@ -251,13 +257,31 @@ def _fake_edit_controller(
             raise RuntimeError("missing parent")
         return parent
 
+    revisions = _ProvenanceRevisionStore()
+
+    def input_resolution_plan(
+        inputs: Sequence[ScriptInput],
+        *,
+        target_node_uid: str | None = None,
+        **kwargs: typing.Any,
+    ) -> _InputResolutionPlan:
+        reason = (
+            None
+            if script_input_unavailable_reason is None
+            else script_input_unavailable_reason(
+                inputs, target_node_uid=target_node_uid, **kwargs
+            )
+        )
+        return _InputResolutionPlan(
+            target_node_uid, tuple(inputs), (), frozenset(), reason
+        )
+
     lineage_controller = types.SimpleNamespace(
-        _script_input_unavailable_reason=(
-            script_input_unavailable_reason
-            if script_input_unavailable_reason is not None
-            else lambda *_args, **_kwargs: None
+        _has_recorded_script_input=lambda item: (
+            item.revision_id is not None and revisions.has_data(item.revision_id)
         ),
-        _rebuild_script_provenance=lambda spec, **_kwargs: types.SimpleNamespace(
+        _input_resolution_plan=input_resolution_plan,
+        _rebuild_script_provenance=lambda spec, **_kwargs: _ProvenanceReplayResult(
             data=xr.DataArray([1.0], dims=("x",)),
             provenance_spec=spec,
         ),
@@ -269,8 +293,10 @@ def _fake_edit_controller(
             lambda entries, **_kwargs: _authorize_execution(entries)
         ),
     )
-    manager = types.SimpleNamespace(
+    manager = QtWidgets.QWidget()
+    manager.__dict__.update(
         _metadata_node_uid=metadata_uid,
+        _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes=graph_nodes),
         _selected_imagetool_targets=lambda: selected_targets,
         _node_for_target=lambda target: graph_nodes[target],
@@ -332,6 +358,9 @@ def _fake_edit_node(
         _derivation_display_rows_generation=0,
         _derivation_display_rows_lineage_generation=(0,),
         provenance_revision=0,
+        current_revision_id=None,
+        revision_id_for_role=lambda _role: None,
+        _suspend_snapshot_updates=contextlib.nullcontext,
         replay_source_data=None,
         has_replay_source=False,
         source_spec=source_spec,
@@ -341,7 +370,10 @@ def _fake_edit_node(
         source_auto_update=True,
         materialize_pending_workspace_payload=lambda: True,
         slicer_area=types.SimpleNamespace(
-            _accepted_filter_provenance_operation=active_filter
+            _accepted_filter_provenance_operation=active_filter,
+            _filter_operation_result_for_replacement=lambda data, operation: (
+                operation.apply(data)
+            ),
         ),
     )
     node.resolved_replay_source_data = lambda: node.replay_source_data

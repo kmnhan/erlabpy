@@ -15,6 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
+from erlab.interactive._code_trust import issue_complete_execution_capability
 from erlab.interactive.imagetool import dialogs
 from erlab.interactive.imagetool._provenance._execution import (
     file_load_source_status,
@@ -22,7 +23,10 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_script_provenance,
     script_provenance_replayable,
 )
-from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    ResolvedReplayInput,
+)
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     ReplayStep,
@@ -37,7 +41,6 @@ from erlab.interactive.imagetool._provenance._model import (
     compose_full_provenance,
     full_data,
     iter_operation_refs,
-    recipe,
     require_live_source_spec,
     restamp_operation_groups,
     script,
@@ -72,6 +75,7 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
     _file_not_found_path_from_exception,
     _FileLoadBatchPeer,
     _FileLoadEditDialog,
+    _iter_exception_chain,
     _loader_summary,
     _missing_source_file_error_from_exception,
     _MissingProvenanceSourceFileError,
@@ -82,17 +86,21 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
 from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
     _ProvenanceReorderDialog,
 )
+from erlab.interactive.imagetool.manager._revisions import _same_bound_provenance
 from erlab.interactive.imagetool.manager._widgets import (
+    _ProvenanceReplayResult,
     _TrustedProvenanceReplayCancelled,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import xarray as xr
 
     from erlab.extensions import RoutineDescriptor
+    from erlab.interactive._code_trust._core import CodeTrustEntry
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._revisions import _BoundProvenanceRevision
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
         _ManagedWindowNode,
@@ -107,6 +115,8 @@ class _ValidatedProvenanceEdit:
     spec: ToolProvenanceSpec
     filter_operation: ToolProvenanceOperation | None
     replace_filter: bool = False
+    recorded_revision: _BoundProvenanceRevision | None = None
+    replay_result: _ProvenanceReplayResult | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -151,6 +161,9 @@ class _ProvenanceCandidate:
     scope: typing.Literal["display", "source"]
     spec: ToolProvenanceSpec
     active_filter_ref: _ProvenanceStepRef | None = None
+    recorded_revision: _BoundProvenanceRevision | None = None
+    restored_input_revision: _BoundProvenanceRevision | None = None
+    retain_active_filter: bool = True
 
 
 class _ProvenanceReplayFailure(RuntimeError):
@@ -168,31 +181,250 @@ class _ProvenanceReplayFailure(RuntimeError):
 def _spreadsheet_metadata_error_from_exception(
     exc: BaseException,
 ) -> erlab.io.metadata.SpreadsheetMetadataError | None:
-    seen: set[int] = set()
-
-    def visit(
-        current: BaseException | None,
-    ) -> erlab.io.metadata.SpreadsheetMetadataError | None:
-        if current is None or id(current) in seen:
-            return None
-        seen.add(id(current))
-        if isinstance(current, erlab.io.metadata.SpreadsheetMetadataError):
-            return current
-        for nested in (
-            getattr(current, "cause", None),
-            current.__cause__,
-            current.__context__,
-        ):
-            if isinstance(nested, BaseException) and (error := visit(nested)):
-                return error
-        return None
-
-    return visit(exc)
+    for error in _iter_exception_chain(exc):
+        if isinstance(error, erlab.io.metadata.SpreadsheetMetadataError):
+            return error
+    return None
 
 
 class _ProvenanceEditController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
+
+    def _input_owning_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+    ) -> ScriptInput | None:
+        if not row.script_input_path:
+            return None
+        root = self._root_display_spec_for_row(node, row, passive=True)
+        if root is None:
+            return None
+        parent = root
+        follow_source = True
+        for depth, index in enumerate(row.script_input_path):
+            if not 0 <= index < len(parent.replay_inputs):
+                return None
+            owner = parent.replay_inputs[index]
+            follow_source = follow_source and owner.follow_source
+            if depth == len(row.script_input_path) - 1:
+                return owner.model_copy(update={"follow_source": follow_source})
+            nested = owner.resolved_provenance_spec()
+            if nested is None:
+                return None
+            parent = nested
+        return None  # pragma: no cover - an empty path returns above.
+
+    def _checkpoint_revert_candidate(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        recorded: _BoundProvenanceRevision,
+    ) -> _ProvenanceCandidate:
+        spec = recorded.provenance_spec
+        owner = self._input_owning_row(node, row)
+        store = self._manager._provenance_revisions
+        pinned_recipe = (
+            spec is not None
+            and spec.kind == "script"
+            and spec.seed_code is None
+            and spec.file_load_source is None
+            and bool(spec.replay_inputs)
+            and all(
+                not item.follow_source
+                and item.revision_id is not None
+                and store.has_data(item.revision_id)
+                and (
+                    item.source_spec is None
+                    or (
+                        item.resolved_revision_id is not None
+                        and store.has_data(item.resolved_revision_id)
+                    )
+                )
+                for item in spec.replay_inputs
+            )
+        )
+        if owner is not None and not owner.follow_source and not pinned_recipe:
+            spec = script(
+                start_label="Use saved input",
+                active_name=owner.name,
+                root_input=owner.model_copy(
+                    update={
+                        "revision_id": recorded.revision_id,
+                        "resolved_revision_id": None,
+                        "source_spec": None,
+                        "fallback_role": "raw",
+                        "provenance_spec": None
+                        if spec is None
+                        else spec.model_dump(mode="json"),
+                    }
+                ),
+            )
+        return _ProvenanceCandidate(
+            node=node,
+            scope=row.scope,
+            spec=spec or full_data(),
+            recorded_revision=recorded,
+        )
+
+    def _recorded_revision_for_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+    ) -> _BoundProvenanceRevision | None:
+        if not row.on_primary_chain or row.replay_ref is None:
+            return None
+        store = self._manager._provenance_revisions
+        spec = self._display_spec_for_row(node, row, passive=True)
+        if spec is None:
+            return None
+        try:
+            if row.replay_ref.kind == "script_input":
+                index = row.replay_ref.script_input_index
+                if index is None:
+                    return None
+                candidate = spec.replay_inputs[index].resolved_provenance_spec()
+            else:
+                candidate = spec._prefix_through_ref(row.replay_ref)
+            if row.revision_id is not None and store.has_data(row.revision_id):
+                return store.bind(row.revision_id, candidate)
+        except (IndexError, ValueError):
+            return None
+        if candidate is None or row.replay_ref.kind == "script_input":
+            return None
+        owner = self._input_owning_row(node, row)
+        pending = [node.current_revision_id]
+        if owner is not None:
+            pending.extend((owner.revision_id, owner.resolved_revision_id))
+        visited: set[str] = set()
+        while pending:
+            revision_id = pending.pop()
+            if revision_id is None or revision_id in visited:
+                continue
+            visited.add(revision_id)
+            record = store.get(revision_id)
+            if record is None:
+                continue
+            if store.has_data(revision_id):
+                bound_spec: ToolProvenanceSpec | None = candidate
+                if (
+                    record.provenance_spec is None
+                    and candidate.kind in {"full_data", "public_data", "selection"}
+                    and not candidate.operations
+                ):
+                    bound_spec = None
+                try:
+                    return store.bind(revision_id, bound_spec)
+                except ValueError:
+                    pass
+            pending.append(record.primary_revision_id)
+        return None
+
+    def _revert_candidate(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        candidate: ToolProvenanceSpec,
+    ) -> _ProvenanceCandidate:
+        if not row.on_primary_chain:
+            return _ProvenanceCandidate(
+                node=node,
+                scope=row.scope,
+                spec=self._root_candidate_for_row(node, row, candidate),
+            )
+        unchanged = _ProvenanceCandidate(node=node, scope=row.scope, spec=candidate)
+        owner = self._input_owning_row(node, row)
+        if owner is None or owner.revision_id is None:
+            return unchanged
+        store = self._manager._provenance_revisions
+        source = owner.parsed_source_spec()
+        if source is None or not store.has_data(owner.revision_id):
+            return unchanged
+        if owner.fallback_role == "resolved":
+            record = store.get(owner.revision_id)
+            raw = None if record is None else record.provenance_spec
+        else:
+            raw = owner.parsed_provenance_spec()
+        raw_input = owner.model_copy(
+            update={
+                "source_spec": None,
+                "resolved_revision_id": None,
+                "fallback_role": "raw",
+                "provenance_spec": None if raw is None else raw.model_dump(mode="json"),
+            }
+        )
+        for end in range(1, len(source.operations) + 1):
+            relative = source.model_copy(
+                update={"source_operations": source.operations[:end]}
+            )
+            # Restore the saved input, then apply only the relative selection.
+            # Keep its raw fallback and the owner's source-following policy.
+            restored = script(
+                start_label=candidate.start_label or "Restore saved input",
+                active_name=candidate.active_name or "derived",
+                root_input=raw_input,
+                steps=ReplayStep.from_source_spec(relative),
+            )
+            if not (
+                _same_bound_provenance(
+                    compose_full_provenance(raw, relative), candidate
+                )
+                or _same_bound_provenance(restored, candidate)
+            ):
+                continue
+            return _ProvenanceCandidate(
+                node=node,
+                scope=row.scope,
+                spec=restored,
+                restored_input_revision=store.bind(
+                    typing.cast("str", raw_input.revision_id), raw
+                ),
+            )
+        return unchanged
+
+    def can_open_input_row(self, row: _ProvenanceDisplayRow | None) -> tuple[bool, str]:
+        node = self._metadata_node()
+        if node is None or row is None:
+            return False, "Select one provenance input."
+        spec = self._root_display_spec_for_row(node, row, passive=True)
+        script_input = self._manager._details_panel._script_input_for_row(spec, row)
+        if script_input is None:
+            return False, "This row is not a provenance input."
+        if not self._manager._lineage_controller._has_recorded_script_input(
+            script_input
+        ):
+            return False, "This input has no saved data."
+        return True, ""
+
+    def open_input_row(self, row: _ProvenanceDisplayRow | None) -> None:
+        available, reason = self.can_open_input_row(row)
+        if not available:
+            self._show_unavailable(reason)
+            return
+        node = self._metadata_node()
+        if node is None or row is None:
+            return
+        spec = self._root_display_spec_for_row(node, row)
+        script_input = self._manager._details_panel._script_input_for_row(spec, row)
+        if script_input is None:
+            return
+        resolved = self._manager._lineage_controller._resolve_recorded_script_input(
+            script_input
+        )
+        if resolved is None:
+            self._show_unavailable("This input has no saved data.")
+            return
+        data, _input = resolved
+        tool = erlab.interactive.itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            return
+        self._manager.add_imagetool(
+            tool,
+            provenance_spec=script_input.resolved_provenance_spec(),
+            show=True,
+            activate=True,
+        )
 
     def _reorder_target(
         self,
@@ -224,7 +456,10 @@ class _ProvenanceEditController:
             ]
         ] = []
         seen: set[tuple[str, typing.Literal["source", "displayed"]]] = set()
-        for ref in script_input_dependency_refs(spec):
+        for ref in script_input_dependency_refs(
+            spec,
+            resolved_input=self._manager._lineage_controller._has_recorded_script_input,
+        ):
             key = (ref.node_uid, ref.data_role)
             if key in seen:
                 continue
@@ -293,25 +528,7 @@ class _ProvenanceEditController:
             return None
 
         if spec.kind == "script":
-            external_input_names = set(script_replay_source_input_names(spec))
-            if not script_provenance_replayable(
-                spec,
-                external_input_names=external_input_names or None,
-                allow_code=True,
-            ):
-                return "This provenance contains recorded code that cannot be replayed."
-            if external_input_names and not node.has_replay_source:
-                return "The original replay source is no longer available."
-            for script_input in spec.script_inputs:
-                reason = (
-                    self._manager._lineage_controller._script_input_unavailable_reason(
-                        script_input,
-                        target_node_uid=node.uid,
-                    )
-                )
-                if reason is not None:
-                    return reason
-            return None
+            return self._script_replay_unavailable_reason(node, spec)
 
         external_input_names = {"data", "derived", "parent_data"}
         for operation in spec.operations:
@@ -339,21 +556,39 @@ class _ProvenanceEditController:
             return "This live provenance no longer has its parent source data."
         return None
 
-    def _script_spec_replayable_for_node(
+    def _script_replay_unavailable_reason(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         spec: ToolProvenanceSpec,
-    ) -> bool:
+    ) -> str | None:
         external_input_names = set(script_replay_source_input_names(spec))
         if external_input_names and not node.has_replay_source:
-            return False
-        if external_input_names:
-            return script_provenance_replayable(
-                spec,
-                external_input_names=external_input_names,
-                allow_code=True,
-            )
-        return script_provenance_replayable(spec, allow_code=True)
+            return "The original replay source is no longer available."
+
+        def resolve_recorded(script_input: ScriptInput) -> ResolvedReplayInput | None:
+            if (
+                script_input.revision_id is not None
+                and self._manager._provenance_revisions.has_data(
+                    script_input.revision_id
+                )
+            ):
+                return ResolvedReplayInput(
+                    typing.cast("xr.DataArray", None), script_input
+                )
+            return None
+
+        if not script_provenance_replayable(
+            spec,
+            external_input_names=external_input_names or None,
+            allow_code=True,
+            live_input_resolver=resolve_recorded,
+        ):
+            return "This provenance contains recorded code that cannot be replayed."
+        return self._manager._lineage_controller._input_resolution_plan(
+            spec.replay_inputs,
+            target_node_uid=node.uid,
+            prefer_recorded_revisions=True,
+        ).unavailable_reason
 
     def can_reorder_steps(self) -> tuple[bool, str]:
         node = self._metadata_node()
@@ -489,9 +724,9 @@ class _ProvenanceEditController:
 
     def can_paste_steps(
         self,
-        operations: Sequence[ToolProvenanceOperation | ReplayStep] | None,
+        spec: ToolProvenanceSpec | None,
     ) -> tuple[bool, str]:
-        if not operations:
+        if spec is None:
             return False, "The clipboard does not contain copied ImageTool steps."
         if not self._paste_target_nodes():
             return False, "Select an available ImageTool row to paste provenance."
@@ -499,14 +734,11 @@ class _ProvenanceEditController:
 
     def paste_steps(
         self,
-        operations: Sequence[ToolProvenanceOperation | ReplayStep],
+        spec: ToolProvenanceSpec,
         *,
-        active_name: str,
-        primary_input: str | None = None,
-        script_inputs: Sequence[ScriptInput] = (),
         source_manager_id: str | None = None,
     ) -> None:
-        paste_enabled, paste_reason = self.can_paste_steps(operations)
+        paste_enabled, paste_reason = self.can_paste_steps(spec)
         if not paste_enabled:
             self._show_unavailable(paste_reason)
             return
@@ -514,24 +746,10 @@ class _ProvenanceEditController:
         failures: list[tuple[_ImageToolWrapper | _ManagedWindowNode, Exception]] = []
         pasted_count = 0
         for node in targets:
-            original_steps = tuple(
-                item if isinstance(item, ReplayStep) else ReplayStep(operation=item)
-                for item in operations
-            )
-            restamped = restamp_operation_groups(
-                tuple(step.operation for step in original_steps)
-            )
-            steps = tuple(
-                step.model_copy(update={"operation": operation})
-                for step, operation in zip(original_steps, restamped, strict=True)
-            )
             try:
                 self._paste_steps_into_node(
                     node,
-                    steps,
-                    active_name=active_name,
-                    primary_input=primary_input,
-                    script_inputs=script_inputs,
+                    spec,
                     source_manager_id=source_manager_id,
                 )
             except _TrustedProvenanceReplayCancelled:
@@ -559,123 +777,156 @@ class _ProvenanceEditController:
                 ),
             )
 
+    @staticmethod
+    def _portable_script_input(item: ScriptInput) -> ScriptInput:
+        fallback = item.parsed_provenance_spec()
+        if fallback is None or fallback.kind not in {"file", "script"}:
+            raise ReplayGraphError(f"{item.label} has no portable recorded provenance")
+        fallback = fallback.with_replay_inputs(
+            tuple(
+                _ProvenanceEditController._portable_script_input(nested)
+                for nested in fallback.replay_inputs
+            )
+        )
+        return item.model_copy(
+            update={
+                "node_uid": None,
+                "node_snapshot_token": None,
+                "revision_id": None,
+                "resolved_revision_id": None,
+                "provenance_spec": fallback.model_dump(mode="json"),
+            }
+        )
+
+    def _rebind_pasted_workflow(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: ToolProvenanceSpec,
+        *,
+        portable_inputs: bool,
+    ) -> ToolProvenanceSpec:
+        """Bind selected primary scopes to the destination's captured data."""
+        inputs: list[ScriptInput] = []
+        for item in spec.replay_inputs:
+            if item.name != spec.replay_primary_input:
+                inputs.append(
+                    self._portable_script_input(item) if portable_inputs else item
+                )
+                continue
+            nested = item.parsed_provenance_spec()
+            if nested is None:
+                inputs.append(
+                    self._manager._lineage_controller._script_input_for_node(
+                        node,
+                        name=item.name,
+                        detached_input_uid=node.uid,
+                        data_role="source",
+                        source_spec=item.parsed_source_spec(),
+                    )
+                )
+                continue
+            rebound = self._rebind_pasted_workflow(
+                node, nested, portable_inputs=portable_inputs
+            )
+            inputs.append(
+                item.model_copy(
+                    update={
+                        "node_uid": None,
+                        "node_snapshot_token": None,
+                        "revision_id": None,
+                        "resolved_revision_id": None,
+                        "provenance_spec": rebound.model_dump(mode="json"),
+                    }
+                )
+            )
+        operations = restamp_operation_groups(
+            tuple(step.operation for step in spec.steps)
+        )
+        return spec.with_replay_inputs(inputs).model_copy(
+            update={
+                "steps": tuple(
+                    step.model_copy(update={"operation": operation})
+                    for step, operation in zip(spec.steps, operations, strict=True)
+                ),
+            }
+        )
+
+    @staticmethod
+    def _live_workflow_steps(spec: ToolProvenanceSpec) -> tuple[ReplayStep, ...] | None:
+        if (
+            spec.replay_primary_input is None
+            or len(spec.replay_inputs) != 1
+            or spec.replay_inputs[0].name != spec.replay_primary_input
+            or spec.seed_code is not None
+            or any(
+                not step.operation.live_applicable
+                or step.input_bindings
+                or step.input_policy is not None
+                or step.legacy_context is not None
+                for step in spec.steps
+            )
+        ):
+            return None
+        nested = spec.replay_inputs[0].resolved_provenance_spec()
+        if nested is None:
+            return spec.steps
+        previous = _ProvenanceEditController._live_workflow_steps(nested)
+        return None if previous is None else (*previous, *spec.steps)
+
     def _paste_steps_into_node(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        steps: Sequence[ToolProvenanceOperation | ReplayStep],
+        spec: ToolProvenanceSpec,
         *,
-        active_name: str,
-        primary_input: str | None = None,
-        script_inputs: Sequence[ScriptInput] = (),
         source_manager_id: str | None = None,
     ) -> None:
-        replay_steps: tuple[ReplayStep, ...] = tuple(
-            item if isinstance(item, ReplayStep) else ReplayStep(operation=item)
-            for item in steps
-        )
-        operations = tuple(step.operation for step in replay_steps)
-        has_bound_inputs = any(step.input_bindings for step in replay_steps)
-        if has_bound_inputs:
-            if primary_input is None:
-                raise ValueError("Bound provenance steps need a primary input")
-            if source_manager_id != self._manager._manager_record.internal_id:
-                portable_inputs: list[ScriptInput] = []
-                for item in script_inputs:
-                    fallback = item.parsed_provenance_spec()
-                    if fallback is None or fallback.kind not in {"file", "script"}:
-                        raise ReplayGraphError(
-                            f"{item.label} has no portable recorded provenance"
-                        )
-                    portable_inputs.append(
-                        item.model_copy(
-                            update={"node_uid": None, "node_snapshot_token": None}
-                        )
-                    )
-                script_inputs = tuple(portable_inputs)
-            primary_name = primary_input
-            local_inputs = (
-                self._manager._lineage_controller._script_input_for_node(
-                    node,
-                    name=primary_name,
-                    detached_input_uid=node.uid,
-                    data_role="source",
+        live_steps = self._live_workflow_steps(spec)
+        if live_steps is None and spec.replay_primary_input is not None:
+            local = self._rebind_pasted_workflow(
+                node,
+                spec,
+                portable_inputs=(
+                    source_manager_id != self._manager._manager_record.internal_id
                 ),
-                *(item for item in script_inputs if item.name != primary_name),
             )
-            if any(
-                isinstance(operation, ScriptCodeOperation) for operation in operations
-            ):
-                local = script(
-                    start_label="Start from current ImageTool data",
-                    active_name=active_name or "derived",
-                    steps=replay_steps,
-                    script_inputs=local_inputs,
-                    primary_input=primary_name,
-                )
-            else:
-                local = recipe(
-                    *replay_steps,
-                    start_label="Start from current ImageTool data",
-                    active_name=active_name or "derived",
-                    script_inputs=local_inputs,
-                    primary_input=primary_name,
-                )
             self._paste_detached_steps(
                 node,
                 local,
-                where="validating the pasted bound provenance steps",
+                where="validating the pasted provenance workflow",
             )
             return
-        if script_inputs or any(
-            not operation.live_applicable for operation in operations
+
+        # Live operations keep the destination's existing source binding.
+        replay_steps = spec.steps if live_steps is None else live_steps
+        operations = restamp_operation_groups(
+            tuple(step.operation for step in replay_steps)
+        )
+        if any(not operation.live_applicable for operation in operations) or any(
+            step.input_policy is not None or step.legacy_context is not None
+            for step in replay_steps
         ):
-            if not script_inputs and primary_input is None:
-                self._paste_detached_steps(
-                    node,
-                    script(
-                        *operations,
-                        start_label="Start from current ImageTool data",
-                        active_name=active_name or "derived",
-                    ),
-                    where="validating the pasted script provenance steps",
-                )
-                return
-            primary_name = primary_input or "data"
-            auxiliary_inputs = tuple(
-                item for item in script_inputs if item.name != primary_name
-            )
-            local_inputs = (
-                self._manager._lineage_controller._script_input_for_node(
-                    node,
-                    name=primary_name,
-                    detached_input_uid=node.uid,
-                    data_role="source",
-                ),
-                *auxiliary_inputs,
-            )
             self._paste_detached_steps(
                 node,
                 script(
                     start_label="Start from current ImageTool data",
-                    active_name=active_name or "derived",
-                    steps=replay_steps,
-                    script_inputs=local_inputs,
-                    primary_input=primary_name,
+                    active_name=spec.active_name or "derived",
+                    steps=tuple(
+                        step.model_copy(update={"operation": operation})
+                        for step, operation in zip(
+                            replay_steps, operations, strict=True
+                        )
+                    ),
                 ),
                 where="validating the pasted script provenance steps",
             )
             return
-        self._paste_structured_steps(node, restamp_operation_groups(operations))
+        self._paste_structured_steps(node, operations)
 
     def _paste_structured_steps(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         operations: tuple[ToolProvenanceOperation, ...],
     ) -> None:
-        for operation in operations:
-            if not operation.live_applicable:
-                raise TypeError("Only live provenance operations can be pasted here")
-
         if node.parent_uid is not None and node.displayed_source_spec is not None:
             candidate = node.displayed_source_spec.append_replacement_operations(
                 *operations
@@ -717,7 +968,7 @@ class _ProvenanceEditController:
             current_output_names = (
                 (current_output_name,) if isinstance(current_output_name, str) else ()
             )
-            if local.kind == "script" and local.primary_input is not None:
+            if local.kind == "script" and local.replay_primary_input is not None:
                 spec = local
             elif local.kind == "script":
                 spec = compose_full_provenance(
@@ -741,6 +992,9 @@ class _ProvenanceEditController:
                 spec,
                 node=node,
                 scope="display",
+                resolve_inputs=(
+                    local.kind == "script" and local.replay_primary_input is not None
+                ),
             )
             current_identities = {
                 entry.document_identity() for entry in current_entries
@@ -757,8 +1011,12 @@ class _ProvenanceEditController:
             ) as authorization:
                 if entries and authorization is None:
                     raise _TrustedProvenanceReplayCancelled
+                rebuilt = None
                 try:
-                    if local.kind == "script" and local.primary_input is not None:
+                    if (
+                        local.kind == "script"
+                        and local.replay_primary_input is not None
+                    ):
                         lineage = self._manager._lineage_controller
                         rebuilt = lineage._rebuild_script_provenance(
                             local,
@@ -810,6 +1068,14 @@ class _ProvenanceEditController:
                     spec,
                     preserve_filter=False,
                     replay_source_data=replay_source_data,
+                    on_commit=(
+                        None
+                        if rebuilt is None
+                        else functools.partial(
+                            rebuilt.commit_revisions,
+                            self._manager._provenance_revisions,
+                        )
+                    ),
                 )
                 publication.publish()
         self._manager._update_info(uid=node.uid)
@@ -859,7 +1125,7 @@ class _ProvenanceEditController:
                 )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
-            if not self._script_spec_replayable_for_node(node, candidate):
+            if self._script_replay_unavailable_reason(node, candidate) is not None:
                 return False, "Deleting this script step would make replay invalid."
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
@@ -959,11 +1225,13 @@ class _ProvenanceEditController:
                         "No editor is available for this complete operation group.",
                     )
                 return True, ""
-        if spec.kind == "script":
-            input_spec = spec._prefix_before_ref(row.edit_ref)
-            if not self._script_spec_replayable_for_node(node, input_spec):
-                return False, "This script step cannot be replayed."
         active_filter_ref = self._active_filter_ref(node, spec)
+        if spec.kind == "script" and (
+            row.script_input_path or active_filter_ref != row.edit_ref
+        ):
+            input_spec = spec._prefix_before_ref(row.edit_ref)
+            if self._script_replay_unavailable_reason(node, input_spec) is not None:
+                return False, "This script step cannot be replayed."
         if (
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"
@@ -994,8 +1262,6 @@ class _ProvenanceEditController:
             return False, reason or "No editing dialog is available for this step."
         if self._operation_action_block(spec, row.edit_ref, action="edit") is None:
             return False, "No editor is available for this complete operation group."
-        if not row.script_input_path and active_filter_ref == row.edit_ref:
-            return True, ""
         return True, ""
 
     def can_revert_row(
@@ -1016,6 +1282,18 @@ class _ProvenanceEditController:
         if not self._node_editable(node):
             return False, "Select an available ImageTool row to revert provenance."
         node = typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)
+        if not row.on_primary_chain:
+            return False, "Open or edit this input to change its history."
+        recorded = self._recorded_revision_for_row(node, row)
+        if recorded is not None:
+            current = self._root_display_spec_for_row(node, row, passive=True)
+            restored = self._checkpoint_revert_candidate(node, row, recorded)
+            if (
+                recorded.revision_id == node.current_revision_id
+                or _same_bound_provenance(restored.spec, current)
+            ):
+                return False, "Already at this provenance step."
+            return True, ""
         if self._source_child_parent_row(node, row):
             return False, "Revert the parent ImageTool row directly."
         if row.replay_ref.kind == "script_input":
@@ -1046,21 +1324,12 @@ class _ProvenanceEditController:
             if spec.kind == "script":
                 return False, "This script row is not a replayable step."
             return False, "This row is not a replayable step."
-        if candidate == spec:
+        if candidate == spec and not row.script_input_path:
             return False, "Already at this provenance step."
-        if spec.kind == "script":
-            if not self._script_spec_replayable_for_node(node, candidate):
-                return False, "This script step cannot be replayed."
-            if not all(
-                self._manager._lineage_controller._script_input_unavailable_reason(
-                    script_input,
-                    target_node_uid=node.uid,
-                )
-                is None
-                for script_input in candidate.script_inputs
-            ):
-                return False, "This script step has unavailable inputs."
-            return True, ""
+        candidate = self._revert_candidate(node, row, candidate).spec
+        if candidate.kind == "script":
+            reason = self._script_replay_unavailable_reason(node, candidate)
+            return reason is None, reason or ""
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
                 return True, ""
@@ -1304,6 +1573,20 @@ class _ProvenanceEditController:
             self._metadata_node(),
         )
         row = typing.cast("_ProvenanceDisplayRow", row)
+        recorded = self._recorded_revision_for_row(node, row)
+        if recorded is not None:
+            try:
+                sessions = self._row_sessions(((node.uid, row),))
+                self._apply_candidates(
+                    (self._checkpoint_revert_candidate(node, row, recorded),),
+                    where="validating the provenance revert target",
+                    sessions=sessions,
+                )
+            except _TrustedProvenanceReplayCancelled:
+                return
+            except Exception as exc:
+                self._show_failed("Could Not Revert Provenance Step", exc)
+            return
         ref = typing.cast(
             "_ProvenanceStepRef",
             row.replay_ref,
@@ -1317,12 +1600,10 @@ class _ProvenanceEditController:
             return
         repair_root_candidate: ToolProvenanceSpec | None = None
         try:
-            candidate = spec._prefix_through_ref(ref)
-            repair_root_candidate = self._root_candidate_for_row(node, row, candidate)
-            self._validate_and_replace(
-                node,
-                row.scope,
-                repair_root_candidate,
+            candidate = self._revert_candidate(node, row, spec._prefix_through_ref(ref))
+            repair_root_candidate = candidate.spec
+            self._apply_candidates(
+                (candidate,),
                 where="validating the provenance revert target",
             )
         except _TrustedProvenanceReplayCancelled:
@@ -1481,11 +1762,15 @@ class _ProvenanceEditController:
         self,
         sessions: Sequence[_ProvenanceRowSession],
     ) -> str:
-        selected_uids = self._selected_imagetool_uids()
-        session_uids = tuple(session.node.uid for session in sessions)
-        if len(selected_uids) != len(session_uids) or frozenset(
-            selected_uids
-        ) != frozenset(session_uids):
+        if len(sessions) == 1:
+            selection_changed = self._metadata_node() is not sessions[0].node
+        else:
+            selected_uids = self._selected_imagetool_uids()
+            session_uids = tuple(session.node.uid for session in sessions)
+            selection_changed = len(selected_uids) != len(session_uids) or frozenset(
+                selected_uids
+            ) != frozenset(session_uids)
+        if selection_changed:
             return "The ImageTool selection changed while the dialog was open."
 
         for session in sessions:
@@ -1562,6 +1847,15 @@ class _ProvenanceEditController:
         candidates: list[_ProvenanceCandidate] = []
         for session in sessions:
             node = session.node
+            if (
+                action == "revert"
+                and (record := self._recorded_revision_for_row(node, session.row))
+                is not None
+            ):
+                candidates.append(
+                    self._checkpoint_revert_candidate(node, session.row, record)
+                )
+                continue
             spec = typing.cast(
                 "ToolProvenanceSpec", self._session_display_spec(session)
             )
@@ -1571,8 +1865,13 @@ class _ProvenanceEditController:
             )
             active_filter_ref = None
             if action == "revert":
-                candidate = spec._prefix_through_ref(ref)
-            elif action == "delete":
+                candidates.append(
+                    self._revert_candidate(
+                        node, session.row, spec._prefix_through_ref(ref)
+                    )
+                )
+                continue
+            if action == "delete":
                 block_ref, _dialog_cls = typing.cast(
                     "tuple[_ProvenanceOperationBlockRef, object | None]",
                     self._operation_action_block(spec, ref, action=action),
@@ -1647,41 +1946,56 @@ class _ProvenanceEditController:
                 action=action,
                 replacements=replacements,
             )
-            self._validate_and_replace_multiple(
-                sessions,
+            self._apply_candidates(
                 candidates,
                 where=(
                     "validating the edited provenance step"
                     if action == "edit"
                     else f"validating the provenance {action} target"
                 ),
+                sessions=sessions,
             )
         except _TrustedProvenanceReplayCancelled:
             return
         except Exception as exc:
             self._show_failed(title, exc)
 
-    def _validate_and_replace_multiple(
+    def _apply_candidates(
         self,
-        sessions: Sequence[_ProvenanceRowSession],
         candidates: Sequence[_ProvenanceCandidate],
         *,
         where: str,
+        sessions: Sequence[_ProvenanceRowSession] = (),
     ) -> None:
         with (
             self._manager._extensions.execution.capture_replay_sources()
         ) as publication:
             entry_groups = tuple(
-                self._provenance_local_edit_entries(
-                    candidate.node,
-                    candidate.scope,
-                    candidate.spec,
+                (
+                    self._provenance_code_entries(
+                        candidate.spec,
+                        node=candidate.node,
+                        scope=candidate.scope,
+                        resolve_inputs=True,
+                        prefer_recorded_revisions=True,
+                    ),
+                    (),
+                )
+                if candidate.restored_input_revision is not None
+                else self._provenance_local_edit_entries(
+                    candidate.node, candidate.scope, candidate.spec
                 )
                 for candidate in candidates
+                if candidate.recorded_revision is None
             )
-            entries = tuple(entry for group, _edited in entry_groups for entry in group)
-            edited_entries = tuple(
-                entry for _group, edited in entry_groups for entry in edited
+            restored_entries = self._approved_recorded_revision_entries(candidates)
+            entries = (
+                *(entry for group, _edited in entry_groups for entry in group),
+                *restored_entries,
+            )
+            edited_entries = (
+                tuple(entry for _group, edited in entry_groups for entry in edited)
+                + restored_entries
             )
             with self._manager._workspace_controller.local_code_edit(
                 entries,
@@ -1690,19 +2004,47 @@ class _ProvenanceEditController:
             ) as authorization:
                 if entries and authorization is None:
                     raise _TrustedProvenanceReplayCancelled
-                edits = tuple(
-                    self._validated_edit(
-                        candidate.node,
-                        candidate.scope,
-                        candidate.spec,
-                        where=f"{where} for {candidate.node.display_text}",
-                        authorization=authorization,
-                        active_filter_ref=candidate.active_filter_ref,
+                edits = []
+                for candidate in candidates:
+                    record = candidate.recorded_revision
+                    if record is not None:
+                        if not candidate.node.materialize_pending_workspace_payload():
+                            raise RuntimeError(
+                                "Could not read this ImageTool from the workspace."
+                            )
+                        data = self._manager._provenance_revisions.resolve_data(
+                            record.revision_id
+                        )
+                        erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
+                            data
+                        )
+                        edits.append(
+                            _ValidatedProvenanceEdit(
+                                node=candidate.node,
+                                scope=candidate.scope,
+                                data=data,
+                                spec=candidate.spec,
+                                filter_operation=None,
+                                recorded_revision=record,
+                            )
+                        )
+                        continue
+                    edits.append(
+                        self._validated_edit(
+                            candidate.node,
+                            candidate.scope,
+                            candidate.spec,
+                            where=(
+                                f"{where} for {candidate.node.display_text}"
+                                if len(candidates) > 1
+                                else where
+                            ),
+                            authorization=authorization,
+                            retain_active_filter=candidate.retain_active_filter,
+                            active_filter_ref=candidate.active_filter_ref,
+                        )
                     )
-                    for candidate in candidates
-                )
-                stale_reason = self._row_sessions_current(sessions)
-                if stale_reason:
+                if sessions and (stale_reason := self._row_sessions_current(sessions)):
                     self._show_unavailable(stale_reason)
                     raise _TrustedProvenanceReplayCancelled
                 publication.require_current_for_publication()
@@ -1710,7 +2052,66 @@ class _ProvenanceEditController:
                     for edit in edits:
                         self._apply_validated_edit(edit)
                     publication.publish()
-        self._manager._sigDataReplaced.emit()
+        if sessions:
+            self._manager._sigDataReplaced.emit()
+
+    def _approved_recorded_revision_entries(
+        self, candidates: Sequence[_ProvenanceCandidate]
+    ) -> tuple[CodeTrustEntry, ...]:
+        """Carry prior approval from a checkpoint to its owning recipe location."""
+        entries: list[CodeTrustEntry] = []
+        for candidate in candidates:
+            bound = candidate.recorded_revision or candidate.restored_input_revision
+            if bound is None:
+                continue
+            previous = self._manager._workspace_state.code_trust
+            approved = set()
+            for entry in provenance_code_trust_entries(
+                bound.revision.provenance_spec,
+                location_prefix=f"revisions/{bound.revision_id}/provenance",
+            ):
+                _trust, capability = issue_complete_execution_capability(
+                    previous, (entry,)
+                )
+                if capability is not None:
+                    approved.add(entry.execution_identity())
+            entries.extend(
+                entry
+                for entry in self._provenance_code_entries(
+                    candidate.spec,
+                    node=candidate.node,
+                    scope=candidate.scope,
+                )
+                if entry.execution_identity() in approved
+            )
+            if candidate.restored_input_revision is not None:
+                runtime = self._provenance_code_entries(
+                    candidate.spec,
+                    node=candidate.node,
+                    scope=candidate.scope,
+                    resolve_inputs=True,
+                    prefer_recorded_revisions=True,
+                )
+                current = (
+                    candidate.node.displayed_source_spec
+                    if candidate.scope == "source"
+                    else candidate.node.displayed_provenance_spec
+                )
+                approved_runtime = set()
+                for entry in self._provenance_code_entries(
+                    current, node=candidate.node, scope=candidate.scope
+                ):
+                    _trust, capability = issue_complete_execution_capability(
+                        previous, (entry,)
+                    )
+                    if capability is not None:
+                        approved_runtime.add(entry.execution_identity())
+                entries.extend(
+                    entry
+                    for entry in runtime
+                    if entry.execution_identity() in approved_runtime
+                )
+        return tuple(entries)
 
     def _confirm_delete_multiple(self) -> bool:
         msg_box = QtWidgets.QMessageBox(self._manager)
@@ -1812,9 +2213,9 @@ class _ProvenanceEditController:
     ) -> ToolProvenanceSpec | None:
         current = spec
         for index in path:
-            if index < 0 or index >= len(current.script_inputs):
+            if index < 0 or index >= len(current.replay_inputs):
                 return None
-            nested = current.script_inputs[index].parsed_provenance_spec()
+            nested = current.replay_inputs[index].resolved_provenance_spec()
             if nested is None:
                 return None
             current = nested
@@ -1846,10 +2247,10 @@ class _ProvenanceEditController:
         if not path:
             return replacement
         index = path[0]
-        if index < 0 or index >= len(spec.script_inputs):
+        if index < 0 or index >= len(spec.replay_inputs):
             raise IndexError("Script input provenance path is not available")
-        script_input = spec.script_inputs[index]
-        nested = script_input.parsed_provenance_spec()
+        script_input = spec.replay_inputs[index]
+        nested = script_input.resolved_provenance_spec()
         if nested is None:
             raise RuntimeError("Script input does not have replayable provenance")
         replaced = self._replace_script_input_path_spec(
@@ -1857,15 +2258,19 @@ class _ProvenanceEditController:
             path[1:],
             replacement,
         )
-        script_inputs = list(spec.script_inputs)
+        script_inputs = list(spec.replay_inputs)
         script_inputs[index] = script_input.model_copy(
             update={
                 "node_uid": None,
                 "node_snapshot_token": None,
+                "revision_id": None,
+                "resolved_revision_id": None,
+                "source_spec": None,
+                "fallback_role": "raw",
                 "provenance_spec": replaced.model_dump(mode="json"),
             }
         )
-        return spec.model_copy(update={"script_inputs": tuple(script_inputs)})
+        return spec.with_replay_inputs(script_inputs)
 
     def _replace_file_load_target_spec(
         self,
@@ -1929,8 +2334,8 @@ class _ProvenanceEditController:
                 return
         if spec.kind != "script":
             return
-        for index, script_input in enumerate(spec.script_inputs):
-            nested = script_input.parsed_provenance_spec()
+        for index, script_input in enumerate(spec.replay_inputs):
+            nested = script_input.resolved_provenance_spec()
             self._append_file_load_targets(
                 targets,
                 node,
@@ -2384,15 +2789,15 @@ class _ProvenanceEditController:
         if shift_name is None:
             raise RuntimeError("The bound shift step has no shift input")
         current_input = next(
-            (item for item in spec.script_inputs if item.name == shift_name), None
+            (item for item in spec.replay_inputs if item.name == shift_name), None
         )
         if current_input is None:
             raise RuntimeError("The bound shift input is not available")
-        prefix_data, _prefix = self._replay_candidate_result(
+        prefix_data = self._replay_candidate_result(
             node,
             row.scope,
             spec._prefix_before_ref(ref),
-        )
+        ).data
         temp_tool = erlab.interactive.imagetool.ImageTool(prefix_data)
         temp_tool.hide()
         dialog: dialogs.ShiftDialog | None = None
@@ -2446,12 +2851,12 @@ class _ProvenanceEditController:
             )
             if item.name == shift_name
             else item
-            for item in spec.script_inputs
+            for item in spec.replay_inputs
         )
         steps = list(spec.steps)
         steps[ref.operation_index] = step.model_copy(update={"operation": replacement})
-        candidate = spec.model_copy(
-            update={"steps": tuple(steps), "script_inputs": inputs}
+        candidate = spec.with_replay_inputs(inputs).model_copy(
+            update={"steps": tuple(steps)}
         )
         root_candidate = self._root_candidate_for_row(node, row, candidate)
         self._validate_and_replace(
@@ -2608,11 +3013,11 @@ class _ProvenanceEditController:
         )
         if prefix_data is None:
             try:
-                prefix_data, _prefix = self._replay_candidate_result(
+                prefix_data = self._replay_candidate_result(
                     node,
                     row.scope,
                     spec._prefix_before_ref(start_ref),
-                )
+                ).data
             except _TrustedProvenanceReplayCancelled:
                 raise
             except Exception as exc:
@@ -2621,15 +3026,13 @@ class _ProvenanceEditController:
                     exc,
                 ) from exc
 
-        manager: object = self._manager
-        dialog_parent = manager if isinstance(manager, QtWidgets.QWidget) else None
         temp_tool = None
         try:
             if issubclass(dialog_match.dialog_cls, dialogs.SelectionDialog):
                 selection_dialog_cls = dialog_match.dialog_cls
                 dialog = selection_dialog_cls(
                     provenance_edit_mode=True,
-                    dialog_parent=dialog_parent,
+                    dialog_parent=self._manager,
                     source_data=prefix_data,
                 )
             else:
@@ -2638,7 +3041,7 @@ class _ProvenanceEditController:
                 dialog = dialog_match.dialog_cls(
                     temp_tool.slicer_area,
                     provenance_edit_mode=True,
-                    dialog_parent=dialog_parent,
+                    dialog_parent=self._manager,
                 )
             self._restore_native_edit_dialog(dialog, operations, dialog_match.focus)
             if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
@@ -2832,32 +3235,17 @@ class _ProvenanceEditController:
         where: str = "validating the provenance change",
         retain_active_filter: bool = True,
     ) -> None:
-        with (
-            self._manager._extensions.execution.capture_replay_sources()
-        ) as publication:
-            entries, edited_entries = self._provenance_local_edit_entries(
-                node,
-                scope,
-                candidate,
-            )
-            with self._manager._workspace_controller.local_code_edit(
-                entries,
-                edited_entries=edited_entries,
-                focus_on_block=True,
-            ) as authorization:
-                if entries and authorization is None:
-                    raise _TrustedProvenanceReplayCancelled
-                edit = self._validated_edit(
-                    node,
-                    scope,
-                    candidate,
-                    where=where,
-                    authorization=authorization,
+        self._apply_candidates(
+            (
+                _ProvenanceCandidate(
+                    node=node,
+                    scope=scope,
+                    spec=candidate,
                     retain_active_filter=retain_active_filter,
-                )
-                publication.require_current_for_publication()
-                self._apply_validated_edit(edit)
-                publication.publish()
+                ),
+            ),
+            where=where,
+        )
 
     def _provenance_local_edit_entries(
         self,
@@ -2927,6 +3315,8 @@ class _ProvenanceEditController:
         *,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
+        resolve_inputs: bool = False,
+        prefer_recorded_revisions: bool = False,
     ) -> tuple[typing.Any, ...]:
         node_path = (
             self._manager._workspace_controller.saving._workspace_node_path_for_node(
@@ -2937,6 +3327,14 @@ class _ProvenanceEditController:
         return provenance_code_trust_entries(
             spec,
             location_prefix=f"{node_path}/{segment}",
+            live_input_resolver=(
+                self._manager._lineage_controller._live_input_resolver(
+                    target_node_uid=node.uid,
+                    prefer_recorded_revisions=prefer_recorded_revisions,
+                )
+                if resolve_inputs
+                else None
+            ),
         )
 
     @staticmethod
@@ -2966,12 +3364,14 @@ class _ProvenanceEditController:
         else:
             base_candidate, filter_operation = candidate, None
         try:
-            source_data, base_candidate = self._replay_candidate_result(
+            replay_result = self._replay_candidate_result(
                 node,
                 scope,
                 base_candidate,
                 authorization=authorization,
             )
+            source_data = replay_result.data
+            base_candidate = replay_result.provenance_spec
         except _TrustedProvenanceReplayCancelled:
             raise
         except Exception as exc:
@@ -3003,6 +3403,7 @@ class _ProvenanceEditController:
             scope=scope,
             data=source_data,
             spec=base_candidate,
+            replay_result=replay_result,
             filter_operation=filter_operation,
             replace_filter=(
                 active_filter_ref is not None and filter_operation is not None
@@ -3018,14 +3419,10 @@ class _ProvenanceEditController:
         where: str,
     ) -> None:
         try:
-            slicer_area = getattr(node, "slicer_area", None)
-            filter_result = getattr(
-                slicer_area,
-                "_filter_operation_result_for_replacement",
-                None,
-            )
-            if node.imagetool is not None and callable(filter_result):
-                filter_result(data, operation)
+            if node.imagetool is not None:
+                node.slicer_area._filter_operation_result_for_replacement(
+                    data, operation
+                )
                 return
             if isinstance(operation, ExtensionRoutineOperation):
                 self._manager._extensions.execution.run_operation(operation, data)
@@ -3038,12 +3435,36 @@ class _ProvenanceEditController:
             ) from exc
 
     def _apply_validated_edit(self, edit: _ValidatedProvenanceEdit) -> None:
+        if edit.recorded_revision is not None:
+            original_spec = edit.recorded_revision.provenance_spec
+            unchanged_recipe = _same_bound_provenance(
+                edit.spec, original_spec or full_data()
+            )
+            edit.node.replace_with_detached_data(
+                edit.data,
+                original_spec if unchanged_recipe else edit.spec,
+                replay_source_data=None,
+            )
+            if unchanged_recipe:
+                edit.node.restore_current_revision_id(
+                    edit.recorded_revision.revision_id
+                )
+            self._manager._update_info(uid=edit.node.uid)
+            return
         self._replace_node_data(
             edit.node,
             edit.scope,
             edit.data,
             edit.spec,
             None if edit.replace_filter else edit.filter_operation,
+            on_commit=(
+                None
+                if edit.replay_result is None
+                else functools.partial(
+                    edit.replay_result.commit_revisions,
+                    self._manager._provenance_revisions,
+                )
+            ),
         )
         if edit.replace_filter:
             edit.node.slicer_area.apply_filter_operation(
@@ -3122,15 +3543,6 @@ class _ProvenanceEditController:
             )
         return tuple(peers)
 
-    def _replay_candidate(
-        self,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        scope: typing.Literal["display", "source"],
-        spec: ToolProvenanceSpec,
-    ) -> xr.DataArray:
-        data, _spec = self._replay_candidate_result(node, scope, spec)
-        return data
-
     def _replay_candidate_result(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
@@ -3138,9 +3550,9 @@ class _ProvenanceEditController:
         spec: ToolProvenanceSpec,
         *,
         authorization: object | None = None,
-    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
+    ) -> _ProvenanceReplayResult:
         if spec.kind == "file":
-            return self._replay_file_candidate(spec), spec
+            return _ProvenanceReplayResult(self._replay_file_candidate(spec), spec)
         if spec.kind in {"full_data", "public_data", "selection"}:
             if any(
                 isinstance(
@@ -3149,7 +3561,7 @@ class _ProvenanceEditController:
                 )
                 for operation in spec.operations
             ):
-                return (
+                return _ProvenanceReplayResult(
                     self._replay_live_script_candidate(
                         node,
                         scope,
@@ -3160,7 +3572,7 @@ class _ProvenanceEditController:
                 )
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
-                return (
+                return _ProvenanceReplayResult(
                     self._manager._lineage_controller._apply_provenance(
                         spec,
                         parent.current_source_data(),
@@ -3172,7 +3584,7 @@ class _ProvenanceEditController:
             parent_data = node.resolved_replay_source_data()
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-            return (
+            return _ProvenanceReplayResult(
                 self._manager._lineage_controller._apply_provenance(
                     spec,
                     parent_data,
@@ -3188,7 +3600,7 @@ class _ProvenanceEditController:
                 if source_data is None:
                     raise RuntimeError("Script provenance needs its replay source")
                 replay_inputs = dict.fromkeys(external_input_names, source_data)
-                return (
+                return _ProvenanceReplayResult(
                     replay_script_provenance(
                         spec,
                         replay_inputs,
@@ -3209,12 +3621,12 @@ class _ProvenanceEditController:
                     ),
                     spec,
                 )
-            result = self._manager._lineage_controller._rebuild_script_provenance(
+            return self._manager._lineage_controller._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
                 authorization=authorization,
+                prefer_recorded_revisions=True,
             )
-            return result.data, result.provenance_spec
         raise RuntimeError("Unsupported provenance kind")
 
     def _replay_live_script_candidate(
@@ -3232,13 +3644,7 @@ class _ProvenanceEditController:
             parent_data = node.resolved_replay_source_data()
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-        data = ToolProvenanceSpec._starting_data_for_kind(
-            typing.cast(
-                "typing.Literal['full_data', 'public_data', 'selection']",
-                spec.kind,
-            ),
-            parent_data,
-        )
+        data = parent_data.copy(deep=False)
         replay_spec = script(
             *spec.operations,
             start_label="Replay live provenance",
@@ -3313,6 +3719,8 @@ class _ProvenanceEditController:
         data: xr.DataArray,
         spec: ToolProvenanceSpec,
         filter_operation: ToolProvenanceOperation | None,
+        *,
+        on_commit: Callable[[], None] | None = None,
     ) -> None:
         if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
@@ -3332,17 +3740,18 @@ class _ProvenanceEditController:
                 live_spec,
                 parent_data=parent_data,
             )
-            node.set_source_binding(
-                live_spec,
-                auto_update=node.source_auto_update,
-                state="fresh",
-                provenance_spec=displayed,
-            )
+            node.revision_id_for_role("source")
+            with node._suspend_snapshot_updates():
+                node.set_source_binding(
+                    live_spec,
+                    auto_update=node.source_auto_update,
+                    state="fresh",
+                    provenance_spec=displayed,
+                )
             node._replace_imagetool_data(
                 data,
                 displayed,
                 propagate_descendants=True,
-                replay_source_data=None,
                 preserve_filter=preserve_filter,
             )
             return
@@ -3352,6 +3761,7 @@ class _ProvenanceEditController:
             spec,
             preserve_filter=preserve_filter,
             replay_source_data=replay_source_data,
+            on_commit=on_commit,
         )
 
     def _active_filter_ref(

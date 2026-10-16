@@ -54,7 +54,7 @@ before using its parameters.
 For a concatenation or console expression made from several ImageTools:
 
 1. Confirm whether the badge is {guilabel}`Changed` or {guilabel}`Missing`.
-2. Restore any missing live input or confirm that its recorded source file is available.
+2. Check whether a closed input has recorded data or an available source file.
 3. Choose {guilabel}`Reload Data`.
 4. Inspect the recomputed result and its input list.
 
@@ -96,8 +96,9 @@ the watched variable name.
 2. Choose a `.itws` path and save the workspace.
 3. Confirm the active path with {menuselection}`File --> Workspace Properties`.
 
-The workspace stores managed windows, their state, row notes, derived relationships,
-and Figure Composer recipes. Row notes remain workspace metadata and do not modify the
+The workspace stores managed windows, their state, row notes, recorded input data,
+analysis history, derived relationships, and Figure Composer recipes. Row notes remain
+workspace metadata and do not modify the
 underlying {class}`DataArray <xarray.DataArray>` attributes.
 
 :::{important}

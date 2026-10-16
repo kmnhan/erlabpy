@@ -278,6 +278,7 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             _manager_instance=manager,
             data=types.SimpleNamespace(ndim=2, dims=("x", "y")),
             displayed_data=types.SimpleNamespace(dims=("x", "y")),
+            _tool_source_singleton_indexers=lambda: {},
             n_cursors=1,
             manual_limits={},
             colormap_properties={
@@ -297,6 +298,8 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             axis_dims_uniform=("y", "x"),
             array_slicer=types.SimpleNamespace(
                 _nonuniform_axes=set(),
+                _nonuniform_axes_set=set(),
+                physical_dims=("x", "y"),
                 qsel_args=lambda _cursor, _axes: {},
             ),
             slicer_data_items=(),
@@ -311,6 +314,10 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             ),
         )
 
+        plot._figure_source_plot = lambda: plot
+        plot._plot_with_matplotlib = types.MethodType(
+            plot_items.ItoolPlotItem._plot_with_matplotlib, plot
+        )
         plot_items.ItoolPlotItem.plot_with_matplotlib(plot)
 
         assert adapter_name in sys.modules

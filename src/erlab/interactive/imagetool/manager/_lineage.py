@@ -8,6 +8,7 @@ import logging
 import pathlib
 import traceback
 import typing
+import uuid
 
 import numpy as np
 from qtpy import QtCore, QtWidgets
@@ -15,6 +16,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive import _persistence_constants
+from erlab.interactive._code_trust import execution_capability_allows
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._execution import (
     _memoized_live_input_resolver,
@@ -27,6 +29,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._graph import (
     LiveInputResolver,
     ReplayGraphError,
+    ResolvedReplayInput,
 )
 from erlab.interactive.imagetool._provenance._model import (
     ReplayStep,
@@ -35,7 +38,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDependencyRef,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
-    compose_full_provenance,
     has_file_load_source,
     rebase_script_input_node_uids,
     rebase_script_inputs_node_uids,
@@ -47,12 +49,13 @@ from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperat
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
     _DEPENDENCY_STATUS_LABELS,
     _DEPENDENCY_STATUS_TOOLTIPS,
+    _ProvenanceReplayResult,
     _ScriptRebuildError,
-    _ScriptRebuildResult,
     _TrustedProvenanceReplayCancelled,
 )
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -67,6 +70,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 
 logger = logging.getLogger(__name__)
@@ -187,49 +191,18 @@ class _LineageController:
         return tooltip
 
     def dependency_input_summary_for_uid(self, uid: str) -> str | None:
-        refs = self._dependency_refs_for_uid(uid)
-        if not refs:
-            return None
-
         script_inputs = self._dependency_script_inputs(
             self._manager._tool_graph.nodes.get(uid)
         )
-        parts: list[str] = []
-        seen: set[tuple[str, str, str | None, str]] = set()
-        for ref in refs:
-            key = (
-                ref.name,
-                ref.node_uid,
-                ref.node_snapshot_token,
-                ref.data_role,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            parent = self._manager._tool_graph.nodes.get(ref.node_uid)
-            if isinstance(parent, _ImageToolWrapper):
-                current = f"currently ImageTool {parent.index}"
-            elif parent is not None:
-                current = f"currently {parent.display_text}"
-            else:
-                current = "parent no longer open"
-                has_recorded_file = self._dependency_ref_has_recorded_file_in_inputs(
-                    script_inputs,
-                    ref,
-                )
-                if has_recorded_file:
-                    current += "; recorded source file found"
-            name = " ".join(ref.name.split())
-            label = " ".join(ref.label.split())
-            current = " ".join(current.split())
-            if name and label and current:
-                if label == name:
-                    parts.append(f"{name} ({current})")
-                else:
-                    parts.append(f"{name}: {label} ({current})")
-        if not parts:
-            return None
-        return "\n".join(parts)
+        source_label = functools.partial(
+            script_input_source_label,
+            self._manager,
+            retained_input_resolver=self._has_recorded_script_input,
+        )
+        return (
+            "\n".join(f"{item.name}: {source_label(item)}" for item in script_inputs)
+            or None
+        )
 
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         node = self._manager._node_for_target(target)
@@ -285,7 +258,7 @@ class _LineageController:
         )
         if source_status != "no-file-load-source":
             return source_status != "missing-file"
-        for nested_input in spec.script_inputs:
+        for nested_input in spec.replay_inputs:
             if self._script_input_has_recorded_file(nested_input):
                 return True
         return False
@@ -366,7 +339,7 @@ class _LineageController:
                 return True
             fallback = script_input.parsed_provenance_spec()
             if self._dependency_ref_has_recorded_file_in_inputs(
-                () if fallback is None else fallback.script_inputs,
+                () if fallback is None else fallback.replay_inputs,
                 ref,
             ):
                 return True
@@ -379,7 +352,7 @@ class _LineageController:
         if node is None or node.tool_script_inputs:
             return () if node is None else node.tool_script_inputs
         spec = node.provenance_spec
-        return () if spec is None else spec.script_inputs
+        return () if spec is None else spec.replay_inputs
 
     def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
         script_inputs = self._dependency_script_inputs(
@@ -478,17 +451,14 @@ class _LineageController:
         detached_input_uid: str | None = None,
         data_role: ScriptInputDataRole = "displayed",
     ) -> ScriptInput:
-        input_provenance = to_replay_provenance_spec(
-            node.provenance_for_role(data_role)
+        revision_id = node.revision_id_for_role(data_role)
+        bound = self._manager._provenance_revisions.bind(
+            revision_id, node.provenance_for_role(data_role)
         )
-        resolved_provenance = (
-            None
-            if input_provenance is None
-            else compose_full_provenance(input_provenance, source_spec)
-        )
+        input_provenance = to_replay_provenance_spec(bound.provenance_spec)
         provenance_spec = (
-            resolved_provenance.model_dump(mode="json")
-            if resolved_provenance is not None
+            input_provenance.model_dump(mode="json")
+            if input_provenance is not None
             else fallback_provenance_spec
         )
         source_payload = (
@@ -510,7 +480,9 @@ class _LineageController:
             return ScriptInput(
                 name=input_name,
                 label=label,
-                node_snapshot_token=node.snapshot_token_for_role(data_role),
+                revision_id=revision_id,
+                resolved_revision_id=revision_id if source_spec is None else None,
+                follow_source=False,
                 data_role=data_role,
                 source_spec=source_payload,
                 provenance_spec=provenance_spec,
@@ -520,6 +492,8 @@ class _LineageController:
             label=label,
             node_uid=node.uid,
             node_snapshot_token=node.snapshot_token_for_role(data_role),
+            revision_id=revision_id,
+            resolved_revision_id=revision_id if source_spec is None else None,
             data_role=data_role,
             source_spec=source_payload,
             provenance_spec=provenance_spec,
@@ -621,17 +595,35 @@ class _LineageController:
         tool = erlab.interactive.itool(data, manager=False, execute=False)
         if not isinstance(tool, ImageTool):
             return None
-        return self._manager.add_imagetool(
-            tool,
-            show=True,
-            activate=True,
-            provenance_spec=self._multi_input_script_provenance(
-                input_targets,
-                operation_label=operation_label,
-                operation_code=operation_code,
-                data_role=data_role,
-            ),
+        controller = self._manager._workspace_controller
+        source_uids = tuple(
+            self._manager._node_for_target(target).uid for target in input_targets
         )
+        with controller.local_provenance_change(
+            edited_entries=lambda: controller._locate_imagetool_code_trust_entries(
+                provenance_code_trust_entries(
+                    tool.provenance_spec,
+                    location_prefix="runtime",
+                    include_inputs=False,
+                ),
+                node_getter=lambda: self._manager._node_for_target(created),
+            ),
+            source_owners=lambda: {
+                self._manager._node_for_target(created).uid: source_uids
+            },
+        ):
+            created = self._manager.add_imagetool(
+                tool,
+                show=True,
+                activate=True,
+                provenance_spec=self._multi_input_script_provenance(
+                    input_targets,
+                    operation_label=operation_label,
+                    operation_code=operation_code,
+                    data_role=data_role,
+                ),
+            )
+        return created
 
     def _live_script_input_node(
         self,
@@ -654,68 +646,133 @@ class _LineageController:
         script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
-        allow_owner_replay_source: bool = True,
-    ) -> tuple[xr.DataArray, ScriptInput] | None:
-        if allow_owner_replay_source and script_input.uses_owner_replay_source:
-            owner = self._manager._tool_graph.nodes.get(target_node_uid or "")
-            if owner is not None:
-                data = owner.resolved_replay_source_data()
-                if data is not None:
-                    source_spec = script_input.parsed_source_spec()
-                    if source_spec is not None:
-                        data = source_spec.apply(
-                            data,
-                            extension_executor=(
-                                self._manager._extensions.execution.run_operation
-                            ),
-                        )
-                    return data, script_input
-            return None
+        prefer_recorded_revision: bool = False,
+    ) -> ResolvedReplayInput | None:
+        store = self._manager._provenance_revisions
+        if prefer_recorded_revision or not script_input.follow_source:
+            resolved_id = script_input.resolved_revision_id
+            if resolved_id is not None and store.has_data(resolved_id):
+                return ResolvedReplayInput(
+                    store.resolve_data(resolved_id), script_input, "resolved"
+                )
+            raw_id = script_input.revision_id
+            if raw_id is not None and store.has_data(raw_id):
+                raw = script_input
+                if raw.fallback_role == "resolved":
+                    record = store.get(raw_id)
+                    producer = None if record is None else record.provenance_spec
+                    raw = raw.model_copy(
+                        update={
+                            "fallback_role": "raw",
+                            "provenance_spec": None
+                            if producer is None
+                            else producer.model_dump(mode="json"),
+                        }
+                    )
+                return ResolvedReplayInput(store.resolve_data(raw_id), raw, "raw")
+            if not script_input.follow_source:
+                return None
         node = self._live_script_input_node(
             script_input, target_node_uid=target_node_uid
         )
         if node is None:
+            if script_input.provenance_spec is None:
+                raw_id = script_input.revision_id
+                if raw_id is not None and store.has_data(raw_id):
+                    return ResolvedReplayInput(
+                        store.resolve_data(raw_id), script_input, "raw"
+                    )
             return None
         owner_node = self._manager._tool_graph.nodes.get(target_node_uid or "")
         data = node.data_for_role(script_input.data_role, owner_node=owner_node)
-        source_spec = script_input.parsed_source_spec()
-        if source_spec is not None:
-            data = source_spec.apply(
-                data,
-                extension_executor=self._manager._extensions.execution.run_operation,
-            )
-        return data, self._script_input_for_node(
+        refreshed = self._script_input_for_node(
             node,
             name=script_input.name,
-            source_spec=source_spec,
+            source_spec=script_input.parsed_source_spec(),
             data_role=script_input.data_role,
         )
+        return ResolvedReplayInput(data, refreshed, "raw")
+
+    def _resolve_recorded_script_input(
+        self, script_input: ScriptInput
+    ) -> tuple[xr.DataArray, ScriptInput] | None:
+        store = self._manager._provenance_revisions
+        resolved_id = script_input.resolved_revision_id
+        if resolved_id is not None and store.has_data(resolved_id):
+            return store.resolve_data(resolved_id), script_input
+        revision_id = script_input.revision_id
+        if revision_id is None or not store.has_data(revision_id):
+            return None
+        data = store.resolve_data(revision_id)
+        source_spec = script_input.parsed_source_spec()
+        if source_spec is not None:
+            data = self._apply_provenance(
+                source_spec, data, reason="resolve this recorded input"
+            )
+        return data, script_input
+
+    def _has_recorded_script_input(
+        self,
+        script_input: ScriptInput,
+    ) -> bool:
+        return any(
+            revision_id is not None
+            and self._manager._provenance_revisions.has_data(revision_id)
+            for revision_id in (
+                script_input.resolved_revision_id,
+                script_input.revision_id,
+            )
+        )
+
+    @staticmethod
+    def _capture_rebuilt_script_input(
+        revisions: _ProvenanceRevisionStore,
+        data: xr.DataArray,
+        script_input: ScriptInput,
+        *,
+        source_owner_uid: str | None,
+    ) -> ScriptInput:
+        revision_id = revisions.add(
+            data,
+            script_input.parsed_provenance_spec(),
+            primary_revision_id=script_input.revision_id,
+            source_owner_uid=source_owner_uid,
+        )
+        return script_input.model_copy(update={"revision_id": revision_id})
 
     def _live_input_resolver(
         self,
         *,
         target_node_uid: str | None = None,
         live_uids: frozenset[str] | None = None,
-        owner_replay_inputs: Sequence[ScriptInput] = (),
-    ) -> LiveInputResolver | None:
-        owner_replay_input_ids = {
-            id(item) for item in owner_replay_inputs if item.uses_owner_replay_source
-        }
-        return _memoized_live_input_resolver(
+        prefer_recorded_revisions: bool = False,
+    ) -> LiveInputResolver:
+        resolver = _memoized_live_input_resolver(
             lambda item: (
                 self._resolve_live_script_input_for_reload(
                     item,
                     target_node_uid=target_node_uid,
-                    allow_owner_replay_source=id(item) in owner_replay_input_ids,
+                    prefer_recorded_revision=prefer_recorded_revisions,
                 )
                 if (
                     live_uids is None
                     or item.node_uid in live_uids
-                    or id(item) in owner_replay_input_ids
+                    or (
+                        item.revision_id is not None
+                        and self._manager._provenance_revisions.has_data(
+                            item.revision_id
+                        )
+                        and (
+                            prefer_recorded_revisions
+                            or not item.follow_source
+                            or item.provenance_spec is None
+                        )
+                    )
                 )
                 else None
             )
         )
+        return typing.cast("LiveInputResolver", resolver)
 
     def _input_resolution_plan(
         self,
@@ -725,7 +782,7 @@ class _LineageController:
         allow_recorded: bool = True,
         force_live_reload: bool = False,
         reload_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
-        allow_owner_replay_source: bool = True,
+        prefer_recorded_revisions: bool = False,
     ) -> _InputResolutionPlan:
         root_inputs = tuple(script_inputs)
         actions: list[_InputResolutionAction] = []
@@ -740,31 +797,31 @@ class _LineageController:
         def provenance_runnable(
             spec: ToolProvenanceSpec,
             target_uid: str | None,
-            owner_replay_inputs: Sequence[ScriptInput] = (),
         ) -> bool:
-            owner_replay_input_ids = {
-                id(item)
-                for item in owner_replay_inputs
-                if item.uses_owner_replay_source
-            }
 
             def resolve(item: ScriptInput):
                 if (
-                    self._live_script_input_node(item, target_node_uid=target_uid)
-                    is not None
-                    or item.node_uid in live_uids
-                    or (
-                        id(item) in owner_replay_input_ids
+                    (
+                        item.revision_id is not None
+                        and self._manager._provenance_revisions.has_data(
+                            item.revision_id
+                        )
                         and (
-                            owner := self._manager._tool_graph.nodes.get(
-                                target_uid or ""
-                            )
+                            prefer_recorded_revisions
+                            or not item.follow_source
+                            or item.provenance_spec is None
+                        )
+                    )
+                    or (
+                        item.follow_source
+                        and self._live_script_input_node(
+                            item, target_node_uid=target_uid
                         )
                         is not None
-                        and owner.has_replay_source
                     )
+                    or item.node_uid in live_uids
                 ):
-                    return typing.cast("xr.DataArray", None), item
+                    return ResolvedReplayInput(typing.cast("xr.DataArray", None), item)
                 return None
 
             validation = _script_replay_validation(spec, live_input_resolver=resolve)
@@ -775,24 +832,13 @@ class _LineageController:
             target_uid: str | None,
             force: bool,
             visiting: frozenset[str],
-            depth: int,
-            use_owner_replay_source: bool,
         ) -> str | None:
-            if depth > 20:
-                return "Nested inputs exceeded the maximum reload depth."
-            if (
-                use_owner_replay_source
-                and sum(item.uses_owner_replay_source for item in inputs) > 1
-            ):
-                return "A result can use only one stored replay-source input."
             for script_input in inputs:
                 reason = plan_input(
                     script_input,
                     target_uid,
                     force,
                     visiting,
-                    depth,
-                    use_owner_replay_source,
                 )
                 if reason is not None:
                     return reason
@@ -802,10 +848,7 @@ class _LineageController:
             node: _ImageToolWrapper | _ManagedWindowNode,
             force: bool,
             visiting: frozenset[str],
-            depth: int,
         ) -> str | None:
-            if depth > 20:
-                return "Nested inputs exceeded the maximum reload depth."
             if not node.is_imagetool and node.tool_window is None:
                 return "This tool cannot be reloaded directly."
             if node.uid in visiting:
@@ -828,8 +871,6 @@ class _LineageController:
                     node.uid,
                     force,
                     visiting,
-                    depth + 1,
-                    True,
                 ):
                     return reason
                 add_action("apply", node.uid)
@@ -840,7 +881,7 @@ class _LineageController:
                     return "This ImageTool window is not open."
                 spec = node.provenance_spec
                 script_inputs = (
-                    spec.script_inputs
+                    spec.replay_inputs
                     if spec is not None and spec.kind == "script"
                     else ()
                 )
@@ -850,8 +891,6 @@ class _LineageController:
                         node.uid,
                         False,
                         visiting,
-                        depth + 1,
-                        True,
                     )
                 ):
                     return reason
@@ -868,17 +907,15 @@ class _LineageController:
             if node.slicer_area._direct_reloadable():
                 add_action("reload", node.uid)
                 return None
-            if spec is not None and spec.kind == "script" and spec.script_inputs:
+            if spec is not None and spec.kind == "script" and spec.replay_inputs:
                 if reason := plan_inputs(
-                    spec.script_inputs,
+                    spec.replay_inputs,
                     node.uid,
                     False,
                     visiting,
-                    depth + 1,
-                    True,
                 ):
                     return reason
-                if not provenance_runnable(spec, node.uid, spec.script_inputs):
+                if not provenance_runnable(spec, node.uid):
                     return "This result contains code that cannot be replayed."
                 add_action("reload", node.uid)
                 return None
@@ -895,7 +932,7 @@ class _LineageController:
                 )
             ):
                 return reason
-            if spec is not None and spec.kind == "script" and not spec.script_inputs:
+            if spec is not None and spec.kind == "script" and not spec.replay_inputs:
                 return "This result has no recorded inputs."
             return node.slicer_area._local_reload_unavailable_reason()
 
@@ -904,18 +941,33 @@ class _LineageController:
             target_uid: str | None,
             force: bool,
             visiting: frozenset[str],
-            depth: int,
-            use_owner_replay_source: bool,
         ) -> str | None:
-            source_uid = script_input.node_uid
-            if use_owner_replay_source and script_input.uses_owner_replay_source:
-                owner = self._manager._tool_graph.nodes.get(target_uid or "")
-                if owner is not None and owner.has_replay_source:
-                    return None
+            if (
+                script_input.revision_id is not None
+                and self._manager._provenance_revisions.has_data(
+                    script_input.revision_id
+                )
+                and (
+                    prefer_recorded_revisions
+                    or not script_input.follow_source
+                    or (
+                        script_input.provenance_spec is None
+                        and self._manager._tool_graph.nodes.get(
+                            script_input.node_uid or ""
+                        )
+                        is None
+                    )
+                )
+            ):
+                return None
+            source_uid = script_input.node_uid if script_input.follow_source else None
             if source_uid is not None and source_uid == target_uid:
                 return "The named inputs contain a dependency cycle."
             if (
-                self._live_script_input_node(script_input, target_node_uid=target_uid)
+                source_uid is not None
+                and self._live_script_input_node(
+                    script_input, target_node_uid=target_uid
+                )
                 is not None
                 and not force
             ):
@@ -940,7 +992,7 @@ class _LineageController:
                 if boundary is not None:
                     action_count = len(actions)
                     previous_live_uids = set(live_uids)
-                    reason = plan_node(boundary, force, visiting, depth + 1)
+                    reason = plan_node(boundary, force, visiting)
                     if reason is None:
                         if boundary.uid != source.uid:
                             add_action("refresh", source.uid)
@@ -966,12 +1018,10 @@ class _LineageController:
             if spec.kind != "script":
                 return f"{script_input.label} has no replayable recorded provenance."
             reason = plan_inputs(
-                spec.script_inputs,
+                spec.replay_inputs,
                 target_uid,
                 False,
                 visiting,
-                depth + 1,
-                False,
             )
             if reason is not None:
                 return reason
@@ -985,11 +1035,9 @@ class _LineageController:
                 target_node_uid,
                 force_live_reload,
                 frozenset(),
-                0,
-                allow_owner_replay_source,
             )
             if reload_node is None
-            else plan_node(reload_node, force_live_reload, frozenset(), 0)
+            else plan_node(reload_node, force_live_reload, frozenset())
         )
         return _InputResolutionPlan(
             target_node_uid,
@@ -1003,46 +1051,16 @@ class _LineageController:
         self,
         node: _ManagedWindowNode,
         provenance_spec: ToolProvenanceSpec | None,
-        replay_source_data: xr.DataArray | None,
     ) -> None:
         if provenance_spec is None or provenance_spec.kind != "script":
             return
-        detached_inputs = tuple(
-            item
-            for item in provenance_spec.script_inputs
-            if item.uses_owner_replay_source
-        )
-        if len(detached_inputs) > 1:
-            raise ValueError("A result can use only one stored replay-source input.")
         if self._manager._dependency_tracker.would_create_script_input_cycle(
             node.uid,
-            provenance_spec.script_inputs,
-            owner_replay_source_available=replay_source_data is not None,
+            provenance_spec.replay_inputs,
         ):
             raise ValueError(
                 "Cannot replace this ImageTool because its named inputs would create "
                 "a dependency cycle."
-            )
-        if not detached_inputs:
-            return
-
-        detached_input = detached_inputs[0]
-        inputs_to_validate = tuple(
-            item for item in provenance_spec.script_inputs if item is not detached_input
-        )
-        if replay_source_data is None:
-            inputs_to_validate += (
-                detached_input.model_copy(update={"node_snapshot_token": None}),
-            )
-        plan = self._input_resolution_plan(
-            inputs_to_validate,
-            target_node_uid=node.uid,
-            allow_owner_replay_source=replay_source_data is not None,
-        )
-        if plan.unavailable_reason is not None:
-            raise ValueError(
-                "Cannot replace this ImageTool because its named inputs cannot be "
-                f"reloaded: {plan.unavailable_reason}"
             )
 
     def _execute_input_resolution_plan(
@@ -1186,9 +1204,9 @@ class _LineageController:
             resolve_live = self._live_input_resolver(
                 target_node_uid=plan.target_uid,
                 live_uids=plan.live_uids,
-                owner_replay_inputs=plan.script_inputs,
             )
 
+            revisions = self._manager._provenance_revisions.stage()
             try:
                 resolved, refreshed_inputs = rebuild_script_inputs(
                     plan.script_inputs,
@@ -1201,9 +1219,23 @@ class _LineageController:
                         reason="reload this tool input"
                     ),
                     allow_recorded=allow_recorded,
+                    _capture_input_revision=functools.partial(
+                        self._capture_rebuilt_script_input,
+                        revisions,
+                        source_owner_uid=target_uid,
+                    ),
                 )
                 with node._suspend_descendant_propagation():
-                    updated = tool._apply_inputs(resolved, refreshed_inputs)
+                    updated = tool._apply_inputs(
+                        resolved,
+                        refreshed_inputs,
+                        on_commit=lambda: self._manager._provenance_revisions.merge(
+                            revisions
+                        ),
+                        publication_context=(
+                            self._manager._workspace_controller.local_provenance_change
+                        ),
+                    )
             except _TrustedProvenanceReplayCancelled:
                 return fail_refresh()
             except Exception as exc:
@@ -1235,9 +1267,12 @@ class _LineageController:
         script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
+        prefer_recorded_revisions: bool = False,
     ) -> str | None:
         return self._input_resolution_plan(
-            (script_input,), target_node_uid=target_node_uid
+            (script_input,),
+            target_node_uid=target_node_uid,
+            prefer_recorded_revisions=prefer_recorded_revisions,
         ).unavailable_reason
 
     def _rebuild_script_provenance(
@@ -1246,20 +1281,42 @@ class _LineageController:
         *,
         target_node_uid: str | None = None,
         authorization: object | None = None,
-    ) -> _ScriptRebuildResult:
+        prefer_recorded_revisions: bool = False,
+    ) -> _ProvenanceReplayResult:
         resolve_live = self._live_input_resolver(
             target_node_uid=target_node_uid,
-            owner_replay_inputs=spec.script_inputs,
+            prefer_recorded_revisions=prefer_recorded_revisions,
         )
 
         def authorize(entries):
             if authorization is None:
-                return self._authorize_provenance_execution(
-                    entries,
+                located_entries = entries
+                if target_node_uid is not None:
+                    node = self._manager._tool_graph.nodes.get(target_node_uid)
+                    if node is None:
+                        raise _TrustedProvenanceReplayCancelled
+                    saving = self._manager._workspace_controller.saving
+                    path = saving._workspace_node_path_for_node(node)
+                    # Live inputs can change graph node indices. Check the owning
+                    # stored inventory before issuing a location-free capability.
+                    requested = {entry.execution_identity() for entry in entries}
+                    located_entries = tuple(
+                        entry
+                        for entry in provenance_code_trust_entries(
+                            spec, location_prefix=f"{path}/provenance"
+                        )
+                        if entry.execution_identity() in requested
+                    )
+                capability = self._authorize_provenance_execution(
+                    located_entries,
                     reason="reload this result",
                 )
+                if not execution_capability_allows(capability, entries):
+                    raise _TrustedProvenanceReplayCancelled
+                return capability
             return authorization
 
+        revisions = self._manager._provenance_revisions.stage()
         try:
             data, rebuilt_spec = rebuild_script_provenance(
                 spec,
@@ -1267,6 +1324,11 @@ class _LineageController:
                 extension_executor=self._manager._extensions.execution.run_operation,
                 extension_loader_executor=self._manager._extensions.replay_loader,
                 authorize=authorize,
+                _capture_input_revision=functools.partial(
+                    self._capture_rebuilt_script_input,
+                    revisions,
+                    source_owner_uid=target_node_uid,
+                ),
             )
         except _TrustedProvenanceReplayCancelled:
             raise
@@ -1280,9 +1342,10 @@ class _LineageController:
                 "Could not reload data.",
                 details=traceback.format_exc(),
             ) from exc
-        return _ScriptRebuildResult(
+        return _ProvenanceReplayResult(
             data=data,
             provenance_spec=rebuilt_spec,
+            revisions=revisions,
         )
 
     def _node_can_reload_script_inputs(
@@ -1295,7 +1358,7 @@ class _LineageController:
             and node.imagetool is not None
             and spec is not None
             and spec.kind == "script"
-            and bool(spec.script_inputs)
+            and bool(spec.replay_inputs)
             and self._node_reload_unavailable_reason(node) is None
         )
 
@@ -1333,12 +1396,9 @@ class _LineageController:
                 if reason is not None:
                     return reason
         if spec is not None and spec.kind == "script":
-            owner_replay_input_ids = {
-                id(item) for item in spec.script_inputs if item.uses_owner_replay_source
-            }
-            if spec.script_inputs and resolved_live_uids is None:
+            if spec.replay_inputs and resolved_live_uids is None:
                 plan = self._input_resolution_plan(
-                    spec.script_inputs,
+                    spec.replay_inputs,
                     target_node_uid=node.uid,
                 )
                 if plan.unavailable_reason is not None:
@@ -1348,7 +1408,10 @@ class _LineageController:
             def resolve_live(item: ScriptInput):
                 if (
                     item.node_uid in (resolved_live_uids or ())
-                    or (id(item) in owner_replay_input_ids and node.has_replay_source)
+                    or (
+                        self._has_recorded_script_input(item)
+                        and (not item.follow_source or item.provenance_spec is None)
+                    )
                     or (
                         resolved_live_uids is None
                         and self._live_script_input_node(
@@ -1358,7 +1421,7 @@ class _LineageController:
                         is not None
                     )
                 ):
-                    return typing.cast("xr.DataArray", None), item
+                    return ResolvedReplayInput(typing.cast("xr.DataArray", None), item)
                 return None
 
             validation = _script_replay_validation(
@@ -1396,13 +1459,26 @@ class _LineageController:
         self, loaded_targets_by_uid: Mapping[str, int | str]
     ) -> None:
         uid_map: dict[str, str] = {}
+        pending: list[ScriptInput] = []
         for saved_uid, target in loaded_targets_by_uid.items():
             try:
-                actual_uid = self._manager._node_for_target(target).uid
+                node = self._manager._node_for_target(target)
             except KeyError:
                 continue
-            if actual_uid != saved_uid:
-                uid_map[saved_uid] = actual_uid
+            if node.uid != saved_uid:
+                uid_map[saved_uid] = node.uid
+            pending.extend(node.tool_script_inputs)
+            if node.provenance_spec is not None:
+                pending.extend(node.provenance_spec.replay_inputs)
+        while pending:
+            item = pending.pop()
+            if item.node_uid is not None and item.node_uid not in loaded_targets_by_uid:
+                # A closed source belongs to this document, even when another
+                # document has an open tool with the same saved UID.
+                uid_map.setdefault(item.node_uid, uuid.uuid4().hex)
+            nested = item.parsed_provenance_spec()
+            if nested is not None:
+                pending.extend(nested.replay_inputs)
         if not uid_map:
             return
 
@@ -2001,7 +2077,7 @@ class _LineageController:
     def _replace_script_reload_target(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        result: _ScriptRebuildResult,
+        result: _ProvenanceReplayResult,
     ) -> None:
         node.replace_with_detached_data(
             result.data,
@@ -2009,6 +2085,9 @@ class _LineageController:
             propagate_descendants=True,
             preserve_filter=True,
             replay_source_data=node.replay_source_data,
+            on_commit=functools.partial(
+                result.commit_revisions, self._manager._provenance_revisions
+            ),
         )
         self._manager.tree_view.refresh(node.uid)
         self._resume_pending_source_refreshes(node.uid)
@@ -2026,7 +2105,7 @@ class _LineageController:
             return False
         reloaded_uids = set() if reloaded_uids is None else reloaded_uids
         plan = self._input_resolution_plan(
-            spec.script_inputs,
+            spec.replay_inputs,
             target_node_uid=node.uid,
         )
         plan = self._execute_input_resolution_plan(
@@ -2041,9 +2120,13 @@ class _LineageController:
                         continuation_uid,
                     )
             return False
+        created_uids: list[str] = []
         with (
-            self._manager._extensions.execution.capture_replay_sources()
-        ) as publication:
+            self._manager._workspace_controller.local_provenance_change(
+                source_owners=lambda: dict.fromkeys(created_uids, (node.uid,))
+            ),
+            self._manager._extensions.execution.capture_replay_sources() as publication,
+        ):
             try:
                 result = self._rebuild_script_provenance(
                     spec,
@@ -2093,12 +2176,17 @@ class _LineageController:
                         )
                         return False
                     publication.require_current_for_publication()
-                    self._manager.add_imagetool(
+                    created = self._manager.add_imagetool(
                         tool,
                         show=True,
                         activate=True,
                         provenance_spec=result.provenance_spec,
+                        _on_commit=functools.partial(
+                            result.commit_revisions,
+                            self._manager._provenance_revisions,
+                        ),
                     )
+                    created_uids.append(self._manager._node_for_target(created).uid)
                     self._manager._status_bar.showMessage(
                         "Opened reloaded data as a new tool", 5000
                     )

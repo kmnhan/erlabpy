@@ -20,6 +20,10 @@ import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dia
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive._code_trust import (
+    issue_complete_execution_capability,
+    new_document_trust,
+)
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
     _serialize_loader_kwargs,
@@ -70,6 +74,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ThinOperation,
     UniformInterpolationOperation,
 )
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _controller as provenance_edit_controller,
@@ -80,6 +85,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _files as provenance_edit_files,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 from ._common import (
     _fake_edit_controller,
@@ -844,55 +850,6 @@ def test_file_load_edit_dialog_repair_checks_required_and_preserves_peer_loader(
     assert str(old_dir / "b.h5") not in relinked.seed_code
 
 
-def test_file_load_edit_dialog_batch_defensive_branches(
-    qtbot,
-    tmp_path: pathlib.Path,
-) -> None:
-    current_spec = _manager_replay_file_spec(tmp_path / "a.h5")
-    assert current_spec.file_load_source is not None
-    peer_spec = _manager_replay_file_spec(tmp_path / "b.h5")
-    peer_node = types.SimpleNamespace(uid="peer", display_text="Peer")
-    peer = provenance_edit_files._FileLoadBatchPeer(
-        node=typing.cast("typing.Any", peer_node),
-        scope="display",
-        spec=peer_spec,
-        original_path=tmp_path / "b.h5",
-        loader_summary="xarray.load_dataarray",
-    )
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    dialog = provenance_edit_files._FileLoadEditDialog(
-        current_spec.file_load_source,
-        parent,
-        batch_peers=(peer,),
-    )
-    qtbot.addWidget(dialog)
-    dialog.batch_apply_check.setChecked(True)
-
-    class _MissingUidItem:
-        def checkState(self, _column: int) -> QtCore.Qt.CheckState:
-            return QtCore.Qt.CheckState.Checked
-
-        def data(self, _column: int, _role: QtCore.Qt.ItemDataRole) -> str:
-            return "missing"
-
-        def setText(self, _column: int, _text: str) -> None:
-            pytest.fail("unknown batch peer rows should not be updated")
-
-    class _SparseTree:
-        def topLevelItemCount(self) -> int:
-            return 2
-
-        def topLevelItem(self, row: int) -> _MissingUidItem | None:
-            return None if row == 0 else _MissingUidItem()
-
-    dialog.batch_peer_tree = typing.cast("typing.Any", _SparseTree())
-
-    assert dialog.selected_batch_peers() == ()
-    dialog._update_batch_peer_paths()
-    dialog._batch_peer_item_changed(typing.cast("typing.Any", _MissingUidItem()), 2)
-
-
 def test_file_load_edit_dialog_rejects_stale_batch_peer(qtbot) -> None:
     current_spec = _manager_replay_file_spec(pathlib.Path("a.h5"))
     assert current_spec.file_load_source is not None
@@ -1472,7 +1429,12 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
         source_spec=source_spec,
         source_display_spec=source_spec,
     )
-    child.manager = types.SimpleNamespace(_parent_node=lambda _node: parent)
+    child.manager = types.SimpleNamespace(
+        _parent_node=lambda _node: parent,
+        _lineage_controller=types.SimpleNamespace(
+            _has_recorded_script_input=lambda _item: False
+        ),
+    )
     child.derivation_display_rows_cache_key = (
         manager_wrapper._ManagedWindowNode.derivation_display_rows_cache_key.fget(child)
     )
@@ -1493,7 +1455,10 @@ def test_manager_derivation_cache_key_supports_deep_lineages() -> None:
             raise RuntimeError("root node has no parent")
         return nodes[node.parent_uid]
 
-    manager = types.SimpleNamespace(_parent_node=parent_node)
+    manager = types.SimpleNamespace(
+        _parent_node=parent_node,
+        _tool_graph=types.SimpleNamespace(structure_generation=0),
+    )
     parent_uid: str | None = None
     for generation in range(1_200):
         uid = str(generation)
@@ -1504,9 +1469,9 @@ def test_manager_derivation_cache_key_supports_deep_lineages() -> None:
         raise RuntimeError("deep lineage was not constructed")
     cache_key = nodes[parent_uid]._derivation_display_rows_lineage_generation
 
-    assert len(cache_key) == 2_400
+    assert len(cache_key) == 2_401
     assert cache_key[:4] == (0, 0, 1, 0)
-    assert cache_key[-4:] == (1_198, 0, 1_199, 0)
+    assert cache_key[-5:] == (1_198, 0, 1_199, 0, 0)
 
 
 def test_manager_derivation_cache_key_rejects_lineage_cycles() -> None:
@@ -1517,7 +1482,10 @@ def test_manager_derivation_cache_key_rejects_lineage_cycles() -> None:
             raise RuntimeError("root node has no parent")
         return nodes[node.parent_uid]
 
-    manager = types.SimpleNamespace(_parent_node=parent_node)
+    manager = types.SimpleNamespace(
+        _parent_node=parent_node,
+        _tool_graph=types.SimpleNamespace(structure_generation=0),
+    )
     nodes["first"] = _LineageKeyNode(manager, "first", "second", 0)
     nodes["second"] = _LineageKeyNode(manager, "second", "first", 0)
 
@@ -1695,8 +1663,14 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
         ),
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
+    manager._provenance_revisions = _ProvenanceRevisionStore()
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
-    capability = object()
+    entries = provenance_code_trust_entries(spec, location_prefix="runtime")
+    assert entries
+    _trust, capability = issue_complete_execution_capability(
+        new_document_trust(), entries
+    )
+    assert capability is not None
     controller._authorize_provenance_execution = (  # type: ignore[method-assign]
         lambda _entries, *, reason, **_kwargs: ensured.append(reason) or capability
     )
@@ -1719,7 +1693,7 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
         spec_arg: ToolProvenanceSpec,
         **kwargs: typing.Any,
     ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
-        trusted_flags.append(kwargs["authorize"]((object(),)) is capability)
+        trusted_flags.append(kwargs["authorize"](entries) is capability)
         return xr.DataArray([2.0], dims=("x",)), spec_arg
 
     monkeypatch.setattr(
@@ -1768,18 +1742,6 @@ def test_manager_provenance_edit_file_load_helper_edges(
     assert replaced.start_label == replacement.start_label
     assert replaced.seed_code == replacement.seed_code
     assert replaced.file_load_source == replacement.file_load_source
-    with pytest.raises(RuntimeError, match="not a file load"):
-        provenance_edit_files._replace_file_load_fields(
-            script_spec,
-            full_data(),
-        )
-
-    invalid_filename = FileNotFoundError()
-    invalid_filename.filename = object()
-    assert (
-        provenance_edit_files._file_not_found_path_from_exception(invalid_filename)
-        is None
-    )
     nested_missing = FileNotFoundError(2, "No such file", str(source_path))
     wrapper = RuntimeError("wrapped")
     wrapper.__cause__ = nested_missing
@@ -1950,7 +1912,7 @@ def test_manager_edit_live_script_code_row_replays_with_data_context(
     monkeypatch.setattr(
         controller,
         "_replace_node_data",
-        lambda _node, _scope, data, candidate, _filter: applied.append(
+        lambda _node, _scope, data, candidate, _filter, **_kwargs: applied.append(
             (data, candidate)
         ),
     )
@@ -1997,3 +1959,99 @@ def test_manager_edit_script_code_trust_cancel_does_not_show_error(
     controller.edit_row(spec.display_rows()[2])
 
     assert failures == []
+
+
+def _staged_replay_controller():
+    store = _ProvenanceRevisionStore()
+    raw_revision = store.add(
+        xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    )
+    inner = script(
+        start_label="Recorded input",
+        primary_input="raw",
+        active_name="raw",
+        script_inputs=(
+            ScriptInput(name="raw", revision_id=raw_revision, follow_source=False),
+        ),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Update", code="result = data + 1"),
+        start_label="Update",
+        active_name="result",
+        script_inputs=(ScriptInput(name="data", provenance_spec=inner),),
+    )
+    manager = types.SimpleNamespace(
+        _provenance_revisions=store,
+        _tool_graph=types.SimpleNamespace(nodes={}),
+        _extensions=types.SimpleNamespace(
+            execution=types.SimpleNamespace(run_operation=None), replay_loader=None
+        ),
+        _workspace_controller=types.SimpleNamespace(
+            issue_code_execution_capability=lambda *_args, **_kwargs: None
+        ),
+    )
+    return manager_lineage._LineageController(manager), store, spec
+
+
+def test_rebuild_discarded_captures_on_authorization_cancel() -> None:
+    controller, store, spec = _staged_replay_controller()
+    initial = store.revision_ids
+    for _ in range(3):
+        with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
+            controller._rebuild_script_provenance(spec)
+        assert store.revision_ids == initial
+
+
+def test_rebuild_discarded_captures_on_execution_failure() -> None:
+    from tests.interactive.imagetool.manager.provenance._common import (
+        _authorize_execution,
+    )
+
+    controller, store, spec = _staged_replay_controller()
+    controller._authorize_provenance_execution = lambda entries, **_kwargs: (
+        _authorize_execution(entries)
+    )
+    spec = spec.model_copy(
+        update={
+            "steps": (
+                spec.steps[0].model_copy(
+                    update={
+                        "operation": ScriptCodeOperation(
+                            label="Fail", code="result = data.isel(missing=0)"
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    initial = store.revision_ids
+    for _ in range(3):
+        with pytest.raises(manager_widgets._ScriptRebuildError) as error:
+            controller._rebuild_script_provenance(spec)
+        assert "ValueError:" in error.value.details
+        assert "missing" in error.value.details
+        assert store.revision_ids == initial
+
+
+def test_rebuild_captures_commit_only_when_result_is_adopted() -> None:
+    from tests.interactive.imagetool.manager.provenance._common import (
+        _authorize_execution,
+    )
+
+    controller, store, spec = _staged_replay_controller()
+    controller._authorize_provenance_execution = lambda entries, **_kwargs: (
+        _authorize_execution(entries)
+    )
+    initial = store.revision_ids
+    result = controller._rebuild_script_provenance(spec)
+    assert store.revision_ids == initial
+    assert result.revisions is not None
+    captured = result.provenance_spec.script_inputs[0].revision_id
+    assert captured is not None
+    assert captured not in store
+    xr.testing.assert_identical(
+        result.data, xr.DataArray(np.arange(6.0).reshape(2, 3) + 1, dims=("x", "y"))
+    )
+    result.commit_revisions(store)
+    assert captured in store
+    xr.testing.assert_identical(store.resolve_data(captured), result.data - 1)

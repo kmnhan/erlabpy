@@ -1485,7 +1485,9 @@ def test_overlay_close_commits_focused_editor(
     before = win._history_state
     history_length = len(win._prev_states)
     win.show()
+    qtbot.waitExposed(win)
     win.activateWindow()
+    QtWidgets.QApplication.setActiveWindow(win)
     if field == "name":
         win.overlays.rename_pocket_action.trigger()
         editor = win.overlays.pocket_list.findChild(QtWidgets.QLineEdit)

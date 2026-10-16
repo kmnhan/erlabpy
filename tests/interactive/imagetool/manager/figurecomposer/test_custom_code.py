@@ -771,7 +771,6 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
         },
         name="map",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.custom(
         label="code",
         code=(
@@ -780,7 +779,7 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
         ),
     )
     tool = FigureComposerTool(
-        internal,
+        public,
         recipe=FigureRecipeState(
             sources=(FigureSourceState(name="data", label="map"),),
             operations=(operation,),

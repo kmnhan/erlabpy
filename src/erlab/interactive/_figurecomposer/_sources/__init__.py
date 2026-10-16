@@ -171,9 +171,7 @@ def _encode_array(payload: ArraySourcePayload) -> EncodedSourcePayload:
 
 
 def _array_value(payload: ArraySourcePayload) -> xr.DataArray | None:
-    from erlab.interactive._figurecomposer._model._sources import _public_source_data
-
-    return None if payload.data is None else _public_source_data(payload.data)
+    return payload.data
 
 
 def _fit_trust_entries(

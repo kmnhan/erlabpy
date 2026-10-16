@@ -14,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._dependency as manager_dependency
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
@@ -31,6 +32,8 @@ from erlab.interactive.imagetool._provenance._model import (
     _ProvenanceDisplayRow,
     full_data,
     script,
+    script_input_dependency_refs,
+    script_inputs_dependency_refs,
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
@@ -47,6 +50,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _NODE_UID_ROLE,
     _ImageToolWrapperItemDelegate,
 )
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     child_status_badge,
@@ -140,73 +144,122 @@ def test_multi_input_script_provenance_rejects_mismatched_input_names() -> None:
         )
 
 
-def test_resolve_owner_replay_input_applies_source_spec() -> None:
+@pytest.mark.parametrize("checkpoint_role", ["raw", "resolved"])
+def test_resolve_captured_input_applies_source_spec(checkpoint_role: str) -> None:
     data = xr.DataArray(np.arange(4), dims="x")
     source_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
-    snapshot_token = str(object())
+    expected = source_spec.apply(data)
+    store = _ProvenanceRevisionStore()
     script_input = ScriptInput(
         name="data",
-        node_snapshot_token=snapshot_token,
+        revision_id=store.add(data),
+        resolved_revision_id=(
+            store.add(expected) if checkpoint_role == "resolved" else None
+        ),
+        follow_source=False,
         source_spec=source_spec.model_dump(mode="json"),
     )
+    controller = manager_lineage._LineageController(
+        types.SimpleNamespace(_provenance_revisions=store)
+    )
+    resolved = controller._resolve_live_script_input_for_reload(script_input)
+    assert resolved is not None
+    assert resolved.data_role == checkpoint_role
+    assert resolved.script_input is script_input
+    xr.testing.assert_identical(
+        resolved.data, expected if checkpoint_role == "resolved" else data
+    )
+    rebuilt, _refreshed = rebuild_script_inputs(
+        (script_input,),
+        live_input_resolver=controller._resolve_live_script_input_for_reload,
+    )
+    xr.testing.assert_identical(rebuilt["data"], expected)
+    missing = script_input.model_copy(
+        update={"revision_id": "missing", "resolved_revision_id": None}
+    )
+    assert controller._resolve_live_script_input_for_reload(missing) is None
+
+
+def test_duplicated_subtree_history_keeps_duplicated_source(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+
+        def window(value):
+            return erlab.interactive.imagetool.ImageTool(value, _in_manager=True)
+
+        def plus_one(node):
+            return script(
+                ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+                start_label="Calculation",
+                primary_input="data",
+                active_name="derived",
+                script_inputs=(
+                    manager._lineage_controller._script_input_for_node(
+                        node, name="data"
+                    ),
+                ),
+            )
+
+        original = manager._node_for_target(
+            manager.add_imagetool(window(data), show=False)
+        )
+        derived = manager._node_for_target(
+            manager.add_imagetool_child(
+                window(data + 1),
+                original.uid,
+                show=False,
+                provenance_spec=plus_one(original),
+            )
+        )
+        final_spec = plus_one(derived)
+        historical_id = final_spec.script_inputs[0].revision_id
+        manager.add_imagetool_child(
+            window(data + 2), derived.uid, show=False, provenance_spec=final_spec
+        )
+        duplicate = manager._node_for_target(
+            manager.duplicate_imagetool(original.index)
+        )
+        copied_derived = manager._child_node(duplicate._childtool_indices[0])
+        target = manager._child_node(copied_derived._childtool_indices[0])
+        original.slicer_area.replace_source_data(data + 100)
+        duplicate.slicer_area.replace_source_data(data + 10)
+        select_child_tool(manager, target.uid)
+        manager._update_info()
+        row = next(
+            row
+            for row in target.derivation_display_rows
+            if row.revision_id == historical_id
+        )
+        editor = manager._provenance_edit_controller
+        monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+        monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+        monkeypatch.setattr(
+            editor, "_show_failed", lambda title, exc: pytest.fail(f"{title}: {exc}")
+        )
+        assert editor.can_revert_row(row)[0]
+        editor.revert_row(row)
+        xr.testing.assert_identical(target.current_source_data(), data + 1)
+        assert target.provenance_spec.replay_inputs[0].node_uid == duplicate.uid
+        promoted_index = manager.promote_child_imagetool(target.uid)
+        target = manager._node_for_target(promoted_index)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [promoted_index])
+        manager._update_info()
+        assert manager.reload_action.isEnabled()
+        manager.reload_action.trigger()
+        xr.testing.assert_identical(target.current_source_data(), data + 11)
+
+
+def test_input_plan_rejects_missing_captured_input() -> None:
     manager = types.SimpleNamespace(
-        _extensions=types.SimpleNamespace(
-            execution=types.SimpleNamespace(run_operation=None)
-        ),
+        _provenance_revisions=_ProvenanceRevisionStore(),
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = manager_lineage._LineageController(manager)
-
-    assert (
-        controller._resolve_live_script_input_for_reload(
-            script_input, target_node_uid="owner"
-        )
-        is None
-    )
-
-    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
-        resolved_replay_source_data=lambda: None
-    )
-    assert (
-        controller._resolve_live_script_input_for_reload(
-            script_input, target_node_uid="owner"
-        )
-        is None
-    )
-
-    manager._tool_graph.nodes["owner"] = types.SimpleNamespace(
-        resolved_replay_source_data=lambda: data
-    )
-    resolved = controller._resolve_live_script_input_for_reload(
-        script_input, target_node_uid="owner"
-    )
-
-    assert resolved is not None
-    resolved_data, resolved_input = resolved
-    xr.testing.assert_identical(resolved_data, source_spec.apply(data))
-    assert resolved_input is script_input
-
-
-def test_input_plan_rejects_invalid_owner_replay_inputs() -> None:
-    owner_input = ScriptInput(name="data", node_snapshot_token=str(object()))
-    manager = types.SimpleNamespace(
-        _tool_graph=types.SimpleNamespace(
-            nodes={"owner": types.SimpleNamespace(has_replay_source=True)}
-        )
-    )
-    controller = manager_lineage._LineageController(manager)
-
-    plan = controller._input_resolution_plan(
-        (owner_input, owner_input.model_copy(update={"name": "other"})),
-        target_node_uid="owner",
-    )
-    assert (
-        plan.unavailable_reason
-        == "A result can use only one stored replay-source input."
-    )
-
-    manager._tool_graph.nodes["owner"].has_replay_source = False
-    plan = controller._input_resolution_plan((owner_input,), target_node_uid="owner")
+    captured = ScriptInput(name="data", revision_id="missing", follow_source=False)
+    plan = controller._input_resolution_plan((captured,), target_node_uid="owner")
     assert plan.unavailable_reason == "data has no recorded reload source."
 
 
@@ -246,22 +299,33 @@ def test_open_script_input_plan_rejects_invalid_replay() -> None:
     )
 
 
-def test_validate_detached_replacement_rejects_multiple_owner_replay_inputs() -> None:
-    controller = manager_lineage._LineageController(types.SimpleNamespace())
+def test_detached_replacement_accepts_multiple_captured_inputs() -> None:
+    store = _ProvenanceRevisionStore()
+    graph = types.SimpleNamespace(nodes={})
+    manager = types.SimpleNamespace(
+        _provenance_revisions=store,
+        _tool_graph=graph,
+        _dependency_tracker=manager_dependency._ManagerDependencyTracker(graph),
+    )
+    controller = manager_lineage._LineageController(manager)
+    inputs = tuple(
+        ScriptInput(
+            name=name, revision_id=store.add(xr.DataArray([value])), follow_source=False
+        )
+        for name, value in (("data", 1), ("other", 2))
+    )
     spec = script(
         ScriptCodeOperation(label="Combine inputs", code="result = data + other"),
         start_label="Combine inputs",
         active_name="result",
-        script_inputs=(
-            ScriptInput(name="data", node_snapshot_token=str(object())),
-            ScriptInput(name="other", node_snapshot_token=str(object())),
-        ),
+        script_inputs=inputs,
     )
-
-    with pytest.raises(ValueError, match="only one stored replay-source input"):
-        controller._validate_detached_replacement(
-            types.SimpleNamespace(uid="owner"), spec, xr.DataArray([1])
-        )
+    controller._validate_detached_replacement(types.SimpleNamespace(uid="owner"), spec)
+    plan = controller._input_resolution_plan(inputs, target_node_uid="owner")
+    assert plan.unavailable_reason is None
+    assert not plan.actions
+    resolved = [controller._resolve_recorded_script_input(item)[0] for item in inputs]
+    xr.testing.assert_equal(resolved[0] + resolved[1], xr.DataArray([3]))
 
 
 def test_pending_reload_reports_unreplayable_script() -> None:
@@ -1531,7 +1595,7 @@ def test_input_resolution_plan_classifies_each_live_fallback_once(
     )
 
     assert plan.unavailable_reason is None
-    assert calls == {"recorded": 1, "live": 2}
+    assert calls == {"live": 2}
 
 
 def test_pending_script_reload_rejects_missing_recorded_input() -> None:
@@ -1563,12 +1627,16 @@ def test_pending_script_reload_rejects_missing_recorded_input() -> None:
     assert "no recorded reload source" in reason
 
 
-def test_pending_script_reload_accepts_owner_replay_source() -> None:
+def test_pending_script_reload_accepts_captured_revision() -> None:
+    store = _ProvenanceRevisionStore()
+    revision_id = store.add(xr.DataArray([1.0]))
     spec = script(
         start_label="Copy stored input",
         seed_code="result = data",
         active_name="result",
-        script_inputs=(ScriptInput(name="data", node_snapshot_token=str(object())),),
+        script_inputs=(
+            ScriptInput(name="data", revision_id=revision_id, follow_source=False),
+        ),
     )
     node = types.SimpleNamespace(
         uid="pending",
@@ -1577,9 +1645,9 @@ def test_pending_script_reload_accepts_owner_replay_source() -> None:
         imagetool=None,
         pending_workspace_memory_payload=object(),
         provenance_spec=spec,
-        has_replay_source=True,
     )
     manager = types.SimpleNamespace(
+        _provenance_revisions=store,
         _extensions=types.SimpleNamespace(
             unavailable_reason_for_node=lambda _uid: None,
             capability_status=lambda *_args, **_kwargs: None,
@@ -2044,6 +2112,71 @@ def test_deferred_abort_runs_newest_input_before_descendant_continuations(
         assert intermediate.update_calls == 1
         assert target.update_calls == 1
         assert not manager._dependency_tracker.has_pending_source_refreshes()
+
+
+@pytest.mark.parametrize("accept_close", [False, True])
+def test_managed_close_cancels_only_its_own_deferred_refresh_chain(
+    qtbot, manager_context, accept_close: bool
+) -> None:
+    class _ClosingTool(_DeferredManagedSumTool):
+        allow_close = accept_close
+
+        def closeEvent(self, event) -> None:
+            if not self.allow_close:
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+    data = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("x", "y"))
+    with manager_context() as manager:
+        for values in (data, data + 10):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(values), show=False
+            )
+        closing = _ClosingTool(data)
+        independent = _DeferredManagedSumTool(data)
+        targets = {}
+        for tool in (closing, independent):
+            uid = manager.add_childtool(
+                tool, script_inputs={"data": 0, "weights": 1}, show=False
+            )
+            tool.set_script_inputs(
+                tool.script_inputs, primary_input="data", auto_update=True
+            )
+            targets[tool] = uid
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 100)
+        qtbot.wait_until(lambda: closing.update_calls == independent.update_calls == 1)
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, data + 200)
+        tracker = manager._dependency_tracker
+        qtbot.wait_until(
+            lambda: all(
+                tracker.source_refresh_queued(uid, uid) for uid in targets.values()
+            )
+        )
+        pending = {tool: tool._input_state() for tool in targets}
+        assert closing.close() is accept_close
+        qtbot.wait_until(lambda: not manager._interaction_gate.pending_keys)
+
+        assert closing.update_calls == independent.update_calls == 1
+        assert independent._input_state() == pending[independent]
+        assert tracker.source_refresh_queued(targets[independent], targets[independent])
+        if accept_close:
+            assert closing._input_state().pending is None
+            assert closing.active_script_inputs == closing.script_inputs
+            assert not closing._source_refresh_deferred
+            assert not tracker.source_refresh_queued(targets[closing], targets[closing])
+        else:
+            assert closing._input_state() == pending[closing]
+            assert closing._source_refresh_deferred
+            assert tracker.source_refresh_queued(targets[closing], targets[closing])
+
+        # Close the rejected window during test cleanup without starting its rerun.
+        closing.abort_source_refresh(resume_pending=False)
+        independent.abort_source_refresh(resume_pending=False)
+        closing.allow_close = True
 
 
 def test_deferred_abort_discards_descendant_continuations_without_rerun(
@@ -2894,11 +3027,11 @@ def test_live_managed_input_fallback_includes_source_transform(
             script_input
         )
         assert resolved is not None
-        live_data, refreshed_input = resolved
+        assert resolved.data_role == "raw"
+        xr.testing.assert_equal(resolved.data, data)
         expected = source_spec.apply(data)
-        xr.testing.assert_equal(live_data, expected)
 
-        recorded_input = refreshed_input.model_copy(
+        recorded_input = resolved.script_input.model_copy(
             update={"node_uid": None, "node_snapshot_token": None}
         )
         rebuilt, _refreshed = rebuild_script_inputs((recorded_input,))
@@ -2927,8 +3060,14 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
             data_role="source",
         )
         assert data_input.node_uid is None
-        assert data_input.node_snapshot_token == data_node.snapshot_token_for_role(
-            "source"
+        assert data_input.revision_id is not None
+        assert not data_input.follow_source
+        assert data_input.node_snapshot_token is None
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(data_input.revision_id).rename(
+                None
+            ),
+            data.rename(None),
         )
         spec = script(
             ScriptCodeOperation(label="Add inputs", code="result = data + shift"),
@@ -2946,8 +3085,9 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
         data_node.replace_with_detached_data(
             data + shift,
             spec,
-            replay_source_data=data,
+            replay_source_data=None,
         )
+        assert data_node.replay_source_data is None
         assert {
             ref.node_uid
             for ref in manager._lineage_controller._dependency_refs_for_uid(
@@ -2969,12 +3109,11 @@ def test_detached_managed_input_reloads_from_owner_snapshot(
             (data + updated_shift).rename(None),
         )
         refreshed_data_input = {
-            item.name: item for item in data_node.provenance_spec.script_inputs
+            item.name: item for item in data_node.provenance_spec.replay_inputs
         }["data"]
         assert refreshed_data_input.node_uid is None
-        assert (
-            refreshed_data_input.node_snapshot_token == data_input.node_snapshot_token
-        )
+        assert refreshed_data_input.node_snapshot_token is None
+        assert refreshed_data_input.revision_id == data_input.revision_id
 
 
 def test_detached_derived_input_ignores_frozen_fallback_dependencies(
@@ -3016,7 +3155,19 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
         derived_node.replace_with_detached_data(
             derived + shift,
             replacement_spec,
-            replay_source_data=derived,
+            replay_source_data=None,
+        )
+        captured = replacement_spec.script_inputs[0]
+        assert captured.revision_id is not None
+        assert not captured.follow_source
+        assert captured.node_uid is None
+        assert captured.node_snapshot_token is None
+        assert derived_node.replay_source_data is None
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(captured.revision_id).rename(
+                None
+            ),
+            derived.rename(None),
         )
 
         assert {
@@ -3033,18 +3184,6 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
             derived_node.uid, source_node.uid
         )
 
-        derived_node._restore_replay_source_data(None)
-        assert derived_node.uid in manager._dependency_tracker.dependent_uids(
-            source_node.uid
-        )
-        assert {
-            ref.node_uid
-            for ref in manager._lineage_controller._dependency_refs_for_uid(
-                derived_node.uid
-            )
-        } == {source_node.uid, shift_node.uid}
-        assert manager.dependency_status_for_uid(derived_node.uid) == "changed"
-        derived_node._restore_replay_source_data(derived)
         assert derived_node.uid not in manager._dependency_tracker.dependent_uids(
             source_node.uid
         )
@@ -3071,7 +3210,7 @@ def test_detached_derived_input_ignores_frozen_fallback_dependencies(
         assert manager.dependency_status_for_uid(derived_node.uid) == "current"
 
 
-def test_detached_replacement_validates_owner_snapshot_before_mutation(
+def test_detached_replacement_uses_captured_revision_without_owner_seed(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -3097,15 +3236,24 @@ def test_detached_replacement_validates_owner_snapshot_before_mutation(
             script_inputs=(detached,),
         )
 
-        with pytest.raises(ValueError, match="no recorded reload source"):
-            node.replace_with_detached_data(
-                data + 1,
-                spec,
-                replay_source_data=None,
-            )
+        node.replace_with_detached_data(
+            data + 1,
+            spec,
+            replay_source_data=None,
+        )
 
-        xr.testing.assert_identical(node.current_public_data().rename(None), data)
-        assert node.provenance_spec is None
+        assert node.replay_source_data is None
+        assert detached.revision_id is not None
+        assert not detached.follow_source
+        xr.testing.assert_equal(
+            manager._provenance_revisions.resolve_data(detached.revision_id),
+            data,
+        )
+        xr.testing.assert_equal(node.current_public_data().rename(None), data + 1)
+        assert node.provenance_spec == spec
+        assert manager._lineage_controller._node_can_reload_script_inputs(node)
+        assert node.reload_source_data()
+        xr.testing.assert_equal(node.current_public_data().rename(None), data + 1)
 
 
 def test_detached_replacement_rejects_indirect_input_cycle(
@@ -3443,7 +3591,7 @@ def test_managed_reload_resumes_after_deferred_script_result_input(
         xr.testing.assert_identical(consumer.tool_data, expected)
         assert consumer.update_calls == 1
         assert derived_node.provenance_spec is not None
-        assert derived_node.provenance_spec.script_inputs[0].node_uid == source_uid
+        assert derived_node.provenance_spec.replay_inputs[0].node_uid == source_uid
         assert not manager._dependency_tracker.has_pending_source_refreshes()
 
 
@@ -5975,8 +6123,15 @@ def test_manager_promote_live_child_retains_replay_source(
 
         promoted_index = manager.promote_child_imagetool(child_uid)
         promoted = manager._tool_graph.root_wrappers[promoted_index]
-        assert promoted.replay_source_data is not None
-        xr.testing.assert_identical(promoted.replay_source_data, expected_source)
+        assert promoted.replay_source_data is None
+        assert promoted.provenance_spec is not None
+        captured = promoted.provenance_spec.replay_inputs[0]
+        assert captured.revision_id is not None
+        assert not captured.follow_source
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id),
+            expected_source,
+        )
 
         select_tools(manager, [promoted_index])
         manager._update_info(uid=promoted.uid)
@@ -6037,7 +6192,7 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
         manager._update_info()
         derivation = metadata_derivation_texts(manager)
         assert derivation == [
-            "Start from current parent ImageTool data",
+            "Use data from Saved",
             'Aggregate(dims=("x",), func="mean")',
         ]
 
@@ -6166,16 +6321,20 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         )
 
 
+@pytest.mark.parametrize("nonuniform", [False, True])
 def test_manager_file_backed_replace_current_keeps_file_provenance(
     qtbot,
     monkeypatch,
     accept_dialog,
     tmp_path: pathlib.Path,
     test_data,
+    nonuniform: bool,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    if nonuniform:
+        test_data = test_data.assign_coords(alpha=[0.0, 0.25, 1.1, 3.0, 10.0])
     file_path = tmp_path / "scan.h5"
     test_data.to_netcdf(file_path, engine="h5netcdf")
 
@@ -6211,7 +6370,9 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         assert root.provenance_spec is not None
         assert root.provenance_spec.kind == "file"
         assert [op.op for op in root.provenance_spec.operations] == ["qsel_aggregate"]
-        assert [step.input_policy for step in root.provenance_spec.steps] == ["current"]
+        assert [step.input_policy for step in root.provenance_spec.steps] == [
+            "restored"
+        ]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
         assert any("Aggregate" in entry.label for entry in entries)
@@ -6248,3 +6409,388 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
             .qsel.mean("alpha")
             .rename(None),
         )
+
+
+@pytest.mark.parametrize("is_imagetool", [False, True])
+@pytest.mark.parametrize(
+    "binding", ["live", "revision", "fallback", "following_revision"]
+)
+def test_dependency_tracker_uses_one_input_resolution_path(
+    is_imagetool: bool, binding: str
+) -> None:
+    recorded_revision = "old"
+    nested = ScriptInput(
+        name="nested", node_uid="fallback", node_snapshot_token=recorded_revision
+    )
+    fallback = script(
+        start_label="Nested input", active_name="result", script_inputs=(nested,)
+    )
+    source = ScriptInput(
+        name="data",
+        node_uid="direct" if binding == "live" else None,
+        revision_id="captured"
+        if binding in {"revision", "following_revision"}
+        else None,
+        follow_source=binding != "revision",
+        node_snapshot_token="old" if binding == "live" else None,
+        provenance_spec=fallback.model_dump(mode="json"),
+    )
+    spec = script(
+        start_label="Use input", active_name="result", script_inputs=(source,)
+    )
+    node = types.SimpleNamespace(
+        is_imagetool=is_imagetool,
+        provenance_spec=spec,
+        tool_script_inputs=() if is_imagetool else (source,),
+        provenance_revision=0,
+    )
+    graph = types.SimpleNamespace(nodes={"owner": node})
+    tracker = manager_dependency._ManagerDependencyTracker(graph)
+    expected = {
+        "live": ["direct"],
+        "revision": [],
+        "fallback": ["fallback"],
+        "following_revision": ["fallback"],
+    }[binding]
+    assert [ref.node_uid for ref in tracker.refs_for_uid("owner")] == expected
+    assert [ref.node_uid for ref in script_input_dependency_refs(spec)] == expected
+    assert tracker.status_for_uid("owner") == ("missing" if expected else None)
+    if expected:
+        parent = types.SimpleNamespace(snapshot_token_for_role=lambda role: "old")
+        graph.nodes[expected[0]] = parent
+        tracker.note_uid(expected[0])
+        assert tracker.status_for_uid("owner") == "current"
+        parent.snapshot_token_for_role = lambda role: "new"
+        tracker.note_uid(expected[0])
+        assert tracker.status_for_uid("owner") == "changed"
+
+
+def test_script_input_dependency_refs_capture_boundaries() -> None:
+    fallback = script(
+        start_label="Use source",
+        active_name="live",
+        script_inputs=(
+            ScriptInput(name="live", node_uid="source", data_role="source"),
+        ),
+    )
+    root = ScriptInput(name="data", provenance_spec=fallback)
+    refs = script_inputs_dependency_refs((root,))
+    assert [(ref.node_uid, ref.data_role) for ref in refs] == [("source", "source")]
+    assert not script_inputs_dependency_refs(
+        (root.model_copy(update={"revision_id": "retained", "follow_source": False}),)
+    )
+    direct = root.model_copy(update={"node_uid": "direct", "revision_id": "retained"})
+    assert [ref.node_uid for ref in script_inputs_dependency_refs((direct,))] == [
+        "direct"
+    ]
+    assert not script_inputs_dependency_refs(
+        (direct.model_copy(update={"follow_source": False}),)
+    )
+
+
+def test_dependency_cycle_detection_ignores_immutable_fallback() -> None:
+    tracker = manager_dependency._ManagerDependencyTracker(
+        types.SimpleNamespace(nodes={})
+    )
+    fallback = script(
+        start_label="Use owner",
+        active_name="result",
+        script_inputs=(ScriptInput(name="owner", node_uid="owner"),),
+    )
+    source = ScriptInput(name="data", provenance_spec=fallback.model_dump(mode="json"))
+    assert tracker.would_create_script_input_cycle("owner", (source,))
+    assert not tracker.would_create_script_input_cycle(
+        "owner",
+        (
+            source.model_copy(
+                update={"revision_id": "retained", "follow_source": False}
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome", ["accept", "reject", "fail", "deferred", "abort", "rebind"]
+)
+def test_rebuilt_tool_input_captures_follow_adoption(
+    qtbot, monkeypatch, manager_context, outcome: str
+) -> None:
+    class _TransactionTool(_ManagedUnaryTool):
+        pending_data: xr.DataArray | None = None
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool | None:
+            if outcome == "reject":
+                return False
+            if outcome == "fail":
+                raise ValueError("stop")
+            if outcome in {"deferred", "abort", "rebind"}:
+                self.pending_data = inputs["data"]
+                self._defer_source_refresh()
+                return False
+            return super().update_inputs(inputs)
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        tool = _TransactionTool(data)
+        uid = manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+        raw = manager._node_for_target(index).revision_id_for_role("source")
+        fallback = script(
+            start_label="Recorded input",
+            primary_input="raw",
+            active_name="raw",
+            script_inputs=(
+                ScriptInput(name="raw", revision_id=raw, follow_source=False),
+            ),
+        )
+        binding = ScriptInput(name="data", data_role="source", provenance_spec=fallback)
+        tool.set_script_inputs((binding,), primary_input="data")
+        store = manager._provenance_revisions
+        initial = store.revision_ids
+        refreshed = manager._lineage_controller._refresh_tool_inputs(
+            uid, allow_recorded=True
+        )
+        assert refreshed is (outcome == "accept")
+        if outcome == "accept":
+            captured = tool.script_inputs[0].revision_id
+            assert captured is not None
+            assert captured not in initial
+            assert store.has_data(captured)
+            xr.testing.assert_identical(store.resolve_data(captured), data)
+        else:
+            assert store.revision_ids == initial
+            assert tool.script_inputs == (binding,)
+        if outcome in {"deferred", "abort", "rebind"}:
+            assert tool._input_state().pending is not None
+            transaction = tool._input_state().pending
+            assert transaction is not None
+            captured = transaction.script_inputs[0].revision_id
+            assert captured is not None
+            assert captured not in store
+            if outcome == "abort":
+                tool.abort_source_refresh()
+                assert store.revision_ids == initial
+                assert tool.script_inputs == (binding,)
+            else:
+                if outcome == "rebind":
+                    manager._provenance_revisions = store.copy()
+                assert tool.pending_data is not None
+                tool._data = tool.pending_data
+                tool.finalize_source_refresh()
+                assert tool.script_inputs[0].revision_id == captured
+                assert manager._provenance_revisions.has_data(captured)
+                if outcome == "rebind":
+                    assert captured not in store
+        assert tool._input_state().pending is None
+
+
+@pytest.mark.parametrize("outcome", ["accept", "abort", "replace", "close"])
+def test_pending_displayed_inputs_own_checkpoints_through_collection_and_save(
+    qtbot, manager_context, tmp_path, outcome: str
+) -> None:
+    from erlab.interactive.imagetool.manager._workspace._revisions import (
+        retained_revision_ids,
+    )
+    from tests.interactive.imagetool.manager.workspace._support import (
+        _current_workspace_manifest,
+    )
+
+    class _DeferredDisplayedInputTool(_ManagedUnaryTool):
+        def __init__(self, data: xr.DataArray) -> None:
+            erlab.interactive.utils.ToolWindow.__init__(self)
+            self._data = data
+            self._status = _ManagedInputTestState()
+            self.update_calls = 0
+            self.set_script_inputs(
+                (ScriptInput(name="data", data_role="displayed"),),
+                primary_input="data",
+            )
+
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.pending_data = inputs["data"]
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray(np.arange(36.0).reshape(6, 6), dims=("x", "y"))
+    with manager_context() as manager:
+        source_index, unrelated = [
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data), show=False
+            )
+            for _ in range(2)
+        ]
+        source = manager._node_for_target(source_index)
+        tool = _DeferredDisplayedInputTool(data)
+        target_uid = manager.add_childtool(
+            tool, script_inputs={"data": source_index}, show=False
+        )
+        accepted_inputs = tool.script_inputs
+        source.slicer_area.apply_filter_operation(
+            GaussianFilterOperation(sigma={"x": 0.5}), emit_edited=True
+        )
+        assert not manager._lineage_controller._refresh_tool_inputs(
+            target_uid, allow_recorded=True
+        )
+        transaction = tool._input_state().pending
+        assert transaction is not None
+        captured = transaction.script_inputs[0].revision_id
+        assert captured is not None
+        expected = tool.pending_data.copy(deep=True)
+        source.slicer_area.apply_filter_operation(
+            GaussianFilterOperation(sigma={"x": 1.5}), emit_edited=True
+        )
+        assert source.revision_id_for_role("displayed") != captured
+        assert captured in retained_revision_ids(manager)
+        manager.remove_imagetool(unrelated)
+        assert manager._provenance_revisions.has_data(captured)
+
+        workspace = tmp_path / "pending-inputs.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert captured in {
+            entry["revision_id"]
+            for entry in _current_workspace_manifest(workspace)["provenance_revisions"]
+        }
+        assert tool._input_state().pending == transaction
+        assert tool.script_inputs == accepted_inputs
+        if outcome == "accept":
+            tool._data = tool.pending_data
+            tool.finalize_source_refresh()
+            assert tool.script_inputs[0].revision_id == captured
+            assert captured in retained_revision_ids(manager)
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(captured), expected
+            )
+        else:
+            if outcome == "abort":
+                tool.abort_source_refresh()
+            elif outcome == "replace":
+                tool.set_script_inputs(
+                    accepted_inputs, primary_input="data", state="stale"
+                )
+            else:
+                assert tool.close()
+            assert captured not in retained_revision_ids(manager)
+            assert tool.script_inputs == accepted_inputs
+        assert tool._input_state().pending is None
+        assert not tool._source_refresh_deferred
+
+
+def test_failed_workspace_import_keeps_existing_accepted_input_transaction(
+    qtbot, monkeypatch, manager_context, tmp_path
+) -> None:
+    class _DeferredInputTool(_ManagedUnaryTool):
+        def update_inputs(self, inputs: Mapping[str, xr.DataArray]) -> bool:
+            self.pending_data = inputs["data"]
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        incoming = tmp_path / "incoming.itws"
+        manager._workspace_controller.saving._save_workspace_document(incoming)
+        tool = _DeferredInputTool(data * 0)
+        uid = manager.add_childtool(tool, script_inputs={"data": index}, show=False)
+        raw = manager._node_for_target(index).revision_id_for_role("source")
+        fallback = script(
+            start_label="Recorded input",
+            primary_input="raw",
+            active_name="raw",
+            script_inputs=(
+                ScriptInput(name="raw", revision_id=raw, follow_source=False),
+            ),
+        )
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="source", provenance_spec=fallback),),
+            primary_input="data",
+        )
+        assert not manager._lineage_controller._refresh_tool_inputs(
+            uid, allow_recorded=True
+        )
+        transaction = tool._input_state().pending
+        assert transaction is not None
+        captured = transaction.script_inputs[0].revision_id
+        assert captured is not None
+        assert captured not in manager._provenance_revisions
+        existing_uids = frozenset(manager._tool_graph.nodes)
+        existing_store = manager._provenance_revisions
+        accepted_node_revision: str | None = None
+
+        def accept_then_fail(*_args, **_kwargs) -> None:
+            nonlocal accepted_node_revision
+            tool._data = tool.pending_data
+            tool.finalize_source_refresh()
+            accepted_node_revision = manager._child_node(uid).revision_id_for_role(
+                "source"
+            )
+            assert manager._provenance_revisions.has_data(captured)
+            raise RuntimeError("workspace import failed after pending input acceptance")
+
+        loading = manager._workspace_controller.loading
+        monkeypatch.setattr(loading, "_restore_workspace_link_groups", accept_then_fail)
+        with pytest.raises(RuntimeError, match="after pending input acceptance"):
+            loading._load_workspace_file(
+                incoming,
+                replace=False,
+                associate=False,
+                mark_dirty=True,
+                select=False,
+            )
+        assert frozenset(manager._tool_graph.nodes) == existing_uids
+        assert manager._provenance_revisions is existing_store
+        assert tool.script_inputs[0].revision_id == captured
+        assert tool.source_state == "fresh"
+        assert tool._input_state().pending is None
+        assert manager._provenance_revisions.has_data(captured)
+        assert accepted_node_revision is not None
+        assert manager._child_node(uid).current_revision_id == accepted_node_revision
+        assert manager._provenance_revisions.has_data(accepted_node_revision)
+        xr.testing.assert_identical(tool.tool_data, data)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured), data
+        )
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(accepted_node_revision), data
+        )
+
+
+def test_cancelled_live_replay_keeps_only_reusable_node_checkpoint(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    from erlab.interactive.imagetool.manager._workspace._revisions import (
+        retained_revision_ids,
+    )
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data), show=False
+        )
+        node = manager._node_for_target(index)
+        spec = script(
+            ScriptCodeOperation(label="Update", code="result = data + 1"),
+            start_label="Update",
+            active_name="result",
+            script_inputs=(ScriptInput(name="data", node_uid=node.uid),),
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "issue_code_execution_capability",
+            lambda *_args, **_kwargs: None,
+        )
+        initial = manager._provenance_revisions.revision_ids
+        for _ in range(3):
+            with pytest.raises(manager_widgets._TrustedProvenanceReplayCancelled):
+                manager._lineage_controller._rebuild_script_provenance(spec)
+            added = manager._provenance_revisions.revision_ids - initial
+            assert len(added) == 1
+            assert added <= retained_revision_ids(manager)
+            captured = next(iter(added))
+            assert node.revision_id_for_role("displayed") == captured
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(captured), data
+            )

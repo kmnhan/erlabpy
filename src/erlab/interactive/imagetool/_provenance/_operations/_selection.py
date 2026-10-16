@@ -10,18 +10,13 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
-    _dynamic_nonuniform_restore_replay_code,
-    _format_selection_expr,
-    _known_nonuniform_restore_statement_code,
-)
+from erlab.interactive.imagetool._provenance._code import _format_selection_expr
 from erlab.interactive.imagetool._provenance._model import (
     _SORT_COORD_ORDER_DERIVATION_LABEL,
     ConsoleCall,
     ConsoleOperationPattern,
     NullableProvenanceHashableTuple,
     ProvenanceHashable,
-    ProvenanceHashableMapping,
     ProvenanceHashableTuple,
     ProvenanceMapping,
     ToolProvenanceOperation,
@@ -59,9 +54,7 @@ class ImageToolSelectionSourceBinding(pydantic.BaseModel):
     def materialize(self, parent_data: xr.DataArray):
         """Build a source spec for the current parent data."""
         operations: list[ToolProvenanceOperation] = []
-        selection_data = ToolProvenanceSpec._starting_data_for_kind(
-            "selection", parent_data
-        )
+        selection_data = parent_data.copy(deep=False)
         selection_indexers = dict(self.selection_indexers)
         if selection_indexers:
             if self.selection_mode == "qsel":
@@ -475,38 +468,3 @@ class RenameOperation(ToolProvenanceOperation):
     ) -> str:
         name_code = erlab.interactive.utils._parse_single_arg(self.name)
         return f"{input_name}.rename({name_code})"
-
-
-class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
-    op: typing.Literal["restore_nonuniform_dims"] = "restore_nonuniform_dims"
-    batch_available: typing.ClassVar[bool] = True
-    dimension_mapping: ProvenanceHashableMapping | None = None
-
-    def apply(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.utils.array._restore_nonuniform_dims(data, self.dimension_mapping)
-
-    def derivation_label(self) -> str:
-        return "Restore nonuniform dimensions"
-
-    def expression_code(
-        self, input_name: str, *, source_name: str | None = None
-    ) -> str:
-        raise NotImplementedError
-
-    def statement_code(
-        self,
-        input_name: str,
-        *,
-        output_name: str,
-        source_name: str | None = None,
-    ) -> str:
-        if self.dimension_mapping is not None:
-            return _known_nonuniform_restore_statement_code(
-                input_name,
-                output_name=output_name,
-                dimension_mapping=self.dimension_mapping,
-            )
-        return _dynamic_nonuniform_restore_replay_code(
-            input_name,
-            output_name=output_name,
-        )

@@ -20,6 +20,8 @@ if typing.TYPE_CHECKING:
     import dask.array
     import xarray as xr
 
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+
 
 class ArraySlicerState(typing.TypedDict):
     """A dictionary containing the state of cursors in an :class:`ArraySlicer`."""
@@ -77,10 +79,8 @@ def _drop_unmatched_stack_dim(data: xr.DataArray, other: xr.DataArray) -> xr.Dat
 def _cursor_compatibility_pair(
     old: xr.DataArray, new: xr.DataArray
 ) -> tuple[xr.DataArray, xr.DataArray]:
-    old_view = erlab.utils.array._restore_nonuniform_dims(old.copy(deep=False))
-    new_view = erlab.utils.array._restore_nonuniform_dims(new.copy(deep=False))
-    old_view = _drop_unmatched_stack_dim(old_view, new_view)
-    new_view = _drop_unmatched_stack_dim(new_view, old_view)
+    old_view = _drop_unmatched_stack_dim(old, new)
+    new_view = _drop_unmatched_stack_dim(new, old_view)
     return old_view, new_view
 
 
@@ -90,6 +90,23 @@ def _get_inc(coord):
     except IndexError:
         # Coord size is 1, assume increment of 1
         return 1
+
+
+def _interp_geometry(values, source, target) -> np.ndarray:
+    """Interpolate geometry, extending the endpoint segments outside the image."""
+    result = np.interp(values, source, target)
+    result = np.where(
+        values < source[0],
+        target[0]
+        + (values - source[0]) * (target[1] - target[0]) / (source[1] - source[0]),
+        result,
+    )
+    return np.where(
+        values > source[-1],
+        target[-1]
+        + (values - source[-1]) * (target[-1] - target[-2]) / (source[-1] - source[-2]),
+        result,
+    )
 
 
 def _display_value_abs_limit() -> float:
@@ -453,14 +470,27 @@ class ArraySlicer(QtCore.QObject):
         bool
             True if the cursors were reset, False if only the data was updated.
         """
-        obj_original = getattr(self, "_obj", None)
+        obj_original = getattr(self, "_obj", None) if reset else None
         if obj_original is not None:
+            original_dims = obj_original.dims
             # Shallow copy is enough: we only compare dims/coords for cursor
             # compatibility.
-            obj_original = obj_original.copy(deep=False)
+            obj_original = self._to_physical_data(obj_original.copy(deep=False))
 
         if validate:
             self._obj = self.validate_array(xarray_obj, copy_values=copy_values)
+            self._dimension_mapping: dict[Hashable, Hashable] = {
+                f"{dim}_idx": dim
+                for dim in xarray_obj.dims
+                if dim not in self._obj.dims
+                and f"{dim}_idx" in self._obj.dims
+                and self._obj.coords[dim].dims == (f"{dim}_idx",)
+            }
+            self._display_only_dims = (
+                set(self._obj.dims)
+                - self._dimension_mapping.keys()
+                - set(xarray_obj.dims)
+            )
         else:
             self._obj = xarray_obj
 
@@ -473,9 +503,11 @@ class ArraySlicer(QtCore.QObject):
 
         if (obj_original is not None) and reset:
             # If same coords, keep cursors
-            if check_cursors_compatible(obj_original, self._obj):
-                if set(self._obj.dims) == set(obj_original.dims):
-                    self._obj = self._obj.transpose(*obj_original.dims)
+            if check_cursors_compatible(
+                obj_original, self._to_physical_data(self._obj)
+            ):
+                if set(self._obj.dims) == set(original_dims):
+                    self._obj = self._obj.transpose(*original_dims)
                 reset = False
             del obj_original
 
@@ -615,15 +647,86 @@ class ArraySlicer(QtCore.QObject):
     def coords(self) -> tuple[npt.NDArray[np.floating], ...]:
         """Coordinate values of each dimension in the array."""
         if self._nonuniform_axes:
-            return tuple(
-                (
-                    self.values_of_dim(str(dim).removesuffix("_idx"))
-                    if i in self._nonuniform_axes
-                    else self.values_of_dim(dim)
-                )
-                for i, dim in enumerate(self._obj.dims)
-            )
+            return tuple(self.values_of_dim(dim) for dim in self.physical_dims)
         return self.coords_uniform
+
+    @property
+    def physical_dims(self) -> tuple[Hashable, ...]:
+        """Dimension names for analysis, in the current displayed axis order."""
+        return self._physical_dims
+
+    def _to_physical_data(self, data: xr.DataArray) -> xr.DataArray:
+        """Undo only coordinate conversions owned by this renderer."""
+        data = erlab.utils.array._restore_nonuniform_dims(data, self._dimension_mapping)
+        promoted_dims = tuple(
+            dim for dim in self._display_only_dims if dim in data.dims
+        )
+        if promoted_dims:
+            data = data.squeeze(promoted_dims, drop=True)
+        promoted_coords = tuple(
+            dim for dim in self._display_only_dims if dim in data.coords
+        )
+        return data.drop_vars(promoted_coords) if promoted_coords else data
+
+    @functools.cached_property
+    def _physical_obj(self) -> xr.DataArray:
+        """Physical selection view sharing the renderer's values buffer."""
+        return self._to_physical_data(self._obj)
+
+    def to_physical_values(self, axis: int, values: npt.ArrayLike) -> np.ndarray:
+        """Convert renderer positions to physical coordinate values."""
+        values = np.asarray(values)
+        if axis not in self._nonuniform_axes_set:
+            return values
+        return _interp_geometry(values, self.coords_uniform[axis], self.coords[axis])
+
+    def to_uniform_values(self, axis: int, values: npt.ArrayLike) -> np.ndarray:
+        """Convert physical geometry positions to renderer positions."""
+        values = np.asarray(values)
+        if axis not in self._nonuniform_axes_set:
+            return values
+        physical = self.coords[axis]
+        uniform = self.coords_uniform[axis]
+        if physical[0] > physical[-1]:
+            physical, uniform = physical[::-1], uniform[::-1]
+        if not np.all(np.diff(physical) > 0):
+            raise ValueError("Physical geometry requires monotonic coordinates")
+        return _interp_geometry(values, physical, uniform)
+
+    def crop_selection(
+        self, indexers: Mapping[Hashable, slice]
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        """Normalize inclusive display bounds into physical data selections."""
+        from erlab.interactive.imagetool._provenance._operations import (
+            IselOperation,
+            SelOperation,
+        )
+
+        sel_indexers: dict[Hashable, slice] = {}
+        isel_indexers: dict[Hashable, slice] = {}
+        for display_dim, selector in indexers.items():
+            if display_dim in self._display_only_dims:
+                continue
+            axis = self._obj.get_axis_num(display_dim)
+            physical_dim = self.physical_dims[axis]
+            start, stop, step = selector.start, selector.stop, selector.step
+            if start is not None and stop is not None and step is None:
+                start, stop = sorted((start, stop))
+                if self.incs_uniform[axis] < 0:
+                    start, stop = stop, start
+            if axis in self._nonuniform_axes_set:
+                isel_indexers[physical_dim] = self._obj.get_index(
+                    display_dim
+                ).slice_indexer(start, stop, step)
+            else:
+                sel_indexers[physical_dim] = slice(start, stop, step)
+
+        operations: list[ToolProvenanceOperation] = []
+        if sel_indexers:
+            operations.append(SelOperation(kwargs=sel_indexers))
+        if isel_indexers:
+            operations.append(IselOperation(kwargs=isel_indexers))
+        return tuple(operations)
 
     @functools.cached_property
     def coords_uniform(self) -> tuple[npt.NDArray[np.floating], ...]:
@@ -852,10 +955,6 @@ class ArraySlicer(QtCore.QObject):
             if data[d].ndim != 1:
                 raise ValueError(f"Coordinate of dimension {d} is not one-dimensional.")
 
-        # Handle loading non-uniform data saved in older versions.
-        # erlab>=3.2.0 should not save non-uniform data in the first place.
-        data = erlab.utils.array._restore_nonuniform_dims(data)
-
         # Convert coords to C-contiguous array
         data = erlab.utils.array.sort_coord_order(
             data.assign_coords(
@@ -885,15 +984,19 @@ class ArraySlicer(QtCore.QObject):
         # rebuilt wholesale whenever the backing DataArray changes.
         # Identify non-uniform axes created by the private conversion while avoiding
         # false positives when users provide their own *_idx dimensions.
-        self._nonuniform_axes = []
-        for i, d in enumerate(self._obj.dims):
-            if erlab.utils.array._nonuniform_dim_name(self._obj, d) is not None:
-                self._nonuniform_axes.append(i)
+        dimension_mapping = self._dimension_mapping
+        self._physical_dims = tuple(
+            dimension_mapping.get(dim, dim) for dim in self._obj.dims
+        )
+        self._nonuniform_axes = [
+            i for i, dim in enumerate(self._obj.dims) if dim in dimension_mapping
+        ]
         self._nonuniform_axes_set: set[int] = set(self._nonuniform_axes)
         self._all_axes: tuple[int, ...] = tuple(range(self._obj.ndim))
         self._dim_indices: dict[Hashable, int] = {
-            dim: i for i, dim in enumerate(self._obj.dims)
+            dim: i for i, dim in enumerate(self.physical_dims)
         }
+        self._dim_indices.update({dim: i for i, dim in enumerate(self._obj.dims)})
         self._hidden_axes_cache: dict[tuple[int, ...], tuple[int, ...]] = {}
         self._hidden_axes_has_nonuniform_cache: dict[tuple[int, ...], bool] = {}
 
@@ -904,6 +1007,7 @@ class ArraySlicer(QtCore.QObject):
         argument-keyed memo tables derived from the current dimension layout.
         """
         for prop in (
+            "_physical_obj",
             "coords",
             "associated_coord_dims",
             "coords_uniform",
@@ -922,6 +1026,7 @@ class ArraySlicer(QtCore.QObject):
         This method clears the cached properties that depend on the data values, such as
         the global minima and maxima.
         """
+        self._reset_property_cache("_physical_obj")
         self._reset_property_cache("_raw_limits")
         self._reset_property_cache("limits")
 
@@ -1327,62 +1432,86 @@ class ArraySlicer(QtCore.QObject):
     ) -> dict[Hashable, slice | int]:
         out: dict[Hashable, slice | int] = {}
         for ax in self._hidden_axes_for_disp(disp):
-            dim_name = self._obj.dims[ax]
-            if ax in self._nonuniform_axes_set and not uniform:
-                dim_name = str(dim_name).removesuffix("_idx")
+            if not uniform and self._obj.dims[ax] in self._display_only_dims:
+                continue
+            dim_name = self._obj.dims[ax] if uniform else self.physical_dims[ax]
             out[dim_name] = self._bin_slice(cursor, ax, int_if_one)
         return out
 
     def qsel_args(self, cursor: int, disp: Sequence[int]) -> dict:
-        binned = self.get_binned(cursor)
-        indexers = self.isel_args(cursor, disp, int_if_one=True)
-        binned_dims: list[Hashable] = []
+        indexers, binned_dims = self._selection_indexers(cursor, disp)
+        return qsel_args_from_indexers(self._physical_obj, indexers, binned_dims)
 
-        for dim in indexers:
-            axis_idx = self._dim_indices.get(dim)
-            if axis_idx is None:
-                axis_idx = self._obj.dims.index(dim)
-            if binned[axis_idx]:
-                binned_dims.append(dim)
+    def _selection_indexers(
+        self, cursor: int, disp: Sequence[int]
+    ) -> tuple[dict[Hashable, slice | int], tuple[Hashable, ...]]:
+        return self.isel_args(cursor, disp, int_if_one=True), tuple(
+            self.physical_dims[axis]
+            for axis in self._hidden_axes_for_disp(disp)
+            if self.get_binned(cursor)[axis]
+            and self._obj.dims[axis] not in self._display_only_dims
+        )
 
-        return qsel_args_from_indexers(self._obj, indexers, binned_dims)
+    def _selection_plan(
+        self, cursor: int, disp: Sequence[int], *, prefer_qsel: bool = True
+    ) -> tuple[str, dict[Hashable, typing.Any], tuple[Hashable, ...]]:
+        indexers, binned_dims = self._selection_indexers(cursor, disp)
+        if prefer_qsel and not self._hidden_axes_have_nonuniform(disp):
+            try:
+                kwargs = qsel_args_from_indexers(
+                    self._physical_obj, indexers, binned_dims
+                )
+            except ValueError:
+                pass
+            else:
+                return "qsel", kwargs, ()
+        return "isel", indexers, binned_dims
+
+    def selection_operations(
+        self, cursor: int, disp: Sequence[int], *, prefer_qsel: bool = True
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        from erlab.interactive.imagetool._provenance._operations import (
+            IselOperation,
+            QSelAggregationOperation,
+            QSelOperation,
+        )
+
+        method, kwargs, mean_dims = self._selection_plan(
+            cursor, disp, prefer_qsel=prefer_qsel
+        )
+        if not kwargs:
+            return ()
+        operations: list[ToolProvenanceOperation] = [
+            QSelOperation(kwargs=kwargs)
+            if method == "qsel"
+            else IselOperation(kwargs=kwargs)
+        ]
+        if mean_dims:
+            operations.append(QSelAggregationOperation(dims=mean_dims, func="mean"))
+        return tuple(operations)
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        if self._hidden_axes_have_nonuniform(disp):
-            # Has non-uniform axes, fallback to isel
-            return self.isel_code(cursor, disp)
+        from erlab.interactive.imagetool._provenance._model import (
+            operations_expression_code,
+        )
 
-        try:
-            qsel_kw = self.qsel_args(cursor, disp)
-        except ValueError:
-            return self.isel_code(cursor, disp)
-        kwargs_str = erlab.interactive.utils.format_kwargs(qsel_kw)
-        if kwargs_str:
-            return f".qsel({kwargs_str})"
-        return ""
+        return operations_expression_code(
+            self.selection_operations(cursor, disp), "data"
+        ).removeprefix("data")
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        kwargs_str = erlab.interactive.utils.format_kwargs(
-            self.isel_args(cursor, disp, int_if_one=True)
+        from erlab.interactive.imagetool._provenance._model import (
+            operations_expression_code,
         )
-        if kwargs_str:
-            return f".isel({kwargs_str})"
-        return ""
+
+        return operations_expression_code(
+            self.selection_operations(cursor, disp, prefer_qsel=False), "data"
+        ).removeprefix("data")
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
-        if not self._hidden_axes_have_nonuniform(disp):
-            return self._obj.qsel(self.qsel_args(cursor, disp))
-
-        isel_kw = self.isel_args(cursor, disp, int_if_one=False, uniform=True)
-        binned_dims: list[Hashable] = [
-            k
-            for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)
-            if (v and (k in isel_kw))
-        ]  # Select only relevant binned dimensions
-        sliced = self._obj.isel(isel_kw).qsel.mean(binned_dims)
-        if self._nonuniform_axes:
-            return erlab.utils.array._restore_nonuniform_dims(sliced)
-        return sliced
+        method, kwargs, mean_dims = self._selection_plan(cursor, disp)
+        selected = getattr(self._physical_obj, method)(kwargs)
+        return selected.qsel.mean(mean_dims) if mean_dims else selected
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
     def slice_with_coord(

@@ -10,12 +10,15 @@ from collections.abc import Mapping
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import (
     create_manifest,
     document_path_is_trusted,
+    issue_complete_execution_capability,
     relocate_manifest_entries,
 )
+from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._payloads import store_code_payload_entries
 from erlab.interactive._saved_tools import resolve_saved_tool_class
 from erlab.interactive.imagetool._provenance._model import (
@@ -26,12 +29,15 @@ from erlab.interactive.imagetool._provenance._trust import provenance_code_trust
 
 if typing.TYPE_CHECKING:
     import os
+    from collections.abc import Iterable
 
+    from erlab.interactive._code_trust._api import _DocumentTrust
+    from erlab.interactive._code_trust._core import CodeTrustEntry
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.utils import ToolWindow
 
 WORKSPACE_CODE_TRUST_DOMAIN = "erlab.workspace"
-WORKSPACE_CODE_TRUST_POLICY_VERSION = 7
+WORKSPACE_CODE_TRUST_POLICY_VERSION = 8
 _MANIFEST_ID = (WORKSPACE_CODE_TRUST_DOMAIN, WORKSPACE_CODE_TRUST_POLICY_VERSION)
 
 
@@ -214,6 +220,16 @@ def workspace_code_trust_manifest(
                 else (_persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,)
             ),
         )
+    for entry in workspace_manifest.get("provenance_revisions", ()):
+        if not isinstance(entry, Mapping):
+            raise TypeError("Workspace provenance revision must be an object")
+        spec = parse_tool_provenance_spec(entry.get("provenance_spec"))
+        if spec is not None:
+            entries.extend(
+                provenance_code_trust_entries(
+                    spec, location_prefix=f"revisions/{entry['revision_id']}/provenance"
+                )
+            )
     return create_manifest(*_MANIFEST_ID, entries)
 
 
@@ -257,7 +273,113 @@ def current_workspace_code_trust_manifest(
                 else ()
             ),
         )
+    for record in manager._provenance_revisions.reachable(
+        workspace_revisions.retained_revision_ids(manager)
+    ):
+        if record.provenance_spec is not None:
+            entries.extend(
+                provenance_code_trust_entries(
+                    record.provenance_spec,
+                    location_prefix=f"revisions/{record.revision_id}/provenance",
+                )
+            )
     return create_manifest(*_MANIFEST_ID, entries)
+
+
+def owned_provenance_code_trust_entries(
+    manager: ImageToolManager,
+    *,
+    previous_revision_ids: frozenset[str],
+    node_paths: Mapping[str, str],
+    previous_entries: Iterable[CodeTrustEntry],
+    execution_entries: Iterable[CodeTrustEntry],
+    edited_entries: Iterable[CodeTrustEntry],
+    previous_trust: _DocumentTrust,
+    manifest_entries: Iterable[CodeTrustEntry],
+    source_owners: Mapping[str, Iterable[str]],
+) -> tuple[CodeTrustEntry, ...]:
+    current_paths = {
+        uid: manager._workspace_controller.saving._workspace_node_path(uid)
+        for uid in manager._tool_graph.nodes
+    }
+
+    def owner(location: str, paths: Mapping[str, str]) -> str | None:
+        candidates = [
+            (len(path), uid)
+            for uid, path in paths.items()
+            if location.startswith(f"{path}/")
+        ]
+        return max(candidates)[1] if candidates else None
+
+    authored: dict[str, set[bytes]] = {}
+    for entry in edited_entries:
+        uid = owner(entry.location, current_paths)
+        if uid is not None:
+            authored.setdefault(uid, set()).add(entry.execution_identity())
+    approved: dict[str, set[bytes]] = {}
+    for entry in (*previous_entries, *execution_entries):
+        uid = owner(entry.location, node_paths)
+        if uid is None:
+            continue
+        if (
+            previous_trust.reason == CodeTrustReason.SIGNATURE
+            and entry.document_identity() not in previous_trust.document_identities
+        ):
+            continue
+        _trust, capability = issue_complete_execution_capability(
+            previous_trust, (entry,)
+        )
+        if capability is not None:
+            approved.setdefault(uid, set()).add(entry.execution_identity())
+
+    new_records = {
+        record.revision_id: record
+        for record in manager._provenance_revisions.reachable(
+            workspace_revisions.retained_revision_ids(manager)
+        )
+        if record.revision_id not in previous_revision_ids
+    }
+
+    def allowed_identities(uid: str) -> set[bytes]:
+        identities: set[bytes] = set()
+        pending = [uid]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current not in seen:
+                seen.add(current)
+                identities.update(approved.get(current, ()))
+                pending.extend(source_owners.get(current, ()))
+        return identities
+
+    entries: list[CodeTrustEntry] = []
+    for entry in manifest_entries:
+        uid = owner(entry.location, current_paths)
+        if uid is not None and entry.execution_identity() in allowed_identities(uid):
+            entries.append(entry)
+    for record in new_records.values():
+        if record.source_owner_uid is None or record.provenance_spec is None:
+            continue
+        allowed = allowed_identities(record.source_owner_uid)
+        authored_entries = {
+            entry.document_identity()
+            for entry in provenance_code_trust_entries(
+                record.provenance_spec,
+                location_prefix=f"revisions/{record.revision_id}/provenance",
+                include_inputs=False,
+            )
+            if entry.execution_identity() in authored.get(record.source_owner_uid, ())
+        }
+        entries.extend(
+            entry
+            for entry in provenance_code_trust_entries(
+                record.provenance_spec,
+                location_prefix=f"revisions/{record.revision_id}/provenance",
+            )
+            if entry.execution_identity() in allowed
+            or entry.document_identity() in authored_entries
+        )
+    return tuple(entries)
 
 
 def inspect_pending_workspace_code_payloads(manager: ImageToolManager) -> None:

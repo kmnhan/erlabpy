@@ -29,7 +29,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_full_provenance,
-    full_data,
     operations_expression_code,
     public_data,
     require_live_source_spec,
@@ -63,7 +62,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     QSelOperation,
     RemoveMeshOperation,
     RenameDimsCoordsOperation,
-    RestoreNonuniformDimsOperation,
     RotateOperation,
     SelOperation,
     ShiftFromInputOperation,
@@ -458,6 +456,10 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         self._slicer_area = weakref.ref(value)
 
     @property
+    def data(self) -> xr.DataArray:
+        return self.slicer_area.displayed_data
+
+    @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
 
@@ -589,12 +591,6 @@ class DataTransformDialog(_DataManipulationDialog):
 
     keep_color_limits: bool = True
     """Whether to also keep manual color limits when opening in a new window."""
-
-    apply_on_nonuniform_data: bool = False
-    """Whether to apply the transform on data with non-uniform dimensions.
-
-    Set to `True` for transforms that can handle coordinates that are not evenly spaced.
-    """
 
     copy_output_suffix: typing.ClassVar[str] = "_transformed"
     """Suffix for copied-code output variables when operations require statements."""
@@ -765,18 +761,11 @@ class DataTransformDialog(_DataManipulationDialog):
         self,
         data: xr.DataArray,
     ) -> ToolProvenanceSpec:
-        operations = self.source_operations()
-        builder = public_data if self.apply_on_nonuniform_data else full_data
-        if not self.apply_on_nonuniform_data:
-            dimension_mapping = erlab.utils.array._nonuniform_dim_mapping(data)
-            if dimension_mapping:
-                operations.append(
-                    RestoreNonuniformDimsOperation(dimension_mapping=dimension_mapping)
-                )
-        return builder(*operations)
+        del data
+        return public_data(*self.source_operations())
 
     def source_spec(self) -> ToolProvenanceSpec:
-        return self.source_spec_for_data(self.slicer_area.data)
+        return self.source_spec_for_data(self.data)
 
     def _detached_provenance_spec(
         self,
@@ -998,23 +987,12 @@ class DataTransformDialog(_DataManipulationDialog):
             super().accept()
             return
 
-        input_name = self.slicer_area.data.name
+        input_name = self.data.name
 
         try:
-            if self.apply_on_nonuniform_data:
-                input_data = erlab.utils.array._restore_nonuniform_dims(
-                    self.slicer_area.data
-                )
-                self.preflight_data(input_data)
-                processed = self.process_data(input_data)
-            else:
-                self.preflight_data(self.slicer_area.data)
-                dimension_mapping = erlab.utils.array._nonuniform_dim_mapping(
-                    self.slicer_area.data
-                )
-                processed = erlab.utils.array._restore_nonuniform_dims(
-                    self.process_data(self.slicer_area.data), dimension_mapping
-                )
+            input_data = self.data
+            self.preflight_data(input_data)
+            processed = self.process_data(input_data)
             processed = processed.rename(input_name)
 
             manager, target = self._manager_target()
@@ -1040,6 +1018,7 @@ class DataTransformDialog(_DataManipulationDialog):
                     and target is not None
                     and manager._is_imagetool_target(target)
                 ):
+                    manager._node_for_target(target).revision_id_for_role("source")
                     self._rewrite_target_provenance(
                         target,
                         detached_provenance_spec,
@@ -1047,6 +1026,12 @@ class DataTransformDialog(_DataManipulationDialog):
                 else:
                     self._set_current_tool_provenance(detached_provenance_spec)
                 self.slicer_area.replace_source_data(processed, emit_edited=True)
+                if (
+                    manager is not None
+                    and target is not None
+                    and manager._is_imagetool_target(target)
+                ):
+                    manager._node_for_target(target).revision_id_for_role("source")
             else:
                 itool_kw = self._itool_kwargs(processed)
                 if self.launch_mode == "nest":
@@ -1072,7 +1057,7 @@ class DataTransformDialog(_DataManipulationDialog):
                         )
                         if tool is not None:  # pragma: no branch
                             tool.set_provenance_spec(detached_provenance_spec)
-                            replay_source_data = self.slicer_area.data
+                            replay_source_data = self.data
                             if target is not None:
                                 replay_source_data = manager._node_for_target(
                                     target
@@ -1292,7 +1277,6 @@ class DataFilterDialog(_DataManipulationDialog):
 class KspaceConversionDialog(DataTransformDialog):
     title = "Convert to kspace"
     enable_copy = True
-    apply_on_nonuniform_data = True
     grouped_operation_only = True
     operation_group_kind = _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
     copy_output_suffix = "_kconv"
@@ -1330,9 +1314,7 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def setup_widgets(self) -> None:
         self.setObjectName("kspaceConversionDialog")
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
         self._compatible = bool(self._source_data.kspace._interactive_compatible)
         self._coordinate_preflight_cancelled = False
         self._input_coordinates_signal_connected = False
@@ -1835,7 +1817,7 @@ class KspaceConversionDialog(DataTransformDialog):
         )
 
     def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
-        source_data = erlab.utils.array._restore_nonuniform_dims(data)
+        source_data = data
         if _kspace_conversion.kspace_configuration(source_data) is None:
             source_data = _kspace_conversion.assign_kspace_configuration(
                 source_data,
@@ -1858,7 +1840,7 @@ class KspaceConversionDialog(DataTransformDialog):
         self,
         data: xr.DataArray,
     ) -> dict[str, float]:
-        source_data = erlab.utils.array._restore_nonuniform_dims(data)
+        source_data = data
         if _kspace_conversion.kspace_configuration(source_data) is None:
             source_data = _kspace_conversion.assign_kspace_configuration(
                 source_data,
@@ -1984,7 +1966,7 @@ class KspaceConversionDialog(DataTransformDialog):
         self,
         data: xr.DataArray,
     ) -> tuple[ToolProvenanceOperation, ...]:
-        source_data = erlab.utils.array._restore_nonuniform_dims(data)
+        source_data = data
         source_configuration = _kspace_conversion.kspace_configuration(source_data)
         if source_configuration is None:
             source_configuration = erlab.constants.AxesConfiguration(
@@ -2010,7 +1992,7 @@ class KspaceConversionDialog(DataTransformDialog):
     def source_operations(
         self,
     ) -> list[ToolProvenanceOperation]:
-        return list(self._operations_for_data(self.slicer_area.data))
+        return list(self._operations_for_data(self.data))
 
     def source_spec_for_data(
         self,
@@ -2183,7 +2165,7 @@ class RotationDialog(DataTransformDialog):
                 np.round(self.angle_spin.value(), self.angle_spin.decimals())
             ),
             "axes": typing.cast(
-                "tuple[str, str]", tuple(self.slicer_area.main_image.axis_dims_uniform)
+                "tuple[str, str]", tuple(self.slicer_area.main_image.axis_dims)
             ),
             "center": typing.cast(
                 "tuple[float, float]", tuple(spin.value() for spin in self.center_spins)
@@ -2208,11 +2190,11 @@ class RotationDialog(DataTransformDialog):
         )
         for i in range(2):
             axis: int = main_image.display_axis[i]
-            dim: str = str(main_image.axis_dims_uniform[i])
+            dim: str = str(main_image.axis_dims[i])
             self.center_spins[i].setDecimals(
-                self.array_slicer.get_significant(axis, uniform=True)
+                self.array_slicer.get_significant(axis, uniform=False)
             )
-            self.center_spins[i].setSingleStep(float(self.array_slicer.incs_uniform[i]))
+            self.center_spins[i].setSingleStep(float(abs(self.array_slicer.incs[axis])))
             self.center_spins[i].setValue(0.0)
 
             self.layout_.addRow(f"Center {dim}", self.center_spins[i])
@@ -2226,7 +2208,10 @@ class RotationDialog(DataTransformDialog):
         self.reshape_check.setChecked(True)
         self.layout_.addRow(self.reshape_check)
 
-        if main_image.is_guidelines_visible:
+        if main_image.is_guidelines_visible and not any(
+            axis in self.array_slicer._nonuniform_axes
+            for axis in main_image.display_axis
+        ):
             # Fill values from guideline
             self.angle_spin.setValue(-main_image._guideline_angle)
             for spin, val in zip(
@@ -2248,9 +2233,7 @@ class RotationDialog(DataTransformDialog):
             RotateOperation,
         ):
             return
-        if tuple(operation.axes) != tuple(
-            self.slicer_area.main_image.axis_dims_uniform
-        ):
+        if tuple(operation.axes) != tuple(self.slicer_area.main_image.axis_dims):
             raise ValueError("Rotation axes are not currently visible")
         self.angle_spin.setValue(float(operation.angle))
         for spin, value in zip(self.center_spins, operation.center, strict=True):
@@ -2274,7 +2257,7 @@ class AggregateDialog(DataTransformDialog):
 
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
 
-        for d in self.slicer_area.data.dims:
+        for d in self.data.dims:
             self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
             dim_layout.addWidget(self.dim_checks[d])
 
@@ -2339,7 +2322,7 @@ class AggregateDialog(DataTransformDialog):
             )
             return
 
-        if (self.slicer_area.data.ndim - len(self._target_dims)) < 1:
+        if (self.data.ndim - len(self._target_dims)) < 1:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Not Enough Dimensions Left",
@@ -2678,7 +2661,6 @@ class _SelectionRow:
 class SelectionDialog(DataTransformDialog):
     title = "Select Data"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (
         IselOperation,
         SelOperation,
@@ -2714,8 +2696,8 @@ class SelectionDialog(DataTransformDialog):
     def setup_widgets(self) -> None:
         source_data = self._source_data
         if source_data is None:
-            source_data = self.slicer_area.data
-        self.public_data = erlab.utils.array._restore_nonuniform_dims(source_data)
+            source_data = self.data
+        self.public_data = source_data
 
         self.grid_layout = QtWidgets.QGridLayout()
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -2766,20 +2748,39 @@ class SelectionDialog(DataTransformDialog):
         self.update_preview()
 
     def _current_selection_index(self, axis: int) -> int:
-        if self._source_data is None:
-            return self.array_slicer.get_index(self.slicer_area.current_cursor, axis)
         dim = self.public_data.dims[axis]
+        if self._source_data is None:
+            display_dims = self.array_slicer.physical_dims
+            if dim in display_dims:
+                return self.array_slicer.get_index(
+                    self.slicer_area.current_cursor, display_dims.index(dim)
+                )
+            return 0
         size = self.public_data.sizes[dim]
         return max(0, min(size // 2, size - 1))
 
-    def _selection_bin_values(self) -> tuple[float, ...]:
+    def _selection_bin_values(self) -> tuple[float | None, ...]:
         if self._source_data is None:
-            return self.array_slicer.get_bin_values(self.slicer_area.current_cursor)
+            values = dict(
+                zip(
+                    self.array_slicer.physical_dims,
+                    self.array_slicer.get_bin_values(self.slicer_area.current_cursor),
+                    strict=True,
+                )
+            )
+            return tuple(values.get(dim, 0.0) for dim in self.public_data.dims)
         return (0.0,) * self.public_data.ndim
 
     def _selection_binned(self) -> tuple[bool, ...]:
         if self._source_data is None:
-            return self.array_slicer.get_binned(self.slicer_area.current_cursor)
+            values = dict(
+                zip(
+                    self.array_slicer.physical_dims,
+                    self.array_slicer.get_binned(self.slicer_area.current_cursor),
+                    strict=True,
+                )
+            )
+            return tuple(values.get(dim, False) for dim in self.public_data.dims)
         return (False,) * self.public_data.ndim
 
     def _selection_kwargs(
@@ -2932,13 +2933,10 @@ class SelectionDialog(DataTransformDialog):
 class InterpolationDialog(DataTransformDialog):
     title = "Interpolate"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (InterpolationOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
 
         self.dim_combo = QtWidgets.QComboBox()
         for dim in self._source_data.dims:
@@ -3086,13 +3084,10 @@ class _UniformInterpolationDialog(DataTransformDialog):
 
     title = "Interpolate Uniform Grid"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (UniformInterpolationOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
         self.size_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
 
@@ -3164,7 +3159,6 @@ class _ImageDerivativeDialog(DataTransformDialog):
 
     title = "Image Derivative"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (ImageDerivativeOperation,)
     _METHODS: typing.ClassVar[tuple[tuple[str, str], ...]] = (
         ("diffn", "Second Derivative"),
@@ -3175,9 +3169,7 @@ class _ImageDerivativeDialog(DataTransformDialog):
     )
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
         self.method_combo = QtWidgets.QComboBox()
         for method, label in self._METHODS:
             self.method_combo.addItem(label, userData=method)
@@ -3312,13 +3304,10 @@ class _RemoveMeshDialog(DataTransformDialog):
 
     title = "Remove Mesh"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (RemoveMeshOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
 
         self.output_combo = QtWidgets.QComboBox()
         self.output_combo.addItem("Corrected Data", userData="corrected")
@@ -3460,21 +3449,10 @@ class _RemoveMeshDialog(DataTransformDialog):
 class SortByDialog(DataTransformDialog):
     title = "Sort By"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (SortByOperation,)
 
     def setup_widgets(self) -> None:
-        source_data = erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
-        public_dims = tuple(
-            dim.removesuffix("_idx")
-            if isinstance(dim, str) and dim.endswith("_idx")
-            else dim
-            for dim in self.slicer_area.data.dims
-        )
-        if tuple(source_data.dims) != public_dims and set(source_data.dims) == set(
-            public_dims
-        ):
-            source_data = source_data.transpose(*public_dims)
+        source_data = self.data
 
         sort_keys: list[Hashable] = list(source_data.dims)
         for name, coord in source_data.coords.items():
@@ -3647,13 +3625,10 @@ class SortByDialog(DataTransformDialog):
 class LeadingEdgeDialog(DataTransformDialog):
     title = "Leading Edge"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (LeadingEdgeOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
 
         self.dim_combo = QtWidgets.QComboBox()
         for dim in self._source_data.dims:
@@ -3760,7 +3735,6 @@ class LeadingEdgeDialog(DataTransformDialog):
 class CoarsenDialog(DataTransformDialog):
     title = "Coarsen"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (CoarsenOperation,)
 
     _REDUCERS: tuple[str, ...] = (
@@ -3778,9 +3752,7 @@ class CoarsenDialog(DataTransformDialog):
     )
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
 
         dim_group = QtWidgets.QGroupBox("Dimensions")
         dim_layout = QtWidgets.QGridLayout()
@@ -3935,13 +3907,10 @@ class CoarsenDialog(DataTransformDialog):
 class ThinDialog(DataTransformDialog):
     title = "Thin Data"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (ThinOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
 
         mode_group = QtWidgets.QGroupBox("Mode")
         mode_layout = QtWidgets.QVBoxLayout()
@@ -4085,13 +4054,10 @@ class ThinDialog(DataTransformDialog):
 class SqueezeDialog(DataTransformDialog):
     title = "Squeeze Dimensions"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (SqueezeOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
 
         dim_group = QtWidgets.QGroupBox("Dimensions")
         dim_group.setObjectName("squeezeDimensionsGroup")
@@ -4206,7 +4172,7 @@ class SymmetrizeDialog(DataTransformDialog):
         dim_group.setLayout(dim_layout)
 
         self._dim_combo = QtWidgets.QComboBox()
-        self._dim_combo.addItems([str(d) for d in self.slicer_area.data.dims])
+        self._dim_combo.addItems([str(d) for d in self.data.dims])
         dim_layout.addWidget(self._dim_combo)
 
         self._center_spin = QtWidgets.QDoubleSpinBox()
@@ -4265,15 +4231,18 @@ class SymmetrizeDialog(DataTransformDialog):
 
     @QtCore.Slot()
     def _update_spin(self) -> None:
-        axis = self._dim_combo.currentIndex()
-        self._center_spin.setRange(*map(float, self.array_slicer.lims_uniform[axis]))
-        self._center_spin.setSingleStep(float(self.array_slicer.incs_uniform[axis]))
-        self._center_spin.setDecimals(
-            self.array_slicer.get_significant(axis, uniform=True)
-        )
-        self._center_spin.setValue(
-            self.slicer_area.current_values_uniform[self._dim_combo.currentIndex()]
-        )
+        dim = self._dim_combo.currentText()
+        coord = np.asarray(self.data[dim].values, dtype=np.float64)
+        self._center_spin.setRange(float(coord.min()), float(coord.max()))
+        if dim in self.array_slicer.physical_dims:
+            axis = self.array_slicer.physical_dims.index(dim)
+            self._center_spin.setSingleStep(float(abs(self.array_slicer.incs[axis])))
+            self._center_spin.setDecimals(self.array_slicer.get_significant(axis))
+            self._center_spin.setValue(self.slicer_area.current_values[axis])
+        else:
+            self._center_spin.setSingleStep(1.0)
+            self._center_spin.setDecimals(3)
+            self._center_spin.setValue(float(coord[0]))
 
     @property
     def _params(self) -> dict[str, typing.Any]:
@@ -4338,8 +4307,8 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
         main_image = self.slicer_area.main_image
 
         self._axes: tuple[str, str] = (
-            str(main_image.axis_dims_uniform[0]),
-            str(main_image.axis_dims_uniform[1]),
+            str(main_image.axis_dims[0]),
+            str(main_image.axis_dims[1]),
         )
 
         plane_group = QtWidgets.QGroupBox("Rotation plane")
@@ -4364,12 +4333,12 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
         )
         for i in range(2):
             axis = main_image.display_axis[i]
-            dim = str(main_image.axis_dims_uniform[i])
+            dim = str(main_image.axis_dims[i])
             self.center_spins[i].setDecimals(
-                self.array_slicer.get_significant(axis, uniform=True)
+                self.array_slicer.get_significant(axis, uniform=False)
             )
-            self.center_spins[i].setSingleStep(float(self.array_slicer.incs_uniform[i]))
-            self.center_spins[i].setValue(self.slicer_area.current_values_uniform[axis])
+            self.center_spins[i].setSingleStep(float(abs(self.array_slicer.incs[axis])))
+            self.center_spins[i].setValue(self.slicer_area.current_values[axis])
             self.layout_.addRow(f"Center {dim}", self.center_spins[i])
 
         self.order_spin = QtWidgets.QSpinBox()
@@ -4381,7 +4350,10 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
         self.reshape_check.setChecked(True)
         self.layout_.addRow(self.reshape_check)
 
-        if main_image.is_guidelines_visible:
+        if main_image.is_guidelines_visible and not any(
+            axis in self.array_slicer._nonuniform_axes
+            for axis in main_image.display_axis
+        ):
             for spin, val in zip(
                 self.center_spins, main_image._guideline_offset, strict=True
             ):
@@ -4448,7 +4420,7 @@ class EdgeCorrectionDialog(DataTransformDialog):
         )
 
     def _validate(self) -> QtWidgets.QDialog.DialogCode:
-        if "eV" not in self.slicer_area.data.dims:
+        if "eV" not in self.data.dims:
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Energy Dimension",
@@ -4468,7 +4440,6 @@ class ShiftDialog(DataTransformDialog):
 
     title = "Shift"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (ShiftOperation,)
 
     _SOURCE_SCALAR = "scalar"
@@ -4497,7 +4468,7 @@ class ShiftDialog(DataTransformDialog):
         self._sync_shift_controls()
 
     def setup_widgets(self) -> None:
-        source_data = erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
+        source_data = self.data
 
         self.along_combo = QtWidgets.QComboBox()
         self.along_combo.setObjectName("shift_along_combo")
@@ -4711,7 +4682,7 @@ class ShiftDialog(DataTransformDialog):
         if manager is not None and target is not None:
             current_node = manager._node_for_target(target)
             source_data = (
-                erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
+                self.data
                 if self.is_provenance_edit_mode
                 else current_node.data_for_role("source", owner_node=current_node)
             )
@@ -4905,7 +4876,6 @@ class ShiftDialog(DataTransformDialog):
 
 class _BaseCropDialog(DataTransformDialog):
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (
         SelOperation,
         IselOperation,
@@ -4915,36 +4885,10 @@ class _BaseCropDialog(DataTransformDialog):
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         raise NotImplementedError
 
-    @staticmethod
-    def _nonuniform_isel_slice(selector: slice) -> slice:
-        start = None if selector.start is None else int(selector.start)
-        stop = None if selector.stop is None else int(selector.stop)
-        step = selector.step
-        if stop is not None:
-            if step is not None and step < 0:
-                stop -= 1
-            else:
-                stop += 1
-        return slice(start, stop, step)
-
     def source_operations(
         self,
     ) -> list[ToolProvenanceOperation]:
-        sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
-        isel_kwargs: dict[Hashable, slice] = {}
-        operations: list[ToolProvenanceOperation] = []
-
-        for key in list(sel_kwargs.keys()):
-            if isinstance(key, str) and key.endswith("_idx"):
-                isel_kwargs[key.removesuffix("_idx")] = self._nonuniform_isel_slice(
-                    sel_kwargs.pop(key)
-                )
-
-        if sel_kwargs:
-            operations.append(SelOperation(kwargs=sel_kwargs))
-        if isel_kwargs:
-            operations.append(IselOperation(kwargs=isel_kwargs))
-        return operations
+        return list(self.array_slicer.crop_selection(self._slice_kwargs))
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         for operation in self.source_operations():
@@ -4963,27 +4907,32 @@ class CropToViewDialog(_BaseCropDialog):
 
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
 
-        for i, d in enumerate(self.slicer_area.data.dims):
-            self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
-            dim_layout.addWidget(self.dim_checks[d])
-            if i < 2:
-                # Enable first 2 dimensions by default
-                self.dim_checks[d].setChecked(True)
-
-            if d not in self.slicer_area.manual_limits:
-                # Disable dimensions without manual limits
-                self.dim_checks[d].setChecked(False)
-                self.dim_checks[d].setDisabled(True)
+        for i, (display_dim, dim) in enumerate(
+            zip(
+                self.slicer_area.data.dims, self.array_slicer.physical_dims, strict=True
+            )
+        ):
+            if dim not in self.data.dims:
+                continue
+            self.dim_checks[dim] = QtWidgets.QCheckBox(str(dim))
+            dim_layout.addWidget(self.dim_checks[dim])
+            self.dim_checks[dim].setChecked(i < 2)
+            if display_dim not in self.slicer_area.manual_limits:
+                self.dim_checks[dim].setChecked(False)
+                self.dim_checks[dim].setDisabled(True)
 
         self.layout_.addRow(dim_group)
 
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
-        return {
-            k: v
-            for k, v in self.slicer_area.make_slice_dict().items()
-            if self.dim_checks[k].isChecked()
-        }
+        limits = self.slicer_area.make_slice_dict()
+        indexers: dict[Hashable, slice] = {}
+        for physical_dim, check in self.dim_checks.items():
+            if check.isChecked():
+                axis = self.array_slicer.physical_dims.index(physical_dim)
+                display_dim = self.slicer_area.data.dims[axis]
+                indexers[display_dim] = limits[display_dim]
+        return indexers
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -5025,21 +4974,14 @@ class CropDialog(_BaseCropDialog):
 
         slice_dict: dict[Hashable, slice] = {}
 
-        for k in self._enabled_dims:
-            ax_idx = self.slicer_area.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-
+        for dim in self._enabled_dims:
+            ax_idx = self.array_slicer.physical_dims.index(dim)
+            k = self.slicer_area.data.dims[ax_idx]
             start = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
             end = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
 
             if start > end:
                 start, end = end, start
-
-            start = float(np.round(start, sig_digits))
-            end = float(np.round(end, sig_digits))
-
-            if sig_digits == 0:
-                start, end = int(start), int(end)
 
             slice_dict[k] = slice(start, end)
 
@@ -5098,7 +5040,9 @@ class CropDialog(_BaseCropDialog):
 
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
 
-        for d in self.slicer_area.data.dims:
+        for d in self.array_slicer.physical_dims:
+            if d not in self.data.dims:
+                continue
             self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
             dim_layout.addWidget(self.dim_checks[d])
 
@@ -5121,7 +5065,7 @@ class NormalizeDialog(DataFilterDialog):
 
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
 
-        for d in self.slicer_area.data.dims:
+        for d in self.data.dims:
             self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
             dim_layout.addWidget(self.dim_checks[d])
 
@@ -5191,13 +5135,10 @@ class NormalizeDialog(DataFilterDialog):
 class DivideByCoordDialog(DataTransformDialog):
     title = "Divide by Coordinate"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (DivideByCoordOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
         self.coord_combo = QtWidgets.QComboBox()
         self.coord_dims_label = QtWidgets.QLabel()
 
@@ -5503,9 +5444,7 @@ class _BoxcarFilterDialog(DataFilterDialog):
     operation_types = (BoxcarFilterOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        self._source_data = self.data
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
         self.size_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
 
@@ -5594,23 +5533,10 @@ class _BoxcarFilterDialog(DataFilterDialog):
 class SwapDimsDialog(DataTransformDialog):
     title = "Swap Dimensions"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (SwapDimsOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
-        public_dims = tuple(
-            dim.removesuffix("_idx")
-            if isinstance(dim, str) and dim.endswith("_idx")
-            else dim
-            for dim in self.slicer_area.data.dims
-        )
-        if tuple(self._source_data.dims) != public_dims and set(
-            self._source_data.dims
-        ) == set(public_dims):
-            self._source_data = self._source_data.transpose(*public_dims)
+        self._source_data = self.data
 
         dim_group = QtWidgets.QGroupBox("Dimensions")
         dim_layout = QtWidgets.QGridLayout()
@@ -5719,23 +5645,10 @@ class SwapDimsDialog(DataTransformDialog):
 class RenameDimsCoordsDialog(DataTransformDialog):
     title = "Rename Coordinates and Dimensions"
     enable_copy = True
-    apply_on_nonuniform_data = True
     operation_types = (RenameDimsCoordsOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area.data
-        )
-        public_dims = tuple(
-            dim.removesuffix("_idx")
-            if isinstance(dim, str) and dim.endswith("_idx")
-            else dim
-            for dim in self.slicer_area.data.dims
-        )
-        if tuple(self._source_data.dims) != public_dims and set(
-            self._source_data.dims
-        ) == set(public_dims):
-            self._source_data = self._source_data.transpose(*public_dims)
+        self._source_data = self.data
 
         self._rename_sources: list[Hashable] = [*self._source_data.dims]
         self._rename_sources.extend(
@@ -5891,7 +5804,7 @@ class AssignCoordsDialog(DataTransformDialog):
         self.layout_.addRow(self._mode_tabs)
 
         scalar_coords: dict[str, float] = {}
-        for name, coord in self.slicer_area.data.coords.items():
+        for name, coord in self.data.coords.items():
             values = np.asarray(coord.values)
             if (
                 values.ndim == 0
@@ -5903,11 +5816,9 @@ class AssignCoordsDialog(DataTransformDialog):
         existing_widget = QtWidgets.QWidget(self)
         existing_layout = QtWidgets.QVBoxLayout(existing_widget)
 
-        existing_coord_names: list[str] = [str(d) for d in self.slicer_area.data.dims]
+        existing_coord_names: list[str] = [str(d) for d in self.data.dims]
         existing_coord_names.extend(
-            str(k)
-            for k in self.slicer_area.data.coords
-            if k not in self.slicer_area.data.dims
+            str(k) for k in self.data.coords if k not in self.data.dims
         )
         self._coord_combo = QtWidgets.QComboBox()
         self._coord_combo.setObjectName("coordinateEditorCoordinateSelector")
@@ -5987,7 +5898,7 @@ class AssignCoordsDialog(DataTransformDialog):
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self._remove_coord_items: dict[Hashable, QtWidgets.QTableWidgetItem] = {}
-        for name, coord in self.slicer_area.data.coords.items():
+        for name, coord in self.data.coords.items():
             if coord.ndim != 0:
                 continue
             row = self._remove_coord_table.rowCount()
@@ -6064,30 +5975,28 @@ class AssignCoordsDialog(DataTransformDialog):
 
     @QtCore.Slot()
     def _coord_selection_changed(self) -> None:
-        self.coord_widget.set_old_coord(
-            self.slicer_area.data[self.current_coord_name].values
-        )
+        self.coord_widget.set_old_coord(self.data[self.current_coord_name].values)
 
     def _populate_add_reference_combo(self) -> None:
         self._add_ref_combo.clear()
         added_dims: set[Hashable] = set()
-        for dim in self.slicer_area.data.dims:
-            if dim in self.slicer_area.data.coords:
-                coord = self.slicer_area.data.coords[dim]
+        for dim in self.data.dims:
+            if dim in self.data.coords:
+                coord = self.data.coords[dim]
                 if coord.ndim == 1:
                     self._add_ref_combo.addItem(f"{dim} (dimension)", userData=dim)
                     added_dims.add(dim)
-        for coord_name, coord in self.slicer_area.data.coords.items():
-            if coord_name in self.slicer_area.data.dims or coord.ndim != 1:
+        for coord_name, coord in self.data.coords.items():
+            if coord_name in self.data.dims or coord.ndim != 1:
                 continue
             dim = coord.dims[0]
-            if dim in self.slicer_area.data.dims:
+            if dim in self.data.dims:
                 self._add_ref_combo.addItem(
                     f"{coord_name} ({dim})",
                     userData=dim,
                 )
                 added_dims.add(dim)
-        for dim in self.slicer_area.data.dims:
+        for dim in self.data.dims:
             if dim not in added_dims:
                 self._add_ref_combo.addItem(str(dim), userData=dim)
 
@@ -6113,10 +6022,10 @@ class AssignCoordsDialog(DataTransformDialog):
         )
         label = self._add_ref_combo.currentText()
         coord_name = label.split(" (", 1)[0]
-        if coord_name in self.slicer_area.data.coords:
-            values = self.slicer_area.data.coords[coord_name].values
+        if coord_name in self.data.coords:
+            values = self.data.coords[coord_name].values
         else:
-            values = np.arange(self.slicer_area.data.sizes[dim], dtype=float)
+            values = np.arange(self.data.sizes[dim], dtype=float)
         self._add_coord_widget.set_old_coord(values)
 
     def _add_coord_values(self) -> tuple[typing.Any, Hashable | None]:
@@ -6142,10 +6051,10 @@ class AssignCoordsDialog(DataTransformDialog):
         values = np.asarray(values)
         if values.ndim != 1:
             raise ValueError("1D coordinates must use a one-dimensional value.")
-        if values.size != self.slicer_area.data.sizes[dim]:
+        if values.size != self.data.sizes[dim]:
             raise ValueError(
                 f"Coordinate length {values.size} does not match dimension "
-                f"{dim!r} length {self.slicer_area.data.sizes[dim]}."
+                f"{dim!r} length {self.data.sizes[dim]}."
             )
         return values, dim
 
@@ -6171,7 +6080,7 @@ class AssignCoordsDialog(DataTransformDialog):
             )
             return
 
-        if name in self.slicer_area.data.dims or name in self.slicer_area.data.coords:
+        if name in self.data.dims or name in self.data.coords:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Duplicate Name",
@@ -6367,7 +6276,7 @@ class AssignAttrsDialog(DataTransformDialog):
     operation_types = (AssignAttrsOperation,)
 
     def setup_widgets(self) -> None:
-        self._original_attrs = dict(self.slicer_area.data.attrs)
+        self._original_attrs = dict(self.data.attrs)
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Value"])
@@ -6539,7 +6448,6 @@ class AssignAttrsDialog(DataTransformDialog):
 class ROIPathDialog(DataTransformDialog):
     title = "Slice Along ROI Path"
     enable_copy = True
-    apply_on_nonuniform_data = True
 
     def __init__(self, roi: ItoolPolyLineROI) -> None:
         self.roi = roi
@@ -6599,7 +6507,6 @@ class ROIPathDialog(DataTransformDialog):
 class ROIMaskDialog(DataTransformDialog):
     title = "Mask with ROI"
     enable_copy = True
-    apply_on_nonuniform_data = True
 
     def __init__(self, roi: ItoolPolyLineROI) -> None:
         self.roi = roi

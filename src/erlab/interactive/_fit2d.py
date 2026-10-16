@@ -1617,18 +1617,7 @@ class Fit2DTool(Fit1DTool):
         self._update_param_plot_options()
         self._update_param_plot()
 
-        repaired_bounds: list[str] = []
-        previous_repaired_bounds = self._param_bounds_repair_names
-        self._param_bounds_repair_names = repaired_bounds
-        try:
-            super()._apply_fit1d_tool_status(
-                status,
-                entries,
-                capability,
-                local_edit=local_edit,
-            )
-            if self._pending_fit_status is not None:
-                return
+        def restore_parameter_groups(repaired_bounds: list[str]) -> None:
             self._update_param_plot_options()
             if state2d is not None:  # pragma: no branch
                 y_size = int(self._data_full.sizes[self._y_dim_name])
@@ -1651,12 +1640,23 @@ class Fit2DTool(Fit1DTool):
                         )
                         if restored is not None:
                             self._initial_params_full[i] = restored
+
+        repaired_bounds: list[str] = []
+        previous_repaired_bounds = self._param_bounds_repair_names
+        self._param_bounds_repair_names = repaired_bounds
+        try:
+            super()._apply_fit1d_tool_status(
+                status,
+                entries,
+                capability,
+                local_edit=local_edit,
+                restore_parameter_groups=restore_parameter_groups,
+            )
+            if self._pending_fit_status is not None:
+                return
         finally:
             self._param_bounds_repair_names = previous_repaired_bounds
         self._show_repaired_parameter_bounds_warning(repaired_bounds)
-        self._refresh_fit_code_entries()
-        if self._fit_code_entries == entries:
-            self._fit_execution_capability = capability
         self._update_param_plot_options()
         self._update_param_plot()
 

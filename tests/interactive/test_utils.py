@@ -2,6 +2,7 @@ import builtins
 import contextlib
 import enum
 import importlib
+import io
 import json
 import logging
 import sys
@@ -73,6 +74,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemModel,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -1940,6 +1942,164 @@ def test_empty_fit_dataset_blob_roundtrip_has_no_private_coord_data() -> None:
     xr.testing.assert_identical(restored, empty)
 
 
+def _fit_dataset_with_hint(kind: str = "builtin") -> xr.Dataset:
+    slope, intercept = "slope", "intercept"
+    if kind == "callable":
+
+        def custom_line(x, slope=1.25, intercept=0.2):
+            return slope * x + intercept
+
+        model = lmfit.Model(custom_line, prefix="line_")
+    elif kind.startswith("erlab"):
+        model = erlab.analysis.fit.models.PolynomialModel(degree=1, prefix="line_")
+        slope, intercept = "c1", "c0"
+    else:
+        model = lmfit.models.LinearModel(prefix="line_")
+    model.set_param_hint(slope, value=1.25, min=0.2, max=3.0)
+    if kind.endswith("expression"):
+        model.set_param_hint(intercept, expr=f"2 * line_{slope}")
+    params = model.make_params(**{f"line_{intercept}": 0.2})
+    angles = np.linspace(-1.0, 1.0, 11)
+    signal = xr.DataArray(
+        model.eval(params=params, x=angles),
+        dims="alpha",
+        coords={"alpha": angles},
+        name="edge_center",
+    ).assign_coords({"sample temperature": 18.0})
+    return signal.xlm.modelfit("alpha", model=model, params=params, guess=False)
+
+
+@pytest.mark.parametrize("released", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["builtin", "erlab", "expression", "erlab-expression", "callable"]
+)
+def test_fit_dataset_blob_preserves_model_data_and_code_boundary(kind, released):
+    import xarray_lmfit
+
+    from erlab.interactive._fit_code_trust import lmfit_result_code_entry
+
+    dataset = _fit_dataset_with_hint(kind)
+    original = dataset.modelfit_results.item()
+    if released:
+        buffer = io.BytesIO()
+        xarray_lmfit.save_fit(dataset, buffer, engine="h5netcdf", invalid_netcdf=True)
+        blob = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
+        external = xarray_lmfit.load_fit(io.BytesIO(blob.tobytes()), engine="h5netcdf")
+        np.testing.assert_allclose(
+            external.modelfit_results.item().eval(), original.eval()
+        )
+    else:
+        blob = erlab.interactive.utils._serialize_fit_dataset_blob(dataset)
+
+    for _roundtrip in range(2):
+        entry = lmfit_result_code_entry(
+            blob, feature="test.fit-result", location="fit-result"
+        )
+        requires_code = (
+            kind.endswith("expression")
+            or kind == "callable"
+            or (released and kind.startswith("erlab") and _roundtrip == 0)
+        )
+        assert (entry is not None) is requires_code
+        restored = erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
+        xr.testing.assert_identical(
+            restored.drop_vars("modelfit_results"),
+            dataset.drop_vars("modelfit_results"),
+        )
+        result = restored.modelfit_results.item()
+        np.testing.assert_allclose(result.eval(), original.eval())
+        assert result.model.param_hints == original.model.param_hints
+        assert result.params.keys() == original.params.keys()
+        for name, parameter in original.params.items():
+            actual = result.params[name]
+            assert actual.value == pytest.approx(parameter.value)
+            assert (actual.min, actual.max, actual.expr, actual.vary) == (
+                parameter.min,
+                parameter.max,
+                parameter.expr,
+                parameter.vary,
+            )
+        normalized = erlab.interactive.utils._normalize_fit_dataset_blob(blob)
+        if kind == "callable":
+            np.testing.assert_array_equal(normalized, blob)
+        normalized_entry = lmfit_result_code_entry(
+            normalized, feature="test.fit-result", location="fit-result"
+        )
+        assert (normalized_entry is not None) is (
+            kind.endswith("expression") or kind == "callable"
+        )
+        if kind == "expression":
+            assert normalized_entry.execution_identity() == entry.execution_identity()
+        normalized_dataset = erlab.interactive.utils._deserialize_fit_dataset_blob(
+            normalized
+        )
+        xr.testing.assert_identical(
+            normalized_dataset.drop_vars("modelfit_results"),
+            dataset.drop_vars("modelfit_results"),
+        )
+        blob = erlab.interactive.utils._serialize_fit_dataset_blob(restored)
+
+
+@pytest.mark.parametrize("consumer", ["figure", "provenance"])
+def test_builtin_fit_result_consumers_need_no_code_approval(qtbot, consumer):
+    from erlab.interactive._figurecomposer import (
+        FigureComposerTool,
+        FigureOperationState,
+        FigureSourceState,
+        _rendering,
+    )
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive.imagetool._provenance._model import (
+        parse_tool_provenance_spec,
+    )
+    from erlab.interactive.imagetool._provenance._operations import (
+        CorrectWithEdgeOperation,
+    )
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_requires_code_trust,
+    )
+
+    dataset = _fit_dataset_with_hint()
+    if consumer == "figure":
+        snapshot = FigureFitSourceSnapshot.from_dataset(dataset)
+        tool = FigureComposerTool.from_fit_sources(
+            {"edge": snapshot},
+            sources=(FigureSourceState(name="edge", kind="fit"),),
+            operations=(
+                FigureOperationState.fit_plot(source="edge").model_copy(
+                    update={"fit_numpoints": 41, "show_data": False}
+                ),
+            ),
+        )
+        qtbot.addWidget(tool)
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+        qtbot.addWidget(restored)
+        assert restored._current_code_trust_manifest().entries == ()
+        assert restored._code_trust_banner.isHidden()
+        _rendering._render_into_figure(restored, restored.figure, sync_visible=False)
+        assert not restored._operation_render_errors
+        line = restored.figure.axes[0].lines[0]
+        assert len(line.get_xdata()) == 41
+        np.testing.assert_allclose(
+            line.get_ydata(),
+            dataset.modelfit_results.item().eval(x=line.get_xdata()),
+        )
+    else:
+        spec = full_data(CorrectWithEdgeOperation(edge_fit=dataset, shift_coords=False))
+        restored = parse_tool_provenance_spec(spec.model_dump(mode="json"))
+        assert restored is not None
+        assert not provenance_requires_code_trust(restored)
+        image = xr.DataArray(
+            np.tile(np.arange(13.0), (11, 1)),
+            dims=("alpha", "eV"),
+            coords={"alpha": dataset.alpha, "eV": np.linspace(-3.0, 3.0, 13)},
+        )
+        xr.testing.assert_identical(
+            restored.apply(image),
+            erlab.analysis.gold.correct_with_edge(image, dataset, shift_coords=False),
+        )
+
+
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("prefix", ["", "peak_"])
 def test_fit_dataset_blob_restores_multipeak_components(nested, prefix) -> None:
@@ -1995,50 +2155,6 @@ def test_fit_dataset_blob_restores_multipeak_components(nested, prefix) -> None:
             assert loaded.param_hints == original.param_hints
             if isinstance(original, erlab.analysis.fit.models.MultiPeakModel):
                 assert type(loaded) is erlab.analysis.fit.models.MultiPeakModel
-
-
-def test_fit_dataset_blob_skips_missing_results_and_other_model_subclasses(
-    monkeypatch,
-) -> None:
-    import xarray_lmfit
-
-    class CustomModel(lmfit.Model):
-        pass
-
-    multipeak = erlab.analysis.fit.models.MultiPeakModel(
-        fd=False, convolve=False, background="none"
-    )
-    custom = CustomModel(multipeak.func)
-    result = lmfit.model.ModelResult(custom, custom.make_params())
-    generic_result = lmfit.model.ModelResult(
-        lmfit.Model(multipeak.func), multipeak.make_params()
-    )
-    recognized_model = lmfit.Model(multipeak.func, name="saved", prefix="saved_")
-    recognized_result = lmfit.model.ModelResult(
-        recognized_model, recognized_model.make_params()
-    )
-    original_state = recognized_model.__dict__.copy()
-    dataset = xr.Dataset(
-        {
-            "modelfit_results": xr.DataArray(
-                [[None, np.nan], ["missing", result]], dims=("a", "b")
-            ),
-            "unrelated": xr.DataArray(generic_result),
-            "other_modelfit_results": xr.DataArray(recognized_result),
-        }
-    )
-    monkeypatch.setattr(xarray_lmfit, "load_fit", lambda *args, **kwargs: dataset)
-
-    restored = erlab.interactive.utils._deserialize_fit_dataset_blob([])
-
-    assert restored.modelfit_results.values[0, 0] is None
-    assert np.isnan(restored.modelfit_results.values[0, 1])
-    assert restored.modelfit_results.values[1, 0] == "missing"
-    assert type(restored.modelfit_results.values[1, 1].model) is CustomModel
-    assert type(restored.unrelated.item().model) is lmfit.Model
-    assert restored.other_modelfit_results.item().model is recognized_model
-    assert type(recognized_model) is erlab.analysis.fit.models.MultiPeakModel
-    assert recognized_model.__dict__ == original_state
 
 
 def test_lmfit_erlab_callable_warning_filter_reemits_unrelated_warning() -> None:
@@ -5203,7 +5319,7 @@ def test_tool_window_false_update_discards_pending_bindings(qtbot) -> None:
     assert not tool._apply_inputs({"data": data + 1.0}, (refreshed_binding,))
     assert tool.source_state == "stale"
     assert tool.script_inputs == (old_binding,)
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
     assert tool._source_refresh_deferred is False
 
 
@@ -5233,7 +5349,7 @@ def test_tool_window_false_update_clears_reentrant_rerun(qtbot) -> None:
     assert tool.update_calls == 1
     assert tool.source_state == "stale"
     assert tool._source_refresh_rerun_requested is False
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
 
 
 def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
@@ -5261,7 +5377,7 @@ def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
 
     assert tool.source_state == "stale"
     assert tool.script_inputs == (old_binding,)
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
     assert tool._source_refresh_deferred is False
     assert tool.provenance_revision == revision
     assert data_changes == []
@@ -5477,7 +5593,7 @@ def test_tool_window_failed_named_input_update_discards_pending_bindings(qtbot) 
         )
 
     assert tool.script_inputs == old_bindings
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
 
 
 def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> None:
@@ -5515,7 +5631,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
         {"data": data, "weights": data},
         refreshed_bindings,
     )
-    pending_bindings = tool._pending_script_inputs
+    pending_bindings = tool._input_state().pending
     invalid_contracts = (
         (
             (old_bindings[0].model_copy(update={"name": "renamed"}), old_bindings[1]),
@@ -5549,7 +5665,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
                 auto_update=True,
             )
         assert tool.script_inputs == old_bindings
-        assert tool._pending_script_inputs == pending_bindings
+        assert tool._input_state().pending == pending_bindings
 
     invalid_refresh = (
         refreshed_bindings[0],
@@ -5560,7 +5676,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
             {"data": data, "weights": data},
             invalid_refresh,
         )
-    assert tool._pending_script_inputs == pending_bindings
+    assert tool._input_state().pending == pending_bindings
 
     tool.set_script_inputs(
         replacement_bindings,
@@ -5625,9 +5741,11 @@ def test_tool_window_dataset_migrates_legacy_input_metadata(qtbot) -> None:
     assert fallback_restored.script_inputs[0].parsed_source_spec() == source_spec
 
 
+@pytest.mark.parametrize("attribute_format", ["unary", "named"])
 def test_tool_window_legacy_input_fallback_replays_source_transform_once(
     qtbot,
     tmp_path,
+    attribute_format,
 ) -> None:
     data = xr.DataArray(
         np.arange(6.0),
@@ -5657,16 +5775,37 @@ def test_tool_window_legacy_input_fallback_replays_source_transform_once(
     assert complete_fallback is not None
     expected = source_spec.apply(data)
     saved = _PersistentTool(expected).to_dataset()
-    saved.attrs["tool_source_spec"] = json.dumps(source_spec.model_dump(mode="json"))
-    saved.attrs["tool_input_provenance_spec"] = json.dumps(
-        complete_fallback.model_dump(mode="json")
-    )
+    if attribute_format == "unary":
+        saved.attrs["tool_source_spec"] = json.dumps(
+            source_spec.model_dump(mode="json")
+        )
+        saved.attrs["tool_input_provenance_spec"] = json.dumps(
+            complete_fallback.model_dump(mode="json")
+        )
+    else:
+        saved.attrs["tool_script_inputs"] = json.dumps(
+            [
+                {
+                    "name": "data",
+                    "source_spec": source_spec.model_dump(mode="json"),
+                    "provenance_spec": complete_fallback.model_dump(mode="json"),
+                }
+            ]
+        )
+        saved.attrs["tool_primary_input"] = "data"
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
     resolved, _refreshed = rebuild_script_inputs(restored.script_inputs)
 
     xr.testing.assert_identical(resolved["data"], expected)
+    assert restored.script_inputs[0].input_version == 2
+    assert restored.script_inputs[0].parsed_provenance_spec() == complete_fallback
+    assert restored.script_inputs[0].fallback_role == "resolved"
+    roundtrip_inputs, _ = restored._saved_script_input_metadata(
+        restored.to_dataset().attrs
+    )
+    assert roundtrip_inputs == restored.script_inputs
 
 
 def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> None:
@@ -6884,6 +7023,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._provenance_revisions = _ProvenanceRevisionStore()
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self._extensions = types.SimpleNamespace(
@@ -6900,11 +7040,16 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
                 )
             )
             self._workspace_controller = types.SimpleNamespace(
+                local_provenance_change=lambda **_kwargs: contextlib.nullcontext(),
                 _configure_tool_code_trust=lambda _tool, **_kwargs: None,
                 _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
             )
             self._lineage_controller = types.SimpleNamespace(
                 _parent_source_data_for_uid=self._parent_source_data_for_uid,
+                _has_recorded_script_input=lambda item: (
+                    item.revision_id is not None
+                    and self._provenance_revisions.has_data(item.revision_id)
+                ),
                 _propagate_source_state_from_uid=(
                     self._propagate_source_state_from_uid
                 ),
@@ -7704,3 +7849,112 @@ def test_tool_window_suppressed_edit_notifies_after_history_resumes(qtbot):
     assert win.tool_status.value == 2
     win.undo()
     assert win.tool_status.value == 0
+
+
+@pytest.mark.parametrize("outcome", ["accept", "abort", "reject", "fail", "replace"])
+def test_tool_window_input_commit_follows_acceptance(qtbot, outcome: str) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed = binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data")
+    committed: list[str] = []
+    if outcome == "reject":
+        tool.update_inputs = lambda _inputs: False
+    elif outcome == "fail":
+
+        def fail(_inputs):
+            raise ValueError("stop")
+
+        tool.update_inputs = fail
+    if outcome == "fail":
+        with pytest.raises(ValueError, match="stop"):
+            tool._apply_inputs(
+                {"data": data + 1},
+                (refreshed,),
+                on_commit=lambda: committed.append("first"),
+            )
+    else:
+        assert not tool._apply_inputs(
+            {"data": data + 1},
+            (refreshed,),
+            on_commit=lambda: committed.append("first"),
+        )
+    assert not committed
+    if outcome == "accept":
+        tool.finish_deferred_update()
+        assert committed == ["first"]
+        assert tool.script_inputs == (refreshed,)
+        tool.finalize_source_refresh()
+        assert committed == ["first"]
+    elif outcome == "replace":
+        assert not tool._apply_inputs(
+            {"data": data + 2},
+            (refreshed,),
+            on_commit=lambda: committed.append("second"),
+        )
+        tool.finish_deferred_update()
+        assert committed == ["second"]
+    else:
+        tool.abort_source_refresh()
+        tool.finalize_source_refresh()
+        assert not committed
+        assert tool.script_inputs == (binding,)
+    assert tool._input_state().pending is None
+
+
+def test_tool_window_failed_input_commit_discards_transaction(qtbot) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    binding = ScriptInput(name="data", revision_id="accepted")
+    refreshed = binding.model_copy(update={"revision_id": "pending"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data")
+    data_changes: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+
+    def fail_commit() -> None:
+        raise ValueError("commit failed")
+
+    assert not tool._apply_inputs(
+        {"data": data + 1}, (refreshed,), on_commit=fail_commit
+    )
+    assert tool.active_script_inputs == (binding, refreshed)
+    with pytest.raises(ValueError, match="commit failed"):
+        tool.finalize_source_refresh()
+    assert tool.script_inputs == (binding,)
+    assert tool.active_script_inputs == (binding,)
+    assert tool._input_state().pending is None
+    assert not tool._source_refresh_deferred
+    assert tool.source_state == "stale"
+    assert not data_changes
+
+
+@pytest.mark.parametrize("terminal", ["unavailable", "close"])
+def test_tool_window_terminal_state_releases_deferred_input_callback(
+    qtbot, terminal: str
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    binding = ScriptInput(name="data", revision_id="accepted")
+    refreshed = binding.model_copy(update={"revision_id": "pending"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data", auto_update=True)
+    committed: list[None] = []
+    assert not tool._apply_inputs(
+        {"data": data + 1}, (refreshed,), on_commit=lambda: committed.append(None)
+    )
+    tool._source_refresh_rerun_requested = True
+    if terminal == "close":
+        assert tool.close()
+    else:
+        tool._set_source_state("unavailable")
+    assert tool.active_script_inputs == (binding,)
+    assert tool._input_state().pending is None
+    assert not tool._source_refresh_deferred
+    assert not tool._source_refresh_rerun_requested
+    tool.finalize_source_refresh()
+    assert not committed
+    assert tool.script_inputs == (binding,)

@@ -769,7 +769,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         parent.isel({"z": 0}).transpose("y", "x").squeeze(),
     )
 
-    parent_nonuniform_public = xr.DataArray(
+    parent_nonuniform = xr.DataArray(
         np.arange(24).reshape((4, 3, 2)),
         dims=("alpha", "eV", "beta"),
         coords={
@@ -779,7 +779,6 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         },
         name="data",
     )
-    parent_nonuniform = erlab.utils.array._make_dims_uniform(parent_nonuniform_public)
     resolved_nonuniform = selection(
         QSelOperation(kwargs={"beta": 2.0}),
         IselOperation(kwargs={"alpha": slice(1, 3)}),
@@ -787,7 +786,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     )
     xr.testing.assert_identical(
         resolved_nonuniform.apply(parent_nonuniform),
-        parent_nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
+        parent_nonuniform.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
     with pytest.raises(

@@ -593,16 +593,18 @@ def test_workspace_document_access_releases_lock(tmp_path) -> None:
             self.unlock_count += 1
 
     lock = _FakeLock()
-    access = manager_widgets._WorkspaceDocumentAccess(tmp_path / "workspace.itws", lock)
-
-    assert access.take_lock() is lock
+    access = manager_widgets._WorkspaceDocumentAccess(
+        tmp_path / "workspace.itws", manager_widgets._WorkspaceDocumentLock(lock)
+    )
+    retained = access.retain()
+    access.release()
     access.release()
     assert lock.unlock_count == 0
-
-    access = manager_widgets._WorkspaceDocumentAccess(tmp_path / "workspace.itws", lock)
-    access.release()
-    access.release()
+    retained.release()
+    retained.release()
     assert lock.unlock_count == 1
+    with pytest.raises(RuntimeError, match="released"):
+        access.retain()
 
 
 def test_workspace_lock_error_detection_message_variants() -> None:

@@ -16,7 +16,6 @@ import numpy as np
 import xarray as xr
 from xarray.backends import BackendArray, CachingFileManager, H5NetCDFStore
 from xarray.backends.common import ArrayWriter
-from xarray.backends.locks import SerializableLock
 from xarray.core import indexing
 
 import erlab
@@ -90,11 +89,6 @@ def _workspace_file_lock(path: str | os.PathLike[str]) -> threading.RLock:
             lock = threading.RLock()
             _WORKSPACE_FILE_LOCKS[target] = lock
         return lock
-
-
-def _workspace_save_lock(path: str | os.PathLike[str]) -> threading.RLock:
-    """Return the single-writer lock for one published workspace document."""
-    return _workspace_file_lock(path)
 
 
 @contextlib.contextmanager
@@ -364,7 +358,6 @@ class WorkspaceFileManager(CachingFileManager):
         self._store_handle_generation = -1
         self._serialized_worker = False
         self._workspace_id: str | None = None
-        self.lock: typing.Any
         target = _normalized_file_path(path)
         if target is None:
             target = os.fsdecode(path)
@@ -372,8 +365,6 @@ class WorkspaceFileManager(CachingFileManager):
         self.workspace_path = target
         self.reader_path = target
         self._object_id = object_id
-        reader_key = ("erlab-workspace-reader", target)
-        self.lock = SerializableLock(reader_key)
         ensure_workspace_hdf5_filters_registered()
         cache_key = (
             "erlab-workspace-reader",
@@ -390,7 +381,9 @@ class WorkspaceFileManager(CachingFileManager):
                 "decode_vlen_strings": True,
                 "locking": "best-effort",
             },
-            lock=self.lock,
+            # Cache cleanup must use the same lock as complete standalone reads.
+            # xarray finalizers take this lock before calling close().
+            lock=_workspace_file_lock(target),
             manager_id=cache_key,
         )
         store = workspace_store.WorkspaceStore.register_path_reader(target, self)
@@ -399,13 +392,16 @@ class WorkspaceFileManager(CachingFileManager):
 
     def _attach_store(self, store: workspace_store.WorkspaceStore) -> None:
         """Attach this reader to the store that now owns its path."""
-        if self._store is store:
-            return
-        if self._store is not None:
-            raise RuntimeError("Workspace reader is already attached to a store")
-        with self.lock:
-            if hasattr(self, "_ref_counter"):
-                super().close(needs_lock=False)
+        # Standalone reads release the path lock before using the store lock.
+        # Publish attachment and reader ownership under both locks.
+        with store.lock, _workspace_file_lock(self.reader_path):
+            if self._store is store:
+                return
+            if self._store is not None:
+                raise RuntimeError("Workspace reader is already attached to a store")
+            if store.closed:
+                raise RuntimeError("Workspace store closed before reader attachment")
+            super().close(needs_lock=False)
             self._store = store
             self._workspace_id = store.workspace_id
             store.register_reader(self)
@@ -435,11 +431,11 @@ class WorkspaceFileManager(CachingFileManager):
         store = self._store
         if store is None:
             raise RuntimeError("Workspace reader is not attached to a store")
-        if self._object_id is not None:
-            if self._object_id == object_id:
-                return
-            raise RuntimeError("Workspace reader already uses another object")
-        with self.lock:
+        with store.lock:
+            if self._object_id is not None:
+                if self._object_id == object_id:
+                    return
+                raise RuntimeError("Workspace reader already uses another object")
             self._close_store_wrapper()
             store.acquire_object(object_id)
             self._object_id = object_id
@@ -590,17 +586,36 @@ class WorkspaceFileManager(CachingFileManager):
             self._remember_workspace_id(file)
             yield file
 
+    @contextlib.contextmanager
+    def read_session(self, *, allow_during_write: bool = False) -> Iterator[typing.Any]:
+        """Keep HDF5 wrappers stable until a complete read finishes."""
+        self._check_process()
+        store = self._store
+        if store is None:
+            with _workspace_file_lock(self.reader_path):
+                store = self._store
+                if store is None:
+                    with self.acquire_context() as file:
+                        yield file
+                    return
+        with store.read_session(allow_during_write=allow_during_write):
+            yield self._active_netcdf_file()
+
     def close(self, needs_lock: bool = True) -> None:
         if self._serialized_worker or self._process_id != os.getpid():
             return
-        if self._store is not None:
-            if needs_lock:
-                with self._store.lock:
-                    self._close_store_wrapper()
-            else:
+        store = self._store
+        if store is None:
+            with _workspace_file_lock(self.reader_path):
+                store = self._store
+                if store is None:
+                    super().close(needs_lock)
+                    return
+        if needs_lock:
+            with store.lock:
                 self._close_store_wrapper()
         else:
-            super().close(needs_lock)
+            self._close_store_wrapper()
 
     def __getstate__(self) -> typing.Any:
         self._check_process()
@@ -654,7 +669,6 @@ class WorkspaceFileManager(CachingFileManager):
         self._store_handle_generation = -1
         self._serialized_worker = True
         self._direct_read_datasets = {}
-        self.lock = SerializableLock(("erlab-workspace-reader", self.reader_path))
 
     def __dask_tokenize__(self) -> tuple[str, str, str | None, str | None]:
         store = self._store
@@ -725,18 +739,9 @@ class _WorkspaceBackendArray(BackendArray):
 
     def _getitem(self, key: typing.Any) -> typing.Any:
         manager = self.datastore._manager
-        if not isinstance(manager, WorkspaceFileManager):
-            raise TypeError("Workspace backend requires a WorkspaceFileManager")
         if manager._serialized_worker:
             return manager._read_bounded_variable(self.variable_name, key)
-        store = manager._store
-        if store is None:
-            with self.datastore.lock:
-                array = self.datastore._acquire(needs_lock=False).variables[
-                    self.variable_name
-                ]
-                return array[key]
-        with store.read_session(allow_during_write=True):
+        with manager.read_session(allow_during_write=True):
             array = self.datastore._acquire(needs_lock=False).variables[
                 self.variable_name
             ]
@@ -754,18 +759,54 @@ class _WorkspaceBackendArray(BackendArray):
 class _WorkspaceH5NetCDFStore(H5NetCDFStore):
     """Build workspace arrays with a process-safe read boundary."""
 
+    _manager: WorkspaceFileManager
+
+    def __init__(
+        self,
+        manager: WorkspaceFileManager,
+        group: str | None = None,
+        mode: str | None = None,
+        lock: typing.Any = False,
+        autoclose: bool = False,
+    ) -> None:
+        with manager.read_session():
+            super().__init__(
+                manager,
+                group=group,
+                mode=mode,
+                lock=lock,
+                autoclose=autoclose,
+            )
+
     def _acquire(self, needs_lock: bool = True) -> typing.Any:
-        manager = self._manager
-        if isinstance(manager, WorkspaceFileManager):
-            self._group = manager._group_path
+        self._group = self._manager._group_path
         return super()._acquire(needs_lock)
 
     def __dask_tokenize__(
         self,
     ) -> tuple[str, tuple[str, str, str | None, str | None]]:
         """Return a stable token without serializing the workspace reader."""
-        manager = typing.cast("WorkspaceFileManager", self._manager)
-        return type(self).__name__, manager.__dask_tokenize__()
+        return type(self).__name__, self._manager.__dask_tokenize__()
+
+    def get_variables(self) -> typing.Any:
+        with self._manager.read_session():
+            return super().get_variables()
+
+    def get_attrs(self) -> typing.Any:
+        with self._manager.read_session():
+            return super().get_attrs()
+
+    def get_dimensions(self) -> typing.Any:
+        with self._manager.read_session():
+            return super().get_dimensions()
+
+    def get_parent_dimensions(self) -> typing.Any:
+        with self._manager.read_session():
+            return super().get_parent_dimensions()
+
+    def get_encoding(self) -> typing.Any:
+        with self._manager.read_session():
+            return super().get_encoding()
 
     def open_store_variable(self, name: str, var: typing.Any) -> xr.Variable:
         variable = super().open_store_variable(name, var)
@@ -799,14 +840,13 @@ def _open_workspace_dataset_from_manager(
     *,
     chunks: typing.Any,
 ) -> xr.Dataset:
-    store = _WorkspaceH5NetCDFStore(
-        file_manager,
-        group=group,
-        mode="r",
-        lock=file_manager.lock,
-        autoclose=False,
-    )
     try:
+        store = _WorkspaceH5NetCDFStore(
+            file_manager,
+            group=group,
+            mode="r",
+            autoclose=False,
+        )
         if chunks is None:
             ds = xr.open_dataset(store)
         else:
@@ -851,7 +891,7 @@ def open_workspace_datatree(
         target = os.fsdecode(path)
     file_manager = WorkspaceFileManager(target)
     try:
-        with file_manager.acquire_context() as h5_file:
+        with file_manager.read_session() as h5_file:
             group_paths = tuple(_iter_h5netcdf_group_paths(h5_file))
     finally:
         file_manager.close()

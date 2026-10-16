@@ -14,6 +14,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -575,21 +576,38 @@ class _ConcatDialog(QtWidgets.QDialog):
                     )
                 else:
                     replacement_node = manager._node_for_target(replacement_target)
-                    replacement_node.replace_with_detached_data(
-                        result_data,
-                        manager._lineage_controller._multi_input_script_provenance(
-                            selected,
-                            operation_label="Concatenate selected ImageTools",
-                            operation_code=operation_code,
-                            detached_input_uid=replacement_node.uid,
-                            data_role="source",
-                        ),
-                        propagate_descendants=True,
-                        preserve_filter=False,
-                        replay_source_data=to_concat[
-                            selected.index(replacement_target)
-                        ],
+                    controller = manager._workspace_controller
+                    source_uids = tuple(
+                        manager._node_for_target(target).uid for target in selected
                     )
+                    with controller.local_provenance_change(
+                        edited_entries=lambda: (
+                            controller._locate_imagetool_code_trust_entries(
+                                provenance_code_trust_entries(
+                                    replacement_node.provenance_spec,
+                                    location_prefix="runtime",
+                                    include_inputs=False,
+                                ),
+                                node_getter=lambda: replacement_node,
+                            )
+                        ),
+                        source_owners={replacement_node.uid: source_uids},
+                    ):
+                        replacement_node.replace_with_detached_data(
+                            result_data,
+                            manager._lineage_controller._multi_input_script_provenance(
+                                selected,
+                                operation_label="Concatenate selected ImageTools",
+                                operation_code=operation_code,
+                                detached_input_uid=replacement_node.uid,
+                                data_role="source",
+                            ),
+                            propagate_descendants=True,
+                            preserve_filter=False,
+                            replay_source_data=to_concat[
+                                selected.index(replacement_target)
+                            ],
+                        )
                     manager.tree_view.refresh(replacement_node.uid)
                     manager._sigDataReplaced.emit()
                     created_index = replacement_target
