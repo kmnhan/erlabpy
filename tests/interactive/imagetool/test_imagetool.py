@@ -10311,6 +10311,61 @@ def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
     win.close()
 
 
+def test_moved_roi_uses_visible_vertices_for_editor_and_analysis(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(64.0).reshape(8, 8),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.5, 3.0, 5.0, 8.0, 12.0], "y": np.arange(8.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    plot = win.slicer_area.main_image
+    plot.add_roi()
+    roi = plot._roi_list[0]
+    local_points = [(0.5, 0.5), (2.0, 0.5), (2.0, 2.0)]
+    roi.setPoints(local_points, closed=True)
+    roi.setPos(1.0, 1.0)
+    editor = _PolyROIEditDialog(roi)
+    qtbot.addWidget(editor)
+    np.testing.assert_allclose(
+        [[float(editor.table.item(i, j).text()) for j in range(2)] for i in range(3)],
+        [[0.5, 1.5], [1.5, 1.5], [1.5, 3.0]],
+    )
+    editor.accept()
+    np.testing.assert_allclose(
+        [[point[0], point[1]] for point in roi.getState()["points"]], local_points
+    )
+    editor = _PolyROIEditDialog(roi)
+    qtbot.addWidget(editor)
+    editor.table.item(0, 0).setText("0.8")
+    editor.accept()
+    np.testing.assert_allclose(
+        [[point[0], point[1]] for point in roi.getState()["points"]],
+        [[1.0, 0.5], [2.0, 0.5], [2.0, 2.0]],
+    )
+    vertices = np.array([[0.8, 1.5], [1.5, 1.5], [1.5, 3.0]])
+    mask = ROIMaskDialog(roi)
+    qtbot.addWidget(mask)
+    path = ROIPathDialog(roi)
+    qtbot.addWidget(path)
+    path._step_spin.setValue(0.25)
+    expected_mask = erlab.analysis.mask.mask_with_polygon(
+        data, vertices, dims=("x", "y")
+    )
+    expected_path = erlab.analysis.interpolate.slice_along_path(
+        data,
+        vertices={"x": [0.8, 1.5, 1.5, 0.8], "y": [1.5, 1.5, 3.0, 1.5]},
+        step_size=0.25,
+        dim_name="path",
+    )
+    for dialog, expected in ((mask, expected_mask), (path, expected_path)):
+        code = dialog.make_code()
+        assert "x_idx" not in code
+        xr.testing.assert_allclose(_exec_data_fragment(data, code), expected)
+        xr.testing.assert_allclose(dialog.source_spec().apply(data), expected)
+    win.close()
+
+
 def test_itool_roi_edit_dialog_invalid_values(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),

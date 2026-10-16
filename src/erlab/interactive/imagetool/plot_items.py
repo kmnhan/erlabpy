@@ -2727,10 +2727,13 @@ class ItoolPolyLineROI(pg.PolyLineROI):
             self.plot_item.array_slicer
         )
 
-        coords = self.getState()["points"]
+        coords = [
+            self.mapToParent(position)
+            for _name, position in self.getLocalHandlePositions()
+        ]
         raw_xy = (
-            np.array([p[0] for p in coords], dtype=float),
-            np.array([p[1] for p in coords], dtype=float),
+            np.array([point.x() for point in coords], dtype=float),
+            np.array([point.y() for point in coords], dtype=float),
         )
 
         vertices: dict[Hashable, list[float]] = {}
@@ -2848,6 +2851,12 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
         array_slicer = self.roi.plot_item.array_slicer
         for column, axis in enumerate(self.roi.plot_item.display_axis):
             values[:, column] = array_slicer.to_uniform_values(axis, values[:, column])
+        local_points = [
+            self.roi.mapFromParent(float(point[0]), float(point[1])) for point in values
+        ]
         self.roi.slicer_area.sigWriteHistory.emit()
-        self.roi.setPoints(values.tolist(), closed=self.closed_check.isChecked())
+        self.roi.setPoints(
+            [(point.x(), point.y()) for point in local_points],
+            closed=self.closed_check.isChecked(),
+        )
         super().accept()
