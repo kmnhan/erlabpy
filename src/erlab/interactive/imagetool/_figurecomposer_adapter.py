@@ -646,14 +646,12 @@ class _PlotOperationBuilder:
             if dim not in self.slicer_area.data.dims:
                 continue
             axis = self.slicer_area.data.dims.index(dim)
-            digits = self.array_slicer.get_significant(axis, uniform=False)
             start, stop = min(values), max(values)
             if self.array_slicer.incs_uniform[axis] < 0:
                 start, stop = stop, start
-            bounds = self.array_slicer.to_physical_values(axis, (start, stop))
-            start, stop = (float(np.round(value, digits)) for value in bounds)
-            if digits == 0:
-                start, stop = int(start), int(stop)
+            start, stop = map(
+                float, self.array_slicer.to_physical_values(axis, (start, stop))
+            )
             slices[self.array_slicer.physical_dims[axis]] = slice(start, stop)
         return slices
 

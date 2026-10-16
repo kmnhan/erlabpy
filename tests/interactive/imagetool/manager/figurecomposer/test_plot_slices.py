@@ -4849,3 +4849,50 @@ def test_imagetool_selection_uses_physical_source_layout(qtbot, promoted) -> Non
         assert len(multi.map_selections) == 2
         assert all(item.isel["singleton"] == 0 for item in multi.map_selections)
     tool.close()
+
+
+@pytest.mark.parametrize(
+    ("x", "expected_xlim"),
+    [
+        ([0.0, 1.0, 2.0, 3.0], (0.125, 2.1)),
+        ([0.0, 0.2, 1.0, 3.0], (0.025, 1.2)),
+        ([3.0, 1.0, 0.2, 0.0], (2.75, 0.18)),
+    ],
+    ids=["uniform", "nonuniform-ascending", "nonuniform-descending"],
+)
+def test_imagetool_figure_seed_preserves_fractional_view_bounds(
+    qtbot, x, expected_xlim
+) -> None:
+    data = xr.DataArray(
+        np.arange(16.0).reshape(4, 4),
+        dims=("x", "y"),
+        coords={"x": x, "y": np.arange(4.0)},
+    )
+    tool = erlab.interactive.itool(data, manager=False, execute=False)
+    qtbot.addWidget(tool)
+    area = tool.slicer_area
+    rendered_dim = area.data.dims[0]
+    area.set_manual_limits({rendered_dim: [0.125, 2.1]})
+    image = area.images[0]
+    image.vb.setXRange(0.125, 2.1, padding=0.0)
+    operation = figurecomposer_adapter.build_figure_composer_operation(
+        image, source_name="data"
+    )
+    np.testing.assert_allclose(operation.xlim, expected_xlim, rtol=0.0, atol=1e-15)
+    assert operation.invert_x is (x[0] > x[-1])
+    assert "x_idx" not in operation.model_dump_json()
+    composer = FigureComposerTool.from_sources(
+        {"data": area.displayed_data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(composer)
+    namespace = {"data": data}
+    exec(composer.generated_code(), namespace)  # noqa: S102
+    try:
+        axis = namespace["fig"].axes[0]
+        np.testing.assert_allclose(axis.get_xlim(), expected_xlim, rtol=0.0, atol=1e-15)
+        assert bool(axis.xaxis_inverted()) is (x[0] > x[-1])
+    finally:
+        plt.close(namespace["fig"])
