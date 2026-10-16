@@ -208,7 +208,7 @@ class WorkspaceStore:
     before it returns.
     """
 
-    _active: weakref.WeakValueDictionary[str, WorkspaceStore] = (
+    _active: typing.ClassVar[weakref.WeakValueDictionary[str, WorkspaceStore]] = (
         weakref.WeakValueDictionary()
     )
     _pending_readers: typing.ClassVar[dict[str, weakref.WeakSet[typing.Any]]] = {}
