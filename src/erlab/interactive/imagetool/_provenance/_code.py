@@ -1497,13 +1497,8 @@ def _remove_unused_generated_import_relays(
             statement = statements[index]
             if id(statement) not in relay_ids:
                 continue
-            if (
-                not isinstance(statement, ast.Assign)
-                or len(statement.targets) != 1
-                or not isinstance(statement.targets[0], ast.Name)
-            ):
-                continue  # pragma: no cover - relay construction is fixed above.
-            target_name = statement.targets[0].id
+            relay = typing.cast("ast.Assign", statement)
+            target_name = typing.cast("ast.Name", relay.targets[0]).id
             for later in statements[index + 1 :]:
                 if has_observable_use_in_any_scope(later, target_name):
                     break

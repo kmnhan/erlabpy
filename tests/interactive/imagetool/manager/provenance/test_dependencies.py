@@ -6459,13 +6459,15 @@ def test_dependency_tracker_uses_one_input_resolution_path(
         assert tracker.status_for_uid("owner") == "changed"
 
 
-def test_script_input_dependency_refs_cycles_and_capture_boundaries() -> None:
-    payload: dict[str, typing.Any] = {"script_inputs": []}
-    cycle = {"name": "cycle", "provenance_spec": payload}
-    payload["script_inputs"].extend(
-        [cycle, {"name": "live", "node_uid": "source", "data_role": "source"}]
+def test_script_input_dependency_refs_capture_boundaries() -> None:
+    fallback = script(
+        start_label="Use source",
+        active_name="live",
+        script_inputs=(
+            ScriptInput(name="live", node_uid="source", data_role="source"),
+        ),
     )
-    root = ScriptInput(name="data").model_copy(update={"provenance_spec": payload})
+    root = ScriptInput(name="data", provenance_spec=fallback)
     refs = script_inputs_dependency_refs((root,))
     assert [(ref.node_uid, ref.data_role) for ref in refs] == [("source", "source")]
     assert not script_inputs_dependency_refs(

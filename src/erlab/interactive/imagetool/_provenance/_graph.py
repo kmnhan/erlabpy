@@ -76,7 +76,7 @@ def _memoized_by_identity(resolver: Callable[[_T], _R]) -> Callable[[_T], _R]:
     def resolve(value: _T) -> _R:
         key = id(value)
         cached = cache.get(key)
-        if cached is not None and cached[0] is value:
+        if cached is not None:
             return cached[1]
         result = resolver(value)
         cache[key] = (value, result)
@@ -87,9 +87,7 @@ def _memoized_by_identity(resolver: Callable[[_T], _R]) -> Callable[[_T], _R]:
 
 def _memoized_input_provenance_resolver() -> InputProvenanceResolver:
     """Parse each exact input fallback once for one replay decision."""
-    return _memoized_by_identity(
-        lambda item: _normalize_legacy_script_input(item).parsed_provenance_spec()
-    )
+    return _memoized_by_identity(ScriptInput.parsed_provenance_spec)
 
 
 class SelectedProvenanceScope(typing.NamedTuple):
@@ -146,7 +144,6 @@ class ReplayInputBoundary(typing.NamedTuple):
 class ReplayGraph:
     __slots__ = (
         "_cacheable_keys",
-        "_compiling_specs",
         "_external_names",
         "_reserved_names",
         "aliases",
@@ -166,7 +163,6 @@ class ReplayGraph:
         trusted_user_code: bool = False,
     ) -> None:
         self.nodes: list[ReplayNode] = []
-        self._compiling_specs: set[int] = set()
         self.input_boundaries: list[ReplayInputBoundary] = []
         self._cacheable_keys: dict[str, str] = {}
         self._external_names: set[str] = set()
@@ -294,29 +290,21 @@ def _is_semantic_replay_name(name: str) -> bool:
 
 
 def _reserved_names_from_spec(
-    spec: typing.Any,
+    spec: ToolProvenanceSpec | None,
     input_provenance_resolver: InputProvenanceResolver,
     *,
     external_input_names: Collection[str] = (),
     live_input_resolver: LiveInputResolver | None = None,
 ) -> set[str]:
+    if spec is None:
+        return set()
     names: set[str] = set()
-    active: set[int] = set()
-    pending = [(spec, False, frozenset(external_input_names))]
+    pending = [(spec, frozenset(external_input_names))]
     while pending:
-        current, leaving, external = pending.pop()
-        identity = id(current)
-        if leaving:
-            active.remove(identity)
-            continue
-        if identity in active:
-            raise ReplayGraphError("Recorded provenance contains an input cycle")
-        active.add(identity)
-        pending.append((current, True, external))
-        active_name = getattr(current, "active_name", None)
-        if isinstance(active_name, str):
-            names.add(active_name)
-        for script_input in reversed(getattr(current, "replay_inputs", ())):
+        current, external = pending.pop()
+        if current.active_name is not None:
+            names.add(current.active_name)
+        for script_input in reversed(current.replay_inputs):
             names.add(script_input.name)
             if script_input.name in external or (
                 live_input_resolver is not None
@@ -325,7 +313,7 @@ def _reserved_names_from_spec(
                 continue
             nested = input_provenance_resolver(script_input)
             if nested is not None:
-                pending.append((nested, False, frozenset()))
+                pending.append((nested, frozenset()))
     return names
 
 
@@ -461,7 +449,7 @@ def _name_binding_is_needed(
 
 
 def _validate_script_provenance(
-    spec: typing.Any,
+    spec: ToolProvenanceSpec,
     *,
     external_input_names: set[str] | None = None,
     allow_external_names: bool = False,
@@ -979,17 +967,6 @@ def _operation_replay_code(
     return code
 
 
-def _compile_spec(graph: ReplayGraph, spec: typing.Any, **kwargs: typing.Any) -> str:
-    identity = id(spec)
-    if identity in graph._compiling_specs:
-        raise ReplayGraphError("Recorded provenance contains an input cycle")
-    graph._compiling_specs.add(identity)
-    try:
-        return _compile_spec_contents(graph, spec, **kwargs)
-    finally:
-        graph._compiling_specs.remove(identity)
-
-
 def _compile_script_input(
     graph: ReplayGraph,
     script_input: ScriptInput,
@@ -1108,7 +1085,7 @@ def _compile_script_input(
     return boundary.output_key
 
 
-def _compile_spec_contents(
+def _compile_spec(
     graph: ReplayGraph,
     spec: typing.Any,
     *,
@@ -3002,8 +2979,7 @@ def _import_binding_targets(code: str) -> dict[str, str] | None:
                 return None
             targets[name] = target
         return targets
-    if not isinstance(statement, ast.ImportFrom):  # pragma: no cover - caller contract.
-        return None
+    statement = typing.cast("ast.ImportFrom", statement)
     if statement.module == "__future__":
         return {}
     targets = {}
@@ -3256,10 +3232,7 @@ def _rename_display_replay_temps(
     if not graph.display or _REPLAY_TEMP_PREFIX not in code:
         return code
 
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:  # pragma: no cover - emitted code is validated upstream.
-        return code
+    module = ast.parse(code, mode="exec")
     surviving_temps = {
         node.id
         for node in ast.walk(module)

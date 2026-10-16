@@ -4259,12 +4259,8 @@ def script_inputs_dependency_refs(
     pending: list[ScriptInput | Mapping[str, typing.Any]] = list(
         reversed(script_inputs)
     )
-    seen: set[int] = set()
     while pending:
         item = pending.pop()
-        if id(item) in seen:
-            continue
-        seen.add(id(item))
         script_input = (
             item if isinstance(item, ScriptInput) else ScriptInput.model_validate(item)
         )

@@ -431,27 +431,23 @@ def test_replay_graph_rejects_unavailable_bound_and_nonlive_inputs() -> None:
     class _NonLiveOperation(ToolProvenanceOperation):
         live_applicable: typing.ClassVar[bool] = False
 
-    bound = recipe(
-        ReplayStep(
-            operation=ShiftFromInputOperation(along="x"),
-            input_bindings={"shift": "shift"},
+    bound = script(
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(label="Discard shift", code="del shift")
+            ),
+            ReplayStep(
+                operation=ShiftFromInputOperation(along="x"),
+                input_bindings={"shift": "shift"},
+            ),
         ),
         start_label="Shift",
         active_name="shifted",
         script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
         primary_input="data",
     )
-    unavailable_bound = types.SimpleNamespace(
-        kind="script",
-        active_name=bound.active_name,
-        primary_input=bound.primary_input,
-        seed_code=None,
-        script_inputs=(ScriptInput(name="data"),),
-        script_context_bindings=(),
-        steps=bound.steps,
-    )
     with pytest.raises(ReplayGraphError, match="input binding is unavailable"):
-        _validate_script_provenance(unavailable_bound)
+        _validate_script_provenance(bound, strict_replay_code=False)
 
     nonlive = script(
         start_label="Non-live operation",
@@ -905,9 +901,7 @@ class Child(Base, metaclass=data_5):
     with pytest.raises(ReplayGraphError, match="Expected script"):
         _validate_script_provenance(full_data(SqueezeOperation()))
     with pytest.raises(ReplayGraphError, match="without active_name"):
-        _validate_script_provenance(
-            types.SimpleNamespace(kind="script", active_name=None)
-        )
+        _validate_script_provenance(script(start_label="Run script"))
     with pytest.raises(ReplayGraphError, match="unsupported Import"):
         _validate_script_provenance(
             script(

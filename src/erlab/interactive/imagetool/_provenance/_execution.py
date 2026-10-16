@@ -831,11 +831,8 @@ def _execute_rebuilt_graph(
         for key, source in boundary.sources:
             events.setdefault(key, []).append((boundary, source))
 
-    def rebuilt(current: ToolProvenanceSpec | None) -> ToolProvenanceSpec | None:
-        if current is None:
-            return None
+    def rebuilt(current: ToolProvenanceSpec) -> ToolProvenanceSpec:
         completed: dict[int, ToolProvenanceSpec] = {}
-        active: set[int] = set()
         pending = [(current, False)]
         while pending:
             owner, leaving = pending.pop()
@@ -857,13 +854,9 @@ def _execute_rebuilt_graph(
                         )
                     inputs.append(item if replacement is None else replacement)
                 completed[identity] = owner.with_replay_inputs(inputs)
-                active.remove(identity)
                 continue
             if identity in completed:
                 continue
-            if identity in active:
-                raise ReplayGraphError("Recorded provenance contains an input cycle")
-            active.add(identity)
             pending.append((owner, True))
             for item in reversed(owner.replay_inputs):
                 boundary = boundaries.get(id(item))
@@ -879,7 +872,11 @@ def _execute_rebuilt_graph(
         for boundary, source in events.get(key, ()):
             identity = id(boundary.original)
             if source is None:
-                producer = rebuilt(boundary.provenance_spec)
+                producer = (
+                    None
+                    if boundary.provenance_spec is None
+                    else rebuilt(boundary.provenance_spec)
+                )
                 item = boundary.refreshed
                 if boundary.capture_raw or boundary.provenance_spec is not None:
                     item = item.model_copy(
@@ -951,10 +948,7 @@ def _execute_rebuilt_graph(
         authorize=authorize,
         _on_value=on_value,
     )
-    result = rebuilt(spec)
-    if result is None:
-        raise ReplayGraphError("Replay did not preserve its provenance")
-    return output, result, resolved_data
+    return output, rebuilt(spec), resolved_data
 
 
 def rebuild_script_provenance(
