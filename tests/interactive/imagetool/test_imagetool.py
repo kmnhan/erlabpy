@@ -2653,11 +2653,19 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
 
 
 def test_figure_composer_operation_reports_uneditable_plot_slices_details(
-    qtbot,
     monkeypatch,
 ) -> None:
-    win = itool(_TEST_DATA["3D"], execute=False)
-    qtbot.addWidget(win)
+    class _PlotWithSelectionPlan:
+        is_image = True
+        display_axis = (0, 1)
+        slicer_area = types.SimpleNamespace(
+            data=types.SimpleNamespace(ndim=3, dims=("alpha", "beta", "eV")),
+            displayed_data=types.SimpleNamespace(dims=("alpha", "beta", "eV")),
+            n_cursors=1,
+        )
+        array_slicer = types.SimpleNamespace(
+            _nonuniform_axes=set(), physical_dims=("alpha", "beta", "eV")
+        )
 
     for plan, detail in (
         (
@@ -2680,11 +2688,9 @@ def test_figure_composer_operation_reports_uneditable_plot_slices_details(
         )
         with pytest.raises(FigureComposerPlotSlicesSelectionError) as exc_info:
             build_figure_composer_operation(
-                win.slicer_area.main_image, source_name="data"
+                _PlotWithSelectionPlan(), source_name="data"
             )
         assert detail in str(exc_info.value)
-
-    win.close()
 
 
 def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
