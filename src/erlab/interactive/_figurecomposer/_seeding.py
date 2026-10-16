@@ -11,10 +11,7 @@ from erlab.interactive._figurecomposer._model._axes import _all_axes_for_shape
 from erlab.interactive._figurecomposer._model._operation_metadata import (
     rename_operation_sources,
 )
-from erlab.interactive._figurecomposer._model._sources import (
-    _middle_coord_value,
-    _public_source_data,
-)
+from erlab.interactive._figurecomposer._model._sources import _middle_coord_value
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureOperationKind,
@@ -211,9 +208,7 @@ def bz_overlay_operation_from_momentum_data(
     axes: FigureAxesSelectionState | None = None,
 ) -> FigureOperationState | None:
     """Seed a BZ overlay from simple momentum-cut dimensions and bounds."""
-    from erlab.interactive._figurecomposer._model._sources import _public_source_data
-
-    data = _public_source_data(data).squeeze(drop=True)
+    data = data.squeeze(drop=True)
     dims = {str(dim) for dim in data.dims}
     updates = _default_bz_updates()
 
@@ -314,9 +309,7 @@ def _make_operations_for_sources(
     all_axes = FigureAxesSelectionState(
         axes=_all_axes_for_shape(setup.nrows, setup.ncols)
     )
-    squeezed = [
-        _public_source_data(data).squeeze(drop=True) for data in source_data.values()
-    ]
+    squeezed = [data.squeeze(drop=True) for data in source_data.values()]
 
     if all(data.ndim == 2 for data in squeezed):
         operations = []
@@ -398,9 +391,7 @@ def _setup_for_operation(
         nrows, ncols = _plot_slices_grid_shape(operation)
         return FigureSubplotsState(nrows=nrows, ncols=ncols)
 
-    squeezed = [
-        _public_source_data(data).squeeze(drop=True) for data in source_data.values()
-    ]
+    squeezed = [data.squeeze(drop=True) for data in source_data.values()]
     return FigureSubplotsState(nrows=max(len(squeezed), 1), ncols=1)
 
 

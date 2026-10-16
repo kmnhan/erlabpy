@@ -64,10 +64,9 @@ def test_manager_default_figure_seed_uses_public_nonuniform_dims() -> None:
         },
         name="map",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
 
     operation = _seeding._make_operations_for_sources(
-        {"data": internal},
+        {"data": public},
         setup=FigureSubplotsState(),
     )[0]
 

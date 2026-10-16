@@ -6,10 +6,7 @@ import typing
 
 import erlab.utils._code
 from erlab.interactive._figurecomposer._code import _needs_squeeze_drop
-from erlab.interactive._figurecomposer._model._sources import (
-    _public_source_data,
-    _valid_source_variable,
-)
+from erlab.interactive._figurecomposer._model._sources import _valid_source_variable
 from erlab.interactive._figurecomposer._model._state import (
     FigureMethodPlotValueState,
     FigureOperationState,
@@ -97,7 +94,6 @@ def _plot_value_options(
     data = source_data.get(source)
     if data is None:
         return ()
-    data = _public_source_data(data)
     options: list[tuple[str, tuple[str, str | None]]] = []
     if data.squeeze(drop=True).ndim == 1:
         options.append(("Data values", _PLOT_DATA_VALUE))
@@ -128,10 +124,9 @@ def _default_plot_value_state(
 def _plot_value_data(
     source_data: Mapping[str, xr.DataArray], state: FigureMethodPlotValueState
 ) -> xr.DataArray:
-    source = source_data.get(state.source)
-    if source is None:
+    data = source_data.get(state.source)
+    if data is None:
         raise ValueError(f"DataArray {state.source!r} is not available")
-    data = _public_source_data(source)
     if state.kind == "data":
         value = data.squeeze(drop=True)
         if value.ndim != 1:
@@ -154,10 +149,9 @@ def _plot_value_data(
 def _plot_value_code_and_data(
     source_data: Mapping[str, xr.DataArray], state: FigureMethodPlotValueState
 ) -> tuple[_RawCode, xr.DataArray]:
-    source = source_data.get(state.source)
-    if source is None:
+    data = source_data.get(state.source)
+    if data is None:
         raise ValueError(f"DataArray {state.source!r} is not available")
-    data = _public_source_data(source)
     source_code = _valid_source_variable(state.source)
     if state.kind == "data":
         value = data.squeeze(drop=True)

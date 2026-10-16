@@ -87,7 +87,6 @@ from erlab.interactive._figurecomposer._model._sources import (
     _FIGURE_CODE_RESERVED_NAMES,
     _default_plot_operation,
     _default_setup_for_data,
-    _public_source_data,
     _selected_data,
     _source_display_label,
     _source_has_selection,
@@ -2366,11 +2365,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             data = self._document.source_selection_input_data(source_name)
             if data is None:
                 continue
-            public = _public_source_data(data)
-            if dim not in public.dims:
+            if dim not in data.dims:
                 continue
-            sizes.add(public.sizes[dim])
-            coord = public.coords.get(dim)
+            sizes.add(data.sizes[dim])
+            coord = data.coords.get(dim)
             if coord is None:
                 continue
             dtypes.add(str(coord.dtype))
@@ -2400,7 +2398,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             data = self._document.source_selection_input_data(source_name)
             if data is None:
                 continue
-            dims = [str(dim) for dim in _public_source_data(data).dims]
+            dims = [str(dim) for dim in data.dims]
             if common is None:
                 common = dims
             else:

@@ -174,10 +174,6 @@ def _source_unique_name(source_name: str, reserved: set[str]) -> str:
     return alias
 
 
-def _public_source_data(data: xr.DataArray) -> xr.DataArray:
-    return erlab.utils.array._restore_nonuniform_dims(data)
-
-
 def _available_source_dims(
     source_data: Mapping[str, xr.DataArray], sources: Sequence[str]
 ) -> list[str]:
@@ -186,7 +182,7 @@ def _available_source_dims(
         data = source_data.get(source)
         if data is None:
             continue
-        for dim in _public_source_data(data).dims:
+        for dim in data.dims:
             if dim not in dims:
                 dims.append(str(dim))
     return dims
@@ -198,7 +194,6 @@ def _selected_data(
     selected = source_data.get(selection.source)
     if selected is None:
         return None
-    selected = _public_source_data(selected)
     if selection.isel:
         selected = selected.isel(_decode_indexers(selection.isel))
     if selection.qsel:
@@ -381,7 +376,6 @@ def _default_plot_operation(
     *,
     setup: FigureSubplotsState,
 ) -> FigureOperationState:
-    data = _public_source_data(data)
     squeezed = data.squeeze(drop=True)
     if squeezed.ndim == 1:
         return FigureOperationState.line(
@@ -414,7 +408,6 @@ def _default_plot_operation(
 
 
 def _default_setup_for_data(data: xr.DataArray) -> FigureSubplotsState:
-    data = _public_source_data(data)
     squeezed = data.squeeze(drop=True)
     if squeezed.ndim <= 2:
         return FigureSubplotsState()

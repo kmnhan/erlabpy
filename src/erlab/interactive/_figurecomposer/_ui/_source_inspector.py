@@ -9,10 +9,7 @@ import typing
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._model._sources import (
-    _public_source_data,
-    _source_display_label,
-)
+from erlab.interactive._figurecomposer._model._sources import _source_display_label
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -56,13 +53,12 @@ def source_metadata_tooltip(
         return "\n".join(lines)
     if original := _original_source_name(data, name):
         lines.append(f"Original name: {original}")
-    public = _public_source_data(data)
     lines.extend(
         (
-            f"Dims: {_sizes_text(public)}",
-            f"Shape: {_shape_text(public.shape)}",
-            f"Dtype: {public.dtype}",
-            f"Size: {erlab.utils.formatting.format_nbytes(public.nbytes)}",
+            f"Dims: {_sizes_text(data)}",
+            f"Shape: {_shape_text(data.shape)}",
+            f"Dtype: {data.dtype}",
+            f"Size: {erlab.utils.formatting.format_nbytes(data.nbytes)}",
         )
     )
     return "\n".join(lines)
@@ -79,9 +75,8 @@ def source_value_tooltip(
     kind, name = value
     if data is None:
         return f"{axis_name} values are unavailable because the source is missing."
-    public = _public_source_data(data)
     if kind == "data":
-        squeezed = public.squeeze(drop=True)
+        squeezed = data.squeeze(drop=True)
         return "\n".join(
             (
                 f"Use DataArray values as {axis_name} values.",
@@ -90,7 +85,7 @@ def source_value_tooltip(
                 f"Dtype: {squeezed.dtype}",
             )
         )
-    coord = _coord_by_name(public, name)
+    coord = _coord_by_name(data, name)
     if coord is None:
         return f"Coordinate {name!r} is not available."
     return "\n".join(
@@ -271,15 +266,14 @@ class SourceInspectorWidget(QtWidgets.QWidget):
             self.setProperty("figureComposerSourceDtype", "")
             self.setProperty("figureComposerSourceSize", "")
             return
-        public = _public_source_data(data)
         details_key = (source_name, id(data))
         if details_key != self._details_key:
             self._details_html = None
             self.details_label.clear()
-        self._data = public.rename(None)
+        self._data = data.rename(None)
         self._details_key = details_key
         shape_html = erlab.utils.formatting.format_darr_shape_html(
-            public.rename(None),
+            data.rename(None),
             show_size=True,
         )
         shape_html = (
@@ -299,10 +293,10 @@ class SourceInspectorWidget(QtWidgets.QWidget):
             self._ensure_details_html()
         self.setProperty(
             "figureComposerSourceDims",
-            tuple(str(dim) for dim in public.dims),
+            tuple(str(dim) for dim in data.dims),
         )
-        self.setProperty("figureComposerSourceDtype", str(public.dtype))
+        self.setProperty("figureComposerSourceDtype", str(data.dtype))
         self.setProperty(
             "figureComposerSourceSize",
-            erlab.utils.formatting.format_nbytes(public.nbytes),
+            erlab.utils.formatting.format_nbytes(data.nbytes),
         )

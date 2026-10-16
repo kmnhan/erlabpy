@@ -3410,13 +3410,11 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
         },
         name="map",
     )
-    nonuniform_internal = erlab.utils.array._make_dims_uniform(nonuniform_public)
-    assert nonuniform_internal.dims == ("alpha", "eV", "sample_temp_idx")
     assert figurecomposer_sources._available_source_dims(
-        {"data": nonuniform_internal}, ("data",)
+        {"data": nonuniform_public}, ("data",)
     ) == ["alpha", "eV", "sample_temp"]
     nonuniform_selected = figurecomposer_sources._selected_data(
-        {"data": nonuniform_internal},
+        {"data": nonuniform_public},
         FigureDataSelectionState(
             source="data",
             isel={"sample_temp": {"kind": "slice", "start": 1, "stop": 3}},
@@ -3443,6 +3441,51 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     )
 
 
+def test_figure_composer_keeps_user_idx_dimension_with_nonuniform_aux_coord(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        [1.0, 4.0, 2.0, 8.0],
+        dims=("scan_idx",),
+        coords={
+            "scan_idx": [0, 1, 2, 3],
+            "scan": ("scan_idx", [10.0, 12.0, 18.0, 30.0]),
+        },
+        name="signal",
+    )
+    assert figurecomposer_sources._available_source_dims(
+        {"signal": data}, ("signal",)
+    ) == ["scan_idx"]
+    selected = figurecomposer_sources._selected_data(
+        {"signal": data},
+        FigureDataSelectionState(source="signal", isel={"scan_idx": 1}),
+    )
+    xr.testing.assert_identical(selected, data.isel(scan_idx=1))
+    operation = FigureOperationState.line(label="line", source="signal").model_copy(
+        update={"line_x": "scan_idx"}
+    )
+    tool = FigureComposerTool.from_sources(
+        {"signal": data},
+        sources=(FigureSourceState(name="signal"),),
+        operations=(operation,),
+        primary_source="signal",
+    )
+    qtbot.addWidget(tool)
+    assert tool._common_source_selection_dims(("signal",)) == ("scan_idx",)
+    assert tool.source_panel.source_inspector.property("figureComposerSourceDims") == (
+        "scan_idx",
+    )
+    xr.testing.assert_identical(tool.source_data()["signal"], data)
+    _render_figure_composer_rgba(tool)
+    assert tool._operation_render_errors == {}
+    namespace = _exec_generated_code(tool.generated_code(), {"signal": data})
+    figure = namespace["fig"]
+    np.testing.assert_array_equal(
+        figure.axes[0].lines[0].get_xdata(), data.scan_idx.values
+    )
+    np.testing.assert_array_equal(figure.axes[0].lines[0].get_ydata(), data.values)
+
+
 def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     public = xr.DataArray(
         np.arange(24.0).reshape(2, 3, 4),
@@ -3454,14 +3497,13 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
         },
         name="map",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.plot_slices(
         label="plot_slices",
         sources=("data",),
     )
 
     tool = FigureComposerTool.from_sources(
-        {"data": internal},
+        {"data": public},
         sources=(FigureSourceState(name="data", label="map"),),
         operations=(operation,),
         setup=FigureSubplotsState(),
@@ -3748,9 +3790,8 @@ def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> 
         },
         name="map",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
     tool = FigureComposerTool.from_sources(
-        {"data": internal},
+        {"data": public},
         sources=(FigureSourceState(name="data", label="map"),),
         operations=(FigureOperationState.plot_slices(label="maps", sources=("data",)),),
         primary_source="data",
