@@ -1993,4 +1993,4 @@ def _compile_untrusted_script_replay_code(code: str) -> types.CodeType:
     module = _parse_validated_script_replay_code(code)
     lowered = typing.cast("ast.Module", _ScriptReplayImportLowerer().visit(module))
     ast.fix_missing_locations(lowered)
-    return compile(lowered, "<ImageTool script provenance>", "exec")
+    return compile(lowered, "<ImageTool script provenance>", "exec", dont_inherit=True)

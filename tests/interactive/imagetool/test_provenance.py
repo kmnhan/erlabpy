@@ -64,7 +64,11 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraph,
     ReplayGraphError,
+    SelectedProvenanceScope,
     compile_replay_graph,
+    emit_replay_code,
+    selected_provenance_code,
+    selected_steps_spec,
 )
 from erlab.interactive.imagetool._provenance._model import (
     _OPERATION_TYPES,
@@ -9854,3 +9858,155 @@ def test_model_fit_operation_rejects_ambiguous_parameter_shapes() -> None:
     )
     with pytest.raises(ValueError, match="was not found in data"):
         operation.apply(data_without_fit_dim)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("future", ["annotations", "barry_as_FLUFL"])
+def test_selected_python_modules_reject_incompatible_future_imports(
+    reverse, future
+) -> None:
+    source = xr.DataArray([1.0, 2.0])
+    offsets = xr.DataArray([100.0, 200.0])
+    annotation = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Read the annotation",
+                    code=(
+                        "def normalize(values: data):\n"
+                        "    return values\n"
+                        "prepared = normalize.__annotations__['values'] + 1"
+                    ),
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    postponed = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare the correction",
+                    code=(f"from __future__ import {future}\ncorrection = offsets * 0"),
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    scopes = (
+        SelectedProvenanceScope(annotation, {}),
+        SelectedProvenanceScope(postponed, {}),
+    )
+    for scope, output_name, expected in zip(
+        scopes, ("prepared", "correction"), (source + 1, offsets * 0), strict=True
+    ):
+        code = selected_provenance_code((scope,))
+        namespace = {"data": source, "offsets": offsets}
+        exec(compile(code, "<copied module>", "exec", dont_inherit=True), namespace)  # noqa: S102
+        xr.testing.assert_identical(namespace[output_name], expected)
+
+    if reverse:
+        scopes = tuple(reversed(scopes))
+    with pytest.raises(
+        ReplayGraphError, match=f"incompatible future imports: {future}"
+    ):
+        selected_provenance_code(scopes)
+
+
+@pytest.mark.parametrize("later_code", ["prepared = prepared", "prepared += 1"])
+def test_python_module_future_flags_survive_graph_simplification(later_code) -> None:
+    spec = script(
+        ScriptCodeOperation(label="Continue the calculation", code=later_code),
+        start_label="Prepare data",
+        seed_code="from __future__ import annotations\nprepared = data + 1",
+        active_name="prepared",
+        script_inputs=(ScriptInput(name="data"),),
+    )
+    graph = compile_replay_graph(spec, display=True)
+
+    with pytest.raises(
+        ReplayGraphError, match="incompatible future imports: annotations"
+    ):
+        emit_replay_code(graph, output_name="prepared")
+
+
+@pytest.mark.parametrize("future", ["annotations", "division"])
+def test_compatible_python_modules_compose_with_structured_steps(future) -> None:
+    source = xr.DataArray([1.0, 2.0])
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare data",
+                    code=(
+                        f"from __future__ import {future}\n"
+                        "def normalize(values: data):\n"
+                        "    return values + 1\n"
+                        "prepared = normalize(data)"
+                    ),
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    second = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Continue the calculation",
+                    code=(
+                        (
+                            "from __future__ import annotations\n"
+                            if future == "annotations"
+                            else ""
+                        )
+                        + "continued = prepared * 2"
+                    ),
+                )
+            ),
+        ),
+        input_name="prepared",
+        output_name="continued",
+    )
+    last = selected_steps_spec(
+        (ReplayStep(operation=AssignAttrsOperation(attrs={"complete": True})),),
+        input_name="continued",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(second, {"prepared": 0}),
+            SelectedProvenanceScope(last, {"continued": 1}),
+        )
+    )
+    namespace = {"data": source}
+    exec(compile(code, "<copied module>", "exec", dont_inherit=True), namespace)  # noqa: S102
+
+    xr.testing.assert_identical(
+        namespace["result"], ((source + 1) * 2).assign_attrs(complete=True)
+    )
+    annotation = namespace["normalize"].__annotations__["values"]
+    if future == "annotations":
+        assert annotation == "data"
+    else:
+        xr.testing.assert_identical(annotation, source)
+
+
+def test_untrusted_compiler_does_not_inherit_framework_future_flags() -> None:
+    import __future__
+
+    from erlab.interactive.imagetool._provenance._code import (
+        _compile_untrusted_script_replay_code,
+    )
+
+    source = xr.DataArray([1.0, 2.0])
+    compiled = _compile_untrusted_script_replay_code("derived = data + 1")
+    namespace = {"data": source}
+    exec(compiled, namespace)  # noqa: S102
+
+    assert not compiled.co_flags & __future__.annotations.compiler_flag
+    xr.testing.assert_identical(namespace["derived"], source + 1)

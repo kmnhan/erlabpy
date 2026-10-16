@@ -7,6 +7,7 @@ shared file loads and shared structured operations are emitted or replayed once.
 """
 
 from __future__ import annotations
+import __future__
 
 import ast
 import builtins
@@ -16,6 +17,7 @@ import json
 import keyword
 import pathlib
 import re
+import sys
 import tokenize
 import typing
 import uuid
@@ -132,6 +134,7 @@ class ReplayGraph:
         "display",
         "nodes",
         "output_key",
+        "source_module_futures",
         "trusted_user_code",
     )
 
@@ -150,6 +153,7 @@ class ReplayGraph:
         self.display = bool(display)
         self.trusted_user_code = bool(trusted_user_code)
         self.output_key: str | None = None
+        self.source_module_futures: list[frozenset[str]] = []
 
     @property
     def reserved_names(self) -> set[str]:
@@ -966,6 +970,14 @@ def _compile_spec(
     except (TypeError, ValueError) as exc:
         raise ReplayGraphError(str(exc)) from exc
 
+    for step in parsed.steps:
+        if getattr(step.operation, "op", None) == "script_code":
+            code = getattr(step.operation, "code", None)
+            if isinstance(code, str):
+                graph.source_module_futures.append(
+                    _module_future_imports(code, code_analyzer=code_analyzer)
+                )
+
     if parsed.kind == "file":
         load_source = parsed.file_load_source
         if load_source is None:
@@ -973,6 +985,14 @@ def _compile_spec(
         active_name = typing.cast("str", parsed.active_name)
         structured_replay = load_source.replay_call is not None
         extension_loader = _is_extension_loader_source(load_source)
+        if (
+            parsed.seed_code
+            and not extension_loader
+            and not (structured_replay and structured_file_replay)
+        ):
+            graph.source_module_futures.append(
+                _module_future_imports(parsed.seed_code, code_analyzer=code_analyzer)
+            )
         setup_code, load_code = (
             (None, None)
             if extension_loader
@@ -1282,6 +1302,9 @@ def _compile_spec(
             current_bindings = bind_name(current_name, script_current_key)
         elif parsed.seed_code:
             seed_code = parsed.seed_code
+            graph.source_module_futures.append(
+                _module_future_imports(seed_code, code_analyzer=code_analyzer)
+            )
             seed_file_load_parts = None
             if parsed.file_load_source is not None:
                 seed_file_load_parts = _script_seed_file_load_parts(
@@ -3308,6 +3331,40 @@ def _binding_assignments_code(assignments: Sequence[tuple[str, str]]) -> str:
     return "\n".join(f"{target} = {value}" for target, value in assignments)
 
 
+def _module_future_imports(
+    code: str, *, code_analyzer: _CodeAnalyzer
+) -> frozenset[str]:
+    """Record active future features before one source module is split or simplified."""
+    module = _parse_replay_code(code, analyzer=code_analyzer).module
+    features: set[str] = set()
+    for statement in module.body:
+        if not (
+            isinstance(statement, ast.ImportFrom) and statement.module == "__future__"
+        ):
+            continue
+        for alias in statement.names:
+            feature = getattr(__future__, alias.name, None)
+            if feature is None:
+                continue
+            mandatory = feature.getMandatoryRelease()
+            if mandatory is None or mandatory > sys.version_info:
+                features.add(alias.name)
+    return frozenset(features)
+
+
+def _validate_module_future_imports(modules: Sequence[frozenset[str]]) -> None:
+    """Reject source modules that require different module-wide compiler flags."""
+    if not modules:
+        return
+    first = modules[0]
+    differences: set[str] = set().union(*(first ^ features for features in modules[1:]))
+    if differences:
+        raise ReplayGraphError(
+            "Cannot combine Python modules with incompatible future imports: "
+            + ", ".join(sorted(differences))
+        )
+
+
 def _partition_emission_prologues(
     chunks: Sequence[tuple[str, bool]],
 ) -> tuple[str, list[tuple[str, bool]]]:
@@ -3351,6 +3408,7 @@ def emit_replay_code(
     )
 
     code_analyzer = code_analyzer or _CodeAnalyzer()
+    _validate_module_future_imports(graph.source_module_futures)
     input_name_overrides = dict(input_name_overrides or {})
     required_input_keys = set(graph.required_input_keys())
     if unknown_keys := input_name_overrides.keys() - required_input_keys:
@@ -4141,6 +4199,9 @@ def selected_provenance_code(
 
     # Input bindings do not change the number of semantic producers.
     graphs = [compile_scope(spec, {}) for spec in notebook_specs]
+    _validate_module_future_imports(
+        tuple(features for graph in graphs for features in graph.source_module_futures)
+    )
     include_framework_imports = sum(map(_semantic_emitted_step_count, graphs)) > 1
     consumed = {
         previous for scope in scopes for previous in scope.input_scopes.values()
