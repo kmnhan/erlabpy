@@ -71,7 +71,15 @@ from erlab.interactive.imagetool.manager._workspace._trust import (
     workspace_code_trust_manifest,
 )
 from erlab.interactive.utils import ToolWindow
-from tests.interactive.imagetool.manager.helpers import make_fit2d_child, select_tools
+from tests.interactive.imagetool.manager.helpers import (
+    click_tree_view_pos,
+    dependency_status_badge,
+    make_fit2d_child,
+    select_tools,
+)
+from tests.interactive.imagetool.manager.provenance._common import (
+    _manager_replay_file_spec,
+)
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
@@ -2177,6 +2185,77 @@ def test_saved_concat_keeps_trust_after_owned_change(
             )
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_saved_missing_concat_reload_keeps_trust(
+    qtbot, accept_dialog, tmp_path, manager_context, nested
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("y", "x"),
+        coords={"y": np.arange(3), "x": np.arange(4)},
+    )
+    paths = [tmp_path / f"source-{offset}.nc" for offset in (0, 1)]
+    inputs = [(data + offset).assign_coords(beta=offset) for offset in (0, 1)]
+    workspace = tmp_path / "missing-concat.itws"
+    with manager_context() as manager:
+        for path, value in zip(paths, inputs, strict=True):
+            value.to_netcdf(path, engine="h5netcdf")
+            manager.add_imagetool(
+                ImageTool(value, _in_manager=True),
+                provenance_spec=_manager_replay_file_spec(path),
+                show=False,
+            )
+        select_tools(manager, [0, 1])
+        accept_dialog(
+            manager.concat_action.trigger,
+            pre_call=lambda dialog: dialog._dim_line.setText("beta"),
+        )
+        target = 2
+        if nested:
+            from erlab.interactive.imagetool.manager._console import ToolsNamespace
+
+            tools = ToolsNamespace(manager)
+            tools.itool(tools[2] + 1)
+            target = 3
+        manager._node_for_target(target).revision_id_for_role("source")
+        for source in range(target):
+            manager.remove_imagetool(source)
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+    for path, value in zip(paths, inputs, strict=True):
+        (value + 10).to_netcdf(path, engine="h5netcdf", mode="w")
+    expected = xr.concat([value + 10 for value in inputs], dim="beta")
+    if nested:
+        expected = expected + 1
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        node = manager._node_for_target(target)
+        manager.get_imagetool(target)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(node.uid) == "missing"
+        )
+        assert manager.code_trust_banner.isHidden()
+        manager.show()
+        badge_rect, _index = dependency_status_badge(manager, target)
+        accept_dialog(
+            lambda: click_tree_view_pos(manager.tree_view, badge_rect.center())
+        )
+        assert document_trust_is_trusted(manager._workspace_state.code_trust)
+        assert manager.code_trust_banner.isHidden()
+        xr.testing.assert_identical(node.current_source_data(), expected)
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, workspace)
+        assert _trust_uses_saved_signature(manager._workspace_state.code_trust)
+        xr.testing.assert_identical(
+            manager._node_for_target(target).current_source_data(), expected
+        )
+
+
 @pytest.mark.parametrize(
     "copy_kind", ["capture", "duplicate", "console", "child", "external-child"]
 )
@@ -2254,6 +2333,76 @@ def test_owned_capture_keeps_partial_approval_at_its_source(
             )
             assert original_allowed is (source == 0)
         assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+
+
+@pytest.mark.parametrize("outcome", ["synchronous", "deferred", "abort"])
+def test_signed_tool_input_refresh_publishes_trust_when_applied(
+    qtbot, manager_context, outcome
+) -> None:
+    class _InputTool(_TrustProbeTool):
+        pending_data: xr.DataArray | None = None
+
+        def update_inputs(self, inputs):
+            if outcome == "synchronous":
+                self._data = inputs["data"]
+                return None
+            self.pending_data = inputs["data"]
+            self._defer_source_refresh()
+            return False
+
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        source = manager.add_imagetool(
+            ImageTool(data + 1, _in_manager=True),
+            provenance_spec=full_data(
+                ScriptCodeOperation(label="Offset", code="derived = derived + 1")
+            ),
+            replay_source_data=data,
+            show=False,
+        )
+        anchor = manager.add_imagetool(ImageTool(data, _in_manager=True), show=False)
+        tool = _InputTool(data + 1)
+        qtbot.addWidget(tool)
+        tool.set_script_inputs(
+            (
+                ScriptInput(name="data", data_role="source"),
+                ScriptInput(name="anchor", data_role="source"),
+            ),
+            primary_input="data",
+        )
+        uid = manager.add_childtool(
+            tool,
+            script_inputs={"data": source, "anchor": anchor},
+            parent=anchor,
+            show=False,
+        )
+        manager._remove_imagetool(source)
+        controller = manager._workspace_controller
+        signed = _document_trust_after_save(
+            new_document_trust(),
+            current_workspace_code_trust_manifest(manager),
+            saved_trusted_lineage=True,
+            signature_stored=True,
+        )
+        controller._set_workspace_code_trust(signed)
+        before = manager._provenance_revisions.revision_ids
+
+        updated = manager._lineage_controller._refresh_tool_inputs(
+            uid, allow_recorded=True
+        )
+        assert updated is (outcome == "synchronous")
+        if outcome != "synchronous":
+            assert manager._workspace_state.code_trust == signed
+            assert manager._provenance_revisions.revision_ids == before
+            if outcome == "abort":
+                tool.abort_source_refresh()
+            else:
+                tool._data = tool.pending_data
+                tool.finalize_source_refresh()
+        with controller.local_provenance_change():
+            pass
+        assert document_trust_has_trusted_lineage(manager._workspace_state.code_trust)
+        xr.testing.assert_identical(tool.tool_data, data + 1)
 
 
 def test_owned_capture_does_not_commit_failed_code_edit(

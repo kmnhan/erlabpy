@@ -729,11 +729,14 @@ class _LineageController:
         revisions: _ProvenanceRevisionStore,
         data: xr.DataArray,
         script_input: ScriptInput,
+        *,
+        source_owner_uid: str | None,
     ) -> ScriptInput:
         revision_id = revisions.add(
             data,
             script_input.parsed_provenance_spec(),
             primary_revision_id=script_input.revision_id,
+            source_owner_uid=source_owner_uid,
         )
         return script_input.model_copy(update={"revision_id": revision_id})
 
@@ -1217,7 +1220,9 @@ class _LineageController:
                     ),
                     allow_recorded=allow_recorded,
                     _capture_input_revision=functools.partial(
-                        self._capture_rebuilt_script_input, revisions
+                        self._capture_rebuilt_script_input,
+                        revisions,
+                        source_owner_uid=target_uid,
                     ),
                 )
                 with node._suspend_descendant_propagation():
@@ -1226,6 +1231,9 @@ class _LineageController:
                         refreshed_inputs,
                         on_commit=lambda: self._manager._provenance_revisions.merge(
                             revisions
+                        ),
+                        publication_context=(
+                            self._manager._workspace_controller.local_provenance_change
                         ),
                     )
             except _TrustedProvenanceReplayCancelled:
@@ -1317,7 +1325,9 @@ class _LineageController:
                 extension_loader_executor=self._manager._extensions.replay_loader,
                 authorize=authorize,
                 _capture_input_revision=functools.partial(
-                    self._capture_rebuilt_script_input, revisions
+                    self._capture_rebuilt_script_input,
+                    revisions,
+                    source_owner_uid=target_node_uid,
                 ),
             )
         except _TrustedProvenanceReplayCancelled:
@@ -2110,9 +2120,13 @@ class _LineageController:
                         continuation_uid,
                     )
             return False
+        created_uids: list[str] = []
         with (
-            self._manager._extensions.execution.capture_replay_sources()
-        ) as publication:
+            self._manager._workspace_controller.local_provenance_change(
+                source_owners=lambda: dict.fromkeys(created_uids, (node.uid,))
+            ),
+            self._manager._extensions.execution.capture_replay_sources() as publication,
+        ):
             try:
                 result = self._rebuild_script_provenance(
                     spec,
@@ -2162,7 +2176,7 @@ class _LineageController:
                         )
                         return False
                     publication.require_current_for_publication()
-                    self._manager.add_imagetool(
+                    created = self._manager.add_imagetool(
                         tool,
                         show=True,
                         activate=True,
@@ -2172,6 +2186,7 @@ class _LineageController:
                             self._manager._provenance_revisions,
                         ),
                     )
+                    created_uids.append(self._manager._node_for_target(created).uid)
                     self._manager._status_bar.showMessage(
                         "Opened reloaded data as a new tool", 5000
                     )

@@ -3390,6 +3390,9 @@ def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
 class _ToolInputTransaction:
     script_inputs: tuple[ScriptInput, ...]
     commit: Callable[[], None] | None = None
+    publication_context: Callable[[], contextlib.AbstractContextManager[None]] = (
+        contextlib.nullcontext
+    )
 
 
 @dataclass(frozen=True)
@@ -4907,8 +4910,13 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         """Record that the current source refresh has been applied to the tool."""
         rerun_requested = self._source_refresh_rerun_requested
         self._source_refresh_rerun_requested = False
-        with self._coalesce_provenance_changes():
-            transaction = self._pending_input_transaction
+        transaction = self._pending_input_transaction
+        with (
+            transaction.publication_context()
+            if transaction is not None
+            else contextlib.nullcontext(),
+            self._coalesce_provenance_changes(),
+        ):
             if transaction is not None:
                 try:
                     if transaction.commit is not None:
@@ -5099,6 +5107,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         refreshed_script_inputs: Sequence[ScriptInput],
         *,
         on_commit: Callable[[], None] | None = None,
+        publication_context: Callable[[], contextlib.AbstractContextManager[None]] = (
+            contextlib.nullcontext
+        ),
     ) -> bool:
         """Validate and apply one complete input transaction."""
         if not self._script_inputs:
@@ -5121,7 +5132,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self._discard_input_transaction()
             self._source_refreshing = True
             self._pending_input_transaction = _ToolInputTransaction(
-                refreshed_inputs, on_commit
+                refreshed_inputs, on_commit, publication_context
             )
             try:
                 return self.update_inputs(validated)
