@@ -1000,12 +1000,15 @@ def test_tool_copy_code_uses_current_script_input(qtbot) -> None:
             self._data = inputs["data"]
 
     data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
-    parent = erlab.interactive.itool(data, execute=False, manager=False)
+    selected = data.isel(x=slice(0, 2))
+    parent = erlab.interactive.itool(selected, execute=False, manager=False)
     assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(parent)
-    parent.set_provenance_spec(selection(IselOperation(kwargs={"x": slice(0, 2)})))
+    parent.set_provenance_spec(
+        selection(IselOperation(kwargs={"x": slice(0, 2)})).to_replay_spec()
+    )
 
-    tool = _DummyTool(data.isel(x=slice(0, 2)))
+    tool = _DummyTool(selected)
     qtbot.addWidget(tool)
     tool.set_script_inputs(
         (ScriptInput(name="data"),),
@@ -1021,7 +1024,7 @@ def test_tool_copy_code_uses_current_script_input(qtbot) -> None:
     )
     result = namespace["result"]
     assert isinstance(result, xr.DataArray)
-    xr.testing.assert_identical(result, data.isel(x=slice(0, 2)).mean())
+    xr.testing.assert_identical(result, selected.mean())
 
     multi_input_tool = _DummyTool(data)
     qtbot.addWidget(multi_input_tool)

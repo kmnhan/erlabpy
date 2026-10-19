@@ -6387,9 +6387,7 @@ def test_standalone_fit_child_save_refresh_save_preserves_trust(
     assert not provenance_code_trust_entries(
         parent.provenance_spec, location_prefix="parent"
     )
-    assert child.script_inputs[0].parsed_provenance_spec() == compose_full_provenance(
-        parent.provenance_spec, source
-    )
+    assert child.script_inputs[0].parsed_provenance_spec() == parent.provenance_spec
     operation = NormalizeOperation(dims=("eV",), mode="area")
     normalized = operation.apply(corrected)
     parent.set_provenance_spec(parent.provenance_spec.append_operations(operation))
@@ -6416,6 +6414,59 @@ def test_standalone_fit_child_save_refresh_save_preserves_trust(
     assert document_trust_is_trusted(reopened._current_document_trust())
     assert reopened._params["c0"].expr == "2 * c1"
     xr.testing.assert_identical(reopened.tool_data, source.apply(normalized))
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+def test_standalone_profile_child_replays_source_selection_once(
+    qtbot, tmp_path, nonuniform
+) -> None:
+    from erlab.interactive._fit1d import Fit1DTool
+
+    data = xr.DataArray(
+        np.arange(155.0).reshape(31, 5),
+        dims=("eV", "alpha"),
+        coords={
+            "eV": np.linspace(-1.0, 1.0, 31),
+            "alpha": [0.0, 1.0, 3.0, 6.0, 10.0] if nonuniform else np.arange(5.0),
+        },
+        name="spectrum",
+    )
+    path = tmp_path / "spectrum.nc"
+    data.to_netcdf(path)
+    parent = ImageTool(
+        xr.load_dataarray(path),
+        file_path=path,
+        load_func=(xr.load_dataarray, {}, FileDataSelection(kind="dataarray")),
+    )
+    qtbot.addWidget(parent)
+    parent.slicer_area.profiles[0].open_in_ftool()
+    child = parent.slicer_area._associated_tools_list[-1]
+    assert isinstance(child, Fit1DTool)
+    qtbot.addWidget(child)
+    child.refit_on_source_update_check.setChecked(False)
+    expected = child.tool_data.copy(deep=True)
+    assert expected.ndim == 1
+
+    for refresh_count in range(3):
+        if refresh_count:
+            assert child.reload_source_data()
+        captured = child.script_inputs[0]
+        assert captured.input_version == 2
+        assert captured.fallback_role == "raw"
+        assert captured.parsed_provenance_spec() == parent.provenance_spec
+        resolved, _refreshed = rebuild_script_inputs(child.script_inputs)
+        xr.testing.assert_identical(resolved["data"], expected)
+        exported = script(
+            start_label="Use selected input",
+            active_name="data",
+            primary_input="data",
+            script_inputs=child.script_inputs,
+        )
+        code = exported.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"xr": xr, "erlab": erlab})
+        xr.testing.assert_identical(namespace["data"], expected)
+        xr.testing.assert_identical(child.tool_data, expected)
 
 
 def _saved_imagetool_with_fit_provenance(qtbot, tmp_path, kind):

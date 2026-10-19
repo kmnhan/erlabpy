@@ -69,7 +69,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_display_provenance,
-    compose_full_provenance,
     file_load,
     full_data,
     script,
@@ -5571,7 +5570,7 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     assert child.source_state == "fresh"
 
 
-def test_standalone_transformed_tool_input_records_resolved_fallback(qtbot) -> None:
+def test_standalone_transformed_tool_input_records_raw_fallback(qtbot) -> None:
     data = xr.DataArray(
         np.arange(24.0).reshape((3, 4, 2)),
         dims=("alpha", "eV", "beta"),
@@ -5619,16 +5618,26 @@ def test_standalone_transformed_tool_input_records_resolved_fallback(qtbot) -> N
     )
     parent.set_provenance_spec(parent_provenance)
     provenance_child = add_child()
-    fallback = provenance_child.script_inputs[0].parsed_provenance_spec()
-    assert fallback == compose_full_provenance(parent_provenance, source_spec)
+    captured = provenance_child.script_inputs[0]
+    fallback = captured.parsed_provenance_spec()
+    assert fallback == parent_provenance
+    assert captured.fallback_role == "raw"
 
     def authorize(entries):
         return issue_complete_execution_capability(new_document_trust(), entries)[1]
 
     xarray.testing.assert_identical(
         replay_script_provenance(fallback, {}, authorize=authorize),
+        data,
+    )
+    xarray.testing.assert_identical(
+        replay_script_provenance(
+            captured.resolved_provenance_spec(), {}, authorize=authorize
+        ),
         resolved,
     )
+    namespace = _exec_generated_code(provenance_child.copy_code(), {})
+    xarray.testing.assert_identical(namespace["result"], provenance_child.result)
 
     parent.close()
 

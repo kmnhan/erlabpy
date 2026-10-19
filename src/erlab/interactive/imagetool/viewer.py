@@ -4172,19 +4172,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     if source_spec is None
                     else source_spec.apply(parent_data)
                 )
-                provenance_spec = (
-                    None
-                    if parent_provenance is None
-                    else compose_full_provenance(parent_provenance, source_spec)
-                )
                 refreshed = script_input.model_copy(
                     update={
+                        "input_version": 2,
+                        "fallback_role": "raw",
                         "node_uid": None,
                         "node_snapshot_token": None,
+                        "revision_id": None,
+                        "resolved_revision_id": None,
                         "provenance_spec": (
                             None
-                            if provenance_spec is None
-                            else provenance_spec.model_dump(mode="json")
+                            if parent_provenance is None
+                            else parent_provenance.model_dump(mode="json")
                         ),
                     }
                 )
