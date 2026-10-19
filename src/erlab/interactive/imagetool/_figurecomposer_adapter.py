@@ -20,9 +20,6 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureOperationState,
 )
 from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
-from erlab.interactive.imagetool._provenance._code import (
-    _restore_nonuniform_dims_expression,
-)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -142,7 +139,7 @@ def _qsel_key_is_editable(key: Hashable) -> bool:
     if not isinstance(key, str):
         return False
     dim_name = key.removesuffix("_width") if key.endswith("_width") else key
-    return bool(dim_name) and not dim_name.endswith("_idx")
+    return bool(dim_name)
 
 
 def _norm_updates(norm_code: str) -> dict[str, typing.Any] | None:
@@ -322,6 +319,8 @@ class _PlotOperationBuilder:
                 detail = "Selection did not produce qsel coordinates for plot_slices."
             raise FigureComposerPlotSlicesSelectionError(detail)
 
+        if self.slicer_area._tool_source_singleton_indexers():
+            selection_exprs = []
         map_selections = (
             self.map_selections(
                 source_name=source_name,
@@ -333,7 +332,9 @@ class _PlotOperationBuilder:
             else ()
         )
         dim_order_plot = [
-            self.selection_dim_name(axis) for axis in range(self.slicer_area.data.ndim)
+            self.selection_dim_name(axis)
+            for axis in range(self.slicer_area.data.ndim)
+            if self.selection_dim_name(axis) in self.slicer_area.displayed_data.dims
         ]
         for key in selected_dims:
             if key in dim_order_plot:
@@ -349,7 +350,7 @@ class _PlotOperationBuilder:
                         variable_dim=variable_dim,
                         selection_count=1,
                     )
-                    if qsel_kwargs
+                    if qsel_kwargs or self.slicer_area._tool_source_singleton_indexers()
                     else ()
                 )
                 return self.plot_array_operation(
@@ -423,9 +424,7 @@ class _PlotOperationBuilder:
     def public_nonuniform_qsel_kwargs_multicursor(
         self, non_display_axes: tuple[int, ...]
     ) -> tuple[dict[Hashable, float | list[float]], Hashable | None]:
-        public_data = erlab.utils.array._restore_nonuniform_dims(
-            self.slicer_area._tool_source_parent_data()
-        )
+        public_data = self.slicer_area._tool_source_parent_data()
         all_qsel_kwargs: list[dict[Hashable, float]] = []
         for cursor in range(self.slicer_area.n_cursors):
             cursor_qsel_kwargs: dict[Hashable, float] = {}
@@ -505,26 +504,22 @@ class _PlotOperationBuilder:
         return qsel_kwargs, None, variable_dim, set(qsel_kwargs)
 
     def selection_dim_name(self, axis: int) -> Hashable:
-        dim_name: Hashable = self.slicer_area.data.dims[axis]
-        if (
-            axis in self.array_slicer._nonuniform_axes
-            and isinstance(dim_name, str)
-            and dim_name.endswith("_idx")
-        ):
-            return dim_name.removesuffix("_idx")
-        return dim_name
+        return self.array_slicer.physical_dims[axis]
 
     def selection_expr_for_cursor(
         self, data_name: str, cursor: int, non_display_axes: tuple[int, ...]
     ) -> str:
-        isel_kwargs: dict[Hashable, slice | int] = {}
+        isel_kwargs: dict[Hashable, slice | int] = dict(
+            self.slicer_area._tool_source_singleton_indexers()
+        )
         qsel_kwargs: dict[Hashable, float] = {}
         mean_dims: list[Hashable] = []
         binned = self.array_slicer.get_binned(cursor)
-        uses_nonuniform_axes = False
+        public_dims = set(self.slicer_area._tool_source_parent_data().dims)
         for axis in non_display_axes:
+            if self.selection_dim_name(axis) not in public_dims:
+                continue
             if axis in self.array_slicer._nonuniform_axes:
-                uses_nonuniform_axes = True
                 dim_name = self.selection_dim_name(axis)
                 isel_kwargs[dim_name] = self.array_slicer._bin_slice(
                     cursor, axis, int_if_one=True
@@ -539,11 +534,6 @@ class _PlotOperationBuilder:
                 )
                 qsel_kwargs.update(self.array_slicer.qsel_args(cursor, display_axes))
         selected = data_name
-        if uses_nonuniform_axes:
-            selected = _restore_nonuniform_dims_expression(
-                selected,
-                erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
-            )
         if isel_kwargs:
             selected += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
         if qsel_kwargs:
@@ -568,8 +558,12 @@ class _PlotOperationBuilder:
                 self.slicer_area.n_cursors if variable_dim is not None else 1
             )
         selections: list[FigureDataSelectionState] = []
+        source_only_indexers = self.slicer_area._tool_source_singleton_indexers()
+        public_dims = set(self.slicer_area._tool_source_parent_data().dims)
         for cursor in range(selection_count):
-            isel_kwargs: dict[str, typing.Any] = {}
+            isel_kwargs: dict[str, typing.Any] = {
+                str(dim): indexer for dim, indexer in source_only_indexers.items()
+            }
             qsel_kwargs: dict[str, typing.Any] = {}
             mean_dims: list[str] = []
             binned = self.array_slicer.get_binned(cursor)
@@ -595,6 +589,11 @@ class _PlotOperationBuilder:
                             ).items()
                         }
                     )
+            qsel_kwargs = {
+                key: value
+                for key, value in qsel_kwargs.items()
+                if key in public_dims or key.removesuffix("_width") in public_dims
+            }
             selections.append(
                 FigureDataSelectionState(
                     source=source_name,
@@ -647,17 +646,13 @@ class _PlotOperationBuilder:
             if dim not in self.slicer_area.data.dims:
                 continue
             axis = self.slicer_area.data.dims.index(dim)
-            digits = self.array_slicer.get_significant(axis, uniform=True)
-            bounds = (
-                float(np.round(values[0], digits)),
-                float(np.round(values[1], digits)),
-            )
-            start, stop = min(bounds), max(bounds)
+            start, stop = min(values), max(values)
             if self.array_slicer.incs_uniform[axis] < 0:
                 start, stop = stop, start
-            if digits == 0:
-                start, stop = int(start), int(stop)
-            slices[dim] = slice(start, stop)
+            start, stop = map(
+                float, self.array_slicer.to_physical_values(axis, (start, stop))
+            )
+            slices[self.array_slicer.physical_dims[axis]] = slice(start, stop)
         return slices
 
     def plot_slices_kwargs(
@@ -679,13 +674,18 @@ class _PlotOperationBuilder:
         return plot_kwargs
 
     def axis_inversion_updates(self) -> dict[str, bool]:
-        inverted = (
+        inverted = [
             bool(self.source.vb.state["xInverted"]),
             bool(self.source.vb.state["yInverted"]),
-        )
+        ]
         if not self.source.is_image and self.source.axis_dims[0] is None:
             # Composer profiles place the coordinate on x, including vertical cuts.
-            inverted = inverted[::-1]
+            inverted.reverse()
+        for index, axis in enumerate(self.source.display_axis):
+            if axis in self.array_slicer._nonuniform_axes_set:
+                coord = self.array_slicer.coords[axis]
+                if coord[0] > coord[-1]:
+                    inverted[index] = not inverted[index]
         return {"invert_x": inverted[0], "invert_y": inverted[1]}
 
     def colormap_kwargs(self) -> dict[str, typing.Any]:

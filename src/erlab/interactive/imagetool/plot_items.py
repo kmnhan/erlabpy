@@ -18,22 +18,18 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool._provenance._code import (
-    _restore_nonuniform_dims_expression,
-)
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     compose_display_provenance,
+    operations_expression_code,
     public_data,
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
-    QSelOperation,
     SelectCoordOperation,
-    SelOperation,
     SqueezeOperation,
     TransposeOperation,
 )
@@ -620,6 +616,7 @@ class ItoolPlotItem(pg.PlotItem):
         if raw_menu is None:
             return None
         if self._context_menu_ready and self._context_menu is raw_menu:
+            self._update_manager_figure_actions()
             return raw_menu
         menu = typing.cast("typing.Any", raw_menu)
 
@@ -782,6 +779,37 @@ class ItoolPlotItem(pg.PlotItem):
             menu.insertAction(insert_before, append_action)
         self._plot_with_matplotlib_action = plot_action
         self._append_to_figure_action = append_action
+        self._update_manager_figure_actions()
+
+    @property
+    def _physical_display_axes(self) -> tuple[int, ...]:
+        physical_dims = self.slicer_area.displayed_data.dims
+        return tuple(
+            axis
+            for axis in self.display_axis
+            if self.array_slicer.physical_dims[axis] in physical_dims
+        )
+
+    def _update_manager_figure_actions(self) -> None:
+        enabled = bool(self._physical_display_axes)
+        for action in (
+            self._plot_with_matplotlib_action,
+            self._append_to_figure_action,
+        ):
+            if action is not None:
+                action.setEnabled(enabled)
+
+    def _figure_source_plot(self) -> ItoolPlotItem | None:
+        axes = self._physical_display_axes
+        if not axes:
+            return None
+        if axes == self.display_axis:
+            return self
+        return next(
+            profile
+            for profile in self.slicer_area.profiles
+            if profile.display_axis == axes
+        )
 
     @QtCore.Slot()
     def _update_signal_refresh_rate(self) -> None:
@@ -1125,14 +1153,10 @@ class ItoolPlotItem(pg.PlotItem):
                     roi.setState(s)
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, str | None]:
-        dim_list: list[str] = [
-            str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
-        ]
-
-        if not uniform and self.array_slicer._nonuniform_axes:
-            for i, ax in enumerate(self.display_axis):
-                if ax in self.array_slicer._nonuniform_axes:
-                    dim_list[i] = dim_list[i].removesuffix("_idx")
+        source_dims = (
+            self.slicer_area.data.dims if uniform else self.array_slicer.physical_dims
+        )
+        dim_list = [str(source_dims[axis]) for axis in self.display_axis]
 
         dims = typing.cast("tuple[str] | tuple[str, str]", tuple(dim_list))
         if not self.is_image:
@@ -1183,18 +1207,23 @@ class ItoolPlotItem(pg.PlotItem):
         return False
 
     @property
-    def _crop_indexers(self) -> dict[Hashable, slice]:
-        """Returns argument to `DataArray.sel` for cropping to current view limits."""
-        return {
-            k: v
-            for k, v in self.slicer_area.make_slice_dict().items()
-            if k in self._current_data.dims
-        }
+    def _crop_operations(self) -> tuple[ToolProvenanceOperation, ...]:
+        """Physical selections for the manual limits on this plot's axes."""
+        limits = self.slicer_area.make_slice_dict()
+        indexers: dict[Hashable, slice] = {}
+        for axis in self.display_axis:
+            display_dim = self.slicer_area.data.dims[axis]
+            if display_dim in limits:
+                indexers[display_dim] = limits[display_dim]
+        return self.array_slicer.crop_selection(indexers)
 
     @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
-        return self._current_data.sel(self._crop_indexers)
+        data = self._current_data
+        for operation in self._crop_operations:
+            data = operation.apply(data)
+        return data
 
     @property
     def current_data(self) -> xr.DataArray:
@@ -1208,60 +1237,34 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         data = self._current_data_cropped if alt_pressed else self._current_data
-        data = erlab.utils.array._restore_nonuniform_dims(data.copy(deep=False))
+        data = self.array_slicer._to_physical_data(data.copy(deep=False))
+        data = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
+            data, self.slicer_area._data
+        )
 
         return erlab.utils.array.sort_coord_order(
             data, self.slicer_area._data.coords.keys()
         )
 
-    def selection_code_for_cursor(self, cursor: int) -> str:
-        """Get the selection code for the data.
-
-        Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
-        the current slice of data based on the current cursor location and bin size.
-        """
-        sel_code = self.array_slicer.qsel_code(cursor, self.display_axis)
-        # sel_code will be ".qsel(...)" or ".isel(...)" or empty string
-
+    def _selection_operations(self, cursor: int) -> tuple[ToolProvenanceOperation, ...]:
+        operations: list[ToolProvenanceOperation] = []
+        if singleton_indexers := self.slicer_area._tool_source_singleton_indexers():
+            operations.append(IselOperation(kwargs=singleton_indexers))
+        operations.extend(
+            self.array_slicer.selection_operations(cursor, self.display_axis)
+        )
         if (
             QtCore.Qt.KeyboardModifier.AltModifier
             in QtWidgets.QApplication.queryKeyboardModifiers()
         ):
-            sel_indexers = self._crop_indexers
-            isel_indexers: dict[Hashable, slice] = {}
-            for k in list(sel_indexers.keys()):
-                if isinstance(k, str) and k.endswith("_idx"):
-                    isel_indexers[k.removesuffix("_idx")] = sel_indexers.pop(k)
+            operations.extend(self._crop_operations)
+        return tuple(operations)
 
-            if sel_code.startswith(".qsel"):
-                qsel_kw = self.array_slicer.qsel_args(cursor, self.display_axis)
-                qsel_kw = qsel_kw | sel_indexers
-
-                sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
-                sel_code = f".qsel({sel_code})"
-
-                if isel_indexers:
-                    isel_code = erlab.interactive.utils.format_kwargs(isel_indexers)
-                    sel_code = sel_code + f".isel({isel_code})"
-
-                return sel_code
-
-            isel_kw: dict[Hashable, slice | int] = {}
-            if sel_code.startswith(".isel"):
-                isel_kw = self.array_slicer.isel_args(
-                    cursor, self.display_axis, int_if_one=True
-                )
-
-            if isel_kw or isel_indexers:
-                isel_kw.update(isel_indexers)
-                sel_code = erlab.interactive.utils.format_kwargs(isel_kw)
-                sel_code = f".isel({sel_code})"
-
-            if sel_indexers:
-                crop_code = erlab.interactive.utils.format_kwargs(sel_indexers)
-                sel_code = sel_code + f".sel({crop_code})"
-
-        return sel_code
+    def selection_code_for_cursor(self, cursor: int) -> str:
+        """Return the physical cursor selection as chained xarray operations."""
+        return operations_expression_code(
+            self._selection_operations(cursor), "data"
+        ).removeprefix("data")
 
     def get_selection_code(self, placeholder: str = "data") -> str:
         """Get selection code for the current cursor and display axis.
@@ -1280,24 +1283,22 @@ class ItoolPlotItem(pg.PlotItem):
         data_name = self.slicer_area.watched_data_name
         if not data_name:
             data_name = placeholder
-        sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
         if not data_name:
-            return sel_code
-        selection_expr = data_name
-        if self.array_slicer._nonuniform_axes:
-            selection_expr = _restore_nonuniform_dims_expression(
-                selection_expr,
-                erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
-            )
-        return f"{selection_expr}{sel_code}"
+            return self.selection_code_for_cursor(self.slicer_area.current_cursor)
+        operations = self._selection_operations(self.slicer_area.current_cursor)
+        return (
+            operations_expression_code(operations, data_name)
+            if operations
+            else data_name
+        )
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
     ) -> ToolProvenanceSpec:
         """Return a source spec for the current plot selection.
 
-        The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
-        parent data. Copied code, derivation display, manager refresh, and saved
+        The spec records physical cursor selections, bin averages, and optional crops.
+        Copied code, derivation display, manager refresh, and saved
         workspaces use this form directly.
 
         Parameters
@@ -1312,107 +1313,13 @@ class ItoolPlotItem(pg.PlotItem):
         ToolProvenanceSpec
             Source spec for the current parent data.
         """
-        cursor = self.slicer_area.current_cursor
-        alt_pressed: bool = (
-            QtCore.Qt.KeyboardModifier.AltModifier
-            in QtWidgets.QApplication.queryKeyboardModifiers()
-        )
-        parent_data = self.slicer_area._tool_source_parent_data()
-        selection_data = ToolProvenanceSpec._starting_data_for_kind(
-            "selection", parent_data
-        )
-        operations: list[ToolProvenanceOperation] = []
-        selection_code = self.selection_code_for_cursor(cursor)
-        selection_indexers = self.array_slicer.isel_args(
-            cursor, self.display_axis, int_if_one=True
-        )
-        public_dims = set(self.slicer_area.displayed_data.dims)
-        slicer_only_selection_dims = {
-            dim
-            for dim in selection_indexers
-            if (
-                dim in selection_data.dims
-                and dim not in public_dims
-                and selection_data.sizes[dim] == 1
-            )
-        }
-        selection_indexers = {
-            dim: indexer
-            for dim, indexer in selection_indexers.items()
-            if dim not in slicer_only_selection_dims
-        }
-        if selection_indexers and selection_code.startswith(".qsel"):
-            binned = self.array_slicer.get_binned(cursor)
-            selection_binned_dims: list[Hashable] = []
-            for dim in selection_indexers:
-                axis_idx = self.array_slicer._dim_indices.get(dim)
-                if axis_idx is None:
-                    axis_idx = self.array_slicer._obj.dims.index(dim)
-                if binned[axis_idx]:
-                    selection_binned_dims.append(dim)
-            operations.append(
-                QSelOperation(
-                    kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
-                        selection_data,
-                        selection_indexers,
-                        tuple(selection_binned_dims),
-                    )
-                )
-            )
-        elif selection_indexers:
-            operations.append(IselOperation(kwargs=selection_indexers))
-
-        crop_sel_indexers: dict[Hashable, slice] = {}
-        crop_isel_indexers: dict[Hashable, slice] = {}
-        if alt_pressed:
-            for key, selector in self._crop_indexers.items():
-                axis_idx = self.array_slicer._dim_indices.get(key)
-                if axis_idx is None:
-                    axis_idx = self.array_slicer._obj.dims.index(key)
-                if selector.start is None or selector.stop is None:
-                    index_selector = selector
-                else:
-                    start = self.array_slicer.index_of_value(
-                        axis_idx, selector.start, uniform=True
-                    )
-                    stop = self.array_slicer.index_of_value(
-                        axis_idx, selector.stop, uniform=True
-                    )
-                    lower, upper = sorted((start, stop))
-                    index_selector = slice(lower, upper + 1, selector.step)
-                if isinstance(key, str) and key.endswith("_idx"):
-                    crop_isel_indexers[key.removesuffix("_idx")] = index_selector
-                else:
-                    crop_sel_indexers[key] = index_selector
-
-        if crop_sel_indexers:
-            crop_sel_kwargs: dict[Hashable, typing.Any] = {}
-            for dim, selector in crop_sel_indexers.items():
-                if dim not in selection_data.dims:
-                    raise ValueError(f"Dimension `{dim}` not found in data")
-                coord = selection_data[dim][selector].values
-                if isinstance(selector, slice):
-                    if coord.size == 0:
-                        raise ValueError(f"Selection for dimension `{dim}` is empty")
-                    crop_sel_kwargs[dim] = slice(
-                        erlab.utils.misc._convert_to_native(coord[0]),
-                        erlab.utils.misc._convert_to_native(coord[-1]),
-                    )
-                else:
-                    crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
-            operations.append(SelOperation(kwargs=crop_sel_kwargs))
-
-        if crop_isel_indexers:
-            operations.append(IselOperation(kwargs=crop_isel_indexers))
+        operations = list(self._selection_operations(self.slicer_area.current_cursor))
 
         if transpose:
             operations.append(
                 TransposeOperation(dims=tuple(reversed(self.current_data.dims)))
             )
-        if squeeze and (
-            slicer_only_selection_dims
-            or any(size == 1 for size in self.current_data.shape)
-        ):
+        if squeeze and any(size == 1 for size in self.current_data.shape):
             operations.append(SqueezeOperation())
         return selection(*operations)
 
@@ -1662,7 +1569,10 @@ class ItoolPlotItem(pg.PlotItem):
                     self.slicer_area.displayed_provenance_spec(),
                     source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
-                )
+                ),
+                _code_trust=typing.cast(
+                    "erlab.interactive.imagetool.ImageTool", self.slicer_area.window()
+                )._provenance_code_trust_for_copy(),
             )
         if isinstance(tool_window, QtWidgets.QWidget):  # pragma: no branch
             self.slicer_area.add_tool_window(tool_window)
@@ -2359,8 +2269,6 @@ class ItoolPlotItem(pg.PlotItem):
         dim = self.slicer_area.data.dims[self.display_axis[index]]
         if dim == "eV":
             return dim, "eV"
-        # if dim in ("kx", "ky", "phi", "theta", "beta", "alpha", "chi"):
-        # return dim
         return dim, ""
 
     def set_active_cursor(self, index: int) -> None:
@@ -2411,39 +2319,18 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def plot_with_matplotlib(self) -> None:
         """Show the current data using matplotlib (only works in ImageTool Manager)."""
-        if self.slicer_area._in_manager:  # pragma: no branch
-            from erlab.interactive.imagetool import _figurecomposer_adapter
-
-            manager = self.slicer_area._manager_instance
-            if manager:  # pragma: no branch
-                target = manager.target_from_slicer_area(self.slicer_area)
-                if target is None:
-                    return
-                source_name = manager._script_input_name_for_node(
-                    manager._node_for_target(target)
-                )
-                from erlab.interactive._figurecomposer._exceptions import (
-                    FigureComposerPlotSlicesSelectionError,
-                )
-
-                try:
-                    operation = _figurecomposer_adapter.build_figure_composer_operation(
-                        self, source_name=source_name
-                    )
-                except FigureComposerPlotSlicesSelectionError as exc:
-                    _figurecomposer_adapter.show_plot_slices_selection_error(
-                        self.slicer_area, exc
-                    )
-                    return
-                manager.create_figure_from_slicer_area(
-                    self.slicer_area,
-                    operation=operation,
-                )
+        self._plot_with_matplotlib(append=False)
 
     @QtCore.Slot()
     def append_to_matplotlib_figure(self) -> None:
         """Append the current plot state to an existing managed figure."""
+        self._plot_with_matplotlib(append=True)
+
+    def _plot_with_matplotlib(self, *, append: bool) -> None:
         if self.slicer_area._in_manager:  # pragma: no branch
+            source = self._figure_source_plot()
+            if source is None:
+                return
             from erlab.interactive.imagetool import _figurecomposer_adapter
 
             manager = self.slicer_area._manager_instance
@@ -2460,14 +2347,19 @@ class ItoolPlotItem(pg.PlotItem):
 
                 try:
                     operation = _figurecomposer_adapter.build_figure_composer_operation(
-                        self, source_name=source_name
+                        source, source_name=source_name
                     )
                 except FigureComposerPlotSlicesSelectionError as exc:
                     _figurecomposer_adapter.show_plot_slices_selection_error(
                         self.slicer_area, exc
                     )
                     return
-                manager.append_figure_from_slicer_area(
+                launch = (
+                    manager.append_figure_from_slicer_area
+                    if append
+                    else manager.create_figure_from_slicer_area
+                )
+                launch(
                     self.slicer_area,
                     operation=operation,
                 )
@@ -2713,33 +2605,30 @@ class ItoolPolyLineROI(pg.PolyLineROI):
             self.plot_item.array_slicer
         )
 
-        coords = self.getState()["points"]
+        coords = [
+            self.mapToParent(position)
+            for _name, position in self.getLocalHandlePositions()
+        ]
         raw_xy = (
-            np.array([p[0] for p in coords], dtype=float),
-            np.array([p[1] for p in coords], dtype=float),
+            np.array([point.x() for point in coords], dtype=float),
+            np.array([point.y() for point in coords], dtype=float),
         )
 
         vertices: dict[Hashable, list[float]] = {}
+        dims = self.plot_item.axis_dims_uniform if uniform else self.plot_item.axis_dims
         for ax, dim, values in zip(
-            self.plot_item.display_axis, self.plot_item.axis_dims, raw_xy, strict=True
+            self.plot_item.display_axis, dims, raw_xy, strict=True
         ):
-            decimals: int = array_slicer.get_significant(ax, uniform=uniform)
-            if not uniform and ax in array_slicer._nonuniform_axes:
-                # Convert from index to true coordinates
-                vertices[dim] = (
-                    np.interp(
-                        values, array_slicer.coords_uniform[ax], array_slicer.coords[ax]
-                    )
-                    .round(decimals)
-                    .tolist()
-                )
-            else:
-                vertices[dim] = values.round(decimals).tolist()
+            if not uniform:
+                values = array_slicer.to_physical_values(ax, values)
+            vertices[dim] = values.tolist()
 
         return vertices
 
 
 class _PolyROIEditDialog(QtWidgets.QDialog):
+    """Edit display positions without inverting physical coordinates."""
+
     def __init__(self, roi: ItoolPolyLineROI) -> None:
         super().__init__()
         self.roi = roi
@@ -2839,6 +2728,13 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
                     f"Invalid value at row {i + 1}. Please enter numeric values.",
                 )
                 return
+        values = np.asarray(points, dtype=float).reshape(-1, 2)
+        local_points = [
+            self.roi.mapFromParent(float(point[0]), float(point[1])) for point in values
+        ]
         self.roi.slicer_area.sigWriteHistory.emit()
-        self.roi.setPoints(points, closed=self.closed_check.isChecked())
+        self.roi.setPoints(
+            [(point.x(), point.y()) for point in local_points],
+            closed=self.closed_check.isChecked(),
+        )
         super().accept()

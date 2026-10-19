@@ -43,7 +43,6 @@ from erlab.interactive.imagetool._provenance._code import (
     _migrate_legacy_nonuniform_restore_code,
     _provenance_value_code,
     _replace_code_identifiers,
-    _restore_nonuniform_dims_expression,
     _simplify_display_code,
     _statement_load_count,
     _statement_store_count,
@@ -61,7 +60,16 @@ from erlab.interactive.imagetool._provenance._execution import (
     replay_script_provenance,
     script_provenance_replayable,
 )
-from erlab.interactive.imagetool._provenance._graph import ReplayGraph, ReplayGraphError
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraph,
+    ReplayGraphError,
+    ResolvedReplayInput,
+    SelectedProvenanceScope,
+    compile_replay_graph,
+    emit_replay_code,
+    selected_provenance_code,
+    selected_steps_spec,
+)
 from erlab.interactive.imagetool._provenance._model import (
     _OPERATION_TYPES,
     ConsoleCall,
@@ -112,6 +120,7 @@ from erlab.interactive.imagetool._provenance._model import (
     parse_tool_provenance_spec,
     public_data,
     rebase_script_input_node_uids,
+    recipe,
     replay_input_name,
     require_live_source_spec,
     restamp_operation_groups,
@@ -157,11 +166,11 @@ from erlab.interactive.imagetool._provenance._operations import (
     RemoveMeshOperation,
     RenameDimsCoordsOperation,
     RenameOperation,
-    RestoreNonuniformDimsOperation,
     RotateOperation,
     ScriptCodeOperation,
     SelectCoordOperation,
     SelOperation,
+    ShiftFromInputOperation,
     ShiftOperation,
     SliceAlongPathOperation,
     SortByOperation,
@@ -176,6 +185,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     _ModelFitParameterSpec,
 )
 from erlab.interactive.imagetool._provenance._trust import (
+    provenance_code_payload_normalizer,
     provenance_code_trust_entries,
     provenance_operation_code_trust_entries,
     provenance_requires_code_trust,
@@ -538,7 +548,6 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         TransposeOperation(dims=("y", "x", "z")),
         SqueezeOperation(),
         RenameOperation(name="renamed"),
-        RestoreNonuniformDimsOperation(),
         RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
         ShiftOperation(shift=0.5, negate=True, along="x"),
         AverageOperation(dims=("x",)),
@@ -1030,14 +1039,20 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         )
 
 
-def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
+@pytest.mark.parametrize(
+    "helper_path",
+    [
+        "erlab.interactive.imagetool.slicer.restore_nonuniform_dims",
+        "erlab.utils.array._restore_nonuniform_dims",
+    ],
+)
+def test_tool_provenance_migrates_legacy_nonuniform_restore_code(helper_path) -> None:
     public = xr.DataArray(
         np.arange(6.0).reshape(3, 2),
         dims=("x", "y"),
         coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
     )
-    uniform = erlab.utils.array._make_dims_uniform(public)
-    legacy_call = "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)"
+    legacy_call = f"{helper_path}(data)"
     payload = {
         "schema_version": 2,
         "kind": "script",
@@ -1055,14 +1070,15 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     spec = parse_tool_provenance_spec(payload)
 
     assert spec is not None
-    migrated_code = spec.derivation_code()
+    migrated_code = spec.seed_code
+    assert migrated_code is not None
     assert "erlab.interactive.imagetool.slicer.restore_nonuniform_dims" not in (
         migrated_code
     )
-    assert "erlab.utils.array._restore_nonuniform_dims(data)" in migrated_code
+    assert "restore_nonuniform_dims" not in migrated_code
     namespace = _exec_generated_code(
         migrated_code,
-        {"data": uniform, "erlab": erlab},
+        {"data": public, "erlab": erlab},
     )
     xr.testing.assert_identical(namespace["derived"], public)
 
@@ -1078,7 +1094,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     )
     assert seed_spec is not None
     assert seed_spec.seed_code is not None
-    assert "erlab.utils.array._restore_nonuniform_dims(data)" in seed_spec.seed_code
+    assert "restore_nonuniform_dims" not in seed_spec.seed_code
 
     file_source = FileLoadSource.model_validate(
         {
@@ -1090,7 +1106,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
         }
     )
     assert file_source.load_code is not None
-    assert "erlab.utils.array._restore_nonuniform_dims(data)" in file_source.load_code
+    assert "restore_nonuniform_dims" not in file_source.load_code
 
     preserved_code = (
         f'# café: keep "{legacy_call}" as documentation\n'
@@ -1098,7 +1114,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     )
     assert _migrate_legacy_nonuniform_restore_code(preserved_code) == (
         f'# café: keep "{legacy_call}" as documentation\n'
-        "derived  =  erlab.utils.array._restore_nonuniform_dims(data)  "
+        "derived  =  (data)  "
         "# keep formatting\n"
     )
 
@@ -1664,87 +1680,6 @@ def test_generated_provenance_code_preserves_seed_load_before_effectful_call() -
         xr.testing.assert_identical(namespace["data"], replacement)
 
 
-@pytest.mark.parametrize("record_mapping", [False, True])
-def test_nonuniform_restore_statement_code_is_safe_to_reingest(
-    record_mapping: bool,
-) -> None:
-    public = xr.DataArray(
-        np.arange(6.0).reshape(3, 2),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
-    )
-    internal = erlab.utils.array._make_dims_uniform(public)
-    operation = RestoreNonuniformDimsOperation(
-        dimension_mapping=(
-            erlab.utils.array._nonuniform_dim_mapping(internal)
-            if record_mapping
-            else None
-        )
-    )
-
-    with pytest.raises(NotImplementedError):
-        operations_expression_code((operation,), "data")
-
-    code = operation.replay_code("data", output_name="derived")
-    spec = script(
-        start_label="Restore ImageTool dimensions",
-        seed_code=code,
-        active_name="derived",
-    )
-
-    assert "lambda" not in code
-    assert provenance_requires_code_trust(spec, external_input_names={"data"})
-    xr.testing.assert_identical(
-        replay_script_provenance(
-            spec, {"data": internal}, authorize=_authorize_execution
-        ),
-        public,
-    )
-
-
-def test_nonuniform_restore_expression_is_linear_and_restores_applicable_dims() -> None:
-    public = xr.DataArray(
-        np.arange(9.0).reshape(3, 3),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 0.4, 2.0]},
-    )
-    internal = erlab.utils.array._make_dims_uniform(public)
-    recorded_mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
-    mapping = {**recorded_mapping, "missing_idx": "missing"}
-    code = _restore_nonuniform_dims_expression("data", mapping)
-
-    attributes = tuple(
-        node.attr
-        for node in ast.walk(ast.parse(code))
-        if isinstance(node, ast.Attribute)
-    )
-    assert attributes.count("swap_dims") == 1
-    assert attributes.count("drop_vars") == 1
-    assert len(code) < 5_000
-
-    partially_restored = erlab.utils.array._restore_nonuniform_dims(
-        internal, {"x_idx": "x"}
-    )
-    namespace = _exec_generated_code(
-        f"result = {code}",
-        {"data": partially_restored},
-    )
-    xr.testing.assert_identical(namespace["result"], public)
-
-
-def test_nonuniform_restore_expression_preserves_inapplicable_coordinates() -> None:
-    data = xr.DataArray(
-        np.arange(3.0),
-        dims=("x",),
-        coords={"x": [0.0, 1.0, 2.0], "x_idx": ("x", [10, 11, 12])},
-    )
-    code = _restore_nonuniform_dims_expression("data", {"x_idx": "x"})
-
-    namespace = _exec_generated_code(f"result = {code}", {"data": data})
-
-    xr.testing.assert_identical(namespace["result"], data)
-
-
 def test_statement_operation_replay_code_mutates_working_copy() -> None:
     data = _kspace_data()
     operation = KspaceWorkFunctionOperation(work_function=4.2)
@@ -1879,7 +1814,6 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         },
         name="data",
     )
-    nonuniform = erlab.utils.array._make_dims_uniform(nonuniform_public)
     selection_spec = selection(
         QSelOperation(kwargs={"beta": 2.0}),
         IselOperation(kwargs={"alpha": slice(1, 3)}),
@@ -1887,7 +1821,7 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     assert [operation.op for operation in selection_spec.operations] == ["qsel", "isel"]
     xr.testing.assert_identical(
-        selection_spec.apply(nonuniform),
+        selection_spec.apply(nonuniform_public),
         nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
@@ -2820,7 +2754,6 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
         coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
         name="data",
     )
-    uniform = erlab.utils.array._make_dims_uniform(public)
 
     spec = public_data(
         CoarsenOperation(
@@ -2836,73 +2769,14 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     assert reparsed is not None
     assert reparsed.kind == "public_data"
     xr.testing.assert_identical(
-        reparsed.apply(uniform),
+        reparsed.apply(public),
         public.coarsen(x=2, boundary="trim", side="left", coord_func="mean").mean(),
     )
 
-    display_code = reparsed.display_code(parent_data=uniform)
+    display_code = reparsed.display_code(parent_data=public)
     assert display_code is not None
     assert "coarsen(x=2" in display_code
     assert "x_idx" not in display_code
-
-    restored_spec = full_data(
-        AverageOperation(dims=("y",)),
-        RestoreNonuniformDimsOperation(
-            dimension_mapping=erlab.utils.array._nonuniform_dim_mapping(uniform)
-        ),
-    )
-    reparsed_restored = parse_tool_provenance_spec(
-        restored_spec.model_dump(mode="json")
-    )
-
-    assert reparsed_restored is not None
-    xr.testing.assert_identical(
-        reparsed_restored.apply(uniform),
-        public.qsel.mean("y"),
-    )
-    restored_code = reparsed_restored.display_code(parent_data=uniform)
-    assert restored_code is not None
-    assert "restore_nonuniform_dims" not in restored_code
-    assert ".swap_dims(" in restored_code
-    assert ".drop_vars(" in restored_code
-    restored_namespace = _exec_generated_code(restored_code, {"data": uniform})
-    xr.testing.assert_identical(restored_namespace["derived"], public.qsel.mean("y"))
-
-
-def test_recorded_nonuniform_mapping_is_not_restored_after_rotation_drops_coord() -> (
-    None
-):
-    public = xr.DataArray(
-        np.arange(20.0).reshape(5, 4),
-        dims=("x", "y"),
-        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4.0)},
-        name="scan",
-    )
-    internal = erlab.utils.array._make_dims_uniform(public)
-    mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
-    rotation = RotateOperation(
-        angle=10.0,
-        axes=("x_idx", "y"),
-        center=(0.0, 0.0),
-    )
-    rotated = rotation.apply(internal)
-    expected = erlab.utils.array._restore_nonuniform_dims(rotated)
-    spec = full_data(
-        rotation,
-        RestoreNonuniformDimsOperation(dimension_mapping=mapping),
-    )
-
-    assert "x_idx" in rotated.dims
-    assert "x" not in rotated.coords
-    assert expected.dims == ("x_idx", "y")
-    xr.testing.assert_identical(spec.apply(internal), expected)
-
-    code = typing.cast("str", spec.display_code(parent_data=internal))
-    namespace = _exec_generated_code(code, {"data": internal})
-
-    assert "erlab.utils.array._restore_nonuniform_dims" not in code
-    assert "erlab.interactive.imagetool.slicer" not in code
-    xr.testing.assert_identical(namespace["derived"], expected)
 
 
 def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
@@ -3149,13 +3023,11 @@ def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None
     spec = full_data(
         TransposeOperation(dims=("x", "y", "z")),
         SqueezeOperation(),
-        RestoreNonuniformDimsOperation(),
     )
     assert [entry.label for entry in spec.display_entries()] == [
         "Start from current parent ImageTool data",
         "transpose(('x', 'y', 'z'))",
         "squeeze()",
-        "Restore nonuniform dimensions",
     ]
     unknown_code = typing.cast("str", spec.display_code())
     assert ".transpose(" in unknown_code
@@ -3174,14 +3046,9 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     data = _base_data()
     context_cls = _ProvenanceDisplayContext
 
-    context = context_cls.from_source("full_data", data)
+    context = context_cls.from_source(data)
     assert context.dims == data.dims
     assert context.sizes == dict(data.sizes)
-    nonuniform_data = xr.DataArray(np.ones(2), dims=("x_idx",), name="scan")
-    assert context_cls.from_source("public_data", nonuniform_data).dims is None
-    assert context_cls.dims_may_restore_nonuniform(("x_idx",))
-    assert not context_cls.dims_may_restore_nonuniform(("x",))
-
     indexer_size = context_cls._isel_indexer_size
     assert indexer_size(slice(None, None, 2), 5) == (True, 3)
     assert indexer_size(True, 5) == (False, None)
@@ -3201,11 +3068,6 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     assert context.advance(RenameOperation(name="renamed")) == context
     assert context.advance(_SourceViewOperation(source_kind="full_data")) == context
     assert context.advance(_SourceViewOperation(source_kind="public_data")) == context
-    nonuniform_context = context_cls(("x_idx", "y"), {"x_idx": 3, "y": 4})
-    assert (
-        nonuniform_context.advance(_SourceViewOperation(source_kind="public_data")).dims
-        is None
-    )
     assert context.advance(QSelOperation()) == context
     assert context.advance(QSelOperation(kwargs={"x": 1.0})).dims is None
     assert context.advance(SelOperation()) == context
@@ -3234,7 +3096,7 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
 
     assert context.advance(SqueezeOperation(dims=("missing",))).dims is None
     mixed_squeeze_context = context_cls.from_source(
-        "full_data", xr.DataArray(np.ones((1, 2)), dims=("x", "z"), name="scan")
+        xr.DataArray(np.ones((1, 2)), dims=("x", "z"), name="scan")
     )
     assert mixed_squeeze_context.advance(SqueezeOperation(dims=("x", "z"))).dims is None
     assert (
@@ -3243,8 +3105,6 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     )
     assert mixed_squeeze_context.advance(SqueezeOperation(dims=("x",))).dims == ("z",)
     assert mixed_squeeze_context.advance(SqueezeOperation()).dims == ("z",)
-    assert context.advance(RestoreNonuniformDimsOperation()) == context
-    assert nonuniform_context.advance(RestoreNonuniformDimsOperation()).dims is None
     assert context.advance(AverageOperation(dims=("x",))).dims is None
 
 
@@ -5820,8 +5680,7 @@ def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     )
     assert full_view.derivation_label() == "Start from current parent ImageTool data"
     assert full_view.expression_code("data") == "data.copy(deep=False)"
-    with pytest.raises(NotImplementedError):
-        selection_view.expression_code("data")
+    assert selection_view.expression_code("data") == "data.copy(deep=False)"
     assert tuple(iter_operation_refs(None)) == ()
 
 
@@ -6261,11 +6120,10 @@ def test_compose_operation_free_restored_source_preserves_nonuniform_dimensions(
         coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
         name="scan",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
 
     if parent_kind == "file":
         path = tmp_path / "nonuniform.nc"
-        internal.to_netcdf(path)
+        public.to_netcdf(path)
         parent = file_load(
             start_label="Load nonuniform data",
             seed_code=(
@@ -6280,7 +6138,7 @@ def test_compose_operation_free_restored_source_preserves_nonuniform_dimensions(
             seed_code="derived = data",
             active_name="derived",
         )
-        replay_inputs = {"data": internal}
+        replay_inputs = {"data": public}
 
     composed = compose_full_provenance(parent, source_builder())
 
@@ -6356,6 +6214,10 @@ def test_script_provenance_supports_named_console_inputs() -> None:
         "Subtract console inputs",
     ]
     rows = spec.display_rows()
+    assert not rows[1].on_primary_chain
+    assert not rows[1].children[0].on_primary_chain
+    assert not rows[1].children[1].on_primary_chain
+    assert rows[3].on_primary_chain
     assert rows[1].children[0].entry.label == "Load left"
     assert rows[1].children[0].replay_ref == _ProvenanceStepRef("start")
     assert rows[1].children[0].script_input_path == (0,)
@@ -6545,6 +6407,481 @@ def test_lazy_script_input_rows_materialize_children_once(monkeypatch) -> None:
     assert parse_calls == 1
 
 
+def test_recipe_display_keeps_primary_history_and_lazy_auxiliary(monkeypatch) -> None:
+    primary = _file_provenance_spec().append_operations(AverageOperation(dims=("x",)))
+    auxiliary = script(
+        start_label="Load shift",
+        seed_code="shift = data",
+        active_name="shift",
+        script_inputs=(ScriptInput(name="data", label="Old shift label"),),
+    )
+    spec = recipe(
+        ReplayStep(
+            operation=ShiftFromInputOperation(along="y"),
+            input_bindings={"shift": "shift"},
+        ),
+        start_label="Shift data",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="primary", provenance_spec=primary, revision_id="primary-r"
+            ),
+            ScriptInput(name="shift", provenance_spec=auxiliary, revision_id="shift-r"),
+        ),
+        primary_input="primary",
+    )
+    parsed_inputs = []
+    original_parse = ScriptInput.parsed_provenance_spec
+
+    def record_parse(script_input):
+        parsed_inputs.append(script_input.name)
+        return original_parse(script_input)
+
+    monkeypatch.setattr(ScriptInput, "parsed_provenance_spec", record_parse)
+    rows = spec.display_rows(
+        _lazy_script_inputs=True, source_label_resolver=lambda _: "Saved"
+    )
+
+    assert parsed_inputs == ["primary"]
+    assert len(rows) == 3
+    assert rows[0].edit_ref == _ProvenanceStepRef("file_load")
+    assert rows[0].script_input_path == (0,)
+    assert rows[1].edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+    assert rows[1].script_input_path == (0,)
+    assert rows[1].revision_id == "primary-r"
+    assert all(row.on_primary_chain for row in rows)
+    assert rows[2].edit_ref == _ProvenanceStepRef("operation", operation_index=0)
+    assert rows[2].script_input_path == ()
+    input_row = rows[2].children[0]
+    assert input_row.replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    assert not input_row.on_primary_chain
+    assert input_row.revision_id == "shift-r"
+    children = input_row.materialized_children()
+    assert parsed_inputs == ["primary", "shift"]
+    assert all(not row.on_primary_chain for row in children)
+    assert all(row.script_input_path == (1,) for row in children)
+    assert children[1].entry.label == "Use data from Saved"
+    assert input_row.materialized_children() is children
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "result = data / reference",
+        "result = data / globals()['reference']",
+        "def normalize():\n    return data / reference\nresult = normalize()",
+    ],
+)
+def test_python_step_display_preserves_its_declared_input_namespace(code) -> None:
+    reference_spec = full_data(AverageOperation(dims=("x",))).to_replay_spec()
+    spec = script(
+        ScriptCodeOperation(label="Normalize", code=code),
+        start_label="Normalize data",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data", revision_id="data-r"),
+            ScriptInput(
+                name="reference",
+                node_uid="reference-tool",
+                provenance_spec=reference_spec,
+                revision_id="reference-r",
+            ),
+        ),
+    )
+    restored = ToolProvenanceSpec.model_validate_json(spec.model_dump_json())
+    rows = restored.display_rows(_lazy_script_inputs=True)
+    assert len(rows) == 2
+    reference_row = rows[1].children[0]
+    assert reference_row.replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    assert reference_row.revision_id == "reference-r"
+    assert not reference_row.on_primary_chain
+    assert reference_row.children == ()
+    nested = reference_row.materialized_children()
+    assert nested
+    assert all(row.script_input_path == (1,) for row in nested)
+
+
+def test_primary_history_preserves_inputs_not_bound_to_a_visible_step() -> None:
+    spec = script(
+        AssignAttrsOperation(attrs={"normalized": True}),
+        start_label="Normalize inputs",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="reference")),
+    )
+    rows = spec.display_rows()
+    assert [row.replay_ref for row in rows] == [
+        _ProvenanceStepRef("script_input", script_input_index=0),
+        _ProvenanceStepRef("script_input", script_input_index=1),
+        _ProvenanceStepRef("operation", operation_index=0),
+    ]
+    assert rows[0].on_primary_chain
+    assert not rows[1].on_primary_chain
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    without_step = spec._replace_operation_range_ref(rows[2].replay_ref, 0, 1, ())
+    prefix = spec._prefix_before_ref(rows[2].replay_ref)
+    for candidate in (without_step, prefix):
+        assert [item.name for item in candidate.script_inputs] == ["data"]
+        assert candidate.active_name == "data"
+        actual = replay_script_provenance(
+            candidate,
+            {"data": data},
+            authorize=_authorize_execution,
+        )
+        xr.testing.assert_identical(actual, data)
+
+
+def test_python_input_retention_is_shared_by_prefix_and_step_replacement() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Normalize", code="result = data / reference"),
+        AssignAttrsOperation(attrs={"normalized": True}),
+        start_label="Normalize data",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="reference")),
+    )
+    ref = _ProvenanceStepRef("operation", operation_index=0)
+    prefix = spec._prefix_through_ref(ref)
+    replaced = spec._replace_operation_range_ref(
+        _ProvenanceStepRef("operation", operation_index=1), 1, 2, ()
+    )
+    assert prefix.script_inputs == replaced.script_inputs == spec.script_inputs
+    assert prefix.display_rows()[1].children[0].replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    no_python = spec._replace_operation_range_ref(ref, 0, 1, ())
+    assert [item.name for item in no_python.script_inputs] == ["data"]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("result = data + 1", ()),
+        ("def identity(reference):\n    return reference\nresult = identity(data)", ()),
+        (
+            "def normalize(value=reference):\n"
+            "    return data / value\nresult = normalize()",
+            ("reference",),
+        ),
+        (
+            "def normalize():\n    return data / reference\nresult = normalize()",
+            ("reference",),
+        ),
+        ("result = data / globals()['reference']", ("reference", "unused")),
+    ],
+)
+def test_python_history_attaches_inputs_at_the_step_that_reads_them(code, expected):
+    spec = script(
+        ScriptCodeOperation(label="Compute", code=code),
+        start_label="Use data",
+        active_name="result",
+        primary_input="data",
+        script_inputs=tuple(
+            ScriptInput(name=name) for name in ("data", "reference", "unused")
+        ),
+    )
+    operation_row = next(row for row in spec.display_rows() if row.edit_ref is not None)
+    assert (
+        tuple(
+            spec.script_inputs[row.replay_ref.script_input_index].name
+            for row in operation_row.children
+        )
+        == expected
+    )
+    prefix = spec._prefix_through_ref(operation_row.replay_ref)
+    assert prefix.script_inputs == spec.script_inputs
+
+
+def test_history_dependency_refs_skip_resolved_input_subtrees() -> None:
+    nested = script(
+        start_label="Nested input",
+        active_name="raw",
+        primary_input="raw",
+        script_inputs=(
+            ScriptInput(name="raw", node_uid="closed-source", revision_id="saved"),
+        ),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Combine", code="result = data + extra"),
+        start_label="Combine inputs",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="data", node_uid="changed-source", revision_id="saved"),
+            ScriptInput(name="extra", provenance_spec=nested),
+            ScriptInput(name="live", node_uid="live-source"),
+        ),
+    )
+    assert [ref.node_uid for ref in script_input_dependency_refs(spec)] == [
+        "changed-source",
+        "closed-source",
+        "live-source",
+    ]
+    assert [
+        ref.node_uid
+        for ref in script_input_dependency_refs(
+            spec, resolved_input=lambda item: item.revision_id == "saved"
+        )
+    ] == ["live-source"]
+
+
+def test_python_history_keeps_an_input_named_like_the_module_scope() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Add input", code="result = data + top"),
+        start_label="Use inputs",
+        active_name="result",
+        primary_input="data",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="top")),
+    )
+    row = spec.display_rows()[1]
+    assert row.children[0].replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=1
+    )
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            spec, {"data": data, "top": data + 1}, authorize=_authorize_execution
+        ),
+        data * 2 + 1,
+    )
+
+
+def test_recipe_display_source_rows_and_nested_revision_paths() -> None:
+    inner = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average data",
+        active_name="average",
+        script_inputs=(ScriptInput(name="raw", revision_id="raw-r"),),
+        primary_input="raw",
+    )
+    outer = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average again",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="average", provenance_spec=inner, revision_id="average-r"),
+        ),
+        primary_input="average",
+    )
+    rows = outer.display_rows(source_label_resolver=lambda _: "Missing")
+
+    assert len(rows) == 3
+    assert rows[0].entry.label == "Missing"
+    assert rows[0].replay_ref == _ProvenanceStepRef(
+        "script_input", script_input_index=0
+    )
+    assert rows[0].script_input_path == (0,)
+    assert rows[0].revision_id == "raw-r"
+    assert rows[1].script_input_path == (0,)
+    assert rows[1].revision_id == "average-r"
+    assert rows[2].script_input_path == ()
+    assert all(row.on_primary_chain for row in rows)
+    source_rows = inner.display_rows(source_label_resolver=lambda _: "ImageTool 7")
+    assert source_rows[0].entry.label == "Use raw from ImageTool 7"
+    assert source_rows[0].on_primary_chain
+
+
+def test_display_primary_checkpoint_skips_generic_input_branches() -> None:
+    nested = script(
+        start_label="Start",
+        seed_code="derived = raw",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="raw"),),
+    )
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average",
+        active_name="average",
+        script_inputs=(
+            ScriptInput(name="derived", provenance_spec=nested, revision_id="r"),
+        ),
+        primary_input="derived",
+    )
+
+    rows = spec.display_rows()
+
+    assert rows[0].on_primary_chain
+    assert rows[0].revision_id == "r"
+    assert not rows[1].on_primary_chain
+    assert rows[1].revision_id is None
+    assert rows[2].on_primary_chain
+
+
+def test_recipe_primary_display_keeps_replay_and_copied_code(tmp_path) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(2, 3, 2),
+        dims=("y", "x", "z"),
+        coords={"y": [0, 1], "x": [0.0, 1.0, 2.0]},
+        name="scan",
+    )
+    shift = xr.DataArray([0.0, 1.0], dims="y", coords={"y": [0, 1]})
+    data_path = tmp_path / "data.nc"
+    shift_path = tmp_path / "shift.nc"
+    data.to_netcdf(data_path)
+    shift.to_netcdf(shift_path)
+    primary = file_load(
+        start_label="Load data",
+        seed_code=f"import xarray\nderived = xarray.load_dataarray({str(data_path)!r})",
+        file_load_source=_file_replay_source(data_path),
+    ).append_operations(AverageOperation(dims=("z",)))
+    auxiliary = file_load(
+        start_label="Load shift",
+        seed_code=(
+            f"import xarray\nderived = xarray.load_dataarray({str(shift_path)!r})"
+        ),
+        file_load_source=_file_replay_source(shift_path),
+    )
+    operation = ShiftFromInputOperation(along="x")
+    spec = recipe(
+        ReplayStep(operation=operation, input_bindings={"shift": "shift"}),
+        start_label="Shift data",
+        active_name="shifted",
+        script_inputs=(
+            ScriptInput(name="scan", provenance_spec=primary, revision_id="scan-r"),
+            ScriptInput(name="shift", provenance_spec=auxiliary, revision_id="shift-r"),
+        ),
+        primary_input="scan",
+    )
+    rows = spec.display_rows(source_label_resolver=lambda _: "Saved")
+    code = spec.display_code()
+    expected = operation.apply_with_inputs(
+        primary.operations[0].apply(data), {"shift": shift}
+    )
+
+    assert rows[0].edit_ref == _ProvenanceStepRef("file_load")
+    assert rows[1].revision_id == "scan-r"
+    assert not rows[2].children[0].children[0].on_primary_chain
+    xr.testing.assert_identical(replay_script_provenance(spec, {}), expected)
+    assert code is not None
+    namespace = _exec_generated_code(code, {})
+    xr.testing.assert_identical(namespace["shifted"], expected)
+
+
+@pytest.mark.parametrize("with_fallback", [False, True])
+def test_selected_primary_display_does_not_claim_raw_revision(tmp_path, with_fallback):
+    raw = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"), name="scan")
+    source_spec = selection(IselOperation(kwargs={"x": slice(0, 2)}))
+    fallback = None
+    if with_fallback:
+        path = tmp_path / "source.nc"
+        raw.to_netcdf(path)
+        fallback = file_load(
+            start_label="Load data",
+            seed_code=f"import xarray\nderived = xarray.load_dataarray({str(path)!r})",
+            file_load_source=_file_replay_source(path),
+        )
+    primary_input = ScriptInput(
+        name="data",
+        node_uid="owner",
+        revision_id="raw-revision",
+        source_spec=source_spec,
+        provenance_spec=fallback,
+    )
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average selection",
+        active_name="average",
+        script_inputs=(primary_input,),
+        primary_input="data",
+    )
+    rows = spec.display_rows()
+
+    assert all(row.revision_id != "raw-revision" for row in rows)
+    assert all(row.on_primary_chain for row in rows)
+    graph = compile_replay_graph(
+        spec,
+        live_input_resolver=(
+            None if with_fallback else lambda item: ResolvedReplayInput(raw, item)
+        ),
+    )
+    expected = raw.isel(x=slice(0, 2)).mean("y")
+    xr.testing.assert_identical(execute_replay_graph(graph), expected)
+    assert expected.sizes["x"] != raw.sizes["x"]
+    if with_fallback:
+        code = spec.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {})
+        xr.testing.assert_identical(namespace["average"], expected)
+    for identity_spec in (None, full_data()):
+        identity_input = primary_input.model_copy(
+            update={
+                "source_spec": (
+                    None
+                    if identity_spec is None
+                    else identity_spec.model_dump(mode="json")
+                ),
+                "provenance_spec": None,
+            }
+        )
+        identity_recipe = spec.model_copy(update={"script_inputs": (identity_input,)})
+        assert identity_recipe.display_rows()[0].revision_id == "raw-revision"
+    public_input = primary_input.model_copy(
+        update={
+            "source_spec": public_data().model_dump(mode="json"),
+            "provenance_spec": None,
+        }
+    )
+    public_recipe = spec.model_copy(update={"script_inputs": (public_input,)})
+    assert public_recipe.display_rows()[0].revision_id is None
+
+
+def test_display_graph_distinguishes_input_revisions() -> None:
+    spec = script(
+        ScriptCodeOperation(label="Sum", code="derived = a + b + c"),
+        start_label="Start",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="a", node_uid="owner", revision_id="first"),
+            ScriptInput(name="b", node_uid="owner", revision_id="first"),
+            ScriptInput(name="c", node_uid="owner", revision_id="second"),
+        ),
+    )
+
+    graph = compile_replay_graph(spec, display=True)
+
+    assert len([node for node in graph.nodes if node.kind == "external_input"]) == 2
+    code = spec.display_code()
+    assert code is not None
+    source = xr.DataArray([1.0, 2.0], dims=("x",))
+    other = xr.DataArray([3.0, 4.0], dims=("x",))
+    namespace = _exec_generated_code(code, {"a": source, "c": other})
+    xr.testing.assert_identical(namespace["derived"], source + source + other)
+
+
+def test_replay_cache_uses_resolved_input_revision() -> None:
+    legacy_snapshot = "legacy-token"
+    spec = recipe(
+        ReplayStep(operation=AverageOperation(dims=("x",))),
+        start_label="Average input",
+        active_name="average",
+        script_inputs=(
+            ScriptInput(
+                name="data", node_uid="owner", node_snapshot_token=legacy_snapshot
+            ),
+        ),
+        primary_input="data",
+    )
+    replay_cache = {}
+    for revision, offset in (("first", 0.0), ("second", 10.0)):
+        data = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("x", "y")) + offset
+        resolved_input = spec.script_inputs[0].model_copy(
+            update={"revision_id": revision}
+        )
+        graph = compile_replay_graph(
+            spec,
+            live_input_resolver=lambda _, data=data, resolved_input=resolved_input: (
+                ResolvedReplayInput(data, resolved_input)
+            ),
+        )
+        xr.testing.assert_identical(
+            execute_replay_graph(graph, cache=replay_cache), data.mean("x")
+        )
+
+
 def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     left_snapshot_id = "left-snapshot"
     right_snapshot_id = "right-snapshot"
@@ -6597,7 +6934,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
 
     assert [
         ref.node_uid for ref in script_inputs_dependency_refs(spec.script_inputs)
-    ] == ["old-extra"]
+    ] == ["old-left", "old-right", "old-extra"]
 
     refs = script_input_dependency_refs(spec)
     assert [
@@ -6809,16 +7146,16 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
     source_input = ScriptInput(name="data_0", data_role="source")
     assert source_input.model_dump(mode="json")["data_role"] == "source"
     node_marker = "snapshot"
-    assert not ScriptInput(name="data_0").uses_owner_replay_source
-    assert not ScriptInput(
-        name="data_0",
-        node_uid="node",
-        node_snapshot_token=node_marker,
-    ).uses_owner_replay_source
-    assert ScriptInput(
-        name="data_0",
-        node_snapshot_token=node_marker,
-    ).uses_owner_replay_source
+    assert ScriptInput(name="data_0").revision_id is None
+    revision_input = ScriptInput(name="data_0", revision_id="source-revision")
+    assert (
+        ScriptInput.model_validate_json(revision_input.model_dump_json())
+        == revision_input
+    )
+    with pytest.raises(ValidationError, match="nonempty string"):
+        ScriptInput(name="data_0", revision_id=" ")
+    with pytest.raises(ValidationError, match="nonempty string"):
+        ScriptInput(name="data_0", revision_id=0)
 
     assert ScriptInputDependencyRef(
         "data_0", "ImageTool 0", "node", node_marker
@@ -7020,6 +7357,37 @@ def test_provenance_code_trust_entries_capture_unrestricted_graph() -> None:
     assert provenance_code_trust_entries(safe, location_prefix="safe")
 
 
+def test_provenance_code_trust_can_exclude_inherited_operations() -> None:
+    spec = None
+    for _ in range(3):
+        spec = script(
+            ScriptCodeOperation(label="Offset", code="derived = data + 1"),
+            start_label="Calculate",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(
+                ScriptInput(
+                    name="data",
+                    label="Input",
+                    provenance_spec=(
+                        None if spec is None else spec.model_dump(mode="json")
+                    ),
+                ),
+            ),
+        )
+    entries = provenance_code_trust_entries(spec, location_prefix="0/provenance")
+    own_entries = provenance_code_trust_entries(
+        spec,
+        location_prefix="0/provenance",
+        include_inputs=False,
+    )
+
+    assert len(entries) == 3
+    assert len({entry.execution_identity() for entry in entries}) == 1
+    assert len({entry.location for entry in entries}) == 3
+    assert own_entries == (entries[-1],)
+
+
 def test_provenance_code_trust_omits_compiler_proven_input_relay() -> None:
     relay = script(
         start_label="Use live input",
@@ -7057,6 +7425,9 @@ def test_provenance_code_trust_entries_capture_live_unrestricted_code() -> None:
     entries = provenance_code_trust_entries(unsafe, location_prefix="nodes/0")
 
     assert len(entries) == 1
+    assert entries == provenance_code_trust_entries(
+        unsafe, location_prefix="nodes/0", include_inputs=False
+    )
     assert entries[0].feature == "erlab.provenance.script-code"
     assert entries[0].location == "nodes/0/operations/0"
     assert entries[0].context == {
@@ -7282,6 +7653,138 @@ def test_opaque_fit_result_decode_requires_explicit_authorization(
         decoded,
     )
     assert calls == ["serialized-result"]
+
+
+def test_fit_provenance_normalization_preserves_unauthorized_and_live_values(
+    monkeypatch,
+) -> None:
+    import base64
+    import io
+
+    import xarray_lmfit
+
+    from erlab.analysis.fit import _serialization as fit_serialization
+    from erlab.analysis.fit.models import PolynomialModel
+
+    x = np.linspace(-1.0, 1.0, 9)
+    data = xr.DataArray(0.03 * x + 0.06, dims="alpha", coords={"alpha": x})
+    models = (PolynomialModel(1), PolynomialModel(1))
+    models[1].set_param_hint("c0", expr="2 * c1")
+    operations = []
+    results = []
+    blobs = []
+    for model in models:
+        result = data.xlm.modelfit("alpha", model=model)
+        buffer = io.BytesIO()
+        xarray_lmfit.save_fit(result, buffer, engine="h5netcdf", invalid_netcdf=True)
+        blob = buffer.getvalue()
+        operations.append(
+            CorrectWithEdgeOperation(
+                edge_fit={_FIT_DATASET_MARKER: base64.b64encode(blob).decode("ascii")}
+            )
+        )
+        results.append(result)
+        blobs.append(blob)
+    payloads = [
+        full_data(operation).model_dump(mode="json") for operation in operations
+    ]
+    payloads.append(copy.deepcopy(payloads[0]))
+    original = copy.deepcopy(payloads)
+    entries = provenance_operation_code_trust_entries(
+        operations[0], location_prefix="operation"
+    )
+    capability = _authorize_execution(entries)
+    calls = []
+    normalize_blob = erlab.interactive.utils._normalize_fit_dataset_blob
+
+    def tracked_normalize(blob):
+        raw = np.asarray(blob, dtype=np.uint8).tobytes()
+        assert raw == blobs[0], "Unapproved result content must stay opaque"
+        calls.append(raw)
+        return normalize_blob(blob)
+
+    def unexpected_load(*_args, **_kwargs):
+        pytest.fail("Normalization must not decode or evaluate saved fit results")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            erlab.interactive.utils, "_normalize_fit_dataset_blob", tracked_normalize
+        )
+        patch.setattr(fit_serialization, "loads_result", unexpected_load)
+        normalize = provenance_code_payload_normalizer(authorization=capability)
+        normalized = normalize(payloads)
+        assert normalize(payloads[0]) == normalized[0]
+        assert (
+            provenance_code_payload_normalizer(authorization=None)(normalized)
+            == normalized
+        )
+    assert len(calls) == 1
+    assert payloads == original
+    assert normalized[0] != original[0]
+    assert normalized[0] == normalized[2]
+    assert normalized[1] == original[1]
+    restored = parse_tool_provenance_spec(normalized[0])
+    assert provenance_code_trust_entries(restored, location_prefix="fit") == ()
+    xr.testing.assert_identical(
+        restored.operations[0].decoded_edge_fit.drop_vars("modelfit_results"),
+        results[0].drop_vars("modelfit_results"),
+    )
+
+
+def test_approved_custom_fit_provenance_stays_opaque(monkeypatch) -> None:
+    import base64
+    import io
+
+    import lmfit
+    import xarray_lmfit
+
+    from erlab.analysis.fit import _serialization as fit_serialization
+
+    x = np.linspace(-1.0, 1.0, 9)
+    data = xr.DataArray(0.03 * x + 0.06, dims="alpha", coords={"alpha": x})
+    model = lmfit.Model(lambda x, c0=0.06, c1=0.03: c0 + c1 * x)
+    result = data.xlm.modelfit("alpha", model=model)
+    buffer = io.BytesIO()
+    xarray_lmfit.save_fit(result, buffer, engine="h5netcdf", invalid_netcdf=True)
+    operation = CorrectWithEdgeOperation(
+        edge_fit={
+            _FIT_DATASET_MARKER: base64.b64encode(buffer.getvalue()).decode("ascii")
+        }
+    )
+    payload = full_data(operation).model_dump(mode="json")
+    entries = provenance_operation_code_trust_entries(
+        operation, location_prefix="operation"
+    )
+    capability = _authorize_execution(entries)
+
+    def unexpected_load(*_args, **_kwargs):
+        pytest.fail("Custom fit code must remain opaque during normalization")
+
+    monkeypatch.setattr(fit_serialization, "loads_result", unexpected_load)
+    monkeypatch.setattr(lmfit.jsonutils, "decode4js", unexpected_load)
+    normalize = provenance_code_payload_normalizer(authorization=capability)
+    assert normalize(payload) == payload
+
+
+def test_approved_unreadable_fit_provenance_stays_opaque() -> None:
+    import base64
+
+    operation = CorrectWithEdgeOperation(
+        edge_fit={
+            _FIT_DATASET_MARKER: base64.b64encode(b"unreadable fit dataset").decode(
+                "ascii"
+            )
+        }
+    )
+    payload = full_data(operation).model_dump(mode="json")
+    entries = provenance_operation_code_trust_entries(
+        operation, location_prefix="operation"
+    )
+    capability = _authorize_execution(entries)
+    normalize = provenance_code_payload_normalizer(authorization=capability)
+    assert normalize(payload) == payload
+    with pytest.raises((OSError, ValueError)):
+        operation._decode_edge_fit(capability)
 
 
 @pytest.mark.parametrize(
@@ -9159,6 +9662,42 @@ def test_model_fit_operation_replays_bound_uncertainty_and_valid_values() -> Non
     assert all(namespace[name] is sentinel for name in reserved_names)
 
 
+def test_model_fit_operation_omits_only_installed_default_constraints() -> None:
+    kwargs = {
+        "npeaks": 2,
+        "peak_shapes": "voigt voigt",
+        "fd": False,
+        "background": "none",
+        "convolve": False,
+    }
+    model = erlab.analysis.fit.models.MultiPeakModel(**kwargs)
+    parameters = {
+        name: _ModelFitParameterSpec(expr=param.expr)
+        if param.expr
+        else _ModelFitParameterSpec(value=param.value)
+        for name, param in model.make_params().items()
+    }
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="MultiPeakModel",
+        model_kwargs=kwargs,
+        parameters=parameters,
+        method="leastsq",
+        parameter="p0_sigma",
+    )
+
+    assert (
+        provenance_operation_code_trust_entries(operation, location_prefix="fit") == ()
+    )
+    parameters["p1_sigma"] = _ModelFitParameterSpec(expr="2 * p0_sigma")
+    edited = operation.model_copy(update={"parameters": parameters})
+    entries = provenance_operation_code_trust_entries(edited, location_prefix="fit")
+
+    assert [(entry.location, entry.code) for entry in entries] == [
+        ("fit/parameters/p1_sigma", "2 * p0_sigma")
+    ]
+
+
 def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     x = np.linspace(-1.0, 1.0, 21)
     data = xr.DataArray(
@@ -9198,6 +9737,11 @@ def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
     assert not can_reload_without_trust(spec)
     assert len(entries) == 1
     assert entries[0].feature == ("erlab.provenance.model-fit-parameter-expression")
+    assert entries == provenance_code_trust_entries(
+        spec,
+        location_prefix="nodes/0/provenance",
+        include_inputs=False,
+    )
     assert entries[0].code == "2 * c2"
     assert entries[0].context["parameter"] == "c1"
 
@@ -9368,3 +9912,260 @@ def test_model_fit_operation_rejects_ambiguous_parameter_shapes() -> None:
     )
     with pytest.raises(ValueError, match="was not found in data"):
         operation.apply(data_without_fit_dim)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("future", ["annotations", "barry_as_FLUFL"])
+def test_selected_python_modules_reject_incompatible_future_imports(
+    reverse, future
+) -> None:
+    source = xr.DataArray([1.0, 2.0])
+    offsets = xr.DataArray([100.0, 200.0])
+    annotation = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Read the annotation",
+                    code=(
+                        "def normalize(values: data):\n"
+                        "    return values\n"
+                        "prepared = normalize.__annotations__['values'] + 1"
+                    ),
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    postponed = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare the correction",
+                    code=(f"from __future__ import {future}\ncorrection = offsets * 0"),
+                )
+            ),
+        ),
+        input_name="offsets",
+        output_name="correction",
+    )
+    scopes = (
+        SelectedProvenanceScope(annotation, {}),
+        SelectedProvenanceScope(postponed, {}),
+    )
+    for scope, output_name, expected in zip(
+        scopes, ("prepared", "correction"), (source + 1, offsets * 0), strict=True
+    ):
+        code = selected_provenance_code((scope,))
+        namespace = {"data": source, "offsets": offsets}
+        exec(compile(code, "<copied module>", "exec", dont_inherit=True), namespace)  # noqa: S102
+        xr.testing.assert_identical(namespace[output_name], expected)
+
+    if reverse:
+        scopes = tuple(reversed(scopes))
+    with pytest.raises(
+        ReplayGraphError, match=f"incompatible future imports: {future}"
+    ):
+        selected_provenance_code(scopes)
+
+
+@pytest.mark.parametrize("later_code", ["prepared = prepared", "prepared += 1"])
+def test_python_module_future_flags_survive_graph_simplification(later_code) -> None:
+    spec = script(
+        ScriptCodeOperation(label="Continue the calculation", code=later_code),
+        start_label="Prepare data",
+        seed_code="from __future__ import annotations\nprepared = data + 1",
+        active_name="prepared",
+        script_inputs=(ScriptInput(name="data"),),
+    )
+    graph = compile_replay_graph(spec, display=True)
+
+    with pytest.raises(
+        ReplayGraphError, match="incompatible future imports: annotations"
+    ):
+        emit_replay_code(graph, output_name="prepared")
+
+
+@pytest.mark.parametrize("future", ["annotations", "division"])
+def test_compatible_python_modules_compose_with_structured_steps(future) -> None:
+    source = xr.DataArray([1.0, 2.0])
+    first = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare data",
+                    code=(
+                        f"from __future__ import {future}\n"
+                        "def normalize(values: data):\n"
+                        "    return values + 1\n"
+                        "prepared = normalize(data)"
+                    ),
+                )
+            ),
+        ),
+        input_name="data",
+        output_name="prepared",
+    )
+    second = selected_steps_spec(
+        (
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Continue the calculation",
+                    code=(
+                        (
+                            "from __future__ import annotations\n"
+                            if future == "annotations"
+                            else ""
+                        )
+                        + "continued = prepared * 2"
+                    ),
+                )
+            ),
+        ),
+        input_name="prepared",
+        output_name="continued",
+    )
+    last = selected_steps_spec(
+        (ReplayStep(operation=AssignAttrsOperation(attrs={"complete": True})),),
+        input_name="continued",
+        output_name="result",
+    )
+    code = selected_provenance_code(
+        (
+            SelectedProvenanceScope(first, {}),
+            SelectedProvenanceScope(second, {"prepared": 0}),
+            SelectedProvenanceScope(last, {"continued": 1}),
+        )
+    )
+    namespace = {"data": source}
+    exec(compile(code, "<copied module>", "exec", dont_inherit=True), namespace)  # noqa: S102
+
+    xr.testing.assert_identical(
+        namespace["result"], ((source + 1) * 2).assign_attrs(complete=True)
+    )
+    annotation = namespace["normalize"].__annotations__["values"]
+    if future == "annotations":
+        assert annotation == "data"
+    else:
+        xr.testing.assert_identical(annotation, source)
+
+
+def test_untrusted_compiler_does_not_inherit_framework_future_flags() -> None:
+    import __future__
+
+    from erlab.interactive.imagetool._provenance._code import (
+        _compile_untrusted_script_replay_code,
+    )
+
+    source = xr.DataArray([1.0, 2.0])
+    compiled = _compile_untrusted_script_replay_code("derived = data + 1")
+    namespace = {"data": source}
+    exec(compiled, namespace)  # noqa: S102
+
+    assert not compiled.co_flags & __future__.annotations.compiler_flag
+    xr.testing.assert_identical(namespace["derived"], source + 1)
+
+
+@pytest.mark.parametrize("kind", ["full_data", "script", "file"])
+def test_released_display_restore_steps_normalize_to_physical_data(
+    kind, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
+    )
+    path = tmp_path / "nonuniform.nc"
+    data.to_netcdf(path)
+    operation = {"op": "qsel_aggregate", "dims": ["x_idx"], "func": "sum"}
+    restore = {
+        "op": "restore_nonuniform_dims",
+        "dimension_mapping": {"x_idx": "x"},
+    }
+    if kind == "full_data":
+        payload = {"kind": kind, "operations": [operation, restore]}
+    else:
+        base = (
+            script(
+                start_label="Use data",
+                seed_code="derived = data",
+                active_name="derived",
+            )
+            if kind == "script"
+            else file_load(
+                start_label="Load nonuniform data",
+                seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+                file_load_source=_file_replay_source(path),
+            )
+        )
+        payload = base.model_dump(mode="json")
+        payload["steps"] = [{"operation": item} for item in (operation, restore)]
+    spec = parse_tool_provenance_spec(payload)
+    assert spec is not None
+    assert len(spec.operations) == 1
+    assert spec.operations[0].dims == ("x",)
+    assert "restore_nonuniform_dims" not in spec.model_dump_json()
+    assert "x_idx" not in spec.model_dump_json()
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"],
+        data.qsel.sum("x"),
+    )
+
+
+def test_released_display_mapping_does_not_rename_unrelated_user_dimensions() -> None:
+    spec = parse_tool_provenance_spec(
+        {
+            "kind": "full_data",
+            "operations": [
+                {"op": "qsel_aggregate", "dims": ["user_idx"], "func": "sum"},
+                {"op": "restore_nonuniform_dims", "dimension_mapping": {"x_idx": "x"}},
+            ],
+        }
+    )
+    assert spec is not None
+    assert spec.operations[0].dims == ("user_idx",)
+
+
+@pytest.mark.parametrize("kind", ["full_data", "script"])
+def test_released_display_mapping_stops_at_its_restore_step(kind) -> None:
+    operations = [
+        {"op": "assign_coords", "coord_name": "x_idx", "values": [0.0, 0.2, 1.0]},
+        {"op": "restore_nonuniform_dims", "dimension_mapping": {"x_idx": "x"}},
+        {
+            "op": "assign_coord_1d",
+            "coord_name": "user_index",
+            "dim": "y",
+            "values": [10, 11],
+        },
+        {"op": "rename_dims_coords", "mapping": {"y": "x_idx"}},
+        {"op": "assign_coords", "coord_name": "x_idx", "values": [4.0, 5.0]},
+    ]
+    if kind == "full_data":
+        payload = {"kind": kind, "operations": operations}
+    else:
+        payload = {
+            "kind": "script",
+            "start_label": "Use data",
+            "seed_code": "derived = data",
+            "active_name": "derived",
+            "steps": [{"operation": item} for item in operations],
+        }
+    spec = parse_tool_provenance_spec(payload)
+    assert spec is not None
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.5, 2.0], "y": [0.0, 1.0]},
+    )
+    expected = (
+        data.assign_coords(x=[0.0, 0.2, 1.0], user_index=("y", [10, 11]))
+        .rename({"y": "x_idx"})
+        .assign_coords(x_idx=[4.0, 5.0])
+    )
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    xr.testing.assert_identical(
+        _exec_generated_code(code, {"data": data})["derived"], expected
+    )

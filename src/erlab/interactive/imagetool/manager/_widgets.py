@@ -36,6 +36,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,14 @@ _DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
 
 
 @dataclass(frozen=True)
-class _ScriptRebuildResult:
+class _ProvenanceReplayResult:
     data: xr.DataArray
     provenance_spec: ToolProvenanceSpec
+    revisions: _ProvenanceRevisionStore | None = None
+
+    def commit_revisions(self, store: _ProvenanceRevisionStore) -> None:
+        if self.revisions is not None:
+            store.merge(self.revisions)
 
 
 class _ScriptRebuildError(RuntimeError):
@@ -1179,19 +1185,25 @@ class _ApplicationQuitFilter(QtCore.QObject):
 
 
 @dataclass
+class _WorkspaceDocumentLock:
+    lock: QtCore.QLockFile
+
+    def __del__(self) -> None:
+        self.lock.unlock()
+
+
+@dataclass
 class _WorkspaceDocumentAccess:
     path: pathlib.Path
-    _lock: QtCore.QLockFile | None = None
+    _ownership: _WorkspaceDocumentLock | None = None
 
-    def take_lock(self) -> QtCore.QLockFile | None:
-        lock = self._lock
-        self._lock = None
-        return lock
+    def retain(self) -> _WorkspaceDocumentAccess:
+        if self._ownership is None:
+            raise RuntimeError("Workspace document access was released")
+        return _WorkspaceDocumentAccess(self.path, self._ownership)
 
     def release(self) -> None:
-        if self._lock is not None:
-            self._lock.unlock()
-            self._lock = None
+        self._ownership = None
 
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"

@@ -29,6 +29,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ScriptInput,
+    _ProvenanceDisplayRow,
     compose_full_provenance,
     file_load,
     full_data,
@@ -1314,6 +1315,11 @@ def test_manager_console_child_window_divide_uses_public_nonuniform_dims(
         assert tools[0].children[0].data.dims == ("sample_temp", "eV")
         assert "sample_temp_idx" not in tools[0].data.dims
         assert "sample_temp_idx" not in tools[0].children[0].data.dims
+        xr.testing.assert_identical(parent.current_source_data(), data)
+        child = manager._child_node(child_uid)
+        xr.testing.assert_identical(
+            child.current_source_data(), tools[0].children[0].data
+        )
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -2888,7 +2894,6 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             operation,
             emit_edited=True,
         )
-        detached_token = manager._tool_graph.root_wrappers[0].source_snapshot_token
 
         compatible_child = typing.cast(
             "erlab.interactive.imagetool.ImageTool",
@@ -2965,14 +2970,19 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
             source.node_snapshot_token
             for source in replacement_provenance.script_inputs
         ] == [
-            detached_token,
+            None,
             manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
         assert replacement_provenance.script_inputs[
             0
         ].parsed_provenance_spec() == to_replay_provenance_spec(old_root_provenance)
-        assert replacement_wrapper.replay_source_data is not None
-        xr.testing.assert_identical(replacement_wrapper.replay_source_data, data0)
+        captured = replacement_provenance.script_inputs[0]
+        assert captured.revision_id is not None
+        assert not captured.follow_source
+        assert replacement_wrapper.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id), data0
+        )
 
         updated_data1 = data1 + 5.0
         manager.get_imagetool(1).slicer_area.replace_source_data(updated_data1)
@@ -3445,6 +3455,9 @@ def test_manager_reload_script_derived_target_honors_trust_cancel(
 
     manager = types.SimpleNamespace(
         _dependency_tracker=types.SimpleNamespace(),
+        _workspace_controller=types.SimpleNamespace(
+            local_provenance_change=lambda **_kwargs: contextlib.nullcontext()
+        ),
         _node_for_target=lambda _target: node,
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(
@@ -3478,6 +3491,9 @@ def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
     dialogs: list[str] = []
     manager = types.SimpleNamespace(
         _dependency_tracker=types.SimpleNamespace(),
+        _workspace_controller=types.SimpleNamespace(
+            local_provenance_change=lambda **_kwargs: contextlib.nullcontext()
+        ),
         _node_for_target=lambda _target: node,
         _extensions=types.SimpleNamespace(
             execution=types.SimpleNamespace(
@@ -3512,7 +3528,7 @@ def test_manager_reload_script_derived_target_rejects_non_imagetool_result(
     assert dialogs == ["An error occurred while opening reloaded data."]
 
 
-def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
+def test_manager_reload_script_inputs_use_physical_nonuniform_dims(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[
@@ -3524,7 +3540,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         dims=("x", "y"),
         coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(3.0)},
     )
-    operation_code = "derived = erlab.utils.array._restore_nonuniform_dims(data_0) + 1"
+    operation_code = "derived = data_0 + 1"
 
     with manager_context() as manager:
         manager.show()
@@ -3535,13 +3551,19 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
             manager._lineage_controller._show_multi_input_script_result(
                 data + 1.0,
                 (0,),
-                operation_label="Offset restored input",
+                operation_label="Offset input",
                 operation_code=operation_code,
             )
             == 1
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert manager.get_imagetool(1).slicer_area.data.dims == ("x_idx", "y")
+        derived = manager._tool_graph.root_wrappers[1]
+        assert derived.displayed_provenance_spec is not None
+        assert (
+            "restore_nonuniform"
+            not in derived.displayed_provenance_spec.model_dump_json()
+        )
 
         updated = data + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated)
@@ -3561,9 +3583,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         manager.reload_selected()
 
         xr.testing.assert_identical(
-            erlab.utils.array._restore_nonuniform_dims(
-                manager.get_imagetool(1).slicer_area.data
-            ),
+            manager.get_imagetool(1).slicer_area.displayed_data,
             updated + 1.0,
         )
         assert manager.dependency_status_for_uid(derived_uid) == "current"
@@ -3895,7 +3915,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]
         assert all(line.strip() for line in details["Inputs"].splitlines())
-        assert "recorded source file found" in details["Inputs"]
+        assert "data_1: right.nc" in details["Inputs"]
 
         manager.reload_selected()
 
@@ -4038,7 +4058,7 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         assert load_count == 1
 
 
-def test_manager_reload_script_inputs_missing_parent_without_source_noops(
+def test_manager_reload_script_inputs_missing_parent_uses_captured_input(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -4077,6 +4097,12 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
         )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         original = manager.get_imagetool(2).slicer_area.data.copy()
+        wrapper = manager._tool_graph.root_wrappers[2]
+        missing_input = wrapper.provenance_spec.script_inputs[1]
+        assert missing_input.revision_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(missing_input.revision_id), data1
+        )
 
         manager.remove_imagetool(1)
         manager.tree_view.deselect_all()
@@ -4085,10 +4111,11 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
 
         assert manager.reload_action.isVisible()
         assert manager.reload_action.isEnabled()
+        assert manager._lineage_controller._node_can_reload_script_inputs(wrapper)
         manager.reload_selected()
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
-        assert unavailable_reasons
+        assert not unavailable_reasons
         assert not errors
 
 
@@ -4230,19 +4257,19 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert load_source is not None
         replay_call = load_source.replay_call
         assert replay_call is not None
-        no_replay_call_input = types.SimpleNamespace(
+        no_replay_call_input = ScriptInput(
             name="no_replay_call",
             node_uid=None,
             label="No replay call",
-            uses_owner_replay_source=False,
-            parsed_provenance_spec=lambda: file_spec.model_copy(
+            provenance_spec=file_spec.model_copy(
                 update={
                     "kind": "script",
+                    "active_name": "derived",
                     "file_load_source": load_source.model_copy(
                         update={"replay_call": None}
                     ),
                 }
-            ),
+            ).model_dump(mode="json"),
         )
         assert manager._lineage_controller._script_input_unavailable_reason(
             no_replay_call_input
@@ -4393,6 +4420,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert tooltip is not None
         assert "Recorded source files found" in tooltip
 
+        child_revision = manager._provenance_revisions.add(data0, file_spec)
         fake_child = types.SimpleNamespace(
             uid="1 child-node",
             provenance_spec=file_spec,
@@ -4404,6 +4432,8 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             snapshot_token_for_role=lambda _role: child_marker,
             provenance_for_role=lambda _role: file_spec,
             type_badge_text="tool",
+            data_for_role=lambda _role: data0,
+            revision_id_for_role=lambda _role: child_revision,
         )
         script_input = manager._lineage_controller._script_input_for_node(fake_child)
         assert script_input.name.startswith("data__1_child")
@@ -4712,7 +4742,7 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         assert rebuilt_spec.script_inputs[0].parsed_provenance_spec() == file_spec
 
 
-def test_manager_reload_raw_self_replacement_unavailable(
+def test_manager_reload_raw_self_replacement_uses_captured_input(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -4739,16 +4769,25 @@ def test_manager_reload_raw_self_replacement_unavailable(
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
         wrapper = manager._tool_graph.root_wrappers[0]
+        captured = wrapper.provenance_spec.script_inputs[0]
+        assert captured.revision_id is not None
+        assert captured.provenance_spec is None
+        assert captured.node_uid is None
+        assert captured.node_snapshot_token is None
+        assert wrapper.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured.revision_id), data
+        )
         manager.tree_view.deselect_all()
         select_tools(manager, [0])
         manager._update_actions()
-        assert not manager._lineage_controller._node_can_reload_script_inputs(wrapper)
+        assert manager._lineage_controller._node_can_reload_script_inputs(wrapper)
         assert manager.reload_action.isVisible()
         assert manager.reload_action.isEnabled()
 
         manager.reload_selected()
 
-        assert unavailable_reasons
+        assert not unavailable_reasons
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
 
@@ -4759,7 +4798,11 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
 
     details = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
-            derivation_entries=(start_entry, unavailable_entry, unavailable_entry),
+            derivation_display_rows=tuple(
+                _ProvenanceDisplayRow(entry)
+                for entry in (start_entry, unavailable_entry, unavailable_entry)
+            ),
+            displayed_provenance_spec=None,
             passive_displayed_provenance_spec=None,
         )
     )
@@ -4767,14 +4810,17 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
 
     fallback = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
-            derivation_entries=(start_entry,),
+            derivation_display_rows=(_ProvenanceDisplayRow(start_entry),),
+            displayed_provenance_spec=None,
             passive_displayed_provenance_spec=None,
         )
     )
     assert fallback
 
     no_spec_node = types.SimpleNamespace(
-        derivation_entries=(start_entry, unavailable_entry),
+        derivation_display_rows=tuple(
+            _ProvenanceDisplayRow(entry) for entry in (start_entry, unavailable_entry)
+        ),
         displayed_provenance_spec=None,
         passive_displayed_provenance_spec=None,
     )

@@ -7,7 +7,8 @@ import keyword
 import math
 import symtable
 import typing
-from collections.abc import Hashable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 
 import numpy as np
 
@@ -17,17 +18,13 @@ import erlab.utils.misc
 if typing.TYPE_CHECKING:
     import types
 
-_LEGACY_NONUNIFORM_RESTORE_PATH = (
-    "erlab",
+_LEGACY_NONUNIFORM_RESTORE_PATHS = {
     (
-        "interactive",
-        "imagetool",
-        "slicer",
-        "restore_nonuniform_dims",
+        "erlab",
+        ("interactive", "imagetool", "slicer", "restore_nonuniform_dims"),
     ),
-)
-
-_PRIVATE_NONUNIFORM_RESTORE_EXPRESSION = "erlab.utils.array._restore_nonuniform_dims"
+    ("erlab", ("utils", "array", "_restore_nonuniform_dims")),
+}
 
 _SLICE_MARKER = "__erlab_slice__"
 
@@ -159,151 +156,6 @@ def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -
     return f"derived = {_format_selection_expr('derived', method, kwargs)}"
 
 
-def _nonuniform_dim_mapping_condition(
-    array_name: str,
-    index_code: str,
-    restored_code: str,
-) -> str:
-    return (
-        f"{index_code} in {array_name}.dims and "
-        f"{restored_code} in {array_name}.coords and "
-        f"{array_name}.coords[{restored_code}].ndim == 1 and "
-        f"{array_name}.coords[{restored_code}].dims == ({index_code},) and "
-        f"{array_name}.coords[{restored_code}].size == "
-        f"{array_name}.sizes[{index_code}]"
-    )
-
-
-def _restore_nonuniform_dims_expression(
-    input_name: str,
-    dimension_mapping: Mapping[Hashable, Hashable],
-) -> str:
-    """Emit a self-contained expression restoring recorded index dimensions.
-
-    This is used for concise copied selection expressions whose receiver is a stable
-    data variable. Applicable dimensions are restored together so expression size grows
-    linearly with the recorded mapping instead of nesting the preceding expression for
-    every dimension. Structured provenance operations use statement code when the
-    receiver itself may need single evaluation.
-    """
-    if not dimension_mapping:
-        return input_name
-
-    receiver = _expression_receiver_code(input_name)
-    mapping_items = ", ".join(
-        f"({_provenance_value_code(index_dim)}, {_provenance_value_code(restored_dim)})"
-        for index_dim, restored_dim in dimension_mapping.items()
-    )
-    mapping_code = f"({mapping_items},)"
-    condition = _nonuniform_dim_mapping_condition(
-        receiver, "index_dimension", "dimension"
-    )
-    applicable_mapping = (
-        "{index_dimension: dimension "
-        f"for index_dimension, dimension in {mapping_code} if {condition}}}"
-    )
-    obsolete_dimensions = (
-        "[index_dimension "
-        f"for index_dimension, dimension in {mapping_code} if {condition}]"
-    )
-    return (
-        f"{receiver}.swap_dims({applicable_mapping}).drop_vars("
-        f'{obsolete_dimensions}, errors="ignore")'
-    )
-
-
-def _known_nonuniform_restore_statement_code(
-    input_name: str,
-    *,
-    output_name: str,
-    dimension_mapping: Mapping[Hashable, Hashable],
-) -> str:
-    """Emit public xarray statements restoring recorded index dimensions."""
-    lines = (
-        []
-        if input_name == output_name and dimension_mapping
-        else [f"{output_name} = {input_name}"]
-    )
-    for index_dim, restored_dim in dimension_mapping.items():
-        index_code = _provenance_value_code(index_dim)
-        restored_code = _provenance_value_code(restored_dim)
-        condition = _nonuniform_dim_mapping_condition(
-            output_name, index_code, restored_code
-        )
-        lines.extend(
-            (
-                f"if {condition}:",
-                f"    {output_name} = {output_name}.swap_dims("
-                f"{{{index_code}: {restored_code}}}).drop_vars("
-                f'{index_code}, errors="ignore")',
-            )
-        )
-    return "\n".join(lines)
-
-
-_NONUNIFORM_RESTORE_FUNCTION_NAME = "_restore_image_tool_dimensions"
-
-
-def _nonuniform_restore_support_code(
-    function_name: str = _NONUNIFORM_RESTORE_FUNCTION_NAME,
-) -> str:
-    """Emit standalone public-API code for detecting ImageTool index dimensions."""
-    return f'''def {function_name}(array):
-    """Restore nonuniform dimensions replaced for ImageTool rendering."""
-    import numpy as np
-
-    dimension_mapping = {{}}
-    for index_dimension in array.dims:
-        if not str(index_dimension).endswith("_idx"):
-            continue
-        dimension = str(index_dimension).removesuffix("_idx")
-        coordinate = array.coords.get(dimension)
-        if coordinate is None:
-            continue
-        if (
-            coordinate.ndim != 1
-            or coordinate.dims != (index_dimension,)
-            or coordinate.size != array.sizes[index_dimension]
-        ):
-            continue
-        try:
-            values = coordinate.values.astype(np.float64)
-        except (TypeError, ValueError):
-            continue
-        if values.size == 1:
-            continue
-        differences = np.diff(values)
-        if differences[0] == 0.0 or not np.allclose(
-            differences,
-            differences[0],
-            rtol=3e-5,
-            atol=3e-5,
-            equal_nan=True,
-        ):
-            dimension_mapping[index_dimension] = dimension
-    if not dimension_mapping:
-        return array
-    return array.swap_dims(dimension_mapping).drop_vars(
-        tuple(dimension_mapping), errors="ignore"
-    )'''
-
-
-def _dynamic_nonuniform_restore_replay_code(
-    input_name: str,
-    *,
-    output_name: str,
-    copy_input: bool = False,
-) -> str:
-    """Emit a standalone dynamic restore for legacy derivation-code fallbacks."""
-    input_expression = f"{input_name}.copy(deep=False)" if copy_input else input_name
-    return "\n".join(
-        (
-            _nonuniform_restore_support_code(),
-            f"{output_name} = {_NONUNIFORM_RESTORE_FUNCTION_NAME}({input_expression})",
-        )
-    )
-
-
 def _validate_active_name(value: typing.Any) -> str | None:
     if value is None:
         return None
@@ -314,68 +166,215 @@ def _validate_active_name(value: typing.Any) -> str | None:
     return value
 
 
-class _CurrentScopeNameCounter(ast.NodeVisitor):
+def _symbol_table_dependencies(
+    table: symtable.SymbolTable, enclosing_bound: frozenset[str] = frozenset()
+) -> set[str]:
+    """Return external reads, excluding closures supplied by enclosing scopes."""
+    dependencies = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_referenced()
+        and (
+            symbol.is_global()
+            or (symbol.is_free() and symbol.get_name() not in enclosing_bound)
+        )
+    }
+    supplied = enclosing_bound
+    if table.get_type() not in {"module", "class"}:
+        supplied = supplied.union(
+            symbol.get_name() for symbol in table.get_symbols() if symbol.is_local()
+        )
+    elif table.get_type() == "class":
+        supplied = supplied.union({"__class__", "__classdict__"})
+    for child in table.get_children():
+        dependencies.update(_symbol_table_dependencies(child, supplied))
+    return dependencies
+
+
+def _deferred_symbol_table_dependencies(
+    table: symtable.SymbolTable, enclosing_bound: frozenset[str] = frozenset()
+) -> set[str]:
+    """Keep deferred child reads across eagerly evaluated comprehension scopes."""
+    dependencies: set[str] = set()
+    named_scopes = {
+        namespace
+        for symbol in table.get_symbols()
+        for namespace in symbol.get_namespaces()
+    }
+    for child in table.get_children():
+        if (
+            child not in named_scopes
+            and child.get_type() == "function"
+            and child.get_name() in {"listcomp", "setcomp", "dictcomp"}
+        ):
+            supplied = enclosing_bound.union(
+                symbol.get_name() for symbol in child.get_symbols() if symbol.is_local()
+            )
+            dependencies.update(_deferred_symbol_table_dependencies(child, supplied))
+        else:
+            dependencies.update(_symbol_table_dependencies(child, enclosing_bound))
+    return dependencies
+
+
+_OPAQUE_NAMESPACE_NAMES = {
+    "globals",
+    "locals",
+    "vars",
+    "eval",
+    "exec",
+    "__import__",
+    "__builtins__",
+}
+_OPAQUE_NAMESPACE_ATTRIBUTES = {
+    "__dict__",
+    "__globals__",
+    "__closure__",
+    "__defaults__",
+    "__kwdefaults__",
+}
+
+
+def _has_opaque_namespace_access(
+    module: ast.AST, symbols: symtable.SymbolTable
+) -> bool:
+    """Detect explicit access to Python namespace capabilities.
+
+    A scope that creates these capabilities can export them through arbitrary aliases
+    or callables. Composed notebook code must therefore retain this scope as an opaque
+    boundary instead of trying to infer the resulting Python objects.
+    """
+    if any(
+        (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in _OPAQUE_NAMESPACE_NAMES
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any(alias.name == "builtins" for alias in node.names)
+        )
+        or (
+            isinstance(node, ast.ImportFrom)
+            and (
+                node.module == "builtins"
+                or any(alias.name == "*" for alias in node.names)
+            )
+        )
+        or (
+            isinstance(node, ast.Attribute)
+            and node.attr in _OPAQUE_NAMESPACE_ATTRIBUTES
+        )
+        or (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _OPAQUE_NAMESPACE_ATTRIBUTES
+        )
+        for node in ast.walk(module)
+    ):
+        return True
+    declares_global = any(isinstance(node, ast.Global) for node in ast.walk(module))
+
+    def deferred_writes(scope: symtable.SymbolTable) -> bool:
+        return (
+            (declares_global or scope.get_name() == "genexpr")
+            and any(
+                symbol.is_declared_global()
+                and (symbol.is_assigned() or symbol.is_imported())
+                for symbol in scope.get_symbols()
+            )
+        ) or any(deferred_writes(child) for child in scope.get_children())
+
+    return any(deferred_writes(child) for child in symbols.get_children())
+
+
+class _CurrentScopeNames(ast.NodeVisitor):
+    """Collect lexical bindings and retain the existing statement-count view."""
+
     def __init__(
         self,
-        target: str,
-        contexts: tuple[type[ast.expr_context], ...],
+        local_names: set[str] | None = None,
         *,
-        count_definition_names: bool = True,
+        count_comprehension_locals: bool = False,
     ) -> None:
-        self.target = target
-        self.contexts = contexts
-        self.count_definition_names = count_definition_names
-        self.count = 0
+        self.loads: set[str] = set()
+        self.stores: set[str] = set()
+        self.writes: set[str] = set()
+        self.load_counts: Counter[str] = Counter()
+        self.store_counts: Counter[str] = Counter()
+        self.definition_counts: Counter[str] = Counter()
+        self.wildcard_stores = 0
+        self._local_names = set(local_names or ())
+        self._count_comprehension_locals = count_comprehension_locals
+
+    def _store(self, name: str, *, counted: bool = True) -> None:
+        if name not in self._local_names:
+            self.stores.add(name)
+            self.writes.add(name)
+            if counted:
+                self.store_counts[name] += 1
 
     def visit_Name(self, node: ast.Name) -> None:
-        if node.id == self.target and isinstance(node.ctx, self.contexts):
-            self.count += 1
+        if node.id in self._local_names:
+            return
+        if isinstance(node.ctx, ast.Load):
+            self.loads.add(node.id)
+            self.load_counts[node.id] += 1
+        elif isinstance(node.ctx, ast.Store | ast.Del):
+            self._store(node.id)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            self.visit(ast.Name(id=node.target.id, ctx=ast.Load()))
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is None and isinstance(node.target, ast.Name):
+            self.stores.add(node.target.id)
+            self.visit(node.annotation)
+        else:
+            self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
-        if ast.Store not in self.contexts:
-            return
         for alias in node.names:
-            bound_name = alias.asname or alias.name.partition(".")[0]
-            self.count += bound_name == self.target
+            self._store(alias.asname or alias.name.partition(".")[0])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if ast.Store not in self.contexts or node.module == "__future__":
-            return
         for alias in node.names:
             if alias.name == "*":
-                self.count += 1
-                continue
-            self.count += (alias.asname or alias.name) == self.target
+                self.wildcard_stores += node.module != "__future__"
+            else:
+                self._store(
+                    alias.asname or alias.name, counted=node.module != "__future__"
+                )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if ast.Store in self.contexts and node.name is not None:
-            self.count += node.name == self.target
         if node.type is not None:
             self.visit(node.type)
+        if node.name is not None:
+            self._store(node.name)
         for statement in node.body:
             self.visit(statement)
 
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if ast.Store in self.contexts and node.name is not None:
-            self.count += node.name == self.target
-        if node.pattern is not None:
-            self.visit(node.pattern)
+        if node.name is not None:
+            self._store(node.name)
+        self.generic_visit(node)
 
     def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if ast.Store in self.contexts and node.name is not None:
-            self.count += node.name == self.target
+        if node.name is not None:
+            self._store(node.name)
 
     def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
-        if ast.Store in self.contexts and node.rest is not None:
-            self.count += node.rest == self.target
-        for key in node.keys:
-            self.visit(key)
-        for pattern in node.patterns:
-            self.visit(pattern)
+        if node.rest is not None:
+            self._store(node.rest)
+        self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if self.count_definition_names and ast.Store in self.contexts:
-            self.count += node.name == self.target
+        self._store(node.name, counted=False)
+        self.definition_counts[node.name] += 1
         for decorator in node.decorator_list:
             self.visit(decorator)
         self._visit_argument_expressions(node.args)
@@ -389,8 +388,8 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
         self._visit_argument_expressions(node.args)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if self.count_definition_names and ast.Store in self.contexts:
-            self.count += node.name == self.target
+        self._store(node.name, counted=False)
+        self.definition_counts[node.name] += 1
         for decorator in node.decorator_list:
             self.visit(decorator)
         for base in node.bases:
@@ -399,9 +398,7 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
             self.visit(keyword_arg)
 
     def _visit_argument_expressions(self, args: ast.arguments) -> None:
-        for default in args.defaults:
-            self.visit(default)
-        for default in args.kw_defaults:
+        for default in (*args.defaults, *args.kw_defaults):
             if default is not None:
                 self.visit(default)
         for arg in (
@@ -412,6 +409,472 @@ class _CurrentScopeNameCounter(ast.NodeVisitor):
         ):
             if arg.annotation is not None:
                 self.visit(arg.annotation)
+
+    def _visit_comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp
+    ) -> None:
+        if self._count_comprehension_locals:
+            self.generic_visit(node)
+            return
+        previous_locals = self._local_names
+        self._local_names = set(previous_locals)
+        try:
+            for generator in node.generators:
+                self.visit(generator.iter)
+                target = _CurrentScopeNames(self._local_names)
+                target.visit(generator.target)
+                self.loads.update(target.loads)
+                self._local_names.update(target.stores)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for field in ("elt", "key", "value"):
+                if (value := getattr(node, field, None)) is not None:
+                    self.visit(value)
+        finally:
+            self._local_names = previous_locals
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+
+
+class _BindingState(typing.NamedTuple):
+    """Separate possible availability, incoming-value replacement, and final binding."""
+
+    available: frozenset[str] = frozenset()
+    replaced: frozenset[str] = frozenset()
+    deleted: frozenset[str] = frozenset()
+    bound: frozenset[str] = frozenset()
+    functions: Mapping[str, frozenset[str]] = {}
+
+
+_BindingExit = typing.Literal["normal", "break", "continue", "return", "raise"]
+_BindingFlow = dict[_BindingExit, _BindingState]
+
+
+def _merge_binding_states(states: Sequence[_BindingState]) -> _BindingState:
+    """Keep possible availability and effects shared by every path."""
+    functions: dict[str, frozenset[str]] = {}
+    for state in states:
+        for name, dependencies in state.functions.items():
+            functions[name] = functions.get(name, frozenset()) | dependencies
+    return _BindingState(
+        frozenset().union(*(state.available for state in states)),
+        frozenset.intersection(*(state.replaced for state in states)),
+        frozenset.intersection(*(state.deleted for state in states)),
+        frozenset.intersection(*(state.bound for state in states)),
+        functions,
+    )
+
+
+def _merge_binding_flows(*flows: _BindingFlow) -> _BindingFlow:
+    exits: dict[_BindingExit, list[_BindingState]] = {}
+    for flow in flows:
+        for exit_kind, state in flow.items():
+            exits.setdefault(exit_kind, []).append(state)
+    return {kind: _merge_binding_states(states) for kind, states in exits.items()}
+
+
+class _CodeBindingEffects:
+    """Follow ordered module bindings without evaluating Python expressions.
+
+    Availability retains the validator's permissive union of conditional bindings.
+    Replacement and deletion are definite effects on normally completed paths. The
+    same traversal supplies notebook liveness and optional name validation.
+    """
+
+    def __init__(
+        self,
+        *,
+        read: Callable[[str, _BindingState], _BindingState] | None = None,
+        require_binding: Callable[[str, _BindingState], _BindingState] | None = None,
+        functions: Mapping[tuple[str, int], set[str]] | None = None,
+    ) -> None:
+        self.incoming_reads: set[str] = set()
+        self.incoming_bindings: set[str] = set()
+        self._read_callback = read
+        self._require_binding_callback = require_binding
+        self._functions = functions or {}
+        self._local_names: set[str] = set()
+
+    def _read(self, name: str, state: _BindingState) -> _BindingState:
+        if name in self._local_names:
+            return state
+        if name not in state.replaced:
+            self.incoming_reads.add(name)
+        return (
+            state if self._read_callback is None else self._read_callback(name, state)
+        )
+
+    @staticmethod
+    def _bind(
+        state: _BindingState, names: Collection[str], *, definite: bool = True
+    ) -> _BindingState:
+        names = frozenset(names)
+        return _BindingState(
+            state.available | names,
+            state.replaced | names if definite else state.replaced,
+            state.deleted - names,
+            state.bound | names if definite else state.bound,
+            {
+                name: deps
+                for name, deps in state.functions.items()
+                if not definite or name not in names
+            },
+        )
+
+    @staticmethod
+    def _delete(state: _BindingState, names: Collection[str]) -> _BindingState:
+        names = frozenset(names)
+        return _BindingState(
+            state.available - names,
+            state.replaced | names,
+            state.deleted | names,
+            state.bound - names,
+            {name: deps for name, deps in state.functions.items() if name not in names},
+        )
+
+    def _expression(self, node: ast.AST | None, state: _BindingState) -> _BindingState:
+        if node is None:
+            return state
+        if isinstance(node, ast.Name):
+            return (
+                self._read(node.id, state) if isinstance(node.ctx, ast.Load) else state
+            )
+        if isinstance(node, ast.NamedExpr):
+            return self._target(node.target, self._expression(node.value, state))
+        if isinstance(node, ast.Lambda):
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                state = self._expression(default, state)
+            return state
+        if isinstance(
+            node, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+        ):
+            return self._comprehension(node, state)
+        if isinstance(node, ast.IfExp):
+            state = self._expression(node.test, state)
+            return _merge_binding_states(
+                [
+                    self._expression(node.body, state),
+                    self._expression(node.orelse, state),
+                ]
+            )
+        if isinstance(node, ast.BoolOp | ast.Compare):
+            values = (
+                node.values
+                if isinstance(node, ast.BoolOp)
+                else [node.left, *node.comparators]
+            )
+            for index, value in enumerate(values):
+                evaluated = self._expression(value, state)
+                state = (
+                    evaluated
+                    if index < (1 if isinstance(node, ast.BoolOp) else 2)
+                    else _merge_binding_states([state, evaluated])
+                )
+            return state
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                state = self._expression(key, state)
+                state = self._expression(value, state)
+            return state
+        for child in ast.iter_child_nodes(node):
+            state = self._expression(child, state)
+        return state
+
+    def _comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        state: _BindingState,
+    ) -> _BindingState:
+        state = self._expression(node.generators[0].iter, state)
+        entry = state
+        previous_locals = self._local_names
+        self._local_names = previous_locals | {
+            target.id
+            for generator in node.generators
+            for target in ast.walk(generator.target)
+            if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)
+        }
+        try:
+            for index, generator in enumerate(node.generators):
+                if index:
+                    state = self._expression(generator.iter, state)
+                state = self._target(generator.target, state)
+                for condition in generator.ifs:
+                    state = self._expression(condition, state)
+            if isinstance(node, ast.DictComp):
+                state = self._expression(node.key, state)
+                state = self._expression(node.value, state)
+            else:
+                state = self._expression(node.elt, state)
+        finally:
+            self._local_names = previous_locals
+        # The body can run zero times. Generator body writes remain deferred.
+        return (
+            entry
+            if isinstance(node, ast.GeneratorExp)
+            else _merge_binding_states([entry, state])
+        )
+
+    def _target(
+        self, target: ast.AST, state: _BindingState, *, delete: bool = False
+    ) -> _BindingState:
+        if isinstance(target, ast.Name):
+            if target.id in self._local_names:
+                return state
+            if delete:
+                if target.id not in state.replaced:
+                    self.incoming_bindings.add(target.id)
+                if self._require_binding_callback is not None:
+                    state = self._require_binding_callback(target.id, state)
+                return self._delete(state, (target.id,))
+            return self._bind(state, (target.id,))
+        if isinstance(target, ast.Tuple | ast.List | ast.Starred):
+            for child in ast.iter_child_nodes(target):
+                state = self._target(child, state, delete=delete)
+            return state
+        return self._expression(target, state)
+
+    def block(
+        self, statements: Sequence[ast.stmt], state: _BindingState | None = None
+    ) -> _BindingFlow:
+        flow: _BindingFlow = {"normal": state or _BindingState()}
+        for statement in statements:
+            normal = flow.pop("normal", None)
+            if normal is None:
+                break
+            flow = _merge_binding_flows(flow, self._statement(statement, normal))
+        return flow
+
+    def _statement(self, node: ast.stmt, state: _BindingState) -> _BindingFlow:
+        if isinstance(node, ast.If):
+            state = self._expression(node.test, state)
+            return _merge_binding_flows(
+                self.block(node.body, state), self.block(node.orelse, state)
+            )
+        if isinstance(node, ast.For | ast.AsyncFor | ast.While):
+            return self._loop(node, state)
+        if isinstance(node, ast.Try | ast.TryStar):
+            return self._try(node, state)
+        if isinstance(node, ast.Match):
+            state = self._expression(node.subject, state)
+            branches: list[_BindingFlow] = []
+            unmatched = True
+            for case in node.cases:
+                names = _CurrentScopeNames()
+                names.visit(case.pattern)
+                branch = state
+                for name in sorted(names.loads):
+                    branch = self._read(name, branch)
+                branch = self._bind(branch, names.writes)
+                branch = self._expression(case.guard, branch)
+                branches.append(self.block(case.body, branch))
+                if case.guard is None and self._irrefutable_pattern(case.pattern):
+                    unmatched = False
+            return _merge_binding_flows(
+                *branches, {"normal": state} if unmatched else {}
+            )
+        if isinstance(node, ast.With | ast.AsyncWith):
+            for item in node.items:
+                state = self._expression(item.context_expr, state)
+                if item.optional_vars is not None:
+                    state = self._target(item.optional_vars, state)
+            body = self.block(node.body, state)
+            # A context manager can suppress an exception before any body binding.
+            return _merge_binding_flows(body, {"normal": state})
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            if isinstance(node, ast.AugAssign):
+                state = (
+                    self._read(node.target.id, state)
+                    if isinstance(node.target, ast.Name)
+                    else self._expression(node.target, state)
+                )
+            state = self._expression(node.value, state)
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not isinstance(node, ast.AnnAssign) or node.value is not None:
+                for target in targets:
+                    state = self._target(target, state)
+            elif not isinstance(node.target, ast.Name):
+                state = self._expression(node.target, state)
+            if isinstance(node, ast.AnnAssign):
+                state = self._expression(node.annotation, state)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                state = self._target(target, state, delete=True)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            for decorator in node.decorator_list:
+                state = self._expression(decorator, state)
+            if isinstance(node, ast.ClassDef):
+                for expression in (*node.bases, *node.keywords):
+                    state = self._expression(expression, state)
+            else:
+                for default in (*node.args.defaults, *node.args.kw_defaults):
+                    state = self._expression(default, state)
+                for argument in (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                    *(
+                        arg
+                        for arg in (node.args.vararg, node.args.kwarg)
+                        if arg is not None
+                    ),
+                ):
+                    state = self._expression(argument.annotation, state)
+                state = self._expression(node.returns, state)
+            state = self._bind(state, (node.name,))
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                state = state._replace(
+                    functions={
+                        **state.functions,
+                        node.name: frozenset(
+                            self._functions.get((node.name, node.lineno), ())
+                        ),
+                    }
+                )
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            names = _CurrentScopeNames()
+            names.visit(node)
+            state = self._bind(state, names.writes)
+        elif isinstance(node, ast.Assert):
+            state = self._expression(node.test, state)
+            return {"normal": state, "raise": self._expression(node.msg, state)}
+        elif isinstance(node, ast.Return | ast.Raise):
+            state = self._expression(node, state)
+            return {"return" if isinstance(node, ast.Return) else "raise": state}
+        elif isinstance(node, ast.Break | ast.Continue):
+            return {"break" if isinstance(node, ast.Break) else "continue": state}
+        else:
+            state = self._expression(node, state)
+            if not isinstance(node, ast.Expr):
+                names = _CurrentScopeNames()
+                names.visit(node)
+                state = self._bind(state, names.writes, definite=False)
+        return {"normal": state}
+
+    @staticmethod
+    def _irrefutable_pattern(pattern: ast.pattern) -> bool:
+        return (
+            isinstance(pattern, ast.MatchAs)
+            and (
+                pattern.pattern is None
+                or _CodeBindingEffects._irrefutable_pattern(pattern.pattern)
+            )
+        ) or (
+            isinstance(pattern, ast.MatchOr)
+            and any(
+                _CodeBindingEffects._irrefutable_pattern(p) for p in pattern.patterns
+            )
+        )
+
+    def _loop(
+        self, node: ast.For | ast.AsyncFor | ast.While, state: _BindingState
+    ) -> _BindingFlow:
+        state = self._expression(
+            node.test if isinstance(node, ast.While) else node.iter, state
+        )
+        entry = (
+            state if isinstance(node, ast.While) else self._target(node.target, state)
+        )
+        body = self.block(node.body, entry)
+        exhausted = [state]
+        iterations = [body.pop(kind) for kind in ("normal", "continue") if kind in body]
+        exhausted.extend(
+            self._expression(node.test, iteration)
+            if isinstance(node, ast.While)
+            else iteration
+            for iteration in iterations
+        )
+        normal = self.block(node.orelse, _merge_binding_states(exhausted))
+        broken = body.pop("break", None)
+        return _merge_binding_flows(
+            body, normal, {} if broken is None else {"normal": broken}
+        )
+
+    def _try(self, node: ast.Try | ast.TryStar, state: _BindingState) -> _BindingFlow:
+        body = self.block(node.body, state)
+        branches: list[_BindingFlow] = []
+        for handler in node.handlers:
+            # An exception can occur before the first binding in the try body.
+            branch = self._expression(handler.type, state)
+            if handler.name is not None:
+                branch = self._bind(branch, (handler.name,))
+            handled = self.block(handler.body, branch)
+            if handler.name is not None:
+                handled = {
+                    kind: self._delete(value, (handler.name,))
+                    for kind, value in handled.items()
+                }
+            branches.append(handled)
+        normal = body.pop("normal", None)
+        if normal is not None:
+            branches.append(self.block(node.orelse, normal))
+        combined = _merge_binding_flows(body, *branches)
+        final: list[_BindingFlow] = []
+        for kind, value in combined.items():
+            after = self.block(node.finalbody, value)
+            completed = after.pop("normal", None)
+            final.append(
+                _merge_binding_flows(
+                    after, {} if completed is None else {kind: completed}
+                )
+            )
+        return _merge_binding_flows(*final)
+
+
+class _CodeAnalysis(typing.NamedTuple):
+    module: ast.Module
+    symbols: symtable.SymbolTable
+    loads: frozenset[str]
+    writes: frozenset[str]
+    deletions: frozenset[str]
+    incoming_reads: frozenset[str]
+    incoming_bindings: frozenset[str]
+    definite_writes: frozenset[str]
+    definite_bindings: frozenset[str]
+    deferred_reads: frozenset[str]
+    referenced_names: frozenset[str]
+    opaque: bool
+
+
+def _incoming_binding_names(statements: Sequence[ast.stmt]) -> set[str]:
+    """Return incoming bindings needed without reading their values."""
+    effects = _CodeBindingEffects()
+    effects.block(statements)
+    return effects.incoming_bindings
+
+
+class _CodeAnalyzer:
+    """Cache read-only analysis facts for one code-generation request."""
+
+    def __init__(self) -> None:
+        self._analyses: dict[str, _CodeAnalysis] = {}
+
+    def __call__(self, code: str) -> _CodeAnalysis:
+        if code not in self._analyses:
+            module = ast.parse(code, mode="exec")
+            symbols = symtable.symtable(code, "<ImageTool replay scope>", "exec")
+            names = _CurrentScopeNames()
+            names.visit(module)
+            effects = _CodeBindingEffects()
+            final = effects.block(module.body).get("normal", _BindingState())
+            self._analyses[code] = _CodeAnalysis(
+                module,
+                symbols,
+                frozenset(names.loads),
+                frozenset(names.writes),
+                final.deleted,
+                frozenset(effects.incoming_reads),
+                frozenset(effects.incoming_bindings),
+                final.replaced,
+                final.bound,
+                frozenset(_deferred_symbol_table_dependencies(symbols)),
+                frozenset(_symbol_table_dependencies(symbols)),
+                _has_opaque_namespace_access(module, symbols),
+            )
+        return self._analyses[code]
 
 
 class _ScopedNameReplacer(ast.NodeTransformer):
@@ -472,26 +935,21 @@ class _ScopedNameReplacer(ast.NodeTransformer):
 
 
 def _statement_load_count(stmt: ast.stmt, target: str) -> int:
-    counter = _CurrentScopeNameCounter(target, (ast.Load,))
-    counter.visit(stmt)
-    return counter.count
+    names = _CurrentScopeNames(count_comprehension_locals=True)
+    names.visit(stmt)
+    return names.load_counts[target]
 
 
 def _statement_store_count(
     stmt: ast.stmt, target: str, *, count_definition_names: bool = False
 ) -> int:
-    counter = _CurrentScopeNameCounter(
-        target,
-        (ast.Store, ast.Del),
-        count_definition_names=count_definition_names,
+    names = _CurrentScopeNames(count_comprehension_locals=True)
+    names.visit(stmt)
+    return (
+        names.store_counts[target]
+        + names.wildcard_stores
+        + (names.definition_counts[target] if count_definition_names else 0)
     )
-    counter.visit(stmt)
-    return counter.count
-
-
-class _NameReplacer(_ScopedNameReplacer):
-    def __init__(self, target: str, replacement: ast.expr) -> None:
-        super().__init__(target, replacement)
 
 
 def _clone_expr(node: ast.expr) -> ast.expr:
@@ -890,13 +1348,8 @@ def _remove_unused_generated_import_relays(
             statement = statements[index]
             if id(statement) not in relay_ids:
                 continue
-            if (
-                not isinstance(statement, ast.Assign)
-                or len(statement.targets) != 1
-                or not isinstance(statement.targets[0], ast.Name)
-            ):
-                continue  # pragma: no cover - relay construction is fixed above.
-            target_name = statement.targets[0].id
+            relay = typing.cast("ast.Assign", statement)
+            target_name = typing.cast("ast.Name", relay.targets[0]).id
             for later in statements[index + 1 :]:
                 if has_observable_use_in_any_scope(later, target_name):
                     break
@@ -1011,6 +1464,7 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
                 isinstance(target_expr, ast.Name)
                 and target_expr.id in inline_targets
                 and isinstance(stmt.value, ast.Name)
+                and target_expr.id not in _incoming_binding_names(body[idx + 1 :])
                 and not any(
                     _statement_load_count(later, target_expr.id) > 0
                     for later in body[idx + 1 :]
@@ -1065,31 +1519,16 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
                 and not reassigns_target_immediately
             ):
                 continue
-            replacement_load_names = {
-                node.id
-                for node in ast.walk(stmt.value)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
             if (
                 len(next_stmt.targets) != 1
                 or not isinstance(next_stmt.targets[0], ast.Name)
                 or _statement_load_count(next_stmt, target) != 1
-                or any(
-                    _statement_store_count(intervening, target)
-                    for intervening in body[idx + 1 : next_idx]
-                )
-                or any(
-                    _statement_store_count(intervening, name)
-                    or _statement_load_count(intervening, name)
-                    for intervening in body[idx + 1 : next_idx]
-                    for name in replacement_load_names
-                )
             ):
                 continue
 
             new_stmt = typing.cast(
                 "ast.stmt",
-                _NameReplacer(target, _clone_expr(stmt.value)).visit(
+                _ScopedNameReplacer(target, _clone_expr(stmt.value)).visit(
                     _clone_stmt(next_stmt)
                 ),
             )
@@ -1152,12 +1591,12 @@ def _code_uses_name(code: str, name: str) -> bool:
 
 
 def _code_uses_name_any_scope(code: str, name: str) -> bool:
-    """Return whether code loads a name at module or nested scope."""
+    """Return whether code reads a name or needs its incoming module binding."""
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return False
-    return any(
+    return name in _incoming_binding_names(module.body) or any(
         isinstance(node, ast.Name)
         and node.id == name
         and isinstance(node.ctx, ast.Load)
@@ -1178,7 +1617,7 @@ def _receiver_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
 
 
 def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
-    """Rewrite the removed public restore helper in persisted executable code."""
+    """Remove the released display conversion from persisted generated code."""
     if code is None or "restore_nonuniform_dims" not in code:
         return code
     try:
@@ -1191,23 +1630,22 @@ def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
     for line in encoded.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
 
-    replacements: list[tuple[int, int]] = []
+    replacements: list[tuple[int, int, bytes]] = []
     for node in ast.walk(module):
-        if not isinstance(node, ast.Attribute):
+        if not isinstance(node, ast.Call):
             continue
-        if _receiver_path(node) != _LEGACY_NONUNIFORM_RESTORE_PATH:
+        if _receiver_path(node.func) not in _LEGACY_NONUNIFORM_RESTORE_PATHS:
             continue
-        if node.end_lineno is None or node.end_col_offset is None:
-            continue  # pragma: no cover - populated by supported Python versions
+        if len(node.args) != 1 or node.keywords:
+            continue
         start = line_starts[node.lineno - 1] + node.col_offset
-        end = line_starts[node.end_lineno - 1] + node.end_col_offset
-        replacements.append((start, end))
+        end = line_starts[typing.cast("int", node.end_lineno) - 1] + typing.cast(
+            "int", node.end_col_offset
+        )
+        argument = ast.get_source_segment(code, node.args[0])
+        replacements.append((start, end, f"({argument})".encode()))
 
-    if not replacements:
-        return code
-
-    replacement = _PRIVATE_NONUNIFORM_RESTORE_EXPRESSION.encode()
-    for start, end in sorted(replacements, reverse=True):
+    for start, end, replacement in sorted(replacements, reverse=True):
         encoded = encoded[:start] + replacement + encoded[end:]
     return encoded.decode()
 
@@ -1380,4 +1818,4 @@ def _compile_untrusted_script_replay_code(code: str) -> types.CodeType:
     module = _parse_validated_script_replay_code(code)
     lowered = typing.cast("ast.Module", _ScriptReplayImportLowerer().visit(module))
     ast.fix_missing_locations(lowered)
-    return compile(lowered, "<ImageTool script provenance>", "exec")
+    return compile(lowered, "<ImageTool script provenance>", "exec", dont_inherit=True)

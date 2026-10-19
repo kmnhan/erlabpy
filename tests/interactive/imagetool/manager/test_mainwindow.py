@@ -68,7 +68,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
     NormalizeOperation,
     RenameOperation,
-    RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
     ShiftFromInputOperation,
     TransposeOperation,
@@ -638,10 +637,10 @@ def test_managed_tool_cleanup_error_does_not_keep_dead_node(
     ],
 ) -> None:
     class _CleanupErrorTool(erlab.interactive.utils.ToolWindow):
-        def _set_input_resolver(self, resolver) -> None:
+        def _set_input_resolver(self, resolver, *, provenance_context=None) -> None:
             if resolver is None:
                 raise RuntimeError("cleanup failed")
-            super()._set_input_resolver(resolver)
+            super()._set_input_resolver(resolver, provenance_context=provenance_context)
 
     with manager_context() as manager:
         root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
@@ -744,13 +743,6 @@ def test_rejected_root_close_preserves_root_after_descendant_removal(
         )
         root.show()
         qtbot.wait_until(root.isVisible)
-        access_release_calls: list[None] = []
-        monkeypatch.setattr(
-            manager._workspace_controller,
-            "_release_unused_imported_workspace_accesses",
-            lambda: access_release_calls.append(None),
-        )
-
         manager.remove_imagetool(root_index)
 
         assert child_uid not in manager._tool_graph.nodes
@@ -759,13 +751,11 @@ def test_rejected_root_close_preserves_root_after_descendant_removal(
         assert root.close_event_count == 1
         assert not any(window is root for window in manager._retired_windows.values())
         assert not root.testAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        assert access_release_calls == [None]
 
         root.reject_close = False
         manager.remove_imagetool(root_index)
         assert root_index not in manager._tool_graph.root_wrappers
         assert any(window is root for window in manager._retired_windows.values())
-        assert access_release_calls == [None, None]
 
         QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
         QtWidgets.QApplication.processEvents()
@@ -1980,11 +1970,19 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         xr.testing.assert_identical(replacement_payloads[-1], expected)
 
         node = manager._tool_graph.root_wrappers[0]
-        assert node.replay_source_data is not None
-        xr.testing.assert_identical(node.replay_source_data, replacement)
+        assert node.replay_source_data is None
         provenance = node.displayed_provenance_spec
         assert provenance is not None
-        xr.testing.assert_identical(provenance.apply(node.replay_source_data), actual)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                provenance.replay_inputs[0].revision_id
+            ),
+            replacement,
+        )
+        replayed = manager._provenance_edit_controller._replay_candidate_result(
+            node, "display", provenance
+        ).data
+        xr.testing.assert_identical(replayed, actual)
 
         incompatible = xr.DataArray(
             np.arange(16.0).reshape(4, 4),
@@ -1995,7 +1993,12 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         with pytest.raises(ValueError, match="angle"):
             replace_data(0, incompatible)
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, before)
-        xr.testing.assert_identical(node.replay_source_data, replacement)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                provenance.replay_inputs[0].revision_id
+            ),
+            replacement,
+        )
 
 
 def test_metadata_editor_rejects_unreplayable_live_provenance_atomically(
@@ -2080,11 +2083,19 @@ def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
         assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
         xr.testing.assert_identical(tool.slicer_area.displayed_data, replaced_expected)
         node = manager._tool_graph.root_wrappers[index]
-        assert node.replay_source_data is not None
-        xr.testing.assert_identical(node.replay_source_data, replacement)
+        assert node.replay_source_data is None
         assert node.displayed_provenance_spec is not None
         xr.testing.assert_identical(
-            node.displayed_provenance_spec.apply(node.replay_source_data),
+            manager._provenance_revisions.resolve_data(
+                node.displayed_provenance_spec.replay_inputs[0].revision_id
+            ),
+            replacement,
+        )
+        replayed = manager._provenance_edit_controller._replay_candidate_result(
+            node, "display", node.displayed_provenance_spec
+        ).data
+        xr.testing.assert_identical(
+            replayed,
             replaced_expected,
         )
 
@@ -2411,7 +2422,13 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
         assert manager._metadata_editor.apply_edits({0: edits})
 
         node = manager._tool_graph.root_wrappers[0]
-        xr.testing.assert_identical(node.replay_source_data, source)
+        assert node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                node.provenance_spec.replay_inputs[0].revision_id
+            ),
+            source,
+        )
         select_tools(manager, [0])
         manager._update_info(uid=node.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
@@ -2428,13 +2445,18 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
 
         restored = manager._tool_graph.root_wrappers[0]
         assert restored.watched
-        assert restored.has_replay_source
-        xr.testing.assert_identical(restored.resolved_replay_source_data(), source)
+        assert not restored.has_replay_source
         assert restored.provenance_spec is not None
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
-                restored, "display", restored.provenance_spec
+            manager._provenance_revisions.resolve_data(
+                restored.provenance_spec.replay_inputs[0].revision_id
             ),
+            source,
+        )
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate_result(
+                restored, "display", restored.provenance_spec
+            ).data,
             expected,
         )
         select_tools(manager, [0])
@@ -2499,7 +2521,10 @@ def test_live_replacement_preserves_explicit_assignment_when_source_matches(
         )
         node = manager._tool_graph.root_wrappers[0]
         assert node.displayed_provenance_spec is not None
-        assert node.replay_source_data is not None
+        assert node.replay_source_data is None
+        assert manager._provenance_revisions.has_data(
+            node.displayed_provenance_spec.replay_inputs[0].revision_id
+        )
 
 
 def test_acquisition_context_can_copy_selected_coordinates_and_attributes(
@@ -2849,7 +2874,7 @@ def test_metadata_editor_supports_paste_and_per_row_values(
             dialog._apply()
         assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
 
-        for index, temperature, sample, source in (
+        for index, temperature, sample, _source in (
             (0, 30.0, "A", data0),
             (1, 35.0, "A", data1),
         ):
@@ -2860,7 +2885,10 @@ def test_metadata_editor_supports_paste_and_per_row_values(
                 index
             ].displayed_provenance_spec
             assert provenance is not None
-            xr.testing.assert_identical(provenance.apply(source), actual)
+            replayed = manager._provenance_edit_controller._replay_candidate_result(
+                manager._node_for_target(index), "display", provenance
+            ).data
+            xr.testing.assert_identical(replayed, actual)
 
 
 def test_metadata_editor_fill_series_rejects_boolean_columns(
@@ -3655,7 +3683,6 @@ def test_batch_operation_metadata_matches_launcher() -> None:
         for operation_type in operation_types
         if not operation_type.batch_available
     ] == []
-    assert RestoreNonuniformDimsOperation.batch_available
 
 
 def test_weighted_ftool_action_routes_assigned_targets(
@@ -3839,35 +3866,6 @@ def test_batch_dialog_defensive_paths_and_launch(
         dialog._launch_selected_operation()
 
 
-def test_update_info_handles_legacy_imagetool_preview_attribute(
-    qtbot,
-    monkeypatch,
-    test_data,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    with manager_context() as manager:
-        manager.show()
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        test_data.qshow(manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        node = manager._tool_graph.root_wrappers[0]
-
-        def _missing_preview_attribute(_node) -> tuple[float, QtGui.QPixmap]:
-            raise AttributeError("_preview_image")
-
-        monkeypatch.setattr(
-            type(node), "_preview_image", property(_missing_preview_attribute)
-        )
-        select_tools(manager, [0])
-
-        manager._update_info()
-
-        assert manager.preview_widget.isVisible()
-
-
 def test_manager_summary_sorts_coordinate_order_at_presentation_boundary(
     monkeypatch,
     manager_context: Callable[
@@ -4018,23 +4016,20 @@ def test_details_panel_update_info_uses_default_child_preview_aspect_ratio() -> 
 def test_details_panel_script_input_labels_omit_redundant_history() -> None:
     manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={}),
+        _lineage_controller=types.SimpleNamespace(
+            _has_recorded_script_input=lambda _item: False
+        ),
     )
     controller = _DetailsPanelController(
         typing.cast("manager_mainwindow.ImageToolManager", manager)
     )
 
-    assert (
-        controller._script_input_row_label(
-            ScriptInput(name="source"), include_history=False
-        )
-        == "Use source"
-    )
+    assert controller._script_input_row_label(ScriptInput(name="source")) == "Missing"
     assert (
         controller._script_input_row_label(
             ScriptInput(name="source", node_uid="missing"),
-            include_history=True,
         )
-        == "Missing source for source"
+        == "Missing"
     )
 
 
@@ -4320,7 +4315,7 @@ def test_batch_dialog_accept_wrappers(
         single_dialog = imagetool_dialogs.RotationDialog(area)
         qtbot.addWidget(single_dialog)
         assert single_dialog.batch_manager is None
-        assert single_dialog.source_spec().kind == "full_data"
+        assert single_dialog.source_spec().kind == "public_data"
         assert single_dialog._itool_kwargs(area.data)["data"] is area.data
 
         transform_dialog = imagetool_dialogs.RotationDialog(
@@ -5020,8 +5015,9 @@ def test_batch_add_coord_duplicate_target_aborts_all_unchanged(
         )
 
 
-def test_batch_nonuniform_restore_is_target_specific(
+def test_batch_nonuniform_inputs_keep_physical_data_and_provenance(
     qtbot,
+    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -5046,19 +5042,42 @@ def test_batch_nonuniform_restore_is_target_specific(
 
         assert manager.apply_batch_transform_dialog(dialog, "nest")
 
-        uniform_child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
-        nonuniform_child_uid = manager._tool_graph.root_wrappers[1]._childtool_indices[
-            0
-        ]
-        uniform_source_spec = manager._child_node(uniform_child_uid).source_spec
-        nonuniform_source_spec = manager._child_node(nonuniform_child_uid).source_spec
-        assert uniform_source_spec is not None
-        assert nonuniform_source_spec is not None
-        assert [op.op for op in uniform_source_spec.operations] == ["qsel_aggregate"]
-        assert [op.op for op in nonuniform_source_spec.operations] == [
-            "qsel_aggregate",
-            "restore_nonuniform_dims",
-        ]
+        checkpoints = []
+        for index, source in enumerate((uniform, nonuniform)):
+            parent = manager._tool_graph.root_wrappers[index]
+            child = manager._child_node(parent._childtool_indices[0])
+            spec = child.source_spec
+            assert spec is not None
+            assert [op.op for op in spec.operations] == ["qsel_aggregate"]
+            expected = source.qsel.mean("y")
+            xr.testing.assert_identical(parent.current_source_data(), source)
+            xr.testing.assert_identical(child.current_source_data(), expected)
+            code = spec.display_code(parent_data=source)
+            assert code is not None
+            assert "_idx" not in code
+            assert "restore_nonuniform" not in code
+            assert "restore_nonuniform" not in spec.model_dump_json()
+            xr.testing.assert_identical(
+                _exec_generated_code(code, {"data": source})["derived"], expected
+            )
+            for node, data in ((parent, source), (child, expected)):
+                revision_id = node.revision_id_for_role("source")
+                xr.testing.assert_identical(
+                    manager._provenance_revisions.resolve_data(revision_id), data
+                )
+                checkpoints.append((node.uid, revision_id, data))
+
+        workspace_path = tmp_path / "physical-nonuniform-inputs.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        for uid, revision_id, expected in checkpoints:
+            node = manager._node_for_target(uid)
+            xr.testing.assert_identical(node.current_source_data(), expected)
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(revision_id), expected
+            )
 
 
 def test_manager_metadata_full_code_generated_only_when_copied(
@@ -5827,25 +5846,6 @@ def test_load_source_details_controller_skips_edit_when_node_disappears(
     assert events == ["exec"]
 
 
-def test_details_panel_selected_derivation_row_rejects_unexpected_item_data(
-    qtbot,
-) -> None:
-    derivation_list = manager_widgets._MetadataDerivationListWidget()
-    qtbot.addWidget(derivation_list)
-    item = QtWidgets.QTreeWidgetItem(["row"])
-    item.setData(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE, object())
-    derivation_list.addItem(item)
-    item.setSelected(True)
-
-    manager = types.SimpleNamespace(metadata_derivation_list=derivation_list)
-    controller = _DetailsPanelController(
-        typing.cast("manager_mainwindow.ImageToolManager", manager)
-    )
-    manager._selected_derivation_items = controller._selected_derivation_items
-
-    assert controller._selected_derivation_row() is None
-
-
 def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:
     workspace_path = (tmp_path / "workspace.itws").resolve()
     workspace_path.write_bytes(b"itws")
@@ -6133,18 +6133,6 @@ def test_manager_notes_controller_guard_branches(
         manager.copy_selected_note()
         manager.clear_selected_note()
         assert copied == []
-
-        monkeypatch.setattr(
-            manager._details_panel,
-            "_notes_ui_available",
-            lambda: False,
-        )
-        manager._details_panel._update_note_actions()
-        manager._schedule_note_commit()
-        manager._commit_note_editor()
-        manager.edit_selected_note()
-        manager.copy_selected_note()
-        manager.clear_selected_note()
 
 
 def test_manager_inspector_tabs_fallback_between_pages(
@@ -6648,34 +6636,6 @@ def test_shutdown_bulk_remove_skips_final_ui_refresh(
         assert manager.updatesEnabled()
         assert manager.tree_view.updatesEnabled()
         assert calls == []
-
-
-def test_bulk_remove_releases_imported_workspace_accesses_once(
-    monkeypatch,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    data = xr.DataArray(
-        np.arange(4.0),
-        dims=("x",),
-        coords={"x": np.arange(4.0)},
-        name="data",
-    )
-    with manager_context() as manager:
-        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
-        manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
-        manager.add_figuretool(FigureComposerTool(data), show=False)
-        calls: list[None] = []
-        monkeypatch.setattr(
-            manager._workspace_controller,
-            "_release_unused_imported_workspace_accesses",
-            lambda: calls.append(None),
-        )
-
-        manager.remove_all_tools()
-
-        assert calls == [None]
 
 
 def test_remove_all_tools_rechecks_graph_after_reentrant_addition(
@@ -7434,6 +7394,7 @@ def test_manager_rename_updates_accepted_filter_data(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         root_tool = manager.get_imagetool(0)
         root_tool.slicer_area.apply_filter_operation(operation)
+        selected = root_tool.slicer_area.main_image.current_data
 
         manager.rename_imagetool(0, "filtered scan")
 
@@ -7441,6 +7402,10 @@ def test_manager_rename_updates_accepted_filter_data(
         assert root_tool.slicer_area._accepted_filter_data is not None
         assert root_tool.slicer_area._accepted_filter_data.name == "filtered scan"
         assert root_tool.slicer_area.array_slicer._obj.name == "filtered scan"
+        xr.testing.assert_identical(
+            root_tool.slicer_area.main_image.current_data,
+            selected.rename("filtered scan"),
+        )
 
 
 def test_manager_reload_selected_preserves_manual_child_imagetool_name(
@@ -9426,6 +9391,7 @@ def test_manager_shift_dialog_reports_stale_and_failed_results(
 def test_manager_shift_dialog_result_placements_and_cycle_preflight(
     qtbot,
     monkeypatch,
+    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -9451,7 +9417,6 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         source_node = manager._node_for_target(0)
         shift_node = manager._node_for_target(1)
-        detached_token = source_node.source_snapshot_token
 
         top_level = imagetool_dialogs.ShiftDialog(manager.get_imagetool(0).slicer_area)
         qtbot.addWidget(top_level)
@@ -9478,7 +9443,7 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         assert isinstance(
             top_node.provenance_spec.operations[-1], ShiftFromInputOperation
         )
-        assert [item.node_uid for item in top_node.provenance_spec.script_inputs] == [
+        assert [item.node_uid for item in top_node.provenance_spec.replay_inputs] == [
             source_node.uid,
             shift_node.uid,
         ]
@@ -9512,10 +9477,17 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         )
         assert [item.name for item in replaced_spec.script_inputs] == ["data", "shift"]
         assert replaced_spec.script_inputs[0].node_uid is None
-        assert replaced_spec.script_inputs[0].node_snapshot_token == detached_token
+        assert replaced_spec.script_inputs[0].node_snapshot_token is None
+        assert replaced_spec.script_inputs[0].revision_id is not None
+        assert not replaced_spec.script_inputs[0].follow_source
         assert replaced_spec.script_inputs[1].node_uid == shift_node.uid
-        assert source_node.replay_source_data is not None
-        xr.testing.assert_identical(source_node.replay_source_data, data)
+        assert source_node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                replaced_spec.script_inputs[0].revision_id
+            ),
+            data,
+        )
         xr.testing.assert_identical(
             fetch(0), erlab.analysis.transform.shift(data, -shift, along="eV")
         )
@@ -9534,13 +9506,15 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         )
         assert manager.dependency_status_for_uid(source_node.uid) == "current"
 
-        tree = manager._workspace_controller.saving._to_datatree()
-        manager.remove_all_tools()
-        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-        for workspace_node in tree.values():
-            manager._workspace_controller.loading._load_workspace_node(
-                typing.cast("xr.DataTree", workspace_node)
-            )
+        workspace_path = tmp_path / "shift-history.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         source_node = manager._node_for_target(0)
@@ -9548,10 +9522,19 @@ def test_manager_shift_dialog_result_placements_and_cycle_preflight(
         restored_spec = source_node.provenance_spec
         assert restored_spec is not None
         assert restored_spec.script_inputs[0].node_uid is None
-        assert restored_spec.script_inputs[0].node_snapshot_token == detached_token
+        assert restored_spec.script_inputs[0].node_snapshot_token is None
+        assert (
+            restored_spec.script_inputs[0].revision_id
+            == replaced_spec.script_inputs[0].revision_id
+        )
         assert restored_spec.script_inputs[1].node_uid == shift_node.uid
-        assert source_node.replay_source_data is not None
-        xr.testing.assert_identical(source_node.replay_source_data, data)
+        assert source_node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(
+                restored_spec.script_inputs[0].revision_id
+            ),
+            data,
+        )
 
         restored_shift = updated_shift + 0.05
         with qtbot.wait_signal(manager._sigDataReplaced):

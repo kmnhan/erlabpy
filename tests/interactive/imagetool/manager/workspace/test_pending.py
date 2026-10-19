@@ -1973,7 +1973,7 @@ def test_pending_workspace_reload_reason_branches(
             == "missing file"
         )
 
-        script_spec = types.SimpleNamespace(kind="script", script_inputs=())
+        script_spec = types.SimpleNamespace(kind="script", replay_inputs=())
         monkeypatch.setattr(
             manager_lineage,
             "_script_replay_validation",

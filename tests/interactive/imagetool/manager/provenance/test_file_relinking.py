@@ -26,7 +26,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     IselOperation,
-    RestoreNonuniformDimsOperation,
+    RenameOperation,
     ScriptCodeOperation,
     SortByOperation,
 )
@@ -1106,7 +1106,8 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
         _fake_edit_node(script_with_structured_step),
         script_input_unavailable_reason=lambda *_args, **_kwargs: "Unavailable",
     )
-    assert controller.can_edit_row(structured_row) == (True, "")
+    assert not controller.can_edit_row(structured_row)[0]
+    assert controller.can_edit_row(script_code_row) == (True, "")
 
     script_parent = script(
         ScriptCodeOperation(
@@ -1157,7 +1158,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
         scope="source",
     )
 
-    unsupported_spec = full_data(RestoreNonuniformDimsOperation())
+    unsupported_spec = full_data(RenameOperation(name="renamed"))
     controller = _fake_edit_controller(
         _fake_edit_node(
             full_data(),
@@ -1238,7 +1239,7 @@ def test_manager_provenance_edit_nested_script_input_operation(
     replaced: list[ToolProvenanceSpec] = []
     monkeypatch.setattr(
         controller,
-        "_replay_candidate",
+        "_replay_candidate_result",
         lambda *_args, **_kwargs: pytest.fail("editing must not replay on open"),
     )
     monkeypatch.setattr(
@@ -1338,6 +1339,13 @@ def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
     replaced: list[ToolProvenanceSpec] = []
     monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
     monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+    monkeypatch.setattr(
+        controller,
+        "_apply_candidates",
+        lambda candidates, **_kwargs: replaced.extend(
+            candidate.spec for candidate in candidates
+        ),
+    )
     monkeypatch.setattr(
         controller,
         "_validate_and_replace",
@@ -2034,18 +2042,20 @@ def test_manager_provenance_edit_controller_error_paths(
     )
     monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
     monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
-    monkeypatch.setattr(controller, "_display_spec_for_row", lambda _node, _row: None)
+    monkeypatch.setattr(
+        controller, "_display_spec_for_row", lambda _node, _row, **_kwargs: None
+    )
     controller.revert_row(row)
     assert len(failed) == 1
 
     monkeypatch.setattr(
         controller,
         "_display_spec_for_row",
-        lambda _node, _row: full_data(),
+        lambda _node, _row, **_kwargs: full_data(),
     )
     monkeypatch.setattr(
         controller,
-        "_validate_and_replace",
+        "_apply_candidates",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     controller.revert_row(row)
@@ -3499,7 +3509,7 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
         controller._edit_operation_row(
             typing.cast(
                 "typing.Any",
-                _fake_edit_node(full_data(RestoreNonuniformDimsOperation())),
+                _fake_edit_node(full_data(RenameOperation(name="renamed"))),
             ),
             operation_row,
         )

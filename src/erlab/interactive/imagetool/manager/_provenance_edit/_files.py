@@ -31,7 +31,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
@@ -66,31 +66,33 @@ class _MissingProvenanceSourceFileError(FileNotFoundError):
         self.source_path = source_path
 
 
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    pending = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        pending.extend(
+            nested
+            for nested in (
+                current.__context__,
+                current.__cause__,
+                getattr(current, "cause", None),
+            )
+            if isinstance(nested, BaseException)
+        )
+
+
 def _missing_source_file_error_from_exception(
     exc: BaseException,
 ) -> _MissingProvenanceSourceFileError | None:
-    seen: set[int] = set()
-
-    def visit(
-        current: BaseException | None,
-    ) -> _MissingProvenanceSourceFileError | None:
-        if current is None or id(current) in seen:
-            return None
-        seen.add(id(current))
-        if isinstance(current, _MissingProvenanceSourceFileError):
-            return current
-        for nested in (
-            getattr(current, "cause", None),
-            current.__cause__,
-            current.__context__,
-        ):
-            if not isinstance(nested, BaseException):
-                continue
-            if missing := visit(nested):
-                return missing
-        return None
-
-    return visit(exc)
+    for error in _iter_exception_chain(exc):
+        if isinstance(error, _MissingProvenanceSourceFileError):
+            return error
+    return None
 
 
 def _file_not_found_path_from_exception(exc: BaseException) -> pathlib.Path | None:
@@ -466,15 +468,14 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             return ()
         peers: list[_FileLoadBatchPeer] = []
         for row in range(self.batch_peer_tree.topLevelItemCount()):
-            item = self.batch_peer_tree.topLevelItem(row)
-            if item is None:
-                continue
+            item = typing.cast(
+                "QtWidgets.QTreeWidgetItem", self.batch_peer_tree.topLevelItem(row)
+            )
             if item.checkState(0) == QtCore.Qt.CheckState.Checked:
                 target_id = typing.cast(
                     "str", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
                 )
-                if peer := self._batch_peers_by_target_id.get(target_id):
-                    peers.append(peer)
+                peers.append(self._batch_peers_by_target_id[target_id])
         return tuple(peers)
 
     def provenance_spec(
@@ -555,14 +556,12 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._updating_batch_peer_paths = True
         try:
             for row in range(self.batch_peer_tree.topLevelItemCount()):
-                item = self.batch_peer_tree.topLevelItem(row)
-                if item is None:
-                    continue
+                item = typing.cast(
+                    "QtWidgets.QTreeWidgetItem", self.batch_peer_tree.topLevelItem(row)
+                )
                 target_id = typing.cast(
                     "str", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
                 )
-                if target_id not in self._batch_peers_by_target_id:
-                    continue
                 if target_id not in self._manual_batch_peer_paths:
                     peer = self._batch_peers_by_target_id[target_id]
                     self._batch_peer_paths[target_id] = self._auto_peer_path(peer)
@@ -577,8 +576,6 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         if column != 2 or self._updating_batch_peer_paths:
             return
         target_id = typing.cast("str", item.data(0, QtCore.Qt.ItemDataRole.UserRole))
-        if target_id not in self._batch_peers_by_target_id:
-            return
         self._manual_batch_peer_paths.add(target_id)
         self._batch_peer_paths[target_id] = pathlib.Path(item.text(2)).expanduser()
 
@@ -654,8 +651,6 @@ def _replace_file_load_fields(
     spec: ToolProvenanceSpec,
     replacement: ToolProvenanceSpec,
 ) -> ToolProvenanceSpec:
-    if replacement.kind != "file" or replacement.file_load_source is None:
-        raise RuntimeError("Replacement is not a file load provenance spec")
     return spec.model_copy(
         update={
             "start_label": replacement.start_label,

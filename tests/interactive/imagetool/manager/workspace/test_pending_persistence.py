@@ -17,11 +17,13 @@ import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInput,
     compose_display_provenance,
     compose_full_provenance,
     full_data,
@@ -51,10 +53,12 @@ if typing.TYPE_CHECKING:
 from tests.interactive.imagetool.manager.workspace._support import (
     _AddedTimeChildTool,
     _compute_first_value,
+    _current_workspace_manifest,
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
     _edit_current_workspace_payload_attrs,
     _open_external_lazy_hdf5_imagetool_data,
+    _publish_workspace_manifest,
     _request_workspace_save_and_wait,
     _request_workspace_save_as_and_wait,
     _workspace_test_file_spec,
@@ -62,6 +66,57 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _WorkspaceSweepFigureTool,
     add_source_childtool,
 )
+
+
+@pytest.mark.parametrize(
+    ("invalid_revision", "error_type", "error_message"),
+    [
+        (42, TypeError, "Workspace current revision ID must be a string"),
+        (
+            "missing-revision",
+            ValueError,
+            "Workspace current provenance revision is missing",
+        ),
+    ],
+)
+def test_workspace_invalid_current_revision_preserves_previous_document(
+    qtbot,
+    tmp_path,
+    test_data,
+    manager_context,
+    invalid_revision,
+    error_type,
+    error_message,
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(root, show=False)
+        node = manager._node_for_target(index)
+        revision_id = node.revision_id_for_role("source")
+        uid = node.uid
+        path = tmp_path / "invalid-current-revision.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        manifest = _current_workspace_manifest(path)
+        manifest["nodes"][0]["current_revision_id"] = invalid_revision
+        _publish_workspace_manifest(path, manifest)
+
+        with pytest.raises(
+            ValueError, match="No workspace windows could be loaded"
+        ) as exc:
+            manager._workspace_controller.loading._load_workspace_file(
+                path, replace=True, associate=True, mark_dirty=False, select=False
+            )
+        assert isinstance(exc.value.__cause__, error_type)
+        assert str(exc.value.__cause__) == error_message
+        assert manager.ntools == 1
+        restored = manager._node_for_target(index)
+        assert restored.uid == uid
+        assert restored.current_revision_id == revision_id
+        xr.testing.assert_identical(restored.data_for_role("source"), test_data)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(revision_id).compute(), test_data
+        )
 
 
 def test_manager_save_updates_pending_linked_partner_state(
@@ -787,8 +842,11 @@ def test_manager_pending_linked_partner_saves_color_when_linked(
         assert saved_partner_state["color"]["cmap"] == new_cmap
 
 
+@pytest.mark.parametrize(
+    "coordinate_kind", ["uniform", "nonuniform", "user_index", "squeezed"]
+)
 def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
-    qtbot, tmp_path
+    qtbot, tmp_path, coordinate_kind
 ) -> None:
     data = xr.DataArray(
         np.arange(2 * 3 * 4, dtype=np.float64).reshape((2, 3, 4)),
@@ -800,17 +858,26 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
         },
         name="pending_order",
     )
+    if coordinate_kind in {"nonuniform", "squeezed"}:
+        data = data.assign_coords(hv=[10.0, 20.0, 45.0])
+        if coordinate_kind == "squeezed":
+            data = data.expand_dims(singleton=[7], z=[0.0, 1.0])
+    elif coordinate_kind == "user_index":
+        data = data.rename(hv="scan_idx").assign_coords(
+            scan_idx=[0.0, 1.0, 2.0], scan=("scan_idx", [10.0, 20.0, 45.0])
+        )
     tool = erlab.interactive.imagetool.ImageTool(data)
     qtbot.addWidget(tool)
     saved = tool.to_dataset()
-    state = json.loads(saved.attrs["itool_state"])
-    assert tuple(state["slice"]["dims"]) == data.dims
+    stored_order = tuple(reversed(data.dims))
+    if coordinate_kind == "squeezed":
+        stored_order = ("singleton", *reversed(data.dims[1:]))
 
     stored = xr.Dataset(
         {
             _persistence_constants.ITOOL_DATA_NAME: saved[
                 _persistence_constants.ITOOL_DATA_NAME
-            ].transpose("hv", "y", "x")
+            ].transpose(*stored_order)
         },
         attrs=dict(saved.attrs),
     )
@@ -865,7 +932,7 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
         loaded_ds.close()
 
 
-def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
+def test_pending_workspace_saved_dim_order_handles_invalid_state() -> None:
     pending_cls = workspace_pending._PendingWorkspacePayloads
     data = xr.DataArray(
         np.arange(6, dtype=np.float64).reshape((2, 3)),
@@ -906,17 +973,6 @@ def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) ->
     assert (
         pending_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": json.dumps({"slice": {"dims": "xy"}})}
-        )
-        is data
-    )
-
-    def _raise_transpose(self: xr.DataArray, *_args, **_kwargs) -> xr.DataArray:
-        raise ValueError("bad dim order")
-
-    monkeypatch.setattr(xr.DataArray, "transpose", _raise_transpose)
-    assert (
-        pending_cls._pending_workspace_data_with_saved_dim_order(
-            data, {"itool_state": json.dumps(valid_state)}
         )
         is data
     )
@@ -1154,20 +1210,26 @@ def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
 
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
-        assert wrapper.has_replay_source
-        assert wrapper.replay_source_data is None
+        source_revision = wrapper.provenance_spec.replay_inputs[0].revision_id
+        assert source_revision is not None
+        assert manager._provenance_revisions.has_data(source_revision)
         select_tools(manager, [0])
         manager._update_info(uid=wrapper.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
         manager.get_imagetool(0)
-        assert wrapper.replay_source_data is not None
-        xr.testing.assert_identical(wrapper.replay_source_data, source)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(source_revision).compute(),
+            source,
+        )
 
         duplicate_index = typing.cast("int", manager.duplicate_imagetool(0))
         duplicate = manager._tool_graph.root_wrappers[duplicate_index]
-        assert duplicate.replay_source_data is not None
-        xr.testing.assert_identical(duplicate.replay_source_data, source)
+        assert duplicate.provenance_spec.replay_inputs[0].revision_id == source_revision
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(source_revision).compute(),
+            source,
+        )
 
 
 def test_generation_save_copies_pending_tools_without_construction(
@@ -1527,7 +1589,7 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
         child = manager._child_node(child_uid)
         assert child.tool_window is not None
         script_input = child.tool_window.script_inputs[0]
-        fallback = script_input.parsed_provenance_spec()
+        fallback = script_input.resolved_provenance_spec()
         assert fallback == compose_full_provenance(parent_provenance, source_spec)
 
         monkeypatch.setattr(
@@ -1548,6 +1610,12 @@ def test_legacy_toolwindow_reload_applies_source_spec_once(
             allow_recorded=True,
         )
 
+        xr.testing.assert_identical(child.tool_window.tool_data, resolved)
+        assert child.tool_window.script_inputs[0].parsed_source_spec() == source_spec
+        assert manager._lineage_controller._refresh_tool_inputs(
+            child_uid,
+            allow_recorded=True,
+        )
         xr.testing.assert_identical(child.tool_window.tool_data, resolved)
 
 
@@ -1832,33 +1900,33 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
         root_node = manager._tool_graph.root_wrappers[0]
         assert child_node.pending_workspace_memory_payload is not None
         assert root_node.pending_workspace_memory_payload is not None
-        assert root_node.replay_source_data is None
-        assert root_node.has_replay_source
+        source_revision = root_node.provenance_spec.replay_inputs[0].revision_id
+        assert source_revision is not None
+        assert manager._provenance_revisions.has_data(source_revision)
 
         with monkeypatch.context() as patch:
             patch.setattr(
                 root_node, "materialize_pending_workspace_payload", lambda: False
             )
-            with pytest.raises(RuntimeError, match="saved replay source"):
-                manager.promote_child_imagetool(child_uid)
-        assert child_uid in manager._tool_graph.nodes
-        assert manager._child_node(child_uid).parent_uid == root_node.uid
-
-        promoted_index = manager.promote_child_imagetool(child_uid)
+            promoted_index = manager.promote_child_imagetool(child_uid)
+        assert root_node.pending_workspace_memory_payload is not None
         promoted = manager.get_imagetool(promoted_index).slicer_area
         promoted_node = manager._tool_graph.root_wrappers[promoted_index]
 
         assert promoted_node.pending_workspace_memory_payload is None
         xr.testing.assert_identical(promoted._data, child_data)
-        xr.testing.assert_identical(promoted_node.replay_source_data, replay_source)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(source_revision).compute(),
+            replay_source,
+        )
         assert promoted_node.provenance_spec is not None
         select_tools(manager, [promoted_index])
         manager._update_info(uid=promoted_node.uid)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 promoted_node, "display", promoted_node.provenance_spec
-            ),
+            ).data,
             child_data,
         )
 
@@ -1919,6 +1987,10 @@ def test_manager_save_as_rebinds_live_tool_reference_dataset(
             _current_workspace_payload_path(target).lstrip("/"),
         )
         np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
+        lock = workspace_storage._acquire_workspace_document_lock(source)
+        lock.unlock()
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(target)
 
 
 def test_manager_save_as_rebinds_external_lazy_tool_data(
@@ -2171,6 +2243,11 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             == original_failing_reference_keys
         )
 
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source)
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(target)
+
 
 def test_manager_compact_does_not_rebind_live_tool_reference_dataset(
     qtbot,
@@ -2365,3 +2442,87 @@ def test_manager_save_as_repoints_imported_pending_payload(
             manager.get_imagetool(wrapper.index).slicer_area._data.values,
             data.values,
         )
+
+
+@pytest.mark.parametrize("finish", ["save_as", "close"])
+def test_import_retains_reachable_revision_checkpoint_source(
+    qtbot, monkeypatch, tmp_path, manager_context, finish
+) -> None:
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
+    from erlab.interactive.imagetool.manager._workspace import (
+        _storage as workspace_storage,
+    )
+
+    source_path = tmp_path / "revision-source.itws"
+    target_path = tmp_path / "revision-copy.itws"
+    data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+    with manager_context() as manager:
+        source = itool(data, manager=False, execute=False)
+        manager.add_imagetool(source, show=False)
+        source_node = manager._tool_graph.root_wrappers[0]
+        historical_id = source_node.revision_id_for_role("source")
+        captured_id = manager._provenance_revisions.add(
+            data + 1, primary_revision_id=historical_id
+        )
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Saved",
+            active_name="data",
+            primary_input="data",
+            script_inputs=(
+                ScriptInput(name="data", revision_id=captured_id, follow_source=False),
+            ),
+        )
+        derived = itool(data + 1, manager=False, execute=False)
+        manager.add_imagetool(derived, show=False, provenance_spec=spec)
+        manager.remove_imagetool(source_node.index)
+        manager._workspace_controller.saving._save_workspace_document(source_path)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        assert controller.loading._load_workspace_file(
+            source_path,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        node = next(iter(manager._tool_graph.root_wrappers.values()))
+        assert source_path.resolve() in controller._workspace_sources
+        assert historical_id not in manager._provenance_revisions._data
+        assert captured_id not in manager._provenance_revisions._data
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source_path)
+
+        if node.pending_workspace_payload is not None:
+            assert controller.loading.pending._materialize_pending_workspace_payload(
+                node
+            )
+        assert not frozenset(node._workspace_sources)
+        assert source_path.resolve() in controller._workspace_sources
+        assert historical_id not in manager._provenance_revisions._data
+        assert captured_id not in manager._provenance_revisions._data
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source_path)
+
+        if finish == "save_as":
+            monkeypatch.setattr(
+                controller, "_workspace_save_dialog", lambda **_kwargs: target_path
+            )
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+            for revision_id, expected in (
+                (historical_id, data),
+                (captured_id, data + 1),
+            ):
+                record = manager._provenance_revisions.get(revision_id)
+                assert record.checkpoint.source.file_path == str(target_path)
+                xr.testing.assert_equal(
+                    manager._provenance_revisions.resolve_data(revision_id), expected
+                )
+        else:
+            manager.remove_imagetool(node.index)
+            qtbot.wait_until(lambda: manager.ntools == 0)
+
+        assert source_path.resolve() not in controller._workspace_sources
+        lock = workspace_storage._acquire_workspace_document_lock(source_path)
+        lock.unlock()

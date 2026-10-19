@@ -189,10 +189,14 @@ def initial_normal_emission_from_slicer_area(
     configuration: AxesConfiguration | int | None = None,
 ) -> tuple[tuple[float, float] | None, float | None]:
     """Return ktool-compatible normal-emission seed values from an ImageTool."""
-    data = erlab.utils.array._restore_nonuniform_dims(slicer_area.data)
+    data = slicer_area.displayed_data
     dim_values = {
         str(dim): float(value)
-        for dim, value in zip(data.dims, slicer_area.current_values, strict=True)
+        for dim, value in zip(
+            slicer_area.array_slicer.physical_dims,
+            slicer_area.current_values,
+            strict=True,
+        )
     }
     beta_value = dim_values.get("beta")
     if beta_value is None and "beta" in data.coords:
@@ -205,7 +209,8 @@ def initial_normal_emission_from_slicer_area(
     initial_normal_emission: tuple[float, float] = (dim_values["alpha"], beta_value)
     initial_delta: float | None = None
     guideline_dims = tuple(
-        str(data.dims[axis]) for axis in slicer_area.main_image.display_axis
+        str(slicer_area.array_slicer.physical_dims[axis])
+        for axis in slicer_area.main_image.display_axis
     )
     if slicer_area.main_image.is_guidelines_visible and set(guideline_dims) == {
         "alpha",
@@ -217,7 +222,7 @@ def initial_normal_emission_from_slicer_area(
             slicer_area.main_image._guideline_offset,
             strict=True,
         ):
-            dim = str(data.dims[axis])
+            dim = str(slicer_area.array_slicer.physical_dims[axis])
             if axis in slicer_area.array_slicer._nonuniform_axes_set:
                 uniform_value = float(value)
                 uniform_coord = np.asarray(

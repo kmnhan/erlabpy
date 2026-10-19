@@ -1255,11 +1255,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _public_source_dims_for_current_layout(self) -> tuple[Hashable, ...]:
         """Merge the saved slicer order with source-only singleton dimensions."""
-        layout = erlab.utils.array._restore_nonuniform_dims(self.data)
-        layout = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
-            layout, self._data
+        layout_dims = tuple(
+            dim
+            for dim in self.array_slicer.physical_dims
+            if dim != "stack_dim" or dim in self._data.dims
         )
-        layout_dims = tuple(layout.dims)
         if any(dim not in self._data.dims for dim in layout_dims):
             raise ValueError(
                 "Slicer layout contains a dimension absent from source data"
@@ -1273,7 +1273,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _restore_public_source_layout(self, data: xr.DataArray) -> xr.DataArray:
         """Undo slicer-only dimension normalization for a public data result."""
-        public = erlab.utils.array._restore_nonuniform_dims(data)
+        public = self.array_slicer._to_physical_data(data)
         public = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
             public, self._data
         )
@@ -1297,8 +1297,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return public.copy(deep=False)
 
     def _tool_source_parent_data(self) -> xr.DataArray:
-        """Return the current slicer view used for source-bound child tools."""
-        return self._accepted_data_for_dims(tuple(self.data.dims)).copy(deep=False)
+        """Return physical data for source-bound analysis tools."""
+        return self.displayed_data
+
+    def _tool_source_singleton_indexers(self) -> dict[Hashable, int]:
+        """Select source dimensions omitted from the displayed axes."""
+        return {
+            dim: 0
+            for dim, size in self._data.sizes.items()
+            if size == 1 and dim not in self.array_slicer.physical_dims
+        }
 
     @property
     def has_active_filter(self) -> bool:
@@ -1432,8 +1440,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             copy_values=False,
         )
         if erlab.interactive.imagetool.slicer.check_cursors_compatible(
-            self.data,
-            validated,
+            self.displayed_data,
+            data,
         ):
             return tuple(self.data.dims)
         return tuple(validated.dims)
@@ -2183,9 +2191,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         This slot is triggered from the parent widget when the menubar containing the
         actions is about to be shown.
         """
-        self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
+        self.ktool_act.setEnabled(self.displayed_data.kspace._interactive_compatible)
         self.meshtool_act.setEnabled(
-            all(dim in self.data.dims for dim in {"alpha", "eV"})
+            all(dim in self.displayed_data.dims for dim in {"alpha", "eV"})
         )
 
     def connect_axes_signals(self) -> None:
@@ -2245,7 +2253,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 return
             coord_dims, target_coord, _ = coord_info
             if axes is not None and not any(
-                self.data.dims[ax] in coord_dims for ax in axes
+                self.array_slicer._dim_indices.get(dim) in axes for dim in coord_dims
             ):
                 return
 
@@ -3456,7 +3464,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
 
         self.array_slicer.set_array(
-            filtered,
+            self._restore_public_source_layout(filtered),
             reset=False,
             copy_values=False,
             preserve_dims=tuple(filtered.dims),
@@ -3598,16 +3606,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if k not in self.data.dims:
                 continue
             ax_idx = self.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            bounds = (
-                float(np.round(v[0], sig_digits)),
-                float(np.round(v[1], sig_digits)),
-            )
-            start, end = min(bounds), max(bounds)
+            start, end = min(v), max(v)
             if self.array_slicer.incs_uniform[ax_idx] < 0:
                 start, end = end, start
-            if sig_digits == 0:
-                start, end = int(start), int(end)
             slice_dict[k] = slice(start, end)
         return slice_dict
 
@@ -4153,11 +4154,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 raise ValueError(
                     "ToolWindows opened from ImageTool must declare one input"
                 )
-            script_input = widget.script_inputs[0]
+            parent = typing.cast("erlab.interactive.imagetool.ImageTool", self.window())
 
             def _resolve_inputs() -> tuple[
                 dict[str, xr.DataArray], tuple[ScriptInput, ...]
             ]:
+                script_input = widget.script_inputs[0]
                 if script_input.data_role == "source":
                     parent_data, _state = self.persistence_data_and_state()
                     parent_provenance = self.provenance_spec
@@ -4170,32 +4172,50 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     if source_spec is None
                     else source_spec.apply(parent_data)
                 )
-                provenance_spec = (
-                    None
-                    if parent_provenance is None
-                    else compose_full_provenance(parent_provenance, source_spec)
-                )
                 refreshed = script_input.model_copy(
                     update={
+                        "input_version": 2,
+                        "fallback_role": "raw",
                         "node_uid": None,
                         "node_snapshot_token": None,
+                        "revision_id": None,
+                        "resolved_revision_id": None,
                         "provenance_spec": (
                             None
-                            if provenance_spec is None
-                            else provenance_spec.model_dump(mode="json")
+                            if parent_provenance is None
+                            else parent_provenance.model_dump(mode="json")
                         ),
                     }
                 )
                 return {script_input.name: resolved}, (refreshed,)
 
+            @contextlib.contextmanager
+            def _source_provenance_context(
+                remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+            ) -> Iterator[None]:
+                previous = parent.provenance_spec
+                if previous is not None:
+                    parent.set_provenance_spec(remap(previous))
+                try:
+                    yield
+                except Exception:
+                    parent.set_provenance_spec(previous)
+                    raise
+
             _, refreshed_inputs = _resolve_inputs()
-            widget.set_script_inputs(
+            with widget._input_provenance_change(
                 refreshed_inputs,
-                primary_input=widget.primary_input,
-                auto_update=widget.source_auto_update,
-                state=widget.source_state,
+                authorization=parent._provenance_code_authorization()[1],
+            ):
+                widget.set_script_inputs(
+                    refreshed_inputs,
+                    primary_input=widget.primary_input,
+                    auto_update=widget.source_auto_update,
+                    state=widget.source_state,
+                )
+            widget._set_input_resolver(
+                _resolve_inputs, provenance_context=_source_provenance_context
             )
-            widget._set_input_resolver(_resolve_inputs)
             widget._set_managed_source_reload(widget._update_from_input_source)
             self.sigSourceDataReplaced.connect(widget.handle_input_sources_replaced)
 
@@ -4253,7 +4273,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         manager = self._manager_instance if self._in_manager else None
 
         tool = erlab.interactive.ktool(
-            self.data,
+            self.displayed_data,
             cmap=cmap,
             gamma=gamma,
             data_name=self.watched_data_name,
@@ -4276,7 +4296,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def open_in_meshtool(self) -> None:
         """Open the interactive mesh removal tool."""
         tool = erlab.interactive.meshtool(
-            self.data, data_name=self.watched_data_name, execute=False
+            self.displayed_data, data_name=self.watched_data_name, execute=False
         )
         self._declare_full_data_tool_input(tool)
         self.add_tool_window(tool)

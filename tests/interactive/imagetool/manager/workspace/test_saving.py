@@ -32,15 +32,25 @@ from erlab.interactive._code_trust import new_document_trust
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._provenance._model import ScriptInput, full_data
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    full_data,
+    script,
+)
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
     IselOperation,
+    ScriptCodeOperation,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
     _WorkspaceScriptRequirement,
 )
+from erlab.interactive.imagetool.manager._metadata_editor import (
+    MetadataCellEdit,
+    MetadataField,
+)
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
@@ -261,6 +271,477 @@ def test_manager_workspace_layout_only_save_updates_root_manifest_only(
         assert (
             manifest["manager_layout"]
             == manager._workspace_controller.saving._workspace_layout_snapshot()
+        )
+
+
+@pytest.mark.parametrize("replace_external", [False, True])
+def test_manager_workspace_restores_revision_history_without_recipe_execution(
+    qtbot, tmp_path, test_data, manager_context, monkeypatch, replace_external
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        index = manager.add_imagetool(root, show=False)
+        node = manager._node_for_target(index)
+        first = node.revision_id_for_role("source")
+        expected_first = manager._provenance_revisions.resolve_data(first)
+        if replace_external:
+            node.slicer_area.replace_source_data(test_data + 10)
+            assert node.current_revision_id is not None
+        else:
+            node.replace_with_detached_data(
+                test_data + 10, None, replay_source_data=None
+            )
+        orphan = manager._provenance_revisions.add(test_data + 99)
+        path = tmp_path / "history.itws"
+        second = node.current_revision_id
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert node.current_revision_id == second
+        assert manager._provenance_revisions.revision_ids == {first, second}
+        assert second is not None
+        manifest = _current_workspace_manifest(path)
+        assert manifest["nodes"][0]["current_revision_id"] == second
+        assert {entry["revision_id"] for entry in manifest["provenance_revisions"]} == {
+            first,
+            second,
+        }
+        assert orphan not in {
+            entry["revision_id"] for entry in manifest["provenance_revisions"]
+        }
+
+        def _forbid_replay(*args, **kwargs):
+            raise AssertionError("workspace load executed provenance")
+
+        monkeypatch.setattr(manager, "_apply_provenance", _forbid_replay)
+        manager._provenance_revisions = type(manager._provenance_revisions)()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager._node_for_target(0)
+        assert restored.current_revision_id == second
+        xr.testing.assert_identical(restored.data_for_role("source"), test_data + 10)
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(first).compute(), expected_first
+        )
+        records = manager._provenance_revisions.reachable([second])
+        assert len(records) == 2
+        assert all(
+            record.checkpoint.source.file_path == str(path) for record in records
+        )
+
+
+@pytest.mark.parametrize("source_change", ["overwrite", "delete"])
+def test_manager_workspace_captures_lazy_input_before_source_changes(
+    qtbot, tmp_path, manager_context, source_change
+) -> None:
+    import dask.array as da
+    from dask import delayed
+
+    expected = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+        name="sample",
+    )
+    source_path = tmp_path / "sample.npy"
+    np.save(source_path, expected.values)
+    source = expected.copy(
+        data=da.from_delayed(
+            delayed(np.load)(source_path), shape=expected.shape, dtype=float
+        )
+    )
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                source, auto_compute=False, _in_manager=True
+            ),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        assert node.data_for_role("source").chunks is not None
+        captured = node.revision_id_for_role("source")
+        assert node.data_for_role("source").chunks is not None
+        node.replace_with_detached_data(expected + 10, None, replay_source_data=None)
+        if source_change == "overwrite":
+            np.save(source_path, expected.values + 100)
+        else:
+            source_path.unlink()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured), expected
+        )
+        destination = tmp_path / "captured.itws"
+        manager._workspace_controller.saving._save_workspace_document(destination)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            destination, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(captured).compute(), expected
+        )
+
+
+@pytest.mark.parametrize("workspace_schema", [3, 4, 5])
+@pytest.mark.parametrize("imported", [False, True])
+def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
+    qtbot, tmp_path, test_data, manager_context, monkeypatch, workspace_schema, imported
+) -> None:
+    source = erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True)
+    qtbot.addWidget(source)
+    dataset = source.to_dataset()
+    source.close()
+    dataset.attrs["itool_visible"] = False
+    dataset.attrs.pop("itool_window_state", None)
+    owner_snapshot = "legacy-owner"
+    spec = script(
+        ScriptCodeOperation(label="Add", code="derived = data + 1"),
+        start_label="Legacy source",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="data", node_snapshot_token=owner_snapshot),),
+    )
+    dataset.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
+        spec.model_dump(mode="json")
+    )
+    dataset.attrs["manager_node_uid"] = "legacy-node"
+    blob_name = _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME
+    dataset[blob_name] = erlab.interactive.utils._tool_data_to_blob(
+        test_data, blob_name
+    )
+    source_path = tmp_path / "legacy.itws"
+    if workspace_schema in {3, 4}:
+        tree = xr.DataTree.from_dict({"0/imagetool": dataset})
+        workspace_format._set_legacy_workspace_schema(tree.attrs)
+        if workspace_schema == 4:
+            tree.attrs["imagetool_workspace_schema_version"] = 4
+            tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                {
+                    "schema_version": 4,
+                    "root_order": [0],
+                    "nodes": [
+                        {
+                            "uid": "legacy-node",
+                            "path": "0",
+                            "kind": "imagetool",
+                            "data_backing": "memory",
+                        }
+                    ],
+                }
+            )
+        tree.to_netcdf(source_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+    else:
+        object_id = "legacy-payload"
+        manifest = {
+            "root_order": [0],
+            "nodes": [
+                {
+                    "uid": "legacy-node",
+                    "path": "0",
+                    "kind": "imagetool",
+                    "data_backing": "memory",
+                    "payload_object_id": object_id,
+                    "payload_path": workspace_store.WorkspaceStore.object_path(
+                        object_id
+                    ),
+                    "payload_attrs": workspace_format._workspace_manifest_attrs(
+                        dataset.attrs
+                    ),
+                }
+            ],
+        }
+        with workspace_store.WorkspaceStore(source_path, create=True) as store:
+            generation = workspace_storage._write_workspace_generation(
+                store,
+                workspace_storage._WorkspaceGenerationPlan(
+                    manifest=manifest,
+                    objects=(
+                        workspace_storage._WorkspaceObjectWrite(
+                            object_id, dataset=dataset
+                        ),
+                    ),
+                ),
+                compression_mode="none",
+            )
+            manifest = dict(generation.manifest)
+            manifest["schema_version"] = workspace_schema
+        with h5py.File(source_path, "r+") as h5_file:
+            text = workspace_store.WorkspaceStore._manifest_text(manifest)
+            generation_group = h5_file[
+                f"{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{generation.sequence:020d}"
+            ]
+            generation_group["manifest"][()] = text
+            generation_group["manifest"].attrs["sha256"] = hashlib.sha256(
+                text.encode()
+            ).hexdigest()
+            h5_file.attrs["imagetool_workspace_schema_version"] = workspace_schema
+            h5_file.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = text
+
+    reads = 0
+    original_decode = erlab.interactive.utils._tool_data_from_blob
+
+    def _count_seed_reads(blob):
+        nonlocal reads
+        reads += 1
+        return original_decode(blob)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "_tool_data_from_blob", _count_seed_reads
+    )
+    normalize = _ProvenanceRevisionStore.normalize_provenance
+
+    def _collect_before_node_registration(registry, *args, **kwargs):
+        normalized = normalize(registry, *args, **kwargs)
+        seed_id = kwargs.get("replay_source_revision_id")
+        if seed_id is not None:
+            assert seed_id in registry.retained_roots
+            registry.discard_unreachable(())
+            assert registry.has_data(seed_id)
+        return normalized
+
+    monkeypatch.setattr(
+        _ProvenanceRevisionStore,
+        "normalize_provenance",
+        _collect_before_node_registration,
+    )
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        def _forbid_replay(*args, **kwargs):
+            raise AssertionError("migration executed a recipe")
+
+        monkeypatch.setattr(manager, "_apply_provenance", _forbid_replay)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source_path,
+            replace=not imported,
+            associate=not imported,
+            mark_dirty=imported,
+            select=False,
+        )
+        node = manager._node_for_target(0)
+        canonical = node.provenance_spec
+        assert canonical is not None
+        seed_id = canonical.replay_inputs[0].revision_id
+        assert seed_id is not None
+        assert canonical.replay_inputs[0].node_snapshot_token is None
+        assert node.replay_source_data is None
+        assert reads == 1
+        if imported:
+            controller = manager._workspace_controller
+            if node.pending_workspace_payload is not None:
+                assert (
+                    controller.loading.pending._materialize_pending_workspace_payload(
+                        node
+                    )
+                )
+            assert source_path.resolve() not in controller._workspace_sources
+            lock = workspace_storage._acquire_workspace_document_lock(source_path)
+            try:
+                with workspace_store.WorkspaceStore(source_path, create=True) as writer:
+                    workspace_storage._write_workspace_generation(
+                        writer,
+                        workspace_storage._WorkspaceGenerationPlan(
+                            manifest={"root_order": [], "nodes": []}, objects=()
+                        ),
+                        compression_mode="none",
+                    )
+            finally:
+                lock.unlock()
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id), test_data
+        )
+        destination = tmp_path / "canonical.itws"
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **kwargs: destination,
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert reads == 1
+        saved = _current_workspace_manifest(destination)
+        attrs = workspace_format._restore_workspace_manifest_attrs(
+            saved["nodes"][0]["payload_attrs"]
+        )
+        saved_spec = json.loads(
+            attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR]
+        )
+        assert saved_spec["script_inputs"][0]["revision_id"] == seed_id
+        assert saved_spec["script_inputs"][0]["node_snapshot_token"] is None
+        registry_ids = {entry["revision_id"] for entry in saved["provenance_revisions"]}
+        assert manager._workspace_controller.loading._load_workspace_file(
+            destination, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        assert reads == 1
+        node = manager._node_for_target(0)
+        assert node.provenance_spec.replay_inputs[0].revision_id == seed_id
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id).compute(), test_data
+        )
+        second_save = tmp_path / "canonical-again.itws"
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **kwargs: second_save,
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert {
+            entry["revision_id"]
+            for entry in _current_workspace_manifest(second_save)[
+                "provenance_revisions"
+            ]
+        } == registry_ids
+        assert reads == 1
+
+
+@pytest.mark.parametrize("save_mode", ["first", "repeat", "save_as", "pending_state"])
+def test_workspace_save_preserves_watched_root_replay(
+    qtbot, monkeypatch, tmp_path, manager_context, save_mode
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        name="scan",
+    ).assign_coords(angle=0.0)
+    path = tmp_path / "watched.itws"
+    with manager_context() as manager:
+        manager._data_watched_update("scan", "watched-source", data)
+        controller = manager._workspace_controller
+        if save_mode == "pending_state":
+            manager.get_imagetool(0).hide()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        node = manager._node_for_target(0)
+        assert node.provenance_spec is not None
+        encoded_attrs = []
+        encode_attrs = workspace_format._workspace_manifest_attrs
+
+        def record_encode(attrs):
+            encoded = encode_attrs(attrs)
+            encoded_attrs.append(encoded)
+            return encoded
+
+        monkeypatch.setattr(
+            workspace_format, "_workspace_manifest_attrs", record_encode
+        )
+        if save_mode == "save_as":
+            path = tmp_path / "watched-copy.itws"
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        elif save_mode == "pending_state":
+            assert controller.loading._load_workspace_file(
+                path, replace=True, associate=True, mark_dirty=False, select=False
+            )
+            node = manager._node_for_target(0)
+            assert node.imagetool is None
+            node.note = "Reviewed"
+            with monkeypatch.context() as pending_patch:
+                pending_patch.setattr(
+                    node,
+                    "materialize_pending_workspace_payload",
+                    lambda: pytest.fail("Saving metadata must not read pending data"),
+                )
+                assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            assert node.imagetool is None
+        elif save_mode == "repeat":
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            assert encoded_attrs == []
+
+        attrs = _current_workspace_payload_attrs(path)
+        for key in (
+            _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+            _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+        ):
+            assert key not in attrs
+        assert node._provenance_spec is None
+        assert controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager._node_for_target(0)
+        assert restored.watched
+        assert restored._provenance_spec is None
+        assert restored.has_replay_source
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate_result(
+                restored, "display", restored.provenance_spec
+            ).data,
+            data,
+        )
+
+        edits = (
+            MetadataCellEdit(
+                MetadataField(kind="attribute", name="sample"), value="reference"
+            ),
+            MetadataCellEdit(MetadataField(kind="coordinate", name="angle"), value=1.5),
+        )
+        assert manager._metadata_editor.apply_edits({0: edits})
+        select_tools(manager, [0])
+        manager._update_info(uid=restored.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate_result(
+                restored, "display", restored.provenance_spec
+            ).data,
+            data.assign_attrs(sample="reference").assign_coords(angle=1.5),
+        )
+
+
+def test_workspace_adoption_normalizes_legacy_seed_before_pure_save(
+    qtbot, tmp_path, test_data, manager_context
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True)
+        index = manager.add_imagetool(root, show=False)
+        node = manager._node_for_target(index)
+        path = tmp_path / "legacy-live-seed.itws"
+        manager._workspace_controller.saving._save_workspace_document(path)
+        adopt_workspace_path(manager, path)
+        object_id = _current_workspace_manifest(path)["nodes"][0]["payload_object_id"]
+
+        # Adopt the old representation at the node boundary, before saving.
+        node.set_displayed_provenance(
+            script(
+                ScriptCodeOperation(label="Add", code="derived = data + 1"),
+                start_label="Legacy source",
+                active_name="derived",
+            ),
+            advance_snapshot=False,
+            replay_source_data=test_data,
+        )
+        adopted = node.provenance_spec
+        revision_ids = manager._provenance_revisions.revision_ids
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert node.provenance_spec == adopted
+        assert manager._provenance_revisions.revision_ids == revision_ids
+
+        spec = node.provenance_spec
+        seed_id = spec.replay_inputs[0].revision_id
+        assert seed_id is not None
+        assert node.replay_source_data is None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id).compute(), test_data
+        )
+        xr.testing.assert_identical(node.data_for_role("source"), test_data + 1)
+        manifest = _current_workspace_manifest(path)
+        assert manifest["nodes"][0]["payload_object_id"] == object_id
+        saved_spec = json.loads(
+            _current_workspace_payload_attrs(path)[
+                _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR
+            ]
+        )
+        assert saved_spec == spec.model_dump(mode="json")
+        revision_ids = manager._provenance_revisions.revision_ids
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert manager._provenance_revisions.revision_ids == revision_ids
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager._node_for_target(0)
+        assert restored.provenance_spec.replay_inputs[0].revision_id == seed_id
+        assert restored.pending_workspace_memory_payload is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id).compute(), test_data
         )
 
 
@@ -649,6 +1130,7 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
         source_store.publish(current_manifest)
 
         manager = types.SimpleNamespace(
+            _provenance_revisions=_ProvenanceRevisionStore(),
             _workspace_state=types.SimpleNamespace(
                 dirty_data=set(),
                 dirty_added=set(),
@@ -658,11 +1140,13 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
             ),
             _tool_graph=types.SimpleNamespace(nodes={}),
         )
-        saver = workspace_saving._WorkspaceSaver.__new__(
-            workspace_saving._WorkspaceSaver
+        saver = workspace_saving._WorkspaceSaver(
+            manager,
+            types.SimpleNamespace(
+                _workspace_store=source_store,
+                _workspace_sources={},
+            ),
         )
-        saver._manager = manager
-        saver._controller = types.SimpleNamespace(_workspace_store=source_store)
         saver._workspace_script_snapshot = lambda: (
             (),
             scripts,
@@ -697,11 +1181,16 @@ def test_committed_generation_merges_embedded_source_into_live_state(
     later_hash = hashlib.sha256(later_source).hexdigest()
     scripts = workspace_state._WorkspaceScriptState()
     scripts.remember_verified_source("later.py", later_hash, later_source)
+    revisions = _ProvenanceRevisionStore()
+    unused_revision_id = revisions.add(xr.DataArray([1.0]))
+    retained_revision_id = revisions.add(xr.DataArray([2.0]))
     manager = types.SimpleNamespace(
         _workspace_state=types.SimpleNamespace(
             extension_scripts=scripts,
             schema_version=0,
-        )
+        ),
+        _provenance_revisions=revisions,
+        _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
@@ -734,18 +1223,24 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         embedded_script_sources=(("embedded.py", embedded_hash, embedded_source),),
     )
 
-    controller._adopt_committed_workspace_generation(
-        pathlib.Path("workspace.itws"),
-        snapshot,
-        manifest=snapshot.generation_plan.manifest,
-    )
+    with revisions.retain((retained_revision_id,)):
+        controller._adopt_committed_workspace_generation(
+            pathlib.Path("workspace.itws"),
+            snapshot,
+            manifest=snapshot.generation_plan.manifest,
+        )
 
     assert set(scripts.verified_sources) == {
         ("embedded.py", embedded_hash),
         ("later.py", later_hash),
     }
     assert rebound == [{"/legacy/imagetool": "payload"}]
-    assert manager._workspace_state.schema_version == 6
+    assert unused_revision_id not in revisions
+    assert retained_revision_id in revisions
+    assert (
+        manager._workspace_state.schema_version
+        == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+    )
 
 
 def test_workspace_save_and_compaction_route_save_as_only_documents() -> None:
@@ -1047,8 +1542,17 @@ def test_manager_workspace_path_lock_contract(
         manager._workspace_state.path = current
         lock = _FakeLock()
 
-        manager._workspace_controller._set_workspace_path(current, workspace_lock=lock)
+        from erlab.interactive.imagetool.manager._widgets import (
+            _WorkspaceDocumentAccess,
+            _WorkspaceDocumentLock,
+        )
 
+        access = _WorkspaceDocumentAccess(current, _WorkspaceDocumentLock(lock))
+        manager._workspace_controller._set_workspace_path(
+            current, workspace_access=access
+        )
+        assert lock.unlock_count == 0
+        access.release()
         assert lock.unlock_count == 1
         with pytest.raises(RuntimeError, match="pre-acquired document lock"):
             manager._workspace_controller._set_workspace_path(tmp_path / "other.itws")
@@ -1595,7 +2099,7 @@ class _DeferredWorkspaceSaveWorker:
         elapsed: float = 0.0,
         error: workspace_saving._WorkspaceSaveError | None = None,
     ) -> None:
-        self._snapshot.close()
+        self._snapshot.close_data()
         self.signals.finished.emit(elapsed, error)
 
 
@@ -2926,9 +3430,15 @@ def test_manager_workspace_generation_save_open_replaces_and_binds_path(
         assert not manager.is_workspace_modified
 
         attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-        assert attrs["imagetool_workspace_schema_version"] == 6
+        assert (
+            attrs["imagetool_workspace_schema_version"]
+            == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+        )
         manifest = workspace_format._workspace_manifest_from_attrs(attrs)
-        assert manifest["schema_version"] == 6
+        assert (
+            manifest["schema_version"]
+            == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+        )
         assert {node["uid"] for node in manifest["nodes"]} >= {
             manager._tool_graph.root_wrappers[0].uid,
             child_uid,
@@ -3316,9 +3826,7 @@ def test_manager_workspace_save_rehomes_imported_dask_data(
         )
         imported = manager.get_imagetool(1).slicer_area._data
         assert imported.chunks is not None
-        assert source.resolve() in (
-            manager._workspace_controller._imported_workspace_accesses
-        )
+        assert source.resolve() in (manager._workspace_controller._workspace_sources)
         with pytest.raises(BlockingIOError):
             workspace_storage._acquire_workspace_document_lock(source)
 
@@ -3330,7 +3838,7 @@ def test_manager_workspace_save_rehomes_imported_dask_data(
         ) == str(target.resolve())
         assert _compute_first_value(rebound) == 0.0
         assert source.resolve() not in (
-            manager._workspace_controller._imported_workspace_accesses
+            manager._workspace_controller._workspace_sources
         )
         lock = workspace_storage._acquire_workspace_document_lock(source)
         lock.unlock()
@@ -3802,10 +4310,13 @@ def test_manager_workspace_save_as_preserves_external_non_dask_file_backed_data(
         assert _compute_first_value(rebound) == 0.0
 
 
+@pytest.mark.parametrize("fail_rebind", [False, True])
 def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
     qtbot,
     accept_dialog,
+    monkeypatch,
     tmp_path,
+    fail_rebind,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -3840,10 +4351,36 @@ def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
             if isinstance(focused, QtWidgets.QLineEdit):
                 focused.setText(new_fname.name)
 
+        errors = []
+        if fail_rebind:
+
+            def _fail_tool_rebind(*_args, **_kwargs):
+                raise workspace_controller._WorkspacePostSaveBindingError(
+                    "later failure"
+                )
+
+            monkeypatch.setattr(
+                manager._workspace_controller,
+                "_refresh_workspace_tool_data_after_full_save",
+                _fail_tool_rebind,
+            )
+            monkeypatch.setattr(
+                manager, "_show_operation_error", lambda *args: errors.append(args)
+            )
         accept_dialog(lambda: manager.save_as(native=False), pre_call=_go_to_file)
         qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
 
         rebound = manager.get_imagetool(0).slicer_area._data
+        if fail_rebind:
+            assert errors
+            assert workspace_arrays.dataarray_source_paths(rebound) == (old_source,)
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(old_fname)
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(new_fname)
+            assert _compute_first_value(rebound) == 0.0
+            return
+        assert not errors
         new_source = str(new_fname.resolve())
         assert (
             workspace_arrays._normalized_file_path(rebound.encoding.get("source"))
@@ -3851,6 +4388,10 @@ def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
         )
         assert rebound.chunks is None
 
+        lock = workspace_storage._acquire_workspace_document_lock(old_fname)
+        lock.unlock()
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(new_fname)
         old_fname.unlink()
         assert _compute_first_value(rebound) == 0.0
 
@@ -4631,6 +5172,9 @@ def test_manager_workspace_save_deduplicates_legacy_payload_in_place(
         tree = manager._workspace_controller.saving._to_datatree()
         manifest = manager._workspace_controller.saving._workspace_manifest()
         manifest["schema_version"] = schema_version
+        manifest.pop("provenance_revisions", None)
+        for entry in manifest["nodes"]:
+            entry.pop("current_revision_id", None)
         tree.attrs["imagetool_workspace_schema_version"] = schema_version
         tree.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = json.dumps(
             manifest
@@ -5087,9 +5631,7 @@ def test_manager_releases_eager_legacy_source_when_conversion_is_canceled(
         assert manager._workspace_state.path is None
         assert loaded.chunks is None
         assert _compute_first_value(loaded) == 0.0
-        assert fname.resolve() not in (
-            manager._workspace_controller._imported_workspace_accesses
-        )
+        assert fname.resolve() not in (manager._workspace_controller._workspace_sources)
         assert workspace_store.WorkspaceStore.active(fname) is None
         lock = workspace_storage._acquire_workspace_document_lock(fname)
         lock.unlock()
@@ -6415,3 +6957,336 @@ def test_manager_workspace_delta_save_persists_geometry_changes(
         saved_state = json.loads(saved_attrs["itool_window_state"])
         saved_rect = tuple(int(value) for value in saved_state["rect"])
         assert saved_rect == expected_rect
+
+
+@pytest.mark.parametrize("save_as", [False, True])
+@pytest.mark.parametrize("fail_write", [False, True])
+def test_background_save_owns_removed_revision_sources(
+    qtbot, monkeypatch, tmp_path, manager_context, save_as, fail_write
+) -> None:
+    import threading
+
+    source_path = tmp_path / "source.itws"
+    destination = tmp_path / "destination.itws"
+    expected = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(expected, _in_manager=True),
+            show=False,
+        )
+        revision_id = manager._node_for_target(index).revision_id_for_role("source")
+        manager._node_for_target(index).set_displayed_provenance(
+            script(
+                start_label="Saved",
+                active_name="data",
+                primary_input="data",
+                script_inputs=(ScriptInput(name="data", revision_id=revision_id),),
+            )
+        )
+        manager._workspace_controller.saving._save_workspace_document(source_path)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        if not save_as:
+            controller.saving._save_workspace_document(destination)
+            adopt_workspace_path(manager, destination)
+        assert controller.loading._load_workspace_file(
+            source_path, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        assert revision_id not in manager._provenance_revisions._data
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+        started = threading.Event()
+        proceed = threading.Event()
+        write_generation = workspace_storage._write_workspace_generation
+
+        def _delayed_write(*args, **kwargs):
+            started.set()
+            if not proceed.wait(10):
+                raise TimeoutError("Test did not release workspace save")
+            if fail_write:
+                raise OSError("Test workspace write failure")
+            return write_generation(*args, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_storage, "_write_workspace_generation", _delayed_write
+        )
+        results = []
+        save = controller.save_as if save_as else controller.save
+        assert save(native=False, on_finished=results.append)
+        try:
+            qtbot.wait_until(started.is_set)
+            select_tools(manager, [next(iter(manager._tool_graph.root_wrappers))])
+            manager._update_info()
+            assert manager.remove_action.isEnabled()
+            manager.remove_action.trigger()
+            dialog = manager._lineage_controller._remove_confirmation_dialog
+            dialog.done(QtWidgets.QMessageBox.StandardButton.Yes.value)
+            qtbot.wait_until(lambda: not manager._tool_graph.nodes)
+            assert not manager._provenance_revisions.revision_ids
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(source_path)
+            assert not manager.close()
+            assert manager._workspace_state.save_in_progress
+        finally:
+            proceed.set()
+            qtbot.wait_until(lambda: bool(results), timeout=10000)
+        assert results == [not fail_write]
+        assert bool(errors) == fail_write
+        lock = workspace_storage._acquire_workspace_document_lock(source_path)
+        lock.unlock()
+        if not fail_write:
+            registry = _ProvenanceRevisionStore()
+            workspace_controller.workspace_revisions.restore_revision_store(
+                registry, _current_workspace_manifest(destination), destination
+            )
+            xr.testing.assert_identical(
+                registry.resolve_data(revision_id).compute(), expected
+            )
+
+
+def test_workspace_snapshot_sources_release_after_failed_start(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    path = tmp_path / "source.itws"
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y")),
+                _in_manager=True,
+            ),
+            show=False,
+        )
+        revision_id = manager._node_for_target(index).revision_id_for_role("source")
+        controller.saving._save_workspace_document(path)
+        adopt_workspace_path(manager, path)
+        store = controller._workspace_store
+        snapshot = controller.saving._workspace_save_snapshot(path)
+        second_snapshot = controller.saving._workspace_save_snapshot(path)
+        assert f"revision-{revision_id}" in store.leased_object_ids
+        manager.remove_imagetool(index)
+        assert not manager._provenance_revisions.revision_ids
+        empty_manifest = dict(snapshot.generation_plan.manifest)
+        empty_manifest["nodes"] = []
+        empty_manifest["root_order"] = []
+        empty_manifest["provenance_revisions"] = []
+        for _ in range(2):
+            store.publish(empty_manifest)
+        store.collect_garbage(max_objects=1000)
+        assert store.object_path(f"revision-{revision_id}") in store.h5_file
+        snapshot.close()
+        assert f"revision-{revision_id}" in store.leased_object_ids
+        monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", lambda: None)
+        assert not controller._start_workspace_save_worker(
+            path, second_snapshot, on_finished=lambda *_args: None
+        )
+        assert f"revision-{revision_id}" not in store.leased_object_ids
+        second_snapshot.close()
+
+
+def test_workspace_snapshot_cleanup_closes_each_resource_once() -> None:
+    closed = []
+    first = xr.Dataset()
+    second = xr.Dataset()
+
+    def _fail_close() -> None:
+        closed.append("first")
+        raise OSError("Test dataset close failure")
+
+    first.set_close(_fail_close)
+    second.set_close(lambda: closed.append("second"))
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        generation_plan=workspace_storage._WorkspaceGenerationPlan(
+            manifest={},
+            objects=(
+                workspace_storage._WorkspaceObjectWrite("first", dataset=first),
+                workspace_storage._WorkspaceObjectWrite("duplicate", dataset=first),
+                workspace_storage._WorkspaceObjectWrite("second", dataset=second),
+            ),
+        ),
+        compression_mode="none",
+        trusted_lineage=True,
+    )
+    snapshot._source_ownership.callback(lambda: closed.append("ownership"))
+    with pytest.raises(OSError, match="Test dataset close failure"):
+        snapshot.close()
+    assert closed == ["second", "first", "ownership"]
+    snapshot.close()
+    assert closed == ["second", "first", "ownership"]
+
+
+@pytest.mark.parametrize("save_as", [False, True])
+def test_background_save_owns_removed_transformed_dask_source(
+    qtbot, monkeypatch, tmp_path, manager_context, save_as
+) -> None:
+    import subprocess
+    import threading
+
+    source = tmp_path / "source.itws"
+    destination = tmp_path / "destination.itws"
+    data = xr.DataArray(np.arange(400.0).reshape(20, 20), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        assert manager.offload_to_workspace([0], native=False)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        if not save_as:
+            controller.saving._save_workspace_document(destination)
+            adopt_workspace_path(manager, destination)
+        assert controller.loading._load_workspace_file(
+            source, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        index = next(iter(manager._tool_graph.root_wrappers))
+        node = manager._node_for_target(index)
+        original = manager.get_imagetool(index).slicer_area._data
+        transformed = xr.DataArray(original.data + 1, dims=original.dims)
+        assert transformed.chunks is not None
+        assert not workspace_arrays.dataarray_source_paths(transformed)
+        node.slicer_area.replace_source_data(transformed, auto_compute=False)
+        assert source.resolve() in controller._workspace_sources
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        started = threading.Event()
+        proceed = threading.Event()
+        write_generation = workspace_storage._write_workspace_generation
+
+        def _delayed_write(*args, **kwargs):
+            started.set()
+            if not proceed.wait(10):
+                raise TimeoutError("Test did not release workspace save")
+            return write_generation(*args, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_storage, "_write_workspace_generation", _delayed_write
+        )
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+        results = []
+        save = controller.save_as if save_as else controller.save
+        assert save(native=False, on_finished=results.append)
+        try:
+            qtbot.wait_until(started.is_set)
+            snapshot = controller._background_save_worker._snapshot
+            assert snapshot.dataset_source_paths == frozenset({source.resolve()})
+            select_tools(manager, [index])
+            manager._update_info()
+            manager.remove_action.trigger()
+            manager._lineage_controller._remove_confirmation_dialog.done(
+                QtWidgets.QMessageBox.StandardButton.Yes.value
+            )
+            qtbot.wait_until(lambda: not manager._tool_graph.nodes)
+            # Evict the incidental HDF5 read handle through normal xarray cache use.
+            other = tmp_path / "cache-eviction.nc"
+            xr.Dataset({"value": ("i", [1])}).to_netcdf(other, engine="h5netcdf")
+            with (
+                xr.set_options(file_cache_maxsize=1),
+                xr.open_dataset(other, engine="h5netcdf") as opened,
+            ):
+                opened.load()
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(source)
+        finally:
+            proceed.set()
+            qtbot.wait_until(lambda: bool(results), timeout=10000)
+        assert results == [True]
+        assert not errors
+        assert source.resolve() not in controller._workspace_sources
+        # An independent writer can now collect the original payload objects.
+        code = """
+import copy
+import sys
+from erlab.interactive.imagetool.manager._workspace import _storage, _store
+lock = _storage._acquire_workspace_document_lock(sys.argv[1])
+with _store.WorkspaceStore(sys.argv[1]) as store:
+    manifest = copy.deepcopy(store.current_generation().manifest)
+    manifest['nodes'] = []
+    manifest['root_order'] = []
+    manifest['provenance_revisions'] = []
+    for _ in range(2):
+        store.publish(manifest)
+    store.collect_garbage(max_objects=1000)
+lock.unlock()
+"""
+        with (
+            xr.set_options(file_cache_maxsize=1),
+            xr.open_dataset(other, engine="h5netcdf") as opened,
+        ):
+            opened.load()
+        subprocess.run(
+            [sys.executable, "-c", code, str(source)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        saved = workspace_arrays.open_workspace_dataset(
+            destination, _current_workspace_payload_path(destination), chunks=None
+        )
+        try:
+            np.testing.assert_array_equal(
+                saved[_persistence_constants.ITOOL_DATA_NAME].values, data.values + 1
+            )
+        finally:
+            saved.close()
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_workspace_source_ownership_follows_promoted_lazy_window(
+    qtbot, tmp_path, manager_context, duplicate
+) -> None:
+    source = tmp_path / "source.itws"
+    data = xr.DataArray(np.arange(400.0).reshape(20, 20), dims=("x", "y"))
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), 0, show=False
+        )
+        manager._workspace_controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        assert manager.offload_to_workspace([child_uid], native=False)
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        assert controller.loading._load_workspace_file(
+            source, replace=False, associate=False, mark_dirty=True, select=False
+        )
+        child_uid = manager._node_for_target(0)._childtool_indices[0]
+        child = manager._node_for_target(child_uid)
+        original = manager.get_imagetool(child_uid).slicer_area._data
+        transformed = xr.DataArray(original.data + 1, dims=original.dims)
+        assert not workspace_arrays.dataarray_source_paths(transformed)
+        child.slicer_area.replace_source_data(transformed, auto_compute=False)
+        assert not manager._provenance_revisions.revision_ids
+
+        promoted = manager.promote_child_imagetool(child_uid)
+        manager.remove_imagetool(0)
+        if duplicate:
+            target = manager.duplicate_imagetool(promoted)
+            manager.remove_imagetool(promoted)
+            assert not manager._node_for_target(target)._workspace_sources
+            lock = workspace_storage._acquire_workspace_document_lock(source)
+            lock.unlock()
+        else:
+            target = promoted
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(source)
+        xr.testing.assert_equal(
+            manager.get_imagetool(target).slicer_area._data, data + 1
+        )
+        manager.remove_imagetool(target)
+        lock = workspace_storage._acquire_workspace_document_lock(source)
+        lock.unlock()

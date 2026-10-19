@@ -14,10 +14,7 @@ from erlab.interactive._figurecomposer._code import (
     _maybe_squeeze_drop_code,
 )
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
-from erlab.interactive._figurecomposer._model._sources import (
-    _public_source_data,
-    _valid_source_variable,
-)
+from erlab.interactive._figurecomposer._model._sources import _valid_source_variable
 from erlab.interactive._figurecomposer._model._state import (
     FigureOperationKind,
     FigureOperationState,
@@ -100,7 +97,7 @@ def _selected_plot_array_data(
     source_name = _primary_source(operation)
     if source_name is None or source_name not in context.source_data:
         return None
-    data = _public_source_data(context.source_data[source_name])
+    data = context.source_data[source_name]
     return data.squeeze(drop=True) if squeeze else data
 
 

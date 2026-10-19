@@ -875,12 +875,17 @@ def _cleanup_orphan_workspace_internal_groups(h5_file) -> None:
 
 
 def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
-    with workspace_arrays._workspace_save_lock(fname):
+    active_store = workspace_store.WorkspaceStore.active(fname)
+    recovery_lock = (
+        active_store.write_lock
+        if active_store is not None
+        else workspace_arrays._workspace_file_lock(fname)
+    )
+    with recovery_lock:
         if not pathlib.Path(fname).exists():
             return
         if not _workspace_path_is_itws(fname):
             return
-        active_store = workspace_store.WorkspaceStore.active(fname)
         read_context = (
             active_store.read_session()
             if active_store is not None

@@ -285,8 +285,11 @@ def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -
         @staticmethod
         def _selected_derivation_step_payload():
             return _details_panel._ProvenanceStepsClipboardPayload(
-                steps=tuple(ReplayStep(operation=operation) for operation in expected),
-                active_name="example_map",
+                spec=erlab.interactive.imagetool.provenance.script(
+                    *expected,
+                    start_label="Apply selected provenance steps",
+                    active_name="example_map",
+                ),
             )
 
     manager._details_panel = _DetailsPanel()
@@ -296,11 +299,15 @@ def test_tutorial_clipboard_requires_the_copied_operations(monkeypatch, qtbot) -
         payload = {
             "type": _details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
             "version": _details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
-            "active_name": "example_map",
-            "steps": [
-                ReplayStep(operation=operation).model_dump(mode="json")
-                for operation in operations
-            ],
+            "provenance_spec": {
+                "kind": "script",
+                "start_label": "Apply selected provenance steps",
+                "active_name": "example_map",
+                "steps": [
+                    ReplayStep(operation=operation).model_dump(mode="json")
+                    for operation in operations
+                ],
+            },
         }
         mime_data = QtCore.QMimeData()
         mime_data.setData(

@@ -28,6 +28,13 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive import _qt_state, _shortcut_sequences
+from erlab.interactive._code_trust import (
+    create_manifest,
+    execution_capability_allows,
+    external_document_trust,
+    issue_execution_capability,
+    new_document_trust,
+)
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._controls_bar import _ControlsBar
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
@@ -36,6 +43,8 @@ from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from erlab.interactive._code_trust._api import _DocumentTrust
+    from erlab.interactive._code_trust._core import CodeTrustManifest
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
@@ -75,6 +84,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         state = kwargs.pop("state", None)
         transpose = bool(kwargs.pop("transpose", False))
         self._provenance_spec: ToolProvenanceSpec | None = None
+        self._provenance_code_trust = new_document_trust()
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
@@ -183,9 +193,47 @@ class BaseImageTool(QtWidgets.QMainWindow):
     def set_provenance_spec(
         self,
         provenance_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+        *,
+        _code_trust: _DocumentTrust | None = None,
     ) -> None:
         """Set canonical replay provenance for the current ImageTool data."""
         self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
+        if _code_trust is not None:
+            self._provenance_code_trust = _code_trust
+
+    def _provenance_code_trust_manifest(self) -> CodeTrustManifest:
+        from erlab.interactive.imagetool._provenance._trust import (
+            provenance_code_trust_entries,
+        )
+
+        return create_manifest(
+            "erlab.imagetool-provenance",
+            1,
+            provenance_code_trust_entries(
+                self.slicer_area.displayed_provenance_spec(),
+                location_prefix="runtime",
+            ),
+        )
+
+    def _provenance_code_authorization(self) -> tuple[CodeTrustManifest, object | None]:
+        """Transfer only the current source recipe's approved executable content."""
+        manifest = self._provenance_code_trust_manifest()
+        authorize = self.slicer_area._stored_code_authorizer
+        if authorize is not None:
+            capability = authorize(manifest.entries)
+        else:
+            _trust, capability = issue_execution_capability(
+                self._provenance_code_trust, manifest.entries
+            )
+        return manifest, capability
+
+    def _provenance_code_trust_for_copy(self) -> _DocumentTrust:
+        manifest, capability = self._provenance_code_authorization()
+        return (
+            new_document_trust()
+            if execution_capability_allows(capability, manifest.entries)
+            else external_document_trust(manifest)
+        )
 
     def _sync_file_load_provenance(self) -> None:
         """Use file-load details as replay provenance when the current data has them."""
@@ -286,7 +334,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(
-            ds[_persistence_constants.ITOOL_DATA_NAME].rename(name),
+            _serialization.restore_legacy_nonuniform_data(
+                ds[_persistence_constants.ITOOL_DATA_NAME].rename(name), saved_version
+            ),
             state=json.loads(ds.attrs["itool_state"]),
             _saved_window_state=ds.attrs.get("itool_window_state"),
             _legacy_window_rect=ds.attrs.get("itool_rect"),
@@ -329,6 +379,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
                     "Ignoring invalid saved ImageTool provenance metadata.",
                 )
         tool.setWindowTitle(ds.attrs["itool_title"])
+        tool._provenance_code_trust = external_document_trust(
+            tool._provenance_code_trust_manifest()
+        )
         return tool
 
     @classmethod
@@ -364,7 +417,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         data, state = self.slicer_area.persistence_data_and_state()
         kwargs["state"] = state
         new_tool = self.__class__(data.copy(deep=False), **kwargs)
-        new_tool.set_provenance_spec(self.provenance_spec)
+        new_tool.set_provenance_spec(
+            self.provenance_spec, _code_trust=self._provenance_code_trust_for_copy()
+        )
         new_tool.setGeometry(self.geometry())
         return new_tool
 
@@ -1000,7 +1055,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _edit_menu_visibility(self) -> None:
         self.action_dict["kspaceConversionAct"].setEnabled(
-            self.slicer_area.data.kspace._interactive_compatible
+            self.slicer_area.displayed_data.kspace._interactive_compatible
         )
 
     @QtCore.Slot()

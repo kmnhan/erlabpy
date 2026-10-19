@@ -6,21 +6,30 @@ Code-generation hints, including implicit imports, do not affect this inventory.
 from __future__ import annotations
 
 import base64
+import functools
 import itertools
 import json
 import typing
 from collections.abc import Mapping
 
-from erlab.interactive._code_trust import create_entry
+from erlab.interactive._code_trust import create_entry, execution_capability_allows
 from erlab.interactive._fit_code_trust import (
+    lmfit_model_default_parameter_expressions,
     lmfit_parameter_expression_entries,
     lmfit_result_code_entry,
 )
 from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
 from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceSpec,
     _direct_replay_source_name,
     parse_tool_provenance_spec,
 )
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from erlab.interactive.imagetool._provenance._graph import LiveInputResolver
+    from erlab.interactive.imagetool._provenance._model import ScriptInput
 
 
 def _model_fit_parameter_expressions(
@@ -69,10 +78,16 @@ def provenance_operation_code_trust_entries(
     location_prefix: str,
 ):
     """Return executable lmfit content stored by one operation."""
+    expressions = _model_fit_parameter_expressions(operation)
     entries = lmfit_parameter_expression_entries(
-        _model_fit_parameter_expressions(operation),
+        expressions,
         feature="erlab.provenance.model-fit-parameter-expression",
         location_prefix=f"{location_prefix}/parameters",
+        safe_expressions=(
+            lmfit_model_default_parameter_expressions(operation._model())
+            if expressions
+            else None
+        ),
     )
     payload = _opaque_fit_dataset_payload(operation)
     if payload is None:
@@ -93,6 +108,114 @@ def provenance_operation_requires_code_trust(operation: typing.Any) -> bool:
             location_prefix="operation",
         )
     )
+
+
+def provenance_code_payload_normalizer(
+    *, authorization: object | None
+) -> Callable[[typing.Any], typing.Any]:
+    """Normalize approved fit metadata with one cache for all document owners."""
+    if authorization is None:
+        return lambda value: value
+    import numpy as np
+
+    import erlab.interactive.utils
+
+    @functools.cache
+    def normalize_fit(encoded: str) -> str:
+        blob = base64.b64decode(encoded.encode("ascii"), validate=True)
+        entry = lmfit_result_code_entry(
+            blob,
+            feature="erlab.provenance.lmfit-result",
+            location="fit-result",
+        )
+        if entry is None or not execution_capability_allows(authorization, (entry,)):
+            return encoded
+        original = np.frombuffer(blob, dtype=np.uint8)
+        try:
+            normalized = erlab.interactive.utils._normalize_fit_dataset_blob(original)
+        except (OSError, ValueError, TypeError, KeyError):
+            # Opaque content can be approved and retained without being replayable.
+            return encoded
+        return (
+            encoded
+            if np.array_equal(original, normalized)
+            else base64.b64encode(normalized.tobytes()).decode("ascii")
+        )
+
+    def normalize(item: typing.Any) -> typing.Any:
+        if isinstance(item, dict):
+            return {
+                key: normalize_fit(part)
+                if key == _FIT_DATASET_MARKER
+                else normalize(part)
+                for key, part in item.items()
+            }
+        if isinstance(item, list):
+            return [normalize(part) for part in item]
+        return item
+
+    return normalize
+
+
+def provenance_spec_normalizer(
+    *, authorization: object | None
+) -> Callable[[ToolProvenanceSpec], ToolProvenanceSpec]:
+    """Normalize approved fit metadata in typed provenance values."""
+    normalize_payload = provenance_code_payload_normalizer(authorization=authorization)
+
+    def normalize(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+        encoded = spec.model_dump(mode="json")
+        normalized = normalize_payload(encoded)
+        return (
+            spec
+            if normalized == encoded
+            else ToolProvenanceSpec.model_validate(normalized)
+        )
+
+    return normalize
+
+
+def remap_script_input_provenance(
+    script_input: ScriptInput,
+    remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+    *,
+    revision_ids: Mapping[str, str] | None = None,
+    retire_changed_revisions: bool = False,
+) -> ScriptInput:
+    """Remap one input and optionally retire changed captures outside a store."""
+    updates: dict[str, typing.Any] = {}
+    for name, spec in (
+        ("source_spec", script_input.parsed_source_spec()),
+        ("provenance_spec", script_input.parsed_provenance_spec()),
+    ):
+        remapped = None if spec is None else remap(spec)
+        if remapped != spec:
+            updates[name] = (
+                None if remapped is None else remapped.model_dump(mode="json")
+            )
+    if revision_ids is not None:
+        for name in ("revision_id", "resolved_revision_id"):
+            current = getattr(script_input, name)
+            if (
+                current is not None
+                and current in revision_ids
+                and revision_ids[current] != current
+            ):
+                updates[name] = revision_ids[current]
+    if retire_changed_revisions:
+        changed = {"source_spec", "provenance_spec"} & updates.keys()
+        for name, required in (
+            ("revision_id", "provenance_spec" in changed),
+            ("resolved_revision_id", bool(changed)),
+        ):
+            current = getattr(script_input, name)
+            if (
+                required
+                and current is not None
+                and (revision_ids is None or current not in revision_ids)
+            ):
+                updates[name] = None
+    return script_input.model_copy(update=updates) if updates else script_input
 
 
 def provenance_replay_node_code_trust_entries(
@@ -130,11 +253,26 @@ def provenance_replay_graph_code_trust_entries(
     graph: typing.Any,
     *,
     location_prefix: str,
+    include_inputs: bool | Callable[[ScriptInput], bool] = True,
 ):
     """Return entries attached to all executable nodes in a replay graph."""
+    inherited_keys: set[str] = set()
+    if include_inputs is not True:
+        nodes_by_key = {node.key: node for node in graph.nodes}
+        pending = [
+            boundary.output_key
+            for boundary in graph.input_boundaries
+            if not callable(include_inputs) or not include_inputs(boundary.original)
+        ]
+        while pending:
+            key = pending.pop()
+            if key not in inherited_keys:
+                inherited_keys.add(key)
+                pending.extend(nodes_by_key[key].parents)
     return tuple(
         entry
         for index, node in enumerate(graph.nodes)
+        if node.key not in inherited_keys
         for entry in provenance_replay_node_code_trust_entries(
             node,
             location_prefix=f"{location_prefix}/nodes/{index}",
@@ -146,6 +284,7 @@ def _stored_spec_code_trust_entries(
     spec: typing.Any,
     *,
     location_prefix: str,
+    include_inputs: bool | Callable[[ScriptInput], bool] = True,
 ):
     """Conservatively inventory stored code when a graph cannot compile."""
     parsed = parse_tool_provenance_spec(spec)
@@ -154,7 +293,7 @@ def _stored_spec_code_trust_entries(
     context = {
         "active_name": parsed.active_name if parsed.kind == "script" else "derived",
         "binding_names": (
-            sorted({item.name for item in parsed.script_inputs})
+            sorted({item.name for item in parsed.replay_inputs})
             if parsed.kind == "script"
             else ["data", "derived", "parent_data"]
         ),
@@ -192,11 +331,25 @@ def _stored_spec_code_trust_entries(
                     context=context,
                 )
             )
-    for index, script_input in enumerate(parsed.script_inputs):
+    for index, script_input in enumerate(parsed.replay_inputs):
+        if not (
+            include_inputs(script_input) if callable(include_inputs) else include_inputs
+        ):
+            continue
         entries.extend(
             _stored_spec_code_trust_entries(
                 script_input.parsed_provenance_spec(),
                 location_prefix=f"{location_prefix}/inputs/{index}:{script_input.name}",
+                include_inputs=include_inputs,
+            )
+        )
+        entries.extend(
+            _stored_spec_code_trust_entries(
+                script_input.parsed_source_spec(),
+                location_prefix=(
+                    f"{location_prefix}/inputs/{index}:{script_input.name}/source"
+                ),
+                include_inputs=include_inputs,
             )
         )
     return tuple(entries)
@@ -210,7 +363,7 @@ def script_replay_source_input_names(spec: typing.Any) -> tuple[str, ...]:
     )
 
     parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script" or parsed.script_inputs:
+    if parsed is None or parsed.kind != "script" or parsed.replay_inputs:
         return ()
 
     candidates = ["data", "derived", "parent_data"]
@@ -237,6 +390,8 @@ def provenance_code_trust_entries(
     *,
     location_prefix: str,
     external_input_names: set[str] | None = None,
+    live_input_resolver: LiveInputResolver | None = None,
+    include_inputs: bool | Callable[[ScriptInput], bool] = True,
 ):
     """Return stored code that can reach a provenance execution boundary."""
     from erlab.interactive.imagetool._provenance._graph import (
@@ -257,16 +412,19 @@ def provenance_code_trust_entries(
             parsed,
             trusted_user_code=True,
             external_inputs=external_inputs or None,
+            live_input_resolver=live_input_resolver,
             allow_unresolved_inputs=True,
         )
     except (ReplayGraphError, TypeError, ValueError):
         return _stored_spec_code_trust_entries(
             parsed,
             location_prefix=location_prefix,
+            include_inputs=include_inputs,
         )
     return provenance_replay_graph_code_trust_entries(
         graph,
         location_prefix=location_prefix,
+        include_inputs=include_inputs,
     )
 
 

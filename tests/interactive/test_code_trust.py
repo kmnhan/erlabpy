@@ -86,6 +86,22 @@ def _trust_after_save(
     )
 
 
+def test_composing_the_same_signed_document_preserves_approval_after_relocation() -> (
+    None
+):
+    signed = _signed_trust()
+    combined = merge_document_trust(signed, signed, replace=False)
+    manifest = CodeTrustManifest(
+        "erlab.workspace", 1, (_entry(), _entry(location="window/1"))
+    )
+    relocated = code_trust.bind_document_trust_manifest(combined, manifest)
+
+    assert document_trust_is_trusted(relocated)
+    _, capability = code_trust.issue_execution_capability(relocated, manifest.entries)
+    assert code_trust.execution_capability_allows(capability, manifest.entries)
+    assert merge_document_trust(signed, signed, replace=True) == signed
+
+
 def test_code_trust_package_exposes_only_the_functional_facade() -> None:
     for implementation_type in (
         "CodeTrustDecision",
@@ -295,7 +311,9 @@ def test_code_trust_lifecycle_is_centralized_behind_document_operations() -> Non
     signed = _signed_trust()
 
     assert merge_document_trust(local, safe_external, replace=False) == local
-    assert merge_document_trust(signed, signed, replace=False) == signed
+    assert document_trust_has_trusted_lineage(
+        merge_document_trust(signed, signed, replace=False)
+    )
     assert document_trust_is_trusted(safe_external)
     assert not document_trust_has_trusted_lineage(safe_external)
     assert not code_trust.authorize_document_execution(
@@ -896,7 +914,10 @@ def test_cancelled_local_edit_does_not_change_partial_trust() -> None:
     assert not code_trust.authorize_document_execution(cancelled, (candidate,))[1]
 
 
-def test_local_edit_commit_adopts_transaction_derived_identities() -> None:
+@pytest.mark.parametrize("adopt_derived_entries", [False, True])
+def test_local_edit_commit_adopts_transaction_derived_identities(
+    adopt_derived_entries,
+) -> None:
     external_entry = _entry(code="external()", location="external")
     edited_entry = _entry(code="edited()", location="edited")
     derived_entry = _entry(code="derived()", location="derived")
@@ -915,12 +936,15 @@ def test_local_edit_commit_adopts_transaction_derived_identities() -> None:
         (external_entry,),
         (external_entry, edited_entry, derived_entry),
         edited_entries=(edited_entry,),
+        adopt_derived_entries=adopt_derived_entries,
     )
 
     assert code_trust.document_trust_needs_review(mixed)
-    assert code_trust.authorize_document_execution(
-        mixed, (edited_entry, derived_entry)
-    )[1]
+    assert code_trust.authorize_document_execution(mixed, (edited_entry,))[1]
+    assert (
+        code_trust.authorize_document_execution(mixed, (derived_entry,))[1]
+        == adopt_derived_entries
+    )
     assert not code_trust.authorize_document_execution(mixed, (external_entry,))[1]
 
 

@@ -2,6 +2,7 @@ import builtins
 import contextlib
 import enum
 import importlib
+import io
 import json
 import logging
 import sys
@@ -73,6 +74,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemModel,
 )
 from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
+from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -1940,6 +1942,164 @@ def test_empty_fit_dataset_blob_roundtrip_has_no_private_coord_data() -> None:
     xr.testing.assert_identical(restored, empty)
 
 
+def _fit_dataset_with_hint(kind: str = "builtin") -> xr.Dataset:
+    slope, intercept = "slope", "intercept"
+    if kind == "callable":
+
+        def custom_line(x, slope=1.25, intercept=0.2):
+            return slope * x + intercept
+
+        model = lmfit.Model(custom_line, prefix="line_")
+    elif kind.startswith("erlab"):
+        model = erlab.analysis.fit.models.PolynomialModel(degree=1, prefix="line_")
+        slope, intercept = "c1", "c0"
+    else:
+        model = lmfit.models.LinearModel(prefix="line_")
+    model.set_param_hint(slope, value=1.25, min=0.2, max=3.0)
+    if kind.endswith("expression"):
+        model.set_param_hint(intercept, expr=f"2 * line_{slope}")
+    params = model.make_params(**{f"line_{intercept}": 0.2})
+    angles = np.linspace(-1.0, 1.0, 11)
+    signal = xr.DataArray(
+        model.eval(params=params, x=angles),
+        dims="alpha",
+        coords={"alpha": angles},
+        name="edge_center",
+    ).assign_coords({"sample temperature": 18.0})
+    return signal.xlm.modelfit("alpha", model=model, params=params, guess=False)
+
+
+@pytest.mark.parametrize("released", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["builtin", "erlab", "expression", "erlab-expression", "callable"]
+)
+def test_fit_dataset_blob_preserves_model_data_and_code_boundary(kind, released):
+    import xarray_lmfit
+
+    from erlab.interactive._fit_code_trust import lmfit_result_code_entry
+
+    dataset = _fit_dataset_with_hint(kind)
+    original = dataset.modelfit_results.item()
+    if released:
+        buffer = io.BytesIO()
+        xarray_lmfit.save_fit(dataset, buffer, engine="h5netcdf", invalid_netcdf=True)
+        blob = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
+        external = xarray_lmfit.load_fit(io.BytesIO(blob.tobytes()), engine="h5netcdf")
+        np.testing.assert_allclose(
+            external.modelfit_results.item().eval(), original.eval()
+        )
+    else:
+        blob = erlab.interactive.utils._serialize_fit_dataset_blob(dataset)
+
+    for _roundtrip in range(2):
+        entry = lmfit_result_code_entry(
+            blob, feature="test.fit-result", location="fit-result"
+        )
+        requires_code = (
+            kind.endswith("expression")
+            or kind == "callable"
+            or (released and kind.startswith("erlab") and _roundtrip == 0)
+        )
+        assert (entry is not None) is requires_code
+        restored = erlab.interactive.utils._deserialize_fit_dataset_blob(blob)
+        xr.testing.assert_identical(
+            restored.drop_vars("modelfit_results"),
+            dataset.drop_vars("modelfit_results"),
+        )
+        result = restored.modelfit_results.item()
+        np.testing.assert_allclose(result.eval(), original.eval())
+        assert result.model.param_hints == original.model.param_hints
+        assert result.params.keys() == original.params.keys()
+        for name, parameter in original.params.items():
+            actual = result.params[name]
+            assert actual.value == pytest.approx(parameter.value)
+            assert (actual.min, actual.max, actual.expr, actual.vary) == (
+                parameter.min,
+                parameter.max,
+                parameter.expr,
+                parameter.vary,
+            )
+        normalized = erlab.interactive.utils._normalize_fit_dataset_blob(blob)
+        if kind == "callable":
+            np.testing.assert_array_equal(normalized, blob)
+        normalized_entry = lmfit_result_code_entry(
+            normalized, feature="test.fit-result", location="fit-result"
+        )
+        assert (normalized_entry is not None) is (
+            kind.endswith("expression") or kind == "callable"
+        )
+        if kind == "expression":
+            assert normalized_entry.execution_identity() == entry.execution_identity()
+        normalized_dataset = erlab.interactive.utils._deserialize_fit_dataset_blob(
+            normalized
+        )
+        xr.testing.assert_identical(
+            normalized_dataset.drop_vars("modelfit_results"),
+            dataset.drop_vars("modelfit_results"),
+        )
+        blob = erlab.interactive.utils._serialize_fit_dataset_blob(restored)
+
+
+@pytest.mark.parametrize("consumer", ["figure", "provenance"])
+def test_builtin_fit_result_consumers_need_no_code_approval(qtbot, consumer):
+    from erlab.interactive._figurecomposer import (
+        FigureComposerTool,
+        FigureOperationState,
+        FigureSourceState,
+        _rendering,
+    )
+    from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+    from erlab.interactive.imagetool._provenance._model import (
+        parse_tool_provenance_spec,
+    )
+    from erlab.interactive.imagetool._provenance._operations import (
+        CorrectWithEdgeOperation,
+    )
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_requires_code_trust,
+    )
+
+    dataset = _fit_dataset_with_hint()
+    if consumer == "figure":
+        snapshot = FigureFitSourceSnapshot.from_dataset(dataset)
+        tool = FigureComposerTool.from_fit_sources(
+            {"edge": snapshot},
+            sources=(FigureSourceState(name="edge", kind="fit"),),
+            operations=(
+                FigureOperationState.fit_plot(source="edge").model_copy(
+                    update={"fit_numpoints": 41, "show_data": False}
+                ),
+            ),
+        )
+        qtbot.addWidget(tool)
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+        qtbot.addWidget(restored)
+        assert restored._current_code_trust_manifest().entries == ()
+        assert restored._code_trust_banner.isHidden()
+        _rendering._render_into_figure(restored, restored.figure, sync_visible=False)
+        assert not restored._operation_render_errors
+        line = restored.figure.axes[0].lines[0]
+        assert len(line.get_xdata()) == 41
+        np.testing.assert_allclose(
+            line.get_ydata(),
+            dataset.modelfit_results.item().eval(x=line.get_xdata()),
+        )
+    else:
+        spec = full_data(CorrectWithEdgeOperation(edge_fit=dataset, shift_coords=False))
+        restored = parse_tool_provenance_spec(spec.model_dump(mode="json"))
+        assert restored is not None
+        assert not provenance_requires_code_trust(restored)
+        image = xr.DataArray(
+            np.tile(np.arange(13.0), (11, 1)),
+            dims=("alpha", "eV"),
+            coords={"alpha": dataset.alpha, "eV": np.linspace(-3.0, 3.0, 13)},
+        )
+        xr.testing.assert_identical(
+            restored.apply(image),
+            erlab.analysis.gold.correct_with_edge(image, dataset, shift_coords=False),
+        )
+
+
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("prefix", ["", "peak_"])
 def test_fit_dataset_blob_restores_multipeak_components(nested, prefix) -> None:
@@ -1995,50 +2155,6 @@ def test_fit_dataset_blob_restores_multipeak_components(nested, prefix) -> None:
             assert loaded.param_hints == original.param_hints
             if isinstance(original, erlab.analysis.fit.models.MultiPeakModel):
                 assert type(loaded) is erlab.analysis.fit.models.MultiPeakModel
-
-
-def test_fit_dataset_blob_skips_missing_results_and_other_model_subclasses(
-    monkeypatch,
-) -> None:
-    import xarray_lmfit
-
-    class CustomModel(lmfit.Model):
-        pass
-
-    multipeak = erlab.analysis.fit.models.MultiPeakModel(
-        fd=False, convolve=False, background="none"
-    )
-    custom = CustomModel(multipeak.func)
-    result = lmfit.model.ModelResult(custom, custom.make_params())
-    generic_result = lmfit.model.ModelResult(
-        lmfit.Model(multipeak.func), multipeak.make_params()
-    )
-    recognized_model = lmfit.Model(multipeak.func, name="saved", prefix="saved_")
-    recognized_result = lmfit.model.ModelResult(
-        recognized_model, recognized_model.make_params()
-    )
-    original_state = recognized_model.__dict__.copy()
-    dataset = xr.Dataset(
-        {
-            "modelfit_results": xr.DataArray(
-                [[None, np.nan], ["missing", result]], dims=("a", "b")
-            ),
-            "unrelated": xr.DataArray(generic_result),
-            "other_modelfit_results": xr.DataArray(recognized_result),
-        }
-    )
-    monkeypatch.setattr(xarray_lmfit, "load_fit", lambda *args, **kwargs: dataset)
-
-    restored = erlab.interactive.utils._deserialize_fit_dataset_blob([])
-
-    assert restored.modelfit_results.values[0, 0] is None
-    assert np.isnan(restored.modelfit_results.values[0, 1])
-    assert restored.modelfit_results.values[1, 0] == "missing"
-    assert type(restored.modelfit_results.values[1, 1].model) is CustomModel
-    assert type(restored.unrelated.item().model) is lmfit.Model
-    assert restored.other_modelfit_results.item().model is recognized_model
-    assert type(recognized_model) is erlab.analysis.fit.models.MultiPeakModel
-    assert recognized_model.__dict__ == original_state
 
 
 def test_lmfit_erlab_callable_warning_filter_reemits_unrelated_warning() -> None:
@@ -5203,7 +5319,7 @@ def test_tool_window_false_update_discards_pending_bindings(qtbot) -> None:
     assert not tool._apply_inputs({"data": data + 1.0}, (refreshed_binding,))
     assert tool.source_state == "stale"
     assert tool.script_inputs == (old_binding,)
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
     assert tool._source_refresh_deferred is False
 
 
@@ -5233,7 +5349,7 @@ def test_tool_window_false_update_clears_reentrant_rerun(qtbot) -> None:
     assert tool.update_calls == 1
     assert tool.source_state == "stale"
     assert tool._source_refresh_rerun_requested is False
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
 
 
 def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
@@ -5261,7 +5377,7 @@ def test_tool_window_abort_discards_deferred_bindings_without_data_signal(
 
     assert tool.source_state == "stale"
     assert tool.script_inputs == (old_binding,)
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
     assert tool._source_refresh_deferred is False
     assert tool.provenance_revision == revision
     assert data_changes == []
@@ -5477,7 +5593,7 @@ def test_tool_window_failed_named_input_update_discards_pending_bindings(qtbot) 
         )
 
     assert tool.script_inputs == old_bindings
-    assert tool._pending_script_inputs is None
+    assert tool._input_state().pending is None
 
 
 def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> None:
@@ -5515,7 +5631,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
         {"data": data, "weights": data},
         refreshed_bindings,
     )
-    pending_bindings = tool._pending_script_inputs
+    pending_bindings = tool._input_state().pending
     invalid_contracts = (
         (
             (old_bindings[0].model_copy(update={"name": "renamed"}), old_bindings[1]),
@@ -5549,7 +5665,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
                 auto_update=True,
             )
         assert tool.script_inputs == old_bindings
-        assert tool._pending_script_inputs == pending_bindings
+        assert tool._input_state().pending == pending_bindings
 
     invalid_refresh = (
         refreshed_bindings[0],
@@ -5560,7 +5676,7 @@ def test_tool_window_rebinding_discards_deferred_named_input_bindings(qtbot) -> 
             {"data": data, "weights": data},
             invalid_refresh,
         )
-    assert tool._pending_script_inputs == pending_bindings
+    assert tool._input_state().pending == pending_bindings
 
     tool.set_script_inputs(
         replacement_bindings,
@@ -5625,9 +5741,11 @@ def test_tool_window_dataset_migrates_legacy_input_metadata(qtbot) -> None:
     assert fallback_restored.script_inputs[0].parsed_source_spec() == source_spec
 
 
+@pytest.mark.parametrize("attribute_format", ["unary", "named"])
 def test_tool_window_legacy_input_fallback_replays_source_transform_once(
     qtbot,
     tmp_path,
+    attribute_format,
 ) -> None:
     data = xr.DataArray(
         np.arange(6.0),
@@ -5657,16 +5775,37 @@ def test_tool_window_legacy_input_fallback_replays_source_transform_once(
     assert complete_fallback is not None
     expected = source_spec.apply(data)
     saved = _PersistentTool(expected).to_dataset()
-    saved.attrs["tool_source_spec"] = json.dumps(source_spec.model_dump(mode="json"))
-    saved.attrs["tool_input_provenance_spec"] = json.dumps(
-        complete_fallback.model_dump(mode="json")
-    )
+    if attribute_format == "unary":
+        saved.attrs["tool_source_spec"] = json.dumps(
+            source_spec.model_dump(mode="json")
+        )
+        saved.attrs["tool_input_provenance_spec"] = json.dumps(
+            complete_fallback.model_dump(mode="json")
+        )
+    else:
+        saved.attrs["tool_script_inputs"] = json.dumps(
+            [
+                {
+                    "name": "data",
+                    "source_spec": source_spec.model_dump(mode="json"),
+                    "provenance_spec": complete_fallback.model_dump(mode="json"),
+                }
+            ]
+        )
+        saved.attrs["tool_primary_input"] = "data"
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
     qtbot.addWidget(restored)
     resolved, _refreshed = rebuild_script_inputs(restored.script_inputs)
 
     xr.testing.assert_identical(resolved["data"], expected)
+    assert restored.script_inputs[0].input_version == 2
+    assert restored.script_inputs[0].parsed_provenance_spec() == complete_fallback
+    assert restored.script_inputs[0].fallback_role == "resolved"
+    roundtrip_inputs, _ = restored._saved_script_input_metadata(
+        restored.to_dataset().attrs
+    )
+    assert roundtrip_inputs == restored.script_inputs
 
 
 def test_tool_window_saved_reference_requires_matching_resolved_data(qtbot) -> None:
@@ -6065,6 +6204,639 @@ def test_tool_window_current_manifest_includes_input_expressions(qtbot) -> None:
     assert manifest.entries[0].location == (
         "tool-inputs/0:data/provenance/operations/0/parameters/c1"
     )
+
+
+def _released_tool_fit_input(kind: str):
+    import base64
+
+    import xarray_lmfit
+
+    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
+    from erlab.interactive.imagetool._provenance._operations import (
+        CorrectWithEdgeOperation,
+    )
+
+    fitted = _fit_dataset_with_hint(
+        "callable" if kind == "callable" else f"erlab-{kind}"
+    )
+    buffer = io.BytesIO()
+    xarray_lmfit.save_fit(fitted, buffer, engine="h5netcdf", invalid_netcdf=True)
+    operation = CorrectWithEdgeOperation(
+        edge_fit={_FIT_DATASET_MARKER: base64.b64encode(buffer.getvalue()).decode()},
+        shift_coords=False,
+    )
+    energy = np.linspace(-3.0, 3.0, 31)
+    data = xr.DataArray(
+        np.exp(-((energy[None, :] - fitted.alpha.values[:, None]) ** 2)),
+        dims=("alpha", "eV"),
+        coords={"alpha": fitted.alpha, "eV": energy},
+    )
+    expected = erlab.analysis.gold.correct_with_edge(data, fitted, shift_coords=False)
+    provenance = full_data(operation).model_dump(mode="json")
+    return (
+        data,
+        expected,
+        ScriptInput(name="data", source_spec=provenance, provenance_spec=provenance),
+    )
+
+
+@pytest.mark.parametrize("kind", ["builtin", "expression", "callable"])
+@pytest.mark.parametrize("signed", [False, True])
+def test_standalone_tool_adopts_released_fit_provenance(
+    qtbot, tmp_path, monkeypatch, kind, signed
+) -> None:
+    from erlab.analysis.fit import _serialization as fit_serialization
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive._code_trust._application import (
+        reset_saved_code_trust,
+        save_document_trust,
+    )
+
+    data, expected, saved_input = _released_tool_fit_input(kind)
+    original = _PersistentTool(expected)
+    qtbot.addWidget(original)
+    released = original.to_dataset()
+    released.attrs.update(original._saved_script_input_attrs((saved_input,), "data"))
+    manifest = original._code_trust_manifest_from_saved_metadata(
+        original.tool_status, released.attrs
+    )
+    assert manifest is not None
+    assert manifest.entries
+    if signed:
+        _trust, stored = save_document_trust(new_document_trust(), manifest)
+        assert stored
+    path = tmp_path / "released-tool.h5"
+    released.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
+
+    loads: list[str] = []
+    load_result = fit_serialization.loads_result
+
+    def tracked_load(serialized):
+        loads.append(serialized)
+        return load_result(serialized)
+
+    monkeypatch.setattr(fit_serialization, "loads_result", tracked_load)
+    restored = _PersistentTool.from_file(path)
+    qtbot.addWidget(restored)
+    assert document_trust_is_trusted(restored._current_document_trust()) is signed
+    if not signed:
+        assert restored.script_inputs == (saved_input,)
+        restored.to_file(tmp_path / "unapproved-tool.h5")
+        assert restored.script_inputs == (saved_input,)
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "confirm_code_trust",
+            lambda *_args, **_kwargs: False,
+        )
+        restored._review_code_trust()
+        assert restored.script_inputs == (saved_input,)
+        assert not document_trust_is_trusted(restored._current_document_trust())
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "confirm_code_trust",
+            lambda *_args, **_kwargs: True,
+        )
+        restored._review_code_trust()
+    assert document_trust_is_trusted(restored._current_document_trust())
+    assert loads == []
+    normalized = restored.script_inputs[0]
+    assert (normalized != saved_input) is (kind != "callable")
+    assert normalized.source_spec == normalized.provenance_spec
+    current = restored._current_code_trust_manifest()
+    assert bool(current is not None and current.entries) is (kind != "builtin")
+    if kind == "expression":
+        assert current is not None
+        assert all("serialized-callable" not in entry.code for entry in current.entries)
+        assert any("2 * line_c1" in entry.code for entry in current.entries)
+
+    spec = normalized.parsed_provenance_spec()
+    assert spec is not None
+    entries = tuple(
+        restored._source_spec_code_trust_entries(spec, location_prefix="use")
+    )
+    capability = restored._issue_code_execution_capability(entries)
+    xr.testing.assert_identical(spec.apply(data, authorization=capability), expected)
+    assert loads
+    saved = tmp_path / "normalized-tool.h5"
+    restored.to_file(saved)
+    signed_copy = _PersistentTool.from_file(saved)
+    qtbot.addWidget(signed_copy)
+    assert document_trust_is_trusted(signed_copy._current_document_trust())
+    assert signed_copy.script_inputs == (normalized,)
+    reset_saved_code_trust(domain=erlab.interactive.utils._TOOL_INPUT_CODE_TRUST_DOMAIN)
+    reopened = _PersistentTool.from_file(saved)
+    qtbot.addWidget(reopened)
+    assert reopened.script_inputs == (normalized,)
+    assert document_trust_is_trusted(reopened._current_document_trust()) is (
+        kind == "builtin"
+    )
+    xr.testing.assert_identical(reopened.tool_data, expected)
+
+
+def test_standalone_tool_normalizes_approved_provenance_before_save(qtbot) -> None:
+    _data, expected, saved_input = _released_tool_fit_input("builtin")
+    tool = _PersistentTool(expected)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((saved_input,), primary_input="data")
+
+    saved = tool.to_dataset()
+
+    assert tool.script_inputs != (saved_input,)
+    assert tool._current_code_trust_manifest() is None
+    inputs, primary = tool._saved_script_input_metadata(saved.attrs)
+    assert primary == "data"
+    assert inputs == tool.script_inputs
+    xr.testing.assert_identical(tool.tool_data, expected)
+
+
+@pytest.mark.parametrize("auto_update", [False, True])
+def test_standalone_fit_child_save_refresh_save_preserves_trust(
+    qtbot, tmp_path, auto_update
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive._code_trust._core import CodeTrustReason
+    from erlab.interactive._fit1d import Fit1DTool
+    from erlab.interactive.imagetool._provenance._operations import NormalizeOperation
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_code_trust_entries,
+    )
+
+    _data, corrected, released_input = _released_tool_fit_input("builtin")
+    parent = ImageTool(corrected)
+    qtbot.addWidget(parent)
+    parent.set_provenance_spec(released_input.parsed_provenance_spec())
+    source = selection(IselOperation(kwargs={"alpha": 5}))
+    model = erlab.analysis.fit.models.PolynomialModel(1)
+    model.set_param_hint("c0", expr="2 * c1")
+    child = Fit1DTool(source.apply(corrected), model, model.make_params(c1=0.1))
+    sibling = _PersistentTool(source.apply(corrected))
+    for tool in (child, sibling):
+        qtbot.addWidget(tool)
+        tool.set_script_inputs(
+            (ScriptInput(name="data", source_spec=source.model_dump(mode="json")),),
+            primary_input="data",
+            auto_update=auto_update,
+        )
+        parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
+    child.refit_on_source_update_check.setChecked(False)
+    saved = tmp_path / "fit-child.h5"
+
+    child.to_file(saved)
+
+    assert child._current_document_trust().reason == CodeTrustReason.SIGNATURE
+    assert not provenance_code_trust_entries(
+        parent.provenance_spec, location_prefix="parent"
+    )
+    assert child.script_inputs[0].parsed_provenance_spec() == parent.provenance_spec
+    operation = NormalizeOperation(dims=("eV",), mode="area")
+    normalized = operation.apply(corrected)
+    parent.set_provenance_spec(parent.provenance_spec.append_operations(operation))
+    parent.slicer_area.replace_source_data(normalized)
+    if not auto_update:
+        assert child.source_state == "stale"
+        assert child.reload_source_data()
+        assert sibling.reload_source_data()
+    assert child.source_state == "fresh"
+    assert sibling.source_state == "fresh"
+    xr.testing.assert_identical(child.tool_data, source.apply(normalized))
+    xr.testing.assert_identical(sibling.tool_data, source.apply(normalized))
+    assert child.script_inputs == sibling.script_inputs
+    assert child._params["c0"].expr == "2 * c1"
+
+    child.to_file(saved)
+
+    assert child._current_document_trust().reason == CodeTrustReason.SIGNATURE
+    entries = child._current_code_trust_manifest().entries
+    assert entries
+    assert all("serialized-callable" not in entry.code for entry in entries)
+    reopened = Fit1DTool.from_file(saved)
+    qtbot.addWidget(reopened)
+    assert document_trust_is_trusted(reopened._current_document_trust())
+    assert reopened._params["c0"].expr == "2 * c1"
+    xr.testing.assert_identical(reopened.tool_data, source.apply(normalized))
+
+
+@pytest.mark.parametrize("nonuniform", [False, True])
+def test_standalone_profile_child_replays_source_selection_once(
+    qtbot, tmp_path, nonuniform
+) -> None:
+    from erlab.interactive._fit1d import Fit1DTool
+
+    data = xr.DataArray(
+        np.arange(155.0).reshape(31, 5),
+        dims=("eV", "alpha"),
+        coords={
+            "eV": np.linspace(-1.0, 1.0, 31),
+            "alpha": [0.0, 1.0, 3.0, 6.0, 10.0] if nonuniform else np.arange(5.0),
+        },
+        name="spectrum",
+    )
+    path = tmp_path / "spectrum.nc"
+    data.to_netcdf(path)
+    parent = ImageTool(
+        xr.load_dataarray(path),
+        file_path=path,
+        load_func=(xr.load_dataarray, {}, FileDataSelection(kind="dataarray")),
+    )
+    qtbot.addWidget(parent)
+    parent.slicer_area.profiles[0].open_in_ftool()
+    child = parent.slicer_area._associated_tools_list[-1]
+    assert isinstance(child, Fit1DTool)
+    qtbot.addWidget(child)
+    child.refit_on_source_update_check.setChecked(False)
+    expected = child.tool_data.copy(deep=True)
+    assert expected.ndim == 1
+
+    for refresh_count in range(3):
+        if refresh_count:
+            assert child.reload_source_data()
+        captured = child.script_inputs[0]
+        assert captured.input_version == 2
+        assert captured.fallback_role == "raw"
+        assert captured.parsed_provenance_spec() == parent.provenance_spec
+        resolved, _refreshed = rebuild_script_inputs(child.script_inputs)
+        xr.testing.assert_identical(resolved["data"], expected)
+        exported = script(
+            start_label="Use selected input",
+            active_name="data",
+            primary_input="data",
+            script_inputs=child.script_inputs,
+        )
+        code = exported.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"xr": xr, "erlab": erlab})
+        xr.testing.assert_identical(namespace["data"], expected)
+        xr.testing.assert_identical(child.tool_data, expected)
+
+
+def _saved_imagetool_with_fit_provenance(qtbot, tmp_path, kind):
+    _data, corrected, released_input = _released_tool_fit_input(kind)
+    original = ImageTool(corrected)
+    qtbot.addWidget(original)
+    original.set_provenance_spec(released_input.parsed_provenance_spec())
+    parent_file = tmp_path / "external-imagetool.h5"
+    original.to_file(parent_file)
+    return parent_file
+
+
+@pytest.mark.parametrize("kind", ["builtin", "expression", "callable"])
+def test_external_imagetool_fit_child_requires_provenance_approval(
+    qtbot, tmp_path, monkeypatch, kind
+) -> None:
+    from erlab.analysis.fit import _serialization as fit_serialization
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive._code_trust._application import reset_saved_code_trust
+    from erlab.interactive._fit1d import Fit1DTool
+
+    parent_file = _saved_imagetool_with_fit_provenance(qtbot, tmp_path, kind)
+    unapproved_file = tmp_path / "unapproved-child.h5"
+    approved_file = tmp_path / "approved-child.h5"
+    reset_saved_code_trust(domain=Fit1DTool._CODE_TRUST_DOMAIN)
+
+    def unexpected_decode(*_args, **_kwargs):
+        pytest.fail("Unapproved inherited fit provenance must stay opaque")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fit_serialization, "normalize_result", unexpected_decode)
+        patch.setattr(fit_serialization, "loads_result", unexpected_decode)
+        patch.setattr(lmfit.jsonutils.dill, "loads", unexpected_decode)
+        patch.setattr(
+            erlab.interactive.utils,
+            "confirm_code_trust",
+            lambda *_args, **_kwargs: False,
+        )
+        parent = ImageTool.from_file(parent_file)
+        qtbot.addWidget(parent)
+        parent.slicer_area.profiles[0].open_in_ftool()
+        child = parent.slicer_area._associated_tools_list[-1]
+        assert isinstance(child, Fit1DTool)
+        qtbot.addWidget(child)
+        child.refit_on_source_update_check.setChecked(False)
+        expected = child.tool_data.copy(deep=True)
+        inherited = child.script_inputs
+        assert tuple(child._script_inputs_code_trust_entries(inherited))
+        assert not document_trust_is_trusted(child._current_document_trust())
+        assert child.reload_source_data()
+        assert child.script_inputs == inherited
+        assert not document_trust_is_trusted(child._current_document_trust())
+
+        child.to_file(unapproved_file)
+        child._review_code_trust()
+
+        assert child.script_inputs == inherited
+        assert not document_trust_is_trusted(child._current_document_trust())
+        reopened = Fit1DTool.from_file(unapproved_file)
+        qtbot.addWidget(reopened)
+        reopened._flush_restore_work()
+        assert reopened.script_inputs == inherited
+        assert not document_trust_is_trusted(reopened._current_document_trust())
+        xr.testing.assert_identical(reopened.tool_data, expected)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: True
+    )
+    child._review_code_trust()
+
+    assert document_trust_is_trusted(child._current_document_trust())
+    if kind != "callable":
+        assert child.script_inputs != inherited
+    approved_inputs = child.script_inputs
+    assert child.reload_source_data()
+    assert child.script_inputs == approved_inputs
+    assert document_trust_is_trusted(child._current_document_trust())
+    xr.testing.assert_identical(child.tool_data, expected)
+    child.to_file(approved_file)
+    approved = Fit1DTool.from_file(approved_file)
+    qtbot.addWidget(approved)
+    approved._flush_restore_work()
+    assert document_trust_is_trusted(approved._current_document_trust())
+    assert approved.script_inputs == approved_inputs
+    xr.testing.assert_identical(approved.tool_data, expected)
+
+
+def _standalone_child_from_imagetool(qtbot, parent: ImageTool) -> _PersistentTool:
+    data, _state = parent.slicer_area.persistence_data_and_state()
+    child = _PersistentTool(data)
+    qtbot.addWidget(child)
+    child.set_script_inputs(
+        (ScriptInput(name="data", data_role="source"),), primary_input="data"
+    )
+    parent.slicer_area.add_tool_window(child, transfer_to_manager=False)
+    return child
+
+
+def test_external_imagetool_derived_windows_keep_provenance_unapproved(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive.imagetool.dialogs import RotationDialog
+
+    saved = _saved_imagetool_with_fit_provenance(qtbot, tmp_path, "builtin")
+    parent = ImageTool.from_file(saved)
+    qtbot.addWidget(parent)
+    duplicate = parent.duplicate()
+    qtbot.addWidget(duplicate)
+    launched = []
+    itool = erlab.interactive.itool
+
+    def capture_itool(*args, **kwargs):
+        kwargs.update(manager=False, execute=False)
+        tool = itool(*args, **kwargs)
+        assert isinstance(tool, ImageTool)
+        qtbot.addWidget(tool)
+        launched.append(tool)
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "itool", capture_itool)
+    parent.slicer_area.main_image.open_in_new_window()
+    dialog = RotationDialog(parent.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.angle_spin.setValue(5.0)
+    dialog.accept()
+
+    assert len(launched) == 2
+    for source in (duplicate, *launched):
+        child = _standalone_child_from_imagetool(qtbot, source)
+        assert child._current_code_trust_manifest().entries
+        assert not document_trust_is_trusted(child._current_document_trust())
+
+
+def test_standalone_tool_outputs_transfer_only_approved_provenance(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+
+    saved = _saved_imagetool_with_fit_provenance(qtbot, tmp_path, "expression")
+    parent = ImageTool.from_file(saved)
+    qtbot.addWidget(parent)
+    producer = _standalone_child_from_imagetool(qtbot, parent)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: True
+    )
+
+    for approved in (False, True):
+        if approved:
+            producer._review_code_trust()
+        output = producer._launch_detached_output_imagetool(
+            producer.tool_data,
+            provenance_spec=producer.script_inputs[0].parsed_provenance_spec(),
+        )
+        assert isinstance(output, ImageTool)
+        qtbot.addWidget(output)
+        child = _standalone_child_from_imagetool(qtbot, output)
+        assert child._current_code_trust_manifest().entries
+        assert document_trust_is_trusted(child._current_document_trust()) is approved
+
+
+def test_managed_imagetool_duplicates_transfer_host_provenance_approval(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive.imagetool.manager._workspace._trust import (
+        current_workspace_code_trust_manifest,
+    )
+
+    data, corrected, released_input = _released_tool_fit_input("expression")
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+        lambda *_args, **_kwargs: True,
+    )
+    with manager_context() as manager:
+        source = ImageTool(corrected, _in_manager=True)
+        manager.add_imagetool(
+            source,
+            provenance_spec=released_input.parsed_provenance_spec(),
+            replay_source_data=data,
+            show=False,
+        )
+        controller = manager._workspace_controller
+        controller._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        for approved in (False, True):
+            if approved:
+                controller.review_and_approve_workspace_code_trust()
+            duplicate = source.duplicate()
+            qtbot.addWidget(duplicate)
+            child = _standalone_child_from_imagetool(qtbot, duplicate)
+            assert child._current_code_trust_manifest().entries
+            assert (
+                document_trust_is_trusted(child._current_document_trust()) is approved
+            )
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+@pytest.mark.parametrize("incoming_kind", ["expression", "callable"])
+def test_standalone_refresh_adopts_physical_data_without_authorizing_new_code(
+    qtbot, tmp_path, monkeypatch, deferred, incoming_kind
+) -> None:
+    from erlab.analysis.fit import _serialization as fit_serialization
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive._code_trust._core import CodeTrustReason
+
+    _data, previous_data, previous_input = _released_tool_fit_input(
+        "callable" if incoming_kind == "expression" else "expression"
+    )
+    _incoming_data, expected, incoming_input = _released_tool_fit_input(incoming_kind)
+    tool = (_DeferredInputTool if deferred else _PersistentTool)(previous_data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs(
+        (
+            previous_input.model_copy(
+                update={"source_spec": full_data().model_dump(mode="json")}
+            ),
+        ),
+        primary_input="data",
+    )
+    tool.to_file(tmp_path / "approved-input.h5")
+    assert tool._current_document_trust().reason == CodeTrustReason.SIGNATURE
+    previous = tool.script_inputs
+    refreshed = previous[0].model_copy(
+        update={"provenance_spec": incoming_input.provenance_spec}
+    )
+
+    def unexpected_decode(*_args, **_kwargs):
+        pytest.fail("Refreshing physical data must not execute incoming fit code")
+
+    monkeypatch.setattr(fit_serialization, "loads_result", unexpected_decode)
+    monkeypatch.setattr(lmfit.jsonutils.dill, "loads", unexpected_decode)
+    completed = tool._apply_inputs({"data": expected}, (refreshed,))
+    if deferred:
+        assert not completed
+        assert tool.script_inputs == previous
+        assert document_trust_is_trusted(tool._current_document_trust())
+        tool.finish_deferred_update()
+    else:
+        assert completed
+    assert tool.source_state == "fresh"
+    assert tool.script_inputs == (refreshed,)
+    xr.testing.assert_identical(tool.tool_data, expected)
+    assert not document_trust_is_trusted(tool._current_document_trust())
+    entries = tuple(tool._script_inputs_code_trust_entries((refreshed,)))
+    assert entries
+    assert tool._issue_code_execution_capability(entries) is None
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: False
+    )
+    tool._review_code_trust()
+    assert not document_trust_is_trusted(tool._current_document_trust())
+    assert tool.script_inputs == (refreshed,)
+    saved = tool.to_dataset()
+    inputs, _primary = tool._saved_script_input_metadata(saved.attrs)
+    assert inputs == (refreshed,)
+
+
+def test_standalone_provenance_normalization_rolls_back_source_owner(
+    qtbot, monkeypatch
+) -> None:
+    _data, corrected, released_input = _released_tool_fit_input("builtin")
+    parent = ImageTool(corrected)
+    qtbot.addWidget(parent)
+    parent.set_provenance_spec(released_input.parsed_provenance_spec())
+    child = _PersistentTool(corrected)
+    qtbot.addWidget(child)
+    child.set_script_inputs(
+        (ScriptInput(name="data", source_spec=full_data().model_dump(mode="json")),),
+        primary_input="data",
+    )
+    parent.slicer_area.add_tool_window(child, transfer_to_manager=False)
+    previous_parent = parent.provenance_spec
+    previous_inputs = child.script_inputs
+    previous_trust = child._current_document_trust()
+
+    def fail_publication(_previous, _candidate, _evaluation, change):
+        assert parent.provenance_spec != previous_parent
+        change()
+        assert child.script_inputs != previous_inputs
+        raise RuntimeError("Provenance publication failed")
+
+    monkeypatch.setattr(child, "_apply_local_code_inventory_change", fail_publication)
+    with pytest.raises(RuntimeError, match="Provenance publication failed"):
+        child.to_dataset()
+    assert parent.provenance_spec == previous_parent
+    assert child.script_inputs == previous_inputs
+    assert child._current_document_trust() == previous_trust
+
+
+@pytest.mark.parametrize("changed", ["producer", "source", "nested", "none"])
+def test_standalone_normalization_retires_only_changed_foreign_captures(
+    qtbot, tmp_path, monkeypatch, changed
+) -> None:
+    data, expected, saved_input = _released_tool_fit_input(
+        "callable" if changed == "none" else "builtin"
+    )
+    producer = saved_input.parsed_provenance_spec()
+    assert producer is not None
+    source = full_data() if changed != "source" else producer
+    if changed == "source":
+        producer = full_data()
+    store = _ProvenanceRevisionStore()
+    raw_id = store.add(data if changed == "source" else expected, producer)
+    resolved_id = store.add(expected, compose_full_provenance(producer, source))
+    source_snapshot = "source-snapshot"
+    captured = saved_input.model_copy(
+        update={
+            "node_uid": "source-node",
+            "node_snapshot_token": source_snapshot,
+            "revision_id": raw_id,
+            "resolved_revision_id": resolved_id,
+            "follow_source": False,
+            "source_spec": source.model_dump(mode="json"),
+            "provenance_spec": producer.model_dump(mode="json"),
+        }
+    )
+    if changed == "nested":
+        nested = script(start_label="Saved input", root_input=captured)
+        outer_id = store.add(expected, nested)
+        captured = ScriptInput(
+            name="data",
+            revision_id=outer_id,
+            resolved_revision_id=outer_id,
+            follow_source=False,
+            provenance_spec=nested.model_dump(mode="json"),
+        )
+    original_ids = store.revision_ids
+    original = _PersistentTool(expected)
+    qtbot.addWidget(original)
+    dataset = original.to_dataset()
+    dataset.attrs.update(original._saved_script_input_attrs((captured,), "data"))
+    path = tmp_path / "captured-tool.h5"
+    dataset.to_netcdf(path, engine="h5netcdf", invalid_netcdf=True)
+    restored = _PersistentTool.from_file(path)
+    qtbot.addWidget(restored)
+    assert restored.script_inputs == (captured,)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: True
+    )
+
+    restored._review_code_trust()
+
+    normalized = restored.script_inputs[0]
+    assert normalized.revision_id == (raw_id if changed in {"source", "none"} else None)
+    assert normalized.resolved_revision_id == (
+        resolved_id if changed == "none" else None
+    )
+    metadata = {"revision_id", "resolved_revision_id", "source_spec", "provenance_spec"}
+    assert normalized.model_dump(exclude=metadata) == captured.model_dump(
+        exclude=metadata
+    )
+    if changed == "nested":
+        nested = normalized.parsed_provenance_spec()
+        assert nested is not None
+        inner = nested.root_input
+        assert inner is not None
+        assert inner.revision_id is None
+        assert inner.resolved_revision_id is None
+        assert inner.node_uid == "source-node"
+        assert inner.node_snapshot_token == source_snapshot
+        assert not inner.follow_source
+        assert inner.parsed_provenance_spec() != producer
+    assert store.revision_ids == original_ids
+    assert store.bind(raw_id, producer).revision_id == raw_id
+    xr.testing.assert_identical(restored.tool_data, expected)
+    saved = restored.to_dataset()
+    inputs, _primary = restored._saved_script_input_metadata(saved.attrs)
+    assert inputs == (normalized,)
 
 
 def test_tool_window_local_code_edit_commits_only_after_success(qtbot) -> None:
@@ -6884,6 +7656,7 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
             self.retired_windows: list[QtWidgets.QWidget] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._provenance_revisions = _ProvenanceRevisionStore()
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self._extensions = types.SimpleNamespace(
@@ -6900,11 +7673,16 @@ def test_managed_imagetool_node_detached_update_branches(qtbot) -> None:
                 )
             )
             self._workspace_controller = types.SimpleNamespace(
+                local_provenance_change=lambda **_kwargs: contextlib.nullcontext(),
                 _configure_tool_code_trust=lambda _tool, **_kwargs: None,
                 _configure_imagetool_code_trust=lambda _tool, **_kwargs: None,
             )
             self._lineage_controller = types.SimpleNamespace(
                 _parent_source_data_for_uid=self._parent_source_data_for_uid,
+                _has_recorded_script_input=lambda item: (
+                    item.revision_id is not None
+                    and self._provenance_revisions.has_data(item.revision_id)
+                ),
                 _propagate_source_state_from_uid=(
                     self._propagate_source_state_from_uid
                 ),
@@ -7704,3 +8482,125 @@ def test_tool_window_suppressed_edit_notifies_after_history_resumes(qtbot):
     assert win.tool_status.value == 2
     win.undo()
     assert win.tool_status.value == 0
+
+
+@pytest.mark.parametrize("outcome", ["accept", "abort", "reject", "fail", "replace"])
+def test_tool_window_input_commit_follows_acceptance(qtbot, outcome: str) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    old_snapshot = "old"
+    binding = ScriptInput(name="data", node_snapshot_token=old_snapshot)
+    refreshed = binding.model_copy(update={"node_snapshot_token": "new"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data")
+    committed: list[str] = []
+    if outcome == "reject":
+        tool.update_inputs = lambda _inputs: False
+    elif outcome == "fail":
+
+        def fail(_inputs):
+            raise ValueError("stop")
+
+        tool.update_inputs = fail
+    if outcome == "fail":
+        with pytest.raises(ValueError, match="stop"):
+            tool._apply_inputs(
+                {"data": data + 1},
+                (refreshed,),
+                on_commit=lambda: committed.append("first"),
+            )
+    else:
+        assert not tool._apply_inputs(
+            {"data": data + 1},
+            (refreshed,),
+            on_commit=lambda: committed.append("first"),
+        )
+    assert not committed
+    if outcome == "accept":
+        tool.finish_deferred_update()
+        assert committed == ["first"]
+        assert tool.script_inputs == (refreshed,)
+        tool.finalize_source_refresh()
+        assert committed == ["first"]
+    elif outcome == "replace":
+        assert not tool._apply_inputs(
+            {"data": data + 2},
+            (refreshed,),
+            on_commit=lambda: committed.append("second"),
+        )
+        tool.finish_deferred_update()
+        assert committed == ["second"]
+    else:
+        tool.abort_source_refresh()
+        tool.finalize_source_refresh()
+        assert not committed
+        assert tool.script_inputs == (binding,)
+    assert tool._input_state().pending is None
+
+
+@pytest.mark.parametrize("changed_code", [False, True])
+def test_tool_window_failed_input_commit_discards_transaction(
+    qtbot, changed_code
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    binding = ScriptInput(name="data", revision_id="accepted")
+    refreshed = binding.model_copy(update={"revision_id": "pending"})
+    if changed_code:
+        refreshed = refreshed.model_copy(
+            update={
+                "provenance_spec": full_data(
+                    ScriptCodeOperation(label="Changed source", code="data = data + 1")
+                ).model_dump(mode="json")
+            }
+        )
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data")
+    previous_trust = tool._current_document_trust()
+    data_changes: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+
+    def fail_commit() -> None:
+        raise ValueError("commit failed")
+
+    assert not tool._apply_inputs(
+        {"data": data + 1}, (refreshed,), on_commit=fail_commit
+    )
+    assert tool.active_script_inputs == (binding, refreshed)
+    with pytest.raises(ValueError, match="commit failed"):
+        tool.finalize_source_refresh()
+    assert tool.script_inputs == (binding,)
+    assert tool.active_script_inputs == (binding,)
+    assert tool._input_state().pending is None
+    assert not tool._source_refresh_deferred
+    assert tool.source_state == "stale"
+    assert tool._current_document_trust() == previous_trust
+    assert not data_changes
+
+
+@pytest.mark.parametrize("terminal", ["unavailable", "close"])
+def test_tool_window_terminal_state_releases_deferred_input_callback(
+    qtbot, terminal: str
+) -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    binding = ScriptInput(name="data", revision_id="accepted")
+    refreshed = binding.model_copy(update={"revision_id": "pending"})
+    tool = _DeferredInputTool(data)
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((binding,), primary_input="data", auto_update=True)
+    committed: list[None] = []
+    assert not tool._apply_inputs(
+        {"data": data + 1}, (refreshed,), on_commit=lambda: committed.append(None)
+    )
+    tool._source_refresh_rerun_requested = True
+    if terminal == "close":
+        assert tool.close()
+    else:
+        tool._set_source_state("unavailable")
+    assert tool.active_script_inputs == (binding,)
+    assert tool._input_state().pending is None
+    assert not tool._source_refresh_deferred
+    assert not tool._source_refresh_rerun_requested
+    tool.finalize_source_refresh()
+    assert not committed
+    assert tool.script_inputs == (binding,)

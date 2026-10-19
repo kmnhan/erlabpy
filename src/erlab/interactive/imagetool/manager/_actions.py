@@ -27,7 +27,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     AssignCoord1DOperation,
     AssignScalarCoordOperation,
     ImageToolSelectionSourceBinding,
-    RestoreNonuniformDimsOperation,
 )
 from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager._dependency import _combine_source_states
@@ -345,6 +344,10 @@ class _ActionsController:
         provenance_spec = persistence.provenance_spec
         snapshot_token = node.snapshot_token
         source_snapshot_token = node.source_snapshot_token
+        current_revision_id = node.current_revision_id
+        workspace_sources = {
+            path: access.retain() for path, access in node._workspace_sources.items()
+        }
         note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
@@ -365,6 +368,8 @@ class _ActionsController:
                 note=note,
             )
         wrapper = self._manager._tool_graph.root_wrappers[new_index]
+        wrapper._workspace_sources = workspace_sources
+        wrapper.restore_current_revision_id(current_revision_id)
         wrapper._recent_geometry = recent_geometry
         self._manager._tool_graph.replace_child_references(
             wrapper.uid, childtool_indices, childtools
@@ -618,19 +623,13 @@ class _ActionsController:
         self,
         dialog: typing.Any,
         operations: Iterable[ToolProvenanceOperation],
-        *,
-        extra_types: tuple[
-            type[ToolProvenanceOperation],
-            ...,
-        ] = (),
     ) -> None:
         declared_types = dialog.batch_operation_types
         if declared_types is None:
             declared_types = dialog.operation_types
         declared_types = tuple(declared_types)
-        accepted_types = declared_types + extra_types
         for operation in operations:
-            if accepted_types and not isinstance(operation, accepted_types):
+            if declared_types and not isinstance(operation, declared_types):
                 raise TypeError(
                     f"{type(dialog).__name__} produced unsupported batch operation "
                     f"{type(operation).__name__}."
@@ -740,18 +739,10 @@ class _ActionsController:
             try:
                 node = self._manager._node_for_target(target)
                 slicer_area = self._manager.get_imagetool(target).slicer_area
-                input_name = slicer_area.data.name
-                source_spec = dialog.source_spec_for_data(slicer_area.data)
-                self._validate_batch_operations(
-                    dialog,
-                    source_spec.operations,
-                    extra_types=(RestoreNonuniformDimsOperation,),
-                )
-                source_data = slicer_area.data
-                if source_spec.kind == "public_data":
-                    source_data = erlab.utils.array._restore_nonuniform_dims(
-                        source_data
-                    )
+                source_data = slicer_area.displayed_data
+                input_name = source_data.name
+                source_spec = dialog.source_spec_for_data(source_data)
+                self._validate_batch_operations(dialog, source_spec.operations)
                 self._validate_batch_target_operations(
                     dialog,
                     source_spec.operations,
@@ -765,6 +756,7 @@ class _ActionsController:
                         node,
                         slicer_area,
                         input_name,
+                        source_data,
                         source_spec,
                     )
                 )
@@ -782,12 +774,13 @@ class _ActionsController:
             node,
             slicer_area,
             input_name,
+            source_data,
             source_spec,
         ) in preflight_plan:
             try:
                 processed = self._manager._apply_provenance(
                     source_spec,
-                    slicer_area.data,
+                    source_data,
                     reason="apply this batch operation",
                 ).rename(input_name)
                 erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
@@ -862,6 +855,7 @@ class _ActionsController:
                 replay_source_data,
             ) in plan:
                 if launch_mode == "replace":
+                    node.revision_id_for_role("source")
                     if replace_provenance is not None:
                         if replace_kind == "source":
                             node.set_source_binding(
@@ -875,6 +869,7 @@ class _ActionsController:
                                 replay_source_data=replay_source_data,
                             )
                     slicer_area.replace_source_data(processed, emit_edited=True)
+                    node.revision_id_for_role("source")
                     continue
 
                 itool_kw = dialog._itool_kwargs(processed, slicer_area)
@@ -1020,26 +1015,29 @@ class _ActionsController:
         )
         duplicated: int | str | None = None
         uid_map: dict[str, str] = {}
-        try:
-            with self._manager._workspace_load_context():
-                duplicated = self._duplicate_subtree(
-                    target,
-                    uid_map=uid_map,
-                )
-                self._manager._lineage_controller._rebase_node_dependency_refs(
-                    uid_map.values(),
-                    uid_map,
-                )
-            self._finish_duplicated_subtree(duplicated)
-        except Exception:
+        with self._manager._workspace_controller.local_provenance_change(
+            source_owners=lambda: {new: (old,) for old, new in uid_map.items()}
+        ):
             try:
-                if duplicated is not None:
-                    with self._manager._workspace_load_context():
-                        self._discard_duplicated_subtree(duplicated)
-            finally:
-                self._manager._workspace_state.restore(workspace_state_snapshot)
-                self._manager._update_workspace_window_title()
-            raise
+                with self._manager._workspace_load_context():
+                    duplicated = self._duplicate_subtree(
+                        target,
+                        uid_map=uid_map,
+                    )
+                    self._manager._lineage_controller._rebase_node_dependency_refs(
+                        uid_map.values(),
+                        uid_map,
+                    )
+                self._finish_duplicated_subtree(duplicated)
+            except Exception:
+                try:
+                    if duplicated is not None:
+                        with self._manager._workspace_load_context():
+                            self._discard_duplicated_subtree(duplicated)
+                finally:
+                    self._manager._workspace_state.restore(workspace_state_snapshot)
+                    self._manager._update_workspace_window_title()
+                raise
         return duplicated
 
     def _duplicate_subtree(
@@ -1124,7 +1122,16 @@ class _ActionsController:
                         note=node.note,
                     )
 
-            uid_map[node.uid] = self._manager._node_for_target(new_target).uid
+            duplicated_node = self._manager._node_for_target(new_target)
+            duplicated_node._workspace_sources = {
+                path: access.retain()
+                for path, access in node._workspace_sources.items()
+            }
+            self._manager._workspace_controller._sync_node_workspace_sources(
+                duplicated_node
+            )
+            duplicated_node.restore_current_revision_id(node.current_revision_id)
+            uid_map[node.uid] = duplicated_node.uid
             for child_uid in tuple(node._childtool_indices):
                 self._duplicate_subtree(
                     child_uid,
@@ -1861,19 +1868,19 @@ class _ActionsController:
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         replay_source_data: xr.DataArray | None = None,
-        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
-        if (
+        imported = (
             provenance_spec is None
             and source_spec is None
             and source_binding is None
             and output_id is None
             and tool.provenance_spec is not None
-        ):
+        )
+        if imported:
             self._manager._workspace_controller.adopt_external_code(
                 provenance_code_trust_entries(
                     tool.provenance_spec,
@@ -1881,50 +1888,54 @@ class _ActionsController:
                 )
             )
         parent_node = self._manager._node_for_target(parent)
-        if source_spec is None and source_binding is not None:
-            source_spec = source_binding.materialize(parent_node.current_source_data())
-            source_binding = None
-        elif source_spec is not None:
-            source_binding = None
-        if provenance_spec is None and source_spec is not None:
-            provenance_spec = compose_display_provenance(
-                parent_node.displayed_provenance_spec,
-                source_spec,
-                parent_data=parent_node.current_source_data(),
+        with self._manager._workspace_controller.local_provenance_change(
+            source_owners=lambda: {} if imported else {node.uid: (parent_node.uid,)}
+        ):
+            if source_spec is None and source_binding is not None:
+                source_spec = source_binding.materialize(
+                    parent_node.current_source_data()
+                )
+                source_binding = None
+            elif source_spec is not None:
+                source_binding = None
+            if provenance_spec is None and source_spec is not None:
+                provenance_spec = compose_display_provenance(
+                    parent_node.displayed_provenance_spec,
+                    source_spec,
+                    parent_data=parent_node.current_source_data(),
+                )
+            if provenance_spec is not None:
+                tool.set_provenance_spec(provenance_spec)
+            node = _ManagedWindowNode(
+                self._manager,
+                self._manager._next_node_uid(uid),
+                parent_node.uid,
+                tool,
+                provenance_spec=provenance_spec,
+                source_spec=source_spec,
+                source_binding=source_binding,
+                source_auto_update=source_auto_update,
+                source_state=source_state,
+                output_id=output_id,
+                replay_source_data=replay_source_data,
+                snapshot_token=snapshot_token,
+                source_snapshot_token=source_snapshot_token,
+                created_time=created_time,
+                note=note,
             )
-        if provenance_spec is not None:
-            tool.set_provenance_spec(provenance_spec)
-        node = _ManagedWindowNode(
-            self._manager,
-            self._manager._next_node_uid(uid),
-            parent_node.uid,
-            tool,
-            provenance_spec=provenance_spec,
-            source_spec=source_spec,
-            source_binding=source_binding,
-            source_auto_update=source_auto_update,
-            source_state=source_state,
-            output_id=output_id,
-            replay_source_data=replay_source_data,
-            replay_source_pending=replay_source_pending,
-            snapshot_token=snapshot_token,
-            source_snapshot_token=source_snapshot_token,
-            created_time=created_time,
-            note=note,
-        )
-        self._manager._register_child_node(node)
-        if output_id is not None and parent_node.tool_window is not None:
-            parent_node.tool_window._register_output_imagetool_target(
-                output_id, node.uid
-            )
-        self._manager.tree_view.childtool_added(node.uid, parent)
-        self._manager._mark_node_added(node.uid)
-        self._manager._update_actions()
-        if show:
-            node.show()
-        if activate and node.window is not None:
-            node.window.activateWindow()
-            node.window.raise_()
+            self._manager._register_child_node(node)
+            if output_id is not None and parent_node.tool_window is not None:
+                parent_node.tool_window._register_output_imagetool_target(
+                    output_id, node.uid
+                )
+            self._manager.tree_view.childtool_added(node.uid, parent)
+            self._manager._mark_node_added(node.uid)
+            self._manager._update_actions()
+            if show:
+                node.show()
+            if activate and node.window is not None:
+                node.window.activateWindow()
+                node.window.raise_()
         return node.uid
 
     def index_from_slicer_area(

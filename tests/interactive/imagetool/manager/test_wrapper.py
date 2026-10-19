@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 import datetime
+import json
 import logging
 import pathlib
 import types
@@ -13,6 +14,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui
 
 import erlab
+from erlab.interactive import _persistence_constants
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import (
     _load_code_from_file_details,
@@ -26,6 +28,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     full_data,
 )
+from erlab.interactive.imagetool._provenance._trust import remap_script_input_provenance
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
     _coerce_note,
@@ -35,7 +38,6 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ManagedWindowNode,
     _NodeProvenanceOwnerSnapshot,
     _preview_from_imagetool,
-    _preview_image_for_node,
 )
 
 
@@ -56,27 +58,20 @@ def test_reapplying_workspace_link_state_keeps_color_cache_valid() -> None:
     assert node._workspace_link_colors is False
 
 
-def test_wrapper_provenance_value_remap_requires_valid_specs() -> None:
+def test_wrapper_provenance_value_remap_updates_input_specs() -> None:
     provenance = full_data()
 
     assert _ManagedWindowNode._remap_provenance_value(None, lambda value: value) is None
     assert (
-        _ManagedWindowNode._remap_provenance_value(
-            provenance, lambda value: value, live_source=True
-        )
+        _ManagedWindowNode._remap_provenance_value(provenance, lambda value: value)
         == provenance
     )
-    with pytest.raises(TypeError, match="ToolProvenanceSpec"):
-        _ManagedWindowNode._remap_provenance_value(
-            provenance, lambda _value: typing.cast("ToolProvenanceSpec", object())
-        )
-
     script_input = ScriptInput(
         name="data",
         source_spec=provenance.model_dump(mode="json"),
         provenance_spec=provenance.model_dump(mode="json"),
     )
-    remapped = _ManagedWindowNode._remap_script_input(
+    remapped = remap_script_input_provenance(
         script_input,
         lambda _value: ToolProvenanceSpec(kind="public_data"),
     )
@@ -169,58 +164,56 @@ def test_wrapper_provenance_owner_remap_rolls_back_atomically(
         node.commit_provenance_owner_remap()
 
 
-def test_wrapper_applies_tool_owned_script_inputs() -> None:
-    changed: list[None] = []
+def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
+    changed: list[str | None] = []
     previous = ScriptInput(name="data", source_spec=full_data().model_dump(mode="json"))
     replacement = ScriptInput(
         name="data",
         source_spec=ToolProvenanceSpec(kind="public_data").model_dump(mode="json"),
         provenance_spec=ToolProvenanceSpec(kind="public_data").model_dump(mode="json"),
     )
-
-    class _Tool:
-        _script_inputs = (previous,)
-        _primary_input = "data"
-        _pending_script_inputs = (previous,)
-
-        @property
-        def script_inputs(self):
-            return self._script_inputs
-
-        @property
-        def primary_input(self):
-            return self._primary_input
-
-        @staticmethod
-        def _coalesce_provenance_changes():
-            return contextlib.nullcontext()
-
-        @staticmethod
-        def _notify_provenance_changed() -> None:
-            changed.append(None)
-
-    tool = _Tool()
+    tool = erlab.interactive.utils.ToolWindow()
+    qtbot.addWidget(tool)
+    tool.set_script_inputs((previous,), primary_input="data")
+    tool._pending_input_transaction = erlab.interactive.utils._ToolInputTransaction(
+        (previous,)
+    )
+    tool.sigProvenanceChanged.connect(lambda: changed.append(None))
     node = types.SimpleNamespace(
         imagetool=None,
         tool_window=tool,
         _pending_workspace_payload=None,
         _pending_workspace_payload_kind=None,
         _pending_workspace_payload_attrs=None,
+        _workspace_tool_data_references={},
+        _set_workspace_tool_data_references=lambda _references: None,
         _source_spec=None,
         _provenance_spec=None,
+        _current_revision_id=None,
+        _revision_ids_by_role={},
         _mark_provenance_changed=lambda **_kwargs: None,
+    )
+
+    def commit() -> None:
+        changed.append("commit")
+
+    state = erlab.interactive.utils._ToolInputState(
+        (replacement,),
+        "data",
+        erlab.interactive.utils._ToolInputTransaction((replacement,), commit),
     )
     snapshot = _NodeProvenanceOwnerSnapshot(
         imagetool=None,
-        tool_window=typing.cast("typing.Any", tool),
+        tool_window=tool,
         pending_payload=None,
         pending_payload_kind=None,
         node_source_spec=None,
         node_provenance_spec=None,
-        tool_script_inputs=(replacement,),
-        tool_primary_input="data",
-        tool_pending_script_inputs=(replacement,),
+        tool_input_state=state,
         pending_payload_attrs=None,
+        workspace_tool_data_references={},
+        node_current_revision_id=None,
+        node_revision_ids_by_role={},
     )
 
     _ManagedWindowNode._apply_provenance_owner_snapshot(
@@ -229,8 +222,64 @@ def test_wrapper_applies_tool_owned_script_inputs() -> None:
 
     assert tool.script_inputs == (replacement,)
     assert tool.primary_input == "data"
-    assert tool._pending_script_inputs == (replacement,)
+    assert tool._input_state() == state
+    assert tool.active_script_inputs == (replacement, replacement)
     assert changed == [None]
+    tool._input_state().pending.commit()
+    assert changed == [None, "commit"]
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_wrapper_remaps_saved_data_references(
+    tmp_path, manager_context, pending: bool
+) -> None:
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    original = full_data().model_dump(mode="json")
+    replacement = ToolProvenanceSpec(kind="public_data")
+    workspace = tmp_path / "references.itws"
+    data_key = _persistence_constants.SAVED_TOOL_DATA_NAME
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        tool = erlab.interactive.derivative.DerivativeTool(data)
+        tool.set_script_inputs(
+            (ScriptInput(name="data", source_spec=original),), primary_input="data"
+        )
+        uid = manager.add_childtool(
+            tool, script_inputs={"data": 0}, parent=0, show=False
+        )
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        if pending:
+            assert manager._workspace_controller.loading._load_workspace_file(
+                workspace, replace=True, associate=False, mark_dirty=False, select=False
+            )
+        node = manager._child_node(uid)
+        before = node._provenance_owner_snapshot()
+        if not pending:
+            assert (
+                before.workspace_tool_data_references[data_key]["source_spec"]
+                == original
+            )
+
+        snapshot, changed = node.remap_provenance_owners(lambda _spec: replacement)
+
+        assert changed
+        if pending:
+            references = json.loads(
+                node.pending_workspace_payload_attrs[
+                    _persistence_constants.TOOL_DATA_REFERENCES_ATTR
+                ]
+            )
+            assert references[data_key]["source_spec"] == replacement.model_dump(
+                mode="json"
+            )
+        else:
+            assert node._workspace_tool_data_references[data_key]["source_spec"] == (
+                replacement.model_dump(mode="json")
+            )
+        node.restore_provenance_owners(snapshot)
+        assert node._provenance_owner_snapshot() == before
 
 
 def test_wrapper_parent_refresh_marks_missing_output_unavailable() -> None:
@@ -416,48 +465,6 @@ def test_wrapper_note_coercion_and_setter_validation(
         assert not wrapper.has_note
         with pytest.raises(TypeError, match="note must be a string"):
             wrapper.note = typing.cast("str", object())
-
-
-def test_preview_image_for_node_handles_legacy_preview_nodes(monkeypatch) -> None:
-    rendered = QtGui.QPixmap(4, 6)
-    rendered.fill(QtGui.QColor("blue"))
-    image_tool = object()
-    calls: list[object | None] = []
-
-    def _preview_from_imagetool_probe(
-        imagetool,
-        fallback_ratio: float,
-        fallback_pixmap: QtGui.QPixmap,
-    ) -> tuple[float, QtGui.QPixmap]:
-        calls.append(imagetool)
-        assert not np.isfinite(fallback_ratio)
-        assert fallback_pixmap.isNull()
-        return 2.0, rendered
-
-    monkeypatch.setattr(
-        "erlab.interactive.imagetool.manager._wrapper._preview_from_imagetool",
-        _preview_from_imagetool_probe,
-    )
-
-    class _LegacyNode:
-        @property
-        def imagetool(self) -> object:
-            return image_tool
-
-    class _BrokenPreviewNode(_LegacyNode):
-        @property
-        def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-            raise AttributeError("_preview_image")
-
-    class _CachedPreviewNode:
-        @property
-        def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-            return 3.0, rendered
-
-    assert _preview_image_for_node(_LegacyNode()) == (2.0, rendered)
-    assert _preview_image_for_node(_BrokenPreviewNode()) == (2.0, rendered)
-    assert _preview_image_for_node(_CachedPreviewNode()) == (3.0, rendered)
-    assert calls == [image_tool, image_tool]
 
 
 def test_wrapper_loader_code_and_metadata_helper_branches(

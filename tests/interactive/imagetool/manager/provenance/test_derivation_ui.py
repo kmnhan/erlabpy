@@ -14,6 +14,7 @@ import erlab
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._source_labels as manager_source_labels
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._execution import (
@@ -99,6 +100,149 @@ def _composed_reorder_file_spec(file_path: pathlib.Path) -> ToolProvenanceSpec:
         assert composed is not None
         spec = composed
     return spec
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        None,
+        "raw globals",
+        "globals()['derived'] = offsets",
+        "locals()['derived'] = offsets",
+        "exec('derived = offsets')",
+        "def overwrite():\n    global derived\n    derived = offsets\noverwrite()",
+    ],
+)
+def test_manager_copy_selected_scopes_preserves_notebook_namespace(
+    overwrite: str | None,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    raw_globals = overwrite == "raw globals"
+    opaque = overwrite is not None and not raw_globals
+    data = xr.DataArray(np.full((3, 2), 10.0), dims=("x", "eV"))
+    offsets = xr.DataArray([3.0, 4.0, 5.0], dims="x")
+    auxiliary = script(
+        ScriptCodeOperation(
+            label="Prepare correction",
+            code=(
+                "data = offsets * 10\nnormalize = data * 0\n"
+                "correction = normalize - normalize"
+                if raw_globals
+                else (
+                    "derived = offsets * 10\ncorrection = derived - derived"
+                    if overwrite is None
+                    else f"{overwrite}\ncorrection = offsets * 2"
+                )
+            ),
+        ),
+        start_label="Use offsets",
+        active_name="correction",
+        primary_input="offsets",
+        script_inputs=(ScriptInput(name="offsets"),),
+    )
+    spec = script(
+        start_label="Prepare sample",
+        active_name="derived",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(name="data"),
+            ScriptInput(
+                name="correction", provenance_spec=auxiliary.model_dump(mode="json")
+            ),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Prepare sample",
+                    code=(
+                        "def normalize():\n    return data + 1\nderived = data + 1"
+                        if raw_globals
+                        else (
+                            "def normalize():\n"
+                            "    return derived + 1\n"
+                            "derived = normalize()"
+                            if overwrite is None
+                            else "derived = data + 1"
+                        )
+                    ),
+                ),
+                context_names=() if raw_globals else ("derived",),
+            ),
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Apply correction",
+                    code=(
+                        "derived = normalize() + correction"
+                        if raw_globals
+                        else (
+                            "derived = normalize() * 2 + correction"
+                            if overwrite is None
+                            else "derived = derived + correction"
+                        )
+                    ),
+                )
+            ),
+            *(
+                (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Update main globals",
+                            code="data = data + 5\nderived = normalize()",
+                        )
+                    ),
+                )
+                if raw_globals
+                else ()
+            ),
+        ),
+    )
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            show=False,
+            provenance_spec=spec,
+        )
+        select_tools(manager, [index])
+        manager._update_info()
+        selected = []
+        for row_index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(row_index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if (
+                isinstance(row, _ProvenanceDisplayRow)
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+            ):
+                selected.append(row_index)
+        assert len(selected) == (4 if raw_globals else 3)
+        select_metadata_rows(manager, selected)
+        code = manager._selected_derivation_code()
+        menu = manager._details_panel._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_copy_selected_action.isEnabled() is not opaque
+        if opaque:
+            assert code is None
+            select_metadata_rows(manager, [selected[-1]])
+            code = manager._selected_derivation_code()
+            menu = manager._details_panel._build_metadata_derivation_menu()
+            assert menu is not None
+            assert manager._metadata_copy_selected_action.isEnabled()
+            assert code is not None
+            namespace = {"offsets": offsets}
+            exec(code, namespace)  # noqa: S102
+            xr.testing.assert_identical(namespace["correction"], offsets * 2)
+            return
+        assert code is not None
+        namespace = {"data": data, "offsets": offsets}
+        exec(code, namespace)  # noqa: S102
+        xr.testing.assert_identical(
+            namespace["derived"], data + 6 if raw_globals else (data + 2) * 2
+        )
+        assert ".copy(" not in code
+        assert "_itool_replay_" not in code
 
 
 @pytest.mark.parametrize(
@@ -385,7 +529,7 @@ def test_manager_provenance_nested_file_load_batch_relinks_deleted_parents(
             (new_a + new_b).astype(np.float64).rename(None),
         )
         assert root.provenance_spec is not None
-        first_input, second_input = root.provenance_spec.script_inputs
+        first_input, second_input = root.provenance_spec.replay_inputs
         assert first_input.node_uid is None
         assert second_input.node_uid is None
         first_relinked = first_input.parsed_provenance_spec()
@@ -736,13 +880,15 @@ def test_manager_multi_selection_projects_shared_provenance_without_loading(
             )
         monkeypatch.setattr(
             manager_details_panel,
-            "_preview_curve_for_node",
+            "_preview_curve_from_imagetool",
             lambda _node: pytest.fail("multi-selection must not render previews"),
         )
         monkeypatch.setattr(
-            manager_details_panel,
-            "_preview_image_for_node",
-            lambda _node: pytest.fail("multi-selection must not render previews"),
+            type(roots[0]),
+            "_preview_image",
+            property(
+                lambda _node: pytest.fail("multi-selection must not render previews")
+            ),
         )
 
         selection_model = manager.tree_view.selectionModel()
@@ -1592,6 +1738,161 @@ def test_manager_provenance_reorder_requires_available_replay(
         assert manager._metadata_reorder_steps_action.isEnabled()
 
 
+@pytest.mark.parametrize("action", ["revert", "delete", "edit", "reorder"])
+@pytest.mark.parametrize("source_change", ["close", "replace"])
+def test_history_actions_use_captured_inputs_after_source_changes(
+    qtbot, accept_dialog, monkeypatch, tmp_path, manager_context, action, source_change
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    source_file = tmp_path / "source.h5"
+    data.to_netcdf(source_file, engine="h5netcdf")
+    with manager_context() as manager:
+        source_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(source_file),
+            show=False,
+        )
+        source = manager._node_for_target(source_index)
+        binding = manager._lineage_controller._script_input_for_node(
+            source, name="data", data_role="source"
+        )
+        spec = script(
+            AssignAttrsOperation(attrs={"order": "first"}),
+            AssignAttrsOperation(attrs={"order": "second"}),
+            start_label="Use recorded data",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(binding,),
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                data.assign_attrs(order="second"), _in_manager=True
+            ),
+            provenance_spec=spec,
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        select_tools(manager, [target])
+        manager._update_info()
+        controller = manager._provenance_edit_controller
+
+        def change_source():
+            if source_change == "close":
+                manager.remove_imagetool(source_index)
+                source_file.unlink()
+            else:
+                source.slicer_area.replace_source_data(data + 100, emit_edited=True)
+            select_tools(manager, [target])
+            manager._update_info()
+            assert controller._dependency_snapshot_tokens(spec) == ()
+
+        monkeypatch.setattr(
+            controller,
+            "_show_failed",
+            lambda title, exc: pytest.fail(f"{title}: {exc}"),
+        )
+        monkeypatch.setattr(controller, "_show_unavailable", pytest.fail)
+        if action == "reorder":
+
+            def apply_reorder(dialog):
+                change_source()
+                assert dialog.current_view.move_current(1)
+                dialog.apply_button.click()
+
+            accept_dialog(controller.open_reorder_dialog, accept_call=apply_reorder)
+        else:
+            change_source()
+            rows = [
+                row
+                for row in node.derivation_display_rows
+                if row.script_input_path == ()
+                and row.replay_ref is not None
+                and row.replay_ref.kind == "operation"
+            ]
+            if action == "revert":
+                assert controller.can_revert_row(rows[0])[0]
+                monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
+                controller.revert_rows(((node.uid, rows[0]),))
+            elif action == "delete":
+                assert controller.can_delete_row(rows[1])[0]
+                controller.delete_rows(((node.uid, rows[1]),))
+            else:
+                assert controller.can_edit_row(rows[1])[0]
+                monkeypatch.setattr(
+                    controller,
+                    "_edited_native_operations",
+                    lambda *_args, **_kwargs: (
+                        AssignAttrsOperation(attrs={"order": "edited"}),
+                    ),
+                )
+                controller.edit_rows(((node.uid, rows[1]),))
+        expected = data.assign_attrs(order="edited" if action == "edit" else "first")
+        xr.testing.assert_identical(node.current_source_data(), expected)
+        assert node.provenance_spec.replay_inputs[0].revision_id == binding.revision_id
+        if source_change == "close":
+            assert manager._lineage_controller._node_reload_unavailable_reason(node)
+
+
+def test_history_replay_plan_resolves_nested_captured_inputs(
+    qtbot, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    source_file = tmp_path / "source.h5"
+    data.to_netcdf(source_file, engine="h5netcdf")
+    with manager_context() as manager:
+        source_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=_manager_replay_file_spec(source_file),
+            show=False,
+        )
+        lineage = manager._lineage_controller
+        binding = lineage._script_input_for_node(
+            manager._node_for_target(source_index), name="raw", data_role="source"
+        )
+        nested = script(
+            start_label="Use saved input",
+            active_name="raw",
+            primary_input="raw",
+            script_inputs=(binding,),
+        )
+        outer = ScriptInput(name="data", provenance_spec=nested)
+        spec = script(
+            AssignAttrsOperation(attrs={"first": True}),
+            AssignAttrsOperation(attrs={"second": True}),
+            start_label="Use nested input",
+            active_name="derived",
+            primary_input="data",
+            script_inputs=(outer,),
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True),
+            provenance_spec=spec,
+            show=False,
+        )
+        manager.remove_imagetool(source_index)
+        source_file.unlink()
+        select_tools(manager, [target])
+        manager._update_info()
+        node = manager._node_for_target(target)
+        controller = manager._provenance_edit_controller
+        assert controller.can_reorder_steps() == (True, "")
+        assert controller._dependency_snapshot_tokens(spec) == ()
+        assert (
+            lineage._script_input_unavailable_reason(
+                outer, target_node_uid=node.uid, prefer_recorded_revisions=True
+            )
+            is None
+        )
+        assert (
+            lineage._script_input_unavailable_reason(outer, target_node_uid=node.uid)
+            is not None
+        )
+        result = controller._replay_candidate_result(node, "display", spec)
+        xr.testing.assert_identical(
+            result.data, data.assign_attrs(first=True, second=True)
+        )
+
+
 def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1847,8 +2148,13 @@ def test_manager_detached_watched_provenance_reorder_uses_retained_source(
             for operation in root.provenance_spec.operations
         ] == ["second", "first"]
         assert root.slicer_area._data.attrs["order"] == "first"
-        assert root.replay_source_data is not None
-        xr.testing.assert_identical(root.replay_source_data, source)
+        assert root.replay_source_data is None
+        assert root.provenance_spec is not None
+        seed_id = root.provenance_spec.replay_inputs[0].revision_id
+        assert seed_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id), source
+        )
 
 
 def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
@@ -1901,15 +2207,20 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
             (AssignAttrsOperation(attrs={"pasted": True}),),
         )
 
-        assert root.replay_source_data is not None
-        xr.testing.assert_identical(root.replay_source_data, source)
+        assert root.replay_source_data is None
+        assert root.provenance_spec is not None
+        seed_id = root.provenance_spec.replay_inputs[0].revision_id
+        assert seed_id is not None
+        xr.testing.assert_identical(
+            manager._provenance_revisions.resolve_data(seed_id), source
+        )
         assert root.provenance_spec is not None
         xr.testing.assert_identical(
-            manager._provenance_edit_controller._replay_candidate(
+            manager._provenance_edit_controller._replay_candidate_result(
                 root,
                 "display",
                 root.provenance_spec,
-            ),
+            ).data,
             tool.slicer_area._data,
         )
 
@@ -1942,6 +2253,7 @@ def test_manager_provenance_reorder_session_rejects_each_stale_input(
         _tool_graph=types.SimpleNamespace(nodes={"node": node, "parent": parent}),
         _parent_node=lambda _node: parent,
     )
+    manager._lineage_controller = manager_lineage._LineageController(manager)
     controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
     sections = spec._reorder_sections()
     session = _ProvenanceReorderSession(
@@ -2901,6 +3213,7 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
         )
 
 
+@pytest.mark.parametrize("missing_script_input", [False, True])
 def test_manager_provenance_active_filter_edit_accept_and_cancel(
     qtbot,
     accept_dialog,
@@ -2908,6 +3221,7 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    missing_script_input: bool,
 ) -> None:
     data = xr.DataArray(
         np.arange(24, dtype=float).reshape((3, 4, 2)) + 1.0,
@@ -2917,13 +3231,28 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
     )
     file_path = tmp_path / "scan.h5"
     data.to_netcdf(file_path, engine="h5netcdf")
-    spec = _manager_replay_file_spec(file_path)
+    spec = (
+        script(
+            start_label="Use input",
+            active_name="data",
+            primary_input="data",
+            script_inputs=(ScriptInput(name="data", node_uid="missing"),),
+        )
+        if missing_script_input
+        else _manager_replay_file_spec(file_path)
+    )
 
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         tool = _add_file_replay_tool(manager, data, spec)
+        if missing_script_input:
+            assert (
+                manager._provenance_edit_controller._script_replay_unavailable_reason(
+                    manager._node_for_target(0), spec
+                )
+            )
         operation = NormalizeOperation(dims=("x",), mode="area")
         tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
@@ -3043,3 +3372,214 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
             tool.slicer_area._data.rename(None),
             data.qsel.mean("x").rename(None),
         )
+
+
+def test_source_label_tracks_live_uid_after_reindex(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(test_data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False, index=7)
+        node = manager._tool_graph.root_wrappers[7]
+        source = ScriptInput(name="data", label="ImageTool 99", node_uid=node.uid)
+        panel = manager._details_panel
+        assert manager_source_labels.script_input_source_label(manager, source) == (
+            "ImageTool 7"
+        )
+        assert panel._script_input_row_label(source) == ("Use data from ImageTool 7")
+        manager.reindex()
+        assert manager_source_labels.script_input_source_label(manager, source) == (
+            "ImageTool 0"
+        )
+        assert panel._script_input_row_label(source) == ("Use data from ImageTool 0")
+        manager.remove_imagetool(0)
+        assert manager_source_labels.script_input_source_label(manager, source) == (
+            "Missing"
+        )
+        assert panel._script_input_row_label(source) == ("Missing")
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_source_label_closed_input_retention(retained: bool) -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    source = ScriptInput(name="shift", label="ImageTool 42", node_uid="closed")
+    resolved = []
+
+    def retained_input(item: ScriptInput) -> bool:
+        resolved.append(item)
+        return retained
+
+    assert manager_source_labels.script_input_source_label(
+        manager, source, retained_input_resolver=retained_input
+    ) == ("Saved" if retained else "Missing")
+    assert resolved == [source]
+
+
+@pytest.mark.parametrize("node_uid", [None, "closed"])
+def test_source_label_nested_recorded_file_without_disk_access(
+    node_uid: str | None, monkeypatch
+) -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    file_spec = _manager_replay_file_spec(pathlib.Path("/absent/source/scan.h5"))
+    nested = script(
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="raw", provenance_spec=file_spec.model_dump(mode="json")),
+        ),
+    )
+    source = ScriptInput(
+        name="data",
+        label="ImageTool 42",
+        node_uid=node_uid,
+        provenance_spec=nested.model_dump(mode="json"),
+    )
+
+    def unexpected_disk_access(*args, **kwargs):
+        pytest.fail("Source label resolution must not inspect the filesystem")
+
+    monkeypatch.setattr(pathlib.Path, "exists", unexpected_disk_access)
+    assert (
+        manager_source_labels.script_input_source_label(
+            manager, source, retained_input_resolver=lambda item: True
+        )
+        == "scan.h5"
+    )
+
+
+def test_source_label_recursive_payload_cycle() -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    payload: dict[str, typing.Any] = {"script_inputs": []}
+    payload["script_inputs"].append({"provenance_spec": payload})
+    source = ScriptInput(name="data", label="ImageTool 42").model_copy(
+        update={"provenance_spec": payload}
+    )
+    assert manager_source_labels.script_input_source_label(manager, source) == "Missing"
+
+
+def test_source_label_live_managed_tool() -> None:
+    node = types.SimpleNamespace(
+        is_imagetool=False, type_badge_text="FitTool", name="fit"
+    )
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"live": node})
+    )
+    source = ScriptInput(name="data", label="Old FitTool title", node_uid="live")
+    assert manager_source_labels.script_input_source_label(manager, source) == "FitTool"
+    node.is_imagetool = True
+    assert manager_source_labels.script_input_source_label(manager, source) == (
+        "ImageTool child"
+    )
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_details_closed_source_label_has_no_historical_number(retained: bool) -> None:
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={}),
+        _lineage_controller=types.SimpleNamespace(
+            _has_recorded_script_input=lambda item: retained
+        ),
+    )
+    panel = manager_details_panel._DetailsPanelController(manager)
+    source = ScriptInput(name="shift", label="ImageTool 42", node_uid="closed")
+    assert panel._script_input_row_label(source) == (
+        "Use shift from Saved" if retained else "Missing"
+    )
+    source = source.model_copy(
+        update={
+            "node_uid": None,
+            "provenance_spec": _manager_replay_file_spec(
+                pathlib.Path("/recorded/shift.h5")
+            ).model_dump(mode="json"),
+        }
+    )
+    assert panel._script_input_row_label(source) == ("Use shift from shift.h5")
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_details_source_menu_opens_exact_selected_input(qtbot, available: bool) -> None:
+    tree = QtWidgets.QTreeWidget()
+    qtbot.addWidget(tree)
+    tree.addTopLevelItem(QtWidgets.QTreeWidgetItem(["Source"]))
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Use data from Saved", None, False),
+        replay_ref=_ProvenanceStepRef("script_input", script_input_index=0),
+    )
+    checked = []
+    opened = []
+
+    def can_open_input(selected):
+        checked.append(selected)
+        return available, "" if available else "The exact input is unavailable."
+
+    controller = types.SimpleNamespace(
+        can_open_input_row=can_open_input,
+        open_input_row=opened.append,
+        can_edit_rows=lambda rows: (False, ""),
+        can_revert_rows=lambda rows: (False, ""),
+        can_delete_rows=lambda rows: (False, ""),
+        can_reorder_steps=lambda: (False, ""),
+        can_paste_steps=lambda steps: (False, ""),
+    )
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=tree,
+        _provenance_edit_controller=controller,
+        _selected_derivation_target_rows=lambda: (("owner", row),),
+        _selected_derivation_code=lambda: None,
+        _metadata_full_code_available=False,
+    )
+    for name in (
+        "edit_step",
+        "reorder_steps",
+        "revert_step",
+        "delete_step",
+        "copy_selected",
+        "paste_steps",
+        "copy_full",
+    ):
+        setattr(manager, f"_metadata_{name}_action", QtGui.QAction(name, tree))
+    panel = manager_details_panel._DetailsPanelController(manager)
+    menu = panel._build_metadata_derivation_menu()
+    assert menu is not None
+    action = next(action for action in menu.actions() if action.data() == "open_input")
+    assert action.isEnabled() is available
+    assert checked == [row]
+    if available:
+        assert menu.defaultAction() is action
+        action.trigger()
+        assert opened == [row]
+    else:
+        assert action.toolTip() == "The exact input is unavailable."
+        assert not opened
+
+
+@pytest.mark.parametrize("primary", [None, "shift"])
+@pytest.mark.parametrize("retained", [False, True])
+def test_source_label_generic_merge_uses_only_primary_file(primary, retained) -> None:
+    manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    inputs = tuple(
+        ScriptInput(
+            name=name,
+            provenance_spec=_manager_replay_file_spec(
+                pathlib.Path(f"/recorded/{name}.h5")
+            ).model_dump(mode="json"),
+        )
+        for name in ("data", "shift")
+    )
+    spec = script(
+        start_label="Merge",
+        active_name="result",
+        script_inputs=inputs,
+        primary_input=primary,
+    )
+    source = ScriptInput(name="result", provenance_spec=spec.model_dump(mode="json"))
+    label = manager_source_labels.script_input_source_label(
+        manager, source, retained_input_resolver=lambda item: retained
+    )
+    assert label == ("shift.h5" if primary else "Saved" if retained else "Missing")

@@ -792,9 +792,6 @@ class _FigureComposerWorkflowController(QtCore.QObject):
             FigureOperationState,
         )
         from erlab.interactive._figurecomposer._defaults import figure_options_context
-        from erlab.interactive._figurecomposer._model._sources import (
-            _public_source_data,
-        )
 
         targets = self._figure_source_targets(targets)
         if any(
@@ -827,10 +824,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         if (
             operation is None
             and custom_code is None
-            and all(
-                _public_source_data(data).squeeze(drop=True).ndim > 1
-                for data in source_data.values()
-            )
+            and all(data.squeeze(drop=True).ndim > 1 for data in source_data.values())
         ):
             from erlab.interactive._figurecomposer._exceptions import (
                 FigureComposerPlotSlicesSelectionError,
@@ -1400,9 +1394,6 @@ class _FigureComposerWorkflowController(QtCore.QObject):
     ) -> bool:
         from erlab.interactive._figurecomposer import FigureComposerTool
         from erlab.interactive._figurecomposer._defaults import figure_options_context
-        from erlab.interactive._figurecomposer._model._sources import (
-            _public_source_data,
-        )
 
         targets = self._figure_source_targets(targets)
         if any(
@@ -1454,8 +1445,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         source_names = tuple(source.name for source in sources)
         auto_operations: tuple[FigureOperationState, ...] = ()
         if operation is None and all(
-            _public_source_data(data).squeeze(drop=True).ndim > 1
-            for data in source_data.values()
+            data.squeeze(drop=True).ndim > 1 for data in source_data.values()
         ):
             from erlab.interactive._figurecomposer._exceptions import (
                 FigureComposerPlotSlicesSelectionError,
@@ -1509,8 +1499,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         source_names = tuple(source.name for source in sources)
         auto_operations = ()
         if operation is None and all(
-            _public_source_data(data).squeeze(drop=True).ndim > 1
-            for data in source_data.values()
+            data.squeeze(drop=True).ndim > 1 for data in source_data.values()
         ):
             from erlab.interactive._figurecomposer._exceptions import (
                 FigureComposerPlotSlicesSelectionError,

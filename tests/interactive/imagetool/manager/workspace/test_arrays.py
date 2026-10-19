@@ -54,7 +54,7 @@ def _numeric_workspace_reader(tmp_path, values, *, legacy=False):
             path, object_id=None if legacy else "payload", group_path=group_path
         )
         datastore = workspace_arrays._WorkspaceH5NetCDFStore(
-            manager, group=group_path, mode="r", lock=manager.lock
+            manager, group=group_path, mode="r"
         )
         backend = workspace_arrays._WorkspaceBackendArray(
             "data", datastore, shape=values.shape, dtype=values.dtype
@@ -272,7 +272,7 @@ def test_workspace_numeric_read_fallback_preserves_netcdf(monkeypatch, tmp_path,
             store.path, object_id="special", group_path=store.object_path("special")
         )
         datastore = workspace_arrays._WorkspaceH5NetCDFStore(
-            special, group=special._group_path, mode="r", lock=special.lock
+            special, group=special._group_path, mode="r"
         )
         try:
             with store.read_session():
@@ -723,6 +723,69 @@ def test_workspace_file_managers_use_access_phony_dimensions(
     assert phony_dims == ["access"]
 
 
+def test_standalone_reader_finalization_does_not_reverse_read_locks(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    path = tmp_path / "workspace.itws"
+    dataset = xr.Dataset({"data": ("x", [1.0, 2.0])})
+    dataset.to_netcdf(path, engine="h5netcdf")
+    old_reader = workspace_arrays.WorkspaceFileManager(path)
+    old_reader.acquire()
+    old_key = old_reader._key
+    cache = old_reader._cache
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    reader = workspace_arrays.WorkspaceFileManager(path)
+    assert old_key != reader._key
+    old_references = [old_reader]
+    del old_reader
+
+    read_started = threading.Event()
+    finalizer_finished = threading.Event()
+    errors: list[BaseException] = []
+    original_acquire = reader.acquire_context
+
+    @contextlib.contextmanager
+    def _acquire(*args, **kwargs):
+        read_started.set()
+        if not finalizer_finished.wait(2):
+            raise TimeoutError("Reader finalizer waited for the read lock")
+        with original_acquire(*args, **kwargs) as file:
+            yield file
+
+    def _read() -> None:
+        try:
+            with reader.read_session() as file:
+                np.testing.assert_array_equal(file.variables["data"][:], [1.0, 2.0])
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _finalize() -> None:
+        try:
+            old_references.clear()
+        finally:
+            finalizer_finished.set()
+
+    monkeypatch.setattr(reader, "acquire_context", _acquire)
+    reading = threading.Thread(target=_read)
+    finalizing = threading.Thread(target=_finalize)
+    try:
+        reading.start()
+        assert read_started.wait(2)
+        finalizing.start()
+        reading.join(5)
+        finalizing.join(5)
+        assert not reading.is_alive()
+        assert not finalizing.is_alive()
+        assert not errors
+    finally:
+        reader.close()
+        with workspace_arrays._workspace_file_lock(path):
+            cached = cache.pop(old_key, None)
+            if cached is not None:
+                cached.close()
+
+
 def test_workspace_file_managers_serialize_shared_cached_handle_access(
     tmp_path,
 ) -> None:
@@ -740,16 +803,14 @@ def test_workspace_file_managers_serialize_shared_cached_handle_access(
 
     close_thread = threading.Thread(target=_close_second)
     try:
-        with first.lock:
-            first.acquire(needs_lock=False)
+        with first.read_session():
             close_thread.start()
             assert close_started.wait(2)
             assert not close_finished.wait(0.05)
         close_thread.join(2)
         assert not close_thread.is_alive()
         assert close_finished.is_set()
-        with first.lock:
-            reopened = first.acquire(needs_lock=False)
+        with first.read_session() as reopened:
             assert pathlib.Path(reopened.filename).resolve() == fname.resolve()
     finally:
         first.close()
@@ -822,15 +883,6 @@ def test_workspace_file_manager_lifecycle_guards(tmp_path) -> None:
         pass
     assert worker.__dask_tokenize__()[1] == str(path)
     worker.close()
-
-    backend = workspace_arrays._WorkspaceBackendArray(
-        "data",
-        types.SimpleNamespace(_manager=object()),
-        shape=(1,),
-        dtype=np.dtype(float),
-    )
-    with pytest.raises(TypeError, match="WorkspaceFileManager"):
-        backend._getitem(slice(None))
 
 
 def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> None:
@@ -1115,7 +1167,7 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
         ) -> None:
             del object_id, group_path
 
-        def acquire_context(self):
+        def read_session(self):
             return contextlib.nullcontext(object())
 
         def close(self) -> None:

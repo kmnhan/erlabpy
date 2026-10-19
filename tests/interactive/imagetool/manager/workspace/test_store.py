@@ -7,16 +7,45 @@ import json
 import shutil
 import threading
 import typing
+import uuid
+from types import SimpleNamespace
 
+import dask
+import dask.array as da
 import h5py
 import numpy as np
 import pytest
 import xarray as xr
 
 from erlab.interactive import _persistence_constants
+from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
+from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
+    ScriptInput,
+    full_data,
+    parse_script_inputs,
+    public_data,
+    script,
+    selection,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    ScriptCodeOperation,
+    ShiftFromInputOperation,
+)
+from erlab.interactive.imagetool.manager._revisions import (
+    _ProvenanceRevisionStore,
+    _RevisionCheckpointSource,
+)
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
+from erlab.interactive.imagetool.manager._workspace import (
+    _revisions as workspace_revisions,
+)
 from erlab.interactive.imagetool.manager._workspace import _storage as workspace_storage
 from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
+from erlab.interactive.imagetool.manager._workspace._trust import (
+    workspace_code_trust_manifest,
+)
 
 if typing.TYPE_CHECKING:
     import pathlib
@@ -24,7 +53,7 @@ if typing.TYPE_CHECKING:
 
 def _manifest(*object_ids: str) -> dict[str, object]:
     return {
-        "schema_version": 6,
+        "schema_version": _persistence_constants.WORKSPACE_SCHEMA_VERSION,
         "nodes": [
             {
                 "uid": f"node-{index}",
@@ -37,6 +66,1247 @@ def _manifest(*object_ids: str) -> dict[str, object]:
         ],
         "root_order": list(range(len(object_ids))),
     }
+
+
+def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(np.arange(4.0), dims="x", attrs={"nested": {"value": 1}})
+    first = registry.add(data, full_data())
+    second = registry.add(data + 10, full_data())
+    nested = script(
+        ScriptCodeOperation(label="Nested", code="derived = other + 1"),
+        start_label="Nested inputs",
+        script_inputs=(ScriptInput(name="other", revision_id=second),),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Outer", code="derived = inner + 1"),
+        start_label="Outer inputs",
+        script_inputs=(
+            ScriptInput(name="inner", provenance_spec=nested.model_dump(mode="json")),
+        ),
+    )
+    third = registry.add(data + 20, spec, primary_revision_id=first)
+    orphan = registry.add(data + 99)
+    data.values[:] = -1
+    data.attrs["nested"]["value"] = 2
+    resolved = registry.resolve_data(first)
+    np.testing.assert_array_equal(resolved.values, np.arange(4.0))
+    assert resolved.attrs["nested"]["value"] == 1
+    resolved.values[:] = -2
+    np.testing.assert_array_equal(registry.resolve_data(first), np.arange(4.0))
+    assert {record.revision_id for record in registry.reachable([third])} == {
+        first,
+        second,
+        third,
+    }
+    assert orphan not in {record.revision_id for record in registry.reachable([third])}
+    registry.discard_unreachable([third])
+    assert orphan not in registry
+    assert registry.get("missing") is None
+    assert registry.has_data(first)
+    with pytest.raises(ValueError, match="already exists"):
+        registry.add(data, revision_id=first)
+    rollback = registry.copy()
+    registry.discard_unreachable(())
+    assert rollback.get(first).checkpoint.source is None
+    restored = rollback.resolve_data(first)
+    np.testing.assert_array_equal(restored.values, np.arange(4.0))
+    assert restored.attrs["nested"]["value"] == 1
+
+
+def test_released_input_normalization_preserves_resolved_fallback() -> None:
+    store = _ProvenanceRevisionStore()
+    complete = script(start_label="Resolved", seed_code="derived = data.isel(x=0)")
+    source = selection(IselOperation(kwargs={"x": 0}))
+    item = parse_script_inputs(
+        [
+            {
+                "name": "selected",
+                "source_spec": source.model_dump(mode="json"),
+                "provenance_spec": complete.model_dump(mode="json"),
+            }
+        ]
+    )[0]
+    migrated = store.normalize_input(item)
+    assert migrated.input_version == 2
+    assert migrated.fallback_role == "resolved"
+    assert migrated.revision_id is None
+    assert migrated.resolved_revision_id is None
+    assert migrated.parsed_source_spec() == source
+    assert migrated.resolved_provenance_spec() == complete
+    assert store.normalize_input(migrated) == migrated
+
+
+def test_revision_retention_follows_root_and_selected_references() -> None:
+    store = _ProvenanceRevisionStore()
+    nested = script(
+        start_label="Nested",
+        root_input=ScriptInput(name="nested", revision_id="nested-raw"),
+    )
+    spec = script(
+        start_label="Consumer",
+        root_input=ScriptInput(
+            name="data",
+            revision_id="raw",
+            resolved_revision_id="selected",
+            provenance_spec=nested,
+        ),
+    )
+    store.add(spec=spec, revision_id="consumer")
+    store.add(revision_id="raw")
+    store.add(
+        spec=script(
+            start_label="Selected",
+            script_inputs=(ScriptInput(name="lost", revision_id="missing"),),
+        ),
+        revision_id="selected",
+    )
+    store.add(revision_id="nested-raw")
+    orphan = store.add()
+    store.discard_unreachable(["consumer"])
+    assert store.revision_ids == {"consumer", "raw", "selected", "nested-raw"}
+    assert (
+        store.get("selected").provenance_spec.replay_inputs[0].revision_id == "missing"
+    )
+    assert orphan not in store
+
+
+def test_revision_normalization_replaces_recipes_and_dependent_links() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    source = registry.add(
+        data,
+        script(start_label="Released result", seed_code="derived = data + 1"),
+        source_owner_uid="producer",
+    )
+    reads = []
+
+    def read_checkpoint(_path, _group):
+        reads.append(True)
+        return data.isel(x=0)
+
+    selected = registry.add(
+        spec=script(
+            start_label="Selected result",
+            root_input=ScriptInput(name="data", revision_id=source),
+        ),
+        source=_RevisionCheckpointSource("source.itws", "/selected", read_checkpoint),
+    )
+    nested = script(
+        start_label="Nested result",
+        root_input=ScriptInput(name="data", revision_id=source),
+    )
+    relative_selection = selection(IselOperation(kwargs={"x": 0}))
+    consumer = registry.add(
+        data + 10,
+        script(
+            start_label="Consumer",
+            script_inputs=(
+                ScriptInput(
+                    name="data",
+                    revision_id=source,
+                    resolved_revision_id=selected,
+                    source_spec=relative_selection,
+                    provenance_spec=nested,
+                ),
+            ),
+        ),
+    )
+    history = registry.add(primary_revision_id=consumer)
+    unrelated = registry.add(
+        data + 99, script(start_label="Released result", seed_code="derived = data + 1")
+    )
+    original_records = dict(registry._records)
+    original_manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(record)
+            for record in original_records.values()
+        ]
+    }
+
+    def normalize(spec):
+        return (
+            spec.model_copy(update={"start_label": "Normalized result"})
+            if spec.start_label == "Released result"
+            else spec
+        )
+
+    with registry.retain([history, unrelated]) as retained:
+        with registry.normalize_provenance_revisions(
+            normalize, roots=[history]
+        ) as replacements:
+            assert set(replacements) == {source, selected, consumer, history}
+            assert not set(replacements.values()) & original_records.keys()
+            assert retained == {history, unrelated}
+            assert registry.retained_roots == {
+                *replacements,
+                *replacements.values(),
+                unrelated,
+            }
+            assert registry.get(replacements[source]).provenance_spec.start_label == (
+                "Normalized result"
+            )
+            selected_record = registry.get(replacements[selected])
+            assert (
+                selected_record.provenance_spec.root_input.revision_id
+                == replacements[source]
+            )
+            consumer_record = registry.get(replacements[consumer])
+            item = consumer_record.provenance_spec.script_inputs[0]
+            assert item.revision_id == replacements[source]
+            assert item.resolved_revision_id == replacements[selected]
+            assert (
+                item.parsed_provenance_spec().root_input.revision_id
+                == replacements[source]
+            )
+            assert item.parsed_source_spec() == relative_selection
+            assert (
+                registry.get(replacements[history]).primary_revision_id
+                == replacements[consumer]
+            )
+            assert {
+                record.revision_id
+                for record in registry.reachable([replacements[history]])
+            } == set(replacements.values())
+            for previous_id, revision_id in replacements.items():
+                record = registry.get(revision_id)
+                previous = original_records[previous_id]
+                assert record.source_owner_uid == previous.source_owner_uid
+                assert record.checkpoint is previous.checkpoint
+                if previous_id in registry._data:
+                    assert registry._data[revision_id] is registry._data[previous_id]
+            assert not reads
+        assert registry.retained_roots == {history, unrelated}
+
+    for revision_id, record in original_records.items():
+        assert registry._records[revision_id] is record
+    assert registry._records[unrelated] is original_records[unrelated]
+    workspace_revisions.restore_revision_store(
+        registry, original_manifest, "preapproval.itws"
+    )
+    assert not reads
+    registry.discard_unreachable(replacements.values())
+    assert registry.revision_ids == set(replacements.values())
+    with registry.normalize_provenance_revisions(
+        normalize, roots=replacements.values()
+    ) as unchanged:
+        assert not unchanged
+
+
+@pytest.mark.parametrize("failure", ["normalization", "publication"])
+def test_revision_normalization_failure_keeps_original_records(failure) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    original = registry.add(data, script(start_label="Released result"))
+    dependent = registry.add(
+        spec=script(start_label="Later result"), primary_revision_id=original
+    )
+    previous_records = dict(registry._records)
+    previous_data = dict(registry._data)
+
+    def normalize(spec):
+        if failure == "normalization" and spec.start_label == "Later result":
+            raise RuntimeError("Normalization failed")
+        return spec.model_copy(update={"start_label": "Normalized result"})
+
+    def publish() -> None:
+        with registry.normalize_provenance_revisions(
+            normalize, roots=[dependent]
+        ) as replacements:
+            assert set(replacements) == {original, dependent}
+            raise RuntimeError("Publication failed")
+
+    with registry.retain([dependent]) as retained:
+        with pytest.raises(RuntimeError, match="failed"):
+            publish()
+        assert retained == {dependent}
+        assert registry.retained_roots == {dependent}
+    assert registry.revision_ids == previous_records.keys()
+    for revision_id, record in previous_records.items():
+        assert registry._records[revision_id] is record
+    assert registry._data.keys() == previous_data.keys()
+    for revision_id, captured in previous_data.items():
+        assert registry._data[revision_id] is captured
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_bound_revision_keeps_checkpoint_and_canonical_metadata(legacy: bool) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed = registry.add(data)
+    spec = script(
+        ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+        start_label="Calculation",
+        primary_input="data",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="data",
+                node_uid="original",
+                node_snapshot_token="legacy-snapshot" if legacy else None,
+                revision_id=None if legacy else seed,
+            ),
+        ),
+    )
+    revision_id = registry.add(data + 1, spec)
+    before = workspace_revisions.revision_manifest_entry(registry.get(revision_id))
+    bound_spec = spec.model_copy(
+        update={
+            "script_inputs": (
+                spec.script_inputs[0].model_copy(update={"node_uid": "imported"}),
+            )
+        }
+    )
+    bound = registry.bind(revision_id, bound_spec)
+    assert bound.provenance_spec == bound_spec
+    assert bound.revision_id == revision_id
+    assert bound.revision == registry.get(revision_id)
+    xr.testing.assert_identical(registry.resolve_data(bound.revision_id), data + 1)
+    assert (
+        workspace_revisions.revision_manifest_entry(registry.get(revision_id)) == before
+    )
+    assert registry.bind(seed, None).provenance_spec is None
+    with pytest.raises(KeyError):
+        registry.bind("missing", None)
+
+
+@pytest.mark.parametrize(
+    "change", ["operation", "revision", "source", "follow", "snapshot"]
+)
+def test_bound_revision_rejects_recipe_changes(change: str) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed = registry.add(data)
+    item = ScriptInput(name="data", node_uid="original", revision_id=seed)
+    spec = script(
+        ScriptCodeOperation(label="Add one", code="derived = data + 1"),
+        start_label="Calculation",
+        primary_input="data",
+        active_name="derived",
+        script_inputs=(item,),
+    )
+    revision_id = registry.add(data + 1, spec)
+    updates = {"node_uid": "imported"}
+    if change == "revision":
+        updates["revision_id"] = "different"
+    elif change == "source":
+        updates["source_spec"] = full_data(IselOperation(kwargs={"x": 0})).model_dump(
+            mode="json"
+        )
+    elif change == "follow":
+        updates["follow_source"] = False
+    elif change == "snapshot":
+        updates["node_snapshot_token"] = uuid.uuid4().hex
+    candidate = spec.model_copy(
+        update={"script_inputs": (item.model_copy(update=updates),)}
+    )
+    if change == "operation":
+        candidate = candidate.model_copy(
+            update={
+                "steps": (
+                    ReplayStep(
+                        operation=ScriptCodeOperation(
+                            label="Add one", code="derived = data + 2"
+                        )
+                    ),
+                )
+            }
+        )
+    with pytest.raises(ValueError, match="bound recipe"):
+        registry.bind(revision_id, candidate)
+
+
+def test_bound_revision_requires_explicit_legacy_normalization_seed() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed = registry.add(data)
+    legacy = full_data(IselOperation(kwargs={"x": slice(None)}))
+    normalized = registry.normalize_provenance(legacy, replay_source_revision_id=seed)
+    revision_id = registry.add(data, normalized)
+    before = registry.revision_ids
+    with pytest.raises(ValueError, match="bound recipe does not match"):
+        registry.bind(revision_id, legacy)
+    assert registry.bind(revision_id, normalized).provenance_spec == normalized
+    assert registry.revision_ids == before
+
+
+def test_bound_revision_keeps_loader_arguments_exact() -> None:
+    from erlab.interactive.imagetool._provenance._model import (
+        FileDataSelection,
+        FileLoadSource,
+        FileReplayCall,
+        file_load,
+    )
+
+    source = FileLoadSource(
+        path="source.h5",
+        loader_label="Loader",
+        loader_text="loader",
+        kwargs_text="",
+        replay_call=FileReplayCall(
+            kind="callable",
+            target="xarray.open_dataarray",
+            selection=FileDataSelection(kind="dataarray"),
+            kwargs={"script_inputs": [{"revision_id": "value", "node_uid": "first"}]},
+        ),
+    )
+    original = file_load(
+        start_label="Load",
+        seed_code="derived = xr.open_dataarray('source.h5')",
+        file_load_source=source,
+    )
+    changed = original.model_copy(
+        update={
+            "file_load_source": source.model_copy(
+                update={
+                    "replay_call": source.replay_call.model_copy(
+                        update={
+                            "kwargs": {
+                                "script_inputs": [
+                                    {"revision_id": "value", "node_uid": "second"}
+                                ]
+                            }
+                        }
+                    )
+                }
+            )
+        }
+    )
+    registry = _ProvenanceRevisionStore()
+    revision_id = registry.add(xr.DataArray([1.0]), original)
+    with pytest.raises(ValueError, match="bound recipe"):
+        registry.bind(revision_id, changed)
+    registry.add(revision_id="value")
+    registry.discard_unreachable((revision_id,))
+    assert registry.revision_ids == {revision_id}
+
+
+def test_revision_capture_freezes_lazy_values_and_coordinates(tmp_path) -> None:
+    registry = _ProvenanceRevisionStore()
+    source = tmp_path / "source.npy"
+    original = np.arange(6.0).reshape(2, 3)
+    np.save(source, original)
+    lazy = da.from_delayed(
+        dask.delayed(np.load)(source), shape=original.shape, dtype=original.dtype
+    )
+    data = xr.DataArray(
+        lazy,
+        name="intensity",
+        dims=("x", "eV"),
+        coords={"offset": ("x", lazy[:, 0])},
+        attrs={"nested": {"value": 1}},
+    )
+    revision_id = registry.add(data)
+    assert isinstance(data.data, da.Array)
+    assert isinstance(data.offset.data, da.Array)
+    np.save(source, original + 100)
+    data.attrs["nested"]["value"] = 2
+    expected = xr.DataArray(
+        original,
+        name="intensity",
+        dims=("x", "eV"),
+        coords={"offset": ("x", original[:, 0])},
+        attrs={"nested": {"value": 1}},
+    )
+    resolved = registry.resolve_data(revision_id)
+    assert not isinstance(resolved.data, da.Array)
+    assert not isinstance(resolved.offset.data, da.Array)
+    xr.testing.assert_identical(resolved, expected)
+    resolved.values[:] = -1
+    xr.testing.assert_identical(registry.resolve_data(revision_id), expected)
+
+
+def test_revision_consumers_retain_ancestors_until_each_owner_releases() -> None:
+    registry = _ProvenanceRevisionStore()
+    parent = registry.add(xr.DataArray([1]))
+    child = registry.add(xr.DataArray([2]), primary_revision_id=parent)
+    other = registry.add(xr.DataArray([3]))
+    with registry.retain([child]) as roots:
+        with registry.retain([child, other]):
+            roots.add(other)
+            registry.discard_unreachable(())
+            assert registry.revision_ids == {parent, child, other}
+            assert registry.retained_roots == {child, other}
+        roots.remove(other)
+        registry.discard_unreachable(())
+        assert registry.revision_ids == {parent, child}
+        assert registry.retained_roots == {child}
+    assert not registry.retained_roots
+    registry.discard_unreachable(())
+    assert not registry.revision_ids
+
+
+def test_revision_consumer_releases_on_error_and_does_not_transfer_to_copy() -> None:
+    registry = _ProvenanceRevisionStore()
+    reads = []
+
+    def _read(file_path, group_path):
+        reads.append((file_path, group_path))
+        return xr.DataArray([1])
+
+    revision_id = registry.add(
+        source=_RevisionCheckpointSource("source.itws", "/checkpoint", _read)
+    )
+
+    def _failed_load():
+        with registry.retain([revision_id]):
+            snapshot = registry.copy()
+            assert not snapshot.retained_roots
+            snapshot.discard_unreachable(())
+            assert not snapshot.revision_ids
+            registry.discard_unreachable(())
+            assert revision_id in registry
+            raise RuntimeError("Failed load")
+
+    with pytest.raises(RuntimeError, match="Failed load"):
+        _failed_load()
+    assert not reads
+    assert not registry.retained_roots
+    registry.discard_unreachable(())
+    assert not registry.revision_ids
+
+
+def test_revision_capture_validates_before_reading_and_keeps_failures_atomic() -> None:
+    registry = _ProvenanceRevisionStore()
+    reads = []
+
+    def _fail_read():
+        reads.append(True)
+        raise OSError("Source is unavailable")
+
+    data = xr.DataArray(
+        da.from_delayed(dask.delayed(_fail_read)(), shape=(2, 3), dtype=float),
+        dims=("x", "eV"),
+    )
+    with pytest.raises(OSError, match="Source is unavailable"):
+        registry.add(data)
+    assert reads == [True]
+    assert registry.revision_ids == frozenset()
+    assert not registry._data
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"revision_id": ""}, "Invalid provenance revision ID"),
+        ({"revision_id": "a/b"}, "Invalid provenance revision ID"),
+        ({"revision_id": "\x00"}, "Invalid provenance revision ID"),
+        ({"revision_id": ".."}, "Invalid provenance revision ID"),
+        (
+            {
+                "data": xr.DataArray([1]),
+                "source": _RevisionCheckpointSource(
+                    "source.itws",
+                    "/checkpoint",
+                    lambda _file, _group: xr.DataArray([2]),
+                ),
+            },
+            "Supply revision data or a checkpoint source",
+        ),
+    ],
+)
+def test_revision_registration_rejects_ambiguous_checkpoints_and_inputs(
+    kwargs, message
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    with pytest.raises(ValueError, match=message):
+        registry.add(**kwargs)
+    assert registry.revision_ids == frozenset()
+    assert not registry._data
+
+
+def test_checkpoint_source_rebinds_reader_and_owner_together() -> None:
+    calls = []
+
+    def read(file_path, group_path):
+        calls.append((file_path, group_path))
+        return xr.DataArray([1.0 if file_path == "original.itws" else 2.0])
+
+    registry = _ProvenanceRevisionStore()
+    revision_id = registry.add(
+        source=_RevisionCheckpointSource("original.itws", "/old", read)
+    )
+    xr.testing.assert_equal(registry.resolve_data(revision_id), xr.DataArray([1.0]))
+    copied = registry.copy()
+    registry.bind_checkpoint_source(
+        revision_id, _RevisionCheckpointSource("copy.itws", "/new", read)
+    )
+    assert calls == [("original.itws", "/old")]
+    xr.testing.assert_equal(registry.resolve_data(revision_id), xr.DataArray([2.0]))
+    xr.testing.assert_equal(copied.resolve_data(revision_id), xr.DataArray([1.0]))
+    assert calls == [("original.itws", "/old"), ("copy.itws", "/new")]
+
+
+def test_workspace_revision_restore_validates_all_records_before_adoption() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0])
+    current = registry.add(data, full_data())
+    conflict = workspace_revisions.revision_manifest_entry(registry.get(current))
+    conflict["source_owner_uid"] = "conflicting-owner"
+    manifest = {
+        "provenance_revisions": [
+            {"revision_id": "new", "checkpoint_object_id": "revision-new"},
+            conflict,
+        ]
+    }
+    with pytest.raises(
+        ValueError, match="Conflicting workspace provenance revision ID"
+    ):
+        workspace_revisions.restore_revision_store(registry, manifest, "incoming.itws")
+    assert registry.revision_ids == {current}
+    assert registry.get(current).source_owner_uid is None
+    assert registry.get(current).checkpoint.source is None
+    xr.testing.assert_identical(registry.resolve_data(current), data)
+
+
+def test_staged_revision_captures_merge_without_copying_or_reading_sources() -> None:
+    registry = _ProvenanceRevisionStore()
+    existing = registry.add(xr.DataArray([1.0, 2.0], dims="x"))
+    staged = registry.stage()
+    captured = staged.add(xr.DataArray([3.0, 4.0], dims="x"))
+    reads = []
+
+    def _read_checkpoint(file_path, group_path):
+        assert (file_path, group_path) == ("source.itws", "/checkpoint")
+        reads.append(True)
+        return xr.DataArray([5.0, 6.0], dims="x")
+
+    lazy = staged.add(
+        source=_RevisionCheckpointSource(
+            "source.itws", "/checkpoint", _read_checkpoint
+        ),
+        primary_revision_id=existing,
+    )
+    assert captured not in registry
+    assert lazy not in registry
+    assert not reads
+    registry.merge(staged)
+    assert not reads
+    assert registry.revision_ids == frozenset({existing, captured, lazy})
+    assert registry._data[captured] is staged._data[captured]
+    assert registry.get(lazy).primary_revision_id == existing
+    xr.testing.assert_identical(
+        registry.resolve_data(captured), xr.DataArray([3.0, 4.0], dims="x")
+    )
+    xr.testing.assert_identical(
+        registry.resolve_data(lazy), xr.DataArray([5.0, 6.0], dims="x")
+    )
+    assert reads == [True]
+    assert registry.stage().revision_ids == frozenset()
+
+
+def test_staged_revision_merge_rejects_conflicts_before_changes() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    existing = registry.add(data)
+    staged = registry.stage()
+    staged.add(data + 1)
+    staged.add(data + 2, revision_id=existing)
+    with pytest.raises(ValueError, match="already exist"):
+        registry.merge(staged)
+    assert registry.revision_ids == frozenset({existing})
+    assert set(registry._data) == {existing}
+    xr.testing.assert_identical(registry.resolve_data(existing), data)
+
+
+def test_revision_lazy_checkpoint_cache_and_source_binding_are_isolated() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x", attrs={"nested": {"value": 1}})
+    calls = []
+
+    def read_checkpoint(file_path: str, group_path: str) -> xr.DataArray:
+        assert (file_path, group_path) == ("original.itws", "/checkpoint")
+        calls.append("original")
+        return data
+
+    original_source = _RevisionCheckpointSource(
+        "original.itws", "/checkpoint", read_checkpoint
+    )
+    revision_id = registry.add(source=original_source)
+    assert registry.has_data(revision_id)
+    assert not calls
+    resolved = registry.resolve_data(revision_id)
+    resolved.values[:] = -1
+    resolved.attrs["nested"]["value"] = 2
+    xr.testing.assert_identical(registry.resolve_data(revision_id), data)
+    assert calls == ["original"]
+
+    replacement = data + 10
+
+    def read_replacement(file_path: str, group_path: str) -> xr.DataArray:
+        assert (file_path, group_path) == ("saved.itws", "/saved-checkpoint")
+        calls.append("replacement")
+        return replacement
+
+    saved_source = _RevisionCheckpointSource(
+        "saved.itws", "/saved-checkpoint", read_replacement
+    )
+    registry.bind_checkpoint_source(revision_id, saved_source)
+    assert calls == ["original"]
+    xr.testing.assert_identical(registry.resolve_data(revision_id), replacement)
+    assert calls == ["original", "replacement"]
+    checkpoint = registry.get(revision_id).checkpoint
+    assert checkpoint.source is saved_source
+
+
+def test_immutable_checkpoint_provider_keeps_array_reads_lazy() -> None:
+    registry = _ProvenanceRevisionStore()
+    reads = []
+
+    def _read_values():
+        reads.append(True)
+        return np.arange(6.0).reshape(2, 3)
+
+    def _open_checkpoint(_file_path, _group_path):
+        return xr.DataArray(
+            da.from_delayed(dask.delayed(_read_values)(), shape=(2, 3), dtype=float),
+            dims=("x", "eV"),
+            name="intensity",
+        )
+
+    revision_id = registry.add(
+        source=_RevisionCheckpointSource(
+            "immutable.itws", "/objects/checkpoint", _open_checkpoint
+        ),
+    )
+    resolved = registry.resolve_data(revision_id)
+    assert isinstance(resolved.data, da.Array)
+    assert not reads
+    np.testing.assert_array_equal(resolved.compute(), np.arange(6.0).reshape(2, 3))
+    assert reads == [True]
+
+
+@pytest.mark.parametrize(
+    ("entries", "error", "message"),
+    [
+        ({}, TypeError, "must be a list"),
+        ([None], TypeError, "must be an object"),
+        ([{}], ValueError, "has no ID"),
+        ([{"revision_id": 2}], ValueError, "has no ID"),
+        (
+            [{"revision_id": "source", "checkpoint_object_id": "other"}],
+            ValueError,
+            "not canonical",
+        ),
+        (
+            [{"revision_id": "source", "primary_revision_id": []}],
+            TypeError,
+            "primary reference",
+        ),
+        ([{"revision_id": "source", "source_owner_uid": 2}], TypeError, "source owner"),
+        (
+            [{"revision_id": "source", "provenance_spec": {"kind": "unknown"}}],
+            ValueError,
+            None,
+        ),
+    ],
+)
+def test_revision_restore_rejects_malformed_metadata_without_reading_data(
+    entries, error, message, monkeypatch
+) -> None:
+    def forbid_checkpoint_read(*args):
+        pytest.fail("metadata validation must not read revision checkpoints")
+
+    monkeypatch.setattr(
+        workspace_revisions, "_read_revision_checkpoint", forbid_checkpoint_read
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("revision_id") == "source":
+                entry.setdefault("checkpoint_object_id", "revision-source")
+    registry = _ProvenanceRevisionStore()
+    with pytest.raises(error, match=message):
+        workspace_revisions.restore_revision_store(
+            registry, {"provenance_revisions": entries}, "missing.itws"
+        )
+    assert registry.revision_ids == frozenset()
+
+
+def test_recipe_only_revision_roundtrip_preserves_unavailable_inputs() -> None:
+    registry = _ProvenanceRevisionStore()
+    recipe = script(
+        ScriptCodeOperation(label="Derived", code="derived = data + 1"),
+        start_label="Unavailable data",
+        script_inputs=(
+            ScriptInput(name="data", revision_id="missing-source"),
+            ScriptInput(name="other", revision_id="missing-source"),
+        ),
+    )
+    revision_id = registry.add(
+        spec=recipe,
+        primary_revision_id="missing-prior",
+    )
+    records = registry.reachable([revision_id])
+    manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(record) for record in records
+        ]
+    }
+    assert workspace_revisions.revision_object_writes(registry, records) == ()
+    restored = _ProvenanceRevisionStore()
+    workspace_revisions.restore_revision_store(restored, manifest, "missing.itws")
+    workspace_revisions.restore_revision_store(restored, manifest, "missing.itws")
+    workspace_revisions.bind_saved_revision_sources(restored, manifest, "saved.itws")
+    workspace_revisions.bind_saved_revision_sources(
+        restored,
+        {
+            "provenance_revisions": [
+                {"revision_id": "missing", "checkpoint_object_id": "revision-missing"}
+            ]
+        },
+        "saved.itws",
+    )
+    assert restored.revision_ids == frozenset({revision_id})
+    assert restored.get(revision_id).provenance_spec == recipe
+    assert not restored.has_data(revision_id)
+    with pytest.raises(ValueError, match="has no data checkpoint"):
+        restored.resolve_data(revision_id)
+    with pytest.raises(ValueError, match="without a data checkpoint"):
+        restored.bind_checkpoint_source(
+            revision_id,
+            _RevisionCheckpointSource("saved.itws", "/checkpoint", lambda *_args: None),
+        )
+
+
+def test_provenance_revision_workspace_roundtrip_is_lazy_and_retains_objects(
+    tmp_path, monkeypatch
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"private coordinate": ("x", [1.0, 2.0])},
+        name="original",
+        attrs={"nested": {"value": [1, 2]}},
+    )
+    first = registry.add(data, full_data())
+    second = registry.add(data + 10, primary_revision_id=first)
+    records = registry.reachable([second])
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record) for record in records
+    ]
+    path = tmp_path / "revisions.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest,
+                objects=workspace_revisions.revision_object_writes(registry, records),
+            ),
+            compression_mode="none",
+        )
+        restored = _ProvenanceRevisionStore()
+        original_open = workspace_arrays.open_workspace_dataset
+
+        def _forbid_open(*args, **kwargs):
+            raise AssertionError("restoration read a checkpoint")
+
+        monkeypatch.setattr(workspace_arrays, "open_workspace_dataset", _forbid_open)
+        workspace_revisions.restore_revision_store(restored, manifest, path)
+        assert restored.has_data(first)
+        writes = workspace_revisions.revision_object_writes(
+            restored, restored.reachable([second])
+        )
+        assert all(
+            item.dataset is None and item.source_file == str(path) for item in writes
+        )
+        monkeypatch.setattr(workspace_arrays, "open_workspace_dataset", original_open)
+        xr.testing.assert_identical(restored.resolve_data(first).compute(), data)
+        assert store.manifest_revision_object_ids(manifest) == {
+            record.checkpoint_object_id for record in records
+        }
+        assert store.collect_garbage(max_objects=10) == 0
+        with store.read_session() as h5_file:
+            assert all(
+                store.object_path(record.checkpoint_object_id) in h5_file
+                for record in records
+            )
+        saved = store.current_generation().manifest
+        assert saved["provenance_revisions"] == manifest["provenance_revisions"]
+        destination = tmp_path / "copy.itws"
+        with workspace_store.WorkspaceStore(destination, create=True) as copy_store:
+            workspace_storage._write_workspace_generation(
+                copy_store,
+                workspace_storage._WorkspaceGenerationPlan(
+                    manifest=manifest, objects=writes
+                ),
+                compression_mode="none",
+            )
+            copy_registry = _ProvenanceRevisionStore()
+            workspace_revisions.restore_revision_store(
+                copy_registry, manifest, destination
+            )
+            xr.testing.assert_identical(
+                copy_registry.resolve_data(first).compute(), data
+            )
+            old_checkpoint_reader = workspace_revisions._read_revision_checkpoint
+
+            def _read_only_new_location(path, group):
+                assert path == str(destination)
+                return old_checkpoint_reader(path, group)
+
+            monkeypatch.setattr(
+                workspace_revisions,
+                "_read_revision_checkpoint",
+                _read_only_new_location,
+            )
+            workspace_revisions.bind_saved_revision_sources(
+                restored, manifest, destination
+            )
+            xr.testing.assert_identical(
+                restored.resolve_data(second).compute(), data + 10
+            )
+        workspace_storage._compact_workspace_store(store)
+        xr.testing.assert_identical(restored.resolve_data(first).compute(), data)
+        with store.read_session() as h5_file:
+            assert all(
+                store.object_path(record.checkpoint_object_id) in h5_file
+                for record in records
+            )
+
+
+def test_workspace_trust_covers_historical_revision_recipes() -> None:
+    registry = _ProvenanceRevisionStore()
+    recipe = script(
+        ScriptCodeOperation(label="Historic", code="derived = data + 1"),
+        start_label="Historic source",
+    )
+    first = registry.add(spec=recipe)
+    second = registry.add(primary_revision_id=first)
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record)
+        for record in registry.reachable([second])
+    ]
+    baseline = workspace_code_trust_manifest(manifest).canonical_bytes()
+    assert b"revisions/" in baseline
+    manifest["provenance_revisions"][0]["provenance_spec"] = script(
+        ScriptCodeOperation(label="Changed", code="derived = data + 2"),
+        start_label="Changed source",
+    ).model_dump(mode="json")
+    assert workspace_code_trust_manifest(manifest).canonical_bytes() != baseline
+
+
+def test_revision_reimport_normalizes_metadata_and_compares_nan_values() -> None:
+    registry = _ProvenanceRevisionStore()
+    owner_snapshot = "old-owner"
+    spec = script(
+        start_label="Shift",
+        active_name="shifted",
+        primary_input="data",
+        script_inputs=(
+            ScriptInput(
+                name="data", revision_id="source", node_snapshot_token=owner_snapshot
+            ),
+            ScriptInput(name="shift", revision_id="shift-source"),
+        ),
+        steps=(
+            ReplayStep(
+                operation=ShiftFromInputOperation(along="x"),
+                input_bindings={"shift": "shift"},
+            ),
+        ),
+    )
+
+    def _forbid_checkpoint_read(_file_path: str, _group_path: str) -> xr.DataArray:
+        raise AssertionError("metadata normalization read immutable data")
+
+    source = _RevisionCheckpointSource(
+        "immutable.itws", "/checkpoint", _forbid_checkpoint_read
+    )
+    revision_id = registry.add(
+        spec=spec,
+        source=source,
+        primary_revision_id="prior",
+        source_owner_uid="owner",
+    )
+    record = registry.get(revision_id)
+    entry = workspace_revisions.revision_manifest_entry(record)
+    assert entry["provenance_spec"]["script_inputs"][0]["node_snapshot_token"] is None
+    manifest = json.loads(json.dumps({"provenance_revisions": [entry]}))
+    workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
+    assert registry.get(revision_id).checkpoint.source is source
+    assert registry.get(revision_id).provenance_spec == registry.normalize_provenance(
+        spec
+    )
+    assert spec.script_inputs[0].node_snapshot_token == owner_snapshot
+
+    manifest["provenance_revisions"][0]["provenance_spec"]["steps"][0]["operation"][
+        "cval"
+    ] = 0.0
+    with pytest.raises(
+        ValueError, match="Conflicting workspace provenance revision ID"
+    ):
+        workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
+
+
+def test_revision_save_as_evicts_cache_and_survives_original_file_removal(
+    tmp_path,
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x", name="source")
+    revision_id = registry.add(data, source_owner_uid="owner")
+    records = registry.reachable([revision_id])
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record) for record in records
+    ]
+    original = tmp_path / "original.itws"
+    destination = tmp_path / "destination.itws"
+    with workspace_store.WorkspaceStore(original, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest,
+                objects=workspace_revisions.revision_object_writes(registry, records),
+            ),
+            compression_mode="none",
+        )
+        workspace_revisions.bind_saved_revision_sources(registry, manifest, original)
+        assert revision_id not in registry._data
+        xr.testing.assert_identical(registry.resolve_data(revision_id).compute(), data)
+        assert revision_id in registry._data
+        with workspace_store.WorkspaceStore(destination, create=True) as target:
+            workspace_storage._write_workspace_generation(
+                target,
+                workspace_storage._WorkspaceGenerationPlan(
+                    manifest=manifest,
+                    objects=workspace_revisions.revision_object_writes(
+                        registry, registry.reachable([revision_id])
+                    ),
+                ),
+                compression_mode="none",
+            )
+            workspace_revisions.bind_saved_revision_sources(
+                registry, manifest, destination
+            )
+            assert revision_id not in registry._data
+    original.unlink()
+    xr.testing.assert_identical(registry.resolve_data(revision_id).compute(), data)
+    restored = _ProvenanceRevisionStore()
+    workspace_revisions.restore_revision_store(restored, manifest, destination)
+    assert restored.get(revision_id).source_owner_uid == "owner"
+
+
+def test_revision_retention_preserves_unavailable_input_references() -> None:
+    registry = _ProvenanceRevisionStore()
+    current = registry.add(
+        xr.DataArray([1.0], dims="x"),
+        spec=script(
+            start_label="Unavailable",
+            script_inputs=(
+                ScriptInput(name="unavailable", revision_id="missing-input"),
+            ),
+        ),
+        primary_revision_id="missing-prior",
+    )
+    records = registry.reachable([current])
+    assert len(records) == 1
+    assert records[0].provenance_spec.replay_inputs[0].revision_id == "missing-input"
+    assert records[0].primary_revision_id == "missing-prior"
+    registry.discard_unreachable([current])
+    assert registry.has_data(current)
+    assert not registry.has_data("missing-input")
+    with pytest.raises(KeyError, match="missing-input"):
+        registry.resolve_data("missing-input")
+
+
+def test_revision_retention_includes_tool_inputs_and_current_role_caches() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0], dims="x")
+    current, displayed, stale, nested_id, tool_id = [
+        registry.add(data) for _ in range(5)
+    ]
+    nested = script(
+        start_label="Nested",
+        active_name="derived",
+        seed_code="derived = inner",
+        script_inputs=(ScriptInput(name="inner", revision_id=nested_id),),
+    )
+    node = SimpleNamespace(
+        _current_revision_id=current,
+        _revision_ids_by_role={
+            "source": ("stale-source", stale),
+            "displayed": ("live-display", displayed),
+        },
+        snapshot_token_for_role=lambda role: {
+            "source": "live-source",
+            "displayed": "live-display",
+        }[role],
+        passive_displayed_provenance_spec=None,
+        source_spec=None,
+        active_tool_script_inputs=(
+            ScriptInput(
+                name="outer",
+                revision_id=tool_id,
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+    )
+    manager = SimpleNamespace(
+        _tool_graph=SimpleNamespace(nodes={"tool": node}),
+        _provenance_revisions=registry,
+    )
+    expected = {current, displayed, nested_id, tool_id}
+    leased = registry.add(data)
+    with registry.retain((leased,)):
+        assert workspace_revisions.retained_revision_ids(manager) == expected | {leased}
+    retained = workspace_revisions.retained_revision_ids(manager)
+    assert retained == expected
+    registry.discard_unreachable(retained)
+    assert stale not in registry
+    assert leased not in registry
+
+
+@pytest.mark.parametrize("factory", [full_data, public_data, selection])
+def test_revision_normalizes_legacy_source_kind_with_stored_python(factory) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    source_id = registry.add(data)
+    code = "derived = derived + 1"
+    legacy = factory(ScriptCodeOperation(label="Legacy", code=code))
+    normalized = registry.normalize_provenance(
+        legacy, replay_source_revision_id=source_id
+    )
+    assert normalized is not None
+    assert normalized.kind == "script"
+    assert normalized.root_input.revision_id == source_id
+    assert normalized.steps[-1].operation.code == code
+    from erlab.interactive._code_trust import (
+        issue_execution_capability,
+        new_document_trust,
+    )
+
+    def _authorize(entries):
+        return issue_execution_capability(new_document_trust(), entries)[1]
+
+    xr.testing.assert_identical(
+        replay_script_provenance(normalized, {"data": data}, authorize=_authorize),
+        data + 1,
+    )
+
+
+def test_provenance_revision_migrates_only_the_known_legacy_owner_seed() -> None:
+    registry = _ProvenanceRevisionStore()
+    nested_snapshot = "unknown-nested-owner"
+    owner_snapshot = "known-owner"
+    nested = script(
+        ScriptCodeOperation(label="Inner", code="derived = inner + 1"),
+        start_label="Inner source",
+        script_inputs=(ScriptInput(name="inner", node_snapshot_token=nested_snapshot),),
+    )
+    spec = script(
+        ScriptCodeOperation(label="Outer", code="derived = outer + 1"),
+        start_label="Outer source",
+        script_inputs=(
+            ScriptInput(
+                name="outer",
+                node_snapshot_token=owner_snapshot,
+                provenance_spec=nested.model_dump(mode="json"),
+            ),
+        ),
+    )
+    reads = 0
+
+    def _read_immutable_legacy_seed(_file_path: str, _group_path: str) -> xr.DataArray:
+        nonlocal reads
+        reads += 1
+        return xr.DataArray([1.0, 2.0], dims="x")
+
+    seed_id = registry.add(
+        source=_RevisionCheckpointSource(
+            "immutable.itws", "/checkpoint", _read_immutable_legacy_seed
+        )
+    )
+    frozen = registry.normalize_provenance(spec, replay_source_revision_id=seed_id)
+    assert frozen is not None
+    assert reads == 0
+    seed_id = frozen.script_inputs[0].revision_id
+    assert seed_id is not None
+    assert spec.script_inputs[0].revision_id is None
+    inner = frozen.script_inputs[0].parsed_provenance_spec()
+    assert inner is not None
+    assert inner.script_inputs[0].revision_id is None
+    assert inner.script_inputs[0].node_snapshot_token is None
+    assert frozen.script_inputs[0].node_snapshot_token is None
+    result = registry.add(
+        xr.DataArray([10.0, 20.0], dims="x"),
+        frozen,
+    )
+    assert {record.revision_id for record in registry.reachable([result])} == {
+        result,
+        seed_id,
+    }
+    np.testing.assert_array_equal(registry.resolve_data(seed_id), [1.0, 2.0])
+    assert reads == 1
+    record = registry.get(result)
+    assert record is not None
+    entry = workspace_revisions.revision_manifest_entry(record)
+    assert entry["provenance_spec"]["script_inputs"][0]["revision_id"] == seed_id
+    assert "replay_source_revision_id" not in entry
+    manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(record)
+            for record in registry.reachable([result])
+        ]
+    }
+    workspace_revisions.restore_revision_store(registry, manifest, "unused.itws")
+
+
+@pytest.mark.parametrize(
+    "operation", [None, IselOperation(kwargs={"x": slice(1, None)})]
+)
+def test_provenance_revision_normalizes_live_source_to_exact_named_input(
+    operation,
+) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0, 3.0], dims="x", coords={"x": [2.0, 4.0, 8.0]})
+    seed_id = registry.add(data)
+    legacy = full_data() if operation is None else full_data(operation)
+    normalized = registry.normalize_provenance(
+        legacy, replay_source_revision_id=seed_id
+    )
+    assert normalized is not None
+    assert normalized.replay_primary_input == "data"
+    assert normalized.root_input.revision_id == seed_id
+    assert normalized.root_input.node_snapshot_token is None
+    expected = data if operation is None else data.isel(x=slice(1, None))
+    xr.testing.assert_identical(
+        replay_script_provenance(normalized, {"data": data}), expected
+    )
+    assert registry.normalize_provenance(normalized) == normalized
+
+
+def test_provenance_revision_names_implicit_script_source() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    seed_id = registry.add(data)
+    legacy = script(
+        start_label="Legacy source",
+        seed_code="derived = data + 1",
+        active_name="derived",
+    )
+    normalized = registry.normalize_provenance(
+        legacy, replay_source_revision_id=seed_id
+    )
+    assert normalized is not None
+    assert normalized.seed_code == legacy.seed_code
+    assert [(item.name, item.revision_id) for item in normalized.script_inputs] == [
+        ("data", seed_id)
+    ]
+    from erlab.interactive._code_trust import (
+        issue_execution_capability,
+        new_document_trust,
+    )
+
+    def _authorize(entries):
+        return issue_execution_capability(new_document_trust(), entries)[1]
+
+    xr.testing.assert_identical(
+        replay_script_provenance(normalized, {"data": data}, authorize=_authorize),
+        data + 1,
+    )
 
 
 def test_workspace_file_access_retry_contract(
@@ -247,13 +1517,347 @@ def test_workspace_store_rebinds_only_existing_legacy_payloads(tmp_path) -> None
         assert matching.object_ids == ["payload"]
 
 
+def test_workspace_reader_attachment_does_not_block_legacy_rebinding(
+    monkeypatch, tmp_path
+) -> None:
+    import contextlib
+
+    path = tmp_path / "workspace.itws"
+    attachment_started = threading.Event()
+    store_locked = threading.Event()
+    attachment_waiting = threading.Event()
+    readers = []
+    errors: list[BaseException] = []
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(workspace_store.WorkspaceStore.object_path("payload"))
+        legacy = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
+        original_attach = workspace_arrays.WorkspaceFileManager._attach_store
+        original_read_session = store.read_session
+        original_lock = store.lock
+
+        class _ObservedStoreLock:
+            def __enter__(self):
+                if threading.current_thread() is attachment_thread:
+                    attachment_waiting.set()
+                if not original_lock.acquire(timeout=2):
+                    raise TimeoutError("Reader attachment blocked legacy rebinding")
+                return self
+
+            def __exit__(self, *_args):
+                original_lock.release()
+
+        def _attach(reader, target):
+            attachment_started.set()
+            if not store_locked.wait(2):
+                raise TimeoutError("Legacy rebinding did not acquire the store lock")
+            original_attach(reader, target)
+
+        @contextlib.contextmanager
+        def _read_session(*args, **kwargs):
+            if threading.current_thread() is rebind_thread:
+                store_locked.set()
+                if not attachment_waiting.wait(2):
+                    raise TimeoutError(
+                        "Reader attachment did not request the store lock"
+                    )
+            with original_read_session(*args, **kwargs) as h5_file:
+                yield h5_file
+
+        def _new_reader():
+            try:
+                readers.append(
+                    workspace_arrays.WorkspaceFileManager(path, group_path="/other")
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        def _rebind():
+            try:
+                store.rebind_legacy_readers({"/legacy": "payload"})
+            except BaseException as exc:
+                errors.append(exc)
+
+        attachment_thread = threading.Thread(target=_new_reader)
+        rebind_thread = threading.Thread(target=_rebind)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                workspace_arrays.WorkspaceFileManager, "_attach_store", _attach
+            )
+            patch.setattr(store, "_lock", _ObservedStoreLock())
+            patch.setattr(store, "read_session", _read_session)
+            attachment_thread.start()
+            try:
+                assert attachment_started.wait(2)
+                rebind_thread.start()
+            finally:
+                attachment_thread.join(3)
+                if rebind_thread.ident is not None:
+                    rebind_thread.join(3)
+                store_locked.set()
+                attachment_waiting.set()
+        assert not attachment_thread.is_alive()
+        assert not rebind_thread.is_alive()
+        assert not errors
+        assert legacy._object_id == "payload"
+        assert len(readers) == 1
+        assert readers[0]._store is store
+        assert readers[0] in store._readers
+        readers[0].close()
+        legacy.close()
+
+
+def test_workspace_reader_rejects_store_closed_before_attachment(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    store = workspace_store.WorkspaceStore(path, create=True)
+    attachment_started = threading.Event()
+    finish_attachment = threading.Event()
+    original_attach = workspace_arrays.WorkspaceFileManager._attach_store
+    errors: list[BaseException] = []
+
+    def _attach(reader, target):
+        attachment_started.set()
+        if not finish_attachment.wait(2):
+            raise TimeoutError("Reader attachment was not released")
+        original_attach(reader, target)
+
+    def _new_reader():
+        try:
+            workspace_arrays.WorkspaceFileManager(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_arrays.WorkspaceFileManager, "_attach_store", _attach)
+        reader_thread = threading.Thread(target=_new_reader)
+        reader_thread.start()
+        try:
+            assert attachment_started.wait(2)
+            store.close()
+        finally:
+            finish_attachment.set()
+            reader_thread.join(3)
+            store.close()
+    assert not reader_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert str(errors[0]) == "Workspace store closed before reader attachment"
+    reader = workspace_arrays.WorkspaceFileManager(path)
+    try:
+        with reader.read_session() as h5_file:
+            assert h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
+    finally:
+        reader.close()
+
+
+def test_workspace_recovery_does_not_block_reader_attachment(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    recovery_started = threading.Event()
+    attachment_waiting = threading.Event()
+    errors: list[BaseException] = []
+    readers = []
+    original_path_lock = workspace_arrays._workspace_file_lock(path)
+    original_path_check = workspace_storage._workspace_path_is_itws
+
+    class _ObservedPathLock:
+        def __enter__(self):
+            if threading.current_thread() is attachment_thread:
+                attachment_waiting.set()
+            if not original_path_lock.acquire(timeout=2):
+                raise TimeoutError("Workspace recovery blocked reader attachment")
+            return self
+
+        def __exit__(self, *_args):
+            original_path_lock.release()
+
+        def acquire(self, *args, **kwargs):
+            return original_path_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            original_path_lock.release()
+
+    def _path_check(fname):
+        if threading.current_thread() is recovery_thread:
+            recovery_started.set()
+            if not attachment_waiting.wait(2):
+                raise TimeoutError("Reader attachment did not request the path lock")
+        return original_path_check(fname)
+
+    def _recover():
+        try:
+            workspace_storage._recover_workspace_transactions(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _new_reader():
+        try:
+            readers.append(workspace_arrays.WorkspaceFileManager(path))
+        except BaseException as exc:
+            errors.append(exc)
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.create_group("__itws_pending_orphan")
+        recovery_thread = threading.Thread(target=_recover)
+        attachment_thread = threading.Thread(target=_new_reader)
+        with monkeypatch.context() as patch:
+            observed_lock = _ObservedPathLock()
+            patch.setattr(
+                workspace_arrays, "_workspace_file_lock", lambda _path: observed_lock
+            )
+            patch.setattr(workspace_storage, "_workspace_path_is_itws", _path_check)
+            recovery_thread.start()
+            try:
+                assert recovery_started.wait(2)
+                attachment_thread.start()
+                attachment_thread.join(3)
+                recovery_thread.join(3)
+            finally:
+                attachment_waiting.set()
+                recovery_thread.join(3)
+                if attachment_thread.ident is not None:
+                    attachment_thread.join(3)
+        assert not attachment_thread.is_alive()
+        assert not recovery_thread.is_alive()
+        assert not errors
+        assert len(readers) == 1
+        assert readers[0]._store is store
+        with store.read_session() as h5_file:
+            assert "__itws_pending_orphan" not in h5_file
+        readers[0].close()
+
+
+def test_workspace_pending_reader_owns_historical_payload_before_gc(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    historical_path = workspace_store.WorkspaceStore.object_path("historical")
+    values = np.arange(4.0)
+    with workspace_store.WorkspaceStore(path, create=True) as previous:
+        with previous.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file,
+                historical_path,
+                xr.Dataset({"data": ("x", values)}),
+                compression_mode="none",
+            )
+            h5_file.require_group(workspace_store.WorkspaceStore.object_path("current"))
+        previous.publish(_manifest("historical"))
+        previous.publish(_manifest("current"))
+        previous.publish(_manifest("current"))
+
+    reader = workspace_arrays.WorkspaceFileManager(
+        path, object_id="historical", group_path=historical_path
+    )
+    original_attach = workspace_arrays.WorkspaceFileManager._attach_store
+    attachment_started = threading.Event()
+    finish_attachment = threading.Event()
+    collector_waiting = threading.Event()
+    collection_finished = threading.Event()
+    collection_blocked: list[bool] = []
+    errors: list[BaseException] = []
+    stores = []
+
+    def _attach(pending_reader, target):
+        stores.append(target)
+        attachment_started.set()
+        if not finish_attachment.wait(2):
+            raise TimeoutError("Pending reader attachment was not released")
+        original_attach(pending_reader, target)
+
+    def _open_store():
+        try:
+            workspace_store.WorkspaceStore(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def _collect():
+        try:
+            stores[0].collect_garbage(max_objects=10)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            collection_finished.set()
+
+    opening_thread = threading.Thread(target=_open_store)
+    collector_thread = threading.Thread(target=_collect)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                workspace_arrays.WorkspaceFileManager, "_attach_store", _attach
+            )
+            opening_thread.start()
+            assert attachment_started.wait(2)
+            store = stores[0]
+            original_lock = store.lock
+
+            class _ObservedStoreLock:
+                def __enter__(self):
+                    acquired = original_lock.acquire(blocking=False)
+                    if (
+                        threading.current_thread() is collector_thread
+                        and not collection_blocked
+                    ):
+                        collection_blocked.append(not acquired)
+                        collector_waiting.set()
+                    if not acquired and not original_lock.acquire(timeout=2):
+                        raise TimeoutError("Pending reader attachment did not finish")
+                    return self
+
+                def __exit__(self, *_args):
+                    original_lock.release()
+
+                def __getattr__(self, name):
+                    return getattr(original_lock, name)
+
+            observed_lock = _ObservedStoreLock()
+            patch.setattr(store, "_lock", observed_lock)
+            patch.setattr(
+                store, "_access_condition", threading.Condition(observed_lock)
+            )
+            collector_thread.start()
+            assert collector_waiting.wait(2)
+            # If publication released the store lock early, finish collection
+            # before attachment so the historical data loss is deterministic.
+            if not collection_blocked[0]:
+                assert collection_finished.wait(2)
+            finish_attachment.set()
+            opening_thread.join(3)
+            collector_thread.join(3)
+        assert not opening_thread.is_alive()
+        assert not collector_thread.is_alive()
+        assert not errors
+        assert reader._store is stores[0]
+        with reader.read_session() as h5_file:
+            actual = (
+                h5_file.groups[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+                .groups["historical"]
+                .variables["data"][:]
+            )
+        np.testing.assert_array_equal(actual, values)
+    finally:
+        finish_attachment.set()
+        if opening_thread.ident is not None:
+            opening_thread.join(3)
+        if collector_thread.ident is not None:
+            collector_thread.join(3)
+        reader.close()
+        for store in stores:
+            store.close()
+
+
 def test_workspace_compaction_allows_missing_optional_extension_source(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "workspace.itws"
     source_hash = "a" * 64
     manifest = {
-        "schema_version": 6,
+        "schema_version": _persistence_constants.WORKSPACE_SCHEMA_VERSION,
         "nodes": [],
         "embedded_extension_sources": [
             {
@@ -1538,6 +3142,131 @@ def test_workspace_store_reentrant_and_writer_owned_read_sessions(
 
         with store.write_session() as writable, store.read_session() as reader:
             assert reader is writable
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "construct",
+        "get_variables",
+        "get_attrs",
+        "get_dimensions",
+        "get_parent_dimensions",
+        "get_encoding",
+        "load",
+        "tree",
+    ],
+)
+@pytest.mark.parametrize("attached", [False, True])
+def test_workspace_metadata_retains_handle_until_operation_finishes(
+    tmp_path: pathlib.Path, monkeypatch, operation: str, attached: bool
+) -> None:
+    import xarray.backends.h5netcdf_ as h5netcdf_backend
+
+    path = tmp_path / "workspace.itws"
+    object_id = "payload"
+    dataset = xr.Dataset(
+        {"data": (("x", "y"), np.arange(6.0).reshape(2, 3))},
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        attrs={"description": "metadata read"},
+    )
+    with workspace_store.WorkspaceStore(path, create=True) as owner:
+        workspace_storage._write_workspace_generation(
+            owner,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=_manifest(object_id),
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(object_id, dataset=dataset),
+                ),
+            ),
+            compression_mode="none",
+        )
+        if not attached:
+            owner.close()
+        manager = workspace_arrays.WorkspaceFileManager(
+            path, object_id=object_id, group_path=owner.object_path(object_id)
+        )
+        other_reader = workspace_arrays.WorkspaceFileManager(path)
+        closed: list[bool] = []
+        errors: list[BaseException] = []
+
+        def _collect_if_unlocked() -> None:
+            lock = (
+                owner.lock if attached else workspace_arrays._workspace_file_lock(path)
+            )
+            acquired = lock.acquire(blocking=False)
+            closed.append(acquired)
+            if acquired:
+                try:
+                    if attached:
+                        owner.collect_garbage(max_objects=10)
+                    else:
+                        other_reader.close()
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    lock.release()
+
+        def _probe_handle_lifetime() -> None:
+            if closed:
+                return
+            collector = threading.Thread(target=_collect_if_unlocked)
+            collector.start()
+            collector.join(2)
+            assert not collector.is_alive()
+            assert not errors
+
+        if operation == "construct":
+            original_find_root = h5netcdf_backend.find_root_and_group
+
+            def _find_root(group):
+                _probe_handle_lifetime()
+                return original_find_root(group)
+
+            monkeypatch.setattr(h5netcdf_backend, "find_root_and_group", _find_root)
+        elif operation == "tree":
+            original_iter = workspace_arrays._iter_h5netcdf_group_paths
+
+            def _iter_groups(group, path="/"):
+                _probe_handle_lifetime()
+                yield from original_iter(group, path)
+
+            monkeypatch.setattr(
+                workspace_arrays, "_iter_h5netcdf_group_paths", _iter_groups
+            )
+
+        backend = workspace_arrays._WorkspaceH5NetCDFStore(
+            manager,
+            group=owner.object_path(object_id),
+            mode="r",
+        )
+        if operation not in {"construct", "tree"}:
+            original_acquire = backend._acquire
+
+            def _acquire(needs_lock=True):
+                group = original_acquire(needs_lock)
+                _probe_handle_lifetime()
+                return group
+
+            monkeypatch.setattr(backend, "_acquire", _acquire)
+            getattr(backend, operation)()
+        elif operation == "tree":
+            with workspace_arrays.open_workspace_datatree(path, chunks={}) as tree:
+                xr.testing.assert_equal(
+                    tree[owner.object_path(object_id)].to_dataset(),
+                    dataset,
+                )
+
+        assert closed == [False]
+        if attached:
+            assert not owner.collect_garbage(max_objects=10)
+        else:
+            other_reader.close()
+        with workspace_arrays.open_workspace_dataset(
+            path, owner.object_path(object_id), chunks={}
+        ) as opened:
+            xr.testing.assert_equal(opened.compute(), dataset)
+        backend.close()
 
 
 def test_workspace_metadata_reads_wait_during_established_write(

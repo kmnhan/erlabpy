@@ -6,7 +6,6 @@ import typing
 
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDependencyRef,
-    script_input_dependency_refs,
     script_inputs_dependency_refs,
 )
 
@@ -34,25 +33,6 @@ def _combine_source_states(states: Iterable[_SourceState]) -> _SourceState:
     return aggregate
 
 
-def _effective_script_input_dependency_refs(
-    script_inputs: Sequence[ScriptInput],
-    *,
-    owner_replay_source_available: bool = False,
-) -> tuple[ScriptInputDependencyRef, ...]:
-    """Return the live dependencies selected by named input resolution."""
-    refs: list[ScriptInputDependencyRef] = []
-    for script_input in script_inputs:
-        if owner_replay_source_available and script_input.uses_owner_replay_source:
-            continue
-        if script_input.node_uid:
-            refs.extend(script_inputs_dependency_refs((script_input,)))
-            continue
-        fallback = script_input.parsed_provenance_spec()
-        if fallback is not None:
-            refs.extend(_effective_script_input_dependency_refs(fallback.script_inputs))
-    return tuple(refs)
-
-
 class _ManagerDependencyTracker:
     """Track script-input dependencies and deferred source refresh requests."""
 
@@ -63,7 +43,6 @@ class _ManagerDependencyTracker:
             tuple[
                 _ManagedWindowNode,
                 int,
-                bool,
                 tuple[
                     ScriptInputDependencyRef,
                     ...,
@@ -96,40 +75,28 @@ class _ManagerDependencyTracker:
             self.invalidate_uid(uid)
             return ()
         if node.is_imagetool:
-            script_inputs = ()
             spec = node.provenance_spec
+            script_inputs = () if spec is None else spec.replay_inputs
         else:
             script_inputs = node.tool_script_inputs
             spec = None if script_inputs else node.provenance_spec
             if spec is not None:
-                script_inputs = spec.script_inputs
-        if spec is None and not script_inputs:
+                script_inputs = spec.replay_inputs
+        if not script_inputs:
             self._remove_reverse_refs(uid)
             self._ref_cache.pop(uid, None)
             self._unindexed_uids.pop(uid, None)
             self._status_cache[uid] = None
             return ()
         cached = self._ref_cache.get(uid)
-        owner_replay_source_available = node.has_replay_source
         if (
             cached is not None
             and cached[0] is node
             and cached[1] == node.provenance_revision
-            and cached[2] == owner_replay_source_available
         ):
             self._unindexed_uids.pop(uid, None)
-            return cached[3]
-        refs = (
-            _effective_script_input_dependency_refs(
-                script_inputs,
-                owner_replay_source_available=owner_replay_source_available,
-            )
-            if script_inputs
-            else script_input_dependency_refs(
-                spec,
-                owner_replay_source_available=owner_replay_source_available,
-            )
-        )
+            return cached[2]
+        refs = script_inputs_dependency_refs(script_inputs)
         self._remove_reverse_refs(uid)
         source_uids = {ref.node_uid for ref in refs}
         self._source_uids_by_dependent[uid] = source_uids
@@ -138,7 +105,6 @@ class _ManagerDependencyTracker:
         self._ref_cache[uid] = (
             node,
             node.provenance_revision,
-            owner_replay_source_available,
             refs,
         )
         self._unindexed_uids.pop(uid, None)
@@ -209,14 +175,9 @@ class _ManagerDependencyTracker:
         self,
         dependent_uid: str,
         script_inputs: Sequence[ScriptInput],
-        *,
-        owner_replay_source_available: bool,
     ) -> bool:
         """Return whether replacing a node would create an input cycle."""
-        for ref in _effective_script_input_dependency_refs(
-            script_inputs,
-            owner_replay_source_available=owner_replay_source_available,
-        ):
+        for ref in script_inputs_dependency_refs(script_inputs):
             if ref.node_uid == dependent_uid or self.transitively_depends_on(
                 ref.node_uid, dependent_uid
             ):

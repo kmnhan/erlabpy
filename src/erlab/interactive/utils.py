@@ -35,7 +35,7 @@ import warnings
 import weakref
 import webbrowser
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import numpy.typing as npt
@@ -52,8 +52,10 @@ from erlab.interactive import (
 )
 from erlab.interactive._code_trust import (
     approve_document_trust,
+    bind_document_trust_manifest,
     commit_local_edit_trust,
     create_manifest,
+    document_trust_has_trusted_lineage,
     document_trust_is_trusted,
     execution_capability_allows,
     external_document_trust,
@@ -61,6 +63,7 @@ from erlab.interactive._code_trust import (
     issue_execution_capability,
     issue_local_edit_capability,
     manifest_has_code,
+    merge_document_trust,
     new_document_trust,
     verify_document_payload_entries,
 )
@@ -1801,55 +1804,73 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     return None
 
 
-def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
-    import xarray_lmfit
+def _fit_dataset_to_blob(ds: xr.Dataset) -> np.ndarray:
+    buffer = io.BytesIO()
+    ds.to_netcdf(buffer, engine="h5netcdf", invalid_netcdf=True)
+    return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
 
+
+def _normalize_fit_dataset_blob(blob: npt.ArrayLike) -> np.ndarray:
+    from erlab.analysis.fit._serialization import normalize_result
+
+    serialized = xr.load_dataset(
+        io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()), engine="h5netcdf"
+    )
+    changed = False
+    for name in serialized.data_vars:
+        if str(name).endswith("modelfit_results"):
+            normalized = np.vectorize(normalize_result, otypes=[object])(
+                serialized[name].values
+            )
+            changed |= not np.array_equal(normalized, serialized[name].values)
+            serialized[name] = serialized[name].copy(data=normalized)
+    if not changed:
+        return np.array(blob, dtype=np.uint8, copy=True)
+    return _fit_dataset_to_blob(serialized)
+
+
+def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
+    from xarray_lmfit._io import _patch_encode4js
+
+    from erlab.analysis.fit._serialization import dumps_result
     from erlab.interactive.imagetool import _serialization
 
-    serialized = ds.copy()
+    serialized = ds.compute()
     private_coord_data_name = _fit_dataset_private_coord_data_name(serialized)
     if private_coord_data_name is not None:
         serialized = _serialization.encode_private_coords(
             serialized, private_coord_data_name
         )
-    buffer = io.BytesIO()
-    xarray_lmfit.save_fit(
-        serialized,
-        buffer,
-        engine="h5netcdf",
-        invalid_netcdf=True,
-    )
-    return np.frombuffer(buffer.getvalue(), dtype=np.uint8).copy()
+    with _patch_encode4js():
+        for name in serialized.data_vars:
+            if str(name).endswith("modelfit_results"):
+                serialized[name] = xr.apply_ufunc(
+                    dumps_result,
+                    serialized[name],
+                    vectorize=True,
+                    output_dtypes=[object],
+                    keep_attrs=True,
+                )
+    return _fit_dataset_to_blob(serialized)
 
 
 def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
-    import lmfit
-    import xarray_lmfit
-
+    from erlab.analysis.fit._serialization import loads_result
     from erlab.interactive.imagetool import _serialization
 
-    restored = xarray_lmfit.load_fit(
+    restored = xr.load_dataset(
         io.BytesIO(np.asarray(blob, dtype=np.uint8).tobytes()),
         engine="h5netcdf",
     )
-
-    def restore_model_components(model: lmfit.Model) -> None:
-        if isinstance(model, lmfit.model.CompositeModel):
-            restore_model_components(model.left)
-            restore_model_components(model.right)
-        elif type(model) is lmfit.Model and isinstance(
-            model.func, erlab.analysis.fit.functions.MultiPeakFunction
-        ):
-            # lmfit restores the callable and model state, but loses the subclass
-            # that supplies separate peak and background components.
-            model.__class__ = erlab.analysis.fit.models.MultiPeakModel
-
-    for name, variable in restored.data_vars.items():
+    for name in restored.data_vars:
         if str(name).endswith("modelfit_results"):
-            for result in variable.values.flat:
-                if isinstance(result, lmfit.model.ModelResult):
-                    restore_model_components(result.model)
-
+            restored[name] = xr.apply_ufunc(
+                loads_result,
+                restored[name],
+                vectorize=True,
+                output_dtypes=[object],
+                keep_attrs=True,
+            )
     private_coord_data_name = _fit_dataset_private_coord_data_name(restored)
     if private_coord_data_name is not None:
         restored = _serialization.restore_private_coords(
@@ -3386,6 +3407,46 @@ def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
     return output_id
 
 
+@dataclass(frozen=True)
+class _ToolInputTransaction:
+    script_inputs: tuple[ScriptInput, ...]
+    commit: Callable[[], None] | None = None
+    publication_context: Callable[[], contextlib.AbstractContextManager[None]] = (
+        contextlib.nullcontext
+    )
+
+
+@dataclass(frozen=True)
+class _ToolInputState:
+    script_inputs: tuple[ScriptInput, ...]
+    primary_input: str | None
+    pending: _ToolInputTransaction | None = None
+
+    @property
+    def active_script_inputs(self) -> tuple[ScriptInput, ...]:
+        return self.script_inputs + (
+            () if self.pending is None else self.pending.script_inputs
+        )
+
+    def map_inputs(
+        self, transform: Callable[[ScriptInput], ScriptInput]
+    ) -> _ToolInputState:
+        return replace(
+            self,
+            script_inputs=tuple(transform(item) for item in self.script_inputs),
+            pending=(
+                None
+                if self.pending is None
+                else replace(
+                    self.pending,
+                    script_inputs=tuple(
+                        transform(item) for item in self.pending.script_inputs
+                    ),
+                )
+            ),
+        )
+
+
 class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     """A window that can be saved and restored from a netcdf file.
 
@@ -3506,7 +3567,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     sigStateChanged = QtCore.Signal()  #: :meta private:
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigProvenanceChanged = QtCore.Signal()  #: :meta private:
-    _sigSourceRefreshAborted = QtCore.Signal()  #: :meta private:
+    _sigSourceRefreshAborted = QtCore.Signal(bool)  #: :meta private:
 
     def __init_subclass__(cls, **kwargs: typing.Any) -> None:
         """Put each concrete status setter inside the mutation boundary."""
@@ -3576,7 +3637,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             Callable[[Iterable[CodeTrustEntry]], tuple[CodeTrustEntry, ...]] | None
         ) = None
         self._script_inputs: tuple[ScriptInput, ...] = ()
-        self._pending_script_inputs: tuple[ScriptInput, ...] | None = None
+        self._pending_input_transaction: _ToolInputTransaction | None = None
         self._primary_input: str | None = None
         self._provenance_revision = 0
         self._provenance_change_depth = 0
@@ -3588,6 +3649,13 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             Callable[
                 [],
                 tuple[Mapping[str, xr.DataArray], tuple[ScriptInput, ...]],
+            ]
+            | None
+        ) = None
+        self._input_provenance_context: (
+            Callable[
+                [Callable[[ToolProvenanceSpec], ToolProvenanceSpec]],
+                contextlib.AbstractContextManager[None],
             ]
             | None
         ) = None
@@ -4516,6 +4584,15 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         prompt_on_reuse: bool,
     ) -> erlab.interactive.imagetool.ImageTool | None:
         manager, parent_uid = self._managed_output_imagetool_parent()
+        provenance_trust: _DocumentTrust | None = None
+        if manager is None or parent_uid is None:
+            manifest = self._current_code_trust_manifest()
+            provenance_trust = (
+                new_document_trust()
+                if manifest is None
+                or self._issue_code_execution_capability(manifest.entries) is not None
+                else external_document_trust(manifest)
+            )
         output_source_state: typing.Literal["fresh", "stale", "unavailable"] = (
             self.source_state if self._script_inputs else "fresh"
         )
@@ -4526,7 +4603,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 return None
 
             if manager is None or parent_uid is None:
-                tool.set_provenance_spec(provenance_spec)
+                tool.set_provenance_spec(provenance_spec, _code_trust=provenance_trust)
                 tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
                 tool.show()
                 tool.raise_()
@@ -4550,7 +4627,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             if isinstance(
                 existing_target, erlab.interactive.imagetool.ImageTool
             ) and qt_is_valid(existing_target):
-                existing_target.set_provenance_spec(provenance_spec)
+                existing_target.set_provenance_spec(
+                    provenance_spec, _code_trust=provenance_trust
+                )
                 existing_target.slicer_area.replace_source_data(data)
                 existing_target.show()
                 existing_target.raise_()
@@ -4562,7 +4641,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             tool = erlab.interactive.itool(data, manager=False, execute=False)
             if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
                 return None
-            tool.set_provenance_spec(provenance_spec)
+            tool.set_provenance_spec(provenance_spec, _code_trust=provenance_trust)
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._register_output_imagetool_target(output_id, tool)
             tool.show()
@@ -4580,17 +4659,18 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             if action == "cancel":
                 return None
             if action == "update":
-                node.set_output_binding(
-                    output_id,
-                    auto_update=node.source_auto_update,
-                    state=output_source_state,
-                )
+                node.revision_id_for_role("source")
+                with node._suspend_snapshot_updates():
+                    node.set_output_binding(
+                        output_id,
+                        auto_update=node.source_auto_update,
+                        state=output_source_state,
+                    )
                 node._replace_imagetool_data(
                     data,
                     provenance_spec,
                     state=output_source_state,
                     propagate_descendants=True,
-                    replay_source_data=None,
                 )
                 manager.show_childtool(existing_target)
                 return manager.get_imagetool(existing_target)
@@ -4640,6 +4720,30 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     def script_inputs(self) -> tuple[ScriptInput, ...]:
         """Return the fixed named inputs consumed by this tool."""
         return tuple(item.model_copy(deep=True) for item in self._script_inputs)
+
+    def _input_state(self) -> _ToolInputState:
+        return _ToolInputState(
+            self._script_inputs, self._primary_input, self._pending_input_transaction
+        ).map_inputs(lambda item: item.model_copy(deep=True))
+
+    def _restore_input_state(self, state: _ToolInputState) -> None:
+        if self._input_state() == state:
+            return
+        copied = state.map_inputs(lambda item: item.model_copy(deep=True))
+        with self._coalesce_provenance_changes():
+            self._script_inputs = copied.script_inputs
+            self._primary_input = copied.primary_input
+            self._pending_input_transaction = copied.pending
+            self._notify_provenance_changed()
+
+    @property
+    def active_script_inputs(self) -> tuple[ScriptInput, ...]:
+        """Return accepted inputs and inputs held by an active refresh."""
+        return self._input_state().active_script_inputs
+
+    def _discard_input_transaction(self) -> None:
+        self._pending_input_transaction = None
+        self._source_refresh_deferred = False
 
     @property
     def primary_input(self) -> str | None:
@@ -4711,7 +4815,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         elif primary_input is not None:
             raise ValueError("primary_input requires at least one script input")
 
-        self._pending_script_inputs = None
+        self._discard_input_transaction()
+        self._source_refresh_rerun_requested = False
         changed = (
             normalized != self._script_inputs or primary_input != self._primary_input
         )
@@ -4729,9 +4834,18 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             [], tuple[Mapping[str, xr.DataArray], tuple[ScriptInput, ...]]
         ]
         | None,
+        *,
+        provenance_context: (
+            Callable[
+                [Callable[[ToolProvenanceSpec], ToolProvenanceSpec]],
+                contextlib.AbstractContextManager[None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         """Set the standalone owner callback that resolves all current inputs."""
         self._input_resolver = resolver
+        self._input_provenance_context = provenance_context
 
     def _set_managed_source_update_dialog(
         self, callback: Callable[..., int] | None
@@ -4844,15 +4958,28 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         """Record that the current source refresh has been applied to the tool."""
         rerun_requested = self._source_refresh_rerun_requested
         self._source_refresh_rerun_requested = False
-        with self._coalesce_provenance_changes():
-            pending_inputs = self._pending_script_inputs
-            self._pending_script_inputs = None
-            if pending_inputs is not None:
+        transaction = self._pending_input_transaction
+        with (
+            transaction.publication_context()
+            if transaction is not None
+            else contextlib.nullcontext(),
+            self._input_provenance_change(transaction.script_inputs)
+            if transaction is not None
+            else contextlib.nullcontext(),
+            self._coalesce_provenance_changes(),
+        ):
+            if transaction is not None:
+                try:
+                    if transaction.commit is not None:
+                        transaction.commit()
+                except Exception:
+                    self.abort_source_refresh()
+                    raise
                 with self._provenance_mutation(
-                    changed=pending_inputs != self._script_inputs
+                    changed=transaction.script_inputs != self._script_inputs
                 ):
-                    self._script_inputs = pending_inputs
-            self._source_refresh_deferred = False
+                    self._script_inputs = transaction.script_inputs
+            self._discard_input_transaction()
             self._set_source_state(
                 "stale" if rerun_requested and not self._source_auto_update else "fresh"
             )
@@ -4871,23 +4998,29 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
 
     def _defer_source_refresh(self) -> None:
         """Keep the current input transaction pending until explicit completion."""
-        if not self._source_refreshing or self._pending_script_inputs is None:
+        if not self._source_refreshing or self._pending_input_transaction is None:
             raise RuntimeError(
                 "source refresh can only be deferred from update_inputs()"
             )
         self._source_refresh_deferred = True
 
-    def abort_source_refresh(self) -> None:
-        """Discard a pending input transaction after deferred work fails or stops."""
-        if self._pending_script_inputs is None and not self._source_refresh_deferred:
+    def abort_source_refresh(self, *, resume_pending: bool = True) -> None:
+        """Discard pending inputs and optionally resume queued refreshes.
+
+        Set ``resume_pending=False`` to cancel queued work when the tool closes.
+        """
+        active = (
+            self._pending_input_transaction is not None or self._source_refresh_deferred
+        )
+        if not active and resume_pending:
             return
         rerun_requested = self._source_refresh_rerun_requested
         self._source_refresh_rerun_requested = False
-        self._pending_script_inputs = None
-        self._source_refresh_deferred = False
-        self._set_source_state("stale")
-        self._sigSourceRefreshAborted.emit()
-        if rerun_requested and self._source_auto_update:
+        self._discard_input_transaction()
+        if active:
+            self._set_source_state("stale")
+        self._sigSourceRefreshAborted.emit(resume_pending)
+        if resume_pending and rerun_requested and self._source_auto_update:
             single_shot(self, 0, self._rerun_source_refresh)
 
     def _set_source_auto_update(self, value: bool) -> None:
@@ -4901,9 +5034,8 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
     ) -> None:
         """Update the source state, refresh the banner, and emit info changes."""
         if state != "stale":
-            self._source_refresh_deferred = False
+            self._discard_input_transaction()
             self._source_refresh_rerun_requested = False
-            self._pending_script_inputs = None
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
@@ -5024,6 +5156,11 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         self,
         inputs: Mapping[str, xr.DataArray],
         refreshed_script_inputs: Sequence[ScriptInput],
+        *,
+        on_commit: Callable[[], None] | None = None,
+        publication_context: Callable[[], contextlib.AbstractContextManager[None]] = (
+            contextlib.nullcontext
+        ),
     ) -> bool:
         """Validate and apply one complete input transaction."""
         if not self._script_inputs:
@@ -5043,9 +5180,11 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             raise ValueError("refreshed inputs do not match the fixed input binding")
 
         def _update(validated: Mapping[str, xr.DataArray]) -> bool | None:
-            self._source_refresh_deferred = False
+            self._discard_input_transaction()
             self._source_refreshing = True
-            self._pending_script_inputs = refreshed_inputs
+            self._pending_input_transaction = _ToolInputTransaction(
+                refreshed_inputs, on_commit, publication_context
+            )
             try:
                 return self.update_inputs(validated)
             except Exception:
@@ -5059,7 +5198,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         )
         if update_complete is False:
             if not self._source_refresh_deferred:
-                self._pending_script_inputs = None
+                self._discard_input_transaction()
                 self._source_refresh_rerun_requested = False
             self._set_source_state("stale")
             return False
@@ -5071,6 +5210,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         if self._input_resolver is None:
             return False
         try:
+            self._normalize_approved_provenance()
             inputs, refreshed_inputs = self._input_resolver()
             return self._apply_inputs(inputs, refreshed_inputs)
         except Exception:
@@ -5087,6 +5227,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self._set_source_state("stale")
             return
         try:
+            self._normalize_approved_provenance()
             inputs, refreshed_inputs = self._input_resolver()
         except Exception:
             self._set_source_state("unavailable")
@@ -5191,11 +5332,21 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         return attrs
 
     @staticmethod
+    def _canonical_saved_script_inputs(
+        script_inputs: Sequence[ScriptInput],
+    ) -> tuple[ScriptInput, ...]:
+        from erlab.interactive.imagetool._provenance._model import (
+            _normalize_legacy_script_input,
+        )
+
+        return tuple(_normalize_legacy_script_input(item) for item in script_inputs)
+
+    @staticmethod
     def _saved_script_input_attrs(
         script_inputs: Sequence[ScriptInput], primary_input: str | None
     ) -> dict[str, typing.Any]:
         """Encode one canonical saved-input attribute pair."""
-        inputs = tuple(script_inputs)
+        inputs = ToolWindow._canonical_saved_script_inputs(script_inputs)
         if not inputs:
             if primary_input is not None:
                 raise ValueError("primary input requires at least one script input")
@@ -5519,6 +5670,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
 
         """
         self._flush_restore_work_for_save()
+        self._normalize_approved_provenance()
         self._flush_pending_history_write()
         ds = self._saved_tool_data_dataset()
         ds = self._append_persistence_payload(ds)
@@ -5636,7 +5788,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                                 }
                             )
                             script_inputs = tuple(updated)
-                return script_inputs, primary_input
+                return ToolWindow._canonical_saved_script_inputs(
+                    script_inputs
+                ), primary_input
 
         raw_source_spec = attrs.get(_persistence_constants.TOOL_SOURCE_SPEC_ATTR)
         raw_source_binding = attrs.get(_persistence_constants.TOOL_SOURCE_BINDING_ATTR)
@@ -5669,18 +5823,23 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         )
         if source_spec is None and provenance_spec is None and source_binding is None:
             return (), None
-        return (
-            ScriptInput(
-                name="data",
-                source_spec=(
-                    None if source_spec is None else source_spec.model_dump(mode="json")
+        return ToolWindow._canonical_saved_script_inputs(
+            (
+                ScriptInput(
+                    input_version=1,
+                    name="data",
+                    source_spec=(
+                        None
+                        if source_spec is None
+                        else source_spec.model_dump(mode="json")
+                    ),
+                    provenance_spec=(
+                        None
+                        if provenance_spec is None
+                        else provenance_spec.model_dump(mode="json")
+                    ),
                 ),
-                provenance_spec=(
-                    None
-                    if provenance_spec is None
-                    else provenance_spec.model_dump(mode="json")
-                ),
-            ),
+            )
         ), "data"
 
     @classmethod
@@ -6087,6 +6246,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             tool._reset_history_stack()
             if not defer_restore_work:
                 tool._flush_restore_work()
+            tool._normalize_approved_provenance()
             tool._plot_state_registry.reapply()
             restore_succeeded = True
         finally:
@@ -6224,10 +6384,14 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             ),
         )
 
-    def _current_code_trust_manifest(self) -> CodeTrustManifest | None:
+    def _current_code_trust_manifest(
+        self, *, script_inputs: Sequence[ScriptInput] | None = None
+    ) -> CodeTrustManifest | None:
         """Return executable content for the current in-memory document."""
         input_entries = tuple(
-            self._script_inputs_code_trust_entries(self._script_inputs)
+            self._script_inputs_code_trust_entries(
+                self._script_inputs if script_inputs is None else script_inputs
+            )
         )
         if self._CODE_TRUST_DOMAIN is None:
             if not input_entries:
@@ -6246,6 +6410,142 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 *input_entries,
             ),
         )
+
+    def _normalize_approved_provenance(self) -> None:
+        """Adopt approved fit metadata owned by a standalone tool document."""
+        if (
+            self._code_trust_state_getter is not None
+            or self._code_trust_entry_locator is not None
+            or not self._script_inputs
+            or not document_trust_has_trusted_lineage(self._document_trust)
+        ):
+            return
+        from erlab.interactive.imagetool._provenance._trust import (
+            provenance_spec_normalizer,
+            remap_script_input_provenance,
+        )
+
+        manifest = self._current_code_trust_manifest()
+        if manifest is None:
+            return
+        _trust, capability = issue_complete_execution_capability(
+            self._document_trust, manifest.entries
+        )
+        if capability is None:
+            return
+        remap = provenance_spec_normalizer(authorization=capability)
+
+        def normalize(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+            normalized = remap(spec)
+            inputs = tuple(normalize_input(item) for item in spec.replay_inputs)
+            return (
+                normalized
+                if inputs == normalized.replay_inputs
+                else normalized.with_replay_inputs(inputs)
+            )
+
+        def normalize_input(item: ScriptInput) -> ScriptInput:
+            return remap_script_input_provenance(
+                item, normalize, retire_changed_revisions=True
+            )
+
+        previous = self._input_state()
+        candidate = previous.map_inputs(normalize_input)
+        previous_trust = self._document_trust
+        try:
+            with (
+                self._input_provenance_context(normalize)
+                if self._input_provenance_context is not None
+                else contextlib.nullcontext()
+            ):
+                if candidate == previous:
+                    return
+                candidate_manifest = self._current_code_trust_manifest(
+                    script_inputs=candidate.script_inputs
+                )
+                entries = (
+                    () if candidate_manifest is None else candidate_manifest.entries
+                )
+                self._apply_local_code_inventory_change(
+                    manifest.entries,
+                    entries,
+                    entries,
+                    lambda: self._restore_input_state(candidate),
+                )
+        except Exception:
+            self._restore_input_state(previous)
+            self.set_document_trust(previous_trust, notify=False)
+            raise
+
+    @contextlib.contextmanager
+    def _input_provenance_change(
+        self,
+        script_inputs: Sequence[ScriptInput],
+        *,
+        authorization: object | None = None,
+    ) -> Iterator[None]:
+        """Publish physical inputs under their existing code approval."""
+        if (
+            self._code_trust_state_getter is not None
+            or self._code_trust_entry_locator is not None
+        ):
+            yield
+            return
+        previous = self._current_code_trust_manifest()
+        candidate = self._current_code_trust_manifest(script_inputs=script_inputs)
+        if candidate == previous:
+            yield
+            return
+        previous_entries = () if previous is None else previous.entries
+        incoming = tuple(self._script_inputs_code_trust_entries(script_inputs))
+        previous_trust = self._document_trust
+        _trust, capability = issue_execution_capability(
+            previous_trust, previous_entries
+        )
+        approved = tuple(
+            entry
+            for entry in incoming
+            if execution_capability_allows(capability, (entry,))
+            or execution_capability_allows(authorization, (entry,))
+        )
+        unknown = tuple(entry for entry in incoming if entry not in approved)
+        trust = previous_trust
+        if unknown:
+            candidate = typing.cast("CodeTrustManifest", candidate)
+            baseline = create_manifest(
+                candidate.domain, candidate.policy_version, previous_entries
+            )
+            trust = merge_document_trust(
+                bind_document_trust_manifest(trust, baseline),
+                external_document_trust(
+                    create_manifest(candidate.domain, candidate.policy_version, unknown)
+                ),
+                replace=False,
+            )
+        _prospective, publication = issue_local_edit_capability(
+            trust, (*previous_entries, *approved), edited_entries=approved
+        )
+        previous_inputs = self._input_state()
+        self.set_document_trust(trust, notify=False)
+        try:
+            yield
+            manifest = self._current_code_trust_manifest()
+            committed = commit_local_edit_trust(
+                trust,
+                publication,
+                previous_entries,
+                () if manifest is None else manifest.entries,
+                edited_entries=approved,
+                document_manifest=manifest,
+                adopt_derived_entries=False,
+            )
+            self.set_document_trust(committed)
+        except Exception:
+            self._restore_input_state(replace(previous_inputs, pending=None))
+            self._discard_input_transaction()
+            self._set_source_state("stale")
+            self.set_document_trust(previous_trust, notify=False)
+            raise
 
     @staticmethod
     def _source_spec_code_trust_entries(
@@ -6539,6 +6839,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self.set_document_trust(
                 approve_document_trust(self._document_trust, manifest)
             )
+            self._normalize_approved_provenance()
             return
         if not confirm_code_trust(
             self,
@@ -6549,6 +6850,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         ):
             return
         self.set_document_trust(approve_document_trust(self._document_trust, manifest))
+        self._normalize_approved_provenance()
 
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         self._flush_restore_work(run_on_show_only=True)
@@ -6559,7 +6861,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         # Teardown has no consumer for optional restored state, and running it here can
         # queue paints for widgets that Qt is already deleting.
         self._deferred_restore_work.clear()
-        return super().closeEvent(event)
+        super().closeEvent(event)
+        if event is None or event.isAccepted():
+            self.abort_source_refresh(resume_pending=False)
 
     @property
     def _tool_display_name(self) -> str:

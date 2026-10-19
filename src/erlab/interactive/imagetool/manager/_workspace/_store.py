@@ -322,7 +322,6 @@ class WorkspaceStore:
             if store is None or store.closed:
                 cls._pending_readers.setdefault(key, weakref.WeakSet()).add(reader)
                 return None
-        store.register_reader(reader)
         return store
 
     @classmethod
@@ -461,17 +460,18 @@ class WorkspaceStore:
 
     def _register(self) -> None:
         key = self._key(self._path)
-        with self._active_lock:
-            existing = self._active.get(key)
-            if existing is not None and existing is not self:
-                self._close_handle()
-                raise RuntimeError(
-                    f"Workspace already has an active store: {self._path}"
-                )
-            self._active[key] = self
-            pending_readers = tuple(self._pending_readers.pop(key, ()))
-        for reader in pending_readers:
-            reader._attach_store(self)
+        with self._lock:
+            with self._active_lock:
+                existing = self._active.get(key)
+                if existing is not None and existing is not self:
+                    self._close_handle()
+                    raise RuntimeError(
+                        f"Workspace already has an active store: {self._path}"
+                    )
+                self._active[key] = self
+                pending_readers = tuple(self._pending_readers.pop(key, ()))
+            for reader in pending_readers:
+                reader._attach_store(self)
 
     def _unregister(self, path: pathlib.Path | None = None) -> None:
         key = self._key(self._path if path is None else path)
@@ -1369,9 +1369,29 @@ class WorkspaceStore:
     @classmethod
     def manifest_object_ids(cls, manifest: Mapping[str, typing.Any]) -> frozenset[str]:
         """Return all immutable object IDs referenced by a manifest."""
-        return cls.manifest_node_object_ids(
-            manifest
-        ) | cls.manifest_extension_object_ids(manifest)
+        return (
+            cls.manifest_node_object_ids(manifest)
+            | cls.manifest_extension_object_ids(manifest)
+            | cls.manifest_revision_object_ids(manifest)
+        )
+
+    @classmethod
+    def manifest_revision_object_ids(
+        cls, manifest: Mapping[str, typing.Any]
+    ) -> frozenset[str]:
+        entries = manifest.get("provenance_revisions", ())
+        if not isinstance(entries, list):
+            return frozenset()
+        ids = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            object_id = entry.get("checkpoint_object_id")
+            revision_id = entry.get("revision_id")
+            if isinstance(revision_id, str) and object_id == f"revision-{revision_id}":
+                cls.object_path(object_id)
+                ids.add(object_id)
+        return frozenset(ids)
 
     def collect_garbage(
         self,

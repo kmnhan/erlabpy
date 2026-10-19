@@ -18,10 +18,12 @@ import erlab.interactive.utils
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
+    SelectedProvenanceScope,
     compile_replay_graph,
     emit_replay_code,
     script_inputs_code,
-    selected_steps_code,
+    selected_provenance_code,
+    selected_steps_spec,
 )
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
@@ -32,10 +34,12 @@ from erlab.interactive.imagetool._provenance._model import (
     _direct_replay_source_name,
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
-    parse_tool_provenance_operation,
+    parse_script_inputs,
+    parse_tool_provenance_spec,
     strip_partial_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool.manager._source_labels import script_input_source_label
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
     _METADATA_DERIVATION_CODE_ROLE,
@@ -50,8 +54,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
     _MetadataField,
-    _preview_curve_for_node,
-    _preview_image_for_node,
+    _preview_curve_from_imagetool,
 )
 
 if typing.TYPE_CHECKING:
@@ -67,7 +70,7 @@ logger = logging.getLogger(__name__)
 _TOOL_PREVIEW_UPDATE_DELAY_MS = 250
 _PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-steps+json"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
-_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 2
+_PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 3
 _MAXIMUM_WRAPPED_METADATA_LINES = 4
 _MAXIMUM_DERIVATION_TOOLTIP_WIDTH = 720
 _MULTI_PROVENANCE_DIFFERENCE_LABEL = "Steps differ across selected ImageTools"
@@ -78,11 +81,37 @@ _MULTI_PROVENANCE_DIFFERENCE_ROW = _ProvenanceDisplayRow(
 
 @dataclasses.dataclass(frozen=True)
 class _ProvenanceStepsClipboardPayload:
-    steps: tuple[ReplayStep, ...]
-    active_name: str
-    primary_input: str | None = None
-    script_inputs: tuple[ScriptInput, ...] = ()
+    spec: ToolProvenanceSpec
     source_manager_id: str | None = None
+
+    @property
+    def steps(self) -> tuple[ReplayStep, ...]:
+        primary = next(
+            (
+                item
+                for item in self.spec.replay_inputs
+                if item.name == self.spec.replay_primary_input
+            ),
+            None,
+        )
+        nested = None if primary is None else primary.resolved_provenance_spec()
+        return (
+            () if nested is None else _ProvenanceStepsClipboardPayload(nested).steps
+        ) + self.spec.steps
+
+    @property
+    def active_name(self) -> str:
+        return self.spec.active_name or "derived"
+
+    @property
+    def primary_input(self) -> str | None:
+        return self.spec.replay_primary_input
+
+    @property
+    def script_inputs(self) -> tuple[ScriptInput, ...]:
+        return tuple(
+            item for item in self.spec.replay_inputs if item.name != self.primary_input
+        )
 
     @property
     def operations(self) -> tuple[ToolProvenanceOperation, ...]:
@@ -121,19 +150,22 @@ def _provenance_step_clipboard_payload(
         if payload.get("type") != _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE:
             return None
         version = payload.get("version")
-        if version not in {1, _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION}:
+        if version not in {1, 2, _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION}:
             return None
+        if version == _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION:
+            spec = parse_tool_provenance_spec(payload.get("provenance_spec"))
+            source_manager_id = payload.get("source_manager_id")
+            if spec is None or spec.kind != "script":
+                return None
+            if source_manager_id is not None and not isinstance(source_manager_id, str):
+                return None
+            result = _ProvenanceStepsClipboardPayload(spec, source_manager_id)
+            return result if result.steps else None
         if version == 1:
             operations_payload = payload.get("operations")
             if not isinstance(operations_payload, list):
                 return None
-            operations = strip_partial_operation_groups(
-                tuple(
-                    parse_tool_provenance_operation(operation)
-                    for operation in operations_payload
-                )
-            )
-            steps = tuple(ReplayStep(operation=operation) for operation in operations)
+            raw_steps = [{"operation": operation} for operation in operations_payload]
             primary_input = None
             script_inputs = ()
             source_manager_id = None
@@ -142,46 +174,60 @@ def _provenance_step_clipboard_payload(
             raw_inputs = payload.get("script_inputs", [])
             if not isinstance(raw_steps, list) or not isinstance(raw_inputs, list):
                 return None
-            steps = tuple(ReplayStep.model_validate(step) for step in raw_steps)
             primary_input = payload.get("primary_input")
             if primary_input is not None and not isinstance(primary_input, str):
                 return None
             if primary_input is not None:
                 ScriptInput(name=primary_input)
-            script_inputs = tuple(
-                ScriptInput.model_validate(item) for item in raw_inputs
-            )
+            script_inputs = parse_script_inputs(raw_inputs)
             names = {item.name for item in script_inputs}
             if len(names) != len(script_inputs) or primary_input in names:
-                return None
-            available_names = names | ({primary_input} if primary_input else set())
-            if any(
-                name not in available_names
-                for step in steps
-                for name in step.input_bindings.values()
-            ):
                 return None
             source_manager_id = payload.get("source_manager_id")
             if source_manager_id is not None and not isinstance(source_manager_id, str):
                 return None
+        active_name = payload.get("active_name")
+        if not isinstance(active_name, str) or not active_name:
+            active_name = "derived"
+        spec = parse_tool_provenance_spec(
+            {
+                "kind": "script",
+                "start_label": "Apply selected provenance steps",
+                "active_name": active_name,
+                "primary_input": primary_input,
+                "script_inputs": (
+                    *((ScriptInput(name=primary_input),) if primary_input else ()),
+                    *script_inputs,
+                ),
+                "steps": raw_steps,
+            }
+        )
+        if spec is None or not spec.steps:
+            return None
+        if version == 1:
+            operations = strip_partial_operation_groups(spec.operations)
+            spec = spec.model_copy(
+                update={
+                    "steps": tuple(
+                        ReplayStep(operation=operation) for operation in operations
+                    )
+                }
+            )
+        else:
+            available_names = names | ({primary_input} if primary_input else set())
+            if any(
+                name not in available_names
+                for step in spec.steps
+                for name in step.input_bindings.values()
+            ):
+                return None
+        return _ProvenanceStepsClipboardPayload(spec, source_manager_id)
     except (
         TypeError,
         ValueError,
         json.JSONDecodeError,
     ):
         return None
-    active_name = payload.get("active_name")
-    if not isinstance(active_name, str) or not active_name:
-        active_name = "derived"
-    if not steps:
-        return None
-    return _ProvenanceStepsClipboardPayload(
-        steps,
-        active_name,
-        primary_input,
-        script_inputs,
-        source_manager_id,
-    )
 
 
 class _DetailsPanelController:
@@ -198,9 +244,6 @@ class _DetailsPanelController:
 
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
-
-    def _notes_ui_available(self) -> bool:
-        return hasattr(self._manager, "notes_editor")
 
     def _selected_note_node(self) -> _ImageToolWrapper | _ManagedWindowNode | None:
         targets: list[int | str] = []
@@ -232,8 +275,6 @@ class _DetailsPanelController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode | None,
     ) -> None:
-        if not self._notes_ui_available():
-            return
         if node is None:
             self._manager._commit_note_editor()
             self._manager._notes_node_uid = None
@@ -266,8 +307,6 @@ class _DetailsPanelController:
         self._update_note_actions()
 
     def _update_note_actions(self) -> None:
-        if not self._notes_ui_available():
-            return
         node = self._selected_or_current_note_node()
         can_edit = node is not None
         has_note = bool(node is not None and node.has_note)
@@ -276,16 +315,12 @@ class _DetailsPanelController:
         self._manager.clear_note_action.setEnabled(has_note)
 
     def _schedule_note_commit(self) -> None:
-        if not self._notes_ui_available():
-            return
         if self._manager._updating_note_editor:
             return
         self._note_editor_dirty = True
         self._manager._note_commit_timer.start()
 
     def _commit_note_editor(self) -> None:
-        if not self._notes_ui_available():
-            return
         self._manager._note_commit_timer.stop()
         if self._manager._updating_note_editor:
             return
@@ -304,8 +339,6 @@ class _DetailsPanelController:
         self._update_note_actions()
 
     def _edit_selected_note(self) -> None:
-        if not self._notes_ui_available():
-            return
         node = self._selected_note_node()
         if node is None:
             return
@@ -314,8 +347,6 @@ class _DetailsPanelController:
         self._manager.notes_editor.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
 
     def _copy_selected_note(self) -> None:
-        if not self._notes_ui_available():
-            return
         self._commit_note_editor()
         node = self._selected_or_current_note_node()
         if node is None or not node.note:
@@ -323,8 +354,6 @@ class _DetailsPanelController:
         erlab.interactive.utils.copy_to_clipboard(node.note)
 
     def _clear_selected_note(self) -> None:
-        if not self._notes_ui_available():
-            return
         self._commit_note_editor()
         node = self._selected_or_current_note_node()
         if node is None:
@@ -619,25 +648,17 @@ class _DetailsPanelController:
     def _script_input_row_label(
         self,
         script_input: ScriptInput,
-        *,
-        include_history: bool,
     ) -> str:
-        node_uid = script_input.node_uid
-        if node_uid is not None:
-            graph = self._manager._tool_graph
-            node = graph.nodes.get(node_uid)
-            if node is not None:
-                return (
-                    f"Use {script_input.name} from "
-                    f"{self._script_input_current_node_label(node)}"
-                )
-            label = f"Missing source for {script_input.name}"
-            if include_history and script_input.label != script_input.name:
-                label += f" (recorded as {script_input.label})"
-            return label
-        if script_input.label == script_input.name:
-            return f"Use {script_input.name}"
-        return f"Use {script_input.name} from {script_input.label}"
+        label = script_input_source_label(
+            self._manager,
+            script_input,
+            retained_input_resolver=(
+                self._manager._lineage_controller._has_recorded_script_input
+            ),
+        )
+        return (
+            "Missing" if label == "Missing" else f"Use {script_input.name} from {label}"
+        )
 
     @staticmethod
     def _script_input_for_row(
@@ -654,30 +675,27 @@ class _DetailsPanelController:
             return None
         current = spec
         for index in row.script_input_path:
-            if current.kind != "script" or index >= len(current.script_inputs):
+            if current.kind != "script" or index >= len(current.replay_inputs):
                 return None
-            nested = current.script_inputs[index].parsed_provenance_spec()
+            nested = current.replay_inputs[index].resolved_provenance_spec()
             if nested is None:
                 return None
             current = nested
         if current.kind != "script" or ref.script_input_index >= len(
-            current.script_inputs
+            current.replay_inputs
         ):
             return None
-        return current.script_inputs[ref.script_input_index]
+        return current.replay_inputs[ref.script_input_index]
 
     def _current_derivation_display_row(
         self,
         row: _ProvenanceDisplayRow,
         spec: ToolProvenanceSpec | None,
-        *,
-        include_history: bool,
     ) -> _ProvenanceDisplayRow:
         children = tuple(
             self._current_derivation_display_row(
                 child,
                 spec,
-                include_history=include_history,
             )
             for child in row.children
         )
@@ -687,7 +705,6 @@ class _DetailsPanelController:
             if script_input is None
             else self._script_input_row_label(
                 script_input,
-                include_history=include_history,
             )
         )
         if label is None and children == row.children:
@@ -698,23 +715,14 @@ class _DetailsPanelController:
     def _current_derivation_display_rows(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        *,
-        include_history: bool = False,
     ) -> list[_ProvenanceDisplayRow]:
         spec = node.passive_displayed_provenance_spec
-        rows = getattr(node, "derivation_display_rows", None)
-        if rows is None:
-            rows = [
-                _ProvenanceDisplayRow(entry)
-                for entry in getattr(node, "derivation_entries", ())
-            ]
         return [
             self._current_derivation_display_row(
                 row,
                 spec,
-                include_history=include_history,
             )
-            for row in rows
+            for row in node.derivation_display_rows
         ]
 
     @staticmethod
@@ -796,22 +804,19 @@ class _DetailsPanelController:
         expanded: set[_ProvenanceDisplayRow] = set()
 
         def collect(item: QtWidgets.QTreeWidgetItem) -> None:
-            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-            if isinstance(row, _ProvenanceDisplayRow):
-                if item.isSelected():
-                    selected.add(row)
-                if item.isExpanded():
-                    expanded.add(row)
+            row = typing.cast(
+                "_ProvenanceDisplayRow", item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            )
+            if item.isSelected():
+                selected.add(row)
+            if item.isExpanded():
+                expanded.add(row)
             for index in range(item.childCount()):
-                child = item.child(index)
-                if child is not None:  # pragma: no branch - valid Qt row
-                    collect(child)
+                collect(typing.cast("QtWidgets.QTreeWidgetItem", item.child(index)))
 
         tree = self._manager.metadata_derivation_list
         for index in range(tree.topLevelItemCount()):
-            item = tree.topLevelItem(index)
-            if item is not None:  # pragma: no branch - valid Qt row
-                collect(item)
+            collect(typing.cast("QtWidgets.QTreeWidgetItem", tree.topLevelItem(index)))
         return frozenset(selected), frozenset(expanded)
 
     def _restore_metadata_derivation_item_state(
@@ -841,11 +846,14 @@ class _DetailsPanelController:
     ) -> None:
         if item.childCount() != 0:
             return
-        row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-        if not isinstance(row, _ProvenanceDisplayRow):
-            return
-        target_rows = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
-        if isinstance(target_rows, tuple) and len(target_rows) >= 2:
+        row = typing.cast(
+            "_ProvenanceDisplayRow", item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+        )
+        target_rows = typing.cast(
+            "tuple[tuple[str, _ProvenanceDisplayRow], ...]",
+            item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE),
+        )
+        if len(target_rows) >= 2:
             rows_by_node: list[
                 tuple[
                     _ImageToolWrapper | _ManagedWindowNode,
@@ -854,13 +862,12 @@ class _DetailsPanelController:
             ] = []
             for uid, target_row in target_rows:
                 node = self._manager._tool_graph.nodes.get(uid)
-                if node is None or not isinstance(target_row, _ProvenanceDisplayRow):
+                if node is None:
                     return
                 current_rows = tuple(
                     self._current_derivation_display_row(
                         child_row,
                         node.passive_displayed_provenance_spec,
-                        include_history=False,
                     )
                     for child_row in target_row.materialized_children()
                 )
@@ -884,7 +891,6 @@ class _DetailsPanelController:
             current_row = self._current_derivation_display_row(
                 child_row,
                 self._metadata_derivation_spec,
-                include_history=False,
             )
             child_item = self._metadata_derivation_item(current_row)
             item.addChild(child_item)
@@ -1210,25 +1216,29 @@ class _DetailsPanelController:
             "list[QtWidgets.QTreeWidgetItem]",
             list(self._manager.metadata_derivation_list.selectedItems()),
         )
-        display_order = getattr(
-            self._manager.metadata_derivation_list,
-            "display_order",
-            self._manager.metadata_derivation_list.row,
-        )
-        return sorted(items, key=display_order)
+        return sorted(items, key=self._manager.metadata_derivation_list.display_order)
 
-    def _selected_derivation_code(self) -> str | None:
-        chunks: list[str] = []
-        for (_uid, spec, _scope, _path), group in itertools.groupby(
-            self._selected_derivation_steps(),
-            key=lambda entry: (
-                entry[0],
-                entry[1],
-                entry[2].scope,
-                entry[2].script_input_path,
-            ),
-        ):
-            rows = tuple(group)
+    def _selected_derivation_scopes(
+        self,
+    ) -> list[SelectedProvenanceScope]:
+        groups = [
+            tuple(group)
+            for _key, group in itertools.groupby(
+                self._selected_derivation_steps(),
+                key=lambda entry: (
+                    entry[0],
+                    entry[2].scope,
+                    entry[2].script_input_path,
+                ),
+            )
+        ]
+        selected: list[SelectedProvenanceScope] = []
+        for group_index, rows in enumerate(groups):
+            spec = rows[0][1]
+            if any(entry[1] != spec for entry in rows[1:]):
+                raise ReplayGraphError(
+                    "Selected rows refer to different provenance scopes"
+                )
             prefix = spec._prefix_before_ref(
                 typing.cast("_ProvenanceStepRef", rows[0][2].replay_ref)
             )
@@ -1242,31 +1252,104 @@ class _DetailsPanelController:
                 ).active_name
                 or "derived"
             )
-            try:
-                code = selected_steps_code(
-                    tuple(step for _uid, _spec, _row, step in rows),
-                    input_name=input_name,
-                    output_name=output_name,
-                    input_alias=prefix.active_name if source_name is not None else None,
-                )
-            except ReplayGraphError:
-                return None
-            if code:
-                chunks.append(code)
-        return "\n".join(chunks) or None
+            operations = strip_partial_operation_groups(
+                tuple(step.operation for _uid, _spec, _row, step in rows)
+            )
+            selected_spec = selected_steps_spec(
+                tuple(
+                    entry[3].model_copy(update={"operation": operation})
+                    for entry, operation in zip(rows, operations, strict=True)
+                ),
+                input_name=input_name,
+                output_name=output_name,
+                input_alias=prefix.active_name if source_name is not None else None,
+                script_inputs=spec.replay_inputs,
+            )
+
+            uid, _original, row, _step = rows[0]
+            input_scopes: dict[str, int] = {}
+            for index in range(group_index - 1, -1, -1):
+                previous_uid, _previous_spec, previous_row, _previous_step = groups[
+                    index
+                ][0]
+                if previous_uid != uid or previous_row.scope != row.scope:
+                    continue
+                path = previous_row.script_input_path
+                if path[: len(row.script_input_path)] != row.script_input_path:
+                    continue
+                relative_path = path[len(row.script_input_path) :]
+                input_name = selected_spec.replay_primary_input
+                current: ToolProvenanceSpec | None = spec
+                primary_chain = True
+                for depth, input_index in enumerate(relative_path):
+                    if current is None or input_index >= len(current.replay_inputs):
+                        primary_chain = False
+                        break
+                    item = current.replay_inputs[input_index]
+                    if depth == 0:
+                        input_name = item.name
+                    else:
+                        primary_input = (
+                            current.replay_primary_input
+                            or _direct_replay_source_name(current)
+                        )
+                        if item.name != primary_input:
+                            primary_chain = False
+                            break
+                    current = item.resolved_provenance_spec()
+                if (
+                    primary_chain
+                    and input_name is not None
+                    and input_name not in input_scopes
+                    and any(
+                        item.name == input_name for item in selected_spec.replay_inputs
+                    )
+                ):
+                    input_scopes[input_name] = index
+            selected.append(SelectedProvenanceScope(selected_spec, input_scopes))
+        return selected
+
+    def _selected_derivation_code(self) -> str | None:
+        try:
+            scopes = self._selected_derivation_scopes()
+            return (selected_provenance_code(scopes) or None) if scopes else None
+        except ReplayGraphError:
+            return None
 
     def _selected_derivation_steps(
         self,
     ) -> list[tuple[str, ToolProvenanceSpec, _ProvenanceDisplayRow, ReplayStep]]:
         selected = []
-        for item in self._manager._selected_derivation_items():
+        selected_refs: dict[
+            tuple[str, str, tuple[int, ...], _ProvenanceStepRef, str | None],
+            ToolProvenanceSpec,
+        ] = {}
+        root_order: list[QtWidgets.QTreeWidgetItem] = []
+
+        def input_first_order(
+            item: QtWidgets.QTreeWidgetItem,
+        ) -> tuple[int | float, ...]:
+            path: list[int] = []
+            current = item
+            while (parent := current.parent()) is not None:
+                path.append(parent.indexOfChild(current))
+                current = parent
+            if current not in root_order:
+                root_order.append(current)
+            root_index = root_order.index(current)
+            # Inputs appear below their consumer in the tree, but execute first.
+            return (root_index, *reversed(path), float("inf"))
+
+        for item in sorted(
+            self._manager._selected_derivation_items(), key=input_first_order
+        ):
             if not item.data(0, _METADATA_DERIVATION_COPYABLE_ROLE) or not item.data(
                 0, _METADATA_DERIVATION_CODE_ROLE
             ):
                 continue
-            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
-            if not isinstance(row, _ProvenanceDisplayRow):
-                continue
+            row = typing.cast(
+                "_ProvenanceDisplayRow", item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            )
             uid = self._manager._metadata_node_uid
             targets = item.data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
             if targets:
@@ -1285,6 +1368,14 @@ class _DetailsPanelController:
             operation = spec._operation_for_ref(ref)
             if operation is None:
                 continue
+            identity = (uid, row.scope, row.script_input_path, ref, row.revision_id)
+            if identity in selected_refs:
+                if selected_refs[identity] != spec:
+                    raise ReplayGraphError(
+                        "Selected rows refer to different provenance scopes"
+                    )
+                continue
+            selected_refs[identity] = spec
             step = (
                 spec.steps[typing.cast("int", ref.operation_index)]
                 if spec.kind in {"script", "file"}
@@ -1296,61 +1387,47 @@ class _DetailsPanelController:
     def _selected_derivation_step_payload(
         self,
     ) -> _ProvenanceStepsClipboardPayload | None:
-        steps: list[ReplayStep] = []
-        step_specs: list[ToolProvenanceSpec] = []
-        script_active_names: list[str] = []
-        for _uid, spec, _row, step in self._selected_derivation_steps():
-            operation = step.operation
-            if isinstance(operation, ScriptCodeOperation):
-                if not operation.copyable or not operation.code:
-                    continue
-            elif not operation.live_applicable and not step.input_bindings:
-                continue
-            steps.append(step)
-            step_specs.append(spec)
-            if spec.kind == "script":
-                script_active_names.append(spec.active_name or "derived")
-
-        if not steps:
+        try:
+            scopes = self._selected_derivation_scopes()
+        except ReplayGraphError:
             return None
-        script_active_name = (
-            script_active_names[0] if script_active_names else "derived"
-        )
-        if any(
-            active_name != script_active_name for active_name in script_active_names
+        if not scopes or any(
+            scope.input_scopes != {scope.spec.replay_primary_input: index - 1}
+            for index, scope in enumerate(scopes)
+            if index
         ):
             return None
-        retained_operations = strip_partial_operation_groups(
-            tuple(step.operation for step in steps)
+        spec = scopes[0].spec
+        for scope in scopes[1:]:
+            local = scope.spec
+            spec = local.with_replay_inputs(
+                tuple(
+                    item.model_copy(
+                        update={
+                            "node_uid": None,
+                            "node_snapshot_token": None,
+                            "revision_id": None,
+                            "resolved_revision_id": None,
+                            "source_spec": None,
+                            "provenance_spec": spec.model_dump(mode="json"),
+                        }
+                    )
+                    if item.name == local.replay_primary_input
+                    else item
+                    for item in local.replay_inputs
+                )
+            )
+        payload = _ProvenanceStepsClipboardPayload(
+            spec, self._manager._manager_record.internal_id
         )
-        retained_steps = tuple(
-            step.model_copy(update={"operation": operation})
-            for step, operation in zip(steps, retained_operations, strict=True)
-        )
-        input_names = {
-            name for step in retained_steps for name in step.input_bindings.values()
-        }
-        bound_specs = tuple(
-            spec
-            for step, spec in zip(retained_steps, step_specs, strict=True)
-            if step.input_bindings
-        )
-        if bound_specs and any(spec != bound_specs[0] for spec in bound_specs[1:]):
+        if any(
+            not step.operation.live_applicable
+            and not isinstance(step.operation, ScriptCodeOperation)
+            and not step.input_bindings
+            for step in payload.steps
+        ):
             return None
-        bound_spec = bound_specs[0] if bound_specs else None
-        primary_input = None if bound_spec is None else bound_spec.primary_input
-        script_inputs = tuple(
-            item
-            for item in (() if bound_spec is None else bound_spec.script_inputs)
-            if item.name in input_names and item.name != primary_input
-        )
-        return _ProvenanceStepsClipboardPayload(
-            retained_steps,
-            script_active_name,
-            primary_input,
-            script_inputs,
-            self._manager._manager_record.internal_id,
-        )
+        return payload
 
     def _selected_derivation_row(
         self,
@@ -1358,10 +1435,9 @@ class _DetailsPanelController:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return None
-        row = items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
-        if isinstance(row, _ProvenanceDisplayRow):
-            return row
-        return None
+        return typing.cast(
+            "_ProvenanceDisplayRow", items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
+        )
 
     def _selected_derivation_target_rows(
         self,
@@ -1369,24 +1445,17 @@ class _DetailsPanelController:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return ()
-        target_rows = items[0].data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE)
-        if (
-            isinstance(target_rows, tuple)
-            and target_rows
-            and all(
-                isinstance(target, tuple)
-                and len(target) == 2
-                and isinstance(target[0], str)
-                and isinstance(target[1], _ProvenanceDisplayRow)
-                for target in target_rows
-            )
-        ):
+        target_rows = typing.cast(
+            "tuple[tuple[str, _ProvenanceDisplayRow], ...]",
+            items[0].data(0, _METADATA_DERIVATION_TARGET_ROWS_ROLE),
+        )
+        if target_rows:
             return target_rows
-        row = items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
+        row = typing.cast(
+            "_ProvenanceDisplayRow", items[0].data(0, _METADATA_DERIVATION_ROW_ROLE)
+        )
         uid = self._manager._metadata_node_uid
-        if uid is not None and isinstance(row, _ProvenanceDisplayRow):
-            return ((uid, row),)
-        return ()
+        return () if uid is None else ((uid, row),)
 
     def _build_metadata_derivation_menu(
         self, *, include_row_actions: bool = True
@@ -1400,6 +1469,29 @@ class _DetailsPanelController:
             if include_row_actions
             else ()
         )
+        open_input_action = None
+        if len(target_rows) == 1:
+            row = target_rows[0][1]
+            ref = row.replay_ref
+            if ref is not None and ref.kind == "script_input":
+                enabled, reason = (
+                    self._manager._provenance_edit_controller.can_open_input_row(row)
+                )
+                open_input_action = QtGui.QAction("Open Input", menu)
+                open_input_action.setData("open_input")
+                open_input_action.setEnabled(enabled)
+                open_input_action.setToolTip(reason)
+                open_input_action.triggered.connect(
+                    lambda _checked=False, selected_row=row: (
+                        self._manager._provenance_edit_controller.open_input_row(
+                            selected_row
+                        )
+                    )
+                )
+                menu.addAction(open_input_action)
+                if enabled:
+                    menu.setDefaultAction(open_input_action)
+                menu.addSeparator()
         edit_enabled, edit_reason = (
             self._manager._provenance_edit_controller.can_edit_rows(target_rows)
         )
@@ -1421,7 +1513,9 @@ class _DetailsPanelController:
         self._manager._metadata_delete_step_action.setEnabled(delete_enabled)
         self._manager._metadata_delete_step_action.setToolTip(delete_reason)
         menu.addAction(self._manager._metadata_edit_step_action)
-        if edit_enabled:
+        if edit_enabled and (
+            open_input_action is None or not open_input_action.isEnabled()
+        ):
             menu.setDefaultAction(self._manager._metadata_edit_step_action)
         menu.addAction(self._manager._metadata_reorder_steps_action)
         menu.addAction(self._manager._metadata_revert_step_action)
@@ -1438,7 +1532,7 @@ class _DetailsPanelController:
         )
         paste_enabled, paste_reason = (
             self._manager._provenance_edit_controller.can_paste_steps(
-                None if paste_payload is None else paste_payload.steps
+                None if paste_payload is None else paste_payload.spec
             )
         )
         self._manager._metadata_paste_steps_action.setEnabled(paste_enabled)
@@ -1475,12 +1569,7 @@ class _DetailsPanelController:
             {
                 "type": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
                 "version": _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
-                "active_name": payload.active_name,
-                "primary_input": payload.primary_input,
-                "steps": [step.model_dump(mode="json") for step in payload.steps],
-                "script_inputs": [
-                    item.model_dump(mode="json") for item in payload.script_inputs
-                ],
+                "provenance_spec": payload.spec.model_dump(mode="json"),
                 "source_manager_id": payload.source_manager_id,
             },
             separators=(",", ":"),
@@ -1506,10 +1595,7 @@ class _DetailsPanelController:
             )
             return
         self._manager._provenance_edit_controller.paste_steps(
-            payload.steps,
-            active_name=payload.active_name,
-            primary_input=payload.primary_input,
-            script_inputs=payload.script_inputs,
+            payload.spec,
             source_manager_id=payload.source_manager_id,
         )
 
@@ -1518,10 +1604,10 @@ class _DetailsPanelController:
     ) -> str:
         unavailable_labels: list[str] = []
         replayable_input_labels = self._replayable_script_input_labels(
-            getattr(node, "displayed_provenance_spec", None)
+            node.displayed_provenance_spec
         )
         rows = self._flatten_derivation_rows(
-            self._current_derivation_display_rows(node, include_history=True)
+            self._current_derivation_display_rows(node)
         )
         for row in rows[1:]:
             entry = row.entry
@@ -1550,7 +1636,7 @@ class _DetailsPanelController:
         if spec is None or spec.kind != "script":
             return set()
         replayable_labels: set[str] = set()
-        for script_input in spec.script_inputs:
+        for script_input in spec.replay_inputs:
             try:
                 script_inputs_code((script_input,), display=True)
             except ReplayGraphError:
@@ -1559,7 +1645,6 @@ class _DetailsPanelController:
                 " ".join(
                     self._script_input_row_label(
                         script_input,
-                        include_history=True,
                     ).split()
                 )
             )
@@ -1753,13 +1838,13 @@ class _DetailsPanelController:
                             self._manager.preview_widget.setPixmap(pending_preview[1])
                         self._manager.preview_widget.setVisible(True)
                         return
-                    if (curve := _preview_curve_for_node(node)) is not None:
+                    if (
+                        curve := _preview_curve_from_imagetool(node.imagetool)
+                    ) is not None:
                         self._manager.preview_widget.setCurve(*curve)
                         self._manager.preview_widget.setVisible(True)
                         return
-                    self._manager.preview_widget.setPixmap(
-                        _preview_image_for_node(node)[1]
-                    )
+                    self._manager.preview_widget.setPixmap(node._preview_image[1])
                     self._manager.preview_widget.setVisible(True)
                     return
 

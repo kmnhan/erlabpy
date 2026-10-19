@@ -190,13 +190,18 @@ class _PendingWorkspacePayloads:
             return data
 
         saved_dims = tuple(str(dim) for dim in raw_dims)
-        # Match ArraySlicer dimension promotion before applying its saved order.
+        # Match the saved rendering names, but retain physical source dimensions.
         normalized = erlab.utils.array._make_dims_uniform(data)
-        dims_by_text = {str(dim): dim for dim in normalized.dims}
+        dims_by_text = {
+            str(render_dim): source_dim
+            for render_dim, source_dim in zip(normalized.dims, data.dims, strict=True)
+        }
+        omitted_dims = set(dims_by_text) - set(saved_dims)
         if (
-            len(saved_dims) != normalized.ndim
+            len(set(saved_dims)) != len(saved_dims)
             or len(dims_by_text) != normalized.ndim
-            or set(saved_dims) != set(dims_by_text)
+            or not set(saved_dims).issubset(dims_by_text)
+            or any(data.sizes[dims_by_text[dim]] != 1 for dim in omitted_dims)
         ):
             logger.debug(
                 "Ignoring incompatible saved pending ImageTool dimension order %s "
@@ -205,18 +210,15 @@ class _PendingWorkspacePayloads:
                 normalized.dims,
             )
             return data
-        ordered_dims = tuple(dims_by_text[dim] for dim in saved_dims)
-        if ordered_dims == normalized.dims:
-            return normalized
-        try:
-            return normalized.transpose(*ordered_dims, transpose_coords=True)
-        except ValueError:
-            logger.debug(
-                "Could not apply saved pending ImageTool dimension order %s",
-                saved_dims,
-                exc_info=True,
-            )
+        layout_dims = tuple(dims_by_text[dim] for dim in saved_dims)
+        layout_dim_set = set(layout_dims)
+        saved_order = iter(layout_dims)
+        ordered_dims = tuple(
+            next(saved_order) if dim in layout_dim_set else dim for dim in data.dims
+        )
+        if ordered_dims == data.dims:
             return data
+        return data.transpose(*ordered_dims, transpose_coords=True)
 
     @staticmethod
     def _apply_pending_workspace_filter(
@@ -297,8 +299,10 @@ class _PendingWorkspacePayloads:
         data = self._loader._workspace_imagetool_payload_data(ds).rename(name)
         if attrs is None:
             attrs = ds.attrs
+        data = _serialization.restore_legacy_nonuniform_data(
+            data, str(attrs.get("erlab_version", "0.0.0"))
+        )
         data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
-        data = erlab.utils.array._restore_nonuniform_dims(data)
         if data_role == "displayed":
             raw_state = attrs.get("itool_state")
             if isinstance(raw_state, bytes):
@@ -366,8 +370,10 @@ class _PendingWorkspacePayloads:
                 attrs = node.pending_workspace_payload_attrs
                 if attrs is None:
                     attrs = ds.attrs
+                data = _serialization.restore_legacy_nonuniform_data(
+                    data, str(attrs.get("erlab_version", "0.0.0"))
+                )
                 data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
-                data = erlab.utils.array._restore_nonuniform_dims(data)
                 data = erlab.utils.array.sort_coord_order(data)
                 data_size = data.nbytes
                 try:
@@ -858,7 +864,6 @@ class _PendingWorkspacePayloads:
                 ),
                 output_id=kwargs.get("output_id"),
                 replay_source_data=kwargs.get("replay_source_data"),
-                replay_source_pending=bool(kwargs.get("replay_source_pending", False)),
                 snapshot_token=kwargs.get("snapshot_token"),
                 source_snapshot_token=kwargs.get("source_snapshot_token"),
                 created_time=kwargs.get("created_time"),
@@ -915,7 +920,6 @@ class _PendingWorkspacePayloads:
                 root_kwargs.get("source_state", "fresh"),
             ),
             replay_source_data=root_kwargs.get("replay_source_data"),
-            replay_source_pending=bool(root_kwargs.get("replay_source_pending", False)),
             snapshot_token=root_kwargs.get("snapshot_token"),
             source_snapshot_token=root_kwargs.get("source_snapshot_token"),
             created_time=root_kwargs.get("created_time"),
@@ -992,14 +996,10 @@ class _PendingWorkspacePayloads:
                         data = ds[_persistence_constants.ITOOL_DATA_NAME].rename(name)
                         node.slicer_area.set_data(data, auto_compute=False)
                         node.slicer_area.state = state
-                    node._restore_replay_source_data(
-                        self._loader._workspace_replay_source_data(ds, uid=node.uid)
-                    )
                     node.clear_pending_workspace_payload()
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)
                 node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
-                self._controller._release_unused_imported_workspace_accesses()
                 return True
         except Exception:
             logger.exception(
@@ -1107,7 +1107,6 @@ class _PendingWorkspacePayloads:
             return False
         else:
             node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
-            self._controller._release_unused_imported_workspace_accesses()
             return True
 
     def _has_pending_workspace_linked_slicers(

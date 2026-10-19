@@ -60,6 +60,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._provenance._model import (
         FileLoadSource,
         FileReplayCall,
+        ToolProvenanceSpec,
     )
     from erlab.interactive.imagetool._provenance._operations import (
         ExtensionRoutineOperation,
@@ -1149,8 +1150,12 @@ class _ExtensionController(QtCore.QObject):
                 current_spec = pending_specs.popleft()
                 pending_specs.extend(
                     nested
-                    for script_input in current_spec.script_inputs
-                    if (nested := script_input.parsed_provenance_spec()) is not None
+                    for script_input in current_spec.replay_inputs
+                    for nested in (
+                        script_input.parsed_provenance_spec(),
+                        script_input.parsed_source_spec(),
+                    )
+                    if nested is not None
                 )
                 for _ref, operation in iter_operation_refs(current_spec):
                     if getattr(operation, "op", None) != "extension_routine":
@@ -1388,7 +1393,7 @@ class _ExtensionController(QtCore.QObject):
         """Remap one workspace source after it is saved with a new filename."""
         previous_key = _script_name_key(previous_name)
 
-        def remap_spec(spec: typing.Any) -> typing.Any:
+        def remap_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
             candidate = spec
             for ref, operation in reversed(tuple(iter_operation_refs(spec))):
                 if (
@@ -1413,27 +1418,21 @@ class _ExtensionController(QtCore.QObject):
 
             script_inputs = []
             script_inputs_changed = False
-            for script_input in candidate.script_inputs:
-                nested = script_input.parsed_provenance_spec()
-                if nested is None:
-                    script_inputs.append(script_input)
-                    continue
-                remapped_nested = remap_spec(nested)
-                if remapped_nested == nested:
-                    script_inputs.append(script_input)
-                    continue
-                script_inputs_changed = True
-                script_inputs.append(
-                    script_input.model_copy(
-                        update={
-                            "provenance_spec": remapped_nested.model_dump(mode="json")
-                        }
-                    )
-                )
+            for script_input in candidate.replay_inputs:
+                updates = {}
+                for field, nested in (
+                    ("provenance_spec", script_input.parsed_provenance_spec()),
+                    ("source_spec", script_input.parsed_source_spec()),
+                ):
+                    if (
+                        nested is not None
+                        and (remapped := remap_spec(nested)) != nested
+                    ):
+                        updates[field] = remapped.model_dump(mode="json")
+                script_inputs_changed |= bool(updates)
+                script_inputs.append(script_input.model_copy(update=updates))
             if script_inputs_changed:
-                candidate = candidate.model_copy(
-                    update={"script_inputs": tuple(script_inputs)}
-                )
+                candidate = candidate.with_replay_inputs(tuple(script_inputs))
 
             load_source = candidate.file_load_source
             replay_call = None if load_source is None else load_source.replay_call
@@ -1445,7 +1444,9 @@ class _ExtensionController(QtCore.QObject):
             ):
                 candidate = candidate.model_copy(
                     update={
-                        "file_load_source": load_source.model_copy(
+                        "file_load_source": typing.cast(
+                            "FileLoadSource", load_source
+                        ).model_copy(
                             update={
                                 "replay_call": replay_call.model_copy(
                                     update={"target": registered_name}

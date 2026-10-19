@@ -11,8 +11,10 @@ import numbers
 import typing
 
 import numpy as np
+import packaging.version
 import xarray as xr
 
+import erlab
 from erlab.interactive import _persistence_constants
 
 if typing.TYPE_CHECKING:
@@ -35,6 +37,15 @@ _STALE_BACKEND_ENCODING_KEYS = frozenset(
         "source",
     )
 )
+
+
+def restore_legacy_nonuniform_data(
+    data: xr.DataArray, saved_version: str
+) -> xr.DataArray:
+    """Restore renderer dimensions only in files saved before version 3.2.0."""
+    if packaging.version.Version(saved_version) < packaging.version.Version("3.2.0"):
+        return erlab.utils.array._restore_nonuniform_dims(data)
+    return data
 
 
 def _tool_attr_writes_natively(value: typing.Any) -> bool:

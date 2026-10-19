@@ -12,7 +12,7 @@ import time
 import traceback
 import typing
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import xarray as xr
 from qtpy import QtCore
@@ -20,10 +20,12 @@ from qtpy import QtCore
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive import _persistence_constants, _qt_state
 from erlab.interactive._code_trust import document_trust_has_trusted_lineage
+from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
@@ -34,9 +36,10 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, MutableMapping
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._extensions._models import (
         _WorkspaceScriptRequirement,
     )
@@ -56,6 +59,20 @@ logger = logging.getLogger(__name__)
 _WORKSPACE_SAVE_SUFFIX_ERROR = "ImageTool workspace documents must be saved as .itws"
 
 
+def _set_imagetool_provenance_attrs(
+    attrs: MutableMapping[typing.Any, typing.Any], spec: ToolProvenanceSpec | None
+) -> None:
+    encoded = None if spec is None else json.dumps(spec.model_dump(mode="json"))
+    for key in (
+        _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+        _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+    ):
+        if encoded is None:
+            attrs.pop(key, None)
+        else:
+            attrs[key] = encoded
+
+
 @dataclass
 class _WorkspaceSaveSnapshot:
     """One immutable generation and the local state to adopt after publication."""
@@ -68,14 +85,44 @@ class _WorkspaceSaveSnapshot:
         tuple[str, str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
     embedded_script_sources: tuple[tuple[str, str, bytes], ...] = ()
+    dataset_source_paths: frozenset[pathlib.Path] = frozenset()
+    _source_ownership: contextlib.ExitStack = field(
+        default_factory=contextlib.ExitStack, repr=False
+    )
+    _data_closed: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def source_paths(self) -> frozenset[pathlib.Path]:
+        return (
+            self.dataset_source_paths
+            | frozenset(
+                pathlib.Path(item.source_file).resolve()
+                for item in self.generation_plan.objects
+                if item.source_file is not None
+            )
+            | frozenset(
+                pathlib.Path(item.source_file).resolve()
+                for item in self.generation_plan.preserved_groups
+            )
+        )
+
+    def close_data(self) -> None:
+        if self._data_closed:
+            return
+        self._data_closed = True
+        closed: set[int] = set()
+        with contextlib.ExitStack() as datasets:
+            for item in self.generation_plan.objects:
+                if item.dataset is None or id(item.dataset) in closed:
+                    continue
+                closed.add(id(item.dataset))
+                datasets.callback(item.dataset.close)
 
     def close(self) -> None:
-        closed: set[int] = set()
-        for item in self.generation_plan.objects:
-            if item.dataset is None or id(item.dataset) in closed:
-                continue
-            closed.add(id(item.dataset))
-            item.dataset.close()
+        try:
+            self.close_data()
+        finally:
+            self._source_ownership.close()
 
 
 @dataclass(frozen=True)
@@ -189,8 +236,9 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         except Exception:
             error = _WorkspaceSaveError(traceback_text=traceback.format_exc())
         finally:
+            # Source ownership ends when the GUI handles completion.
             with contextlib.suppress(Exception):
-                self._snapshot.close()
+                self._snapshot.close_data()
         self.signals.finished.emit(time.perf_counter() - start_time, error)
 
 
@@ -252,6 +300,51 @@ class _WorkspaceSaver:
     ) -> None:
         self._manager = manager
         self._controller = controller
+
+    def _dataset_source_paths(
+        self, dataset: xr.Dataset, node: _ManagedWindowNode
+    ) -> frozenset[pathlib.Path]:
+        lazy_variables = [
+            variable
+            for variable in dataset.variables.values()
+            if not variable._in_memory
+        ]
+        if not lazy_variables:
+            return frozenset()
+        paths = set(node._workspace_sources)
+        for variable in lazy_variables:
+            source = workspace_arrays._xarray_source_path(
+                variable.encoding.get("source")
+            )
+            if source is not None:
+                paths.add(pathlib.Path(source))
+        return frozenset(paths)
+
+    def _own_snapshot_sources(self, snapshot: _WorkspaceSaveSnapshot) -> None:
+        ownership = snapshot._source_ownership
+        try:
+            for path in snapshot.source_paths:
+                if path in self._controller._workspace_sources:
+                    access = self._controller._workspace_document_access(path)
+                    ownership.callback(access.release)
+            sources = {
+                (item.source_file, item.source_path)
+                for item in snapshot.generation_plan.objects
+                if item.source_file is not None and item.source_path is not None
+            }
+            for source_file, source_path in sources:
+                store = workspace_store.WorkspaceStore.active(source_file)
+                parts = source_path.strip("/").split("/")
+                if (
+                    store is not None
+                    and len(parts) >= 2
+                    and parts[0] == _persistence_constants.WORKSPACE_OBJECTS_GROUP
+                ):
+                    store.acquire_object(parts[1])
+                    ownership.callback(store.release_object, parts[1])
+        except Exception:
+            snapshot.close()
+            raise
 
     def _workspace_reader_closers(
         self, fname: str | os.PathLike[str]
@@ -324,17 +417,8 @@ class _WorkspaceSaver:
             ds.attrs.pop("manager_node_note", None)
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
-        if kind == "imagetool" and persistence.replay_source_data is not None:
-            ds = ds.copy(deep=False)
-            blob_name = _persistence_constants.WORKSPACE_REPLAY_SOURCE_BLOB_NAME
-            ds[blob_name] = erlab.interactive.utils._tool_data_to_blob(
-                persistence.replay_source_data,
-                blob_name,
-            )
-        if kind == "imagetool" and provenance_spec is not None:
-            ds.attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
-                provenance_spec.model_dump(mode="json")
-            )
+        if kind == "imagetool":
+            _set_imagetool_provenance_attrs(ds.attrs, provenance_spec)
         else:
             ds.attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
@@ -561,6 +645,8 @@ class _WorkspaceSaver:
                 "parent_uid": node.parent_uid,
                 "display_name": node.display_text,
             }
+            if node.current_revision_id is not None:
+                entry["current_revision_id"] = node.current_revision_id
             if node.is_imagetool:
                 # Distinguishes embedded data from lazy file-backed/dask payloads.
                 entry["data_backing"] = node.persistence_data_backing()[0]
@@ -618,19 +704,31 @@ class _WorkspaceSaver:
             nodes=self._workspace_node_manifest_entries(),
             erlab_version=str(erlab.__version__),
             workspace_link_id=self._manager._workspace_state.link_id,
-            manager_layout=self._workspace_layout_snapshot(),
-            loader_state=self._workspace_loader_state_snapshot(),
-            standalone_apps=self._workspace_standalone_apps_snapshot(),
-            option_overrides=self._workspace_option_overrides_snapshot(),
-            acquisition_context=(self._manager._acquisition_context.state_payload()),
         )
+        manifest.update(self._workspace_metadata_snapshot())
         manifest["extension_requirements"] = scripts.requirement_manifest_value(
             requirements
         )
         manifest["embedded_extension_sources"] = scripts.source_manifest_value(
             source_keys
         )
+        manifest["provenance_revisions"] = [
+            workspace_revisions.revision_manifest_entry(record)
+            for record in self._manager._provenance_revisions.reachable(
+                workspace_revisions.retained_revision_ids(self._manager)
+            )
+        ]
         return manifest
+
+    def _workspace_metadata_snapshot(self) -> dict[str, typing.Any]:
+        """Capture the document settings restored by a full workspace load."""
+        return {
+            "manager_layout": self._workspace_layout_snapshot(),
+            "loader_state": self._workspace_loader_state_snapshot(),
+            "standalone_apps": self._workspace_standalone_apps_snapshot(),
+            "interactive_option_overrides": self._workspace_option_overrides_snapshot(),
+            "acquisition_context": self._manager._acquisition_context.state_payload(),
+        }
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
         return self._manager.effective_interactive_options.io.workspace.compression
@@ -786,6 +884,7 @@ class _WorkspaceSaver:
 
         fname = document_access.path
         _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
+        self._controller._prepare_workspace_provenance()
         self._manager._workspace_state.saving_depth += 1
         snapshot: _WorkspaceSaveSnapshot | None = None
         target_store: workspace_store.WorkspaceStore | None = None
@@ -857,13 +956,7 @@ class _WorkspaceSaver:
         attrs["itool_name"] = node.name
         attrs["itool_title"] = node.name
 
-        provenance_spec = node.provenance_spec
-        if provenance_spec is None:
-            attrs.pop(_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR, None)
-        else:
-            attrs[_persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR] = json.dumps(
-                provenance_spec.model_dump(mode="json")
-            )
+        _set_imagetool_provenance_attrs(attrs, node.persistence_provenance_spec)
 
         if isinstance(node, _ImageToolWrapper):
             if node.source_input_ndim is None:
@@ -1085,6 +1178,7 @@ class _WorkspaceSaver:
         self, fname: str | os.PathLike[str]
     ) -> _WorkspaceSaveSnapshot:
         self._controller._drain_workspace_deferred_events()
+        self._controller._prepare_workspace_provenance()
         generation = self._manager._workspace_state.dirty_generation
         self._manager._workspace_state.saving_depth += 1
         try:
@@ -1178,6 +1272,7 @@ class _WorkspaceSaver:
         final_entries: list[dict[str, typing.Any]] = []
         serialized_datasets: list[xr.Dataset] = []
         serialized_dataset_ids: set[int] = set()
+        dataset_source_paths: set[pathlib.Path] = set()
         legacy_payload_rewrite_uids: set[str] = set()
         extension_object_ids = set(
             workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
@@ -1251,6 +1346,37 @@ class _WorkspaceSaver:
                         serialized_datasets.append(dataset)
                         serialized_dataset_ids.add(id(dataset))
             if attrs_payload is not None:
+                if kind == "imagetool" and not needs_current_attrs:
+                    provenance_spec = node.persistence_provenance_spec
+                    provenance_attrs: dict[str, typing.Any] = {}
+                    _set_imagetool_provenance_attrs(provenance_attrs, provenance_spec)
+                    for key in (
+                        _persistence_constants.MANAGER_PROVENANCE_SPEC_ATTR,
+                        _persistence_constants.ITOOL_PROVENANCE_SPEC_ATTR,
+                    ):
+                        encoded_key = _serialization.encode_attr_key(key)
+                        current = next(
+                            (
+                                item[1]
+                                for item in attrs_payload
+                                if item[0] == encoded_key
+                            ),
+                            None,
+                        )
+                        expected = (
+                            _serialization.encode_attr_value(provenance_attrs[key])
+                            if key in provenance_attrs
+                            else None
+                        )
+                        if current != expected:
+                            attrs = workspace_format._restore_workspace_manifest_attrs(
+                                attrs_payload
+                            )
+                            _set_imagetool_provenance_attrs(attrs, provenance_spec)
+                            attrs_payload = workspace_format._workspace_manifest_attrs(
+                                attrs
+                            )
+                            break
                 entry["payload_attrs"] = attrs_payload
 
             if can_reuse_object:
@@ -1308,6 +1434,9 @@ class _WorkspaceSaver:
                         object_id,
                         dataset=dataset,
                     )
+                    dataset_source_paths.update(
+                        self._dataset_source_paths(dataset, node)
+                    )
 
             entry["payload_object_id"] = object_id
             entry["payload_path"] = workspace_store.WorkspaceStore.object_path(
@@ -1316,6 +1445,13 @@ class _WorkspaceSaver:
             final_entries.append(entry)
 
         manifest["nodes"] = final_entries
+        for item in workspace_revisions.revision_object_writes(
+            self._manager._provenance_revisions,
+            self._manager._provenance_revisions.reachable(
+                workspace_revisions.retained_revision_ids(self._manager)
+            ),
+        ):
+            object_writes[item.object_id] = item
         node_object_ids = {
             str(entry["payload_object_id"])
             for entry in final_entries
@@ -1465,7 +1601,7 @@ class _WorkspaceSaver:
                 )
                 for group_path in sorted(leased_legacy_group_paths)
             )
-        return _WorkspaceSaveSnapshot(
+        snapshot = _WorkspaceSaveSnapshot(
             generation=generation,
             generation_plan=workspace_storage._WorkspaceGenerationPlan(
                 manifest=manifest,
@@ -1484,4 +1620,7 @@ class _WorkspaceSaver:
                 self._serialized_tool_data_references(serialized_datasets)
             ),
             embedded_script_sources=tuple(embedded_script_sources),
+            dataset_source_paths=frozenset(dataset_source_paths),
         )
+        self._own_snapshot_sources(snapshot)
+        return snapshot

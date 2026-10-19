@@ -8,7 +8,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive import _shortcut_sequences
-from erlab.interactive._figurecomposer._model._sources import _public_source_data
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
@@ -766,7 +765,7 @@ class FigureSourcePanel(QtWidgets.QWidget):
         shape_label = QtWidgets.QLabel(
             erlab.interactive.utils._apply_qt_accent_color(
                 erlab.utils.formatting.format_darr_shape_html(
-                    _public_source_data(row.data).rename(None), show_size=False
+                    row.data.rename(None), show_size=False
                 )
             ),
             self.source_list,

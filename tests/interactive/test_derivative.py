@@ -769,7 +769,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         parent.isel({"z": 0}).transpose("y", "x").squeeze(),
     )
 
-    parent_nonuniform_public = xr.DataArray(
+    parent_nonuniform = xr.DataArray(
         np.arange(24).reshape((4, 3, 2)),
         dims=("alpha", "eV", "beta"),
         coords={
@@ -779,7 +779,6 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         },
         name="data",
     )
-    parent_nonuniform = erlab.utils.array._make_dims_uniform(parent_nonuniform_public)
     resolved_nonuniform = selection(
         QSelOperation(kwargs={"beta": 2.0}),
         IselOperation(kwargs={"alpha": slice(1, 3)}),
@@ -787,7 +786,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     )
     xr.testing.assert_identical(
         resolved_nonuniform.apply(parent_nonuniform),
-        parent_nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
+        parent_nonuniform.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
     with pytest.raises(
@@ -1001,12 +1000,15 @@ def test_tool_copy_code_uses_current_script_input(qtbot) -> None:
             self._data = inputs["data"]
 
     data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
-    parent = erlab.interactive.itool(data, execute=False, manager=False)
+    selected = data.isel(x=slice(0, 2))
+    parent = erlab.interactive.itool(selected, execute=False, manager=False)
     assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(parent)
-    parent.set_provenance_spec(selection(IselOperation(kwargs={"x": slice(0, 2)})))
+    parent.set_provenance_spec(
+        selection(IselOperation(kwargs={"x": slice(0, 2)})).to_replay_spec()
+    )
 
-    tool = _DummyTool(data.isel(x=slice(0, 2)))
+    tool = _DummyTool(selected)
     qtbot.addWidget(tool)
     tool.set_script_inputs(
         (ScriptInput(name="data"),),
@@ -1022,7 +1024,7 @@ def test_tool_copy_code_uses_current_script_input(qtbot) -> None:
     )
     result = namespace["result"]
     assert isinstance(result, xr.DataArray)
-    xr.testing.assert_identical(result, data.isel(x=slice(0, 2)).mean())
+    xr.testing.assert_identical(result, selected.mean())
 
     multi_input_tool = _DummyTool(data)
     qtbot.addWidget(multi_input_tool)

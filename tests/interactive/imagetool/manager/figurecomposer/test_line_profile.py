@@ -267,14 +267,13 @@ def test_figure_composer_line_profile_uses_public_nonuniform_dims(qtbot) -> None
         },
         name="profile",
     )
-    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.line(
         label="line",
         source="data",
     ).model_copy(update={"line_selection": {"sample_temp": 15.0}, "line_x": "alpha"})
 
     tool = FigureComposerTool.from_sources(
-        {"data": internal},
+        {"data": public},
         sources=(FigureSourceState(name="data", label="profile"),),
         operations=(operation,),
         setup=FigureSubplotsState(),
