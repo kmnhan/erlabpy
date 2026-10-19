@@ -1181,12 +1181,16 @@ def test_committed_generation_merges_embedded_source_into_live_state(
     later_hash = hashlib.sha256(later_source).hexdigest()
     scripts = workspace_state._WorkspaceScriptState()
     scripts.remember_verified_source("later.py", later_hash, later_source)
+    revisions = _ProvenanceRevisionStore()
+    unused_revision_id = revisions.add(xr.DataArray([1.0]))
+    retained_revision_id = revisions.add(xr.DataArray([2.0]))
     manager = types.SimpleNamespace(
         _workspace_state=types.SimpleNamespace(
             extension_scripts=scripts,
             schema_version=0,
         ),
-        _provenance_revisions=_ProvenanceRevisionStore(),
+        _provenance_revisions=revisions,
+        _tool_graph=types.SimpleNamespace(nodes={}),
     )
     controller = workspace_controller._WorkspaceController.__new__(
         workspace_controller._WorkspaceController
@@ -1219,17 +1223,20 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         embedded_script_sources=(("embedded.py", embedded_hash, embedded_source),),
     )
 
-    controller._adopt_committed_workspace_generation(
-        pathlib.Path("workspace.itws"),
-        snapshot,
-        manifest=snapshot.generation_plan.manifest,
-    )
+    with revisions.retain((retained_revision_id,)):
+        controller._adopt_committed_workspace_generation(
+            pathlib.Path("workspace.itws"),
+            snapshot,
+            manifest=snapshot.generation_plan.manifest,
+        )
 
     assert set(scripts.verified_sources) == {
         ("embedded.py", embedded_hash),
         ("later.py", later_hash),
     }
     assert rebound == [{"/legacy/imagetool": "payload"}]
+    assert unused_revision_id not in revisions
+    assert retained_revision_id in revisions
     assert (
         manager._workspace_state.schema_version
         == _persistence_constants.WORKSPACE_SCHEMA_VERSION

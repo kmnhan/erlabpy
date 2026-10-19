@@ -884,7 +884,7 @@ class _WorkspaceSaver:
 
         fname = document_access.path
         _require_itws_workspace_path(fname, _WORKSPACE_SAVE_SUFFIX_ERROR)
-        self._controller._normalize_approved_workspace_provenance()
+        self._controller._prepare_workspace_provenance()
         self._manager._workspace_state.saving_depth += 1
         snapshot: _WorkspaceSaveSnapshot | None = None
         target_store: workspace_store.WorkspaceStore | None = None
@@ -1178,7 +1178,7 @@ class _WorkspaceSaver:
         self, fname: str | os.PathLike[str]
     ) -> _WorkspaceSaveSnapshot:
         self._controller._drain_workspace_deferred_events()
-        self._controller._normalize_approved_workspace_provenance()
+        self._controller._prepare_workspace_provenance()
         generation = self._manager._workspace_state.dirty_generation
         self._manager._workspace_state.saving_depth += 1
         try:

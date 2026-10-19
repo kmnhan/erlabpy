@@ -954,6 +954,150 @@ def test_fit_provenance_approval_preserves_saved_revision_history(
 
 
 @pytest.mark.parametrize("retain_snapshot", [False, True])
+def test_untrusted_checkpoint_revert_releases_old_workspace_after_save_as(
+    qtbot, tmp_path, monkeypatch, manager_context, retain_snapshot
+) -> None:
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+    from erlab.interactive.imagetool.manager._workspace import (
+        _revisions as workspace_revisions,
+    )
+    from erlab.interactive.imagetool.manager._workspace import (
+        _storage as workspace_storage,
+    )
+    from erlab.interactive.imagetool.manager._workspace._store import WorkspaceStore
+
+    original_workspace = tmp_path / "before-revert.itws"
+    destination = tmp_path / "after-revert.itws"
+    snapshot_destination = tmp_path / "before-revert-snapshot.itws"
+    data = xr.DataArray(np.arange(12.0).reshape(3, 4), dims=("x", "y"))
+    cropped = data.isel(x=slice(1, None))
+    monkeypatch.setattr(workspace_trust, "workspace_path_is_trusted", lambda _: False)
+    with manager_context() as manager:
+        index = manager.add_imagetool(ImageTool(data, _in_manager=True), show=False)
+        node = manager._node_for_target(index)
+        captured = manager._lineage_controller._script_input_for_node(
+            node, name="data", data_role="source", detached_input_uid=node.uid
+        )
+        original_revision_id = captured.revision_id
+        external_index = manager.add_imagetool(
+            ImageTool(data + 1, _in_manager=True),
+            provenance_spec=script(
+                ScriptCodeOperation(label="Offset", code="derived = data + 1"),
+                start_label="Calculation",
+                active_name="derived",
+                primary_input="data",
+                script_inputs=(captured,),
+            ),
+            show=False,
+        )
+        external_revision_id = manager._node_for_target(
+            external_index
+        ).revision_id_for_role("source")
+        node.replace_with_detached_data(
+            cropped,
+            script(
+                IselOperation(kwargs={"x": slice(1, None)}),
+                start_label="Crop",
+                active_name="data",
+                primary_input="data",
+                script_inputs=(captured,),
+            ),
+            replay_source_data=None,
+        )
+        later_revision_id = node.current_revision_id
+        manager._workspace_controller.saving._save_workspace_document(
+            original_workspace
+        )
+
+    reset_saved_code_trust(domain="erlab.workspace")
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        assert controller.loading._load_workspace_file(
+            original_workspace,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        node = manager._node_for_target(0)
+        manager.get_imagetool(0)
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        snapshot = (
+            controller.saving._workspace_generation_save_snapshot(
+                manager._workspace_state.dirty_generation,
+                fname=snapshot_destination,
+            )
+            if retain_snapshot
+            else None
+        )
+        try:
+            editor = manager._provenance_edit_controller
+            monkeypatch.setattr(editor, "_confirm_revert", lambda: True)
+            monkeypatch.setattr(editor, "_show_unavailable", pytest.fail)
+            monkeypatch.setattr(
+                editor,
+                "_show_failed",
+                lambda title, exc: pytest.fail(f"{title}: {exc}"),
+            )
+            select_tools(manager, [0])
+            manager._update_info()
+            row = next(
+                row
+                for row in node.derivation_display_rows
+                if row.on_primary_chain and row.revision_id == original_revision_id
+            )
+            assert editor.can_revert_row(row)[0]
+            editor.revert_row(row)
+            assert node.current_revision_id == original_revision_id
+            xr.testing.assert_identical(node.current_source_data(), data)
+            assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+            monkeypatch.setattr(
+                controller, "_workspace_save_dialog", lambda **_kwargs: destination
+            )
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+            assert manager.workspace_path == str(destination.resolve())
+            assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+            assert manager._provenance_revisions.revision_ids == {
+                original_revision_id,
+                external_revision_id,
+            }
+            xr.testing.assert_identical(node.current_source_data(), data)
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(destination)
+
+            if snapshot is not None:
+                with pytest.raises(BlockingIOError):
+                    workspace_storage._acquire_workspace_document_lock(
+                        original_workspace
+                    )
+                manifest = snapshot.generation_plan.manifest
+                assert later_revision_id in {
+                    entry["revision_id"] for entry in manifest["provenance_revisions"]
+                }
+                with WorkspaceStore(snapshot_destination, create=True) as store:
+                    workspace_storage._write_workspace_generation(
+                        store,
+                        snapshot.generation_plan,
+                        compression_mode=snapshot.compression_mode,
+                    )
+                restored = _ProvenanceRevisionStore()
+                workspace_revisions.restore_revision_store(
+                    restored, manifest, snapshot_destination
+                )
+                xr.testing.assert_identical(
+                    restored.resolve_data(later_revision_id).compute(), cropped
+                )
+        finally:
+            if snapshot is not None:
+                snapshot.close()
+
+        original_lock = workspace_storage._acquire_workspace_document_lock(
+            original_workspace
+        )
+        original_lock.unlock()
+
+
+@pytest.mark.parametrize("retain_snapshot", [False, True])
 def test_fit_provenance_approval_releases_old_workspace_after_save_as(
     qtbot, tmp_path, monkeypatch, manager_context, retain_snapshot
 ) -> None:
@@ -1176,7 +1320,7 @@ def test_provenance_normalization_rolls_back_all_owners_and_revisions(
             else:
                 patch.setattr(controller, "_commit_provenance_change", fail_after_remap)
             with pytest.raises(RuntimeError, match="Normalization commit failed"):
-                controller._normalize_approved_workspace_provenance()
+                controller._prepare_workspace_provenance()
 
         assert [node.provenance_spec for node in nodes] == previous_specs
         assert [

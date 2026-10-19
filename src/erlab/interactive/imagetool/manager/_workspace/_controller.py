@@ -371,7 +371,16 @@ class _WorkspaceController:
         self._set_workspace_code_trust(
             approve_document_trust(self._manager._workspace_state.code_trust, manifest)
         )
+        self._prepare_workspace_provenance()
+
+    def _prepare_workspace_provenance(self) -> None:
         self._normalize_approved_workspace_provenance()
+        self._discard_unreachable_provenance_revisions()
+
+    def _discard_unreachable_provenance_revisions(self) -> None:
+        self._manager._provenance_revisions.discard_unreachable(
+            workspace_revisions.retained_revision_ids(self._manager)
+        )
 
     def _normalize_approved_workspace_provenance(self) -> None:
         """Adopt data-only fit payloads across all approved provenance owners."""
@@ -424,9 +433,6 @@ class _WorkspaceController:
                 node.restore_provenance_owners(snapshot)
             self._set_workspace_code_trust(previous)
             raise
-        revisions.discard_unreachable(
-            workspace_revisions.retained_revision_ids(self._manager)
-        )
 
     def issue_code_execution_capability(
         self,
@@ -1414,6 +1420,7 @@ class _WorkspaceController:
         self._manager._workspace_state.schema_version = (
             workspace_format._current_workspace_schema_version()
         )
+        self._discard_unreachable_provenance_revisions()
 
     def _pending_workspace_payload_snapshot(
         self,
@@ -2995,7 +3002,7 @@ class _WorkspaceController:
                 f".{access.path.name}.tmp-{uuid.uuid4().hex}"
             )
             self._drain_workspace_deferred_events()
-            self._normalize_approved_workspace_provenance()
+            self._prepare_workspace_provenance()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
             try:
