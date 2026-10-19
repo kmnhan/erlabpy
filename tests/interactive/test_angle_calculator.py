@@ -1105,20 +1105,30 @@ def test_angle_calculator_overlay_history_does_not_recalculate_coverage(
 ):
     win = angle_calculator
     win.show()
-    qtbot.wait(100)
-    # Finish startup redraws before measuring updates caused by overlay edits.
-    qtbot.wait_until(lambda: not win._redraw_timer.isActive())
-    calls = []
-    for curve in (*win.scan_curves, win.cut_curve):
-        monkeypatch.setattr(
-            curve, "setData", lambda *args, **kwargs: calls.append(None)
-        )
-    win.overlays.add_button.click()
-    win.overlays.inputs["pocket_x"].setValue(0.2)
-    qtbot.wait_until(win.undo_action.isEnabled)
-    qtbot.wait_until(lambda: not win._pocket_redraw_timer.isActive())
-    assert calls == []
-    assert win._history_state.overlays.pockets[0].center[0] == 0.2
+    qtbot.waitExposed(win)
+    views = tuple(
+        plot.getViewBox()
+        for plot in (win.momentum_plot, win.angle_plot, win.out_of_plane_plot)
+    )
+    # Range changes redraw coverage independently. Measure only overlay edits.
+    for view in views:
+        view.sigRangeChanged.disconnect(win._view_changed)
+    try:
+        win._redraw_timer.stop()
+        calls = []
+        for curve in (*win.scan_curves, win.cut_curve):
+            monkeypatch.setattr(
+                curve, "setData", lambda *args, **kwargs: calls.append(None)
+            )
+        win.overlays.add_button.click()
+        win.overlays.inputs["pocket_x"].setValue(0.2)
+        qtbot.wait_until(win.undo_action.isEnabled)
+        qtbot.wait_until(lambda: not win._pocket_redraw_timer.isActive())
+        assert calls == []
+        assert win._history_state.overlays.pockets[0].center[0] == 0.2
+    finally:
+        for view in views:
+            view.sigRangeChanged.connect(win._view_changed)
 
 
 def test_angle_calculator_history_preserves_pocket_selection(angle_calculator):
