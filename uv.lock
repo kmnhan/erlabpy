@@ -1386,7 +1386,7 @@ docs = [
     { name = "sphinx-autosummary-accessors", specifier = ">=2026.10.0" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinx-design", specifier = ">=0.6.1" },
-    { name = "sphinx-llm", specifier = ">=0.3.0" },
+    { name = "sphinx-llm", specifier = ">=1.1.0" },
     { name = "sphinx-notfound-page", specifier = ">=1.0.4" },
     { name = "sphinx-qt-documentation", specifier = ">=0.4.1" },
     { name = "sphinxcontrib-bibtex", specifier = ">=2.6.3" },
