@@ -2612,8 +2612,9 @@ class ItoolPolyLineROI(pg.PolyLineROI):
         )
 
         vertices: dict[Hashable, list[float]] = {}
+        dims = self.plot_item.axis_dims_uniform if uniform else self.plot_item.axis_dims
         for ax, dim, values in zip(
-            self.plot_item.display_axis, self.plot_item.axis_dims, raw_xy, strict=True
+            self.plot_item.display_axis, dims, raw_xy, strict=True
         ):
             if not uniform:
                 values = array_slicer.to_physical_values(ax, values)
@@ -2623,6 +2624,8 @@ class ItoolPolyLineROI(pg.PolyLineROI):
 
 
 class _PolyROIEditDialog(QtWidgets.QDialog):
+    """Edit display positions without inverting physical coordinates."""
+
     def __init__(self, roi: ItoolPolyLineROI) -> None:
         super().__init__()
         self.roi = roi
@@ -2633,7 +2636,7 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
 
         self.table = QtWidgets.QTableWidget(self)
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(self.roi.plot_item.axis_dims)
+        self.table.setHorizontalHeaderLabels(self.roi.plot_item.axis_dims_uniform)
         hdr = self.table.horizontalHeader()
         if hdr:  # pragma: no branch
             hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -2670,7 +2673,7 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
         self._populate_table()
 
     def _populate_table(self) -> None:
-        values = np.column_stack(tuple(self.roi._get_vertices().values()))
+        values = np.column_stack(tuple(self.roi._get_vertices(uniform=True).values()))
         self.table.setRowCount(len(values))
         for i in range(values.shape[0]):
             for j in range(2):
@@ -2723,9 +2726,6 @@ class _PolyROIEditDialog(QtWidgets.QDialog):
                 )
                 return
         values = np.asarray(points, dtype=float).reshape(-1, 2)
-        array_slicer = self.roi.plot_item.array_slicer
-        for column, axis in enumerate(self.roi.plot_item.display_axis):
-            values[:, column] = array_slicer.to_uniform_values(axis, values[:, column])
         local_points = [
             self.roi.mapFromParent(float(point[0]), float(point[1])) for point in values
         ]

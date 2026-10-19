@@ -10322,14 +10322,17 @@ def test_itool_roi_edit_dialog_updates_points(qtbot) -> None:
     win.close()
 
 
-@pytest.mark.parametrize("descending", [False, True])
-def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
-    qtbot, descending
-) -> None:
-    x = np.array([0.0, 0.2, 1.0, 3.0])
-    y = np.array([5.0, 7.0, 11.0, 12.0])
-    if descending:
-        x, y = x[::-1], y[::-1]
+@pytest.mark.parametrize(
+    ("x", "y"),
+    [
+        pytest.param([0.0, 0.2, 1.0, 3.0], [5.0, 7.0, 11.0, 12.0], id="ascending"),
+        pytest.param([3.0, 1.0, 0.2, 0.0], [12.0, 11.0, 7.0, 5.0], id="descending"),
+        pytest.param([0.0, 1.0, 0.2, 3.0], [5.0, 11.0, 7.0, 12.0], id="nonmonotonic"),
+        pytest.param([0.0, 0.2, 0.2, 3.0], [5.0, 7.0, 7.0, 12.0], id="duplicates"),
+    ],
+)
+def test_itool_roi_editor_uses_display_nonuniform_coordinates(qtbot, x, y) -> None:
+    x, y = np.asarray(x), np.asarray(y)
     data = xr.DataArray(
         np.arange(16.0).reshape(4, 4), dims=("x", "y"), coords={"x": x, "y": y}
     )
@@ -10345,15 +10348,12 @@ def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
     dialog = _PolyROIEditDialog(roi)
     qtbot.addWidget(dialog)
     assert [dialog.table.horizontalHeaderItem(i).text() for i in range(2)] == [
-        "x",
-        "y",
+        "x_idx",
+        "y_idx",
     ]
     np.testing.assert_allclose(
         [[float(dialog.table.item(i, j).text()) for j in range(2)] for i in range(2)],
-        [
-            [x[0] - (x[1] - x[0]) / 2, (y[1] + y[2]) / 2],
-            [x[3] + (x[3] - x[2]) / 2, y[2]],
-        ],
+        original_points,
     )
     dialog.accept()
     np.testing.assert_allclose(
@@ -10362,6 +10362,7 @@ def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
     )
     dialog = _PolyROIEditDialog(roi)
     qtbot.addWidget(dialog)
+    edited_points = np.array([[-0.75, 3.5], [3.25, -0.5]])
     expected = np.array(
         [
             [x[0] - 0.75 * (x[1] - x[0]), y[3] + 0.5 * (y[3] - y[2])],
@@ -10370,12 +10371,14 @@ def test_itool_roi_editor_uses_physical_nonuniform_coordinates(
     )
     for row in range(2):
         for column in range(2):
-            dialog.table.item(row, column).setText(str(expected[row, column]))
+            dialog.table.item(row, column).setText(str(edited_points[row, column]))
     dialog.accept()
     np.testing.assert_allclose(
         [[float(point[0]), float(point[1])] for point in roi.getState()["points"]],
-        [[-0.75, 3.5], [3.25, -0.5]],
+        edited_points,
     )
+    assert tuple(roi._get_vertices()) == ("x", "y")
+    assert tuple(roi._get_vertices(uniform=True)) == ("x_idx", "y_idx")
     np.testing.assert_allclose(
         np.column_stack(tuple(roi._get_vertices().values())), expected
     )
@@ -10400,7 +10403,7 @@ def test_moved_roi_uses_visible_vertices_for_editor_and_analysis(qtbot) -> None:
     qtbot.addWidget(editor)
     np.testing.assert_allclose(
         [[float(editor.table.item(i, j).text()) for j in range(2)] for i in range(3)],
-        [[0.5, 1.5], [1.5, 1.5], [1.5, 3.0]],
+        [[1.5, 1.5], [3.0, 1.5], [3.0, 3.0]],
     )
     editor.accept()
     np.testing.assert_allclose(
@@ -10408,7 +10411,7 @@ def test_moved_roi_uses_visible_vertices_for_editor_and_analysis(qtbot) -> None:
     )
     editor = _PolyROIEditDialog(roi)
     qtbot.addWidget(editor)
-    editor.table.item(0, 0).setText("0.8")
+    editor.table.item(0, 0).setText("2.0")
     editor.accept()
     np.testing.assert_allclose(
         [[point[0], point[1]] for point in roi.getState()["points"]],

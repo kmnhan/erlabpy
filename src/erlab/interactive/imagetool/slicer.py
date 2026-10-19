@@ -680,19 +680,6 @@ class ArraySlicer(QtCore.QObject):
             return values
         return _interp_geometry(values, self.coords_uniform[axis], self.coords[axis])
 
-    def to_uniform_values(self, axis: int, values: npt.ArrayLike) -> np.ndarray:
-        """Convert physical geometry positions to renderer positions."""
-        values = np.asarray(values)
-        if axis not in self._nonuniform_axes_set:
-            return values
-        physical = self.coords[axis]
-        uniform = self.coords_uniform[axis]
-        if physical[0] > physical[-1]:
-            physical, uniform = physical[::-1], uniform[::-1]
-        if not np.all(np.diff(physical) > 0):
-            raise ValueError("Physical geometry requires monotonic coordinates")
-        return _interp_geometry(values, physical, uniform)
-
     def crop_selection(
         self, indexers: Mapping[Hashable, slice]
     ) -> tuple[ToolProvenanceOperation, ...]:
