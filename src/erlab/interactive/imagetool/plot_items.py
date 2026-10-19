@@ -1569,7 +1569,10 @@ class ItoolPlotItem(pg.PlotItem):
                     self.slicer_area.displayed_provenance_spec(),
                     source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
-                )
+                ),
+                _code_trust=typing.cast(
+                    "erlab.interactive.imagetool.ImageTool", self.slicer_area.window()
+                )._provenance_code_trust_for_copy(),
             )
         if isinstance(tool_window, QtWidgets.QWidget):  # pragma: no branch
             self.slicer_area.add_tool_window(tool_window)

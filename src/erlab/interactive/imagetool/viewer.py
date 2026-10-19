@@ -4154,6 +4154,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 raise ValueError(
                     "ToolWindows opened from ImageTool must declare one input"
                 )
+            parent = typing.cast("erlab.interactive.imagetool.ImageTool", self.window())
 
             def _resolve_inputs() -> tuple[
                 dict[str, xr.DataArray], tuple[ScriptInput, ...]
@@ -4193,9 +4194,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
             def _source_provenance_context(
                 remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
             ) -> Iterator[None]:
-                parent = typing.cast(
-                    "erlab.interactive.imagetool.ImageTool", self.window()
-                )
                 previous = parent.provenance_spec
                 if previous is not None:
                     parent.set_provenance_spec(remap(previous))
@@ -4206,12 +4204,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     raise
 
             _, refreshed_inputs = _resolve_inputs()
-            widget.set_script_inputs(
+            with widget._input_provenance_change(
                 refreshed_inputs,
-                primary_input=widget.primary_input,
-                auto_update=widget.source_auto_update,
-                state=widget.source_state,
-            )
+                authorization=parent._provenance_code_authorization()[1],
+            ):
+                widget.set_script_inputs(
+                    refreshed_inputs,
+                    primary_input=widget.primary_input,
+                    auto_update=widget.source_auto_update,
+                    state=widget.source_state,
+                )
             widget._set_input_resolver(
                 _resolve_inputs, provenance_context=_source_provenance_context
             )

@@ -1074,7 +1074,13 @@ class DataTransformDialog(_DataManipulationDialog):
                             erlab.interactive.itool(**itool_kw),
                         )
                         if tool is not None:
-                            tool.set_provenance_spec(detached_provenance_spec)
+                            tool.set_provenance_spec(
+                                detached_provenance_spec,
+                                _code_trust=typing.cast(
+                                    "erlab.interactive.imagetool.ImageTool",
+                                    self.slicer_area.window(),
+                                )._provenance_code_trust_for_copy(),
+                            )
 
             del processed
 

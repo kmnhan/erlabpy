@@ -4584,6 +4584,15 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         prompt_on_reuse: bool,
     ) -> erlab.interactive.imagetool.ImageTool | None:
         manager, parent_uid = self._managed_output_imagetool_parent()
+        provenance_trust: _DocumentTrust | None = None
+        if manager is None or parent_uid is None:
+            manifest = self._current_code_trust_manifest()
+            provenance_trust = (
+                new_document_trust()
+                if manifest is None
+                or self._issue_code_execution_capability(manifest.entries) is not None
+                else external_document_trust(manifest)
+            )
         output_source_state: typing.Literal["fresh", "stale", "unavailable"] = (
             self.source_state if self._script_inputs else "fresh"
         )
@@ -4594,7 +4603,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 return None
 
             if manager is None or parent_uid is None:
-                tool.set_provenance_spec(provenance_spec)
+                tool.set_provenance_spec(provenance_spec, _code_trust=provenance_trust)
                 tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
                 tool.show()
                 tool.raise_()
@@ -4618,7 +4627,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             if isinstance(
                 existing_target, erlab.interactive.imagetool.ImageTool
             ) and qt_is_valid(existing_target):
-                existing_target.set_provenance_spec(provenance_spec)
+                existing_target.set_provenance_spec(
+                    provenance_spec, _code_trust=provenance_trust
+                )
                 existing_target.slicer_area.replace_source_data(data)
                 existing_target.show()
                 existing_target.raise_()
@@ -4630,7 +4641,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             tool = erlab.interactive.itool(data, manager=False, execute=False)
             if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
                 return None
-            tool.set_provenance_spec(provenance_spec)
+            tool.set_provenance_spec(provenance_spec, _code_trust=provenance_trust)
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._register_output_imagetool_target(output_id, tool)
             tool.show()
@@ -6468,9 +6479,12 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
 
     @contextlib.contextmanager
     def _input_provenance_change(
-        self, script_inputs: Sequence[ScriptInput]
+        self,
+        script_inputs: Sequence[ScriptInput],
+        *,
+        authorization: object | None = None,
     ) -> Iterator[None]:
-        """Publish refreshed physical inputs without authoring their stored code."""
+        """Publish physical inputs under their existing code approval."""
         if (
             self._code_trust_state_getter is not None
             or self._code_trust_entry_locator is not None
@@ -6492,6 +6506,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             entry
             for entry in incoming
             if execution_capability_allows(capability, (entry,))
+            or execution_capability_allows(authorization, (entry,))
         )
         unknown = tuple(entry for entry in incoming if entry not in approved)
         trust = previous_trust

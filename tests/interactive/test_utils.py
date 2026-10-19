@@ -6418,6 +6418,202 @@ def test_standalone_fit_child_save_refresh_save_preserves_trust(
     xr.testing.assert_identical(reopened.tool_data, source.apply(normalized))
 
 
+def _saved_imagetool_with_fit_provenance(qtbot, tmp_path, kind):
+    _data, corrected, released_input = _released_tool_fit_input(kind)
+    original = ImageTool(corrected)
+    qtbot.addWidget(original)
+    original.set_provenance_spec(released_input.parsed_provenance_spec())
+    parent_file = tmp_path / "external-imagetool.h5"
+    original.to_file(parent_file)
+    return parent_file
+
+
+@pytest.mark.parametrize("kind", ["builtin", "expression", "callable"])
+def test_external_imagetool_fit_child_requires_provenance_approval(
+    qtbot, tmp_path, monkeypatch, kind
+) -> None:
+    from erlab.analysis.fit import _serialization as fit_serialization
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive._code_trust._application import reset_saved_code_trust
+    from erlab.interactive._fit1d import Fit1DTool
+
+    parent_file = _saved_imagetool_with_fit_provenance(qtbot, tmp_path, kind)
+    unapproved_file = tmp_path / "unapproved-child.h5"
+    approved_file = tmp_path / "approved-child.h5"
+    reset_saved_code_trust(domain=Fit1DTool._CODE_TRUST_DOMAIN)
+
+    def unexpected_decode(*_args, **_kwargs):
+        pytest.fail("Unapproved inherited fit provenance must stay opaque")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fit_serialization, "normalize_result", unexpected_decode)
+        patch.setattr(fit_serialization, "loads_result", unexpected_decode)
+        patch.setattr(lmfit.jsonutils.dill, "loads", unexpected_decode)
+        patch.setattr(
+            erlab.interactive.utils,
+            "confirm_code_trust",
+            lambda *_args, **_kwargs: False,
+        )
+        parent = ImageTool.from_file(parent_file)
+        qtbot.addWidget(parent)
+        parent.slicer_area.profiles[0].open_in_ftool()
+        child = parent.slicer_area._associated_tools_list[-1]
+        assert isinstance(child, Fit1DTool)
+        qtbot.addWidget(child)
+        child.refit_on_source_update_check.setChecked(False)
+        expected = child.tool_data.copy(deep=True)
+        inherited = child.script_inputs
+        assert tuple(child._script_inputs_code_trust_entries(inherited))
+        assert not document_trust_is_trusted(child._current_document_trust())
+        assert child.reload_source_data()
+        assert child.script_inputs == inherited
+        assert not document_trust_is_trusted(child._current_document_trust())
+
+        child.to_file(unapproved_file)
+        child._review_code_trust()
+
+        assert child.script_inputs == inherited
+        assert not document_trust_is_trusted(child._current_document_trust())
+        reopened = Fit1DTool.from_file(unapproved_file)
+        qtbot.addWidget(reopened)
+        reopened._flush_restore_work()
+        assert reopened.script_inputs == inherited
+        assert not document_trust_is_trusted(reopened._current_document_trust())
+        xr.testing.assert_identical(reopened.tool_data, expected)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: True
+    )
+    child._review_code_trust()
+
+    assert document_trust_is_trusted(child._current_document_trust())
+    if kind != "callable":
+        assert child.script_inputs != inherited
+    approved_inputs = child.script_inputs
+    assert child.reload_source_data()
+    assert child.script_inputs == approved_inputs
+    assert document_trust_is_trusted(child._current_document_trust())
+    xr.testing.assert_identical(child.tool_data, expected)
+    child.to_file(approved_file)
+    approved = Fit1DTool.from_file(approved_file)
+    qtbot.addWidget(approved)
+    approved._flush_restore_work()
+    assert document_trust_is_trusted(approved._current_document_trust())
+    assert approved.script_inputs == approved_inputs
+    xr.testing.assert_identical(approved.tool_data, expected)
+
+
+def _standalone_child_from_imagetool(qtbot, parent: ImageTool) -> _PersistentTool:
+    data, _state = parent.slicer_area.persistence_data_and_state()
+    child = _PersistentTool(data)
+    qtbot.addWidget(child)
+    child.set_script_inputs(
+        (ScriptInput(name="data", data_role="source"),), primary_input="data"
+    )
+    parent.slicer_area.add_tool_window(child, transfer_to_manager=False)
+    return child
+
+
+def test_external_imagetool_derived_windows_keep_provenance_unapproved(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive.imagetool.dialogs import RotationDialog
+
+    saved = _saved_imagetool_with_fit_provenance(qtbot, tmp_path, "builtin")
+    parent = ImageTool.from_file(saved)
+    qtbot.addWidget(parent)
+    duplicate = parent.duplicate()
+    qtbot.addWidget(duplicate)
+    launched = []
+    itool = erlab.interactive.itool
+
+    def capture_itool(*args, **kwargs):
+        kwargs.update(manager=False, execute=False)
+        tool = itool(*args, **kwargs)
+        assert isinstance(tool, ImageTool)
+        qtbot.addWidget(tool)
+        launched.append(tool)
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "itool", capture_itool)
+    parent.slicer_area.main_image.open_in_new_window()
+    dialog = RotationDialog(parent.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.angle_spin.setValue(5.0)
+    dialog.accept()
+
+    assert len(launched) == 2
+    for source in (duplicate, *launched):
+        child = _standalone_child_from_imagetool(qtbot, source)
+        assert child._current_code_trust_manifest().entries
+        assert not document_trust_is_trusted(child._current_document_trust())
+
+
+def test_standalone_tool_outputs_transfer_only_approved_provenance(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+
+    saved = _saved_imagetool_with_fit_provenance(qtbot, tmp_path, "expression")
+    parent = ImageTool.from_file(saved)
+    qtbot.addWidget(parent)
+    producer = _standalone_child_from_imagetool(qtbot, parent)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: True
+    )
+
+    for approved in (False, True):
+        if approved:
+            producer._review_code_trust()
+        output = producer._launch_detached_output_imagetool(
+            producer.tool_data,
+            provenance_spec=producer.script_inputs[0].parsed_provenance_spec(),
+        )
+        assert isinstance(output, ImageTool)
+        qtbot.addWidget(output)
+        child = _standalone_child_from_imagetool(qtbot, output)
+        assert child._current_code_trust_manifest().entries
+        assert document_trust_is_trusted(child._current_document_trust()) is approved
+
+
+def test_managed_imagetool_duplicates_transfer_host_provenance_approval(
+    qtbot, monkeypatch, manager_context
+) -> None:
+    from erlab.interactive._code_trust import document_trust_is_trusted
+    from erlab.interactive.imagetool.manager._workspace._trust import (
+        current_workspace_code_trust_manifest,
+    )
+
+    data, corrected, released_input = _released_tool_fit_input("expression")
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+        lambda *_args, **_kwargs: True,
+    )
+    with manager_context() as manager:
+        source = ImageTool(corrected, _in_manager=True)
+        manager.add_imagetool(
+            source,
+            provenance_spec=released_input.parsed_provenance_spec(),
+            replay_source_data=data,
+            show=False,
+        )
+        controller = manager._workspace_controller
+        controller._set_workspace_code_trust(
+            untrusted_document_trust(current_workspace_code_trust_manifest(manager))
+        )
+        for approved in (False, True):
+            if approved:
+                controller.review_and_approve_workspace_code_trust()
+            duplicate = source.duplicate()
+            qtbot.addWidget(duplicate)
+            child = _standalone_child_from_imagetool(qtbot, duplicate)
+            assert child._current_code_trust_manifest().entries
+            assert (
+                document_trust_is_trusted(child._current_document_trust()) is approved
+            )
+
+
 @pytest.mark.parametrize("deferred", [False, True])
 @pytest.mark.parametrize("incoming_kind", ["expression", "callable"])
 def test_standalone_refresh_adopts_physical_data_without_authorizing_new_code(
