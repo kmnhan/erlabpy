@@ -174,6 +174,8 @@ jobs:
           set -euo pipefail
           mapfile -t targets < "$RUNNER_TEMP/targets.txt"
           pytest_args=(
+            --capture=tee-sys
+            --no-qt-log
             -o faulthandler_timeout=300
             -o faulthandler_exit_on_timeout=true
             --cov erlab
@@ -268,6 +270,8 @@ jobs:
           mapfile -t targets < "$RUNNER_TEMP/targets.txt"
           PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
             uv run pytest \
+            --capture=tee-sys \
+            --no-qt-log \
             -m compat \
             -o faulthandler_timeout=300 \
             -o faulthandler_exit_on_timeout=true \
