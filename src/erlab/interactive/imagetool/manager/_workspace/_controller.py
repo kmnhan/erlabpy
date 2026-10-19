@@ -61,9 +61,12 @@ from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._ui import confirm_code_trust
 from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
 from erlab.interactive.imagetool._provenance._trust import (
-    provenance_code_payload_normalizer,
+    provenance_spec_normalizer,
 )
 from erlab.interactive.imagetool.manager import _desktop
+from erlab.interactive.imagetool.manager._revisions import (
+    _remap_provenance_revision_ids,
+)
 from erlab.interactive.imagetool.manager._widgets import (
     _RECENT_WORKSPACES_SETTINGS_KEY,
     _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME,
@@ -388,32 +391,37 @@ class _WorkspaceController:
         )
         if capability is None:
             return
-        normalize_payload = provenance_code_payload_normalizer(authorization=capability)
-
-        def remap(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
-            encoded = spec.model_dump(mode="json")
-            normalized = normalize_payload(encoded)
-            if normalized == encoded:
-                return spec
-            return ToolProvenanceSpec.model_validate(normalized)
-
+        normalize = provenance_spec_normalizer(authorization=capability)
         revisions = self._manager._provenance_revisions
-        previous_records = None
         applied: list[tuple[typing.Any, typing.Any]] = []
         try:
-            with self.local_provenance_change(
-                execution_entries=manifest.entries, adopt_derived_entries=True
-            ):
-                previous_records = revisions.remap_provenance_specs(remap)
-                for node in tuple(self._manager._tool_graph.nodes.values()):
-                    snapshot, changed = node.remap_provenance_owners(remap)
-                    if changed:
-                        applied.append((node, snapshot))
-                for node, _snapshot in applied:
-                    node.commit_provenance_owner_remap()
+            with contextlib.ExitStack() as staged:
+                with self.local_provenance_change(
+                    execution_entries=manifest.entries, adopt_derived_entries=True
+                ):
+                    revision_ids = staged.enter_context(
+                        revisions.normalize_provenance_revisions(
+                            normalize,
+                            roots=workspace_revisions.retained_revision_ids(
+                                self._manager, include_retained_roots=False
+                            ),
+                        )
+                    )
+
+                    def remap(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+                        return _remap_provenance_revision_ids(
+                            normalize(spec), revision_ids
+                        )
+
+                    for node in tuple(self._manager._tool_graph.nodes.values()):
+                        snapshot, changed = node.remap_provenance_owners(
+                            remap, revision_ids=revision_ids
+                        )
+                        if changed:
+                            applied.append((node, snapshot))
+                    for node, _snapshot in applied:
+                        node.commit_provenance_owner_remap()
         except Exception:
-            if previous_records is not None:
-                revisions.restore_provenance_specs(previous_records)
             for node, snapshot in reversed(applied):
                 node.restore_provenance_owners(snapshot)
             self._set_workspace_code_trust(previous)
@@ -2986,6 +2994,7 @@ class _WorkspaceController:
                 f".{access.path.name}.tmp-{uuid.uuid4().hex}"
             )
             self._drain_workspace_deferred_events()
+            self._normalize_approved_workspace_provenance()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
             try:

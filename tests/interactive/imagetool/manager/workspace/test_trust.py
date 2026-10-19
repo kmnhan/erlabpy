@@ -696,6 +696,24 @@ def _restore_released_fit_provenance(workspace, current_blob, released_blob):
     return released_manifest
 
 
+def _save_released_fit_provenance_workspace(manager_context, workspace, saved_kind):
+    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
+
+    operation, released_blob, data, expected = _released_fit_provenance_data(saved_kind)
+    with manager_context() as manager:
+        manager.add_imagetool(
+            ImageTool(expected, _in_manager=True),
+            provenance_spec=full_data(operation),
+            replay_source_data=data,
+            show=False,
+        )
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+    released_manifest = _restore_released_fit_provenance(
+        workspace, operation.edge_fit[_FIT_DATASET_MARKER], released_blob
+    )
+    return released_manifest, data, expected
+
+
 @pytest.mark.parametrize("imported", [False, True])
 @pytest.mark.parametrize("saved_kind", ["builtin", "expression", "callable"])
 @pytest.mark.parametrize("initially_signed", [False, True])
@@ -703,30 +721,17 @@ def test_released_fit_provenance_normalizes_only_after_approval(
     tmp_path, monkeypatch, manager_context, saved_kind, imported, initially_signed
 ) -> None:
     from erlab.analysis.fit import _serialization as fit_serialization
-    from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
     from erlab.interactive.imagetool._provenance._trust import (
         provenance_operation_code_trust_entries,
     )
     from erlab.interactive.imagetool.manager._workspace._store import WorkspaceStore
 
-    operation, released_blob, data, expected = _released_fit_provenance_data(saved_kind)
-    current_blob = operation.edge_fit[_FIT_DATASET_MARKER]
-    provenance = full_data(operation)
     workspace = tmp_path / "released-fit-provenance.itws"
     normalized_workspace = tmp_path / "normalized-fit-provenance.itws"
     saveas_workspace = tmp_path / "saved-as-fit-provenance.itws"
     monkeypatch.setattr(workspace_trust, "workspace_path_is_trusted", lambda _: False)
-    with manager_context() as manager:
-        manager.add_imagetool(
-            ImageTool(expected, _in_manager=True),
-            provenance_spec=provenance,
-            replay_source_data=data,
-            show=False,
-        )
-        manager._workspace_controller.saving._save_workspace_document(workspace)
-
-    released_manifest = _restore_released_fit_provenance(
-        workspace, current_blob, released_blob
+    released_manifest, data, expected = _save_released_fit_provenance_workspace(
+        manager_context, workspace, saved_kind
     )
     reset_saved_code_trust(domain="erlab.workspace")
     if initially_signed:
@@ -838,6 +843,123 @@ def test_released_fit_provenance_normalizes_only_after_approval(
         assert loads == []
 
 
+@pytest.mark.parametrize("normalized_first", [False, True])
+def test_fit_provenance_approval_preserves_saved_revision_history(
+    tmp_path, monkeypatch, manager_context, normalized_first
+) -> None:
+    from erlab.interactive.imagetool._provenance._trust import (
+        provenance_operation_code_trust_entries,
+    )
+    from erlab.interactive.imagetool.manager._workspace._revisions import (
+        revision_manifest_entry,
+    )
+    from erlab.interactive.imagetool.manager._workspace._store import WorkspaceStore
+
+    released_workspace = tmp_path / "released-fit.itws"
+    before_approval = tmp_path / "before-approval.itws"
+    after_approval = tmp_path / "after-approval.itws"
+    monkeypatch.setattr(workspace_trust, "workspace_path_is_trusted", lambda _: False)
+    _manifest, data, expected = _save_released_fit_provenance_workspace(
+        manager_context, released_workspace, "builtin"
+    )
+    reset_saved_code_trust(domain="erlab.workspace")
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+        lambda *_args, **_kwargs: True,
+    )
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, released_workspace)
+        manager.get_imagetool(0)
+        node = manager._node_for_target(0)
+        original_revision_id = node.revision_id_for_role("source")
+        revisions = manager._provenance_revisions
+        original_data = revisions.resolve_data(original_revision_id)
+        manager._workspace_controller.saving._save_workspace_document(before_approval)
+        original_records = {
+            revision_id: revisions.get(revision_id)
+            for revision_id in revisions.revision_ids
+        }
+        with WorkspaceStore(before_approval) as store:
+            original_manifest = store.current_generation().manifest
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        assert workspace_code_trust_manifest(original_manifest).entries
+
+        manager._workspace_controller.review_and_approve_workspace_code_trust()
+        normalized_revision_id = node.current_revision_id
+        assert normalized_revision_id is not None
+        assert normalized_revision_id != original_revision_id
+        bound = revisions.bind(
+            normalized_revision_id, node.provenance_for_role("source")
+        )
+        assert bound.revision_id == normalized_revision_id
+        for revision_id, record in original_records.items():
+            retained = revisions.get(revision_id)
+            assert retained == record
+            assert retained.checkpoint is record.checkpoint
+        xr.testing.assert_identical(
+            revisions.resolve_data(original_revision_id), original_data
+        )
+        xr.testing.assert_identical(
+            revisions.resolve_data(normalized_revision_id), original_data
+        )
+        manager._workspace_controller.saving._save_workspace_document(after_approval)
+        with WorkspaceStore(after_approval) as store:
+            normalized_manifest = store.current_generation().manifest
+        assert not workspace_code_trust_manifest(normalized_manifest).entries
+        assert original_revision_id not in {
+            entry["revision_id"]
+            for entry in normalized_manifest["provenance_revisions"]
+        }
+        assert normalized_revision_id in {
+            entry["revision_id"]
+            for entry in normalized_manifest["provenance_revisions"]
+        }
+        with WorkspaceStore(before_approval) as store:
+            assert store.current_generation().manifest == original_manifest
+
+    first, second = (
+        (after_approval, before_approval)
+        if normalized_first
+        else (before_approval, after_approval)
+    )
+    with manager_context() as manager:
+        assert _load_workspace(manager, first)
+        assert _load_workspace(manager, second, replace=False)
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        entries = current_workspace_code_trust_manifest(manager).entries
+        assert any("serialized-callable" in entry.code for entry in entries)
+        for manifest in (original_manifest, normalized_manifest):
+            for entry in manifest["provenance_revisions"]:
+                retained = manager._provenance_revisions.get(entry["revision_id"])
+                assert retained is not None
+                assert revision_manifest_entry(retained) == entry
+        for target in (0, 1):
+            manager.get_imagetool(target)
+            node = manager._node_for_target(target)
+            xr.testing.assert_identical(node.current_source_data(), expected)
+        raw_node = manager._node_for_target(int(normalized_first))
+        raw_operation = next(
+            operation
+            for operation in raw_node.provenance_spec.operations
+            if operation.op == "correct_with_edge"
+        )
+        raw_entries = provenance_operation_code_trust_entries(
+            raw_operation, location_prefix="operation"
+        )
+        assert raw_entries
+        assert (
+            manager._workspace_controller.issue_code_execution_capability(raw_entries)
+            is None
+        )
+        with pytest.raises(PermissionError, match="not authorized"):
+            raw_operation.apply(data)
+        for revision_id in (original_revision_id, normalized_revision_id):
+            xr.testing.assert_identical(
+                manager._provenance_revisions.resolve_data(revision_id), original_data
+            )
+
+
 @pytest.mark.parametrize("materialize", [False, True])
 def test_associated_signed_tool_fit_provenance_survives_same_file_save(
     qtbot, tmp_path, monkeypatch, manager_context, materialize
@@ -903,8 +1025,9 @@ def test_associated_signed_tool_fit_provenance_survives_same_file_save(
         assert current_workspace_code_trust_manifest(manager).entries == ()
 
 
+@pytest.mark.parametrize("failure", ["owner", "publication"])
 def test_provenance_normalization_rolls_back_all_owners_and_revisions(
-    monkeypatch, manager_context
+    monkeypatch, manager_context, failure
 ) -> None:
     from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
 
@@ -936,21 +1059,40 @@ def test_provenance_normalization_rolls_back_all_owners_and_revisions(
             if record.checkpoint is not None
         }
         previous_specs = [node.provenance_spec for node in nodes]
+        previous_bindings = [
+            (node.current_revision_id, node._revision_ids_by_role.copy())
+            for node in nodes
+        ]
+        controller = manager._workspace_controller
+        signed_trust, stored = save_document_trust(
+            new_document_trust(), current_workspace_code_trust_manifest(manager)
+        )
+        assert stored
+        assert _trust_uses_saved_signature(signed_trust)
+        controller._set_workspace_code_trust(signed_trust)
         previous_trust = manager._workspace_state.code_trust
 
-        def fail_after_first_owner(_remap):
+        def fail_after_remap(*_args, **_kwargs):
             assert nodes[0].provenance_spec != previous_specs[0]
-            assert any(
-                revisions.get(revision_id).provenance_spec != record.provenance_spec
+            assert nodes[0].current_revision_id != previous_bindings[0][0]
+            assert revisions.revision_ids - previous_records.keys()
+            assert all(
+                revisions.get(revision_id) == record
                 for revision_id, record in previous_records.items()
             )
-            raise RuntimeError("Later owner rejected normalization")
+            raise RuntimeError("Normalization commit failed")
 
-        monkeypatch.setattr(nodes[1], "remap_provenance_owners", fail_after_first_owner)
-        with pytest.raises(RuntimeError, match="Later owner rejected"):
-            manager._workspace_controller._normalize_approved_workspace_provenance()
+        if failure == "owner":
+            monkeypatch.setattr(nodes[1], "remap_provenance_owners", fail_after_remap)
+        else:
+            monkeypatch.setattr(controller, "_commit_provenance_change", fail_after_remap)
+        with pytest.raises(RuntimeError, match="Normalization commit failed"):
+            controller._normalize_approved_workspace_provenance()
 
         assert [node.provenance_spec for node in nodes] == previous_specs
+        assert [
+            (node.current_revision_id, node._revision_ids_by_role) for node in nodes
+        ] == previous_bindings
         assert manager._workspace_state.code_trust == previous_trust
         assert revisions.revision_ids == previous_records.keys()
         for revision_id, record in previous_records.items():

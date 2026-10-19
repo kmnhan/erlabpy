@@ -20,6 +20,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool._provenance._trust import (
+    remap_script_input_provenance,
     script_replay_source_input_names,
 )
 
@@ -74,6 +75,30 @@ def _spec_revision_ids(spec: ToolProvenanceSpec | None) -> frozenset[str]:
     )
 
 
+def _remap_provenance_revision_ids(
+    spec: ToolProvenanceSpec, revision_ids: Mapping[str, str]
+) -> ToolProvenanceSpec:
+    """Retarget captured inputs without changing their recipes or live bindings."""
+    if not revision_ids:
+        return spec
+    inputs = tuple(
+        remap_script_input_provenance(
+            item,
+            lambda nested: _remap_provenance_revision_ids(nested, revision_ids),
+            revision_ids=revision_ids,
+        )
+        for item in spec.replay_inputs
+    )
+    return (
+        spec
+        if all(
+            item is previous
+            for item, previous in zip(inputs, spec.replay_inputs, strict=True)
+        )
+        else spec.with_replay_inputs(inputs)
+    )
+
+
 def _same_bound_provenance(
     left: ToolProvenanceSpec | None, right: ToolProvenanceSpec | None
 ) -> bool:
@@ -123,9 +148,9 @@ def _script_input_revision_ids(inputs: Iterable[ScriptInput]) -> frozenset[str]:
             ids.add(item.revision_id)
         if item.resolved_revision_id is not None:
             ids.add(item.resolved_revision_id)
-        nested = item.parsed_provenance_spec()
-        if nested is not None:
-            pending.extend(nested.replay_inputs)
+        for nested in (item.parsed_source_spec(), item.parsed_provenance_spec()):
+            if nested is not None:
+                pending.extend(nested.replay_inputs)
     return frozenset(ids)
 
 
@@ -207,29 +232,76 @@ class _ProvenanceRevisionStore:
             return None
         return replace(record, provenance_spec=copy.deepcopy(record.provenance_spec))
 
-    def remap_provenance_specs(
-        self, remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec]
-    ) -> Mapping[str, _ProvenanceRevision]:
-        """Normalize recipe representations without changing checkpoint identities."""
-        previous = self._records
-        self._records = {
-            revision_id: replace(
-                record,
+    @contextmanager
+    def normalize_provenance_revisions(
+        self,
+        remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+        *,
+        roots: Iterable[str],
+    ) -> Iterator[Mapping[str, str]]:
+        """Publish normalized revisions and their dependents under new identities."""
+        records = {
+            record.revision_id: self._records[record.revision_id]
+            for record in self.reachable(roots)
+        }
+        normalized = {
+            revision_id: (
+                None
+                if record.provenance_spec is None
+                else remap(record.provenance_spec)
+            )
+            for revision_id, record in records.items()
+        }
+        changed = {
+            revision_id
+            for revision_id, spec in normalized.items()
+            if spec != records[revision_id].provenance_spec
+        }
+        dependents: dict[str, set[str]] = {}
+        for revision_id, record in records.items():
+            dependencies = set(_spec_revision_ids(normalized[revision_id]))
+            if record.primary_revision_id is not None:
+                dependencies.add(record.primary_revision_id)
+            for dependency in dependencies:
+                dependents.setdefault(dependency, set()).add(revision_id)
+        pending = list(changed)
+        while pending:
+            for revision_id in dependents.get(pending.pop(), ()):
+                if revision_id not in changed:
+                    changed.add(revision_id)
+                    pending.append(revision_id)
+        revision_ids = {revision_id: uuid.uuid4().hex for revision_id in changed}
+        staged = self.stage()
+        for previous_id, revision_id in revision_ids.items():
+            previous = self._records[previous_id]
+            spec = normalized[previous_id]
+            staged._records[revision_id] = replace(
+                previous,
+                revision_id=revision_id,
                 provenance_spec=(
                     None
-                    if record.provenance_spec is None
-                    else remap(record.provenance_spec)
+                    if spec is None
+                    else _remap_provenance_revision_ids(spec, revision_ids)
+                ),
+                primary_revision_id=(
+                    None
+                    if previous.primary_revision_id is None
+                    else revision_ids.get(
+                        previous.primary_revision_id, previous.primary_revision_id
+                    )
                 ),
             )
-            for revision_id, record in previous.items()
-        }
-        return previous
-
-    def restore_provenance_specs(
-        self, snapshot: Mapping[str, _ProvenanceRevision]
-    ) -> None:
-        """Restore the records returned by :meth:`remap_provenance_specs`."""
-        self._records = dict(snapshot)
+            if previous_id in self._data:
+                staged._data[revision_id] = self._data[previous_id]
+        with self.retain((*revision_ids, *revision_ids.values())):
+            self.merge(staged)
+            try:
+                yield revision_ids
+            except Exception:
+                for revision_id in staged.revision_ids:
+                    self._records.pop(revision_id, None)
+                    self._data.pop(revision_id, None)
+                raise
 
     def bind(
         self, revision_id: str, provenance_spec: ToolProvenanceSpec | None

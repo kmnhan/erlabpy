@@ -32,8 +32,14 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
-def retained_revision_ids(manager: ImageToolManager) -> frozenset[str]:
-    ids = set(manager._provenance_revisions.retained_roots)
+def retained_revision_ids(
+    manager: ImageToolManager, *, include_retained_roots: bool = True
+) -> frozenset[str]:
+    ids = (
+        set(manager._provenance_revisions.retained_roots)
+        if include_retained_roots
+        else set()
+    )
     for node in manager._tool_graph.nodes.values():
         if node._current_revision_id is not None:
             ids.add(node._current_revision_id)

@@ -20,6 +20,7 @@ from erlab.interactive._fit_code_trust import (
 )
 from erlab.interactive.imagetool._provenance._code import _FIT_DATASET_MARKER
 from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceSpec,
     _direct_replay_source_name,
     parse_tool_provenance_spec,
 )
@@ -154,6 +155,65 @@ def provenance_code_payload_normalizer(
         return item
 
     return normalize
+
+
+def provenance_spec_normalizer(
+    *, authorization: object | None
+) -> Callable[[ToolProvenanceSpec], ToolProvenanceSpec]:
+    """Normalize approved fit metadata in typed provenance values."""
+    normalize_payload = provenance_code_payload_normalizer(authorization=authorization)
+
+    def normalize(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+        encoded = spec.model_dump(mode="json")
+        normalized = normalize_payload(encoded)
+        return (
+            spec
+            if normalized == encoded
+            else ToolProvenanceSpec.model_validate(normalized)
+        )
+
+    return normalize
+
+
+def remap_script_input_provenance(
+    script_input: ScriptInput,
+    remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+    *,
+    revision_ids: Mapping[str, str] | None = None,
+    retire_changed_revisions: bool = False,
+) -> ScriptInput:
+    """Remap one input and optionally retire changed captures outside a store."""
+    updates: dict[str, typing.Any] = {}
+    for name, spec in (
+        ("source_spec", script_input.parsed_source_spec()),
+        ("provenance_spec", script_input.parsed_provenance_spec()),
+    ):
+        remapped = None if spec is None else remap(spec)
+        if remapped != spec:
+            updates[name] = (
+                None if remapped is None else remapped.model_dump(mode="json")
+            )
+    if revision_ids is not None:
+        for name in ("revision_id", "resolved_revision_id"):
+            current = getattr(script_input, name)
+            if (
+                current is not None
+                and current in revision_ids
+                and revision_ids[current] != current
+            ):
+                updates[name] = revision_ids[current]
+    if retire_changed_revisions:
+        changed = {"source_spec", "provenance_spec"} & updates.keys()
+        for name, required in (
+            ("revision_id", "provenance_spec" in changed),
+            ("resolved_revision_id", bool(changed)),
+        ):
+            current = getattr(script_input, name)
+            if required and current is not None and (
+                revision_ids is None or current not in revision_ids
+            ):
+                updates[name] = None
+    return script_input.model_copy(update=updates) if updates else script_input
 
 
 def provenance_replay_node_code_trust_entries(

@@ -28,6 +28,9 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     full_data,
 )
+from erlab.interactive.imagetool._provenance._trust import (
+    remap_script_input_provenance,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
     _coerce_note,
@@ -70,7 +73,7 @@ def test_wrapper_provenance_value_remap_updates_input_specs() -> None:
         source_spec=provenance.model_dump(mode="json"),
         provenance_spec=provenance.model_dump(mode="json"),
     )
-    remapped = _ManagedWindowNode._remap_script_input(
+    remapped = remap_script_input_provenance(
         script_input,
         lambda _value: ToolProvenanceSpec(kind="public_data"),
     )
@@ -188,6 +191,8 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         _set_workspace_tool_data_references=lambda _references: None,
         _source_spec=None,
         _provenance_spec=None,
+        _current_revision_id=None,
+        _revision_ids_by_role={},
         _mark_provenance_changed=lambda **_kwargs: None,
     )
 
@@ -209,6 +214,8 @@ def test_wrapper_applies_tool_owned_script_inputs(qtbot) -> None:
         tool_input_state=state,
         pending_payload_attrs=None,
         workspace_tool_data_references={},
+        node_current_revision_id=None,
+        node_revision_ids_by_role={},
     )
 
     _ManagedWindowNode._apply_provenance_owner_snapshot(

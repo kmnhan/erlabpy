@@ -171,6 +171,159 @@ def test_revision_retention_follows_root_and_selected_references() -> None:
     assert orphan not in store
 
 
+def test_revision_normalization_replaces_recipes_and_dependent_links() -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    source = registry.add(
+        data,
+        script(start_label="Released result", seed_code="derived = data + 1"),
+        source_owner_uid="producer",
+    )
+    reads = []
+
+    def read_checkpoint(_path, _group):
+        reads.append(True)
+        return data.isel(x=0)
+
+    selected = registry.add(
+        spec=script(
+            start_label="Selected result",
+            root_input=ScriptInput(name="data", revision_id=source),
+        ),
+        source=_RevisionCheckpointSource("source.itws", "/selected", read_checkpoint),
+    )
+    nested = script(
+        start_label="Nested result",
+        root_input=ScriptInput(name="data", revision_id=source),
+    )
+    consumer = registry.add(
+        data + 10,
+        script(
+            start_label="Consumer",
+            script_inputs=(
+                ScriptInput(
+                    name="data",
+                    revision_id=source,
+                    resolved_revision_id=selected,
+                    source_spec=nested,
+                    provenance_spec=nested,
+                ),
+            ),
+        ),
+    )
+    history = registry.add(primary_revision_id=consumer)
+    unrelated = registry.add(
+        data + 99, script(start_label="Released result", seed_code="derived = data + 1")
+    )
+    original_records = dict(registry._records)
+    original_manifest = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(record)
+            for record in original_records.values()
+        ]
+    }
+
+    def normalize(spec):
+        return (
+            spec.model_copy(update={"start_label": "Normalized result"})
+            if spec.start_label == "Released result"
+            else spec
+        )
+
+    with registry.retain([history, unrelated]) as retained:
+        with registry.normalize_provenance_revisions(
+            normalize, roots=[history]
+        ) as replacements:
+            assert set(replacements) == {source, selected, consumer, history}
+            assert not set(replacements.values()) & original_records.keys()
+            assert retained == {history, unrelated}
+            assert registry.retained_roots == {
+                *replacements,
+                *replacements.values(),
+                unrelated,
+            }
+            assert registry.get(replacements[source]).provenance_spec.start_label == (
+                "Normalized result"
+            )
+            selected_record = registry.get(replacements[selected])
+            assert selected_record.provenance_spec.root_input.revision_id == (
+                replacements[source]
+            )
+            consumer_record = registry.get(replacements[consumer])
+            item = consumer_record.provenance_spec.script_inputs[0]
+            assert item.revision_id == replacements[source]
+            assert item.resolved_revision_id == replacements[selected]
+            assert item.parsed_provenance_spec().root_input.revision_id == (
+                replacements[source]
+            )
+            assert item.parsed_source_spec().root_input.revision_id == (
+                replacements[source]
+            )
+            assert registry.get(replacements[history]).primary_revision_id == (
+                replacements[consumer]
+            )
+            assert {
+                record.revision_id
+                for record in registry.reachable([replacements[history]])
+            } == set(replacements.values())
+            for previous_id, revision_id in replacements.items():
+                record = registry.get(revision_id)
+                previous = original_records[previous_id]
+                assert record.source_owner_uid == previous.source_owner_uid
+                assert record.checkpoint is previous.checkpoint
+                if previous_id in registry._data:
+                    assert registry._data[revision_id] is registry._data[previous_id]
+            assert not reads
+        assert registry.retained_roots == {history, unrelated}
+
+    for revision_id, record in original_records.items():
+        assert registry._records[revision_id] is record
+    assert registry._records[unrelated] is original_records[unrelated]
+    workspace_revisions.restore_revision_store(
+        registry, original_manifest, "preapproval.itws"
+    )
+    assert not reads
+    registry.discard_unreachable(replacements.values())
+    assert registry.revision_ids == set(replacements.values())
+    with registry.normalize_provenance_revisions(
+        normalize, roots=replacements.values()
+    ) as unchanged:
+        assert not unchanged
+
+
+@pytest.mark.parametrize("failure", ["normalization", "publication"])
+def test_revision_normalization_failure_keeps_original_records(failure) -> None:
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    original = registry.add(data, script(start_label="Released result"))
+    dependent = registry.add(
+        spec=script(start_label="Later result"), primary_revision_id=original
+    )
+    previous_records = dict(registry._records)
+    previous_data = dict(registry._data)
+
+    def normalize(spec):
+        if failure == "normalization" and spec.start_label == "Later result":
+            raise RuntimeError("Normalization failed")
+        return spec.model_copy(update={"start_label": "Normalized result"})
+
+    with registry.retain([dependent]) as retained:
+        with pytest.raises(RuntimeError, match="failed"):
+            with registry.normalize_provenance_revisions(
+                normalize, roots=[dependent]
+            ) as replacements:
+                assert set(replacements) == {original, dependent}
+                raise RuntimeError("Publication failed")
+        assert retained == {dependent}
+        assert registry.retained_roots == {dependent}
+    assert registry.revision_ids == previous_records.keys()
+    for revision_id, record in previous_records.items():
+        assert registry._records[revision_id] is record
+    assert registry._data.keys() == previous_data.keys()
+    for revision_id, captured in previous_data.items():
+        assert registry._data[revision_id] is captured
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_bound_revision_keeps_checkpoint_and_canonical_metadata(legacy: bool) -> None:
     registry = _ProvenanceRevisionStore()
