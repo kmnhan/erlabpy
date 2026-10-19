@@ -4154,11 +4154,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 raise ValueError(
                     "ToolWindows opened from ImageTool must declare one input"
                 )
-            script_input = widget.script_inputs[0]
-
             def _resolve_inputs() -> tuple[
                 dict[str, xr.DataArray], tuple[ScriptInput, ...]
             ]:
+                script_input = widget.script_inputs[0]
                 if script_input.data_role == "source":
                     parent_data, _state = self.persistence_data_and_state()
                     parent_provenance = self.provenance_spec
@@ -4189,6 +4188,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
                 return {script_input.name: resolved}, (refreshed,)
 
+            @contextlib.contextmanager
+            def _source_provenance_context(
+                remap: Callable[[ToolProvenanceSpec], ToolProvenanceSpec],
+            ) -> Iterator[None]:
+                parent = typing.cast(
+                    "erlab.interactive.imagetool.ImageTool", self.window()
+                )
+                previous = parent.provenance_spec
+                if previous is not None:
+                    parent.set_provenance_spec(remap(previous))
+                try:
+                    yield
+                except Exception:
+                    parent.set_provenance_spec(previous)
+                    raise
+
             _, refreshed_inputs = _resolve_inputs()
             widget.set_script_inputs(
                 refreshed_inputs,
@@ -4196,7 +4211,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 auto_update=widget.source_auto_update,
                 state=widget.source_state,
             )
-            widget._set_input_resolver(_resolve_inputs)
+            widget._set_input_resolver(
+                _resolve_inputs, provenance_context=_source_provenance_context
+            )
             widget._set_managed_source_reload(widget._update_from_input_source)
             self.sigSourceDataReplaced.connect(widget.handle_input_sources_replaced)
 

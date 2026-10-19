@@ -637,10 +637,10 @@ def test_managed_tool_cleanup_error_does_not_keep_dead_node(
     ],
 ) -> None:
     class _CleanupErrorTool(erlab.interactive.utils.ToolWindow):
-        def _set_input_resolver(self, resolver) -> None:
+        def _set_input_resolver(self, resolver, *, provenance_context=None) -> None:
             if resolver is None:
                 raise RuntimeError("cleanup failed")
-            super()._set_input_resolver(resolver)
+            super()._set_input_resolver(resolver, provenance_context=provenance_context)
 
     with manager_context() as manager:
         root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)

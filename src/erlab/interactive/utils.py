@@ -52,6 +52,7 @@ from erlab.interactive import (
 )
 from erlab.interactive._code_trust import (
     approve_document_trust,
+    bind_document_trust_manifest,
     commit_local_edit_trust,
     create_manifest,
     document_trust_has_trusted_lineage,
@@ -62,6 +63,7 @@ from erlab.interactive._code_trust import (
     issue_execution_capability,
     issue_local_edit_capability,
     manifest_has_code,
+    merge_document_trust,
     new_document_trust,
     verify_document_payload_entries,
 )
@@ -3650,6 +3652,13 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             ]
             | None
         ) = None
+        self._input_provenance_context: (
+            Callable[
+                [Callable[[ToolProvenanceSpec], ToolProvenanceSpec]],
+                contextlib.AbstractContextManager[None],
+            ]
+            | None
+        ) = None
         self._source_refreshing: bool = False
         self._source_refresh_deferred: bool = False
         self._source_refresh_rerun_requested: bool = False
@@ -4814,9 +4823,18 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             [], tuple[Mapping[str, xr.DataArray], tuple[ScriptInput, ...]]
         ]
         | None,
+        *,
+        provenance_context: (
+            Callable[
+                [Callable[[ToolProvenanceSpec], ToolProvenanceSpec]],
+                contextlib.AbstractContextManager[None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         """Set the standalone owner callback that resolves all current inputs."""
         self._input_resolver = resolver
+        self._input_provenance_context = provenance_context
 
     def _set_managed_source_update_dialog(
         self, callback: Callable[..., int] | None
@@ -4932,6 +4950,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         transaction = self._pending_input_transaction
         with (
             transaction.publication_context()
+            if transaction is not None
+            else contextlib.nullcontext(),
+            self._input_provenance_change(transaction.script_inputs)
             if transaction is not None
             else contextlib.nullcontext(),
             self._coalesce_provenance_changes(),
@@ -5178,6 +5199,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         if self._input_resolver is None:
             return False
         try:
+            self._normalize_approved_provenance()
             inputs, refreshed_inputs = self._input_resolver()
             return self._apply_inputs(inputs, refreshed_inputs)
         except Exception:
@@ -5194,6 +5216,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self._set_source_state("stale")
             return
         try:
+            self._normalize_approved_provenance()
             inputs, refreshed_inputs = self._input_resolver()
         except Exception:
             self._set_source_state("unavailable")
@@ -6417,22 +6440,93 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
 
         previous = self._input_state()
         candidate = previous.map_inputs(normalize_input)
-        if candidate == previous:
-            return
-        candidate_manifest = self._current_code_trust_manifest(
-            script_inputs=candidate.script_inputs
-        )
-        entries = () if candidate_manifest is None else candidate_manifest.entries
         previous_trust = self._document_trust
         try:
-            self._apply_local_code_inventory_change(
-                manifest.entries,
-                entries,
-                entries,
-                lambda: self._restore_input_state(candidate),
-            )
+            with (
+                self._input_provenance_context(normalize)
+                if self._input_provenance_context is not None
+                else contextlib.nullcontext()
+            ):
+                if candidate == previous:
+                    return
+                candidate_manifest = self._current_code_trust_manifest(
+                    script_inputs=candidate.script_inputs
+                )
+                entries = () if candidate_manifest is None else candidate_manifest.entries
+                self._apply_local_code_inventory_change(
+                    manifest.entries,
+                    entries,
+                    entries,
+                    lambda: self._restore_input_state(candidate),
+                )
         except Exception:
             self._restore_input_state(previous)
+            self.set_document_trust(previous_trust, notify=False)
+            raise
+
+    @contextlib.contextmanager
+    def _input_provenance_change(
+        self, script_inputs: Sequence[ScriptInput]
+    ) -> Iterator[None]:
+        """Publish refreshed physical inputs without authoring their stored code."""
+        if (
+            self._code_trust_state_getter is not None
+            or self._code_trust_entry_locator is not None
+        ):
+            yield
+            return
+        previous = self._current_code_trust_manifest()
+        candidate = self._current_code_trust_manifest(script_inputs=script_inputs)
+        if candidate == previous:
+            yield
+            return
+        previous_entries = () if previous is None else previous.entries
+        incoming = tuple(self._script_inputs_code_trust_entries(script_inputs))
+        previous_trust = self._document_trust
+        _trust, capability = issue_execution_capability(
+            previous_trust, previous_entries
+        )
+        approved = tuple(
+            entry
+            for entry in incoming
+            if execution_capability_allows(capability, (entry,))
+        )
+        unknown = tuple(entry for entry in incoming if entry not in approved)
+        trust = previous_trust
+        if unknown:
+            candidate = typing.cast("CodeTrustManifest", candidate)
+            baseline = create_manifest(
+                candidate.domain, candidate.policy_version, previous_entries
+            )
+            trust = merge_document_trust(
+                bind_document_trust_manifest(trust, baseline),
+                external_document_trust(
+                    create_manifest(candidate.domain, candidate.policy_version, unknown)
+                ),
+                replace=False,
+            )
+        _prospective, publication = issue_local_edit_capability(
+            trust, (*previous_entries, *approved), edited_entries=approved
+        )
+        previous_inputs = self._input_state()
+        self.set_document_trust(trust, notify=False)
+        try:
+            yield
+            manifest = self._current_code_trust_manifest()
+            committed = commit_local_edit_trust(
+                trust,
+                publication,
+                previous_entries,
+                () if manifest is None else manifest.entries,
+                edited_entries=approved,
+                document_manifest=manifest,
+                adopt_derived_entries=False,
+            )
+            self.set_document_trust(committed)
+        except Exception:
+            self._restore_input_state(replace(previous_inputs, pending=None))
+            self._discard_input_transaction()
+            self._set_source_state("stale")
             self.set_document_trust(previous_trust, notify=False)
             raise
 
