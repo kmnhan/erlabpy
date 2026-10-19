@@ -295,10 +295,9 @@ def test_manager_workspace_restores_revision_history_without_recipe_execution(
         orphan = manager._provenance_revisions.add(test_data + 99)
         path = tmp_path / "history.itws"
         second = node.current_revision_id
-        revision_ids = manager._provenance_revisions.revision_ids
         manager._workspace_controller.saving._save_workspace_document(path)
         assert node.current_revision_id == second
-        assert manager._provenance_revisions.revision_ids == revision_ids
+        assert manager._provenance_revisions.revision_ids == {first, second}
         assert second is not None
         manifest = _current_workspace_manifest(path)
         assert manifest["nodes"][0]["current_revision_id"] == second

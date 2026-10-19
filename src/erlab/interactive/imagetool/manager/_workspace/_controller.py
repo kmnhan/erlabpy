@@ -59,10 +59,7 @@ from erlab.interactive._code_trust._application import (
 )
 from erlab.interactive._code_trust._core import CodeTrustReason
 from erlab.interactive._code_trust._ui import confirm_code_trust
-from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
-from erlab.interactive.imagetool._provenance._trust import (
-    provenance_spec_normalizer,
-)
+from erlab.interactive.imagetool._provenance._trust import provenance_spec_normalizer
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._revisions import (
     _remap_provenance_revision_ids,
@@ -93,6 +90,7 @@ if typing.TYPE_CHECKING:
         CodeTrustManifest,
     )
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
         _WorkspaceStateSnapshot,
@@ -395,32 +393,32 @@ class _WorkspaceController:
         revisions = self._manager._provenance_revisions
         applied: list[tuple[typing.Any, typing.Any]] = []
         try:
-            with contextlib.ExitStack() as staged:
-                with self.local_provenance_change(
+            with (
+                contextlib.ExitStack() as staged,
+                self.local_provenance_change(
                     execution_entries=manifest.entries, adopt_derived_entries=True
-                ):
-                    revision_ids = staged.enter_context(
-                        revisions.normalize_provenance_revisions(
-                            normalize,
-                            roots=workspace_revisions.retained_revision_ids(
-                                self._manager, include_retained_roots=False
-                            ),
-                        )
+                ),
+            ):
+                revision_ids = staged.enter_context(
+                    revisions.normalize_provenance_revisions(
+                        normalize,
+                        roots=workspace_revisions.retained_revision_ids(
+                            self._manager, include_retained_roots=False
+                        ),
                     )
+                )
 
-                    def remap(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
-                        return _remap_provenance_revision_ids(
-                            normalize(spec), revision_ids
-                        )
+                def remap(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+                    return _remap_provenance_revision_ids(normalize(spec), revision_ids)
 
-                    for node in tuple(self._manager._tool_graph.nodes.values()):
-                        snapshot, changed = node.remap_provenance_owners(
-                            remap, revision_ids=revision_ids
-                        )
-                        if changed:
-                            applied.append((node, snapshot))
-                    for node, _snapshot in applied:
-                        node.commit_provenance_owner_remap()
+                for node in tuple(self._manager._tool_graph.nodes.values()):
+                    snapshot, changed = node.remap_provenance_owners(
+                        remap, revision_ids=revision_ids
+                    )
+                    if changed:
+                        applied.append((node, snapshot))
+                for node, _snapshot in applied:
+                    node.commit_provenance_owner_remap()
         except Exception:
             for node, snapshot in reversed(applied):
                 node.restore_provenance_owners(snapshot)

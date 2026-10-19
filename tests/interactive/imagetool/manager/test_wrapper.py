@@ -28,9 +28,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     full_data,
 )
-from erlab.interactive.imagetool._provenance._trust import (
-    remap_script_input_provenance,
-)
+from erlab.interactive.imagetool._provenance._trust import remap_script_input_provenance
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
     _coerce_note,

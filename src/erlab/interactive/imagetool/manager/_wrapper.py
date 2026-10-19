@@ -19,9 +19,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
 )
-from erlab.interactive.imagetool._provenance._trust import (
-    remap_script_input_provenance,
-)
+from erlab.interactive.imagetool._provenance._trust import remap_script_input_provenance
 
 __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 

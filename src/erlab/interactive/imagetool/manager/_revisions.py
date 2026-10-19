@@ -148,9 +148,9 @@ def _script_input_revision_ids(inputs: Iterable[ScriptInput]) -> frozenset[str]:
             ids.add(item.revision_id)
         if item.resolved_revision_id is not None:
             ids.add(item.resolved_revision_id)
-        for nested in (item.parsed_source_spec(), item.parsed_provenance_spec()):
-            if nested is not None:
-                pending.extend(nested.replay_inputs)
+        provenance = item.parsed_provenance_spec()
+        if provenance is not None:
+            pending.extend(provenance.replay_inputs)
     return frozenset(ids)
 
 

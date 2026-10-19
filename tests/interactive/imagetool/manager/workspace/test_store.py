@@ -196,6 +196,7 @@ def test_revision_normalization_replaces_recipes_and_dependent_links() -> None:
         start_label="Nested result",
         root_input=ScriptInput(name="data", revision_id=source),
     )
+    relative_selection = selection(IselOperation(kwargs={"x": 0}))
     consumer = registry.add(
         data + 10,
         script(
@@ -205,7 +206,7 @@ def test_revision_normalization_replaces_recipes_and_dependent_links() -> None:
                     name="data",
                     revision_id=source,
                     resolved_revision_id=selected,
-                    source_spec=nested,
+                    source_spec=relative_selection,
                     provenance_spec=nested,
                 ),
             ),
@@ -246,21 +247,22 @@ def test_revision_normalization_replaces_recipes_and_dependent_links() -> None:
                 "Normalized result"
             )
             selected_record = registry.get(replacements[selected])
-            assert selected_record.provenance_spec.root_input.revision_id == (
-                replacements[source]
+            assert (
+                selected_record.provenance_spec.root_input.revision_id
+                == replacements[source]
             )
             consumer_record = registry.get(replacements[consumer])
             item = consumer_record.provenance_spec.script_inputs[0]
             assert item.revision_id == replacements[source]
             assert item.resolved_revision_id == replacements[selected]
-            assert item.parsed_provenance_spec().root_input.revision_id == (
-                replacements[source]
+            assert (
+                item.parsed_provenance_spec().root_input.revision_id
+                == replacements[source]
             )
-            assert item.parsed_source_spec().root_input.revision_id == (
-                replacements[source]
-            )
-            assert registry.get(replacements[history]).primary_revision_id == (
-                replacements[consumer]
+            assert item.parsed_source_spec() == relative_selection
+            assert (
+                registry.get(replacements[history]).primary_revision_id
+                == replacements[consumer]
             )
             assert {
                 record.revision_id
@@ -307,13 +309,16 @@ def test_revision_normalization_failure_keeps_original_records(failure) -> None:
             raise RuntimeError("Normalization failed")
         return spec.model_copy(update={"start_label": "Normalized result"})
 
+    def publish() -> None:
+        with registry.normalize_provenance_revisions(
+            normalize, roots=[dependent]
+        ) as replacements:
+            assert set(replacements) == {original, dependent}
+            raise RuntimeError("Publication failed")
+
     with registry.retain([dependent]) as retained:
         with pytest.raises(RuntimeError, match="failed"):
-            with registry.normalize_provenance_revisions(
-                normalize, roots=[dependent]
-            ) as replacements:
-                assert set(replacements) == {original, dependent}
-                raise RuntimeError("Publication failed")
+            publish()
         assert retained == {dependent}
         assert registry.retained_roots == {dependent}
     assert registry.revision_ids == previous_records.keys()

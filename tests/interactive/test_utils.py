@@ -6260,7 +6260,8 @@ def test_standalone_tool_adopts_released_fit_provenance(
     manifest = original._code_trust_manifest_from_saved_metadata(
         original.tool_status, released.attrs
     )
-    assert manifest is not None and manifest.entries
+    assert manifest is not None
+    assert manifest.entries
     if signed:
         _trust, stored = save_document_trust(new_document_trust(), manifest)
         assert stored
@@ -6283,13 +6284,17 @@ def test_standalone_tool_adopts_released_fit_provenance(
         restored.to_file(tmp_path / "unapproved-tool.h5")
         assert restored.script_inputs == (saved_input,)
         monkeypatch.setattr(
-            erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: False
+            erlab.interactive.utils,
+            "confirm_code_trust",
+            lambda *_args, **_kwargs: False,
         )
         restored._review_code_trust()
         assert restored.script_inputs == (saved_input,)
         assert not document_trust_is_trusted(restored._current_document_trust())
         monkeypatch.setattr(
-            erlab.interactive.utils, "confirm_code_trust", lambda *_args, **_kwargs: True
+            erlab.interactive.utils,
+            "confirm_code_trust",
+            lambda *_args, **_kwargs: True,
         )
         restored._review_code_trust()
     assert document_trust_is_trusted(restored._current_document_trust())
@@ -6521,10 +6526,11 @@ def test_standalone_normalization_retires_only_changed_foreign_captures(
     store = _ProvenanceRevisionStore()
     raw_id = store.add(data if changed == "source" else expected, producer)
     resolved_id = store.add(expected, compose_full_provenance(producer, source))
+    source_snapshot = "source-snapshot"
     captured = saved_input.model_copy(
         update={
             "node_uid": "source-node",
-            "node_snapshot_token": "source-snapshot",
+            "node_snapshot_token": source_snapshot,
             "revision_id": raw_id,
             "resolved_revision_id": resolved_id,
             "follow_source": False,
@@ -6572,9 +6578,10 @@ def test_standalone_normalization_retires_only_changed_foreign_captures(
         assert nested is not None
         inner = nested.root_input
         assert inner is not None
-        assert inner.revision_id is None and inner.resolved_revision_id is None
+        assert inner.revision_id is None
+        assert inner.resolved_revision_id is None
         assert inner.node_uid == "source-node"
-        assert inner.node_snapshot_token == "source-snapshot"
+        assert inner.node_snapshot_token == source_snapshot
         assert not inner.follow_source
         assert inner.parsed_provenance_spec() != producer
     assert store.revision_ids == original_ids
@@ -8285,7 +8292,9 @@ def test_tool_window_input_commit_follows_acceptance(qtbot, outcome: str) -> Non
 
 
 @pytest.mark.parametrize("changed_code", [False, True])
-def test_tool_window_failed_input_commit_discards_transaction(qtbot, changed_code) -> None:
+def test_tool_window_failed_input_commit_discards_transaction(
+    qtbot, changed_code
+) -> None:
     data = xr.DataArray([1.0, 2.0], dims="x")
     binding = ScriptInput(name="data", revision_id="accepted")
     refreshed = binding.model_copy(update={"revision_id": "pending"})

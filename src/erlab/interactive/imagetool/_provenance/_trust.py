@@ -209,8 +209,10 @@ def remap_script_input_provenance(
             ("resolved_revision_id", bool(changed)),
         ):
             current = getattr(script_input, name)
-            if required and current is not None and (
-                revision_ids is None or current not in revision_ids
+            if (
+                required
+                and current is not None
+                and (revision_ids is None or current not in revision_ids)
             ):
                 updates[name] = None
     return script_input.model_copy(update=updates) if updates else script_input

@@ -6452,7 +6452,9 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 candidate_manifest = self._current_code_trust_manifest(
                     script_inputs=candidate.script_inputs
                 )
-                entries = () if candidate_manifest is None else candidate_manifest.entries
+                entries = (
+                    () if candidate_manifest is None else candidate_manifest.entries
+                )
                 self._apply_local_code_inventory_change(
                     manifest.entries,
                     entries,

@@ -4154,6 +4154,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 raise ValueError(
                     "ToolWindows opened from ImageTool must declare one input"
                 )
+
             def _resolve_inputs() -> tuple[
                 dict[str, xr.DataArray], tuple[ScriptInput, ...]
             ]:

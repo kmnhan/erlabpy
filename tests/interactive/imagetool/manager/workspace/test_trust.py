@@ -961,7 +961,9 @@ def test_fit_provenance_approval_releases_old_workspace_after_save_as(
     from erlab.interactive.imagetool.manager._workspace import (
         _revisions as workspace_revisions,
     )
-    from erlab.interactive.imagetool.manager._workspace import _storage as workspace_storage
+    from erlab.interactive.imagetool.manager._workspace import (
+        _storage as workspace_storage,
+    )
     from erlab.interactive.imagetool.manager._workspace._store import WorkspaceStore
 
     released_workspace = tmp_path / "released-fit.itws"
