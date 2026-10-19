@@ -84,6 +84,7 @@ from tests.interactive.imagetool.manager.provenance._common import (
 from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
+    _request_workspace_save_as_and_wait,
     add_source_childtool,
 )
 
@@ -876,10 +877,6 @@ def test_fit_provenance_approval_preserves_saved_revision_history(
         revisions = manager._provenance_revisions
         original_data = revisions.resolve_data(original_revision_id)
         manager._workspace_controller.saving._save_workspace_document(before_approval)
-        original_records = {
-            revision_id: revisions.get(revision_id)
-            for revision_id in revisions.revision_ids
-        }
         with WorkspaceStore(before_approval) as store:
             original_manifest = store.current_generation().manifest
         assert not document_trust_is_trusted(manager._workspace_state.code_trust)
@@ -889,17 +886,13 @@ def test_fit_provenance_approval_preserves_saved_revision_history(
         normalized_revision_id = node.current_revision_id
         assert normalized_revision_id is not None
         assert normalized_revision_id != original_revision_id
-        bound = revisions.bind(
-            normalized_revision_id, node.provenance_for_role("source")
+        assert (
+            revisions.bind(
+                normalized_revision_id, node.provenance_for_role("source")
+            ).revision_id
+            == normalized_revision_id
         )
-        assert bound.revision_id == normalized_revision_id
-        for revision_id, record in original_records.items():
-            retained = revisions.get(revision_id)
-            assert retained == record
-            assert retained.checkpoint is record.checkpoint
-        xr.testing.assert_identical(
-            revisions.resolve_data(original_revision_id), original_data
-        )
+        assert original_revision_id not in revisions
         xr.testing.assert_identical(
             revisions.resolve_data(normalized_revision_id), original_data
         )
@@ -958,6 +951,99 @@ def test_fit_provenance_approval_preserves_saved_revision_history(
             xr.testing.assert_identical(
                 manager._provenance_revisions.resolve_data(revision_id), original_data
             )
+
+
+@pytest.mark.parametrize("retain_snapshot", [False, True])
+def test_fit_provenance_approval_releases_old_workspace_after_save_as(
+    qtbot, tmp_path, monkeypatch, manager_context, retain_snapshot
+) -> None:
+    from erlab.interactive.imagetool.manager._revisions import _ProvenanceRevisionStore
+    from erlab.interactive.imagetool.manager._workspace import (
+        _revisions as workspace_revisions,
+    )
+    from erlab.interactive.imagetool.manager._workspace import _storage as workspace_storage
+    from erlab.interactive.imagetool.manager._workspace._store import WorkspaceStore
+
+    released_workspace = tmp_path / "released-fit.itws"
+    original_workspace = tmp_path / "before-approval.itws"
+    destination = tmp_path / "after-approval.itws"
+    snapshot_destination = tmp_path / "snapshot.itws"
+    monkeypatch.setattr(workspace_trust, "workspace_path_is_trusted", lambda _: False)
+    _manifest, _data, expected = _save_released_fit_provenance_workspace(
+        manager_context, released_workspace, "builtin"
+    )
+    reset_saved_code_trust(domain="erlab.workspace")
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._workspace._controller.confirm_code_trust",
+        lambda *_args, **_kwargs: True,
+    )
+
+    with manager_context() as manager:
+        assert _load_workspace(manager, released_workspace)
+        manager.get_imagetool(0)
+        node = manager._node_for_target(0)
+        original_revision_id = node.revision_id_for_role("source")
+        controller = manager._workspace_controller
+        destinations = iter((original_workspace, destination))
+        monkeypatch.setattr(
+            controller,
+            "_workspace_save_dialog",
+            lambda *_args, **_kwargs: str(next(destinations)),
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert manager.workspace_path == str(original_workspace.resolve())
+        assert not document_trust_is_trusted(manager._workspace_state.code_trust)
+        snapshot = (
+            controller.saving._workspace_generation_save_snapshot(
+                manager._workspace_state.dirty_generation,
+                fname=snapshot_destination,
+            )
+            if retain_snapshot
+            else None
+        )
+        try:
+            controller.review_and_approve_workspace_code_trust()
+            revisions = manager._provenance_revisions
+            assert original_revision_id not in revisions
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+            assert manager.workspace_path == str(destination.resolve())
+            xr.testing.assert_identical(node.current_source_data(), expected)
+            xr.testing.assert_identical(
+                revisions.resolve_data(node.current_revision_id), expected
+            )
+            with pytest.raises(BlockingIOError):
+                workspace_storage._acquire_workspace_document_lock(destination)
+
+            if snapshot is not None:
+                with pytest.raises(BlockingIOError):
+                    workspace_storage._acquire_workspace_document_lock(
+                        original_workspace
+                    )
+                manifest = snapshot.generation_plan.manifest
+                assert original_revision_id in {
+                    entry["revision_id"] for entry in manifest["provenance_revisions"]
+                }
+                with WorkspaceStore(snapshot_destination, create=True) as store:
+                    workspace_storage._write_workspace_generation(
+                        store,
+                        snapshot.generation_plan,
+                        compression_mode=snapshot.compression_mode,
+                    )
+                restored = _ProvenanceRevisionStore()
+                workspace_revisions.restore_revision_store(
+                    restored, manifest, snapshot_destination
+                )
+                xr.testing.assert_identical(
+                    restored.resolve_data(original_revision_id), expected
+                )
+        finally:
+            if snapshot is not None:
+                snapshot.close()
+
+        original_lock = workspace_storage._acquire_workspace_document_lock(
+            original_workspace
+        )
+        original_lock.unlock()
 
 
 @pytest.mark.parametrize("materialize", [False, True])
@@ -1082,12 +1168,13 @@ def test_provenance_normalization_rolls_back_all_owners_and_revisions(
             )
             raise RuntimeError("Normalization commit failed")
 
-        if failure == "owner":
-            monkeypatch.setattr(nodes[1], "remap_provenance_owners", fail_after_remap)
-        else:
-            monkeypatch.setattr(controller, "_commit_provenance_change", fail_after_remap)
-        with pytest.raises(RuntimeError, match="Normalization commit failed"):
-            controller._normalize_approved_workspace_provenance()
+        with monkeypatch.context() as patch:
+            if failure == "owner":
+                patch.setattr(nodes[1], "remap_provenance_owners", fail_after_remap)
+            else:
+                patch.setattr(controller, "_commit_provenance_change", fail_after_remap)
+            with pytest.raises(RuntimeError, match="Normalization commit failed"):
+                controller._normalize_approved_workspace_provenance()
 
         assert [node.provenance_spec for node in nodes] == previous_specs
         assert [

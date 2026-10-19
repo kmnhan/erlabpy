@@ -426,6 +426,9 @@ class _WorkspaceController:
                 node.restore_provenance_owners(snapshot)
             self._set_workspace_code_trust(previous)
             raise
+        revisions.discard_unreachable(
+            workspace_revisions.retained_revision_ids(self._manager)
+        )
 
     def issue_code_execution_capability(
         self,
