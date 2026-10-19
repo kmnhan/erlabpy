@@ -1,6 +1,28 @@
-## Unreleased
+## v3.28.0 (2026-10-19)
 
 ### ✨ Features
+
+- **plotting:** add fit result plots (#618) ([ec2f5ef](https://github.com/kmnhan/erlabpy/commit/ec2f5efa4cbcdcf040c35cc520fb0634af8d06d7))
+
+  Adds `eplt.plot_fit` which plots a 1D fit result with optional confidence intervals and components. The functionality is also available as a new step in figure composer, and can be created from the right-click context menu of a fit in `ftool`.
+
+- **figurecomposer:** inherit ImageTool axis settings (#615) ([8522e60](https://github.com/kmnhan/erlabpy/commit/8522e60f065185d8652ed0b15f1a9926978c45f5))
+
+- **interactive:** add optional light plot backgrounds (#613) ([4b3f026](https://github.com/kmnhan/erlabpy/commit/4b3f026a3449fd1d70322060336140aa15f611ac))
+
+  Adds an option to render GUI plots with black text and white backgrounds.
+
+- **manager:** make color linking opt-in (#611) ([bfa2258](https://github.com/kmnhan/erlabpy/commit/bfa2258d384001c0afecfba94d5037fb36641982))
+
+  Clicking on the link badge now opens a menu where users can toggle color linking.
+
+- **manager:** add Open Style Directory action (#610) ([9dc7490](https://github.com/kmnhan/erlabpy/commit/9dc749079a6076536f25f4fdd947935bbfef34c9))
+
+  Adds an action beside Open Log Directory to open the custom Matplotlib style directory.
+
+- **imagetool:** remove scalar coordinates in the coordinate editor (#608) ([979c548](https://github.com/kmnhan/erlabpy/commit/979c548394c8a4e7385f978523fd770b78b2d38e))
+
+  Adds a Remove Coordinates tab for selecting scalar coordinates to remove from ImageTool data.
 
 - **interactive:** add Angle Calculator ([19d9bf0](https://github.com/kmnhan/erlabpy/commit/19d9bf0e911cfb579211a860285d59f037d48e98))
 
@@ -17,6 +39,20 @@
   Also adds the `espresso` data loader plugin for the HiSOR BL9B ESPRESSO endstation.
 
 ### 🐞 Bug Fixes
+
+- **manager:** retain data history across multiple inputs (#614) ([46ae204](https://github.com/kmnhan/erlabpy/commit/46ae204b1cdab98618d9a3600f2eac67113c6408))
+
+  Improve code generation and store data so that Revert can restore prior data even for some destructive edits.
+
+- **manager:** preserve closed app state (#617) ([c660b02](https://github.com/kmnhan/erlabpy/commit/c660b024f8a22d1f8527fa514a74ffb7779febc2))
+
+- **manager:** improve provenance code quality (#616) ([c312c9d](https://github.com/kmnhan/erlabpy/commit/c312c9d86d300417fff9b611509ec1c3e5d5cfbf))
+
+  Fixes an issue where copying selected provenance steps includes internal ImageTool dimension restoration helpers and disconnected variable names.
+
+- **analysis:** preserve data coordinates in corrections and models (#609) ([3b5886b](https://github.com/kmnhan/erlabpy/commit/3b5886b59d19137a5e95230101e031870d2daebc))
+
+  Fixes an issue where non-index coordinates on correction, mask, and model parameter arrays could add or remove coordinates in the result.
 
 - **manager:** use current workspace defaults when opening `ktool` ([4b9c15b](https://github.com/kmnhan/erlabpy/commit/4b9c15b4fa0601ef1faa0cd002b913eba56f28ab))
 
