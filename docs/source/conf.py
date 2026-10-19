@@ -16,7 +16,10 @@ import pybtex.style.formatting.unsrt
 import pybtex.style.template
 import sphinx_autosummary_accessors
 from docutils import nodes
-from sphinx_markdown_builder.translator import MarkdownTranslator
+from sphinx.util.osutil import relative_uri
+from sphinx_llm.markdown_builder import SphinxLlmMarkdownTranslator
+from sphinx_markdown_builder.contexts import CommaSeparatedContext, WrappedContext
+from sphinx_markdown_builder.translator import pushing_context
 
 # Build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -64,6 +67,7 @@ extensions = [
     "sphinx_llm.txt",
 ]
 llms_txt_build_parallel = not bool(os.getenv("READTHEDOCS"))
+llms_txt_full_build = True
 myst_enable_extensions = ["colon_fence", "dollarmath", "substitution"]
 
 mermaid_light_theme = "neutral"
@@ -105,6 +109,17 @@ suppress_warnings = [
 ]
 nb_execution_mode = "cache"
 nb_execution_timeout = -1
+# Select portable notebook outputs for the custom Markdown builder.
+nb_mime_priority_overrides = [
+    ("llms-markdown", "image/svg+xml", 10),
+    ("llms-markdown", "image/png", 20),
+    ("llms-markdown", "image/gif", 30),
+    ("llms-markdown", "image/jpeg", 40),
+    ("llms-markdown", "text/markdown", 50),
+    ("llms-markdown", "text/latex", 60),
+    ("llms-markdown", "text/plain", 70),
+    ("llms-markdown", "text/html", 80),
+]
 
 sd_fontawesome_latex = True
 
@@ -205,8 +220,8 @@ def fix_matplotlib_set_inheritance(app, config) -> None:
     erlab.plotting.plot3d.FancyArrow3D.set.__doc__ = ""
 
 
-class ERLabMarkdownTranslator(MarkdownTranslator):
-    """Preserve Sphinx signature and docstring nodes in the LLM export."""
+class ERLabMarkdownTranslator(SphinxLlmMarkdownTranslator):
+    """Preserve documentation content and links in the LLM export."""
 
     def visit_abbreviation(self, node) -> None:
         """Keep keyword-only markers in Python signatures."""
@@ -225,11 +240,54 @@ class ERLabMarkdownTranslator(MarkdownTranslator):
         """Finish a generic admonition after its children are written."""
         self._pop_context()
 
+    @pushing_context
     def visit_title(self, node) -> None:
         """Avoid writing an admonition title twice."""
         if isinstance(node.parent, nodes.admonition):
             raise nodes.SkipNode
         super().visit_title(node)
+
+    visit_citation = SphinxLlmMarkdownTranslator.visit_footnote
+    visit_citation_reference = SphinxLlmMarkdownTranslator.visit_footnote_reference
+    visit_caption = SphinxLlmMarkdownTranslator.visit_paragraph
+    visit_PassthroughTextElement = SphinxLlmMarkdownTranslator.visit_paragraph
+
+    def visit_image(self, node) -> None:
+        """Link to the image copies published with the HTML pages."""
+        if node["uri"] in self.builder.env.images:
+            node = node.copy()
+            filename = self.builder.env.images[node["uri"]][1]
+            node["uri"] = relative_uri(
+                f"{self.builder.current_doc_name}.md", f"_images/{filename}"
+            )
+        super().visit_image(node)
+
+    def visit_desc_type_parameter_list(self, node) -> None:
+        """Write generic type parameters in square brackets."""
+        self._push_context(WrappedContext("[", "]", wrap_empty=True))
+        self._push_context(CommaSeparatedContext(", "))
+
+    depart_desc_type_parameter_list = (
+        SphinxLlmMarkdownTranslator.depart_desc_parameterlist
+    )
+    visit_desc_type_parameter = SphinxLlmMarkdownTranslator.visit_desc_parameter
+    depart_desc_type_parameter = SphinxLlmMarkdownTranslator.depart_desc_parameter
+
+    def visit_mermaid(self, node) -> None:
+        """Keep diagram source in a Mermaid code block."""
+        if alt := node.get("alt"):
+            self.add(alt, prefix_eol=2, suffix_eol=2)
+        self.add(f"```mermaid\n{node['code']}\n```", prefix_eol=2, suffix_eol=2)
+        raise nodes.SkipNode
+
+    def visit_fontawesome(self, node) -> None:
+        """Keep icon names, including platform symbols, as readable text."""
+        self.add(f"[{node['icon']}]")
+        raise nodes.SkipNode
+
+    def visit_toctree(self, node) -> None:
+        """Skip hidden navigation trees after visible trees are resolved."""
+        raise nodes.SkipNode
 
 
 def write_trimmed_llms_export(app, exception) -> None:
@@ -266,7 +324,7 @@ def write_trimmed_llms_export(app, exception) -> None:
 
 
 def setup(app) -> None:
-    app.set_translator("markdown", ERLabMarkdownTranslator, override=True)
+    app.set_translator("llms-markdown", ERLabMarkdownTranslator, override=True)
     app.connect("config-inited", make_accessor_docs)
     app.connect("config-inited", fix_matplotlib_set_inheritance)
     app.connect("build-finished", write_trimmed_llms_export)
