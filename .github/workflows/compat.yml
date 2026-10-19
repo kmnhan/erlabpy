@@ -156,6 +156,8 @@ jobs:
             --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml"
           uv run pytest \
             "${common_args[@]}" \
+            --capture=tee-sys \
+            --no-qt-log \
             -m gui \
             --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-gui.xml"
 
