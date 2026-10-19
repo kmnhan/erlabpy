@@ -54,6 +54,7 @@ from erlab.interactive._code_trust import (
     approve_document_trust,
     commit_local_edit_trust,
     create_manifest,
+    document_trust_has_trusted_lineage,
     document_trust_is_trusted,
     execution_capability_allows,
     external_document_trust,
@@ -5635,6 +5636,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
 
         """
         self._flush_restore_work_for_save()
+        self._normalize_approved_provenance()
         self._flush_pending_history_write()
         ds = self._saved_tool_data_dataset()
         ds = self._append_persistence_payload(ds)
@@ -6210,6 +6212,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             tool._reset_history_stack()
             if not defer_restore_work:
                 tool._flush_restore_work()
+            tool._normalize_approved_provenance()
             tool._plot_state_registry.reapply()
             restore_succeeded = True
         finally:
@@ -6347,10 +6350,14 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             ),
         )
 
-    def _current_code_trust_manifest(self) -> CodeTrustManifest | None:
+    def _current_code_trust_manifest(
+        self, *, script_inputs: Sequence[ScriptInput] | None = None
+    ) -> CodeTrustManifest | None:
         """Return executable content for the current in-memory document."""
         input_entries = tuple(
-            self._script_inputs_code_trust_entries(self._script_inputs)
+            self._script_inputs_code_trust_entries(
+                self._script_inputs if script_inputs is None else script_inputs
+            )
         )
         if self._CODE_TRUST_DOMAIN is None:
             if not input_entries:
@@ -6369,6 +6376,65 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 *input_entries,
             ),
         )
+
+    def _normalize_approved_provenance(self) -> None:
+        """Adopt approved fit metadata owned by a standalone tool document."""
+        if (
+            self._code_trust_state_getter is not None
+            or self._code_trust_entry_locator is not None
+            or not self._script_inputs
+            or not document_trust_has_trusted_lineage(self._document_trust)
+        ):
+            return
+        from erlab.interactive.imagetool._provenance._trust import (
+            provenance_spec_normalizer,
+            remap_script_input_provenance,
+        )
+
+        manifest = self._current_code_trust_manifest()
+        if manifest is None:
+            return
+        _trust, capability = issue_complete_execution_capability(
+            self._document_trust, manifest.entries
+        )
+        if capability is None:
+            return
+        remap = provenance_spec_normalizer(authorization=capability)
+
+        def normalize(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
+            normalized = remap(spec)
+            inputs = tuple(normalize_input(item) for item in spec.replay_inputs)
+            return (
+                normalized
+                if inputs == normalized.replay_inputs
+                else normalized.with_replay_inputs(inputs)
+            )
+
+        def normalize_input(item: ScriptInput) -> ScriptInput:
+            return remap_script_input_provenance(
+                item, normalize, retire_changed_revisions=True
+            )
+
+        previous = self._input_state()
+        candidate = previous.map_inputs(normalize_input)
+        if candidate == previous:
+            return
+        candidate_manifest = self._current_code_trust_manifest(
+            script_inputs=candidate.script_inputs
+        )
+        entries = () if candidate_manifest is None else candidate_manifest.entries
+        previous_trust = self._document_trust
+        try:
+            self._apply_local_code_inventory_change(
+                manifest.entries,
+                entries,
+                entries,
+                lambda: self._restore_input_state(candidate),
+            )
+        except Exception:
+            self._restore_input_state(previous)
+            self.set_document_trust(previous_trust, notify=False)
+            raise
 
     @staticmethod
     def _source_spec_code_trust_entries(
@@ -6662,6 +6728,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             self.set_document_trust(
                 approve_document_trust(self._document_trust, manifest)
             )
+            self._normalize_approved_provenance()
             return
         if not confirm_code_trust(
             self,
@@ -6672,6 +6739,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         ):
             return
         self.set_document_trust(approve_document_trust(self._document_trust, manifest))
+        self._normalize_approved_provenance()
 
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         self._flush_restore_work(run_on_show_only=True)
