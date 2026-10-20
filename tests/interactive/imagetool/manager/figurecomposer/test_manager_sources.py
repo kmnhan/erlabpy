@@ -16,6 +16,8 @@ from erlab.interactive._figurecomposer import (
     FigureSourceState,
 )
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._model import FileDataSelection
+from erlab.interactive.imagetool._provenance._operations import GaussianFilterOperation
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
@@ -271,6 +273,99 @@ def test_manager_figure_source_row_refresh_updates_only_selected_source(
         first_item = figure_tool.source_panel.source_list.topLevelItem(0)
         assert first_item is not None
         assert first_item.icon(0).isNull()
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+def test_manager_figure_source_refresh_after_imagetool_rename(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    filtered: bool,
+) -> None:
+    data = xr.DataArray(
+        np.arange(30.0).reshape(5, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(6)},
+        name="sample",
+    )
+    data_path = tmp_path / "sample.h5"
+    data.to_netcdf(data_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        itool(
+            data,
+            manager=True,
+            file_path=data_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        node = manager._node_for_target(0)
+        if filtered:
+            node.slicer_area.apply_filter_operation(
+                GaussianFilterOperation(sigma={"x": 0.5}), emit_edited=True
+            )
+        source_revision = node.revision_id_for_role("source")
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = _materialized_figure_tool(manager, figure_uid)
+        [figure_source] = figure_tool.source_states()
+        displayed_revision = node.revision_id_for_role("displayed")
+        revisions = manager._provenance_revisions
+        original_source = revisions.resolve_data(source_revision)
+        original_displayed = revisions.resolve_data(displayed_revision)
+        original_source_record = revisions.get(source_revision)
+        original_displayed_record = revisions.get(displayed_revision)
+        expected_displayed = original_displayed.rename("renamed")
+
+        manager.rename_imagetool(0, "renamed")
+
+        assert manager._figure_workflows._refresh_figure_source(
+            figure_uid, figure_source.name
+        )
+        xr.testing.assert_identical(
+            figure_tool.source_data()[figure_source.name], expected_displayed
+        )
+        for role, previous_revision, expected in (
+            ("source", source_revision, data.rename("renamed")),
+            ("displayed", displayed_revision, expected_displayed),
+        ):
+            revision_id = node.revision_id_for_role(role)
+            assert revision_id != previous_revision
+            revisions.bind(revision_id, node.provenance_for_role(role))
+            xr.testing.assert_identical(revisions.resolve_data(revision_id), expected)
+        assert revisions.get(source_revision) == original_source_record
+        assert revisions.get(displayed_revision) == original_displayed_record
+        xr.testing.assert_identical(
+            revisions.resolve_data(source_revision), original_source
+        )
+        xr.testing.assert_identical(
+            revisions.resolve_data(displayed_revision), original_displayed
+        )
+
+        workspace_path = tmp_path / "renamed.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        node = manager._node_for_target(0)
+        assert node.materialize_pending_workspace_payload()
+        figure_tool = _materialized_figure_tool(manager, figure_uid)
+        assert manager._figure_workflows._refresh_figure_source(
+            figure_uid, figure_source.name
+        )
+        xr.testing.assert_identical(
+            figure_tool.source_data()[figure_source.name], expected_displayed
+        )
 
 
 def test_manager_figure_refresh_sources_updates_live_sources_and_skips_detached(
