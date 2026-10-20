@@ -1039,6 +1039,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._catalog = catalog
         self._manager_session_id = manager._manager_record.internal_id
         self._pool = QtCore.QThreadPool(self)
+        self._pool.setStackSize(erlab.interactive.utils._python_thread_stack_size())
         self._pool.setMaxThreadCount(1)
         self._script_modules: dict[tuple[str, str, str], LoadedScript] = {}
         self._pending: deque[_ExtensionRoutineJob] = deque()

@@ -4422,6 +4422,9 @@ def test_manager_file_open_uses_selected_dataset_variable(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    stack_size = 8 * 1024 * 1024
+    monkeypatch.setattr("threading.stack_size", lambda: stack_size)
+    loader_stack_sizes: list[int] = []
     file_path = tmp_path / "multi.h5"
     file_path.touch()
     initial_second = xr.DataArray(
@@ -4450,6 +4453,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
     }
 
     def _load_multi(_path: pathlib.Path) -> xr.Dataset:
+        loader_stack_sizes.append(QtCore.QThread.currentThread().stackSize())
         return datasets["current"]
 
     def _select_second(data, parent=None):
@@ -4483,6 +4487,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         tool = manager.get_imagetool(0)
 
+        assert loader_stack_sizes == [stack_size]
         xr.testing.assert_identical(tool.slicer_area.data, initial_second)
         assert tool.slicer_area._load_func is not None
         assert tool.slicer_area._load_func[2] == selection

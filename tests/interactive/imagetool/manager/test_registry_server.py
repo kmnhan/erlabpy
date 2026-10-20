@@ -1331,11 +1331,33 @@ def test_server_stop_logs_when_cooperative_wait_times_out(monkeypatch, caplog) -
     assert "Manager server did not stop within timeout" in caplog.text
 
 
-def test_manager_server_stop_wakes_receive_loop(qtbot) -> None:
+def test_manager_server_stop_wakes_receive_loop(qtbot, monkeypatch) -> None:
+    expected_stack_size = 8 * 1024 * 1024
+    monkeypatch.setattr(threading, "stack_size", lambda: expected_stack_size)
     server = manager_server._ManagerServer(port=0)
+    received_stack_sizes: list[int] = []
+    receive = manager_server._recv_multipart
+
+    def receive_with_stack_size(*args, **kwargs) -> dict[str, typing.Any]:
+        thread = QtCore.QThread.currentThread()
+        if thread == server:
+            received_stack_sizes.append(thread.stackSize())
+        return receive(*args, **kwargs)
+
+    monkeypatch.setattr(manager_server, "_recv_multipart", receive_with_stack_size)
     server.start()
     try:
-        assert server.wait_until_bound(timeout_ms=5000) > 0
+        port = server.wait_until_bound(timeout_ms=5000)
+        assert port > 0
+        with zmq.Context.instance().socket(zmq.REQ) as socket:
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.connect(f"tcp://127.0.0.1:{port}")
+            manager_server._send_multipart(
+                socket, {"packet_type": "command", "command": "ping"}
+            )
+            assert socket.poll(1000)
+            assert manager_server._recv_multipart(socket)["status"] == "ok"
+        assert received_stack_sizes == [expected_stack_size]
         server.stop(timeout_ms=1000)
         assert not server.isRunning()
     finally:
