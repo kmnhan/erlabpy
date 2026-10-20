@@ -1,3 +1,15 @@
+## v3.28.1 (2026-10-20)
+
+### 🐞 Bug Fixes
+
+- **figurecomposer:** refresh sources after ImageTool rename (#625) ([f9b080c](https://github.com/kmnhan/erlabpy/commit/f9b080c5e2ffc7ae8e5ffe6b4b5bb891ffa76775))
+
+  Fixes an issue where refreshing a Figure Composer source fails after renaming its ImageTool.
+
+- **manager:** use Python stack sizes for Qt workers (#624) ([8be7be4](https://github.com/kmnhan/erlabpy/commit/8be7be4bacf03718bd5baabf6aad4fc5aaf1ad7c))
+
+  Fixes an issue where Numba compilation on a Manager Qt worker could overflow the default macOS stack.
+
 ## v3.28.0 (2026-10-19)
 
 ### ✨ Features
