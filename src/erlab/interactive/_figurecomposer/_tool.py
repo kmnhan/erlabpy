@@ -3971,14 +3971,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 spec = source_spec_for_payload(payload)
                 lines.append(spec.label or spec.kind)
                 lines.extend(spec.describe(payload))
-            if source.provider_selection:
-                lines.append(
-                    "Pinned selection: "
-                    + ", ".join(
-                        f"{key}={value}"
-                        for key, value in source.provider_selection.items()
-                    )
-                )
             if source.selection_source is not None and source.selection_source != name:
                 lines.append(f"Selected from {source.selection_source}")
             if origin := self._source_refresh_label(name):

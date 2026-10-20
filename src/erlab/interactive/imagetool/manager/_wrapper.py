@@ -1271,6 +1271,10 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         if record_provenance:
             self._record_data_rename_provenance(data_name)
+        displayed_matches_source = self.snapshot_token == self.source_snapshot_token
+        self._advance_snapshot_token(defer_refresh=True)
+        if not displayed_matches_source:
+            self._advance_displayed_snapshot_token(defer_refresh=True)
         self._invalidate_info_text_cache()
         self.imagetool.setWindowTitle(self.label_text)
         self._notify_change(
