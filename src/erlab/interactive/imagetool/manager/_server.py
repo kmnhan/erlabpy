@@ -563,6 +563,7 @@ class _ManagerServer(QtCore.QThread):
 
     def __init__(self, port: int | None = None) -> None:
         super().__init__()
+        self.setStackSize(erlab.interactive.utils._python_thread_stack_size())
         self.setObjectName(type(self).__name__)
         self.stopped = threading.Event()
         self.port = PORT if port is None else port

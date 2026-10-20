@@ -616,6 +616,8 @@ def test_explorer_loader_refresh_keeps_selection_atomic(
 
 
 def test_repr_fetcher_keeps_coordinate_values_without_preview(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
     import numpy as np
@@ -631,14 +633,26 @@ def test_repr_fetcher_keeps_coordinate_values_without_preview(
         name="demo",
     )
     fetched: list[tuple[str, object]] = []
+    worker_stack_sizes: list[int] = []
+    stack_size = 8 * 1024 * 1024
+    monkeypatch.setattr("threading.stack_size", lambda: stack_size)
+    explorer = _DataExplorer(root_path=tmp_path, loader_name="builtin:xarray-hdf5")
+    qtbot.addWidget(explorer)
 
-    worker = _ReprFetcher(tmp_path / "data.h5", lambda *_args, **_kwargs: data, False)
+    def load_data(*_args, **_kwargs):
+        worker_stack_sizes.append(QtCore.QThread.currentThread().stackSize())
+        return data
+
+    worker = _ReprFetcher(tmp_path / "data.h5", load_data, False)
     worker.signals.fetched.connect(
         lambda _path, text, preview_data: fetched.append((text, preview_data))
     )
 
-    worker.run()
+    explorer._preview_threadpool.start(worker)
+    qtbot.wait_until(lambda: len(fetched) == 1)
+    assert explorer._preview_threadpool.waitForDone(5000)
 
+    assert worker_stack_sizes == [stack_size]
     assert len(fetched) == 1
     text, preview_data = fetched[0]
     assert preview_data is None

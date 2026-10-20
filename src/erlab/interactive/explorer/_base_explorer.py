@@ -1059,6 +1059,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._selected_loader_name: str | None = None
         self._workspace_state_restoring = False
         self._preview_threadpool = QtCore.QThreadPool(self)
+        self._preview_threadpool.setStackSize(
+            erlab.interactive.utils._python_thread_stack_size()
+        )
         self._preview_threadpool.setExpiryTimeout(0)
         self._preview_workers: set[_ReprFetcher] = set()
         self._preview_stopping = False

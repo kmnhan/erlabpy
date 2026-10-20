@@ -6406,11 +6406,14 @@ def test_manager_executes_routine_in_serial_extension_queue(
     manager_context,
     qtbot: pytest.QtBot,
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("threading.stack_size", lambda: 8 * 1024 * 1024)
     script_path = tmp_path / "inspect_input.py"
     script_path.write_text(
         """import threading
 import xarray as xr
+from qtpy import QtCore
 from erlab.extensions import routine
 
 @routine(name="Inspect Input")
@@ -6418,6 +6421,7 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
     return (data + offset).assign_attrs(
         input_writeable=data.values.flags.writeable,
         execution_thread=threading.get_ident(),
+        execution_stack_size=QtCore.QThread.currentThread().stackSize(),
     )
 """
     )
@@ -6454,6 +6458,7 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         xr.testing.assert_equal(result, data + 2.0)
         assert not result.attrs["input_writeable"]
         assert result.attrs["execution_thread"] != manager_thread
+        assert result.attrs["execution_stack_size"] == 8 * 1024 * 1024
         operation = manager._tool_graph.root_wrappers[1].provenance_spec.operations[-1]
         assert operation.op == "extension_routine"
         assert operation.source_hash == source_hash
@@ -6465,6 +6470,7 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         xr.testing.assert_equal(replayed, data + 2.0)
         assert not replayed.attrs["input_writeable"]
         assert replayed.attrs["execution_thread"] != manager_thread
+        assert replayed.attrs["execution_stack_size"] == 8 * 1024 * 1024
 
         graph_replayed = replay_script_provenance(
             manager._tool_graph.root_wrappers[1].provenance_spec,
@@ -6474,6 +6480,7 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         xr.testing.assert_equal(graph_replayed, data + 2.0)
         assert not graph_replayed.attrs["input_writeable"]
         assert graph_replayed.attrs["execution_thread"] != manager_thread
+        assert graph_replayed.attrs["execution_stack_size"] == 8 * 1024 * 1024
 
 
 def test_queued_routine_uses_pinned_bytes_after_unchanged_relocation(

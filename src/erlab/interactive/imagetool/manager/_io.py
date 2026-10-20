@@ -635,6 +635,9 @@ class _MultiFileHandler(QtCore.QObject):
         self._abort: bool = False
 
         self._threadpool = QtCore.QThreadPool(self)
+        self._threadpool.setStackSize(
+            erlab.interactive.utils._python_thread_stack_size()
+        )
         self._threadpool.setExpiryTimeout(0)
 
     @property
