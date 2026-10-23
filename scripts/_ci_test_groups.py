@@ -57,6 +57,7 @@ COMPAT_TARGETS: tuple[str, ...] = (
     "tests/interactive/test_kspace.py::test_ktool_overlay_image_roundtrip",
     "tests/interactive/test_kspace.py::test_ktool_update_inputs_with_single_energy_disables_energy_group",
     "tests/interactive/test_kspace.py::test_ktool_update_inputs_reconnects_energy_controls_after_single_energy",
+    "tests/interactive/imagetool/test_replay_graph.py::test_replace_code_identifiers_preserves_generic_type_alias_parameters",
     "tests/interactive/test_utils.py::test_better_axis_item_paint_ignores_deleted_axis",
     "tests/interactive/test_utils.py::test_better_axis_item_paint_ignores_deleted_wrapper_error",
     "tests/interactive/test_utils.py::test_better_axis_item_paint_reraises_unexpected_error",
