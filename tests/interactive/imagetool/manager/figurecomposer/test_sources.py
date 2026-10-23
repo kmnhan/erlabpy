@@ -12,11 +12,13 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
 import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
+import erlab.interactive._figurecomposer._source_storage as source_storage
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
 import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 import erlab.interactive._stylesheets
+import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.plotting as eplt
 from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
@@ -85,6 +87,136 @@ from ._common import (
     _restored_figure_composer_from_netcdf,
     _select_operation_rows,
 )
+
+
+def test_embedded_workspace_sources_filters_captured_array_inputs():
+    captured_revision = "old-1"
+    sources = (
+        FigureSourceState(
+            name="primary", node_uid="n1", node_snapshot_token=captured_revision
+        ),
+        FigureSourceState(name="secondary", node_uid="n2"),
+        FigureSourceState(name="referenced", node_uid="n3"),
+        FigureSourceState(name="custom", node_uid="n4", use_node_data=False),
+        FigureSourceState(name="orphan", use_node_data=True),
+        FigureSourceState(name="fit", kind="fit", node_uid="n5", use_node_data=True),
+    )
+    attrs = {
+        "tool_cls_qualname": FigureComposerTool._qual_name(),
+        "tool_state": FigureRecipeState(
+            sources=sources, primary_source="primary"
+        ).model_dump_json(),
+        _persistence_constants.TOOL_DATA_REFERENCES_ATTR: json.dumps(
+            {"referenced": {"kind": "manager_node", "node_uid": "n3"}}
+        ),
+    }
+    saved_state = attrs["tool_state"]
+
+    assert source_storage.embedded_workspace_sources(attrs) == {
+        _persistence_constants.SAVED_TOOL_DATA_NAME: sources[0],
+        "secondary": sources[1],
+    }
+    assert attrs["tool_state"] == saved_state
+
+
+@pytest.mark.parametrize(
+    "invalid_metadata",
+    [
+        {"tool_cls_qualname": "other:Tool"},
+        {"tool_state": None},
+        {"tool_state": "invalid JSON"},
+        {"tool_state": '{"unknown": true}'},
+        {_persistence_constants.TOOL_DATA_REFERENCES_ATTR: "[]"},
+        {_persistence_constants.TOOL_DATA_REFERENCES_ATTR: '{"data": []}'},
+        {_persistence_constants.TOOL_DATA_REFERENCES_ATTR: 123},
+    ],
+)
+def test_embedded_workspace_sources_rejects_invalid_metadata(invalid_metadata):
+    attrs = {
+        "tool_cls_qualname": FigureComposerTool._qual_name(),
+        "tool_state": FigureRecipeState(
+            sources=(FigureSourceState(name="data", node_uid="n1"),)
+        ).model_dump_json(),
+    }
+    attrs.update(invalid_metadata)
+
+    assert source_storage.embedded_workspace_sources(attrs) == {}
+    assert (
+        source_storage.embedded_workspace_sources(
+            {"tool_cls_qualname": FigureComposerTool._qual_name()}
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize("name", [None, "measurement", ("measurement", 2)])
+@pytest.mark.parametrize(
+    "variable_name", [_persistence_constants.SAVED_TOOL_DATA_NAME, "secondary"]
+)
+def test_restore_workspace_source_name_uses_manifest(name, variable_name):
+    data = xr.DataArray([1.0, 2.0], dims="x", name="stored")
+    attrs = {
+        source_storage.SOURCE_MANIFEST_ATTR: json.dumps(
+            {
+                "sources": {
+                    "captured": {
+                        "array_names": {
+                            "data": imagetool_serialization.encode_attr_key(name)
+                        }
+                    }
+                }
+            }
+        ),
+        "tool_data_name": "legacy name",
+    }
+
+    restored = source_storage.restore_workspace_source_name(
+        attrs, "captured", variable_name, data
+    )
+
+    xr.testing.assert_identical(restored, data.rename(name))
+    assert data.name == "stored"
+
+
+@pytest.mark.parametrize(
+    ("variable_name", "saved_name", "expected_name"),
+    [
+        (_persistence_constants.SAVED_TOOL_DATA_NAME, "measurement", "measurement"),
+        (_persistence_constants.SAVED_TOOL_DATA_NAME, None, None),
+        (
+            _persistence_constants.SAVED_TOOL_DATA_NAME,
+            _persistence_constants.NONE_TOOL_DATA_NAME,
+            None,
+        ),
+        ("secondary", "legacy name", "stored"),
+    ],
+)
+def test_restore_workspace_source_name_uses_legacy_primary_metadata(
+    variable_name, saved_name, expected_name
+):
+    data = xr.DataArray([1.0, 2.0], dims="x", name="stored")
+
+    restored = source_storage.restore_workspace_source_name(
+        {"tool_data_name": saved_name}, "captured", variable_name, data
+    )
+
+    xr.testing.assert_identical(restored, data.rename(expected_name))
+    assert data.name == "stored"
+
+
+@pytest.mark.parametrize(
+    "manifest", ["invalid JSON", "[]", '{"sources": {}}', '{"sources": {"data": {}}}']
+)
+def test_restore_workspace_source_name_rejects_corrupt_manifest(manifest):
+    data = xr.DataArray([1.0, 2.0], dims="x", name="stored")
+
+    with pytest.raises((KeyError, TypeError, ValueError)):
+        source_storage.restore_workspace_source_name(
+            {source_storage.SOURCE_MANIFEST_ATTR: manifest, "tool_data_name": "legacy"},
+            "data",
+            _persistence_constants.SAVED_TOOL_DATA_NAME,
+            data,
+        )
 
 
 @pytest.mark.parametrize(

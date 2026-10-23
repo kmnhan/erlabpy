@@ -1110,8 +1110,9 @@ def test_workspace_root_attrs_require_valid_generation(tmp_path) -> None:
         workspace_arrays._read_workspace_root_attrs_h5py(path)
 
 
-def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
-    calls: list[tuple[object, str, str | None]] = []
+@pytest.mark.parametrize("cache", [None, False])
+def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch, cache) -> None:
+    calls: list[tuple[object, str, str | None, bool | None]] = []
 
     class _FakeFileManager:
         def __init__(
@@ -1124,8 +1125,10 @@ def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
             del object_id, group_path
             self.workspace_path = path
 
-    def _fake_open(file_manager, group: str, *, chunks: str | None):
-        calls.append((file_manager, group, chunks))
+    def _fake_open(
+        file_manager, group: str, *, chunks: str | None, cache: bool | None = None
+    ):
+        calls.append((file_manager, group, chunks, cache))
         return "dataset"
 
     monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
@@ -1135,14 +1138,17 @@ def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
     )
 
     assert (
-        workspace_arrays.open_workspace_dataset("fallback.itws", "/0", chunks=None)
+        workspace_arrays.open_workspace_dataset(
+            "fallback.itws", "/0", chunks=None, cache=cache
+        )
         == "dataset"
     )
-    file_manager, group, chunks = calls[0]
+    file_manager, group, chunks, forwarded_cache = calls[0]
     assert isinstance(file_manager, _FakeFileManager)
     assert file_manager.workspace_path == "fallback.itws"
     assert group == "/0"
     assert chunks is None
+    assert forwarded_cache is cache
 
 
 def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> None:
@@ -1173,7 +1179,10 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
         def close(self) -> None:
             pass
 
-    def _fake_open(_file_manager, group_path: str, *, chunks: str | None):
+    def _fake_open(
+        _file_manager, group_path: str, *, chunks: str | None, cache: bool | None = None
+    ):
+        assert cache is None
         if group_path == "/broken":
             raise RuntimeError("broken group")
         return _FakeDataset(group_path)
@@ -1494,6 +1503,113 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_references(tmp_path) -> 
     assert json.loads(
         loaded.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR]
     ) == json.loads(ds.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR])
+
+
+def test_workspace_h5py_reader_preserves_lazy_variables_with_native_coords(
+    monkeypatch, tmp_path
+) -> None:
+    data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
+    primary = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={
+            "x": xr.DataArray([1.0, 2.0, 3.0], dims="x", attrs={"units": "deg"}),
+            "y": np.arange(4.0),
+            "temperature": 20.0,
+            "Fake Motor": ("x", [10.0, 20.0, 30.0]),
+        },
+        attrs={"sample": "test"},
+        name=data_name,
+    )
+    saved = primary.to_dataset()
+    secondary = xr.DataArray(
+        np.arange(200_000.0),
+        dims="z",
+        coords={"z": np.arange(200_000.0)},
+        attrs={"units": "eV"},
+        name="secondary source",
+    )
+    saved["secondary"] = erlab.interactive.utils._tool_data_to_blob(
+        secondary, "secondary"
+    )
+    saved["reference"] = erlab.interactive.utils._tool_data_placeholder()
+    saved.attrs["note"] = "keep metadata"
+    path = tmp_path / "mixed-lazy-primary.itws"
+    workspace_arrays._write_workspace_dataset_group_to_file(path, "figure/tool", saved)
+    opened = workspace_arrays.open_workspace_dataset(
+        path, "figure/tool", chunks=None, cache=False
+    )
+    reads: list[str] = []
+    getitem = h5py.Dataset.__getitem__
+
+    def record_read(self, key, *args, **kwargs):
+        if self.name.rsplit("/", 1)[-1] in {data_name, "secondary"}:
+            reads.append(self.name)
+        return getitem(self, key, *args, **kwargs)
+
+    monkeypatch.setattr(h5py.Dataset, "__getitem__", record_read)
+    try:
+        loaded = workspace_arrays._read_workspace_dataset_group_h5py(
+            path,
+            "figure/tool",
+            preferred_data_name=data_name,
+            data_variables=opened.variables,
+        )
+        assert loaded is not None
+        assert reads == []
+        assert not loaded[data_name].variable._in_memory
+        assert not loaded["secondary"].variable._in_memory
+        assert loaded.attrs == saved.attrs
+        assert set(loaded.coords) == set(primary.coords)
+        xr.testing.assert_identical(loaded.coords["x"], primary.coords["x"])
+        xr.testing.assert_identical(
+            loaded.coords["Fake Motor"], primary.coords["Fake Motor"]
+        )
+        xr.testing.assert_identical(loaded[data_name].load(), primary)
+        assert reads
+        assert all(name.endswith(f"/{data_name}") for name in reads)
+        xr.testing.assert_identical(
+            erlab.interactive.utils._tool_data_from_blob(loaded["secondary"]), secondary
+        )
+        assert any(name.endswith("/secondary") for name in reads)
+        blob_reads = sum(name.endswith("/secondary") for name in reads)
+        xr.testing.assert_identical(
+            erlab.interactive.utils._tool_data_from_blob(loaded["secondary"]), secondary
+        )
+        assert sum(name.endswith("/secondary") for name in reads) > blob_reads
+        assert not loaded["secondary"].variable._in_memory
+        assert loaded["reference"].size == 0
+    finally:
+        opened.close()
+
+
+@pytest.mark.parametrize(
+    "primary_data",
+    [
+        xr.Variable("x", np.ones(2)),
+        xr.Variable(("x", "y"), np.ones((2, 3), dtype=np.float32)),
+    ],
+)
+def test_workspace_h5py_reader_rejects_mismatched_primary_data(
+    tmp_path, primary_data
+) -> None:
+    data_name = _persistence_constants.SAVED_TOOL_DATA_NAME
+    path = tmp_path / "mismatched-lazy-primary.itws"
+    saved = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [1.0, 2.0], "y": [3.0, 4.0, 5.0]},
+        name=data_name,
+    ).to_dataset()
+    workspace_arrays._write_workspace_dataset_group_to_file(path, "figure/tool", saved)
+
+    with pytest.raises(ValueError, match="Primary data does not match"):
+        workspace_arrays._read_workspace_dataset_group_h5py(
+            path,
+            "figure/tool",
+            preferred_data_name=data_name,
+            data_variables={data_name: primary_data},
+        )
 
 
 def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(

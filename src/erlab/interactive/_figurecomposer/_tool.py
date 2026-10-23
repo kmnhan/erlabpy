@@ -146,6 +146,9 @@ from erlab.interactive._figurecomposer._rendering import (
     _set_preview_draw_error,
 )
 from erlab.interactive._figurecomposer._source_storage import (
+    SOURCE_MANIFEST_ATTR as _SOURCE_MANIFEST_ATTR,
+)
+from erlab.interactive._figurecomposer._source_storage import (
     SourceBundle,
     decode_source_bundle,
     encode_source_bundle,
@@ -236,7 +239,6 @@ _SOURCE_FREE_DATA_DIM = "_figure_composer_source_free"
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 2
-_SOURCE_MANIFEST_ATTR = "figure_composer_source_manifest"
 _SourcePayloadT = typing.TypeVar("_SourcePayloadT")
 _AXES_EXPRESSION_PLACEHOLDER = "Advanced: axs[0, :] or axs[:, 0]"
 logger = logging.getLogger(__name__)

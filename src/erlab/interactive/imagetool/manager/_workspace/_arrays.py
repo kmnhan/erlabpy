@@ -839,6 +839,7 @@ def _open_workspace_dataset_from_manager(
     group: str,
     *,
     chunks: typing.Any,
+    cache: bool | None = None,
 ) -> xr.Dataset:
     try:
         store = _WorkspaceH5NetCDFStore(
@@ -848,9 +849,9 @@ def _open_workspace_dataset_from_manager(
             autoclose=False,
         )
         if chunks is None:
-            ds = xr.open_dataset(store)
+            ds = xr.open_dataset(store, cache=cache)
         else:
-            ds = xr.open_dataset(store, chunks=chunks)
+            ds = xr.open_dataset(store, chunks=chunks, cache=cache)
     finally:
         file_manager.close()
     for variable in ds.variables.values():
@@ -863,6 +864,7 @@ def open_workspace_dataset(
     group: str,
     *,
     chunks: typing.Any,
+    cache: bool | None = None,
 ) -> xr.Dataset:
     """Open a workspace group through the manager-owned file manager."""
     target = _normalized_file_path(path)
@@ -879,6 +881,7 @@ def open_workspace_dataset(
         WorkspaceFileManager(target, object_id=object_id, group_path=group),
         group,
         chunks=chunks,
+        cache=cache,
     )
 
 
@@ -1294,6 +1297,7 @@ def _workspace_h5py_dataset_independent_tool_variable(
     variable_name: str,
     *,
     exclude_attrs: Iterable[typing.Hashable],
+    data_variable: xr.Variable | None = None,
 ) -> xr.Variable | None:
     if not _workspace_h5py_dataset_storage_supported(dataset):
         return None
@@ -1304,7 +1308,19 @@ def _workspace_h5py_dataset_independent_tool_variable(
         dims = (_persistence_constants.SAVED_TOOL_DATA_REFERENCE_DIM,)
     else:
         return None
-    return xr.Variable(dims, _workspace_h5py_read_values(dataset), attrs)
+    if data_variable is not None and (
+        data_variable.shape != dataset.shape or data_variable.dtype != dataset.dtype
+    ):
+        raise ValueError(
+            f"Data variable {variable_name!r} does not match the saved workspace array"
+        )
+    # The private backend preserves lazy reads; public ``data`` would load values.
+    values = (
+        _workspace_h5py_read_values(dataset)
+        if data_variable is None
+        else data_variable._data
+    )
+    return xr.Variable(dims, values, attrs)
 
 
 def _workspace_h5py_extra_tool_data_names(
@@ -1341,7 +1357,14 @@ def _read_workspace_dataset_group_h5py(
     group_path: str,
     *,
     preferred_data_name: str | None = None,
+    data_variables: Mapping[Hashable, xr.Variable] | None = None,
 ) -> xr.Dataset | None:
+    """Read native dimensions and metadata, optionally borrowing lazy values.
+
+    ``data_variables`` must come from the same file and group. Only their values
+    are used; saved dimensions replace their dimensions. The caller must retain
+    and close the dataset that owns these borrowed values.
+    """
     ensure_workspace_hdf5_filters_registered()
     group_path = group_path.strip("/")
     internal_attrs = (
@@ -1376,6 +1399,14 @@ def _read_workspace_dataset_group_h5py(
         else:
             return None
 
+        data_dataset = datasets[data_name]
+        primary_data = None if data_variables is None else data_variables.get(data_name)
+        if primary_data is not None and (
+            primary_data.shape != data_dataset.shape
+            or primary_data.dtype != data_dataset.dtype
+        ):
+            raise ValueError("Primary data does not match the saved workspace array")
+
         if (
             preferred_data_name
             == data_name
@@ -1387,6 +1418,11 @@ def _read_workspace_dataset_group_h5py(
                     dataset,
                     variable_name,
                     exclude_attrs=internal_attrs,
+                    data_variable=(
+                        None
+                        if data_variables is None
+                        else data_variables.get(variable_name)
+                    ),
                 )
                 if variable is None:
                     break
@@ -1416,7 +1452,6 @@ def _read_workspace_dataset_group_h5py(
                 dims.append(dim_name)
             return tuple(dims)
 
-        data_dataset = datasets[data_name]
         if data_dataset.dtype.kind not in "biufc":
             return None
         dims: list[str] = []
@@ -1481,7 +1516,9 @@ def _read_workspace_dataset_group_h5py(
                 coords[coord_name] = coord_variable
 
         data_attrs = _h5py_attrs_to_dict(data_dataset.attrs, exclude=internal_attrs)
-        data_values = np.asarray(data_dataset[()])
+        data_values = (
+            np.asarray(data_dataset[()]) if primary_data is None else primary_data._data
+        )
         data_vars: dict[typing.Hashable, typing.Any] = {
             data_name: (
                 tuple(dims),
@@ -1547,6 +1584,11 @@ def _read_workspace_dataset_group_h5py(
                     dataset,
                     variable_name,
                     exclude_attrs=internal_attrs,
+                    data_variable=(
+                        None
+                        if data_variables is None
+                        else data_variables.get(variable_name)
+                    ),
                 )
                 if variable is None:
                     if data_name == _persistence_constants.SAVED_TOOL_DATA_NAME:

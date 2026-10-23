@@ -3132,8 +3132,9 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
+        self._invalidate_info_text_cache()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token(defer_refresh=True)
+        self._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:
