@@ -3,15 +3,70 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import typing
 
+import erlab
 from erlab.interactive import _persistence_constants
+from erlab.interactive._figurecomposer._model._state import FigureRecipeState
 from erlab.interactive.imagetool._serialization import decode_attr_key, encode_attr_key
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
 
     import xarray as xr
+
+    from erlab.interactive._figurecomposer._model._state import FigureSourceState
+
+
+SOURCE_MANIFEST_ATTR = "figure_composer_source_manifest"
+
+
+def embedded_workspace_sources(
+    attrs: Mapping[str, typing.Any],
+) -> dict[str, FigureSourceState]:
+    """Find captured array inputs that still have an embedded workspace payload."""
+    if attrs.get("tool_cls_qualname") != (
+        "erlab.interactive._figurecomposer._tool:FigureComposerTool"
+    ):
+        return {}
+    tool_cls = erlab.interactive.utils.ToolWindow
+    try:
+        recipe = FigureRecipeState.model_validate_json(attrs["tool_state"])
+        references = tool_cls._saved_tool_data_references_from_metadata(attrs)
+    except (KeyError, TypeError, ValueError):
+        return {}
+    sources = {}
+    for source in recipe.sources:
+        if source.kind != "array" or not source.node_uid or not source.use_node_data:
+            continue
+        variable_name = (
+            _persistence_constants.SAVED_TOOL_DATA_NAME
+            if source.name == recipe.primary_source
+            else source.name
+        )
+        if variable_name not in references:
+            sources[variable_name] = source
+    return sources
+
+
+def restore_workspace_source_name(
+    attrs: Mapping[str, typing.Any],
+    source_name: str,
+    variable_name: str,
+    data: xr.DataArray,
+) -> xr.DataArray:
+    """Restore the captured array name from current or legacy workspace metadata."""
+    source_manifest = attrs.get(SOURCE_MANIFEST_ATTR)
+    if source_manifest is not None:
+        names = json.loads(source_manifest)["sources"][source_name]["array_names"]
+        return data.rename(decode_attr_key(names["data"]))
+    if variable_name == _persistence_constants.SAVED_TOOL_DATA_NAME:
+        data_name = attrs.get("tool_data_name")
+        if data_name == _persistence_constants.NONE_TOOL_DATA_NAME:
+            data_name = None
+        return data.rename(data_name)
+    return data
 
 
 @dataclasses.dataclass(frozen=True)

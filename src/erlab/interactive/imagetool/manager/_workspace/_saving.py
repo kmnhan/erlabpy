@@ -12,12 +12,13 @@ import time
 import traceback
 import typing
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import xarray as xr
 from qtpy import QtCore
 
 import erlab
+import erlab.interactive._figurecomposer._source_storage as figure_source_storage
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._revisions as workspace_revisions
@@ -36,7 +37,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, MutableMapping
+    from collections.abc import Callable, Hashable, Iterable, Mapping, MutableMapping
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
@@ -81,6 +82,7 @@ class _WorkspaceSaveSnapshot:
     generation_plan: workspace_storage._WorkspaceGenerationPlan
     compression_mode: WorkspaceCompressionMode
     trusted_lineage: bool
+    repair_embedded_figure_data: bool = False
     serialized_tool_data_references: tuple[
         tuple[str, str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
@@ -111,12 +113,22 @@ class _WorkspaceSaveSnapshot:
             return
         self._data_closed = True
         closed: set[int] = set()
-        with contextlib.ExitStack() as datasets:
-            for item in self.generation_plan.objects:
-                if item.dataset is None or id(item.dataset) in closed:
-                    continue
-                closed.add(id(item.dataset))
-                datasets.callback(item.dataset.close)
+        try:
+            with contextlib.ExitStack() as datasets:
+                for item in self.generation_plan.objects:
+                    if item.dataset is None or id(item.dataset) in closed:
+                        continue
+                    closed.add(id(item.dataset))
+                    datasets.callback(item.dataset.close)
+        finally:
+            # Lazy graphs retain reader leases after their file handles close.
+            self.generation_plan = replace(
+                self.generation_plan,
+                objects=tuple(
+                    replace(item, dataset=None) if item.dataset is not None else item
+                    for item in self.generation_plan.objects
+                ),
+            )
 
     def close(self) -> None:
         try:
@@ -210,6 +222,9 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     compression_mode=self._snapshot.compression_mode,
                     on_contention=self._handle_contention,
                 )
+                if self._snapshot.repair_embedded_figure_data:
+                    self._snapshot.close_data()
+                    workspace_storage._compact_workspace_store(target_store)
             finally:
                 if owned_store:
                     target_store.close()
@@ -862,6 +877,156 @@ class _WorkspaceSaver:
                 rewrite_uids.append(uid)
         return sorted(rewrite_uids, key=self._workspace_node_path)
 
+    @staticmethod
+    def _workspace_figure_arrays_identical(
+        stored: xr.DataArray, current: xr.DataArray
+    ) -> bool:
+        """Compare captured data in bounded blocks, including its metadata."""
+        if (
+            stored.name != current.name
+            or stored.dims != current.dims
+            or stored.shape != current.shape
+            or stored.dtype != current.dtype
+            or stored.coords.keys() != current.coords.keys()
+        ):
+            return False
+        pairs = [(stored.variable, current.variable)]
+        pairs.extend(
+            (coord.variable, current.coords[name].variable)
+            for name, coord in stored.coords.items()
+        )
+        for left, right in pairs:
+            if (
+                left.dims != right.dims
+                or not xr.Dataset(attrs=left.attrs).identical(
+                    xr.Dataset(attrs=right.attrs)
+                )
+                or not workspace_storage._workspace_dataset_values_equal(left, right)
+            ):
+                return False
+        return True
+
+    def _repair_workspace_figure_dataset(
+        self, node: _ImageToolWrapper | _ManagedWindowNode, ds: xr.Dataset
+    ) -> xr.Dataset | None:
+        """Return repaired storage references, or ``None`` when unchanged."""
+        sources = figure_source_storage.embedded_workspace_sources(ds.attrs)
+        if not sources:
+            return None
+        references = erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+        repaired_names: set[str] = set()
+        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
+        tool_cls = erlab.interactive.utils.ToolWindow
+        try:
+            for variable_name, source in sources.items():
+                if variable_name not in ds or not ds[variable_name].size:
+                    continue
+                source_uid = typing.cast("str", source.node_uid)
+                source_node = self._manager._tool_graph.nodes.get(source_uid)
+                if source_node is None or not source_node.is_imagetool:
+                    continue
+                stored: xr.DataArray | None = None
+                try:
+                    stored = tool_cls._tool_data_items_from_dataset(
+                        ds,
+                        source_parent_data=None,
+                        reference_resolver=None,
+                        variable_names=(variable_name,),
+                    )[variable_name]
+                    stored = figure_source_storage.restore_workspace_source_name(
+                        ds.attrs, source.name, variable_name, stored
+                    )
+                    current = (
+                        self._controller.loading._workspace_tool_reference_source_data(
+                            source_uid,
+                            data_role=source.data_role,
+                            reference_datasets=reference_datasets,
+                        )
+                    )
+                    if not self._workspace_figure_arrays_identical(stored, current):
+                        continue
+                except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug(
+                        "Could not compare saved figure input %s/%s",
+                        node.uid,
+                        source.name,
+                        exc_info=True,
+                    )
+                    continue
+                finally:
+                    # Release this decoded blob before decoding the next input.
+                    stored = None
+                references[variable_name] = {
+                    "kind": "manager_node",
+                    "source": source.name,
+                    "node_uid": source.node_uid,
+                    "node_snapshot_token": source_node.snapshot_token_for_role(
+                        source.data_role
+                    ),
+                    "data_role": source.data_role,
+                }
+                repaired_names.add(variable_name)
+        finally:
+            self._controller.loading._close_workspace_reference_datasets(
+                reference_datasets
+            )
+        if not repaired_names:
+            return None
+        variables: dict[Hashable, xr.DataArray] = {}
+        for name, data in ds.data_vars.items():
+            if name in repaired_names:
+                variables[name] = erlab.interactive.utils._tool_data_placeholder()
+            elif name in references or (
+                _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR in data.attrs
+            ):
+                variables[name] = data.reset_coords(drop=True)
+            else:
+                variables[name] = data
+        repaired = xr.Dataset(variables, attrs=ds.attrs)
+        repaired.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
+            references
+        )
+        repaired.set_close(ds.close)
+        return repaired
+
+    def _repair_saved_workspace_figure_dataset(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        payload: tuple[str | os.PathLike[str], str],
+        attrs: Mapping[str, typing.Any],
+    ) -> xr.Dataset | None:
+        """Inspect saved inputs without restoring a hidden figure window."""
+        opened: xr.Dataset | None = None
+        try:
+            # Do not retain encoded blobs after each comparison releases its input.
+            opened = workspace_arrays.open_workspace_dataset(
+                payload[0], payload[1], chunks=None, cache=False
+            )
+            captured = workspace_arrays._read_workspace_dataset_group_h5py(
+                payload[0],
+                payload[1],
+                preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+                data_variables=opened.variables,
+            )
+            if captured is None:
+                captured = workspace_format._restore_workspace_dataset_attrs(opened)
+            captured.attrs = dict(attrs)
+            repaired = self._repair_workspace_figure_dataset(node, captured)
+            if repaired is None:
+                return None
+            repaired.set_close(opened.close)
+            opened = None
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            logger.debug(
+                "Could not inspect saved figure inputs for %s", node.uid, exc_info=True
+            )
+            return None
+        else:
+            return repaired
+        finally:
+            if opened is not None:
+                opened.close()
+
     def _save_workspace_document(
         self,
         fname: str | os.PathLike[str],
@@ -908,6 +1073,9 @@ class _WorkspaceSaver:
                 snapshot.generation_plan,
                 compression_mode=snapshot.compression_mode,
             )
+            if snapshot.repair_embedded_figure_data:
+                snapshot.close_data()
+                workspace_storage._compact_workspace_store(target_store)
             self._controller._adopt_committed_workspace_generation(
                 fname,
                 snapshot,
@@ -1277,8 +1445,10 @@ class _WorkspaceSaver:
         extension_object_ids = set(
             workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
         )
+        repair_embedded_figure_data = False
 
         def _serialize(uid: str) -> xr.Dataset | None:
+            nonlocal repair_embedded_figure_data
             node = self._manager._tool_graph.nodes.get(uid)
             if node is None:
                 return None
@@ -1289,7 +1459,13 @@ class _WorkspaceSaver:
                 self._workspace_node_path(uid),
                 include_children=False,
             )
-            return constructor.get(self._workspace_payload_path(uid))
+            dataset = constructor.get(self._workspace_payload_path(uid))
+            if dataset is not None and not node.is_imagetool:
+                repaired = self._repair_workspace_figure_dataset(node, dataset)
+                if repaired is not None:
+                    repair_embedded_figure_data = True
+                    dataset = repaired
+            return dataset
 
         for entry in base_entries:
             uid = str(entry["uid"])
@@ -1318,13 +1494,57 @@ class _WorkspaceSaver:
             attrs_payload = (
                 previous.get("payload_attrs") if previous is not None else None
             )
+            if (
+                kind == "tool"
+                and uid not in dirty_data
+                and (
+                    node.pending_workspace_tool_payload is not None
+                    or uid not in dirty_state
+                )
+                and not has_saved_input_provenance
+            ):
+                saved_attrs = node.pending_workspace_payload_attrs
+                if saved_attrs is not None and uid in dirty_state:
+                    saved_attrs = self._pending_workspace_tool_attrs(node)
+                if saved_attrs is None and attrs_payload is not None:
+                    saved_attrs = workspace_format._restore_workspace_manifest_attrs(
+                        attrs_payload
+                    )
+                pending = node.pending_workspace_tool_payload
+                if (
+                    pending is None
+                    and previous is not None
+                    and source_workspace_path is not None
+                ):
+                    pending = (source_workspace_path, str(previous["payload_path"]))
+                if (
+                    pending is not None
+                    and saved_attrs is not None
+                    and figure_source_storage.embedded_workspace_sources(
+                        typing.cast("Mapping[str, typing.Any]", saved_attrs)
+                    )
+                ):
+                    dataset = self._repair_saved_workspace_figure_dataset(
+                        node,
+                        pending,
+                        typing.cast("Mapping[str, typing.Any]", saved_attrs),
+                    )
+                    if dataset is not None:
+                        repair_embedded_figure_data = True
+                        dirty_data.add(uid)
+                        can_reuse_object = False
+                        serialized_datasets.append(dataset)
+                        serialized_dataset_ids.add(id(dataset))
+                        attrs_payload = workspace_format._workspace_manifest_attrs(
+                            dataset.attrs
+                        )
             needs_current_attrs = (
                 attrs_payload is None
                 or uid in dirty_state
                 or uid in dirty_data
                 or has_saved_input_provenance
             )
-            if needs_current_attrs:
+            if needs_current_attrs and dataset is None:
                 pending_attrs = (
                     self._pending_workspace_payload_attrs_for_save(node)
                     if uid not in self._manager._workspace_state.dirty_data
@@ -1611,6 +1831,7 @@ class _WorkspaceSaver:
                 legacy_reader_rebindings=legacy_reader_rebindings,
             ),
             compression_mode=self._workspace_compression_mode(),
+            repair_embedded_figure_data=repair_embedded_figure_data,
             trusted_lineage=(
                 document_trust_has_trusted_lineage(
                     self._manager._workspace_state.code_trust

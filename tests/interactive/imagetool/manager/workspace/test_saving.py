@@ -2289,6 +2289,260 @@ def test_workspace_save_worker_closes_readers_only_after_contention(
     assert waiting == ([None] if contended else [])
 
 
+@pytest.mark.parametrize("background_worker", [False, True])
+@pytest.mark.parametrize(
+    ("repair", "fail_compact", "pin_old_payload"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (True, True, False),
+        (True, False, True),
+    ],
+)
+def test_workspace_save_reclaims_repaired_payloads(
+    monkeypatch,
+    tmp_path,
+    background_worker: bool,
+    repair: bool,
+    fail_compact: bool,
+    pin_old_payload: bool,
+) -> None:
+    path = tmp_path / "repaired.itws"
+
+    def manifest(object_id: str) -> dict:
+        return {
+            "schema_version": 7,
+            "nodes": [
+                {
+                    "uid": "figure",
+                    "kind": "tool",
+                    "path": "figures/figure",
+                    "payload_object_id": object_id,
+                    "payload_path": workspace_store.WorkspaceStore.object_path(
+                        object_id
+                    ),
+                }
+            ],
+        }
+
+    source_closed: list[bool] = []
+    repaired = xr.Dataset({"values": xr.DataArray([1.0, 2.0], dims="x")})
+    repaired.set_close(lambda: source_closed.append(True))
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        generation_plan=workspace_storage._WorkspaceGenerationPlan(
+            manifest=manifest("repaired"),
+            objects=(
+                workspace_storage._WorkspaceObjectWrite("repaired", dataset=repaired),
+            ),
+        ),
+        compression_mode="none",
+        trusted_lineage=True,
+        repair_embedded_figure_data=repair,
+    )
+    compact_calls: list[bool] = []
+    compact = workspace_storage._compact_workspace_store
+
+    def compact_repaired(store) -> None:
+        assert source_closed == [True]
+        compact_calls.append(True)
+        if fail_compact:
+            raise OSError("Test repair compaction failure")
+        compact(store)
+
+    monkeypatch.setattr(workspace_storage, "_compact_workspace_store", compact_repaired)
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest("old"),
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        "old",
+                        dataset=xr.Dataset(
+                            {"values": xr.DataArray(np.zeros(256_000, dtype=np.uint8))}
+                        ),
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+        original_size = path.stat().st_size
+        if pin_old_payload:
+            store.pin_serialized_reader(
+                workspace_id=store.workspace_id,
+                path=path,
+                object_id="old",
+                legacy_group_path=None,
+            )
+
+        if background_worker:
+            worker = workspace_saving._WorkspaceSaveWorker(path, snapshot, store=store)
+            results: list[workspace_saving._WorkspaceSaveError | None] = []
+            receiver = workspace_saving._WorkspaceSaveResultReceiver(
+                callback=lambda _elapsed, error: results.append(error),
+                parent=worker.signals,
+            )
+            worker.signals.finished.connect(receiver.finish)
+            worker.run()
+            assert len(results) == 1
+            if fail_compact:
+                assert results[0] is not None
+                assert "Test repair compaction failure" in results[0].traceback_text
+            else:
+                assert results == [None]
+        else:
+            state = types.SimpleNamespace(saving_depth=0, dirty_generation=0)
+            controller = types.SimpleNamespace(
+                _prepare_workspace_provenance=lambda: None,
+                _adopt_committed_workspace_generation=lambda *_args, **_kwargs: None,
+                _record_saved_workspace_code_trust=lambda *_args, **_kwargs: None,
+                _mark_workspace_clean=lambda: None,
+            )
+            saver = workspace_saving._WorkspaceSaver(
+                typing.cast(
+                    "ImageToolManager", types.SimpleNamespace(_workspace_state=state)
+                ),
+                typing.cast("workspace_controller._WorkspaceController", controller),
+            )
+            monkeypatch.setattr(
+                saver,
+                "_workspace_generation_save_snapshot",
+                lambda *_a, **_kw: snapshot,
+            )
+            monkeypatch.setattr(
+                saver, "_close_workspace_idle_readers", lambda *_a: None
+            )
+            context = (
+                pytest.raises(OSError, match="Test repair compaction failure")
+                if fail_compact
+                else contextlib.nullcontext()
+            )
+            with context:
+                saver._save_workspace_document(
+                    path,
+                    document_access=typing.cast(
+                        "manager_widgets._WorkspaceDocumentAccess",
+                        types.SimpleNamespace(path=path),
+                    ),
+                )
+            assert state.saving_depth == 0
+
+        assert compact_calls == ([True] if repair else [])
+        assert (
+            store.current_generation().manifest["nodes"][0]["payload_object_id"]
+            == "repaired"
+        )
+        with store.read_session() as h5_file:
+            np.testing.assert_array_equal(
+                h5_file[f"{store.object_path('repaired')}/values"][()], [1.0, 2.0]
+            )
+            assert (store.object_path("old") in h5_file) == (
+                not repair or fail_compact or pin_old_payload
+            )
+        if repair and not fail_compact and not pin_old_payload:
+            assert path.stat().st_size < original_size // 2
+            generations = store.generations()
+            assert len(generations) == 2
+            assert generations[0].manifest == generations[1].manifest
+        store.clear_serialized_reader_pins()
+    snapshot.close()
+
+
+@pytest.mark.parametrize("external_reader", [False, True])
+def test_workspace_repair_releases_only_snapshot_owned_readers(
+    monkeypatch, tmp_path, external_reader: bool
+) -> None:
+    path = tmp_path / "snapshot-readers.itws"
+
+    def manifest(object_id: str) -> dict:
+        return {
+            "schema_version": 7,
+            "nodes": [
+                {
+                    "uid": "figure",
+                    "kind": "tool",
+                    "path": "figures/figure",
+                    "payload_object_id": object_id,
+                    "payload_path": workspace_store.WorkspaceStore.object_path(
+                        object_id
+                    ),
+                }
+            ],
+        }
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest("old"),
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        "old", dataset=xr.Dataset({"values": ("x", np.arange(32.0))})
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+        old_path = store.object_path("old")
+        opened = workspace_arrays.open_workspace_dataset(path, old_path, chunks=None)
+        captured = opened.isel(x=slice(0, 2))
+        captured.set_close(opened.close)
+        snapshot = workspace_saving._WorkspaceSaveSnapshot(
+            generation=0,
+            generation_plan=workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest("repaired"),
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        "repaired", dataset=captured
+                    ),
+                ),
+            ),
+            compression_mode="none",
+            trusted_lineage=True,
+            repair_embedded_figure_data=True,
+        )
+        del captured, opened
+        held = (
+            workspace_arrays.open_workspace_dataset(path, old_path, chunks=None)
+            if external_reader
+            else None
+        )
+        assert "old" in store.leased_object_ids
+        compact = workspace_storage._compact_workspace_store
+
+        def compact_after_release(current_store) -> None:
+            assert all(
+                item.dataset is None for item in snapshot.generation_plan.objects
+            )
+            assert ("old" in current_store.leased_object_ids) == external_reader
+            compact(current_store)
+
+        monkeypatch.setattr(
+            workspace_storage, "_compact_workspace_store", compact_after_release
+        )
+        worker = workspace_saving._WorkspaceSaveWorker(path, snapshot, store=store)
+        results: list[workspace_saving._WorkspaceSaveError | None] = []
+        receiver = workspace_saving._WorkspaceSaveResultReceiver(
+            callback=lambda _elapsed, error: results.append(error),
+            parent=worker.signals,
+        )
+        worker.signals.finished.connect(receiver.finish)
+
+        worker.run()
+
+        assert results == [None]
+        with store.read_session() as h5_file:
+            assert (old_path in h5_file) == external_reader
+            np.testing.assert_array_equal(
+                h5_file[f"{store.object_path('repaired')}/values"][()], [0.0, 1.0]
+            )
+        if held is not None:
+            np.testing.assert_array_equal(held["values"].values, np.arange(32.0))
+            held.close()
+        snapshot.close()
+
+
 def test_workspace_gc_worker_reports_contention_and_errors() -> None:
     closed: list[None] = []
 

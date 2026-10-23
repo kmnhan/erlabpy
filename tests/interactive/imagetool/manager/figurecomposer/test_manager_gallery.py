@@ -1681,6 +1681,272 @@ def test_manager_workspace_figure_sources_save_as_references(
         xr.testing.assert_identical(source_data["second"], second)
 
 
+@pytest.mark.parametrize("mode", ["live", "pending", "pending_state"])
+def test_manager_workspace_save_repairs_embedded_figure_sources(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    mode: str,
+) -> None:
+    pending = mode != "live"
+    data = xr.DataArray(
+        np.random.default_rng(0).random((128, 128)),
+        dims=("x", "y"),
+        coords={"x": np.arange(128.0), "y": np.arange(128.0)},
+        attrs={"units": "counts"},
+        name="cut",
+    )
+    data.values[0, 0] = np.nan
+    data.coords["x"].attrs["units"] = "degrees"
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        second = itool(data.copy(deep=True), manager=False, execute=False)
+        assert isinstance(second, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(second, show=False)
+        source_nodes = tuple(manager._node_for_target(index) for index in (0, 1))
+        figure_uids = tuple(
+            manager.create_figure_from_targets((0, 1), show=False) for _ in range(2)
+        )
+        assert all(uid is not None for uid in figure_uids)
+        captured_tokens = {node.uid: node.snapshot_token for node in source_nodes}
+        for node in source_nodes:
+            node._advance_snapshot_token()
+            assert node.snapshot_token != captured_tokens[node.uid]
+
+        saver = manager._workspace_controller.saving
+        workspace_path = tmp_path / "embedded-figure-sources.itws"
+        # Reproduce an existing file written after the old storage handler advanced
+        # the source token without changing its data.
+        with monkeypatch.context() as context:
+            context.setattr(
+                saver, "_repair_workspace_figure_dataset", lambda _node, _ds: None
+            )
+            saver._save_workspace_document(workspace_path)
+        adopt_workspace_path(manager, workspace_path)
+        bloated_size = workspace_path.stat().st_size
+        saved_states = {}
+        for uid in figure_uids:
+            saved = workspace_arrays._read_workspace_dataset_group_h5py(
+                workspace_path,
+                _current_workspace_payload_path(workspace_path, f"figures/{uid}"),
+                preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+            )
+            assert saved is not None
+            assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == data.size
+            assert saved["cut_2"].size > 0
+            assert (
+                saved["cut_2"].attrs[_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR]
+                == "cut"
+            )
+            assert not FigureComposerTool._saved_tool_data_references(saved)
+            saved_states[uid] = saved.attrs["tool_state"]
+
+        if pending:
+            assert manager._workspace_controller.loading._load_workspace_file(
+                workspace_path,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+            for uid in figure_uids:
+                assert (
+                    manager._child_node(uid).pending_workspace_tool_payload is not None
+                )
+                if mode == "pending_state":
+                    manager._child_node(uid).note = "Reviewed"
+                    manager._mark_node_state_dirty(uid)
+
+        # A normal save must discover and repair duplicates even with no new edits.
+        saver._save_workspace_document(workspace_path)
+        assert workspace_path.stat().st_size < bloated_size
+        for uid in figure_uids:
+            saved = workspace_arrays._read_workspace_dataset_group_h5py(
+                workspace_path,
+                _current_workspace_payload_path(workspace_path, f"figures/{uid}"),
+                preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+            )
+            assert saved is not None
+            assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == 0
+            assert saved["cut_2"].size == 0
+            references = FigureComposerTool._saved_tool_data_references(saved)
+            assert len(references) == 2
+            for reference in references.values():
+                source_node = manager._tool_graph.nodes[reference["node_uid"]]
+                assert reference["node_snapshot_token"] == source_node.snapshot_token
+            assert saved.attrs["tool_state"] == saved_states[uid]
+            if mode == "pending_state":
+                assert saved.attrs["manager_node_note"] == "Reviewed"
+            state = FigureRecipeState.model_validate_json(saved.attrs["tool_state"])
+            for source in state.sources:
+                assert source.node_snapshot_token == captured_tokens[source.node_uid]
+            if pending:
+                assert (
+                    manager._child_node(uid).pending_workspace_tool_payload is not None
+                )
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        for uid in figure_uids:
+            restored = _materialized_figure_tool(manager, uid)
+            for source in restored.source_states():
+                xr.testing.assert_identical(restored.source_data()[source.name], data)
+                assert source.node_snapshot_token == captured_tokens[source.node_uid]
+
+
+@pytest.mark.parametrize(
+    "difference", ["values", "dtype", "dims", "coords", "attrs", "name"]
+)
+def test_manager_workspace_save_keeps_distinct_embedded_figure_sources(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    difference: str,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+        attrs={"units": "counts"},
+        name="cut",
+    )
+    captured = data.copy(deep=True)
+    match difference:
+        case "values":
+            captured.values[0, 0] = -1.0
+        case "dtype":
+            captured = captured.astype(np.float32)
+        case "dims":
+            captured = captured.transpose("y", "x")
+        case "coords":
+            captured = captured.assign_coords(x=[0.0, 1.0, 3.0])
+        case "attrs":
+            captured.attrs["units"] = "normalized"
+        case "name":
+            captured = captured.rename("historical_cut")
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure = _materialized_figure_tool(manager, figure_uid)
+        source_name = figure.tool_status.primary_source
+        figure.set_source_data({source_name: captured})
+        source_node = manager._node_for_target(0)
+        source_node._advance_snapshot_token()
+
+        saver = manager._workspace_controller.saving
+        workspace_path = tmp_path / "distinct-figure-source.itws"
+        with monkeypatch.context() as context:
+            context.setattr(
+                saver, "_repair_workspace_figure_dataset", lambda _node, _ds: None
+            )
+            saver._save_workspace_document(workspace_path)
+        adopt_workspace_path(manager, workspace_path)
+        saver._save_workspace_document(workspace_path)
+        saved = workspace_arrays._read_workspace_dataset_group_h5py(
+            workspace_path,
+            _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+        )
+        assert saved is not None
+        assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == captured.size
+        assert not FigureComposerTool._saved_tool_data_references(saved)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        restored = _materialized_figure_tool(manager, figure_uid)
+        xr.testing.assert_identical(restored.source_data()[source_name], captured)
+
+
+@pytest.mark.parametrize("read_error", [OSError, ValueError])
+def test_manager_workspace_save_keeps_figure_data_when_repair_probe_fails(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    read_error: type[Exception],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0, 3.0]},
+        name="cut",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        manager._node_for_target(0)._advance_snapshot_token()
+        saver = manager._workspace_controller.saving
+        workspace_path = tmp_path / "unreadable-figure-repair.itws"
+        with monkeypatch.context() as context:
+            context.setattr(
+                saver, "_repair_workspace_figure_dataset", lambda _node, _ds: None
+            )
+            saver._save_workspace_document(workspace_path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        figure_node = manager._child_node(figure_uid)
+        assert figure_node.pending_workspace_tool_payload is not None
+        read_attempted = False
+
+        def fail_read(*_args, **_kwargs):
+            nonlocal read_attempted
+            read_attempted = True
+            raise read_error("Could not read saved figure metadata")
+
+        with monkeypatch.context() as context:
+            context.setattr(
+                workspace_arrays, "_read_workspace_dataset_group_h5py", fail_read
+            )
+            saver._save_workspace_document(workspace_path)
+        assert read_attempted
+        assert figure_node.pending_workspace_tool_payload is not None
+        saved = workspace_arrays._read_workspace_dataset_group_h5py(
+            workspace_path,
+            _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+        )
+        assert saved is not None
+        assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == data.size
+        assert not FigureComposerTool._saved_tool_data_references(saved)
+        restored = _materialized_figure_tool(manager, figure_uid)
+        xr.testing.assert_identical(
+            restored.source_data()[restored.tool_status.primary_source], data
+        )
+
+
 def test_manager_figure_workspace_reference_helper_edges(
     qtbot,
     monkeypatch,

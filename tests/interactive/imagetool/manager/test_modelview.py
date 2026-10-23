@@ -2547,6 +2547,60 @@ def test_manager_signals_do_not_restart_interaction_delay(
         assert activity_calls == []
 
 
+@pytest.mark.parametrize("operation", ["auto_chunk", "set_chunks", "load_memory"])
+def test_imagetool_backing_changes_preserve_snapshot_references(
+    qtbot,
+    test_data,
+    operation: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(test_data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False)
+        wrapper = manager._tool_graph.root_wrappers[0]
+        area = tool.slicer_area
+        if operation != "auto_chunk":
+            area._auto_chunk()
+        area.swap_axes(0, 1)
+        assert wrapper.snapshot_token != wrapper.source_snapshot_token
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_node = manager._child_node(figure_uid)
+        figure = figure_node.tool_window
+        assert figure is not None
+        script_inputs = figure.script_inputs
+        snapshot_token = wrapper.snapshot_token
+        source_snapshot_token = wrapper.source_snapshot_token
+        revision_id = wrapper.revision_id_for_role("source")
+        original_data = wrapper.current_public_data().copy(deep=True)
+        manager._flush_idle_work(force=True)
+        manager._workspace_controller._mark_workspace_clean()
+
+        if operation == "auto_chunk":
+            area._auto_chunk()
+        elif operation == "set_chunks":
+            area._set_chunks({"alpha": 2, "eV": 3})
+        else:
+            area._compute_chunked()
+        manager._flush_idle_work(force=True)
+
+        assert wrapper.snapshot_token == snapshot_token
+        assert wrapper.source_snapshot_token == source_snapshot_token
+        assert wrapper.current_revision_id == revision_id
+        assert wrapper.revision_id_for_role("source") == revision_id
+        assert manager._workspace_state.dirty_data == {wrapper.uid}
+        assert figure.script_inputs == script_inputs
+        assert figure_node.source_state == "fresh"
+        assert manager.dependency_status_for_uid(figure_uid) == "current"
+        xr.testing.assert_identical(wrapper.current_public_data(), original_data)
+        assert area.data_chunked == (operation != "load_memory")
+
+
 def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
     qtbot,
     test_data,
