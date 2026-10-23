@@ -233,7 +233,8 @@ def _find_falling_edge_candidates(
         )
         peak_indices = np.flatnonzero(is_local_maximum) + 3
 
-        for candidate_index in peak_indices:
+        for peak_index in peak_indices:
+            candidate_index = int(peak_index)
             side_points = min(
                 max(round(2 * filter_sigma), 3),
                 candidate_index,
