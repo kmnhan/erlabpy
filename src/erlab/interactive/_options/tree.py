@@ -137,9 +137,8 @@ def make_parameter(
 
 def parameter_to_options(param: pyqtgraph.parametertree.Parameter) -> AppOptions:
     """Rebuild an `AppOptions` instance from a Parameter tree."""
-    T = typing.TypeVar("T", bound=BaseModel)
 
-    def _extract(model_cls: type[T], group_param) -> T:
+    def _extract[T: BaseModel](model_cls: type[T], group_param) -> T:
         data: dict[str, typing.Any] = {}
         default_instance = model_cls()
         for fname in model_cls.model_fields:

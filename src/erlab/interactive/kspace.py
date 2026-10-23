@@ -1049,7 +1049,7 @@ class KspaceTool(KspaceToolGUI):
             self._ensure_energy_control_connections()
         else:
             if "eV" in self.data.coords and self.data["eV"].size == 1:
-                fixed_energy = float(self.data.eV)
+                fixed_energy = float(self.data.eV.item())
                 # Although spinbox will be disabled, setting range and value for
                 # displaying the fixed energy value.
                 self.center_spin.setRange(fixed_energy - 0.1, fixed_energy + 0.1)
@@ -1434,7 +1434,7 @@ class KspaceTool(KspaceToolGUI):
             self._ensure_energy_control_connections()
         else:
             if "eV" in self.data.coords and self.data["eV"].size == 1:
-                fixed_energy = float(self.data.eV)
+                fixed_energy = float(self.data.eV.item())
                 self.center_spin.setRange(fixed_energy - 0.1, fixed_energy + 0.1)
                 self.center_spin.setValue(fixed_energy)
             self.energy_group.setDisabled(True)

@@ -140,8 +140,8 @@ The repository has two CI workflows:
 
 - The fast pull-request workflow runs the full suite once with coverage on locked
   dependencies. It uses Python 3.13 and PyQt6. It runs in multiple shards.
-- The weekly compatibility workflow tests upgraded dependencies with Python 3.11 to
-  3.14, PyQt6, and PySide6.
+- The weekly compatibility workflow tests upgraded dependencies with Python 3.12 to
+  3.15, PyQt6, and PySide6.
 
 For local development, run:
 

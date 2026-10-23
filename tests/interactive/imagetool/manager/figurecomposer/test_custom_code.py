@@ -1,5 +1,4 @@
 import ast
-import sys
 import textwrap
 import typing
 
@@ -391,13 +390,12 @@ def test_figure_composer_custom_code_names_cover_structured_python() -> None:
     } <= names
     assert "local_import" not in names
 
-    if sys.version_info >= (3, 12):
-        assert "source" in figurecomposer_custom_code._custom_code_names(
-            "def generic[T](value: T) -> T:\n    return source"
-        )
-        assert "source" in figurecomposer_custom_code._custom_code_names(
-            "class Generic[T]:\n    value: T = source"
-        )
+    assert "source" in figurecomposer_custom_code._custom_code_names(
+        "def generic[T](value: T) -> T:\n    return source"
+    )
+    assert "source" in figurecomposer_custom_code._custom_code_names(
+        "class Generic[T]:\n    value: T = source"
+    )
 
 
 def test_figure_composer_custom_code_analyzer_handles_async_blocks() -> None:

@@ -57,9 +57,6 @@ if typing.TYPE_CHECKING:
     )
 
 
-_PayloadT = typing.TypeVar("_PayloadT")
-
-
 class FigureSourceAddResult(typing.NamedTuple):
     """Outcome of adding or refreshing a batch of figure sources."""
 
@@ -104,9 +101,9 @@ class FigureRecipeContext(typing.Protocol):
 
     def source_kind_names(self, kind: str) -> tuple[str, ...]: ...
 
-    def source_payload(
-        self, name: str, payload_type: type[_PayloadT]
-    ) -> _PayloadT | None: ...
+    def source_payload[PayloadT](
+        self, name: str, payload_type: type[PayloadT]
+    ) -> PayloadT | None: ...
 
     @property
     def source_data(self) -> Mapping[str, xr.DataArray]: ...
@@ -185,9 +182,9 @@ class FigureDocument:
         """Captured sources indexed by their recipe aliases."""
         return types.MappingProxyType(self._source_payloads)
 
-    def source_payload(
-        self, name: str, payload_type: type[_PayloadT]
-    ) -> _PayloadT | None:
+    def source_payload[PayloadT](
+        self, name: str, payload_type: type[PayloadT]
+    ) -> PayloadT | None:
         """Return a payload only when it has the requested runtime type."""
         payload = self._source_payloads.get(name)
         return payload if isinstance(payload, payload_type) else None

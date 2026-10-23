@@ -529,11 +529,11 @@ def _restore_nonuniform_dims(
     return darr.swap_dims(mapping).drop_vars(tuple(mapping), errors="ignore")
 
 
-def check_arg_2d_darr(func: Callable) -> Callable:
+def check_arg_2d_darr[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """Decorate a function to check if the first argument is a 2D DataArray."""
 
     @functools.wraps(func)
-    def _wrapper(*args, **kwargs):
+    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         if not isinstance(args[0], xr.DataArray) or args[0].ndim != 2:
             raise ValueError("Input must be a 2-dimensional xarray.DataArray")
         return func(*args, **kwargs)
@@ -541,11 +541,11 @@ def check_arg_2d_darr(func: Callable) -> Callable:
     return _wrapper
 
 
-def check_arg_uniform_dims(func: Callable) -> Callable:
+def check_arg_uniform_dims[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """Decorate a function to check if all dims in the first argument are uniform."""
 
     @functools.wraps(func)
-    def _wrapper(*args, **kwargs):
+    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         if not isinstance(args[0], xr.DataArray) or not is_dims_uniform(args[0]):
             raise ValueError("Coordinates for all dimensions must be uniformly spaced")
         return func(*args, **kwargs)
@@ -553,21 +553,21 @@ def check_arg_uniform_dims(func: Callable) -> Callable:
     return _wrapper
 
 
-def check_arg_has_no_nans(func: Callable) -> Callable:
+def check_arg_has_no_nans[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """Decorate a function to check if the first argument has no NaNs."""
 
     @functools.wraps(func)
-    def _wrapper(*args, **kwargs):
-        if np.isnan(args[0]).any():
+    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        if np.isnan(typing.cast("npt.ArrayLike", args[0])).any():
             raise ValueError("Input must not contain any NaN values")
         return func(*args, **kwargs)
 
     return _wrapper
 
 
-def check_arg_has(
+def check_arg_has[**P, R](
     dims: Collection[Hashable] | None = None, coords: Collection[Hashable] | None = None
-) -> Callable:
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorate a function to check its first argument.
 
     The first argument must be a DataArray that contains the given dimensions or
@@ -578,9 +578,9 @@ def check_arg_has(
     if coords is None:
         coords = set()
 
-    def _decorator(func: Callable) -> Callable:
+    def _decorator(func: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(func)
-        def _wrapper(*args, **kwargs) -> typing.Any:
+        def _wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             if not isinstance(args[0], xr.DataArray):
                 raise TypeError("Input must be a xarray.DataArray")
 

@@ -5,7 +5,7 @@ __all__ = ["AngleScaleView", "IncompleteDataError", "MomentumAccessor", "OffsetV
 import functools
 import time
 import typing
-from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
+from collections.abc import Callable, Hashable, ItemsView, Iterable, Iterator, Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -16,7 +16,6 @@ from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.constants import AxesConfiguration
 
 _ANGLE_SCALE_KEYS = ("alpha", "beta")
-_Coordinate = typing.TypeVar("_Coordinate", xr.DataArray, np.ndarray)
 
 
 class IncompleteDataError(ValueError):
@@ -169,7 +168,9 @@ def _solve_hv_to_kz_roots_2d(
     return roots
 
 
-def _only_angles(method):
+def _only_angles[**P, R](
+    method: Callable[typing.Concatenate["MomentumAccessor", P], R],
+) -> Callable[typing.Concatenate["MomentumAccessor", P], R]:
     """Decorate methods that require data to be in angle space.
 
     Ensures the data is in angle space before executing the decorated method.
@@ -178,21 +179,20 @@ def _only_angles(method):
     `ValueError` is raised.
     """
 
-    def wrapper(method):
-        @functools.wraps(method)
-        def _impl(self, *args, **kwargs):
-            if "kx" in self._obj.dims or "ky" in self._obj.dims:
-                raise ValueError(
-                    f"`{method.__name__}` cannot be called for data in momentum space."
-                )
-            return method(self, *args, **kwargs)
+    @functools.wraps(method)
+    def _impl(self: "MomentumAccessor", *args: P.args, **kwargs: P.kwargs) -> R:
+        if "kx" in self._obj.dims or "ky" in self._obj.dims:
+            raise ValueError(
+                f"`{method.__name__}` cannot be called for data in momentum space."
+            )
+        return method(self, *args, **kwargs)
 
-        return _impl
-
-    return wrapper(method)
+    return _impl
 
 
-def _only_momentum(method):
+def _only_momentum[**P, R](
+    method: Callable[typing.Concatenate["MomentumAccessor", P], R],
+) -> Callable[typing.Concatenate["MomentumAccessor", P], R]:
     """Decorate methods that require data to be in momentum space.
 
     Ensure the data is in momentum space before executing the decorated method.
@@ -201,18 +201,15 @@ def _only_momentum(method):
     present), a `ValueError` is raised.
     """
 
-    def wrapper(method):
-        @functools.wraps(method)
-        def _impl(self, *args, **kwargs):
-            if not ("kx" in self._obj.dims or "ky" in self._obj.dims):
-                raise ValueError(
-                    f"`{method.__name__}` cannot be called for data in angle space."
-                )
-            return method(self, *args, **kwargs)
+    @functools.wraps(method)
+    def _impl(self: "MomentumAccessor", *args: P.args, **kwargs: P.kwargs) -> R:
+        if not ("kx" in self._obj.dims or "ky" in self._obj.dims):
+            raise ValueError(
+                f"`{method.__name__}` cannot be called for data in angle space."
+            )
+        return method(self, *args, **kwargs)
 
-        return _impl
-
-    return wrapper(method)
+    return _impl
 
 
 class OffsetView:
@@ -717,11 +714,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise IncompleteDataError("coord", "beta")
         return self._obj.beta
 
-    def _scaled_angle_coord(
+    def _scaled_angle_coord[Coordinate: (xr.DataArray, np.ndarray)](
         self,
         axis: typing.Literal["alpha", "beta"],
-        coord: _Coordinate,
-    ) -> _Coordinate:
+        coord: Coordinate,
+    ) -> Coordinate:
         scale = self.angle_scales[axis]
         if np.isclose(scale, 1.0):
             return coord
@@ -1165,13 +1162,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         return False
 
-    def _forward_coords(
+    def _forward_coords[Coordinate: (xr.DataArray, np.ndarray)](
         self,
-        alpha: _Coordinate,
-        beta: _Coordinate,
-        hv: _Coordinate,
-        binding_energy: _Coordinate,
-    ) -> dict[typing.Literal["kx", "ky", "kz"], _Coordinate]:
+        alpha: Coordinate,
+        beta: Coordinate,
+        hv: Coordinate,
+        binding_energy: Coordinate,
+    ) -> dict[typing.Literal["kx", "ky", "kz"], Coordinate]:
         """Evaluate the complete forward map from original measured coordinates."""
         kinetic_energy = hv - self.analyzer_work_function + binding_energy
         kx, ky = erlab.analysis.kspace.get_kconv_forward(self.configuration)(

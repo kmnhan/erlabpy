@@ -718,8 +718,7 @@ _LINE_KWARG_ALIASES = {
 
 def _hashable_plot_slices_value(value: typing.Any) -> Hashable:
     if isinstance(value, slice):
-        return (
-            "slice",
+        return slice(
             _hashable_plot_slices_value(value.start),
             _hashable_plot_slices_value(value.stop),
             _hashable_plot_slices_value(value.step),

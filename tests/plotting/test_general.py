@@ -65,6 +65,41 @@ def test_validate_image_norm_allows_unresolved_limits(monkeypatch) -> None:
     assert norm.vmax is None
 
 
+def test_plot_slices_reuses_cache_for_equal_slices(monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(10.0).reshape(2, 5),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": np.arange(5)},
+    )
+    original_qsel = accessor_general.SelectionAccessor.__call__
+    calls = []
+
+    def counted_qsel(self, *args, **kwargs):
+        calls.append(dict(kwargs))
+        return original_qsel(self, *args, **kwargs)
+
+    monkeypatch.setattr(accessor_general.SelectionAccessor, "__call__", counted_qsel)
+    cache = {}
+    figures = []
+    try:
+        for start, stop in ((1, 3), (1, 3), (2, 4)):
+            figure, axes = plot_slices(
+                data,
+                x=slice(start, stop),
+                _selection_cache=cache,
+                _selection_cache_key="source",
+            )
+            figures.append(figure)
+            np.testing.assert_array_equal(
+                axes[0, 0].images[0].get_array(),
+                data.sel(x=slice(start, stop)).values,
+            )
+        assert len(calls) == 2
+    finally:
+        for figure in figures:
+            plt.close(figure)
+
+
 def test_plot_slices_selects_slice_stack_once_per_map(monkeypatch) -> None:
     eV = np.array([0.0, 1.0, 2.0])
     y = np.array([0.0, 1.0, 2.0, 3.0])

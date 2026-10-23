@@ -3,7 +3,6 @@ import hashlib
 import pathlib
 import re
 import symtable
-import sys
 import textwrap
 import typing
 from collections.abc import Collection, Mapping
@@ -3631,6 +3630,39 @@ def test_replace_ast_names_preserves_definition_whitespace(
     assert async_namespace["result"].__name__ == "script_result"
 
 
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "type Pair[T: Scalar] = tuple[T, T]",
+        "type Pair[*T] = tuple[Scalar, *T]",
+        "from collections.abc import Callable\ntype Pair[**T] = Callable[T, Scalar]",
+    ],
+    ids=["type-var", "type-var-tuple", "param-spec"],
+)
+def test_replace_code_identifiers_preserves_generic_type_alias_parameters(
+    definition: str,
+) -> None:
+    renamed = _replace_code_identifiers(
+        f"{definition}\nresult = Pair, T",
+        {"Pair": "CoordinatePair", "Scalar": "coordinate_type", "T": "temperature"},
+    )
+    namespace = _exec_generated_code(
+        renamed, {"coordinate_type": float, "temperature": 7}
+    )
+    alias, outer_value = namespace["result"]
+    parameter = alias.__type_params__[0]
+
+    assert alias is namespace["CoordinatePair"]
+    assert alias.__name__ == "CoordinatePair"
+    assert parameter.__name__ == "T"
+    assert alias.__value__.__parameters__ == (parameter,)
+    if isinstance(parameter, typing.TypeVar):
+        assert parameter.__bound__ is float
+    else:
+        assert float in alias.__value__.__args__
+    assert outer_value == 7
+
+
 def test_replace_code_identifiers_keeps_required_dotted_import_relay() -> None:
     code = (
         "import numpy.random\n\n"
@@ -6873,7 +6905,6 @@ def test_selected_notebook_scopes_keep_lexical_closures_out_of_caller_inputs(
     assert "_itool_replay_" not in code
 
 
-@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
 @pytest.mark.parametrize(
     "definition",
     [
@@ -6946,7 +6977,6 @@ def test_symbol_table_dependencies_keep_free_names_of_the_requested_scope() -> N
     assert _symbol_table_dependencies(inner) == {"edge"}
 
 
-@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
 def test_symbol_table_dependencies_keep_type_alias_parameters_in_lexical_scope() -> (
     None
 ):

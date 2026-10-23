@@ -971,8 +971,8 @@ def _snap_polyline_endpoints(
             and abs(float(np.dot(tangent_i, tangent_j))) > 0.95
         ):
             continue
-        neighbors[i].add(int(j))
-        neighbors[j].add(int(i))
+        neighbors[int(i)].add(int(j))
+        neighbors[int(j)].add(int(i))
 
     seen: set[int] = set()
     components: list[list[int]] = []

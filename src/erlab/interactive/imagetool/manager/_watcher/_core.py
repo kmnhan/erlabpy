@@ -30,10 +30,9 @@ _NAMESPACE_PARAM_DOC = """namespace
     kernel globals are used when running in marimo; otherwise the caller module globals
     are used if no IPython shell is detected.
 """
-_F = typing.TypeVar("_F", bound=Callable[..., typing.Any])
 
 
-def _inject_target_param_docs(func: _F) -> _F:
+def _inject_target_param_docs[F: Callable[..., typing.Any]](func: F) -> F:
     doc = func.__doc__
     if doc is None:
         return func

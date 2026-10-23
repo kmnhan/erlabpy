@@ -239,7 +239,6 @@ _SOURCE_FREE_DATA_DIM = "_figure_composer_source_free"
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 2
-_SourcePayloadT = typing.TypeVar("_SourcePayloadT")
 _AXES_EXPRESSION_PLACEHOLDER = "Advanced: axs[0, :] or axs[:, 0]"
 logger = logging.getLogger(__name__)
 
@@ -4344,9 +4343,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         """Return captured payloads indexed by recipe alias."""
         return dict(self._document.source_payloads)
 
-    def source_payload(
-        self, name: str, payload_type: type[_SourcePayloadT]
-    ) -> _SourcePayloadT | None:
+    def source_payload[PayloadT](
+        self, name: str, payload_type: type[PayloadT]
+    ) -> PayloadT | None:
         return self._document.source_payload(name, payload_type)
 
     def source_kind_names(self, kind: str) -> tuple[str, ...]:

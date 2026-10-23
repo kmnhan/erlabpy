@@ -42,11 +42,8 @@ class OpaqueSourcePayload:
     encoded: EncodedSourcePayload
 
 
-_PayloadT = typing.TypeVar("_PayloadT")
-
-
 @dataclasses.dataclass(frozen=True)
-class SourceSpec(typing.Generic[_PayloadT]):
+class SourceSpec[PayloadT]:
     """Storage and execution operations for one explicitly registered type.
 
     Decoding and safe value access must not execute stored Python objects.
@@ -54,19 +51,19 @@ class SourceSpec(typing.Generic[_PayloadT]):
     """
 
     kind: str
-    payload_type: type[_PayloadT]
-    duplicate: Callable[[_PayloadT], _PayloadT]
-    encode: Callable[[_PayloadT], EncodedSourcePayload]
-    decode: Callable[[EncodedSourcePayload], _PayloadT]
-    safe_value: Callable[[_PayloadT], object]
+    payload_type: type[PayloadT]
+    duplicate: Callable[[PayloadT], PayloadT]
+    encode: Callable[[PayloadT], EncodedSourcePayload]
+    decode: Callable[[EncodedSourcePayload], PayloadT]
+    safe_value: Callable[[PayloadT], object]
     label: str = ""
     supports_selection: bool = False
-    is_available: Callable[[_PayloadT], bool] = lambda payload: True
-    describe: Callable[[_PayloadT], tuple[str, ...]] = lambda payload: ()
-    materialize: Callable[[_PayloadT], object] | None = None
-    trust_entries: (
-        Callable[[_PayloadT, str, str], tuple[CodeTrustEntry, ...]] | None
-    ) = None
+    is_available: Callable[[PayloadT], bool] = lambda payload: True
+    describe: Callable[[PayloadT], tuple[str, ...]] = lambda payload: ()
+    materialize: Callable[[PayloadT], object] | None = None
+    trust_entries: Callable[[PayloadT, str, str], tuple[CodeTrustEntry, ...]] | None = (
+        None
+    )
     default_operation: Callable[[str], FigureOperationState] | None = None
 
 

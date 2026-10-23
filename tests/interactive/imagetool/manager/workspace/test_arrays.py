@@ -1092,10 +1092,33 @@ def test_workspace_h5py_create_kwargs_maps_chunksizes() -> None:
     }
 
 
-def test_workspace_root_attrs_require_valid_generation(tmp_path) -> None:
+@pytest.mark.parametrize("schema_version", [2, 3, 4])
+@pytest.mark.parametrize("active", [False, True])
+def test_workspace_root_attrs_reads_legacy_schema_array(
+    tmp_path, schema_version, active
+) -> None:
+    path = tmp_path / "legacy.itws"
+    with h5py.File(path, "w") as h5_file:
+        h5_file.attrs["imagetool_workspace_schema_version"] = np.array([schema_version])
+
+    context = (
+        workspace_store.WorkspaceStore(path) if active else contextlib.nullcontext()
+    )
+    with context:
+        attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
+    assert workspace_format._workspace_file_metadata_from_attrs(attrs) == (
+        schema_version,
+        None,
+    )
+
+
+@pytest.mark.parametrize("schema_version", [5, np.array([5])])
+def test_workspace_root_attrs_require_valid_generation(
+    tmp_path, schema_version
+) -> None:
     path = tmp_path / "workspace.itws"
     with h5py.File(path, "w") as h5_file:
-        h5_file.attrs["imagetool_workspace_schema_version"] = 5
+        h5_file.attrs["imagetool_workspace_schema_version"] = schema_version
 
     with pytest.raises(ValueError, match="no committed generation"):
         workspace_arrays._read_workspace_root_attrs_h5py(path)

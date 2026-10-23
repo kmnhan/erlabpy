@@ -14,6 +14,7 @@ import logging
 import pathlib
 import typing
 
+import numpy as np
 import pydantic
 
 from erlab.extensions._models import _script_name_key, _validate_source_hash
@@ -186,10 +187,17 @@ def _decode_workspace_attr_text(value: object) -> str | None:
     return None
 
 
+def _workspace_schema_version_from_attrs(
+    attrs: Mapping[typing.Any, typing.Any],
+) -> int:
+    """Read scalar versions, including legacy length-one HDF5 attributes."""
+    return int(np.asarray(attrs.get("imagetool_workspace_schema_version", 1)).item())
+
+
 def _workspace_file_metadata_from_attrs(
     attrs: Mapping[typing.Any, typing.Any],
 ) -> tuple[int, dict[str, typing.Any] | None]:
-    schema_version = int(attrs.get("imagetool_workspace_schema_version", 1))
+    schema_version = _workspace_schema_version_from_attrs(attrs)
     manifest = None
     # Schema 4 introduced the root manifest.
     if schema_version >= 4:

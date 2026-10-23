@@ -155,10 +155,10 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool._provenance._graph import ReplayGraph
 
-_SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
-_ReplayInputPolicy: typing.TypeAlias = typing.Literal["current", "restored"]
-ScriptInputDataRole: typing.TypeAlias = typing.Literal["source", "displayed"]
-FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
+type _SourceKind = typing.Literal["full_data", "public_data", "selection"]
+type _ReplayInputPolicy = typing.Literal["current", "restored"]
+type ScriptInputDataRole = typing.Literal["source", "displayed"]
+type FileLoadSourceStatus = typing.Literal[
     "loadable",
     "no-file-load-source",
     "missing-file",
@@ -1811,7 +1811,7 @@ def _coerce_float_sequence_mapping_field(
     )
 
 
-ProvenanceHashable: typing.TypeAlias = typing.Annotated[
+type ProvenanceHashable = typing.Annotated[
     Hashable,
     pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_field),
     pydantic.PlainSerializer(
@@ -1819,7 +1819,7 @@ ProvenanceHashable: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-NullableProvenanceHashable: typing.TypeAlias = typing.Annotated[
+type NullableProvenanceHashable = typing.Annotated[
     Hashable | None,
     pydantic.BeforeValidator(_coerce_nullable_hashable_field),
     pydantic.PlainSerializer(
@@ -1827,7 +1827,7 @@ NullableProvenanceHashable: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-NullableProvenanceHashableTuple: typing.TypeAlias = typing.Annotated[
+type NullableProvenanceHashableTuple = typing.Annotated[
     tuple[Hashable, ...] | None,
     pydantic.BeforeValidator(_coerce_nullable_hashable_tuple_field),
     pydantic.PlainSerializer(
@@ -1835,7 +1835,7 @@ NullableProvenanceHashableTuple: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceHashableTuple: typing.TypeAlias = typing.Annotated[
+type ProvenanceHashableTuple = typing.Annotated[
     tuple[Hashable, ...],
     pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_tuple_field),
     pydantic.PlainSerializer(
@@ -1843,7 +1843,7 @@ ProvenanceHashableTuple: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceHashablePair: typing.TypeAlias = typing.Annotated[
+type ProvenanceHashablePair = typing.Annotated[
     tuple[Hashable, Hashable],
     pydantic.BeforeValidator(_coerce_hashable_pair_field),
     pydantic.PlainSerializer(
@@ -1851,7 +1851,7 @@ ProvenanceHashablePair: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceMapping: typing.TypeAlias = typing.Annotated[
+type ProvenanceMapping = typing.Annotated[
     dict[Hashable, typing.Any],
     pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_mapping_field),
     pydantic.PlainSerializer(
@@ -1859,7 +1859,7 @@ ProvenanceMapping: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceIntMapping: typing.TypeAlias = typing.Annotated[
+type ProvenanceIntMapping = typing.Annotated[
     dict[Hashable, int],
     pydantic.BeforeValidator(_coerce_int_mapping_field),
     pydantic.PlainSerializer(
@@ -1867,7 +1867,7 @@ ProvenanceIntMapping: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceFloatMapping: typing.TypeAlias = typing.Annotated[
+type ProvenanceFloatMapping = typing.Annotated[
     dict[Hashable, float],
     pydantic.BeforeValidator(_coerce_float_mapping_field),
     pydantic.PlainSerializer(
@@ -1875,7 +1875,7 @@ ProvenanceFloatMapping: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceHashableMapping: typing.TypeAlias = typing.Annotated[
+type ProvenanceHashableMapping = typing.Annotated[
     dict[Hashable, Hashable],
     pydantic.BeforeValidator(_coerce_hashable_mapping_field),
     pydantic.PlainSerializer(
@@ -1883,7 +1883,7 @@ ProvenanceHashableMapping: typing.TypeAlias = typing.Annotated[
     ),
 ]
 
-ProvenanceFloatSequenceMapping: typing.TypeAlias = typing.Annotated[
+type ProvenanceFloatSequenceMapping = typing.Annotated[
     dict[Hashable, list[float]],
     pydantic.BeforeValidator(_coerce_float_sequence_mapping_field),
     pydantic.PlainSerializer(

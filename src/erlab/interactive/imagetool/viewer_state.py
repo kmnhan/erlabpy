@@ -35,7 +35,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-_SerializedFileDataSelection: typing.TypeAlias = int | dict[str, typing.Any]
+type _SerializedFileDataSelection = int | dict[str, typing.Any]
 
 
 @dataclasses.dataclass(frozen=True)

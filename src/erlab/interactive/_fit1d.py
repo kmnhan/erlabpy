@@ -49,10 +49,6 @@ else:
 
     varname = _lazy.load("varname")
     lmfit = _lazy.load("lmfit")
-
-_P = typing.ParamSpec("_P")
-_R = typing.TypeVar("_R")
-_T = typing.TypeVar("_T")
 logger = logging.getLogger(__name__)
 _FIT_MULTI_LIVE_REFRESH_INTERVAL_S = 0.10
 _REGISTERED_MODEL_CLASSES: dict[str, type[lmfit.Model]] = {}
@@ -235,9 +231,9 @@ def _uncertainty_from_weights(weights: xr.DataArray) -> xr.DataArray:
         return 1.0 / weights
 
 
-def _load_lmfit_for_ftool_restore(
-    load: Callable[[], _T], *, params: object | None = None
-) -> _T:
+def _load_lmfit_for_ftool_restore[T](
+    load: Callable[[], T], *, params: object | None = None
+) -> T:
     caught: list[warnings.WarningMessage] = []
 
     def _warn_again(
@@ -1053,21 +1049,21 @@ def _release_running_fit_worker(thread: _FitWorker) -> None:
     _fit_worker_registry().remove(thread)
 
 
-def _rebuild_ui(
+def _rebuild_ui[**P, R](
     *,
     mark_fresh: bool = True,
     restore_fit_result: bool = False,
 ) -> Callable[
-    [Callable[typing.Concatenate[Fit1DTool, _P], _R]],
-    Callable[typing.Concatenate[Fit1DTool, _P], _R],
+    [Callable[typing.Concatenate[Fit1DTool, P], R]],
+    Callable[typing.Concatenate[Fit1DTool, P], R],
 ]:
     """Decorate a method to rebuild the UI after changing the data/model."""
 
     def decorator(
-        func: Callable[typing.Concatenate[Fit1DTool, _P], _R],
-    ) -> Callable[typing.Concatenate[Fit1DTool, _P], _R]:
+        func: Callable[typing.Concatenate[Fit1DTool, P], R],
+    ) -> Callable[typing.Concatenate[Fit1DTool, P], R]:
         @functools.wraps(func)
-        def wrapper(self: Fit1DTool, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        def wrapper(self: Fit1DTool, *args: P.args, **kwargs: P.kwargs) -> R:
             old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
             self._cancel_fit_for_state_change()
 
@@ -4884,12 +4880,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         if needs_dict:
             lines.append(f"params = {model_name}.make_params(**{param_kwargs!r})")
+        elif param_entries:
+            lines.append(
+                f"params = {model_name}.make_params(\n"
+                f"    {',\n    '.join(param_entries)},\n)"
+            )
         else:
-            joined = ",\n    ".join(param_entries)
-            if joined:
-                lines.append(f"params = {model_name}.make_params(\n    {joined},\n)")
-            else:
-                lines.append(f"params = {model_name}.make_params()")
+            lines.append(f"params = {model_name}.make_params()")
 
         return "\n".join(lines)
 

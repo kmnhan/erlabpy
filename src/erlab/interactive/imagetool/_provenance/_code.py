@@ -998,16 +998,20 @@ class _ScopeAwareTransformer(ast.NodeTransformer):
                 visited.append(typing.cast("ast.stmt", result))
         return visited
 
-    def _visit_type_parameters(self, node: ast.AST) -> set[str]:
+    def _visit_type_parameters(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias,
+    ) -> set[str]:
         previous_hidden = self._hidden_bindings
-        type_parameters = list(getattr(node, "type_params", ()))
         self._hidden_bindings = previous_hidden | {
             parameter.name
-            for parameter in type_parameters
-            if isinstance(getattr(parameter, "name", None), str)
+            for parameter in node.type_params
+            if isinstance(parameter, ast.TypeVar | ast.ParamSpec | ast.TypeVarTuple)
         }
-        if hasattr(node, "type_params"):
-            node.type_params = [self.visit(parameter) for parameter in type_parameters]
+        node.type_params = [
+            typing.cast("ast.type_param", self.visit(parameter))
+            for parameter in node.type_params
+        ]
         return previous_hidden
 
     def _find_child_scope(
@@ -1187,21 +1191,19 @@ class _ScopeAwareTransformer(ast.NodeTransformer):
         self._scope, self._resolution_scope = previous
         return node
 
-    def visit_TypeAlias(self, node: ast.AST) -> ast.AST:
-        type_alias = typing.cast("typing.Any", node)
-        name_node = typing.cast("ast.Name", type_alias.name)
-        original_name = name_node.id
-        type_alias.name = typing.cast("ast.Name", self.visit(name_node))
-        previous_hidden = self._visit_type_parameters(type_alias)
+    def visit_TypeAlias(self, node: ast.TypeAlias) -> ast.TypeAlias:
+        original_name = node.name.id
+        node.name = typing.cast("ast.Name", self.visit(node.name))
+        previous_hidden = self._visit_type_parameters(node)
         previous = self._enter_scope(
             scope_type="type alias",
             name=original_name,
-            lineno=type_alias.lineno,
+            lineno=node.lineno,
         )
-        type_alias.value = typing.cast("ast.expr", self.visit(type_alias.value))
+        node.value = typing.cast("ast.expr", self.visit(node.value))
         self._scope, self._resolution_scope = previous
         self._hidden_bindings = previous_hidden
-        return type_alias
+        return node
 
     def _visit_comprehension(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
