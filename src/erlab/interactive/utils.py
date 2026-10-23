@@ -34,8 +34,9 @@ import typing
 import warnings
 import weakref
 import webbrowser
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import override
 
 import numpy as np
 import numpy.typing as npt
@@ -3237,9 +3238,6 @@ class ROIControls(ParameterGroup):
         vb.mouseDragEvent = mouseDragEventCustom  # set to modified mouseDragEvent
 
 
-M = typing.TypeVar("M", bound="pydantic.BaseModel")
-
-
 def _validate_script_identifier(value: typing.Any, *, field_name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{field_name} must be a string")
@@ -3447,7 +3445,7 @@ class _ToolInputState:
         )
 
 
-class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
+class ToolWindow[M: pydantic.BaseModel](StatefulWindow[M], metaclass=_ToolWindowMeta):
     """A window that can be saved and restored from a netcdf file.
 
     Mainly for interactive tools used in the ImageTool manager.
@@ -3741,10 +3739,12 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         )
 
     @property
+    @override
     def _history_state(self) -> M:
         return self.tool_status
 
     @_history_state.setter
+    @override
     def _history_state(self, state: M) -> None:
         self.tool_status = state
 
@@ -3756,12 +3756,14 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         """Let image updates control the levels for a registered plot."""
         self._plot_state_registry.clear_manual_levels(plot_id)
 
+    @override
     def _history_suppression_context(self) -> contextlib.AbstractContextManager[None]:
         return self._coalesce_provenance_changes()
 
     @typing.final
+    @override
     @contextlib.contextmanager
-    def _history_transition(self, target_state: M):
+    def _history_transition(self, target_state: M) -> Iterator[None]:
         with self._coalesce_provenance_changes():
             if self._history_transition_affects_provenance(target_state):
                 self._notify_provenance_changed()
@@ -3769,6 +3771,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                 yield
 
     @typing.final
+    @override
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
         if self._restoring_from_dataset or (

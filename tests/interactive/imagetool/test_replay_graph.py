@@ -3,7 +3,6 @@ import hashlib
 import pathlib
 import re
 import symtable
-import sys
 import textwrap
 import typing
 from collections.abc import Collection, Mapping
@@ -6873,7 +6872,6 @@ def test_selected_notebook_scopes_keep_lexical_closures_out_of_caller_inputs(
     assert "_itool_replay_" not in code
 
 
-@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
 @pytest.mark.parametrize(
     "definition",
     [
@@ -6946,7 +6944,6 @@ def test_symbol_table_dependencies_keep_free_names_of_the_requested_scope() -> N
     assert _symbol_table_dependencies(inner) == {"edge"}
 
 
-@pytest.mark.skipif(sys.version_info < (3, 12), reason="Requires type parameters")
 def test_symbol_table_dependencies_keep_type_alias_parameters_in_lexical_scope() -> (
     None
 ):

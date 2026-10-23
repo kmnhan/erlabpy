@@ -2,7 +2,7 @@
 
 # Dependencies and compatibility
 
-ERLabPy supports Python 3.11 and later. Qt5 bindings are not supported. Interactive
+ERLabPy supports Python 3.12 and later. Qt5 bindings are not supported. Interactive
 tools require PyQt6 or PySide6 and import the selected binding through
 [qtpy](https://github.com/spyder-ide/qtpy).
 

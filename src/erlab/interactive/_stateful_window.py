@@ -15,10 +15,8 @@ if typing.TYPE_CHECKING:
 
     import pydantic
 
-M = typing.TypeVar("M", bound="pydantic.BaseModel")
 
-
-class StatefulWindow(QtWidgets.QMainWindow, typing.Generic[M]):
+class StatefulWindow[M: pydantic.BaseModel](QtWidgets.QMainWindow):
     """Record model snapshots and restore them through Undo and Redo.
 
     Subclasses provide ``_history_state``. Its getter must return a detached

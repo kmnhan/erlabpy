@@ -29,7 +29,7 @@ if typing.TYPE_CHECKING:
 _PLOT_DATA_VALUE: tuple[str, str | None] = ("data", None)
 
 
-_PLOT_DATA_AXES: typing.TypeAlias = typing.Literal["x", "y", "xerr", "yerr"]
+type _PLOT_DATA_AXES = typing.Literal["x", "y", "xerr", "yerr"]
 
 
 def _plot_method_call_name(spec: MethodSpec) -> str:

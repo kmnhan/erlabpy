@@ -24,7 +24,7 @@ from erlab.accessors.utils import (
     either_dict_or_kwargs,
 )
 
-QSelReducer: typing.TypeAlias = typing.Literal["mean", "min", "max", "sum"]
+type QSelReducer = typing.Literal["mean", "min", "max", "sum"]
 _QSEL_REDUCERS: tuple[QSelReducer, ...] = ("mean", "min", "max", "sum")
 
 if typing.TYPE_CHECKING:

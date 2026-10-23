@@ -318,7 +318,7 @@ class _TopLevelExternalNameAnalyzer(ast.NodeVisitor):
             self.visit(node.args.kwarg.annotation)
         if node.returns is not None:
             self.visit(node.returns)
-        for type_param in getattr(node, "type_params", ()):
+        for type_param in node.type_params:
             self.visit(type_param)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -486,7 +486,7 @@ class _TopLevelExternalNameAnalyzer(ast.NodeVisitor):
             self.visit(base)
         for keyword in node.keywords:
             self.visit(keyword.value)
-        for type_param in getattr(node, "type_params", ()):
+        for type_param in node.type_params:
             self.visit(type_param)
         self.scope_bindings[id(node)] = frozenset(self.bound)
         class_analyzer = _TopLevelExternalNameAnalyzer()

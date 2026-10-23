@@ -16,8 +16,6 @@ from erlab.interactive._code_trust._core import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
-    _T = typing.TypeVar("_T")
-
 
 def create_entry(
     feature: str,
@@ -580,11 +578,11 @@ def execution_capability_allows(
     )
 
 
-def execute_with_capability(
+def execute_with_capability[T](
     capability: object | None,
     entries: CodeTrustEntrySource,
-    execute: Callable[[], _T],
-) -> tuple[bool, _T | None]:
+    execute: Callable[[], T],
+) -> tuple[bool, T | None]:
     """Execute one callback only when the capability allows its exact entries."""
     resolved_entries = tuple(entries() if callable(entries) else entries)
     if not execution_capability_allows(capability, resolved_entries):

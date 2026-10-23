@@ -889,7 +889,7 @@ def cover_qthreads(monkeypatch, qtbot, pytestconfig):
 
     def run_with_trace(self):  # pragma: no cover
         # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-        sys.settrace(threading._trace_hook)
+        sys.settrace(threading.gettrace())
         self._base_run()
 
     def init_with_trace(self, *args, **kwargs):
@@ -915,7 +915,7 @@ def cover_qthreadpool(monkeypatch, qtbot, pytestconfig):
         original_run = runnable.run
 
         def wrapped_run(*a, **kw):
-            sys.settrace(threading._trace_hook)
+            sys.settrace(threading.gettrace())
             return original_run(*a, **kw)
 
         runnable.run = wrapped_run

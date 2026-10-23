@@ -532,7 +532,7 @@ def _compact_workspace_store(
                 prepared_path.unlink()
 
 
-_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int]
+type _WorkspacePublicationState = tuple[bool, int, int, int, int]
 
 
 class _WorkspaceBackingFileNotFoundError(FileNotFoundError):

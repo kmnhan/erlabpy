@@ -64,14 +64,12 @@ class ReplayGraphError(Exception):
 
 
 InputProvenanceResolver = Callable[[ScriptInput], ToolProvenanceSpec | None]
-_T = typing.TypeVar("_T")
-_R = typing.TypeVar("_R")
 
 
-def _memoized_by_identity(resolver: Callable[[_T], _R]) -> Callable[[_T], _R]:
-    cache: dict[int, tuple[_T, _R]] = {}
+def _memoized_by_identity[T, R](resolver: Callable[[T], R]) -> Callable[[T], R]:
+    cache: dict[int, tuple[T, R]] = {}
 
-    def resolve(value: _T) -> _R:
+    def resolve(value: T) -> R:
         key = id(value)
         cached = cache.get(key)
         if cached is not None:

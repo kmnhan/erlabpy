@@ -74,10 +74,7 @@ else:
     lmfit = _lazy.load("lmfit")
 
 logger = logging.getLogger(__name__)
-
-_P = typing.ParamSpec("_P")
 _FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S = 0.10
-_R = typing.TypeVar("_R")
 
 
 def _fit_dataset_settings(
@@ -119,21 +116,21 @@ def _fit_dataset_settings(
     return scale_covar, weighted
 
 
-def _rebuild_ui(
+def _rebuild_ui[**P, R](
     *,
     mark_fresh: bool = True,
     restore_fit_result: bool = False,
 ) -> Callable[
-    [Callable[typing.Concatenate[Fit2DTool, _P], _R]],
-    Callable[typing.Concatenate[Fit2DTool, _P], _R],
+    [Callable[typing.Concatenate[Fit2DTool, P], R]],
+    Callable[typing.Concatenate[Fit2DTool, P], R],
 ]:
     """Decorate a method to rebuild the UI after changing the data/model."""
 
     def decorator(
-        func: Callable[typing.Concatenate[Fit2DTool, _P], _R],
-    ) -> Callable[typing.Concatenate[Fit2DTool, _P], _R]:
+        func: Callable[typing.Concatenate[Fit2DTool, P], R],
+    ) -> Callable[typing.Concatenate[Fit2DTool, P], R]:
         @functools.wraps(func)
-        def wrapper(self: Fit2DTool, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        def wrapper(self: Fit2DTool, *args: P.args, **kwargs: P.kwargs) -> R:
             old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
             self._cancel_fit_for_state_change()
             # A rebuild either produces a new result payload or owns no result

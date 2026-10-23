@@ -101,7 +101,7 @@ class _TutorialText:
         return cls((_TutorialTextSpan(text),))
 
 
-_TutorialTextKind: typing.TypeAlias = typing.Literal[
+type _TutorialTextKind = typing.Literal[
     "plain", "space", "ui", "menu", "menu_action", "menu_separator"
 ]
 
@@ -235,7 +235,7 @@ class CompositeTarget:
 
 
 if typing.TYPE_CHECKING:
-    Target: typing.TypeAlias = (
+    type Target = (
         QtWidgets.QWidget
         | QtGui.QAction
         | QtCore.QModelIndex
@@ -249,7 +249,7 @@ if typing.TYPE_CHECKING:
         | RectTarget
         | CompositeTarget
     )
-    TargetResolver: typing.TypeAlias = Target | Callable[[], Target | None] | None
+    type TargetResolver = Target | Callable[[], Target | None] | None
 
 
 @dataclasses.dataclass(frozen=True)

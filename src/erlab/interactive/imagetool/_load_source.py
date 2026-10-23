@@ -55,14 +55,12 @@ _RESERVED_REPLAY_SOURCE_NAMES = {
     "_processed",
 }
 
-_LoadFunc: typing.TypeAlias = tuple[
+type _LoadFunc = tuple[
     Callable[..., typing.Any] | str,
     dict[str, typing.Any],
     FileDataSelection,
 ]
-_LoadKind: typing.TypeAlias = typing.Literal[
-    "erlab_loader", "callable", "extension_loader"
-]
+type _LoadKind = typing.Literal["erlab_loader", "callable", "extension_loader"]
 
 # These are the public loaders that ImageTool provides without an extension. Keep
 # this registry explicit so a saved workspace cannot cause an import of its target.

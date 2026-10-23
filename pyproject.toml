@@ -3,7 +3,7 @@ name = "erlab"
 version = "3.28.1"
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Kimoon Higashihira Han", email = "khan@kaist.ac.kr" }]
@@ -12,7 +12,6 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
@@ -132,11 +131,7 @@ pyinstaller = [
   "seaborn>=0.13.2",
 ]
 pyqt6 = ["pyqt6>=6.8.0"]
-pyside6 = [
-  # PySide6 6.12.0 aborts on Python 3.11 with a None reference count error.
-  "pyside6>=6.8.1.1,!=6.9.1,!=6.12.0; python_version < '3.12'",
-  "pyside6>=6.8.1.1,!=6.9.1; python_version >= '3.12'",
-]
+pyside6 = ["pyside6>=6.8.1.1,!=6.9.1"]
 
 [build-system]
 requires = ["uv_build>=0.8.13"]
@@ -200,6 +195,7 @@ exclude_also = [
 ]
 
 [tool.mypy]
+python_version = "3.12"
 strict = false
 warn_unused_configs = true
 warn_redundant_casts = true
@@ -259,6 +255,7 @@ qt_log_ignore = [
 DISPLAY = ":99.0"
 
 [tool.ruff]
+target-version = "py312"
 line-length = 88
 indent-width = 4
 
