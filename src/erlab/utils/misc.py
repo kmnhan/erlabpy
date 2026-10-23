@@ -60,8 +60,9 @@ def _warning_skip_file_prefixes() -> tuple[str, ...]:
     if os.__file__ is not None:
         stdlib_dir = pathlib.Path(os.__file__).parent
         if stdlib_dir.is_dir():
+            # Match module stems in source and bytecode filenames.
             prefixes.extend(
-                str(path) + (os.sep if path.is_dir() else "")
+                str(path) + os.sep if path.is_dir() else str(path.with_suffix("")) + "."
                 for path in stdlib_dir.iterdir()
                 if path.name not in {"site-packages", "dist-packages"}
             )

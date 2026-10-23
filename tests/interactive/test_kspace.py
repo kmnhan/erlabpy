@@ -4161,31 +4161,33 @@ def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:
     assert win.tool_status.cmap_gamma == initial.cmap_gamma + 0.1
 
 
+@pytest.mark.parametrize("scalar_energy", [False, True])
 def test_ktool_update_inputs_with_single_energy_disables_energy_group(
-    qtbot, anglemap
+    qtbot, anglemap, scalar_energy
 ) -> None:
     initial = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
         deep=True
     )
-    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
-        deep=True
-    )
+    data = anglemap.isel(
+        alpha=slice(0, 3), beta=slice(0, 3), eV=1 if scalar_energy else slice(1, 2)
+    ).copy(deep=True)
     win = ktool(initial, execute=False)
     _add_hidden_tool(qtbot, win)
 
     win.update_inputs({"data": data})
-    fixed_energy = float(data.eV.values[0])
+    fixed_energy = float(data.eV.item())
     assert win.energy_group.isEnabled() is False
     assert win.center_spin.minimum() == pytest.approx(fixed_energy - 0.1, abs=1e-3)
     assert win.center_spin.maximum() == pytest.approx(fixed_energy + 0.1, abs=1e-3)
 
 
+@pytest.mark.parametrize("scalar_energy", [False, True])
 def test_ktool_update_inputs_reconnects_energy_controls_after_single_energy(
-    qtbot, anglemap, monkeypatch
+    qtbot, anglemap, monkeypatch, scalar_energy
 ) -> None:
-    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
-        deep=True
-    )
+    data = anglemap.isel(
+        alpha=slice(0, 3), beta=slice(0, 3), eV=1 if scalar_energy else slice(1, 2)
+    ).copy(deep=True)
     updated = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
         deep=True
     )

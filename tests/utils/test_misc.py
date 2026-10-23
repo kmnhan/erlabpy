@@ -36,6 +36,30 @@ def test_user_level_warning_skips_package_and_stdlib_wrappers(package) -> None:
     assert recorded[0].lineno == expected_line
 
 
+@pytest.mark.parametrize("suffix", [".py", ".pyc"])
+def test_user_level_warning_skips_stdlib_module_files(
+    monkeypatch, tmp_path, suffix
+) -> None:
+    (tmp_path / f"wrapper{suffix}").touch()
+
+    def issue_warning():
+        erlab.utils.misc.emit_user_level_warning("User warning", UserWarning)
+
+    wrapped = types.FunctionType(
+        issue_warning.__code__.replace(co_filename=str(tmp_path / "wrapper.py")),
+        globals(),
+    )
+    erlab.utils.misc._warning_skip_file_prefixes.cache_clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "__file__", str(tmp_path / "os.py"))
+        try:
+            with pytest.warns(UserWarning, match="User warning") as recorded:
+                wrapped()
+            assert recorded[0].filename == __file__
+        finally:
+            erlab.utils.misc._warning_skip_file_prefixes.cache_clear()
+
+
 def test_user_level_warning_preserves_third_party_source() -> None:
     filename = pathlib.Path(os.__file__).parent / "site-packages" / "other.py"
 
