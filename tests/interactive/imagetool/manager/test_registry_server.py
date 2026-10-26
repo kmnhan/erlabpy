@@ -3,6 +3,8 @@ import contextlib
 import dataclasses
 import json
 import logging
+import os
+import pathlib
 import subprocess
 import sys
 import threading
@@ -14,7 +16,7 @@ import numpy as np
 import pytest
 import xarray as xr
 import zmq
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._heartbeat as manager_heartbeat
@@ -81,6 +83,137 @@ def test_manager_selection_info_single_manager(
         assert info["reason"] == "default"
         assert info["default_index"] == manager.manager_index
         assert info["managers"][0]["is_default"] is True
+
+
+def test_workspace_paths_match_file_identity(tmp_path) -> None:
+    workspace = tmp_path / "workspace.itws"
+    workspace.touch()
+    alias = tmp_path / "alias.itws"
+    alias.hardlink_to(workspace)
+    other = tmp_path / "other.itws"
+    other.touch()
+
+    assert manager_registry._workspace_paths_match(
+        workspace, tmp_path / "subdir" / ".." / workspace.name
+    )
+    assert manager_registry._workspace_paths_match(workspace, alias)
+    assert not manager_registry._workspace_paths_match(workspace, other)
+    assert not manager_registry._workspace_paths_match(
+        workspace, tmp_path / "missing.itws"
+    )
+
+
+@pytest.mark.parametrize("activation_case", ["matching", "different", "closing"])
+def test_workspace_activation_over_socket(
+    activation_case, monkeypatch, tmp_path, qtbot, manager_context
+) -> None:
+    with manager_context(use_socket=True) as manager:
+        workspace = tmp_path / "workspace.itws"
+        adopt_workspace_path(manager, workspace)
+        manager.hide()
+        activated: list[object] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "activate_window",
+            lambda window: (activated.append(window), window.show()),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_handle_dropped_files",
+            lambda _paths: pytest.fail("activation must not reload a workspace"),
+        )
+        path = tmp_path / "other.itws" if activation_case == "different" else workspace
+        manager._workspace_state.closing_document = activation_case == "closing"
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = pool.submit(
+                    manager_server._activate_workspace_in_manager,
+                    path,
+                    record=manager._manager_record,
+                    timeout_ms=1500,
+                )
+                qtbot.wait_until(result.done, timeout=5000)
+                assert result.result() is (activation_case == "matching")
+            assert activated == ([manager] if activation_case == "matching" else [])
+            assert manager.isVisible() is (activation_case == "matching")
+            assert manager.workspace_path == str(workspace.resolve())
+        finally:
+            manager._workspace_state.closing_document = False
+
+
+def test_workspace_activation_client_passes_foreground_permission(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    record = manager_registry._ManagerRecord(
+        internal_id="other-manager",
+        index=2,
+        pid=123,
+        host="127.0.0.1",
+        port=45555,
+        watch_port=45556,
+        started="",
+        version="3.28.1",
+        heartbeat=0.0,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        manager_server._desktop,
+        "allow_foreground_activation",
+        lambda pid: calls.append(pid),
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_query_zmq",
+        lambda payload, **kwargs: (
+            calls.append((payload, kwargs)) or Response(status="ok")
+        ),
+    )
+
+    assert manager_server._activate_workspace_in_manager(
+        path, record=record, timeout_ms=1234
+    )
+    assert calls[0] == 123
+    payload, kwargs = calls[1]
+    assert payload.command == "activate-workspace"
+    assert payload.command_arg == str(path)
+    assert kwargs == {"record": record, "timeout_ms": 1234}
+
+
+def test_workspace_desktop_activation_from_another_process(
+    monkeypatch, tmp_path, qtbot, manager_context
+) -> None:
+    with manager_context() as manager:
+        path = tmp_path / "workspace.itws"
+        adopt_workspace_path(manager, path)
+        qtbot.wait_until(lambda: not manager._registry_heartbeat.is_busy, timeout=5000)
+        manager.hide()
+        env = os.environ.copy()
+        env["ITOOL_MANAGER_REGISTRY"] = str(manager_registry._REGISTRY_PATH)
+        env["PYTHONPATH"] = str(pathlib.Path.cwd() / "src")
+        code = """
+import pathlib
+import sys
+from erlab.interactive.imagetool.manager import _try_activate_workspace
+raise SystemExit(0 if _try_activate_workspace(pathlib.Path(sys.argv[1])) else 1)
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", code, str(path)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            qtbot.wait_until(lambda: process.poll() is not None, timeout=20000)
+            stdout, stderr = process.communicate(timeout=1)
+            assert process.returncode == 0, stdout + stderr
+            assert manager.isVisible()
+            assert manager.workspace_path == str(path.resolve())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def test_manager_server_threads_are_explicitly_managed(
@@ -1066,13 +1199,14 @@ def test_itool_manager_accepts_index_like_values(monkeypatch, test_data) -> None
 
 
 def test_itool_manager_invalid_index_object_and_unavailable_fallback(
-    monkeypatch, test_data
+    monkeypatch, test_data, qtbot
 ) -> None:
     warnings: list[str] = []
     running_targets: list[int | None] = []
 
-    class _DummyImageTool:
+    class _DummyImageTool(QtWidgets.QWidget):
         def __init__(self, data, **_kwargs) -> None:
+            super().__init__()
             self.data = data
 
         def show(self) -> None:
@@ -1098,6 +1232,8 @@ def test_itool_manager_invalid_index_object_and_unavailable_fallback(
 
     direct_tool = itool(test_data, manager=object(), execute=False)
     fallback_tool = itool(test_data, manager=3, execute=False)
+    qtbot.addWidget(direct_tool)
+    qtbot.addWidget(fallback_tool)
 
     assert isinstance(direct_tool, _DummyImageTool)
     assert isinstance(fallback_tool, _DummyImageTool)
@@ -1505,6 +1641,7 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
         sigWatchedVarChanged = QtCore.Signal(str, str, object, object)
         sigDataRequested = QtCore.Signal(object)
         sigWatchInfoRequested = QtCore.Signal()
+        sigWorkspaceActivationRequested = QtCore.Signal(str)
         sigRemoveIndex = QtCore.Signal(int)
         sigShowIndex = QtCore.Signal(int)
         sigRemoveUID = QtCore.Signal(str)
@@ -1576,6 +1713,9 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
         def _send_watch_info(self) -> None:
             self._record("send_watch_info")
 
+        def _send_workspace_activation(self, *args) -> None:
+            self._record("send_workspace_activation", *args)
+
         def remove_imagetool(self, *args) -> None:
             self._record("remove_imagetool", *args)
 
@@ -1604,6 +1744,7 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
         (server.sigReplaceRequested, manager._data_replace),
         (server.sigDataRequested, manager._send_imagetool_data),
         (server.sigWatchInfoRequested, manager._send_watch_info),
+        (server.sigWorkspaceActivationRequested, manager._send_workspace_activation),
         (manager._sigReplyData, server.set_return_value),
         (server.sigRemoveIndex, manager.remove_imagetool),
         (server.sigShowIndex, manager.show_imagetool),
@@ -1820,7 +1961,10 @@ def test_manager_server_run_returns_watch_info(monkeypatch) -> None:
     assert socket.closed
 
 
-def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
+@pytest.mark.parametrize("command", ["get-data", "activate-workspace"])
+def test_manager_server_run_errors_when_data_request_stops(
+    monkeypatch, command
+) -> None:
     sent: list[dict[str, typing.Any]] = []
 
     class _DummySocket:
@@ -1855,7 +1999,7 @@ def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
         "_recv_multipart",
         lambda _socket, **_kwargs: {
             "packet_type": "command",
-            "command": "get-data",
+            "command": command,
             "command_arg": 0,
         },
     )
@@ -1865,6 +2009,7 @@ def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
         lambda _socket, payload, **_kwargs: sent.append(payload),
     )
     manager.sigDataRequested.connect(lambda _arg: manager.stopped.set())
+    manager.sigWorkspaceActivationRequested.connect(lambda _arg: manager.stopped.set())
 
     manager.run()
 

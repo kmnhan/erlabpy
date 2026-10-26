@@ -16,7 +16,7 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
-import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+import erlab.interactive.utils
 from erlab.interactive import _persistence_constants
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
@@ -163,7 +163,7 @@ def test_manager_windows_figure_activation_preserves_resized_geometry(
             self.geometry_restores += 1
             return super().restoreGeometry(geometry)
 
-    monkeypatch.setattr(manager_wrapper.sys, "platform", "win32")
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),

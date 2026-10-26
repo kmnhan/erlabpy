@@ -2200,8 +2200,7 @@ class _LineageController:
         current_dialog = self._remove_confirmation_dialog
         if current_dialog is not None:
             if erlab.interactive.utils.qt_is_valid(current_dialog):
-                current_dialog.raise_()
-                current_dialog.activateWindow()
+                erlab.interactive.utils.activate_window(current_dialog, show=False)
                 return
             self._remove_confirmation_dialog = None
             self._remove_confirmation_finished_callback = None

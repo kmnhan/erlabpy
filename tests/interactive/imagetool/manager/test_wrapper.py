@@ -41,6 +41,36 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 
+def test_wrapper_show_restores_minimized_window(
+    qtbot, test_data, manager_context
+) -> None:
+    with manager_context() as manager:
+        itool(test_data, manager=True)
+        wrapper = manager._tool_graph.root_wrappers[0]
+        window = manager.get_imagetool(0)
+        window.showMaximized()
+        window.showMinimized()
+
+        wrapper.show()
+
+        assert window.isVisible()
+        assert not window.isMinimized()
+        assert window.isMaximized()
+
+
+@pytest.mark.parametrize("show", [False, True])
+@pytest.mark.parametrize("activate", [False, True])
+def test_manager_activation_respects_show_option(
+    qtbot, test_data, manager_context, show, activate
+) -> None:
+    with manager_context() as manager:
+        window = erlab.interactive.imagetool.ImageTool(test_data)
+
+        manager.add_imagetool(window, show=show, activate=activate)
+
+        assert window.isVisible() is show
+
+
 def test_reapplying_workspace_link_state_keeps_color_cache_valid() -> None:
     invalidated: list[None] = []
     node = types.SimpleNamespace(

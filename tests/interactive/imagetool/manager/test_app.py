@@ -104,6 +104,36 @@ def test_manager_runtime_icon_is_sanitized(qapp) -> None:
     assert not pixmap.toImage().colorSpace().isValid()
 
 
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_desktop_passes_foreground_permission_only_on_windows(
+    monkeypatch, platform
+) -> None:
+    calls: list[int] = []
+    user32 = types.SimpleNamespace(
+        AllowSetForegroundWindow=lambda pid: calls.append(pid.value) or 1
+    )
+    monkeypatch.setattr(manager_desktop.sys, "platform", platform)
+    monkeypatch.setattr(
+        manager_desktop.ctypes,
+        "windll",
+        types.SimpleNamespace(user32=user32),
+        raising=False,
+    )
+
+    manager_desktop.allow_foreground_activation(123)
+
+    assert calls == ([123] if platform == "win32" else [])
+
+
+def test_desktop_foreground_permission_failure_is_nonfatal(monkeypatch) -> None:
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.ctypes, "windll", types.SimpleNamespace(), raising=False
+    )
+
+    manager_desktop.allow_foreground_activation(123)
+
+
 def test_manager_rejects_unavailable_named_loader(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]

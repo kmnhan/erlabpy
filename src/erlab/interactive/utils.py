@@ -141,6 +141,7 @@ __all__ = [
     "ToolImageOutputDefinition",
     "ToolScriptProvenanceDefinition",
     "ToolWindow",
+    "activate_window",
     "copy_to_clipboard",
     "file_loaders",
     "format_1d_numeric_array_code",
@@ -297,6 +298,53 @@ def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
     return ("wrapped C/C++ object" in message and "has been deleted" in message) or (
         "Internal C++ object" in message and "already deleted" in message
     )
+
+
+def activate_window(window: QtWidgets.QWidget | None, *, show: bool = True) -> None:
+    """Show a window, restore it if minimized, and request activation.
+
+    On Windows, a previously shown native window briefly becomes topmost when shown.
+    This works around windows that do not rise when activated. The original
+    window flags, geometry, and maximized or full-screen state are preserved.
+    Operating system restrictions can still prevent foreground activation.
+
+    Parameters
+    ----------
+    window
+        Window to activate. Missing or deleted Qt objects are ignored.
+    show
+        If `False`, only raise and request activation. Do not show a hidden
+        window or restore a minimized window.
+
+    """
+    if window is None or not qt_is_valid(window):
+        return
+
+    if show:
+        if window.isMinimized():
+            window.setWindowState(
+                window.windowState() & ~QtCore.Qt.WindowState.WindowMinimized
+            )
+        if (
+            sys.platform == "win32"
+            and window.windowHandle() is not None
+            and window.testAttribute(
+                QtCore.Qt.WidgetAttribute.WA_WState_ExplicitShowHide
+            )
+            and not window.windowFlags() & QtCore.Qt.WindowType.WindowStaysOnTopHint
+        ):
+            window_flags = window.windowFlags()
+            window_geometry = window.saveGeometry()
+            window.setWindowFlags(
+                window_flags | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            )
+            window.show()
+            window.setWindowFlags(window_flags)
+            window.restoreGeometry(window_geometry)
+        window.show()
+
+    window.raise_()
+    window.activateWindow()
 
 
 _ERLAB_CURSOR_SHAPE_PROPERTY = "_erlab_cursor_shape"
@@ -4621,9 +4669,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             if manager is None or parent_uid is None:
                 tool.set_provenance_spec(provenance_spec, _code_trust=provenance_trust)
                 tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-                tool.show()
-                tool.raise_()
-                tool.activateWindow()
+                activate_window(tool)
                 return tool
 
             manager.add_imagetool(
@@ -4647,9 +4693,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
                     provenance_spec, _code_trust=provenance_trust
                 )
                 existing_target.slicer_area.replace_source_data(data)
-                existing_target.show()
-                existing_target.raise_()
-                existing_target.activateWindow()
+                activate_window(existing_target)
                 return existing_target
             if isinstance(existing_target, QtWidgets.QWidget):
                 existing_target.close()
@@ -4660,9 +4704,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
             tool.set_provenance_spec(provenance_spec, _code_trust=provenance_trust)
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._register_output_imagetool_target(output_id, tool)
-            tool.show()
-            tool.raise_()
-            tool.activateWindow()
+            activate_window(tool)
             return tool
 
         if isinstance(existing_target, str):
@@ -6995,9 +7037,7 @@ class AnalysisWindow(ToolWindow):
 
     def __post_init__(self, execute=None):
         with setup_qapp(execute) as execute:
-            self.show()
-            self.activateWindow()
-            self.raise_()
+            activate_window(self)
 
     def addParameterGroup(self, *args, **kwargs):
         group = ParameterGroup(*args, **kwargs)

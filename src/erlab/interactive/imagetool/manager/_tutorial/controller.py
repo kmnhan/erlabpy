@@ -1577,9 +1577,7 @@ class _TutorialController(TourController):
     def _debug_activate_window(self, window: QtWidgets.QWidget | None) -> None:
         if window is None:
             raise RuntimeError("The destination window is not available.")
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        erlab.interactive.utils.activate_window(window)
         handle = window.windowHandle()
         if handle is not None:
             handle.requestActivate()
@@ -2764,9 +2762,7 @@ class _TutorialController(TourController):
     def _show_figure_composer(self) -> None:
         composer = self._figure_composer()
         if composer is not None:
-            composer.show()
-            composer.raise_()
-            composer.activateWindow()
+            erlab.interactive.utils.activate_window(composer)
 
     def _figure_output_target(self) -> QtWidgets.QWidget | None:
         composer = self._figure_composer()

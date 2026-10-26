@@ -4236,9 +4236,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                         tool.deleteLater()
 
         widget.closeEvent = new_close_event  # type: ignore[assignment]
-        widget.show()
-        widget.raise_()
-        widget.activateWindow()
+        erlab.interactive.utils.activate_window(widget)
 
     @staticmethod
     def _declare_full_data_tool_input(widget: QtWidgets.QWidget) -> None:

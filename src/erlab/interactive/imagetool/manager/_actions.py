@@ -604,8 +604,7 @@ class _ActionsController:
             return
         dialog = self._batch_dialog
         dialog.open()
-        dialog.raise_()
-        dialog.activateWindow()
+        erlab.interactive.utils.activate_window(dialog, show=False)
 
     def _selected_batch_targets(self) -> list[int | str]:
         targets = list(self._manager._selected_imagetool_targets())
@@ -1574,9 +1573,7 @@ class _ActionsController:
         if self._manager.console.isVisible():
             self._manager.console.hide()
         else:
-            self._manager.console.show()
-            self._manager.console.activateWindow()
-            self._manager.console.raise_()
+            erlab.interactive.utils.activate_window(self._manager.console)
             self._manager.console._console_widget._control.setFocus()
             self._manager.console._initialize_visible_console()
 
@@ -1934,8 +1931,7 @@ class _ActionsController:
             if show:
                 node.show()
             if activate and node.window is not None:
-                node.window.activateWindow()
-                node.window.raise_()
+                erlab.interactive.utils.activate_window(node.window, show=False)
         return node.uid
 
     def index_from_slicer_area(

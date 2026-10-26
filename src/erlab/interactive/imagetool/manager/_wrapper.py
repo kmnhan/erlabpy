@@ -31,7 +31,6 @@ import keyword
 import logging
 import math
 import pathlib
-import sys
 import typing
 import uuid
 import weakref
@@ -3008,19 +3007,7 @@ class _ManagedWindowNode(QtCore.QObject):
             if recent_geometry is not None:
                 window.restoreGeometry(recent_geometry)
 
-        if sys.platform == "win32" and not first_show:
-            window_flags = window.windowFlags()
-            window_geometry = window.saveGeometry()
-            window.setWindowFlags(
-                window_flags | QtCore.Qt.WindowType.WindowStaysOnTopHint
-            )
-            window.show()
-            window.setWindowFlags(window_flags)
-            window.restoreGeometry(window_geometry)
-
-        window.show()
-        window.activateWindow()
-        window.raise_()
+        erlab.interactive.utils.activate_window(window)
 
     @QtCore.Slot()
     def hide(self) -> None:

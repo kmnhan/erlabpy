@@ -1921,8 +1921,7 @@ class _WorkspaceController:
             origin,
         ):
             return
-        origin.activateWindow()
-        origin.raise_()
+        erlab.interactive.utils.activate_window(origin, show=False)
         focus_widget = origin.focusWidget()
         if isinstance(
             focus_widget, QtWidgets.QWidget

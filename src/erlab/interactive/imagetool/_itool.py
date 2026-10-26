@@ -236,8 +236,7 @@ def itool(
             )
             # TODO: make sure this is not garbage collected
 
-        itool_list[-1].activateWindow()
-        itool_list[-1].raise_()
+        erlab.interactive.utils.activate_window(itool_list[-1], show=False)
 
         if execute:  # pragma: no cover
             return None

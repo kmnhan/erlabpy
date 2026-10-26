@@ -1748,9 +1748,7 @@ class _WidgetsController:
             )
             pbar.findChild(QtWidgets.QProgressBar).setFormat("%p% (%v/%m)")
             self._manager._progress_bars[total] = pbar
-            pbar.show()
-            pbar.raise_()
-            pbar.activateWindow()
+            erlab.interactive.utils.activate_window(pbar)
 
         pbar.setValue(current)
 
@@ -1813,9 +1811,7 @@ class _WidgetsController:
         self._manager._alert_dialogs.append(dialog)
         dialog.finished.connect(lambda *, d=dialog: self._manager._unregister_alert(d))
 
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        erlab.interactive.utils.activate_window(dialog)
 
     def _ignore_warning_message(self, message: str) -> None:
         """Ignore future warnings with the same message for this session."""
@@ -1852,6 +1848,9 @@ class _WidgetsController:
         server.sigReplaceRequested.connect(self._manager._data_replace)
         server.sigDataRequested.connect(self._manager._send_imagetool_data)
         server.sigWatchInfoRequested.connect(self._manager._send_watch_info)
+        server.sigWorkspaceActivationRequested.connect(
+            self._manager._send_workspace_activation
+        )
         self._manager._sigReplyData.connect(server.set_return_value)
         server.sigRemoveIndex.connect(self._manager.remove_imagetool)
         server.sigShowIndex.connect(self._manager.show_imagetool)
@@ -1910,6 +1909,10 @@ class _WidgetsController:
                     (server.sigReplaceRequested, self._manager._data_replace),
                     (server.sigDataRequested, self._manager._send_imagetool_data),
                     (server.sigWatchInfoRequested, self._manager._send_watch_info),
+                    (
+                        server.sigWorkspaceActivationRequested,
+                        self._manager._send_workspace_activation,
+                    ),
                     (self._manager._sigReplyData, server.set_return_value),
                     (server.sigRemoveIndex, self._manager.remove_imagetool),
                     (server.sigShowIndex, self._manager.show_imagetool),
@@ -1947,9 +1950,7 @@ class _WidgetsController:
                     self._manager._additional_windows.pop("settings", None)
 
             dialog.destroyed.connect(cleanup)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        erlab.interactive.utils.activate_window(dialog)
         return dialog
 
     def open_keyboard_shortcuts(self) -> KeyboardShortcutsDialog:
@@ -1969,9 +1970,7 @@ class _WidgetsController:
                     self._manager._additional_windows.pop("keyboard-shortcuts", None)
 
             dialog.destroyed.connect(cleanup)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        erlab.interactive.utils.activate_window(dialog)
         return dialog
 
     def open_new_manager_instance(self) -> None:
