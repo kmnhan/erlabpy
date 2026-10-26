@@ -723,6 +723,224 @@ def test_workspace_file_managers_use_access_phony_dimensions(
     assert phony_dims == ["access"]
 
 
+@pytest.mark.parametrize("associated", [False, True])
+@pytest.mark.parametrize("chunks", [None, {}])
+@pytest.mark.parametrize("coordinate_kind", ["numeric", "datetime", "string"])
+@pytest.mark.parametrize(("blob_size", "scale_chunks"), [(0, None), (11, (2,))])
+def test_workspace_lazy_reader_preserves_legacy_scales_with_unscaled_blob(
+    monkeypatch, tmp_path, associated, chunks, coordinate_kind, blob_size, scale_chunks
+) -> None:
+    path = tmp_path / "legacy-scales.itws"
+    group_path = workspace_store.WorkspaceStore.object_path("payload")
+    if coordinate_kind == "datetime":
+        raw_coordinate = np.arange(5)
+        coordinate = np.datetime64("2024-01-01", "ns") + np.arange(5).astype(
+            "timedelta64[D]"
+        )
+        coordinate_attrs = {
+            "units": "days since 2024-01-01",
+            "calendar": "proleptic_gregorian",
+        }
+    elif coordinate_kind == "string":
+        raw_coordinate = np.array(["α", "β", "γ", "δ", "ε"], dtype=object)
+        coordinate = raw_coordinate.astype(str)
+        coordinate_attrs = {}
+    else:
+        raw_coordinate = coordinate = np.linspace(-1.5, 1.3, 5)
+        coordinate_attrs = {"units": "1/angstrom"}
+    energy = np.linspace(-0.2, 0.2, 3)
+    values = np.arange(15.0).reshape(5, 3)
+    auxiliary = values + 20.0
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    with h5py.File(path, "w") as h5_file:
+        group = h5_file.create_group(group_path)
+        scales = []
+        for dim_id, (name, data) in enumerate((("kx", raw_coordinate), ("eV", energy))):
+            kwargs = {"dtype": h5py.string_dtype()} if data.dtype.kind == "O" else {}
+            scale = group.create_dataset(name, data=data, chunks=scale_chunks, **kwargs)
+            scale.make_scale(name)
+            scale.attrs["_Netcdf4Dimid"] = np.int32(dim_id)
+            scale.attrs["_Netcdf4Coordinates"] = np.array([dim_id], dtype=np.int32)
+            scales.append(scale)
+        scales[0].attrs.update(coordinate_attrs)
+        for name, data in ((data_name, values), ("ky", auxiliary)):
+            dataset = group.create_dataset(name, data=data, chunks=(2, 3))
+            for axis, scale in enumerate(scales):
+                dataset.dims[axis].attach_scale(scale)
+        group[data_name].attrs["coordinates"] = "ky"
+
+    reads = []
+    getitem = h5py.Dataset.__getitem__
+
+    def record_read(self, key, *args, **kwargs):
+        reads.append(self.name.rsplit("/", 1)[-1])
+        return getitem(self, key, *args, **kwargs)
+
+    monkeypatch.setattr(h5py.Dataset, "__getitem__", record_read)
+    with workspace_arrays.open_workspace_dataset(
+        path, group_path, chunks=chunks
+    ) as baseline:
+        baseline_reads = reads.copy()
+        baseline_encoding = baseline["kx"].encoding.copy()
+    reads.clear()
+    with h5py.File(path, "r+") as h5_file:
+        blob = h5_file[group_path].create_dataset(
+            "replay", data=np.arange(blob_size, dtype=np.uint8)
+        )
+        blob.attrs[_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR] = "replay"
+    store = (
+        workspace_store.WorkspaceStore(path) if associated else contextlib.nullcontext()
+    )
+    with (
+        store,
+        workspace_arrays.open_workspace_dataset(
+            path, group_path, chunks=chunks
+        ) as opened,
+    ):
+        assert opened["kx"].dims == ("kx",)
+        assert opened["kx"].shape == (5,)
+        assert opened["kx"].encoding == baseline_encoding
+        for name in ("kx", "eV"):
+            assert 1 <= reads.count(name) <= baseline_reads.count(name)
+        assert set(reads) == {"kx", "eV"}
+        for name in (data_name, "ky", "replay"):
+            assert not opened[name].variable._in_memory
+        expected = xr.DataArray(
+            values,
+            dims=("kx", "eV"),
+            coords={"kx": coordinate, "eV": energy, "ky": (("kx", "eV"), auxiliary)},
+            name=data_name,
+        )
+        if coordinate_kind == "numeric":
+            expected["kx"].attrs = coordinate_attrs
+        xr.testing.assert_identical(opened[data_name].compute(), expected)
+        np.testing.assert_array_equal(opened["replay"].values, np.arange(blob_size))
+
+
+@pytest.mark.parametrize("associated", [False, True])
+@pytest.mark.parametrize("chunks", [None, {}])
+@pytest.mark.parametrize("zero_dimension", ["label", "string5"])
+def test_workspace_lazy_reader_preserves_character_scale_with_unscaled_blob(
+    monkeypatch, tmp_path, associated, chunks, zero_dimension
+) -> None:
+    path = tmp_path / "character-scale.itws"
+    group_path = workspace_store.WorkspaceStore.object_path("payload")
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    values = np.arange(6.0).reshape(3, 2)
+    expected = xr.DataArray(
+        values,
+        dims=("label", "energy"),
+        coords={
+            "label": ["alpha", "beta", "gamma"],
+            "energy": [-0.1, 0.1],
+            "ky": (("label", "energy"), values + 10.0),
+        },
+        name=data_name,
+    )
+    expected.to_dataset().to_netcdf(
+        path,
+        group=group_path,
+        engine="h5netcdf",
+        encoding={"label": {"dtype": "S1", "chunksizes": (2, 5)}},
+    )
+    with h5py.File(path, "r+") as h5_file:
+        group = h5_file[group_path]
+        if zero_dimension == "string5":
+            label_id = int(group["label"].attrs["_Netcdf4Dimid"])
+            character_id = int(group["string5"].attrs["_Netcdf4Dimid"])
+            swapped_ids = {label_id: character_id, character_id: label_id}
+            for dataset in group.values():
+                dim_id = dataset.attrs.get("_Netcdf4Dimid")
+                if dim_id is not None:
+                    dataset.attrs["_Netcdf4Dimid"] = np.int32(
+                        swapped_ids.get(dim_id, dim_id)
+                    )
+                coordinate_ids = dataset.attrs.get("_Netcdf4Coordinates")
+                if coordinate_ids is not None:
+                    dataset.attrs["_Netcdf4Coordinates"] = np.array(
+                        [swapped_ids.get(dim_id, dim_id) for dim_id in coordinate_ids],
+                        dtype=np.int32,
+                    )
+        blob = group.create_dataset("replay", data=np.arange(11, dtype=np.uint8))
+        blob.attrs[_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR] = "replay"
+
+    reads = []
+    getitem = h5py.Dataset.__getitem__
+
+    def record_read(self, key, *args, **kwargs):
+        reads.append(self.name.rsplit("/", 1)[-1])
+        return getitem(self, key, *args, **kwargs)
+
+    monkeypatch.setattr(h5py.Dataset, "__getitem__", record_read)
+    store = (
+        workspace_store.WorkspaceStore(path) if associated else contextlib.nullcontext()
+    )
+    with (
+        store,
+        workspace_arrays.open_workspace_dataset(
+            path, group_path, chunks=chunks
+        ) as opened,
+    ):
+        assert opened["label"].dims == ("label",)
+        assert opened["label"].encoding["original_shape"] == (3, 5)
+        assert opened["label"].encoding["preferred_chunks"] == {
+            "label": 2,
+            "string5": 5,
+        }
+        assert reads.count("label") == reads.count("energy") == 1
+        assert set(reads) == {"label", "energy"}
+        for name in (data_name, "ky", "replay"):
+            assert not opened[name].variable._in_memory
+        xr.testing.assert_identical(opened[data_name].compute(), expected)
+
+
+@pytest.mark.parametrize("associated", [False, True])
+def test_workspace_multidimensional_scale_stays_lazy_after_reopen_and_serialization(
+    monkeypatch, tmp_path, associated
+) -> None:
+    path = tmp_path / "numeric-scale.itws"
+    group_path = workspace_store.WorkspaceStore.object_path("payload")
+    data_name = _persistence_constants.ITOOL_DATA_NAME
+    values = np.arange(6.0).reshape(3, 2)
+    expected = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"x": (("x", "y"), values / 10), "y": [-0.1, 0.1]},
+        name=data_name,
+    )
+    expected.to_dataset().to_netcdf(path, group=group_path, engine="h5netcdf")
+    with h5py.File(path, "r+") as h5_file:
+        blob = h5_file[group_path].create_dataset(
+            "replay", data=np.arange(11, dtype=np.uint8)
+        )
+        blob.attrs[_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR] = "replay"
+
+    reads = []
+    getitem = h5py.Dataset.__getitem__
+
+    def record_read(self, key, *args, **kwargs):
+        reads.append(self.name.rsplit("/", 1)[-1])
+        return getitem(self, key, *args, **kwargs)
+
+    monkeypatch.setattr(h5py.Dataset, "__getitem__", record_read)
+    store = (
+        workspace_store.WorkspaceStore(path) if associated else contextlib.nullcontext()
+    )
+    with (
+        store,
+        workspace_arrays.open_workspace_dataset(path, group_path, chunks={}) as opened,
+    ):
+        assert opened["x"].dims == ("x", "y")
+        assert reads == ["y"]
+        for name in (data_name, "x", "replay"):
+            assert not opened[name].variable._in_memory
+        serialized = pickle.loads(pickle.dumps(opened["x"].data))
+        np.testing.assert_array_equal(
+            serialized.compute(scheduler="synchronous"), expected["x"].values
+        )
+        xr.testing.assert_identical(opened[data_name].compute(), expected)
+
+
 def test_standalone_reader_finalization_does_not_reverse_read_locks(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:

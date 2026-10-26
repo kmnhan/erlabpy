@@ -2395,12 +2395,14 @@ def test_manager_generation_save_preserves_pending_figure_snapshot(
         xr.testing.assert_identical(restored_source, data)
 
 
+@pytest.mark.parametrize("legacy_scales", [False, True])
 def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
     qtbot,
     tmp_path: Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    legacy_scales: bool,
 ) -> None:
     data = xr.DataArray(
         np.arange(2 * 3 * 4, dtype=np.float64).reshape((2, 3, 4)),
@@ -2445,6 +2447,20 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
         assert workspace_arrays._write_workspace_dataset_group_h5py(
             workspace_path, payload_path, stored
         )
+        if legacy_scales:
+            with h5py.File(workspace_path, "r+") as h5_file:
+                group = h5_file[payload_path]
+                for dim_id, dim in enumerate(
+                    stored[_persistence_constants.ITOOL_DATA_NAME].dims
+                ):
+                    group[dim].attrs["_Netcdf4Dimid"] = np.int32(dim_id)
+                    group[dim].attrs["_Netcdf4Coordinates"] = np.array(
+                        [dim_id], dtype=np.int32
+                    )
+                blob = group.create_dataset(
+                    "legacy-replay", data=np.arange(11, dtype=np.uint8)
+                )
+                blob.attrs[_persistence_constants.TOOL_DATA_BLOB_NAME_ATTR] = "replay"
 
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
