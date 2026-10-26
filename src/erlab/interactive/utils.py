@@ -302,7 +302,7 @@ def _is_deleted_qt_wrapper_error(exc: RuntimeError) -> bool:
 def activate_window(window: QtWidgets.QWidget | None, *, show: bool = True) -> None:
     """Show a window, restore it if minimized, and request activation.
 
-    On Windows, an existing native window briefly becomes topmost when shown.
+    On Windows, a previously shown native window briefly becomes topmost when shown.
     This works around windows that do not rise when activated. The original
     window flags, geometry, and maximized or full-screen state are preserved.
     Operating system restrictions can still prevent foreground activation.
@@ -327,6 +327,9 @@ def activate_window(window: QtWidgets.QWidget | None, *, show: bool = True) -> N
         if (
             sys.platform == "win32"
             and window.windowHandle() is not None
+            and window.testAttribute(
+                QtCore.Qt.WidgetAttribute.WA_WState_ExplicitShowHide
+            )
             and not window.windowFlags() & QtCore.Qt.WindowType.WindowStaysOnTopHint
         ):
             window_flags = window.windowFlags()

@@ -163,16 +163,20 @@ def test_activate_window_windows_workaround_preserves_window(
     assert window.isVisible()
 
 
-@pytest.mark.parametrize("already_topmost", [False, True])
+@pytest.mark.parametrize("window_state", ["new", "native-created", "topmost"])
 def test_activate_window_skips_unnecessary_windows_workaround(
-    qtbot, monkeypatch, already_topmost
+    qtbot, monkeypatch, window_state
 ) -> None:
     window = QtWidgets.QWidget()
     qtbot.addWidget(window)
+    already_topmost = window_state == "topmost"
     if already_topmost:
         window.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint)
         window.show()
         window.hide()
+    elif window_state == "native-created":
+        window.winId()
+        assert window.windowHandle() is not None
     else:
         assert window.windowHandle() is None
     monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
