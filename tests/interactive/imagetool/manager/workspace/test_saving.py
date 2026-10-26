@@ -29,18 +29,22 @@ import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive import _persistence_constants
 from erlab.interactive._code_trust import new_document_trust
+from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
+    ReplayStep,
     ScriptInput,
     full_data,
+    parse_tool_provenance_spec,
     script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
     IselOperation,
     ScriptCodeOperation,
+    ShiftFromInputOperation,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._extensions._models import (
@@ -69,6 +73,7 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _current_workspace_manifest,
     _current_workspace_payload_attrs,
     _current_workspace_payload_path,
+    _edit_current_workspace_payload_attrs,
     _open_external_file_backed_hdf5_imagetool_data,
     _open_external_lazy_hdf5_imagetool_data,
     _request_workspace_save_and_wait,
@@ -77,6 +82,80 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _write_transaction_test_workspace,
     add_source_childtool,
 )
+
+
+@pytest.mark.parametrize("visible", [False, True])
+@pytest.mark.parametrize("legacy_null", [False, True])
+def test_workspace_figure_preserves_shift_nan_provenance(
+    qtbot, tmp_path, manager_context, visible, legacy_null
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(2, 6),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": np.arange(6.0)},
+        name="shifted",
+    )
+    operation = ShiftFromInputOperation(along="x")
+    shifted = operation.apply_with_inputs(data, {"shift": xr.DataArray(1.0)})
+    spec = script(
+        start_label="Shift ImageTool data",
+        active_name="shifted",
+        script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+        primary_input="data",
+        steps=(ReplayStep(operation=operation, input_bindings={"shift": "shift"}),),
+    )
+    path = tmp_path / "shifted-figure.itws"
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(shifted, _in_manager=True),
+            show=False,
+        )
+        source = manager._node_for_target(index)
+        figure = FigureComposerTool.from_sources(
+            {"shifted": shifted},
+            sources=(
+                FigureSourceState(
+                    name="shifted",
+                    node_uid=source.uid,
+                    node_snapshot_token=source.snapshot_token,
+                    provenance_spec=spec.model_dump(mode="json"),
+                ),
+            ),
+            operations=(),
+            primary_source="shifted",
+        )
+        uid = manager.add_figuretool(figure, show=visible)
+        manager._workspace_controller.saving._save_workspace_document(path)
+        attrs = _current_workspace_payload_attrs(path, f"figures/{uid}")
+        state = json.loads(attrs["tool_state"])
+        assert np.isnan(
+            state["sources"][0]["provenance_spec"]["steps"][0]["operation"]["cval"]
+        )
+        if legacy_null:
+            state["sources"][0]["provenance_spec"]["steps"][0]["operation"]["cval"] = (
+                None
+            )
+            with _edit_current_workspace_payload_attrs(path, f"figures/{uid}") as attrs:
+                attrs["tool_state"] = json.dumps(state)
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        node = manager._child_node(uid)
+        assert node.materialize_pending_workspace_payload()
+        restored = node.tool_window
+        assert isinstance(restored, FigureComposerTool)
+        history = parse_tool_provenance_spec(
+            restored.source_states()[0].provenance_spec
+        )
+        assert history is not None
+        assert np.isnan(history.steps[0].operation.cval)
+        xr.testing.assert_identical(restored.source_data()["shifted"], shifted)
+        manager._workspace_controller._mark_node_state_dirty(uid)
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
 
 
 def test_manager_workspace_saves_added_time_for_all_node_kinds(

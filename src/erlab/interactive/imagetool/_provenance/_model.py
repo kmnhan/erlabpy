@@ -1113,6 +1113,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         frozen=True,
         arbitrary_types_allowed=True,
         extra="forbid",
+        ser_json_inf_nan="constants",
     )
 
     @classmethod
@@ -2854,6 +2855,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         arbitrary_types_allowed=True,
         extra="forbid",
         serialize_by_alias=True,
+        ser_json_inf_nan="constants",
     )
 
     @pydantic.model_validator(mode="before")

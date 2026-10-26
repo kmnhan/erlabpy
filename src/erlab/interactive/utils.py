@@ -39,6 +39,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import numpy.typing as npt
+import pydantic_core
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
@@ -1219,6 +1220,21 @@ def _normalize_tool_source_state(
     if isinstance(value, str) and value in {"fresh", "stale", "unavailable"}:
         return typing.cast("typing.Literal['fresh', 'stale', 'unavailable']", value)
     return "fresh"
+
+
+def _model_dump_json(
+    model: pydantic.BaseModel, *, exclude: set[str] | None = None
+) -> str:
+    """Serialize persisted models without replacing non-finite values with null."""
+    config = typing.cast(
+        "pydantic_core.CoreConfig",
+        {**model.model_config, "ser_json_inf_nan": "constants"},
+    )
+    # JSON-mode Any fields use the serializer's config, including nested metadata.
+    serializer = pydantic_core.SchemaSerializer(
+        model.__pydantic_core_schema__, config=config
+    )
+    return json.dumps(serializer.to_python(model, mode="json", exclude=exclude))
 
 
 class _MissingSavedToolDataReferenceError(ValueError):
@@ -5309,7 +5325,7 @@ class ToolWindow(StatefulWindow[M], metaclass=_ToolWindowMeta):
         if data_name is None:
             data_name = _persistence_constants.NONE_TOOL_DATA_NAME
         attrs: dict[str, typing.Any] = {
-            "tool_state": self._saved_tool_status().model_dump_json(),
+            "tool_state": _model_dump_json(self._saved_tool_status()),
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),

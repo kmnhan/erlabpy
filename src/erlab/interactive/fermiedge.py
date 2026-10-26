@@ -963,7 +963,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     @property
     def _saved_tool_attrs(self) -> dict:
         attrs = super()._saved_tool_attrs
-        attrs["tool_state"] = self.tool_status.model_dump_json(exclude={"fit_snapshot"})
+        attrs["tool_state"] = erlab.interactive.utils._model_dump_json(
+            self.tool_status, exclude={"fit_snapshot"}
+        )
         return attrs
 
     def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
