@@ -58,5 +58,6 @@ terms. Use concise noun or gerund phrases for headings. Avoid excessive hyphenat
 
 For commit and changelog text, read [Writing instructions](.agents/writing.md).
 
-PRs must explain the behavior change, list checks run, include screenshots or GIFs for
-GUI changes, and identify dependent data or documentation PRs.
+PRs must explain the behavior change, list checks run, and identify dependent data or
+documentation PRs. Create or attach visual assets only when absolutely necessary for
+review. Keep PR assets outside the checkout; never commit them.
