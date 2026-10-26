@@ -52,6 +52,9 @@ from erlab.interactive._figurecomposer import (
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._fit_sources import FigureFitSourceSnapshot
+from erlab.interactive._figurecomposer._operations import (
+    _registry as figurecomposer_operation_registry,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _render as plot_slices_render,
 )
@@ -5299,6 +5302,56 @@ def test_figure_composer_operation_list_keypress_defensive_paths(qtbot) -> None:
         QtCore.Qt.KeyboardModifier.NoModifier,
     )
     operation_list.keyPressEvent(fallback_event)
+
+
+@pytest.mark.parametrize(
+    "action_id",
+    [
+        None,
+        *(
+            action.action_id
+            for action in figurecomposer_operation_registry.add_step_actions()
+        ),
+    ],
+)
+def test_figure_composer_unmounted_editor_pages_stay_hidden(qtbot, action_id) -> None:
+    data = _figure_composer_image_source()
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="image"),),
+        primary_source="image",
+    )
+    tool = FigureComposerTool(data, recipe=recipe)
+    qtbot.addWidget(tool)
+    if action_id is not None:
+        action = figurecomposer_operation_registry.spec_for_action(action_id)
+        operation = action.create_operation(tool)
+        tool.tool_status = recipe.model_copy(update={"operations": (operation,)})
+    tool.auto_redraw_check.setChecked(False)
+    tool.editor_tabs.setCurrentWidget(tool.operation_panel)
+    tool.show()
+    editor = tool.operation_editor
+    qtbot.waitUntil(editor.isVisible)
+
+    for key in editor.section_keys:
+        editor.select_section(key)
+        assert editor.current_page is not None
+        assert editor.current_page.isVisible()
+        assert all(
+            widget.isHidden()
+            for widget in editor.findChildren(
+                QtWidgets.QWidget,
+                options=QtCore.Qt.FindChildOption.FindDirectChildrenOnly,
+            )
+            if widget not in (editor.navigator, editor.stack)
+        )
+
+    tool.hide()
+    tool.show()
+    assert editor.current_page.isVisible()
+    navigator_child = editor.childAt(0, 0)
+    assert navigator_child is editor.navigator or editor.navigator.isAncestorOf(
+        navigator_child
+    )
 
 
 def test_figure_composer_step_sections_scroll_independently(qtbot) -> None:
