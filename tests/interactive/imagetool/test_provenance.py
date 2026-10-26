@@ -3648,6 +3648,68 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     }
 
 
+@pytest.mark.parametrize("bound_input", [False, True])
+@pytest.mark.parametrize("cval", [np.nan, np.inf, -np.inf, 0.0])
+def test_shift_provenance_json_preserves_fill_value(bound_input, cval) -> None:
+    operation = (
+        ShiftFromInputOperation(along="y", cval=cval)
+        if bound_input
+        else ShiftOperation(shift=1.0, along="y", cval=cval)
+    )
+    spec = (
+        script(
+            start_label="Shift",
+            active_name="shifted",
+            script_inputs=(ScriptInput(name="data"), ScriptInput(name="shift")),
+            primary_input="data",
+            steps=(ReplayStep(operation=operation, input_bindings={"shift": "shift"}),),
+        )
+        if bound_input
+        else full_data(operation)
+    )
+    restored_operation = parse_tool_provenance_operation(
+        json.loads(operation.model_dump_json())
+    )
+    restored_spec = ToolProvenanceSpec.model_validate_json(spec.model_dump_json())
+    restored_values = (
+        restored_operation.cval,
+        restored_spec.steps[0].operation.cval
+        if bound_input
+        else restored_spec.operations[0].cval,
+    )
+    for value in restored_values:
+        if np.isnan(cval):
+            assert np.isnan(value)
+        else:
+            assert value == cval
+
+
+@pytest.mark.parametrize("bound_input", [False, True])
+def test_shift_operation_recovers_legacy_null_fill_value(bound_input) -> None:
+    data = _base_data().astype(float)
+    original = (
+        ShiftFromInputOperation(along="y")
+        if bound_input
+        else ShiftOperation(shift=1.0, along="y")
+    )
+    payload = original.model_dump(mode="json")
+    payload["cval"] = None
+    restored = parse_tool_provenance_operation(json.loads(json.dumps(payload)))
+
+    assert isinstance(restored, type(original))
+    assert np.isnan(restored.cval)
+    assert np.isnan(restored.model_dump(mode="json")["cval"])
+    if bound_input:
+        inputs = {"shift": xr.DataArray(1.0)}
+        actual = restored.apply_with_inputs(data, inputs)
+        expected = original.apply_with_inputs(data, inputs)
+    else:
+        actual = restored.apply(data)
+        expected = original.apply(data)
+    xr.testing.assert_identical(actual, expected)
+    assert bool(actual.isnull().any())
+
+
 def test_shift_operation_round_trip_apply_and_generated_code() -> None:
     data = _base_data().astype(float)
     operation = ShiftOperation(

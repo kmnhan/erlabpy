@@ -4845,6 +4845,33 @@ def test_tool_window_dataset_roundtrips_transformed_script_input(qtbot) -> None:
     assert restored.source_state == "stale"
 
 
+def test_tool_window_file_preserves_nonfinite_state(qtbot, tmp_path) -> None:
+    class _NonfiniteState(_PersistentToolState):
+        scalar: float = np.nan
+        nested: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+    class _NonfiniteTool(_PersistentTool):
+        StateModel = _NonfiniteState
+
+    data = xr.DataArray(np.arange(4.0), dims="x")
+    tool = _NonfiniteTool(data)
+    qtbot.addWidget(tool)
+    tool.tool_status = _NonfiniteState(
+        nested={"values": [np.nan, np.inf, -np.inf, 1.5, None]}
+    )
+    path = tmp_path / "nonfinite.h5"
+    tool.to_file(path)
+    restored = erlab.interactive.utils.ToolWindow.from_file(path)
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored.tool_status, _NonfiniteState)
+    assert np.isnan(restored.tool_status.scalar)
+    values = restored.tool_status.nested["values"]
+    assert np.isnan(values[0])
+    assert values[1:] == [np.inf, -np.inf, 1.5, None]
+    xr.testing.assert_identical(restored.tool_data, data)
+
+
 def test_tool_window_dataset_normalizes_invalid_source_state(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data)

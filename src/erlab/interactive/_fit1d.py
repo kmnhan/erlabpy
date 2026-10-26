@@ -4941,7 +4941,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         provenance = self._figure_fit_provenance()
         if provenance is not None:
-            result_ds.attrs["__figure_fit_provenance__"] = provenance.model_dump_json()
+            result_ds.attrs["__figure_fit_provenance__"] = (
+                erlab.interactive.utils._model_dump_json(provenance)
+            )
 
     def figure_fit_selection(self) -> dict[str, typing.Any] | None:
         return None

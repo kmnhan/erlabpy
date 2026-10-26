@@ -149,6 +149,12 @@ class _BaseShiftOperation(ToolProvenanceOperation):
     cval: float = np.nan
     prefilter: bool = False
 
+    @pydantic.field_validator("cval", mode="before")
+    @classmethod
+    def _restore_nan_fill_value(cls, value: typing.Any) -> typing.Any:
+        # Older tool-state JSON encoded the default NaN fill value as null.
+        return np.nan if value is None else value
+
     @property
     def kwargs(self) -> dict[str, typing.Any]:
         return {
