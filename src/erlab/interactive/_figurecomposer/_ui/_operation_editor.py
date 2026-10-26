@@ -321,6 +321,8 @@ class FigureOperationEditor(QtWidgets.QWidget):
         """Create a page whose lifetime is owned by this editor."""
         page = _FigureComposerStepEditorPage(self._editor_tabs, self)
         page.setObjectName(object_name)
+        # Unmounted pages must not cover the navigator when the editor opens.
+        page.hide()
         if transient:
             self._transient_pages.append(page)
         return page
