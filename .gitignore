@@ -163,6 +163,9 @@ cython_debug/
 # VS Code
 .vscode/*
 
+# PR review assets
+pr-previews/
+
 # Misc. files
 erlab.accessors.md
 
