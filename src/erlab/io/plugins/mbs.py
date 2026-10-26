@@ -1,11 +1,12 @@
 """Data loader for MB Scientific analyzers.
 
-Provides a base class for implementing loaders that can load ``.txt`` and ``.krax``
-filew acquired with MB Scientific analyzers. Subclass to implement the actual loading.
+Provides a base class for implementing loaders that can load ``.txt`` and ``.krx``
+files acquired with MB Scientific analyzers. Subclass to implement the actual loading.
 """
 
 __all__ = ["MBSLoader", "load_krax", "load_text"]
 
+import itertools
 import os
 import pathlib
 import re
@@ -37,25 +38,97 @@ def _parse_attr(val: str) -> float | bool | str:
     return out
 
 
-def _parse_header(header_str_list: list[str]) -> dict[str, float | bool | str]:
-    header: dict[str, float | bool | str] = {}
-    for line in header_str_list:
-        name, val = line.split("\t", 1)
-        val = val.strip()
-        if not name and not val:
+def _parse_header(header_str: str) -> dict[str, str]:
+    header: dict[str, str] = {}
+    keys: set[str] = set()
+    for line in header_str.partition("DATA:")[0].splitlines():
+        match = re.fullmatch(r"([^\t:]*)([\t:])(.*)", line)
+        if match is None:
             continue
-
-        if name == "":
-            name = "Unknown"
-
-        if name in header:
-            erlab.utils.misc.emit_user_level_warning(
-                f"Duplicate header key '{name}' found, overwriting."
-            )
-
-        header[name] = _parse_attr(val)
-
+        name, separator, value = match.groups()
+        name = name.strip()
+        if separator == ":":
+            value = value.lstrip(" \t")
+            if name.casefold() == "timestamp":
+                name = "TIMESTAMP:"
+        if (not name and not value.strip()) or name.casefold() in keys:
+            continue
+        # Igor's NumberByKey and StringByKey use the first case-insensitive match.
+        keys.add(name.casefold())
+        header[name] = value
     return header
+
+
+def _infer_axis(
+    header: dict[str, typing.Any],
+    size: int,
+    *keys: tuple[str, str | None, str],
+) -> npt.NDArray[np.float64] | None:
+    header = {key.casefold(): value for key, value in header.items()}
+    for start_key, step_key, end_key in keys:
+        values = []
+        for key in (start_key, step_key, end_key):
+            try:
+                values.append(
+                    float(header.get(key.casefold(), np.nan)) if key else np.nan
+                )
+            except (TypeError, ValueError):
+                values.append(np.nan)
+        start, step, end = values
+        if not np.isfinite(start):
+            continue
+        if size == 1:
+            return np.array([start], dtype=np.float64)
+        if np.isfinite(step) and step != 0:
+            return start + step * np.arange(size, dtype=np.float64)
+        if np.isfinite(end) and end != start:
+            return np.linspace(start, end, size)
+    return None
+
+
+def _default_axis(size: int, name: str) -> npt.NDArray[np.float64]:
+    erlab.utils.misc.emit_user_level_warning(
+        f"Cannot infer the MBS {name} scale; using zero-based channel indices."
+    )
+    return np.arange(size, dtype=np.float64)
+
+
+def _energy_axis(header: dict[str, typing.Any], size: int) -> npt.NDArray[np.float64]:
+    values = _infer_axis(header, size, ("Start K.E.", "Step Size", "End K.E."))
+    if values is None:
+        values = _default_axis(size, "energy")
+    return values
+
+
+def _angle_axis(
+    header: dict[str, typing.Any], size: int, *, spin: bool = False
+) -> npt.NDArray[np.float64]:
+    keys = [("ScaleMin", "ScaleMult", "ScaleMax")]
+    if spin:
+        keys.append(("S0ScaleMin", "S0ScaleMult", "S0ScaleMax"))
+    keys.append(("XScaleMin", "XScaleMult", "XScaleMax"))
+    values = _infer_axis(header, size, *keys)
+    if values is None:
+        values = _infer_axis(
+            header, size, ("SY", None, "EndY"), ("Start Line", None, "End Line")
+        )
+    if values is None:
+        values = _default_axis(size, "angle")
+    return values
+
+
+def _deflector_axis(
+    header: dict[str, typing.Any], size: int, axis: str = "X"
+) -> npt.NDArray[np.float64]:
+    keys: list[tuple[str, str | None, str]] = [
+        (f"MapStart{axis}", None, f"MapEnd{axis}")
+    ]
+    if axis == "X":
+        keys.append(("YScaleMin", "YScaleMult", "YScaleMax"))
+    values = _infer_axis(header, size, *keys)
+    if values is None:
+        values = _default_axis(size, f"deflector {axis}")
+    return values
 
 
 def load_text(filename: str | os.PathLike) -> xr.DataArray:
@@ -64,79 +137,91 @@ def load_text(filename: str | os.PathLike) -> xr.DataArray:
     Adapted to Python from the ``MBS_FileLoader_v4.ipf`` Igor procedure with some code
     from `mueslo/mbs <https://github.com/mueslo/mbs>`_.
 
+    Files with one intensity column return a one-dimensional array. Files with two
+    columns and no ``NoS`` entry are read as energy and intensity. If energy metadata
+    are missing, use the energy column when it is present. Missing scales otherwise
+    use zero-based channel indices and issue a warning.
     """
     header_lines = []
     data_start: int | None = None
-    # Read the header (all lines before the "Data" line)
+    # Prefer DATA: so numerical header notes are not mistaken for data.
     with open(filename) as f:
         for i, line in enumerate(f):
-            if line.startswith("DATA:"):
-                data_start = i
+            if line.lstrip().startswith("DATA:"):
+                data_start = i + 1
                 break
-            # fix for old files
-            if line.startswith("TIMESTAMP:") and not line.startswith("TIMESTAMP:\t"):
-                line = line.replace("TIMESTAMP:", "TIMESTAMP:\t", 1)
-            header_lines.append(line)
-    if data_start is None:
-        raise ValueError("Not a valid MBS data file.")
+        f.seek(0)
+        data_lines: typing.Iterable[str] = f
+        if data_start is not None:
+            header_lines = list(itertools.islice(f, data_start))
+        else:
+            for line in f:
+                if values := line.split():
+                    try:
+                        for value in values:
+                            float(value)
+                    except ValueError:
+                        pass
+                    else:
+                        data_lines = itertools.chain((line,), f)
+                        break
+                header_lines.append(line)
+            else:
+                raise ValueError("The MBS text file does not contain data.")
 
-    header_dict = _parse_header(header_lines)
+        data = np.loadtxt(data_lines, dtype=np.float64, ndmin=2)
 
-    # Load the numerical data after the header.
-    data = np.loadtxt(filename, skiprows=data_start + 1, dtype=np.float64)
+    header_dict = {
+        key or "Unknown": _parse_attr(value.strip())
+        for key, value in _parse_header("".join(header_lines)).items()
+    }
 
-    # Match step size and center energy
-    e0 = float(header_dict["Start K.E."]) + 0.5 * float(header_dict["Step Size"])
-    e1 = float(header_dict["End K.E."]) - 0.5 * float(header_dict["Step Size"])
+    if data.size == 0:
+        raise ValueError("The MBS text file does not contain data.")
 
-    if "ScaleMin" in header_dict:
-        x0 = float(header_dict["ScaleMin"])
-        x1 = float(header_dict["ScaleMax"])
-        y0 = float(header_dict.get("MapStartX", np.nan))
-        y1 = float(header_dict.get("MapEndX", np.nan))
-    else:
-        # Old header format
-        x0 = float(header_dict["XScaleMin"])
-        x1 = float(header_dict["XScaleMax"])
-        y0 = float(header_dict.get("YScaleMin", np.nan))
-        y1 = float(header_dict.get("YScaleMax", np.nan))
-
-    has_energy: bool = True
-
-    if int(header_dict["NoS"]) != int(data.shape[1]):
-        if (
-            header_dict["NoS"] == data.shape[1] - 1  # angle-resolved
-            or data.shape[1] == 2  # angle-integrated
-        ):
-            if not np.allclose(
-                np.linspace(
-                    float(header_dict["Start K.E."]),
-                    float(header_dict["End K.E."]) - float(header_dict["Step Size"]),
-                    data.shape[0],
-                ),
-                data[:, 0],
-            ):
-                raise ValueError("Energy scale mismatch; data file may be corrupt.")
-
-            data = data[:, 1:]
-
-        elif header_dict["NoS"] == data.shape[0]:  # Constant energy map (defl.)
-            data = data.T
+    energies = _infer_axis(
+        header_dict, data.shape[0], ("Start K.E.", "Step Size", "End K.E.")
+    )
+    has_energy = True
+    has_energy_column = False
+    n_columns = data.shape[1]
+    n_slices = next(
+        (value for key, value in header_dict.items() if key.casefold() == "nos"), None
+    )
+    if n_columns > 1 and n_slices != n_columns:
+        has_energy_column = (
+            n_slices == n_columns - 1
+            or n_columns == 2
+            or (energies is not None and np.allclose(energies, data[:, 0]))
+        )
+        if not has_energy_column and n_slices == data.shape[0]:
+            data = data.T  # Constant energy map (defl.)
             has_energy = False
 
-        else:
-            raise ValueError(
-                f"Number of slices are {header_dict['NoS']} in header, "
-                f"but data has {data.shape[1]} columns."
-            )
+    if has_energy_column:
+        if energies is None:
+            energies = data[:, 0]
+        data = data[:, 1:]
 
     # MBS_FileLoader_v4.ipf normalizes data with 'ActScans' attr, but we skip that here
 
-    coords = {"angles": np.linspace(x0, x1, data.shape[1])}
     if has_energy:
-        coords["energies"] = np.linspace(e0, e1, data.shape[0])
+        if energies is None:
+            energies = _energy_axis(header_dict, data.shape[0])
+        if data.shape[1] == 1:
+            return xr.DataArray(
+                data[:, 0].astype(np.int32),
+                dims=("energies",),
+                coords={"energies": energies},
+                attrs=header_dict,
+                name=pathlib.Path(filename).stem[:-6],
+            )
+
+    coords = {"angles": _angle_axis(header_dict, data.shape[1])}
+    if has_energy:
+        coords["energies"] = typing.cast("npt.NDArray[np.float64]", energies)
     else:
-        coords["defl_angles"] = np.linspace(y0, y1, data.shape[0])
+        coords["defl_angles"] = _deflector_axis(header_dict, data.shape[0])
 
     return xr.DataArray(
         data.T.astype(np.int32),
@@ -150,36 +235,43 @@ def load_text(filename: str | os.PathLike) -> xr.DataArray:
 def load_krax(
     filename: str | os.PathLike, *, without_values: bool = False
 ) -> xr.DataArray:
-    """Load MBS deflector maps in ``.krx`` format.
+    """Load MBS spectra, deflector maps, and spin channels in ``.krx`` format.
 
     Adapted to Python from the ``load_krax_FS.ipf`` Igor procedure by Felix Baumberger,
-    University of Geneva.
+    University of Geneva, and ``MBSIkrx.ipf`` by Cheewin Pisanupoj, MB Scientific AB.
+
+    Spin channels have a ``spin`` dimension with zero-based channel indices. Channels
+    stored in consecutive row blocks of one image are split along this dimension.
+    Deflector scans use ``defl_angles`` for X and ``defl_angles_y`` for Y. X varies
+    fastest in a map. Separate spin maps are grouped by channel.
+    Missing scales use zero-based channel indices and issue a warning.
     """
 
-    def read_header(file, pos, size):
-        file.seek(pos)
-        return file.read(size).decode("utf-8")
+    def read_exact(size):
+        buffer = file.read(size)
+        if len(buffer) != size:
+            raise ValueError("Unexpected end of the MBS file.")
+        return buffer
 
-    def header_to_dict(header_str):
-        out = {}
-        for row in header_str.strip().split("\r\n"):
-            if row.startswith("DATA:"):
-                break
-            k, v = row.split("\t", 1)
+    def read_header(pos, end):
+        file.seek(pos)
+        size = struct.unpack("<I", read_exact(4))[0]
+        if pos + 4 + size > end:
+            raise ValueError("MBS header length exceeds its image block.")
+        header = {}
+        for key, value in _parse_header(read_exact(size).decode("utf-8")).items():
             try:
-                v = float(v)
+                number = float(value)
             except ValueError:
-                pass
+                header[key] = value
             else:
-                if v.is_integer():
-                    v = int(v)
-            out[k] = v
-        return out
+                header[key] = int(number) if number.is_integer() else number
+        return header
 
     with open(filename, "rb") as file:
+        file_size = os.fstat(file.fileno()).st_size
         file.seek(4)
-        v0 = struct.unpack("<I", file.read(4))[0]
-        is_64bit = v0 == 0
+        is_64bit = struct.unpack("<I", read_exact(4))[0] == 0
 
         if is_64bit:
             fmt = "<Q"
@@ -189,87 +281,116 @@ def load_krax(
             num_bytes = 4
 
         file.seek(0)
-        v1 = struct.unpack(fmt, file.read(num_bytes))[0]
-        n_images = v1 // 3
+        n_entries = struct.unpack(fmt, read_exact(num_bytes))[0]
+        if n_entries == 0 or n_entries % 3 or (n_entries + 1) * num_bytes > file_size:
+            raise ValueError("Invalid MBS image index size.")
+        n_images = n_entries // 3
+        index = np.frombuffer(
+            read_exact(n_entries * num_bytes), dtype="<u8" if is_64bit else "<u4"
+        ).reshape(n_images, 3)
+        image_size_y, image_size_x = (int(v) for v in index[0, 1:])
+        if (
+            image_size_x == 0
+            or image_size_y == 0
+            or np.any(index[:, 1:] != index[0, 1:])
+        ):
+            raise ValueError("MBS images must have the same nonzero dimensions.")
 
-        # File-position of first image
-        file.seek(num_bytes)
-        image_pos = struct.unpack(fmt, file.read(num_bytes))[0]
+        positions = [int(v) * 4 for v in index[:, 0]]
+        ends = [*positions[1:], file_size]
+        image_nbytes = image_size_x * image_size_y * 4
+        index_end = file.tell()
+        if positions[0] < index_end or any(
+            pos + image_nbytes + 4 > end
+            for pos, end in zip(positions, ends, strict=True)
+        ):
+            raise ValueError("MBS image data exceeds its image block.")
 
-        # Parallel detection angle
-        file.seek(2 * num_bytes)
-        image_sizeY = struct.unpack(fmt, file.read(num_bytes))[0]
-
-        # Energy coordinate
-        file.seek(3 * num_bytes)
-        image_sizeX = struct.unpack(fmt, file.read(num_bytes))[0]
-
-        # Autodetect header format and get wave scaling from first header
-        header_pos = (image_pos + image_sizeX * image_sizeY + 1) * 4
-        header = read_header(file, header_pos, 1200)
-        header = header[: header.find("DATA:")]
-        header_dict = header_to_dict(header)
-
-        e0 = header_dict["Start K.E."] + 0.5 * header_dict["Step Size"]
-        e1 = header_dict["End K.E."] - 0.5 * header_dict["Step Size"]
-        if header.startswith("Lines\t"):
-            x0 = header_dict["ScaleMin"]
-            x1 = header_dict["ScaleMax"]
-            y0 = header_dict.get("MapStartX", np.nan)
-            y1 = header_dict.get("MapEndX", np.nan)
-        else:
-            # Old header format
-            x0 = header_dict["XScaleMin"]
-            x1 = header_dict["XScaleMax"]
-            y0 = header_dict.get("YScaleMin", np.nan)
-            y1 = header_dict.get("YScaleMax", np.nan)
-
-        data = []
-        for ii in range(n_images):
-            file.seek((ii * 3 + 1) * num_bytes)
-            image_pos = struct.unpack(fmt, file.read(num_bytes))[0]
-
-            file.seek(image_pos * 4)
-
-            if without_values:
-                buffer = np.zeros((image_sizeY, image_sizeX), dtype=np.int32)
-            else:
-                buffer = np.frombuffer(
-                    file.read(image_sizeX * image_sizeY * 4), dtype=np.int32
-                ).reshape((image_sizeY, image_sizeX))
-
-            header_pos = (image_pos + image_sizeX * image_sizeY + 1) * 4
-            file.seek(header_pos)
-            header = file.read(1200).decode("utf-8")
-            header = header[: header.find("DATA:")]
-            header_dict = header_to_dict(header)
-
-            data.append(
-                xr.DataArray(
-                    buffer,
-                    dims=["angles", "energies"],
-                    coords={
-                        "angles": np.linspace(x0, x1, image_sizeY),
-                        "energies": np.linspace(e0, e1, image_sizeX),
-                    },
-                    attrs=header_dict,
-                )
+        map_size: tuple[int, ...] = ()
+        if index_end < positions[0]:
+            if positions[0] - index_end < 2 * num_bytes:
+                raise ValueError("Incomplete MBS map dimensions.")
+            ndim = struct.unpack(fmt, read_exact(num_bytes))[0]
+            # Igor skips the second size word and reads image sizes from the index.
+            file.seek(num_bytes, os.SEEK_CUR)
+            if file.tell() + ndim * num_bytes > positions[0]:
+                raise ValueError("MBS map metadata overlaps the first image.")
+            map_size = struct.unpack(
+                f"<{ndim}{'Q' if is_64bit else 'I'}", read_exact(ndim * num_bytes)
             )
-
-        if n_images == 1:
-            return data[0]
-
-        return xr.concat(data, dim="defl_angles").assign_coords(
-            defl_angles=np.linspace(y0, y1, n_images)
+        header_dict = read_header(positions[0] + image_nbytes, ends[0])
+        shape = (n_images, image_size_y, image_size_x)
+        data = (
+            np.broadcast_to(np.zeros((), dtype=np.int32), shape)
+            if without_values
+            else np.empty(shape, dtype=np.int32)
         )
+        if not without_values:
+            for ii, pos in enumerate(positions):
+                file.seek(pos)
+                data[ii] = np.frombuffer(read_exact(image_nbytes), dtype="<i4").reshape(
+                    image_size_y, image_size_x
+                )
+
+    return _reshape_krax(data, header_dict, map_size)
+
+
+def _reshape_krax(
+    data: npt.NDArray[np.int32],
+    header: dict[str, typing.Any],
+    map_size: tuple[int, ...],
+) -> xr.DataArray:
+    n_images, size_y, size_x = data.shape
+    map_x, map_y = map_size[2:4] if len(map_size) >= 4 else (n_images, 1)
+    n_spin = map_size[4] if len(map_size) == 5 else 0
+    dims = ["defl_angles_y", "defl_angles", "angles", "energies"]
+
+    if n_spin and n_images == map_x * map_y * n_spin:
+        data = data.reshape(n_spin, map_y, map_x, size_y, size_x)
+        dims.insert(0, "spin")
+    elif n_spin and n_images == map_x * map_y and size_y % n_spin == 0:
+        size_y //= n_spin
+        data = data.reshape(map_y, map_x, n_spin, size_y, size_x)
+        data = data.transpose(2, 0, 1, 3, 4)
+        dims.insert(0, "spin")
+    elif n_spin and n_images == n_spin:
+        dims = ["spin", "angles", "energies"]
+    elif n_spin and n_images == 1 and size_y % n_spin == 0:
+        size_y //= n_spin
+        data = data.reshape(n_spin, size_y, size_x)
+        dims = ["spin", "angles", "energies"]
+    elif n_spin:
+        raise ValueError("MBS spin channels do not match the map dimensions.")
+    else:
+        if n_images != map_x * map_y:
+            raise ValueError("MBS image count does not match the map dimensions.")
+        data = data.reshape(map_y, map_x, size_y, size_x)
+
+    coords: dict[str, npt.NDArray] = {
+        "angles": _angle_axis(header, size_y, spin=bool(n_spin)),
+        "energies": _energy_axis(header, size_x),
+    }
+    for dim, size, axis in (
+        ("defl_angles", map_x, "X"),
+        ("defl_angles_y", map_y, "Y"),
+    ):
+        if dim in dims and size > 1:
+            coords[dim] = _deflector_axis(header, size, axis)
+    if n_spin:
+        coords["spin"] = np.arange(n_spin)
+
+    out = xr.DataArray(data, dims=dims, coords=coords, attrs=header)
+    return out.squeeze(
+        dim=[dim for dim in dims if dim != "spin" and out.sizes[dim] == 1]
+    )
 
 
 class MBSLoader(LoaderBase):
     """Load data acquired with MB Scientific analyzers.
 
     The loader reads angle-resolved or angle-integrated data and constant-energy
-    deflector maps from ``.txt`` files. It also reads deflector maps from ``.krx``
-    files.
+    deflector maps from ``.txt`` files. It also reads spectra, deflector maps, and spin
+    channels from ``.krx`` files.
     """
 
     name = "mbs"
