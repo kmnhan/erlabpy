@@ -970,24 +970,18 @@ def test_reveal_nodes_restores_minimized_manager(
 ) -> None:
     with manager_context() as manager:
         _add_batch_tools(qtbot, manager, test_data)
-        calls: list[str] = []
-        monkeypatch.setattr(manager, "isMinimized", lambda: True)
-        monkeypatch.setattr(manager, "showNormal", lambda: calls.append("normal"))
-        monkeypatch.setattr(manager, "raise_", lambda: calls.append("raise"))
-        monkeypatch.setattr(manager, "activateWindow", lambda: calls.append("activate"))
+        manager.showMaximized()
+        manager.showMinimized()
 
         assert manager.reveal_nodes((manager._tool_graph.root_wrappers[0].uid,))
 
-        assert calls == ["normal", "raise", "activate"]
-
-        calls.clear()
-        monkeypatch.setattr(manager, "isMinimized", lambda: False)
-        monkeypatch.setattr(manager, "isVisible", lambda: False)
-        monkeypatch.setattr(manager, "show", lambda: calls.append("show"))
+        assert not manager.isMinimized()
+        assert manager.isMaximized()
+        manager.hide()
 
         assert manager.reveal_nodes((manager._tool_graph.root_wrappers[0].uid,))
 
-        assert calls == ["show", "raise", "activate"]
+        assert manager.isVisible()
 
 
 def test_manager_open_settings_reuses_live_dialog(

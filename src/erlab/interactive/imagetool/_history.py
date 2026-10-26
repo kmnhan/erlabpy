@@ -12,9 +12,7 @@ from collections.abc import Hashable, Mapping, MutableMapping, Sequence
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
-if typing.TYPE_CHECKING:
-    import erlab
-
+import erlab
 
 _MISSING = object()
 
@@ -1009,9 +1007,7 @@ class HistoryMenu(QtWidgets.QMenu):
             slicer_area = self.slicer_area
             self._dialog = HistoryDialog(slicer_area, slicer_area.window())
         self._dialog.refresh()
-        self._dialog.show()
-        self._dialog.raise_()
-        self._dialog.activateWindow()
+        erlab.interactive.utils.activate_window(self._dialog)
 
     def update_actions(self) -> None:
         self.clear()

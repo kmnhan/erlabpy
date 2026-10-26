@@ -49,6 +49,7 @@ import zmq.utils.monitor
 from qtpy import QtCore
 
 import erlab
+from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._registry import (
     ImageToolManagerAmbiguousError,
     ImageToolManagerNotFoundError,
@@ -183,6 +184,7 @@ class CommandPacket(_BasePacket):
     packet_type: typing.Literal["command"]
     command: typing.Literal[
         "ping",
+        "activate-workspace",
         "get-data",
         "remove-idx",
         "show-idx",
@@ -555,6 +557,7 @@ class _ManagerServer(QtCore.QThread):
 
     sigDataRequested = QtCore.Signal(object)
     sigWatchInfoRequested = QtCore.Signal()
+    sigWorkspaceActivationRequested = QtCore.Signal(str)
     sigRemoveIndex = QtCore.Signal(int)
     sigShowIndex = QtCore.Signal(int)
     sigRemoveUID = QtCore.Signal(str)
@@ -677,7 +680,8 @@ class _ManagerServer(QtCore.QThread):
                 logger.debug("Received payload with type %s", payload.packet_type)
                 if not (
                     payload.packet_type == "command"
-                    and payload.command in {"get-data", "watch-info"}
+                    and payload.command
+                    in {"get-data", "watch-info", "activate-workspace"}
                 ):
                     # For commands without return payloads, send an immediate OK
                     # response before dispatching work to the GUI thread.
@@ -707,6 +711,18 @@ class _ManagerServer(QtCore.QThread):
                     case "command":
                         logger.debug("Processing command: %s", payload.command)
                         match payload.command:
+                            case "activate-workspace":
+                                self.sigWorkspaceActivationRequested.emit(
+                                    str(payload.command_arg)
+                                )
+                                activated = self._wait_for_return_value()
+                                if activated is _UNSET:
+                                    break
+                                _send_multipart(
+                                    sock,
+                                    {"status": "ok" if activated else "error"},
+                                )
+                                continue
                             case "get-data":
                                 self.sigDataRequested.emit(payload.command_arg)
                                 logger.debug("Getting data...")
@@ -1074,6 +1090,24 @@ def load_in_manager(
             arguments=load_kwargs,
         ),
         record=record,
+    )
+
+
+def _activate_workspace_in_manager(
+    path: pathlib.Path, *, record: _ManagerRecord, timeout_ms: int
+) -> bool:
+    _desktop.allow_foreground_activation(record.pid)
+    return (
+        _query_zmq(
+            CommandPacket(
+                packet_type="command",
+                command="activate-workspace",
+                command_arg=str(path),
+            ),
+            record=record,
+            timeout_ms=timeout_ms,
+        ).status
+        == "ok"
     )
 
 

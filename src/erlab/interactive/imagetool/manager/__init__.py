@@ -75,6 +75,10 @@ from erlab.interactive.imagetool.manager._logging import (
     get_log_file_path,
 )
 from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+from erlab.interactive.imagetool.manager._registry import (
+    _workspace_paths_match,
+    live_manager_records,
+)
 from erlab.interactive.imagetool.manager._server import (
     HOST_IP,
     PORT,
@@ -83,6 +87,7 @@ from erlab.interactive.imagetool.manager._server import (
     ImageToolManagerHandle,
     ImageToolManagerNotFoundError,
     ImageToolManagerRegistry,
+    _activate_workspace_in_manager,
     _load_in_manager_startup,
     _unwatch_data,
     _watch_data,
@@ -105,7 +110,10 @@ from erlab.interactive.imagetool.manager._watcher import (
     watch,
     watched_variables,
 )
-from erlab.interactive.imagetool.manager._widgets import _ICON_PATH
+from erlab.interactive.imagetool.manager._widgets import (
+    _ICON_PATH,
+    _launch_new_manager_instance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,11 +196,13 @@ class _ManagerApp(QtWidgets.QApplication):
                 return True
         return super().event(e)
 
-    def _handle_open_file(self, path: pathlib.Path) -> None:  # pragma: no cover
-        if _manager_instance:
-            _manager_instance._handle_dropped_files([path])
-        else:
+    def _handle_open_file(self, path: pathlib.Path) -> None:
+        if _manager_instance is None:
             self._pending_files.append(path)
+        elif _startup_path_is_workspace(path):
+            _open_desktop_workspace(_manager_instance, path)
+        else:
+            _manager_instance._handle_dropped_files([path])
 
 
 def _get_updater_settings() -> QtCore.QSettings:  # pragma: no cover
@@ -256,6 +266,69 @@ def _parse_startup_args(args: Iterable[str]) -> _StartupArgs:
 
 def _startup_path_is_workspace(path: pathlib.Path) -> bool:
     return path.suffix.lower() == ".itws"
+
+
+def _try_activate_workspace(path: pathlib.Path) -> bool:
+    manager = _manager_instance
+    if (
+        manager is not None
+        and erlab.interactive.utils.qt_is_valid(manager)
+        and manager._activate_workspace(str(path))
+    ):
+        return True
+
+    try:
+        records = live_manager_records(lock_timeout_ms=_STARTUP_FORWARD_TIMEOUT_MS)
+        for record in records:
+            # The GUI thread cannot wait for a reply from its own server.
+            if record.pid == os.getpid() or record.workspace_path is None:
+                continue
+            if _workspace_paths_match(record.workspace_path, path):
+                return _activate_workspace_in_manager(
+                    path,
+                    record=record,
+                    timeout_ms=_STARTUP_FORWARD_TIMEOUT_MS,
+                )
+    except Exception:
+        logger.debug(
+            "Could not activate the manager for workspace %s", path, exc_info=True
+        )
+    return False
+
+
+def _open_desktop_workspace(manager: ImageToolManager, path: pathlib.Path) -> None:
+    if _try_activate_workspace(path):
+        return
+
+    state = manager._workspace_state
+    if (
+        manager.workspace_path is None
+        and not manager._tool_graph.nodes
+        and not manager.is_workspace_modified
+        and not state.extension_scripts.has_content
+        and not state.options_modified
+        and not state.save_in_progress
+        and not state.loading_depth
+        and not state.closing_document
+        and not manager._file_handlers
+    ):
+        manager._handle_dropped_files([path])
+        return
+
+    try:
+        _launch_new_manager_instance(
+            extra_args=[_desktop.NEW_MANAGER_WINDOW_ARG, str(path.resolve())]
+        )
+    except Exception:
+        logger.exception(
+            "Could not open workspace in a new ImageTool Manager",
+            extra={"suppress_ui_alert": True},
+        )
+        erlab.interactive.utils.MessageDialog.critical(
+            manager,
+            "Open Workspace",
+            "Could not open the workspace in another ImageTool Manager window.",
+        )
 
 
 def _startup_pending_files(
@@ -436,6 +509,21 @@ def main(execute: bool = True) -> None:
         qapp._pending_files.copy() if isinstance(qapp, _ManagerApp) else []
     )
     startup_files = _startup_pending_files(file_open_event_files, startup_arg_files)
+    had_startup_files = bool(startup_files)
+    startup_files = [
+        path
+        for path in startup_files
+        if not (_startup_path_is_workspace(path) and _try_activate_workspace(path))
+    ]
+    if (
+        had_startup_files
+        and not startup_files
+        and not startup_args.open_workspace_dialog
+        and not startup_args.tutorial
+    ):
+        if isinstance(qapp, _ManagerApp):
+            qapp._pending_files.clear()
+        return
     if (
         startup_files
         and not startup_args.force_new_manager
@@ -446,8 +534,7 @@ def main(execute: bool = True) -> None:
         return
 
     _manager_instance = ImageToolManager()
-    _manager_instance.show()
-    _manager_instance.activateWindow()
+    erlab.interactive.utils.activate_window(_manager_instance)
 
     if startup_args.tutorial:
         tutorial_manager = _manager_instance
@@ -463,8 +550,15 @@ def main(execute: bool = True) -> None:
     if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
         _desktop.install_macos_dock_menu(_manager_instance)
 
-    if startup_files:  # pragma: no cover
-        _manager_instance._handle_dropped_files(startup_files)
+    if startup_files:
+        for path in startup_files:
+            if _startup_path_is_workspace(path):
+                _open_desktop_workspace(_manager_instance, path)
+        data_files = [
+            path for path in startup_files if not _startup_path_is_workspace(path)
+        ]
+        if data_files:
+            _manager_instance._handle_dropped_files(data_files)
         if isinstance(qapp, _ManagerApp):
             qapp._pending_files.clear()
 

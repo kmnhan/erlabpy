@@ -43,6 +43,19 @@ def configure_process() -> None:
     install_windows_jump_list()
 
 
+def allow_foreground_activation(pid: int) -> None:
+    """Pass the shell launch's foreground permission to an existing process."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        user32 = typing.cast("typing.Any", ctypes).windll.user32
+        user32.AllowSetForegroundWindow(ctypes.c_ulong(pid))
+    except Exception:
+        logger.debug(
+            "Could not pass foreground permission to process %s", pid, exc_info=True
+        )
+
+
 def record_recent_workspace(fname: str | os.PathLike[str]) -> None:
     """Record a workspace with the platform's shell recent-document list."""
     path = pathlib.Path(fname).expanduser().resolve()

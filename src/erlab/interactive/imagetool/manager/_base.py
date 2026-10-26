@@ -894,9 +894,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
     def _show_standalone_app(self, key: str) -> QtWidgets.QWidget:
         widget = self._ensure_standalone_app(key)
-        widget.show()
-        widget.activateWindow()
-        widget.raise_()
+        erlab.interactive.utils.activate_window(widget)
         return widget
 
     def _mark_standalone_app_state_dirty(self) -> None:

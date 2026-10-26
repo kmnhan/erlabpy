@@ -88,6 +88,7 @@ from erlab.interactive.utils import (
     PythonCodeEditor,
     PythonHighlighter,
     SingleLinePlainTextEdit,
+    activate_window,
     array_rect,
     generate_code,
     load_fit_ui,
@@ -105,6 +106,122 @@ def _exec_generated_code(
     output = {"__builtins__": vars(builtins), **namespace}
     exec(code, output, output)  # noqa: S102
     return output
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+@pytest.mark.parametrize("state", ["hidden", "minimized", "maximized", "fullscreen"])
+def test_activate_window_restores_window(qtbot, monkeypatch, platform, state) -> None:
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+    window.setGeometry(120, 140, 320, 240)
+    if state == "maximized":
+        window.showMaximized()
+        window.showMinimized()
+    elif state == "fullscreen":
+        window.showFullScreen()
+        window.showMinimized()
+    elif state == "minimized":
+        window.showMinimized()
+    else:
+        window.show()
+        window.hide()
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", platform)
+
+    activate_window(window)
+
+    assert window.isVisible()
+    assert not window.isMinimized()
+    assert window.isMaximized() is (state == "maximized")
+    assert window.isFullScreen() is (state == "fullscreen")
+
+
+def test_activate_window_windows_workaround_preserves_window(
+    qtbot, monkeypatch
+) -> None:
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+    window.setGeometry(120, 140, 320, 240)
+    window.show()
+    window.hide()
+    flags = window.windowFlags()
+    geometry = window.geometry()
+    transitions: list[QtCore.Qt.WindowType] = []
+    set_flags = window.setWindowFlags
+
+    def track_flags(value) -> None:
+        transitions.append(value)
+        set_flags(value)
+
+    monkeypatch.setattr(window, "setWindowFlags", track_flags)
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+
+    activate_window(window)
+
+    assert transitions == [flags | QtCore.Qt.WindowType.WindowStaysOnTopHint, flags]
+    assert window.windowFlags() == flags
+    assert window.geometry() == geometry
+    assert window.isVisible()
+
+
+@pytest.mark.parametrize("already_topmost", [False, True])
+def test_activate_window_skips_unnecessary_windows_workaround(
+    qtbot, monkeypatch, already_topmost
+) -> None:
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+    if already_topmost:
+        window.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        window.show()
+        window.hide()
+    else:
+        assert window.windowHandle() is None
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    monkeypatch.setattr(
+        window,
+        "setWindowFlags",
+        lambda _flags: pytest.fail("this window needs no flag changes"),
+    )
+
+    activate_window(window)
+
+    assert window.isVisible()
+    assert (
+        bool(window.windowFlags() & QtCore.Qt.WindowType.WindowStaysOnTopHint)
+        is already_topmost
+    )
+
+
+@pytest.mark.parametrize("minimized", [False, True])
+def test_activate_window_without_show_preserves_visibility(
+    qtbot, monkeypatch, minimized
+) -> None:
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+    if minimized:
+        window.showMinimized()
+    else:
+        window.show()
+        window.hide()
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    monkeypatch.setattr(
+        window,
+        "setWindowFlags",
+        lambda _flags: pytest.fail("activation alone must not change window flags"),
+    )
+
+    activate_window(window, show=False)
+
+    assert window.isVisible() is minimized
+    assert window.isMinimized() is minimized
+
+
+def test_activate_window_ignores_missing_and_deleted_windows(qtbot) -> None:
+    window = QtWidgets.QWidget()
+    window.deleteLater()
+    qtbot.wait_until(lambda: not qt_is_valid(window))
+
+    activate_window(None)
+    activate_window(window)
 
 
 @pytest.mark.parametrize(

@@ -282,6 +282,19 @@ def live_manager_records(
         return tuple(record for record in records if record.state == _READY_STATE)
 
 
+def _workspace_paths_match(
+    first: str | os.PathLike[str], second: str | os.PathLike[str]
+) -> bool:
+    first_path = pathlib.Path(first).expanduser().resolve()
+    second_path = pathlib.Path(second).expanduser().resolve()
+    if os.path.normcase(str(first_path)) == os.path.normcase(str(second_path)):
+        return True
+    try:
+        return first_path.samefile(second_path)
+    except OSError:
+        return False
+
+
 def reserve_manager_record(*, host: str) -> _ManagerRecord:
     """Reserve a launch index for a starting manager."""
     with _registry_lock():

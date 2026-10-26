@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import datetime
 import json
 import logging
@@ -23,6 +24,7 @@ import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._modelview as manager_modelview
+import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
@@ -1760,6 +1762,300 @@ def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
     assert not normal_tutorial_args.tutorial_debug
 
 
+def test_manager_file_open_event_waits_for_startup(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(manager_module, "_manager_instance", None)
+    app = types.SimpleNamespace(_pending_files=[])
+    path = tmp_path / "workspace.itws"
+
+    manager_module._ManagerApp._handle_open_file(app, path)
+
+    assert app._pending_files == [path]
+
+
+def test_manager_file_open_event_keeps_data_file_ingress(
+    monkeypatch, tmp_path, manager_context
+) -> None:
+    path = tmp_path / "data.h5"
+    calls: list[list[pathlib.Path]] = []
+    with manager_context() as manager:
+        monkeypatch.setattr(manager, "_handle_dropped_files", calls.append)
+        manager_module._ManagerApp._handle_open_file(None, path)
+
+    assert calls == [[path]]
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["empty", "saved", "unsaved", "saving", "loading", "closing", "data", "options"],
+)
+def test_manager_desktop_workspace_reuses_only_empty_manager(
+    state, monkeypatch, tmp_path, manager_context
+) -> None:
+    path = tmp_path / "new workspace.ITWS"
+    opened: list[list[pathlib.Path]] = []
+    launched: list[list[str]] = []
+    monkeypatch.setattr(manager_module, "_try_activate_workspace", lambda _path: False)
+    monkeypatch.setattr(
+        manager_module,
+        "_launch_new_manager_instance",
+        lambda *, extra_args: launched.append(extra_args),
+    )
+
+    with manager_context() as manager:
+        if state == "saved":
+            adopt_workspace_path(manager, tmp_path / "current.itws")
+        elif state == "unsaved":
+            manager._workspace_state.context_modified = True
+        elif state == "saving":
+            manager._workspace_state.save_in_progress = True
+        elif state == "loading":
+            manager._workspace_state.loading_depth += 1
+        elif state == "closing":
+            manager._workspace_state.closing_document = True
+        elif state == "data":
+            manager._file_handlers.add(object())
+        elif state == "options":
+            manager._workspace_state.options_modified = True
+        monkeypatch.setattr(manager, "_handle_dropped_files", opened.append)
+        try:
+            manager_module._ManagerApp._handle_open_file(None, path)
+        finally:
+            manager._workspace_state.save_in_progress = False
+            manager._workspace_state.closing_document = False
+            manager._file_handlers.clear()
+            if state == "loading":
+                manager._workspace_state.loading_depth -= 1
+
+    assert opened == ([[path]] if state == "empty" else [])
+    assert launched == (
+        []
+        if state == "empty"
+        else [[manager_desktop.NEW_MANAGER_WINDOW_ARG, str(path.resolve())]]
+    )
+
+
+def test_manager_desktop_workspace_preserves_unsaved_tools_on_launch_failure(
+    monkeypatch, tmp_path, test_data, manager_context
+) -> None:
+    dialogs: list[object] = []
+    monkeypatch.setattr(manager_module, "_try_activate_workspace", lambda _path: False)
+    monkeypatch.setattr(
+        manager_module,
+        "_launch_new_manager_instance",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("launch failed")),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: dialogs.append(args),
+    )
+    with manager_context() as manager:
+        itool(test_data, manager=True)
+        tool = manager.get_imagetool(0)
+        manager_module._ManagerApp._handle_open_file(None, tmp_path / "other.itws")
+
+        assert manager.get_imagetool(0) is tool
+        assert manager.workspace_path is None
+        assert manager.is_workspace_modified
+        assert len(dialogs) == 1
+
+
+def test_manager_desktop_workspace_activates_local_document_without_reloading(
+    monkeypatch, tmp_path, manager_context
+) -> None:
+    activated: list[object] = []
+    monkeypatch.setattr(
+        manager_module,
+        "live_manager_records",
+        lambda **_kwargs: pytest.fail("the local workspace needs no registry lookup"),
+    )
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            erlab.interactive.utils, "activate_window", activated.append
+        )
+        path = tmp_path / "workspace.itws"
+        adopt_workspace_path(manager, path)
+        monkeypatch.setattr(
+            manager,
+            "_handle_dropped_files",
+            lambda _paths: pytest.fail("the current workspace must not reload"),
+        )
+
+        manager_module._ManagerApp._handle_open_file(None, path)
+
+        assert activated == [manager]
+
+
+@pytest.mark.parametrize("activation_result", [True, False, "error", "missing"])
+def test_manager_desktop_workspace_finds_document_owner(
+    activation_result, monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    record = manager_registry._ManagerRecord(
+        internal_id="owner",
+        index=2,
+        pid=-1,
+        host="127.0.0.1",
+        port=12345,
+        watch_port=12346,
+        started="",
+        version="3.28.1",
+        heartbeat=0.0,
+        workspace_path=str(path),
+    )
+    other_record = dataclasses.replace(
+        record, index=3, workspace_path=str(tmp_path / "other.itws")
+    )
+    local_record = dataclasses.replace(record, index=0, pid=manager_module.os.getpid())
+    empty_record = dataclasses.replace(record, index=1, workspace_path=None)
+    calls: list[object] = []
+    monkeypatch.setattr(manager_module, "_manager_instance", None)
+    monkeypatch.setattr(
+        manager_module,
+        "live_manager_records",
+        lambda **_kwargs: (
+            (local_record, empty_record, other_record)
+            if activation_result == "missing"
+            else (local_record, empty_record, other_record, record)
+        ),
+    )
+
+    def activate(path, **kwargs):
+        calls.append((path, kwargs))
+        if activation_result == "error":
+            raise RuntimeError("manager stopped")
+        return activation_result
+
+    monkeypatch.setattr(manager_module, "_activate_workspace_in_manager", activate)
+
+    assert manager_module._try_activate_workspace(path) is (activation_result is True)
+    assert calls == (
+        []
+        if activation_result == "missing"
+        else [
+            (
+                path,
+                {
+                    "record": record,
+                    "timeout_ms": manager_module._STARTUP_FORWARD_TIMEOUT_MS,
+                },
+            )
+        ]
+    )
+
+
+def test_manager_desktop_workspace_registry_failure_falls_back(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(manager_module, "_manager_instance", None)
+    monkeypatch.setattr(
+        manager_module,
+        "live_manager_records",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("registry unavailable")),
+    )
+    assert not manager_module._try_activate_workspace(tmp_path / "workspace.itws")
+
+
+@pytest.fixture
+def desktop_startup_app(monkeypatch, qapp):
+    class _StartupApp:
+        def __init__(self, _argv) -> None:
+            self._pending_files: list[pathlib.Path] = []
+
+        def setStyle(self, _style) -> None:
+            pass
+
+        def setAttribute(self, *_args) -> None:
+            pass
+
+        def property(self, _name) -> bool:
+            return True
+
+        def processEvents(self) -> None:
+            pass
+
+    app = _StartupApp([])
+    monkeypatch.setattr(manager_module, "_ManagerApp", _StartupApp)
+    monkeypatch.setattr(manager_module.QtWidgets.QApplication, "instance", lambda: None)
+    monkeypatch.setattr(_StartupApp, "__new__", lambda *_args: app)
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(manager_module, "_manager_instance", None)
+    return app
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_manager_startup_activates_existing_workspace_without_empty_window(
+    platform, desktop_startup_app, monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    path.touch()
+    activated: list[pathlib.Path] = []
+    monkeypatch.setattr(manager_module.sys, "platform", platform)
+    if platform == "darwin":
+        monkeypatch.setattr(manager_module.sys, "argv", ["itool-manager"])
+        monkeypatch.setattr(
+            type(desktop_startup_app),
+            "processEvents",
+            lambda self: self._pending_files.append(path),
+        )
+    else:
+        monkeypatch.setattr(manager_module.sys, "argv", ["itool-manager", str(path)])
+    monkeypatch.setattr(
+        manager_module,
+        "_try_activate_workspace",
+        lambda path: activated.append(path) or True,
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "ImageToolManager",
+        lambda: pytest.fail("an open workspace must not create another Manager"),
+    )
+
+    manager_module.main(execute=False)
+
+    assert activated == [path]
+    assert manager_module._manager_instance is None
+    assert desktop_startup_app._pending_files == []
+
+
+def test_manager_startup_routes_each_workspace_separately(
+    desktop_startup_app, monkeypatch, tmp_path
+) -> None:
+    paths = [tmp_path / "first.itws", tmp_path / "second.itws", tmp_path / "data.h5"]
+    for path in paths:
+        path.touch()
+    calls: list[object] = []
+
+    class _StartupManager(QtWidgets.QWidget):
+        def show(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
+
+        def _handle_dropped_files(self, paths) -> None:
+            calls.append(("data", paths))
+
+    monkeypatch.setattr(manager_module.sys, "argv", ["itool-manager", *map(str, paths)])
+    monkeypatch.setattr(manager_module, "ImageToolManager", _StartupManager)
+    monkeypatch.setattr(manager_module, "_try_activate_workspace", lambda _path: False)
+    monkeypatch.setattr(
+        manager_module,
+        "_open_desktop_workspace",
+        lambda manager, path: calls.append(("workspace", path)),
+    )
+    try:
+        manager_module.main(execute=False)
+
+        assert calls == [
+            ("workspace", paths[0]),
+            ("workspace", paths[1]),
+            ("data", [paths[2]]),
+        ]
+    finally:
+        manager_module._manager_instance = None
+
+
 def test_manager_tutorial_start_is_deferred(monkeypatch, qapp) -> None:
     callbacks: list[Callable[[], None]] = []
     started: list[object] = []
@@ -1771,8 +2067,9 @@ def test_manager_tutorial_start_is_deferred(monkeypatch, qapp) -> None:
         def setEnabled(self, enabled: bool) -> None:
             self.enabled = enabled
 
-    class _FakeManager:
+    class _FakeManager(QtWidgets.QWidget):
         def __init__(self) -> None:
+            super().__init__()
             self.tutorial_action = _FakeAction()
 
         def show(self) -> None:
@@ -1829,7 +2126,7 @@ def test_manager_startup_ignores_argv_files_with_existing_qapplication(
     if isinstance(qapp, manager_module._ManagerApp):
         qapp._pending_files.clear()
 
-    class _FakeManager:
+    class _FakeManager(QtWidgets.QWidget):
         def show(self) -> None:
             pass
 

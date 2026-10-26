@@ -54,6 +54,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
     _ProvenanceEditController,
 )
 from erlab.interactive.imagetool.manager._registry import (
+    _workspace_paths_match,
     activate_manager_record,
     reserve_manager_record,
     unregister_manager_record,
@@ -2378,6 +2379,20 @@ class ImageToolManager(_ImageToolManagerBase):
     def open_new_manager_instance(self) -> None:
         self._widgets_controller.open_new_manager_instance()
 
+    def _activate_workspace(self, path: str) -> bool:
+        if (
+            self._workspace_state.closing_document
+            or self.workspace_path is None
+            or not _workspace_paths_match(self.workspace_path, path)
+        ):
+            return False
+        erlab.interactive.utils.activate_window(self)
+        return True
+
+    @QtCore.Slot(str)
+    def _send_workspace_activation(self, path: str) -> None:
+        self._sigReplyData.emit(self._activate_workspace(path))
+
     def open_tutorial(self) -> None:
         self._widgets_controller.open_tutorial()
 
@@ -2919,12 +2934,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self.tree_view.scrollTo(indexes[0])
             focus_widget = self.tree_view
 
-        if self.isMinimized():
-            self.showNormal()
-        elif not self.isVisible():
-            self.show()
-        self.raise_()
-        self.activateWindow()
+        erlab.interactive.utils.activate_window(self)
         focus_widget.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
         return True
 
@@ -3387,12 +3397,10 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._sigReloadLinkers.emit()
 
-        if show:
-            tool.show()
-
         if activate:
-            tool.activateWindow()
-            tool.raise_()
+            erlab.interactive.utils.activate_window(tool, show=show)
+        elif show:
+            tool.show()
 
         # Add to view after initialization
         self.tree_view.imagetool_added(index)
