@@ -6,44 +6,16 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: compat-266-native-${{ github.run_id }}
-  cancel-in-progress: false
-
 jobs:
-  trace:
-    name: Native trace [${{ matrix.gc-mode }} GC]
+  probe:
+    name: Probe PySide6 widget destruction
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        gc-mode: [normal, frequent]
+    timeout-minutes: 15
     env:
-      DISPLAY: ":99.0"
-      QT_API: pyside6
-      PYTEST_QT_API: pyside6
-      ERLAB_COMPAT266_GC_MODE: ${{ matrix.gc-mode }}
-      ERLAB_TEST_DATA_CACHE_DIR: /home/runner/.cache/erlabpy
+      QT_QPA_PLATFORM: offscreen
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Load test data configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-          source tests/test-data.env
-          cat tests/test-data.env >> "$GITHUB_ENV"
-          echo "ERLAB_TEST_DATA_DIR=$ERLAB_TEST_DATA_CACHE_DIR/kmnhan-erlabpy-data-${ERLAB_TEST_DATA_COMMIT:0:7}" >> "$GITHUB_ENV"
-
-      - uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.ERLAB_TEST_DATA_CACHE_DIR }}
-          key: erlabpy-data-${{ hashFiles('tests/test-data.env') }}
-          fail-on-cache-miss: true
 
       - uses: pyvista/setup-headless-display-action@v5
         with:
@@ -54,42 +26,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies from compatibility 266
-        shell: bash
+      - name: Install compatibility 266 Qt wheel
         run: |
-          set -euo pipefail
-          uv sync --all-extras --dev --group pyside6 --upgrade
-          uv pip install --no-deps --requirements scripts/_compat266_requirements.txt
-          uv pip freeze > resolved-dependencies.txt
+          uv venv --python 3.12
+          uv pip install pyside6==6.12.0
+          uv pip freeze > probe-dependencies.txt
           if ! command -v gdb; then
             sudo apt-get update
             sudo apt-get install -y gdb
           fi
 
-      - name: Run GUI sequence under GDB
+      - name: Inspect destruction threads
         shell: bash
         run: |
           set +e
           set -o pipefail
           gdb --batch --return-child-result \
             -x scripts/_compat266.gdb \
-            --args "$PWD/.venv/bin/python" -X faulthandler -m pytest \
-            -v --capture=tee-sys --no-qt-log \
-            -o faulthandler_timeout=300 \
-            -o faulthandler_exit_on_timeout=true \
-            -o junit_family=legacy \
-            -m gui -p scripts._compat266_diagnostics \
-            --junitxml "native-${{ matrix.gc-mode }}.xml" \
-            2>&1 | tee "native-${{ matrix.gc-mode }}.log"
+            --args "$PWD/.venv/bin/python" -X faulthandler \
+            scripts/_compat266_probe.py 2>&1 | tee probe.log
           exit "${PIPESTATUS[0]}"
 
-      - name: Save diagnostics
+      - name: Save probe evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: compat-266-native-${{ matrix.gc-mode }}
+          name: compat-266-widget-thread-probe
           path: |
-            native-*.log
-            native-*.xml
-            resolved-dependencies.txt
-          if-no-files-found: warn
+            probe.log
+            probe-dependencies.txt
