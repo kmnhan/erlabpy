@@ -525,7 +525,9 @@ class WorkspaceFileManager(CachingFileManager):
                 for part in (self._group_path or "/").strip("/").split("/"):
                     if part:
                         group = group.groups[part]
-                return group.variables[variable_name][key]
+                variable = group.variables[variable_name]
+                _restore_workspace_dimension_scale(variable_name, variable)
+                return variable[key]
 
         try:
             return workspace_store._wait_for_hdf5_access(_read)
@@ -745,6 +747,7 @@ class _WorkspaceBackendArray(BackendArray):
             array = self.datastore._acquire(needs_lock=False).variables[
                 self.variable_name
             ]
+            _restore_workspace_dimension_scale(self.variable_name, array)
             dataset = manager._direct_read_dataset(self.variable_name, array)
             if dataset is not None and all(
                 type(part) is int
@@ -809,6 +812,7 @@ class _WorkspaceH5NetCDFStore(H5NetCDFStore):
             return super().get_encoding()
 
     def open_store_variable(self, name: str, var: typing.Any) -> xr.Variable:
+        _restore_workspace_dimension_scale(name, var)
         variable = super().open_store_variable(name, var)
         data = indexing.LazilyIndexedArray(
             _WorkspaceBackendArray(
@@ -1116,6 +1120,30 @@ def _workspace_h5py_attr_text(value: typing.Any) -> str | None:
 
 def _workspace_h5py_dataset_is_dimension_scale(dataset: typing.Any) -> bool:
     return _workspace_h5py_attr_text(dataset.attrs.get("CLASS")) == "DIMENSION_SCALE"
+
+
+def _restore_workspace_dimension_scale(name: str, variable: h5netcdf.Variable) -> None:
+    """Restore saved scale axes without synthetic dimension IDs."""
+    dimensions = variable._parent._all_dimensions
+    if name not in dimensions or not any(
+        dimensions[dim]._phony for dim in variable.dimensions
+    ):
+        return
+    dataset = variable._h5ds
+    if not _workspace_h5py_dataset_is_dimension_scale(dataset):
+        return
+    coordinate_ids = dataset.attrs.get("_Netcdf4Coordinates")
+    if coordinate_ids is None:
+        return
+    # Synthetic dimensions have ID False, which collides with saved ID 0.
+    # Correct this handle's cache before decoding or reading a scale. Reopened
+    # handles need the same correction, including for character-array coordinates.
+    dimension_names = {
+        dimension._dimid: dim_name
+        for dim_name, dimension in dimensions.items()
+        if not dimension._phony
+    }
+    variable._dimensions = tuple(dimension_names[dim_id] for dim_id in coordinate_ids)
 
 
 def _workspace_h5py_type_contains_reference(type_id: typing.Any) -> bool:
