@@ -3010,6 +3010,10 @@ class _WorkspaceController:
                     generation,
                     fname=worker_path,
                 )
+                # Successful Save As adopts this directory with the new path.
+                snapshot.generation_plan.manifest["loader_state"][
+                    "recent_directory"
+                ] = str(access.path.parent)
                 snapshot_elapsed = time.perf_counter() - snapshot_started_at
             finally:
                 self._manager._workspace_state.saving_depth -= 1

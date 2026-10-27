@@ -171,10 +171,14 @@ changeup_scope_separator = ":** "
 source = ["src"]
 omit = ["*/_deprecated/*", "*/_updater_gui.py", "*/_updater_core.py"]
 branch = true
+relative_files = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
 patch = ["subprocess", "execv", "_exit", "fork"]
+
+[tool.coverage.paths]
+source = ["src", "*/src"]
 
 [tool.coverage.report]
 exclude_also = [

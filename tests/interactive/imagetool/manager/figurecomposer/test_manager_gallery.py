@@ -14,6 +14,7 @@ import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._figure_repair as figure_repair
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.utils
@@ -1725,7 +1726,9 @@ def test_manager_workspace_save_repairs_embedded_figure_sources(
         # the source token without changing its data.
         with monkeypatch.context() as context:
             context.setattr(
-                saver, "_repair_workspace_figure_dataset", lambda _node, _ds: None
+                saver,
+                "_repair_workspace_figure_dataset",
+                lambda _node, _ds: figure_repair._WorkspaceFigureRepairResult(),
             )
             saver._save_workspace_document(workspace_path)
         adopt_workspace_path(manager, workspace_path)
@@ -1855,7 +1858,9 @@ def test_manager_workspace_save_keeps_distinct_embedded_figure_sources(
         workspace_path = tmp_path / "distinct-figure-source.itws"
         with monkeypatch.context() as context:
             context.setattr(
-                saver, "_repair_workspace_figure_dataset", lambda _node, _ds: None
+                saver,
+                "_repair_workspace_figure_dataset",
+                lambda _node, _ds: figure_repair._WorkspaceFigureRepairResult(),
             )
             saver._save_workspace_document(workspace_path)
         adopt_workspace_path(manager, workspace_path)
@@ -1907,7 +1912,9 @@ def test_manager_workspace_save_keeps_figure_data_when_repair_probe_fails(
         workspace_path = tmp_path / "unreadable-figure-repair.itws"
         with monkeypatch.context() as context:
             context.setattr(
-                saver, "_repair_workspace_figure_dataset", lambda _node, _ds: None
+                saver,
+                "_repair_workspace_figure_dataset",
+                lambda _node, _ds: figure_repair._WorkspaceFigureRepairResult(),
             )
             saver._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(

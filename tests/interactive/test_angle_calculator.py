@@ -991,10 +991,14 @@ def test_angle_calculator_numeric_history_shortcuts(
     }[control]
     win.tabs.setCurrentIndex(tab_index)
     win.show()
+    qtbot.waitExposed(win)
     win.activateWindow()
-    qtbot.wait_until(win.isActiveWindow)
+    # QTest sends keys directly. Set their Qt shortcut context without waiting
+    # for native focus, which other xdist workers can hold on the same display.
+    QtWidgets.QApplication.setActiveWindow(win)
     initial = win._history_state
     spin.setFocus()
+    qtbot.wait_until(spin.hasFocus)
     spin.selectAll()
     qtbot.keyClicks(spin, value)
     if commit:

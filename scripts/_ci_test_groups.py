@@ -89,6 +89,18 @@ COMPAT_TARGETS: tuple[str, ...] = (
     "tests/utils/test_array.py",
 )
 
+# Platform-specific runners cover operating-system interfaces and Qt behavior. Keep
+# these targets separate from the full Ubuntu coverage and compatibility lanes.
+PLATFORM_SPECIFIC_TARGETS: tuple[str, ...] = (
+    "tests/interactive/test_platform_specific.py",
+    "tests/interactive/imagetool/manager/workspace/test_platform_files.py",
+    "tests/interactive/test_utils.py::test_activate_window_ignores_missing_and_deleted_windows",
+    "tests/interactive/imagetool/manager/test_app.py::test_manager_runtime_icon_is_sanitized",
+    "tests/interactive/imagetool/manager/test_app.py::test_manager_keyboard_shortcuts_match_manager_actions",
+    "tests/interactive/imagetool/manager/test_app.py::test_keyboard_shortcut_keycaps_use_uniform_ui_font",
+)
+
+
 COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "cov-core-a": (
         "tests/accessors",
@@ -144,7 +156,10 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "cov-qt-manager-workspace-b": (
         "tests/interactive/imagetool/manager/workspace/test_document.py",
+        "tests/interactive/imagetool/manager/workspace/test_file_copy.py",
+        "tests/interactive/imagetool/manager/workspace/test_figure_repair_cache.py",
         "tests/interactive/imagetool/manager/workspace/test_loading.py",
+        "tests/interactive/imagetool/manager/workspace/test_platform_files.py",
         "tests/interactive/imagetool/manager/workspace/test_pending.py",
         "tests/interactive/imagetool/manager/workspace/test_pending_preview.py",
         "tests/interactive/imagetool/manager/workspace/test_storage.py",
@@ -178,6 +193,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/test_momentum_overlays.py",
         "tests/interactive/test_angle_calculator_calculation.py",
         "tests/interactive/test_momentum_overlay_geometry.py",
+        "tests/interactive/test_platform_specific.py",
         "tests/interactive/test_code_trust.py",
         "tests/interactive/test_colors.py",
         "tests/interactive/test_options.py",
@@ -265,6 +281,8 @@ def expand_file_targets(targets: Sequence[str]) -> list[str]:
 def get_group_targets(group: str) -> tuple[str, ...]:
     if group == "compat":
         return COMPAT_TARGETS
+    if group == "platform-specific":
+        return PLATFORM_SPECIFIC_TARGETS
     try:
         return COVERAGE_GROUPS[group]
     except KeyError as exc:
@@ -389,3 +407,4 @@ def is_compat_nodeid(nodeid: str) -> bool:
 def iter_known_groups() -> Iterable[str]:
     yield from COVERAGE_GROUPS
     yield "compat"
+    yield "platform-specific"

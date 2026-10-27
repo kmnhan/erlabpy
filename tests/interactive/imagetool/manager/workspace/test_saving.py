@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import sys
 import time
 import types
@@ -3933,6 +3934,148 @@ def test_manager_workspace_save_as_preserves_live_in_memory_windows(
         object.__setattr__(dask_options, "compute_threshold", old_threshold)
 
 
+@pytest.mark.parametrize("copy_errno", [None, errno.EACCES, errno.EIO])
+def test_manager_save_as_copies_or_falls_back_to_reused_groups(
+    qtbot, monkeypatch, tmp_path, manager_context, copy_errno
+) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("x", "y", "z"),
+        coords={"x": [1.0, 2.0], "y": [10.0, 20.0, 30.0], "z": np.arange(4.0)},
+        name="source",
+        attrs={"units": "counts"},
+    )
+    source = tmp_path / "source.itws"
+    destination = tmp_path / "destination.itws"
+    if copy_errno is not None:
+        destination.write_bytes(b"existing destination")
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        controller.loading._rebind_workspace_backed_imagetools(source, chunks={})
+        controller._mark_workspace_clean()
+        original_source = source.read_bytes()
+        with h5py.File(source, "r") as h5_file:
+            source_id = h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
+
+        copy_file = shutil.copyfile
+        copy_group = workspace_storage._copy_workspace_group
+        copies: list[tuple[pathlib.Path, pathlib.Path]] = []
+        copied_groups: list[str] = []
+
+        def _copy_file(src, dst):
+            copies.append((pathlib.Path(src), pathlib.Path(dst)))
+            if copy_errno is not None:
+                pathlib.Path(dst).write_bytes(b"partial copy")
+                raise OSError(copy_errno, "Injected workspace copy error", dst)
+            return copy_file(src, dst)
+
+        def _copy_group(*args, **kwargs):
+            copied_groups.append(kwargs["source_path"])
+            return copy_group(*args, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_storage.workspace_file_copy,
+            "_copy_native",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            workspace_storage.workspace_file_copy.shutil, "copyfile", _copy_file
+        )
+        monkeypatch.setattr(
+            workspace_storage,
+            "_copy_workspace_group",
+            _copy_group,
+        )
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert not errors
+        assert copies
+        if copy_errno is None:
+            assert len(copies) == 1
+            assert not copied_groups
+        else:
+            assert copied_groups
+        assert copies[0][0] == source
+        assert copies[0][1].parent == destination.parent
+        assert not copies[0][1].exists()
+        assert source.read_bytes() == original_source
+        assert manager.workspace_path == str(destination.resolve())
+        with h5py.File(destination, "r") as h5_file:
+            assert h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR] != source_id
+        rebound = root.slicer_area._data
+        assert rebound.chunks is not None
+        assert workspace_arrays.dataarray_source_paths(rebound) == (
+            str(destination.resolve()),
+        )
+        source.unlink()
+        xr.testing.assert_identical(rebound.compute(), data)
+
+
+def test_manager_save_as_copy_programming_error_preserves_source_and_destination(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="source",
+    )
+    source = tmp_path / "source.itws"
+    destination = tmp_path / "destination.itws"
+    destination.write_bytes(b"existing destination")
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        controller.loading._rebind_workspace_backed_imagetools(source, chunks={})
+        controller._mark_workspace_clean()
+        original_source = source.read_bytes()
+        copies: list[pathlib.Path] = []
+
+        def _fail_copy(_src, dst):
+            copies.append(pathlib.Path(dst))
+            pathlib.Path(dst).write_bytes(b"partial copy")
+            raise ValueError("Injected workspace copy failure")
+
+        monkeypatch.setattr(
+            workspace_storage.workspace_file_copy,
+            "_copy_native",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            workspace_storage.workspace_file_copy.shutil, "copyfile", _fail_copy
+        )
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: destination
+        )
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+
+        assert not _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        assert len(copies) == 1
+        assert not copies[0].exists()
+        assert not list(tmp_path.glob(f".{destination.name}.tmp-*"))
+        assert destination.read_bytes() == b"existing destination"
+        assert source.read_bytes() == original_source
+        assert manager.workspace_path == str(source.resolve())
+        assert len(errors) == 1
+        assert "Injected workspace copy failure" in errors[0].traceback_text
+        xr.testing.assert_identical(root.slicer_area._data.compute(), data)
+
+
 def test_manager_offload_to_workspace_save_as_rebinds_root_as_dask(
     qtbot,
     accept_dialog,
@@ -5970,6 +6113,88 @@ def test_manager_releases_eager_legacy_source_when_conversion_is_canceled(
         lock.unlock()
 
 
+@pytest.mark.parametrize("has_data", [False, True])
+def test_manager_unchanged_workspace_saves_keep_generation_and_size(
+    qtbot, monkeypatch, tmp_path, manager_context, has_data
+) -> None:
+    path = tmp_path / "unchanged.itws"
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        if has_data:
+            data = xr.DataArray(np.arange(30.0).reshape(5, 6), dims=("x", "y"))
+            manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+
+        def wait_for_cleanup() -> None:
+            qtbot.wait_until(
+                lambda: (
+                    controller._workspace_gc_worker is None
+                    and not controller._workspace_gc_requested
+                ),
+                timeout=5000,
+            )
+
+        def object_ids() -> frozenset[str]:
+            with store.read_session() as h5_file:
+                return frozenset(
+                    h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+                )
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        wait_for_cleanup()
+        store = controller._workspace_store
+        assert store is not None
+        initial = store.current_generation()
+        assert initial.sequence == 1
+        assert bool(initial.manifest["nodes"]) is has_data
+        assert (
+            initial.manifest["loader_state"]["recent_directory"]
+            == (manager._recent_directory)
+            == str(path.parent)
+        )
+        initial_objects = object_ids()
+        initial_size = path.stat().st_size
+
+        for _ in range(3):
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            wait_for_cleanup()
+            assert store.current_generation() == initial
+            assert object_ids() == initial_objects
+            assert path.stat().st_size == initial_size
+            assert not manager.is_workspace_modified
+
+        if has_data:
+            select_tools(manager, [0])
+            manager._update_info()
+            manager.notes_editor.setPlainText("Reviewed")
+            manager._commit_note_editor()
+        else:
+            manager._set_workspace_option_overrides(
+                {"io/workspace/compression": "none"}
+            )
+        assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+        wait_for_cleanup()
+        changed = store.current_generation()
+        assert changed.sequence == initial.sequence + 1
+        assert changed.manifest != initial.manifest
+        assert object_ids() == initial_objects
+        if has_data:
+            assert _current_workspace_payload_attrs(path)["manager_node_note"] == (
+                "Reviewed"
+            )
+        changed_size = path.stat().st_size
+
+        for _ in range(3):
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            wait_for_cleanup()
+            assert store.current_generation() == changed
+            assert object_ids() == initial_objects
+            assert path.stat().st_size == changed_size
+            assert not manager.is_workspace_modified
+
+
 def test_manager_workspace_save_collects_old_generations_in_background(
     qtbot,
     tmp_path,
@@ -6252,7 +6477,7 @@ def test_workspace_save_and_save_as_error_continuation_branches(
         return workspace_saving._WorkspaceSaveSnapshot(
             generation=generation,
             generation_plan=workspace_storage._WorkspaceGenerationPlan(
-                manifest={"schema_version": 5, "nodes": []},
+                manifest={"schema_version": 5, "nodes": [], "loader_state": {}},
                 objects=(),
             ),
             compression_mode="none",
@@ -6333,10 +6558,13 @@ def test_workspace_save_and_save_as_error_continuation_branches(
             return True
 
         monkeypatch.setattr(controller, "_start_workspace_save_worker", _fail_worker)
+        original_directory = str(tmp_path / "original")
+        manager._recent_directory = original_directory
         finished.clear()
         assert controller.save_as(native=False, on_finished=finished.append)
         assert [error.traceback_text for error in worker_errors] == ["write failed"]
         assert finished == [False]
+        assert manager._recent_directory == original_directory
 
         manager._workspace_controller._mark_workspace_clean()
 
@@ -6459,7 +6687,7 @@ def test_workspace_save_as_completion_ignores_inactive_document(
             lambda generation, **_kwargs: workspace_saving._WorkspaceSaveSnapshot(
                 generation=generation,
                 generation_plan=workspace_storage._WorkspaceGenerationPlan(
-                    manifest={"schema_version": 5, "nodes": []},
+                    manifest={"schema_version": 5, "nodes": [], "loader_state": {}},
                     objects=(),
                 ),
                 compression_mode="none",

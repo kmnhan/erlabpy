@@ -101,6 +101,8 @@ analysis history, derived relationships, and Figure Composer recipes. Row notes 
 workspace metadata and do not modify the
 underlying {class}`DataArray <xarray.DataArray>` attributes.
 
+{menuselection}`File --> Save Workspace As…` creates an independent workspace.
+
 :::{important}
 Keep the original measurement files and record the software environment separately. A
 workspace restores the Manager session. It does not reproduce a notebook kernel or

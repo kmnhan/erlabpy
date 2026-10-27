@@ -5,7 +5,10 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import errno
+import functools
+import hashlib
 import json
+import logging
 import os
 import pathlib
 import stat
@@ -17,7 +20,9 @@ from dataclasses import dataclass
 import numpy as np
 from qtpy import QtCore
 
+import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._file_copy as workspace_file_copy
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive import _persistence_constants
@@ -37,6 +42,8 @@ else:
     import lazy_loader as _lazy
 
     h5py = _lazy.load("h5py")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -119,6 +126,264 @@ def _existing_workspace_object_ids(
         )
 
 
+def _workspace_reused_payload_allows_byte_copy(
+    h5_file: typing.Any, object_ids: Iterable[str], source_size: int
+) -> bool:
+    """Allow bulk copying only when it adds little unused data.
+
+    Count allocated compressed bytes, without reading dataset values. A small
+    metadata allowance covers ordinary tiny workspaces. Larger files must retain
+    at least half their bytes to justify copying the complete source.
+    """
+    if source_size <= 0:
+        return False
+    stored_bytes = 0
+    seen: set[int] = set()
+    inspected = 0
+    try:
+        root_name = _persistence_constants.WORKSPACE_OBJECTS_GROUP
+        if not isinstance(h5_file.get(root_name, getlink=True), h5py.HardLink):
+            return False
+        objects = h5_file[root_name]
+        pending = []
+        for object_id in object_ids:
+            pending.append((objects, object_id))
+            if len(pending) > 4096:
+                return False
+        while pending:
+            parent, name = pending.pop()
+            inspected += 1
+            if inspected > 4096 or not isinstance(
+                parent.get(name, getlink=True), h5py.HardLink
+            ):
+                return False
+            item = parent[name]
+            address = int(h5py.h5o.get_info(item.id).addr)
+            if address in seen:
+                continue
+            seen.add(address)
+            if isinstance(item, h5py.Dataset):
+                if item.is_virtual or item.external:
+                    return False
+                stored_bytes += int(item.id.get_storage_size())
+            elif isinstance(item, h5py.Group):
+                for child_name in item:
+                    pending.append((item, child_name))
+                    if inspected + len(pending) > 4096:
+                        return False
+            else:
+                return False
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return stored_bytes * 2 >= source_size or source_size - stored_bytes <= 1 << 20
+
+
+def _seed_workspace_save_as(
+    target_path: str | os.PathLike[str],
+    plan: _WorkspaceGenerationPlan,
+    *,
+    on_contention: Callable[[], None] | None = None,
+) -> bool:
+    """Copy a stable immutable document before writing a new generation.
+
+    Only unchanged objects from one document are retained. New dataset and blob
+    writes still go through the generation writer, even if their IDs already
+    exist in the copied document. Legacy and mixed-source plans keep the group
+    copy path.
+    """
+    target = pathlib.Path(target_path).resolve()
+    if target.exists() or (
+        plan.preserved_groups
+        or plan.legacy_object_links
+        or plan.legacy_reader_rebindings
+    ):
+        return False
+    object_ids = {item.object_id for item in plan.objects}
+    if len(object_ids) != len(plan.objects):
+        return False
+    reused = tuple(
+        item for item in plan.objects if item.dataset is None and item.blob is None
+    )
+    if not reused or any(
+        item.source_file is None
+        or item.source_path is None
+        or f"/{item.source_path.strip('/')}"
+        != workspace_store.WorkspaceStore.object_path(item.object_id)
+        for item in reused
+    ):
+        return False
+    source_paths = {
+        pathlib.Path(typing.cast("str", item.source_file)).resolve() for item in reused
+    }
+    if len(source_paths) != 1:
+        return False
+    source = next(iter(source_paths))
+    if source == target:
+        return False
+    source_store = workspace_store.WorkspaceStore.active(source)
+    source_lock = (
+        source_store.write_lock
+        if source_store is not None
+        else workspace_arrays._workspace_file_lock(source)
+    )
+    copied = False
+    try:
+        with source_lock, contextlib.ExitStack() as source_access:
+            if source_store is not None:
+                if (
+                    source_store.closed
+                    or source_store.path != source
+                    or source_store.conflicted
+                    or source_store.recovery_path is not None
+                    or source_store.write_in_progress
+                    or not source_store.locking_supported
+                ):
+                    return False
+                try:
+                    source_store.require_current_path()
+                except workspace_store.WorkspaceStoreConflictError:
+                    # Group copying can still use the retained recovery handle.
+                    return False
+            expected_source = _workspace_publication_state(source)
+            source_h5 = source_access.enter_context(
+                _workspace_generation_copy_source(source)
+            )
+            roots = {
+                _persistence_constants.WORKSPACE_OBJECTS_GROUP,
+                _persistence_constants.WORKSPACE_GENERATIONS_GROUP,
+                _persistence_constants.WORKSPACE_STAGING_GROUP,
+            }
+            if (
+                set(source_h5) != roots
+                or not workspace_format._workspace_schema_uses_immutable_generations(
+                    int(source_h5.attrs.get("imagetool_workspace_schema_version", 0))
+                )
+                or workspace_store.WorkspaceStore._workspace_id_from_file(source_h5)
+                is None
+            ):
+                return False
+            try:
+                _, source_manifest = (
+                    workspace_format._workspace_file_metadata_from_attrs(
+                        workspace_arrays._read_workspace_root_attrs_h5py(source)
+                    )
+                )
+            except (TypeError, ValueError):
+                return False
+            if source_manifest is None:
+                return False
+            source_nodes = tuple(
+                workspace_format._iter_workspace_manifest_node_entries(source_manifest)
+            )
+            target_nodes = tuple(
+                workspace_format._iter_workspace_manifest_node_entries(plan.manifest)
+            )
+            source_uids = {
+                entry["uid"]
+                for entry in source_nodes
+                if isinstance(entry.get("uid"), str)
+            }
+            target_uids = {
+                entry["uid"]
+                for entry in target_nodes
+                if isinstance(entry.get("uid"), str)
+            }
+            if (
+                len(source_uids) != len(source_nodes)
+                or len(target_uids) != len(target_nodes)
+                or not source_uids.issubset(target_uids)
+            ):
+                # Exporting fewer rows should still copy only the selected payloads.
+                return False
+            keep_ids = {item.object_id for item in reused}
+            if any(
+                not isinstance(
+                    source_h5.get(
+                        workspace_store.WorkspaceStore.object_path(object_id)
+                    ),
+                    h5py.Group,
+                )
+                for object_id in keep_ids
+            ):
+                return False
+            _require_workspace_publication_state(source, expected_source)
+            if source_store is not None:
+                try:
+                    source_store.require_current_path()
+                except workspace_store.WorkspaceStoreConflictError as exc:
+                    raise _WorkspacePublicationConflictError(source) from exc
+                # The write lock prevents saves, collection and handle replacement.
+                # Release the read lock so lazy slices can continue during copying.
+                source_access.close()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            for allow_byte_copy in (False, True):
+                if allow_byte_copy:
+                    with _workspace_generation_copy_source(source) as estimate_h5:
+                        worthwhile = _workspace_reused_payload_allows_byte_copy(
+                            estimate_h5, keep_ids, expected_source[3]
+                        )
+                    _require_workspace_publication_state(source, expected_source)
+                    if not worthwhile:
+                        return False
+                try:
+                    copied = workspace_store._retry_file_access(
+                        functools.partial(
+                            workspace_file_copy.copy_workspace_file,
+                            source,
+                            target,
+                            allow_byte_copy=allow_byte_copy,
+                        ),
+                        on_wait=on_contention,
+                    )
+                except FileExistsError:
+                    raise
+                except OSError:
+                    # A partial file must not become the group writer's input.
+                    # Cleanup errors remain fatal, including read-only targets.
+                    workspace_file_copy._remove_incomplete_copy(target)
+                    _require_workspace_publication_state(source, expected_source)
+                    logger.debug(
+                        "Could not copy workspace file; using group copying",
+                        exc_info=True,
+                    )
+                    return False
+                except BaseException:
+                    with contextlib.suppress(OSError):
+                        workspace_file_copy._remove_incomplete_copy(target)
+                    raise
+                _require_workspace_publication_state(source, expected_source)
+                if copied:
+                    break
+            if not copied:
+                return False
+
+        with workspace_store._wait_for_hdf5_access(
+            lambda: h5py.File(target, "r+", locking="best-effort"),
+            on_wait=on_contention,
+        ) as target_h5:
+            objects = target_h5[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+            for object_id in list(objects):
+                if object_id not in keep_ids:
+                    del objects[object_id]
+            for root in (
+                _persistence_constants.WORKSPACE_GENERATIONS_GROUP,
+                _persistence_constants.WORKSPACE_STAGING_GROUP,
+            ):
+                for name in list(target_h5[root]):
+                    del target_h5[root][name]
+            target_h5.attrs[_persistence_constants.WORKSPACE_ID_ATTR] = uuid.uuid4().hex
+            target_h5.flush()
+    except BaseException as exc:
+        if copied:
+            with contextlib.suppress(OSError):
+                target.unlink(missing_ok=True)
+        if isinstance(exc, FileNotFoundError) and not source.exists():
+            raise _WorkspaceBackingFileNotFoundError(source) from exc
+        raise
+    else:
+        return True
+
+
 def _copy_workspace_group(
     target_store: workspace_store.WorkspaceStore,
     *,
@@ -181,7 +446,64 @@ def _write_workspace_generation(
     compression_mode: WorkspaceCompressionMode,
     on_contention: Callable[[], None] | None = None,
 ) -> workspace_store._WorkspaceGeneration:
-    """Write new immutable objects and publish one generation."""
+    """Write required objects, publishing only when the saved state changes."""
+    with target_store.write_lock, target_store.read_session() as h5_file:
+        target_store.require_current_path()
+        saved_version = h5_file.attrs.get("erlab_version")
+        if isinstance(saved_version, bytes):
+            saved_version = saved_version.decode("utf-8")
+        root = h5_file.get(_persistence_constants.WORKSPACE_GENERATIONS_GROUP)
+        names = (
+            [
+                name
+                for name in root
+                if len(name) == _persistence_constants.WORKSPACE_GENERATION_WIDTH
+                and name.isdigit()
+            ]
+            if root is not None
+            else []
+        )
+        if (
+            names
+            and target_store.workspace_id is not None
+            and h5_file.attrs.get("imagetool_workspace_schema_version")
+            == workspace_format._current_workspace_schema_version()
+            and saved_version == str(erlab.__version__)
+            and all(
+                target_store.object_path(item.object_id) in h5_file
+                for item in plan.objects
+            )
+            and all(item.target_path in h5_file for item in plan.preserved_groups)
+        ):
+            manifest = dict(plan.manifest)
+            manifest["schema_version"] = (
+                workspace_format._current_workspace_schema_version()
+            )
+            manifest.pop("generation", None)
+            text = target_store._manifest_text(manifest)
+            try:
+                group = root[max(names)]
+                checksum = group["manifest"].attrs.get("sha256")
+                if isinstance(checksum, bytes):
+                    checksum = checksum.decode()
+                if checksum == hashlib.sha256(text.encode()).hexdigest():
+                    # Validate the actual newest commit; a corrupt newer commit
+                    # must be repaired even when its older fallback is identical.
+                    saved = target_store._read_manifest(group)
+                    if group["manifest"].asstr()[()] == text:
+                        return workspace_store._WorkspaceGeneration(
+                            int(max(names)), saved
+                        )
+            except (
+                AttributeError,
+                KeyError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
+                pass
+
     with target_store.write_session(on_contention=on_contention):
         created_object_ids: list[str] = []
         created_legacy_links: list[str] = []
@@ -305,7 +627,10 @@ def _read_workspace_blob(
 def _workspace_dataset_values_equal(
     left: typing.Any,
     right: typing.Any,
+    *,
+    on_mismatch: Callable[[tuple[int, ...], np.ndarray], None] | None = None,
 ) -> bool:
+    """Compare bounded blocks and optionally report one copied scalar mismatch."""
     if left.shape != right.shape or left.dtype != right.dtype:
         return False
 
@@ -315,8 +640,47 @@ def _workspace_dataset_values_equal(
         except TypeError:
             return bool(np.array_equal(left_values, right_values))
 
+    def _report_mismatch(
+        left_values: np.ndarray,
+        right_values: np.ndarray,
+        offsets: tuple[int, ...],
+    ) -> None:
+        if on_mismatch is None:
+            return
+        left_values = np.asarray(left_values, dtype=left.dtype)
+        right_values = np.asarray(right_values, dtype=right.dtype)
+        if left_values.dtype.kind not in "biufcSU":
+            return
+        equal = np.equal(left_values, right_values)
+        if left_values.dtype.kind in "fc":
+            # array_equal treats complex values as equal if either component is
+            # NaN in both values, including NaNs in different components.
+            equal |= np.isnan(left_values) & np.isnan(right_values)
+        if bool(np.all(equal)):
+            return
+        local_index = tuple(
+            int(index) for index in np.unravel_index(int(np.argmin(equal)), equal.shape)
+        )
+        stored_scalar = np.array(
+            left_values[local_index], dtype=left_values.dtype, copy=True
+        )
+        current_scalar = np.asarray(right_values[local_index])
+        if _values_equal(stored_scalar, current_scalar):
+            return
+        on_mismatch(
+            tuple(
+                offset + index
+                for offset, index in zip(offsets, local_index, strict=True)
+            ),
+            stored_scalar,
+        )
+
     if not left.shape:
-        return _values_equal(left[()], right[()])
+        left_values, right_values = left[()], right[()]
+        equal = _values_equal(left_values, right_values)
+        if not equal and on_mismatch is not None:
+            _report_mismatch(left_values, right_values, ())
+        return equal
     if any(size == 0 for size in left.shape):
         return True
     remaining_items = max(1, (16 * 1024 * 1024) // max(1, left.dtype.itemsize))
@@ -340,7 +704,14 @@ def _workspace_dataset_values_equal(
                 block_index, block_shape, left.shape, strict=True
             )
         )
-        if not _values_equal(left[selection], right[selection]):
+        left_values, right_values = left[selection], right[selection]
+        if not _values_equal(left_values, right_values):
+            if on_mismatch is not None:
+                _report_mismatch(
+                    left_values,
+                    right_values,
+                    tuple(part.start for part in selection),
+                )
             return False
     return True
 
