@@ -351,27 +351,32 @@ jobs:
               raise SystemExit(f"Expected native platform {expected}, found {actual}")
           PY
 
-      - name: Resolve native platform targets
-        run: uv run --no-sync python -m scripts.ci_test_groups native-platform > "$RUNNER_TEMP/targets.txt"
-
       - name: Run native platform tests
         env:
           ERLAB_TEST_DATA_CACHE_DIR: ${{ runner.temp }}/erlabpy-test-data
         run: |
-          set -euo pipefail
-          targets=()
-          while IFS= read -r target; do
-            # Python writes CRLF on Windows; do not pass CR as part of a node ID.
-            targets+=("${target%$'\r'}")
-          done < "$RUNNER_TEMP/targets.txt"
-          uv run --no-sync pytest \
-            --capture=tee-sys \
-            --no-qt-log \
-            -o faulthandler_timeout=120 \
-            -o faulthandler_exit_on_timeout=true \
-            --junitxml "junit-native-${{ matrix.platform }}-${{ matrix.qt-api }}.xml" \
-            -o junit_family=legacy \
-            "${targets[@]}"
+          uv run --no-sync python - <<'PY'
+          import subprocess
+          import sys
+
+          from scripts._ci_test_groups import get_group_targets
+
+          subprocess.run(
+              [
+                  sys.executable,
+                  "-m",
+                  "pytest",
+                  "--capture=tee-sys",
+                  "--no-qt-log",
+                  "-o", "faulthandler_timeout=120",
+                  "-o", "faulthandler_exit_on_timeout=true",
+                  "--junitxml", "junit-native-${{ matrix.platform }}-${{ matrix.qt-api }}.xml",
+                  "-o", "junit_family=legacy",
+                  *get_group_targets("native-platform"),
+              ],
+              check=True,
+          )
+          PY
 
       - name: Upload native platform JUnit artifact
         if: always()
