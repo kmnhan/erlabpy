@@ -84,7 +84,8 @@ def test_native_window_cursor_wait_and_font(tmp_path) -> None:
         else:
             assert window.cursor().shape() == QtCore.Qt.CursorShape.SizeAllCursor
         utils.set_widget_cursor(window, None)
-        assert not window.testAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor)
+        # Top-level Qt windows retain WA_SetCursor after unsetCursor().
+        assert window.cursor().shape() == QtCore.Qt.CursorShape.ArrowCursor
 
         utils.patch_macos_matplotlib_qt_cursor()
         canvas = FigureCanvasQTAgg(Figure(figsize=(2, 2)))
