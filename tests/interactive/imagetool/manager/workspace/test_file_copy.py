@@ -477,7 +477,7 @@ def _mock_windows_copy(monkeypatch, callback, *, error_code=0):
     return copy
 
 
-def test_copy_workspace_file_windows_native_copy(monkeypatch, copy_paths):
+def test_copy_workspace_file_windows_copy(monkeypatch, copy_paths):
     source, destination = copy_paths
 
     def callback(src, dst, fail_if_exists):

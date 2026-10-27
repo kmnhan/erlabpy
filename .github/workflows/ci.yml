@@ -178,7 +178,7 @@ jobs:
             --no-qt-log
             -o faulthandler_timeout=300
             -o faulthandler_exit_on_timeout=true
-            --cov erlab
+            --cov
             --cov-report=
             --junitxml "junit-${{ matrix.group }}.xml"
             -o junit_family=legacy
@@ -287,8 +287,8 @@ jobs:
           path: junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
           if-no-files-found: error
 
-  native-platform:
-    name: Native ${{ matrix.platform }} [${{ matrix.qt-api }}]
+  platform-specific:
+    name: Platform-specific ${{ matrix.platform }} [${{ matrix.qt-api }}]
     needs: partition-check
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -337,7 +337,7 @@ jobs:
       - name: Install project with test dependencies
         run: uv sync --locked --dev --group ${{ matrix.qt-api }}
 
-      - name: Verify native Python platform
+      - name: Verify Python platform and architecture
         run: |
           uv run --no-sync python - <<'PY'
           import os
@@ -348,47 +348,98 @@ jobs:
           actual = (sys.platform, platform.machine())
           print(f"Python platform: {actual[0]}, architecture: {actual[1]}")
           if actual != expected:
-              raise SystemExit(f"Expected native platform {expected}, found {actual}")
+              raise SystemExit(f"Expected platform {expected}, found {actual}")
           PY
 
-      - name: Run native platform tests
+      - name: Run platform-specific tests
         env:
           ERLAB_TEST_DATA_CACHE_DIR: ${{ runner.temp }}/erlabpy-test-data
         run: |
           uv run --no-sync python - <<'PY'
-          import subprocess
           import sys
+
+          import coverage
+          import pytest
 
           from scripts._ci_test_groups import get_group_targets
 
-          subprocess.run(
-              [
-                  sys.executable,
-                  "-m",
-                  "pytest",
-                  "--capture=tee-sys",
-                  "--no-qt-log",
-                  "-o", "faulthandler_timeout=120",
-                  "-o", "faulthandler_exit_on_timeout=true",
-                  "--junitxml", "junit-native-${{ matrix.platform }}-${{ matrix.qt-api }}.xml",
-                  "-o", "junit_family=legacy",
-                  *get_group_targets("native-platform"),
-              ],
-              check=True,
-          )
+          cov = coverage.Coverage(config_file="pyproject.toml")
+          if sys.platform == "win32":
+              cov.set_option(
+                  "run:patch",
+                  [
+                      patch
+                      for patch in cov.get_option("run:patch")
+                      if patch not in {"execv", "fork"}
+                  ],
+              )
+          cov.start()
+          try:
+              exit_code = pytest.main(
+                  [
+                      "--capture=tee-sys",
+                      "--no-qt-log",
+                      "-o", "faulthandler_timeout=120",
+                      "-o", "faulthandler_exit_on_timeout=true",
+                      "--junitxml", "junit-platform-specific-${{ matrix.platform }}-${{ matrix.qt-api }}.xml",
+                      "-o", "junit_family=legacy",
+                      *get_group_targets("platform-specific"),
+                  ]
+              )
+          finally:
+              cov.stop()
+              cov.save()
+          raise SystemExit(exit_code)
           PY
 
-      - name: Upload native platform JUnit artifact
+      - name: Package platform-specific artifacts
+        if: always()
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import pathlib
+          import shutil
+
+          artifact_dir = (
+              pathlib.Path(os.environ["RUNNER_TEMP"])
+              / "artifacts"
+              / "platform-${{ matrix.platform }}-${{ matrix.qt-api }}"
+          )
+          artifact_dir.mkdir(parents=True, exist_ok=True)
+          junit_file = pathlib.Path(
+              "junit-platform-specific-${{ matrix.platform }}-${{ matrix.qt-api }}.xml"
+          )
+          if junit_file.is_file():
+              shutil.copyfile(junit_file, artifact_dir / junit_file.name)
+          coverage_files = sorted(
+              path for path in pathlib.Path.cwd().glob(".coverage*") if path.is_file()
+          )
+          for index, coverage_file in enumerate(coverage_files):
+              shutil.copyfile(
+                  coverage_file,
+                  artifact_dir
+                  / f"coverage-data-platform-${{ matrix.platform }}-${{ matrix.qt-api }}-{index}",
+              )
+          missing = []
+          if not junit_file.is_file():
+              missing.append("No JUnit report was produced.")
+          if not coverage_files:
+              missing.append("No coverage data files were produced.")
+          if missing:
+              raise SystemExit(" ".join(missing))
+          PY
+
+      - name: Upload platform-specific artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: native-${{ matrix.platform }}-${{ matrix.qt-api }}
-          path: junit-native-${{ matrix.platform }}-${{ matrix.qt-api }}.xml
+          name: coverage-platform-${{ matrix.platform }}-${{ matrix.qt-api }}
+          path: ${{ runner.temp }}/artifacts/platform-${{ matrix.platform }}-${{ matrix.qt-api }}/
           if-no-files-found: error
 
   coverage-combine:
     name: Combine Coverage
-    needs: coverage
+    needs: [coverage, platform-specific]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

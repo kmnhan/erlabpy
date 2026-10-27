@@ -1,4 +1,4 @@
-"""Exercise workspace copies through the host's native file APIs."""
+"""Exercise workspace copies through platform-specific file APIs."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from erlab.interactive import _persistence_constants
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Requires Linux FICLONE")
-def test_linux_native_clone_or_safe_decline(tmp_path):
+def test_linux_clone_or_safe_decline(tmp_path):
     source = tmp_path / "source.itws"
     destination = tmp_path / "destination.itws"
     original = bytes(range(256)) * 1024
@@ -37,7 +37,7 @@ def test_linux_native_clone_or_safe_decline(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Requires macOS clonefile")
-def test_macos_native_clone_is_independent(tmp_path):
+def test_macos_clone_is_independent(tmp_path):
     source = tmp_path / "source α.itws"
     destination = tmp_path / "destination β.itws"
     original = bytes(range(256)) * 1024
@@ -57,7 +57,7 @@ def test_macos_native_clone_is_independent(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows CopyFileW")
-def test_windows_native_copy_handles_long_unicode_paths(tmp_path):
+def test_windows_copy_handles_long_unicode_paths(tmp_path):
     directory = pathlib.Path(workspace_file_copy._windows_path(tmp_path))
     for index in range(8):
         directory /= f"unicode αβγ directory {index:02d}"
@@ -87,9 +87,7 @@ def test_windows_native_copy_handles_long_unicode_paths(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows CopyFileW")
 @pytest.mark.parametrize("attribute", [0x1, 0x2], ids=["readonly", "hidden"])
-def test_windows_native_copy_preserves_raced_destination(
-    monkeypatch, tmp_path, attribute
-):
+def test_windows_copy_preserves_raced_destination(monkeypatch, tmp_path, attribute):
     windows = typing.cast("typing.Any", ctypes)
     kernel32 = windows.WinDLL("kernel32", use_last_error=True)
     set_attributes = kernel32.SetFileAttributesW
@@ -120,7 +118,7 @@ def test_windows_native_copy_preserves_raced_destination(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows sharing modes")
-def test_windows_native_copy_reports_sharing_violation(tmp_path):
+def test_windows_copy_reports_sharing_violation(tmp_path):
     windows = typing.cast("typing.Any", ctypes)
     kernel32 = windows.WinDLL("kernel32", use_last_error=True)
     create_file = kernel32.CreateFileW
@@ -166,10 +164,10 @@ def test_windows_native_copy_reports_sharing_violation(tmp_path):
 
 @pytest.mark.skipif(
     sys.platform not in {"darwin", "win32"},
-    reason="Requires the macOS or Windows native copy path",
+    reason="Requires the macOS or Windows copy path",
 )
-@pytest.mark.parametrize("use_seed", [True, False], ids=["native-seed", "groups"])
-def test_native_workspace_copy_survives_source_removal(tmp_path, use_seed):
+@pytest.mark.parametrize("use_seed", [True, False], ids=["file-seed", "groups"])
+def test_platform_workspace_copy_survives_source_removal(tmp_path, use_seed):
     source = tmp_path / "source α.itws"
     target = tmp_path / "destination β.itws"
     object_path = workspace_store.WorkspaceStore.object_path("kept")

@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     sys.platform not in {"darwin", "win32"},
-    reason="Native desktop APIs require macOS or Windows",
+    reason="Platform-specific desktop APIs require macOS or Windows",
 )
 
 _QT_SETUP = """
@@ -23,14 +23,14 @@ assert app.platformName() == expected_platform, app.platformName()
 """
 
 
-def _run_native_script(
-    tmp_path: pathlib.Path, script: str, *, native_qt: bool = False
+def _run_platform_script(
+    tmp_path: pathlib.Path, script: str, *, platform_qt: bool = False
 ) -> None:
-    if native_qt:
+    if platform_qt:
         expected_platform = "cocoa" if sys.platform == "darwin" else "windows"
         if os.environ.get("QT_QPA_PLATFORM") != expected_platform:
             pytest.skip(
-                f"Native Qt coverage requires QT_QPA_PLATFORM={expected_platform}"
+                f"Platform Qt coverage requires QT_QPA_PLATFORM={expected_platform}"
             )
         script = _QT_SETUP + textwrap.dedent(script)
     environment = os.environ.copy()
@@ -50,8 +50,8 @@ def _run_native_script(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_native_window_cursor_wait_and_font(tmp_path) -> None:
-    _run_native_script(
+def test_platform_window_cursor_wait_and_font(tmp_path) -> None:
+    _run_platform_script(
         tmp_path,
         """
         from matplotlib.backend_bases import cursors
@@ -95,12 +95,12 @@ def test_native_window_cursor_wait_and_font(tmp_path) -> None:
             assert hasattr(FigureCanvasQT, utils._MPL_QT_CURSOR_PATCH_ATTR)
             assert not canvas.testAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor)
 
-        with utils.wait_dialog(window, "Native platform check") as indicator:
+        with utils.wait_dialog(window, "Platform check") as indicator:
             expected = (
                 utils._WaitDialog if sys.platform == "darwin" else utils._WaitPanel
             )
             assert isinstance(indicator, expected)
-            indicator.set_message("Updated native platform check")
+            indicator.set_message("Updated platform check")
             app.processEvents()
             assert indicator.isVisible()
         assert utils._WAIT_DIALOG_DEPTH == 0
@@ -122,12 +122,12 @@ def test_native_window_cursor_wait_and_font(tmp_path) -> None:
         window.close()
         app.processEvents()
         """,
-        native_qt=True,
+        platform_qt=True,
     )
 
 
-def test_native_registry_process_liveness(tmp_path) -> None:
-    _run_native_script(
+def test_platform_registry_process_liveness(tmp_path) -> None:
+    _run_platform_script(
         tmp_path,
         """
         import subprocess
@@ -151,8 +151,8 @@ def test_native_registry_process_liveness(tmp_path) -> None:
     )
 
 
-def test_native_workspace_lock_file_is_hidden(tmp_path) -> None:
-    _run_native_script(
+def test_platform_workspace_lock_file_is_hidden(tmp_path) -> None:
+    _run_platform_script(
         tmp_path,
         """
         import pathlib
@@ -163,7 +163,7 @@ def test_native_workspace_lock_file_is_hidden(tmp_path) -> None:
         )
 
         path = pathlib.Path("workspace.itws.lock")
-        path.write_bytes(b"temporary native lock")
+        path.write_bytes(b"temporary platform lock")
         _hide_workspace_lock_file(str(path.resolve()))
         if sys.platform == "darwin":
             assert path.stat().st_flags & stat.UF_HIDDEN
@@ -174,8 +174,8 @@ def test_native_workspace_lock_file_is_hidden(tmp_path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows process desktop APIs")
-def test_native_windows_process_desktop_integration(tmp_path) -> None:
-    _run_native_script(
+def test_windows_process_desktop_integration(tmp_path) -> None:
+    _run_platform_script(
         tmp_path,
         """
         import ctypes
@@ -189,7 +189,7 @@ def test_native_windows_process_desktop_integration(tmp_path) -> None:
 
         _desktop.logger.setLevel(logging.DEBUG)
         _desktop.logger.addHandler(CaptureErrors())
-        app_id = "dev.kmnhan.erlabpy.native-test"
+        app_id = "dev.kmnhan.erlabpy.platform-test"
         _desktop.set_windows_app_user_model_id(app_id)
         shell32 = ctypes.WinDLL("shell32")
         getter = shell32.GetCurrentProcessExplicitAppUserModelID
@@ -210,8 +210,8 @@ def test_native_windows_process_desktop_integration(tmp_path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Dock menu API")
-def test_native_macos_dock_menu_lifetime(tmp_path) -> None:
-    _run_native_script(
+def test_macos_dock_menu_lifetime(tmp_path) -> None:
+    _run_platform_script(
         tmp_path,
         """
         from erlab.interactive.imagetool.manager import _desktop
@@ -237,5 +237,5 @@ def test_native_macos_dock_menu_lifetime(tmp_path) -> None:
         assert not qt_is_valid(menu)
         window.close()
         """,
-        native_qt=True,
+        platform_qt=True,
     )
