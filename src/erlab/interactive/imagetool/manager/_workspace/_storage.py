@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import errno
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 from qtpy import QtCore
 
+import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._file_copy as workspace_file_copy
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
@@ -444,7 +446,64 @@ def _write_workspace_generation(
     compression_mode: WorkspaceCompressionMode,
     on_contention: Callable[[], None] | None = None,
 ) -> workspace_store._WorkspaceGeneration:
-    """Write new immutable objects and publish one generation."""
+    """Write required objects, publishing only when the saved state changes."""
+    with target_store.write_lock, target_store.read_session() as h5_file:
+        target_store.require_current_path()
+        saved_version = h5_file.attrs.get("erlab_version")
+        if isinstance(saved_version, bytes):
+            saved_version = saved_version.decode("utf-8")
+        root = h5_file.get(_persistence_constants.WORKSPACE_GENERATIONS_GROUP)
+        names = (
+            [
+                name
+                for name in root
+                if len(name) == _persistence_constants.WORKSPACE_GENERATION_WIDTH
+                and name.isdigit()
+            ]
+            if root is not None
+            else []
+        )
+        if (
+            names
+            and target_store.workspace_id is not None
+            and h5_file.attrs.get("imagetool_workspace_schema_version")
+            == workspace_format._current_workspace_schema_version()
+            and saved_version == str(erlab.__version__)
+            and all(
+                target_store.object_path(item.object_id) in h5_file
+                for item in plan.objects
+            )
+            and all(item.target_path in h5_file for item in plan.preserved_groups)
+        ):
+            manifest = dict(plan.manifest)
+            manifest["schema_version"] = (
+                workspace_format._current_workspace_schema_version()
+            )
+            manifest.pop("generation", None)
+            text = target_store._manifest_text(manifest)
+            try:
+                group = root[max(names)]
+                checksum = group["manifest"].attrs.get("sha256")
+                if isinstance(checksum, bytes):
+                    checksum = checksum.decode()
+                if checksum == hashlib.sha256(text.encode()).hexdigest():
+                    # Validate the actual newest commit; a corrupt newer commit
+                    # must be repaired even when its older fallback is identical.
+                    saved = target_store._read_manifest(group)
+                    if group["manifest"].asstr()[()] == text:
+                        return workspace_store._WorkspaceGeneration(
+                            int(max(names)), saved
+                        )
+            except (
+                AttributeError,
+                KeyError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
+                pass
+
     with target_store.write_session(on_contention=on_contention):
         created_object_ids: list[str] = []
         created_legacy_links: list[str] = []

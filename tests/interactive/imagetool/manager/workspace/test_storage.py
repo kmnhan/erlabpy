@@ -1057,6 +1057,174 @@ def _save_as_seed_plan(
     )
 
 
+@pytest.mark.parametrize("fixed_version", [False, True])
+def test_workspace_unchanged_generation_never_opens_a_writer(
+    tmp_path, monkeypatch, fixed_version
+) -> None:
+    path = tmp_path / "unchanged.itws"
+    manifest = _save_as_seed_manifest("kept")
+    manifest["metadata"] = {"nan": float("nan"), "values": (1, 2, 3)}
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest,
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        "kept", dataset=_save_as_seed_dataset()
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+        manifest.pop("schema_version")
+        manifest["generation"] = 100
+        plan = replace(_save_as_seed_plan(path), manifest=manifest)
+        if fixed_version:
+            with store.write_session() as h5_file:
+                del h5_file.attrs["erlab_version"]
+                h5_file.attrs.create(
+                    "erlab_version", str(erlab.__version__).encode(), dtype="S64"
+                )
+        before = path.read_bytes()
+        current = store.current_generation()
+
+        @contextlib.contextmanager
+        def _unexpected_write(**_kwargs):
+            raise AssertionError("Unchanged saves must stay read-only")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(store, "write_session", _unexpected_write)
+        for _ in range(25):
+            saved = workspace_storage._write_workspace_generation(
+                store, plan, compression_mode="none"
+            )
+            assert saved.sequence == current.sequence
+            assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "metadata",
+        "version",
+        "schema",
+        "missing_object",
+        "checksum",
+        "manifest_text",
+        "manifest_type",
+        "dangling_generation",
+        "missing_preserved_group",
+    ],
+)
+def test_workspace_unchanged_generation_does_not_skip_required_writes(
+    tmp_path, change
+) -> None:
+    path = tmp_path / "changed.itws"
+    manifest = _save_as_seed_manifest("kept")
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(store.object_path("kept"))
+        store.publish(manifest)
+        store.publish(manifest)
+        plan = _save_as_seed_plan(path)
+        newest = f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{2:020d}"
+        with store.write_session() as h5_file:
+            if change == "metadata":
+                plan.manifest["note"] = "Changed metadata"
+            elif change == "version":
+                h5_file.attrs.modify("erlab_version", "older")
+            elif change == "schema":
+                h5_file.attrs.modify("imagetool_workspace_schema_version", 0)
+            elif change == "missing_object":
+                del h5_file[store.object_path("kept")]
+                plan = replace(
+                    plan,
+                    objects=(
+                        workspace_storage._WorkspaceObjectWrite(
+                            "kept", dataset=_save_as_seed_dataset()
+                        ),
+                    ),
+                )
+            elif change == "checksum":
+                h5_file[newest]["manifest"].attrs.modify("sha256", b"invalid")
+            elif change == "manifest_text":
+                h5_file[newest]["manifest"][()] = b"{}"
+            elif change == "manifest_type":
+                checksum = h5_file[newest]["manifest"].attrs["sha256"]
+                del h5_file[newest]["manifest"]
+                h5_file[newest].create_group("manifest").attrs["sha256"] = checksum
+            elif change == "dangling_generation":
+                del h5_file[newest]
+                h5_file[newest] = h5py.SoftLink("/missing")
+            elif change == "missing_preserved_group":
+                h5_file.require_group("legacy-source")
+                plan = replace(
+                    plan,
+                    preserved_groups=(
+                        workspace_storage._WorkspaceGroupCopy(
+                            str(path), "/legacy-source", "/preserved"
+                        ),
+                    ),
+                )
+        saved = workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+        assert saved.sequence == 3
+        assert store.current_generation().sequence == 3
+        with store.read_session() as h5_file:
+            assert h5_file.attrs["erlab_version"] == str(erlab.__version__)
+            assert (
+                h5_file.attrs["imagetool_workspace_schema_version"]
+                == _persistence_constants.WORKSPACE_SCHEMA_VERSION
+            )
+            assert store.object_path("kept") in h5_file
+            if change == "missing_preserved_group":
+                assert "preserved" in h5_file
+
+
+def test_workspace_unchanged_generation_keeps_existing_legacy_links(tmp_path) -> None:
+    path = tmp_path / "legacy-links.itws"
+    manifest = _save_as_seed_manifest("kept")
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(store.object_path("kept"))
+            h5_file["legacy"] = h5_file[store.object_path("kept")]
+        first = store.publish(manifest)
+        plan = replace(
+            _save_as_seed_plan(path),
+            preserved_groups=(
+                workspace_storage._WorkspaceGroupCopy(str(path), "/legacy", "/legacy"),
+            ),
+            legacy_object_links=(("/legacy", "kept"),),
+            legacy_reader_rebindings=(("/legacy", "kept"),),
+        )
+        before = path.read_bytes()
+        saved = workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+        assert saved.sequence == first.sequence
+        assert path.read_bytes() == before
+
+
+def test_workspace_unchanged_generation_assigns_missing_identity(tmp_path) -> None:
+    path = tmp_path / "missing-identity.itws"
+    manifest = _save_as_seed_manifest()
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.publish(manifest)
+    with h5py.File(path, "r+") as h5_file:
+        del h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
+    with workspace_store.WorkspaceStore(path) as store:
+        assert store.workspace_id is None
+        saved = workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(manifest=manifest, objects=()),
+            compression_mode="none",
+        )
+        assert saved.sequence == 2
+        assert store.workspace_id is not None
+
+
 @pytest.mark.parametrize("active_source", [False, True])
 def test_workspace_save_as_seed_preserves_payload_and_resets_document(
     monkeypatch, tmp_path, save_as_seed_source, active_source

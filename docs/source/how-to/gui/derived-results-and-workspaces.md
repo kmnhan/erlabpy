@@ -105,6 +105,9 @@ underlying {class}`DataArray <xarray.DataArray>` attributes.
 new file can retain unused space from the source workspace. To reclaim this space,
 use {menuselection}`File --> Compact Workspace` after saving.
 
+Repeated saves without changes keep the file size stable. When you change the
+workspace, saves reuse available space inside the file where possible.
+
 :::{important}
 Keep the original measurement files and record the software environment separately. A
 workspace restores the Manager session. It does not reproduce a notebook kernel or

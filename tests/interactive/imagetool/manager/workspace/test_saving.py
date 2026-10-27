@@ -6113,6 +6113,88 @@ def test_manager_releases_eager_legacy_source_when_conversion_is_canceled(
         lock.unlock()
 
 
+@pytest.mark.parametrize("has_data", [False, True])
+def test_manager_unchanged_workspace_saves_keep_generation_and_size(
+    qtbot, monkeypatch, tmp_path, manager_context, has_data
+) -> None:
+    path = tmp_path / "unchanged.itws"
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        if has_data:
+            data = xr.DataArray(np.arange(30.0).reshape(5, 6), dims=("x", "y"))
+            manager.add_imagetool(itool(data, manager=False, execute=False), show=False)
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+
+        def wait_for_cleanup() -> None:
+            qtbot.wait_until(
+                lambda: (
+                    controller._workspace_gc_worker is None
+                    and not controller._workspace_gc_requested
+                ),
+                timeout=5000,
+            )
+
+        def object_ids() -> frozenset[str]:
+            with store.read_session() as h5_file:
+                return frozenset(
+                    h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+                )
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        wait_for_cleanup()
+        store = controller._workspace_store
+        assert store is not None
+        initial = store.current_generation()
+        assert initial.sequence == 1
+        assert bool(initial.manifest["nodes"]) is has_data
+        assert (
+            initial.manifest["loader_state"]["recent_directory"]
+            == (manager._recent_directory)
+            == str(path.parent)
+        )
+        initial_objects = object_ids()
+        initial_size = path.stat().st_size
+
+        for _ in range(3):
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            wait_for_cleanup()
+            assert store.current_generation() == initial
+            assert object_ids() == initial_objects
+            assert path.stat().st_size == initial_size
+            assert not manager.is_workspace_modified
+
+        if has_data:
+            select_tools(manager, [0])
+            manager._update_info()
+            manager.notes_editor.setPlainText("Reviewed")
+            manager._commit_note_editor()
+        else:
+            manager._set_workspace_option_overrides(
+                {"io/workspace/compression": "none"}
+            )
+        assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+        wait_for_cleanup()
+        changed = store.current_generation()
+        assert changed.sequence == initial.sequence + 1
+        assert changed.manifest != initial.manifest
+        assert object_ids() == initial_objects
+        if has_data:
+            assert _current_workspace_payload_attrs(path)["manager_node_note"] == (
+                "Reviewed"
+            )
+        changed_size = path.stat().st_size
+
+        for _ in range(3):
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+            wait_for_cleanup()
+            assert store.current_generation() == changed
+            assert object_ids() == initial_objects
+            assert path.stat().st_size == changed_size
+            assert not manager.is_workspace_modified
+
+
 def test_manager_workspace_save_collects_old_generations_in_background(
     qtbot,
     tmp_path,
@@ -6395,7 +6477,7 @@ def test_workspace_save_and_save_as_error_continuation_branches(
         return workspace_saving._WorkspaceSaveSnapshot(
             generation=generation,
             generation_plan=workspace_storage._WorkspaceGenerationPlan(
-                manifest={"schema_version": 5, "nodes": []},
+                manifest={"schema_version": 5, "nodes": [], "loader_state": {}},
                 objects=(),
             ),
             compression_mode="none",
@@ -6476,10 +6558,13 @@ def test_workspace_save_and_save_as_error_continuation_branches(
             return True
 
         monkeypatch.setattr(controller, "_start_workspace_save_worker", _fail_worker)
+        original_directory = str(tmp_path / "original")
+        manager._recent_directory = original_directory
         finished.clear()
         assert controller.save_as(native=False, on_finished=finished.append)
         assert [error.traceback_text for error in worker_errors] == ["write failed"]
         assert finished == [False]
+        assert manager._recent_directory == original_directory
 
         manager._workspace_controller._mark_workspace_clean()
 
@@ -6602,7 +6687,7 @@ def test_workspace_save_as_completion_ignores_inactive_document(
             lambda generation, **_kwargs: workspace_saving._WorkspaceSaveSnapshot(
                 generation=generation,
                 generation_plan=workspace_storage._WorkspaceGenerationPlan(
-                    manifest={"schema_version": 5, "nodes": []},
+                    manifest={"schema_version": 5, "nodes": [], "loader_state": {}},
                     objects=(),
                 ),
                 compression_mode="none",

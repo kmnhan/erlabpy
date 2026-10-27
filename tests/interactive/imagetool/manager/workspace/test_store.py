@@ -2295,6 +2295,123 @@ def test_workspace_store_publishes_valid_generations(
         ]
 
 
+def test_workspace_store_reads_legacy_and_fixed_length_unicode_manifests(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "unicode.itws"
+    manifest = _manifest()
+    manifest["note"] = "한글 αβγ 🌏"
+    legacy_text = json.dumps(manifest, ensure_ascii=False)
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            legacy = h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP]
+            group = legacy.create_group("00000000000000000001")
+            dataset = group.create_dataset(
+                "manifest", data=legacy_text, dtype=h5py.string_dtype("utf-8")
+            )
+            dataset.attrs["sha256"] = hashlib.sha256(
+                legacy_text.encode("utf-8")
+            ).hexdigest()
+        assert store.current_generation().manifest == manifest
+        published = store.publish(manifest)
+        assert published.sequence == 2
+        assert published.manifest == manifest
+        with store.read_session() as h5_file:
+            current = h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP][
+                "00000000000000000002"
+            ]["manifest"]
+            assert h5py.check_string_dtype(current.dtype).length is not None
+            assert current.attrs.get_id("sha256").dtype == np.dtype("S64")
+        with store.write_session() as h5_file:
+            current = h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP][
+                "00000000000000000002"
+            ]["manifest"]
+            current.attrs.modify("sha256", b"invalid")
+        assert store.current_generation().sequence == 1
+        assert store.current_generation().manifest == manifest
+
+
+@pytest.mark.parametrize("version_storage", ["variable", "fixed", "short-fixed"])
+def test_workspace_store_updates_existing_format_attrs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    version_storage: str,
+) -> None:
+    path = tmp_path / "format-attrs.itws"
+    updated_version = "9.99.0.dev12345"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            del h5_file.attrs["erlab_version"]
+            dtype = {
+                "variable": h5py.string_dtype("utf-8"),
+                "fixed": h5py.string_dtype("utf-8", length=64),
+                "short-fixed": h5py.string_dtype("utf-8", length=3),
+            }[version_storage]
+            h5_file.attrs.create("erlab_version", b"old", dtype=dtype)
+            h5_file.attrs.modify("imagetool_workspace_schema_version", 4)
+        monkeypatch.setattr(workspace_store.erlab, "__version__", updated_version)
+        store.publish(_manifest())
+        with store.read_session() as h5_file:
+            version = h5_file.attrs["erlab_version"]
+            if isinstance(version, bytes):
+                version = version.decode("utf-8")
+            assert version == updated_version
+            assert h5_file.attrs["imagetool_workspace_schema_version"] == (
+                _persistence_constants.WORKSPACE_SCHEMA_VERSION
+            )
+            if version_storage == "variable":
+                assert (
+                    h5py.check_string_dtype(
+                        h5_file.attrs.get_id("erlab_version").dtype
+                    ).length
+                    is None
+                )
+            elif version_storage == "fixed":
+                assert h5_file.attrs.get_id("erlab_version").dtype.itemsize == 64
+
+
+def test_workspace_store_reuses_space_for_changed_manifests(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "reused-manifests.itws"
+    sizes = []
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        for index in range(80):
+            manifest = _manifest()
+            manifest["note"] = f"{index:04d}" + "x" * (64 * 1024)
+            published = store.publish(manifest)
+            assert published.sequence == index + 1
+            assert not store.collect_garbage()
+            sizes.append(path.stat().st_size)
+        assert len(store.generations()) == 2
+        assert store.current_generation().manifest == manifest
+    # Three live manifests are needed briefly before cleanup. Repeated saves
+    # must reuse their storage rather than retain each retired string's heap.
+    assert max(sizes[10:]) <= max(sizes[:10]) + 32 * 1024
+
+
+def test_workspace_store_reuses_collected_payload_space(tmp_path) -> None:
+    path = tmp_path / "reused-payloads.itws"
+    payload = np.zeros(1 << 20, dtype=np.uint8)
+    offsets: list[int] = []
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        for index in range(16):
+            object_id = f"payload-{index}"
+            with store.write_session() as h5_file:
+                dataset = h5_file.require_group(
+                    store.object_path(object_id)
+                ).create_dataset("data", data=payload)
+                offset = dataset.id.get_offset()
+                assert offset is not None
+                offsets.append(offset)
+            store.publish(_manifest(object_id))
+            store.collect_garbage(max_objects=100)
+        assert len(store.generations()) == 2
+        assert len(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP]) == 2
+    assert len(set(offsets)) < len(offsets)
+    assert path.stat().st_size < payload.nbytes * len(offsets) // 2
+
+
 def test_workspace_store_rejects_generation_with_missing_object(
     tmp_path: pathlib.Path,
 ) -> None:

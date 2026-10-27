@@ -502,6 +502,31 @@ class WorkspaceStore:
             return workspace_id
         return None
 
+    @staticmethod
+    def _update_format_attrs(h5_file: typing.Any) -> None:
+        values = {
+            "imagetool_workspace_schema_version": _current_workspace_schema_version(),
+            "erlab_version": str(erlab.__version__),
+        }
+        for name, value in values.items():
+            if name not in h5_file.attrs:
+                h5_file.attrs[name] = value
+                continue
+            current = h5_file.attrs[name]
+            if isinstance(value, str) and isinstance(current, bytes):
+                current = current.decode("utf-8")
+            if current == value:
+                continue
+            if isinstance(value, str):
+                string_info = h5py.check_string_dtype(h5_file.attrs.get_id(name).dtype)
+                if string_info is None or (
+                    string_info.length is not None
+                    and len(value.encode("utf-8")) > string_info.length
+                ):
+                    h5_file.attrs[name] = value
+                    continue
+            h5_file.attrs.modify(name, value)
+
     def _open_with_lock_detection(
         self,
         mode: str,
@@ -528,10 +553,7 @@ class WorkspaceStore:
                 fs_persist=True,
             )
             self._workspace_id = self._ensure_workspace_id(h5_file, workspace_id)
-            h5_file.attrs["imagetool_workspace_schema_version"] = (
-                _current_workspace_schema_version()
-            )
-            h5_file.attrs["erlab_version"] = str(erlab.__version__)
+            self._update_format_attrs(h5_file)
             h5_file.require_group(_persistence_constants.WORKSPACE_OBJECTS_GROUP)
             h5_file.require_group(_persistence_constants.WORKSPACE_STAGING_GROUP)
             h5_file.require_group(_persistence_constants.WORKSPACE_GENERATIONS_GROUP)
@@ -1187,13 +1209,15 @@ class WorkspaceStore:
         group: typing.Any,
         manifest: Mapping[str, typing.Any],
     ) -> None:
-        text = cls._manifest_text(manifest)
+        encoded = cls._manifest_text(manifest).encode("utf-8")
         dataset = group.create_dataset(
             "manifest",
-            data=text,
-            dtype=h5py.string_dtype(encoding="utf-8"),
+            data=encoded,
+            dtype=h5py.string_dtype(encoding="utf-8", length=len(encoded)),
         )
-        dataset.attrs["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+        dataset.attrs.create(
+            "sha256", hashlib.sha256(encoded).hexdigest().encode("ascii"), dtype="S64"
+        )
 
     @classmethod
     def _read_manifest(cls, group: typing.Any) -> dict[str, typing.Any]:
@@ -1308,10 +1332,7 @@ class WorkspaceStore:
                 f"/{_persistence_constants.WORKSPACE_STAGING_GROUP}/{staging_name}",
                 f"/{_persistence_constants.WORKSPACE_GENERATIONS_GROUP}/{generation_name}",
             )
-            self.h5_file.attrs["imagetool_workspace_schema_version"] = (
-                _current_workspace_schema_version()
-            )
-            self.h5_file.attrs["erlab_version"] = str(erlab.__version__)
+            self._update_format_attrs(self.h5_file)
             self.flush(durable=True)
             return _WorkspaceGeneration(sequence, generation_manifest)
 
