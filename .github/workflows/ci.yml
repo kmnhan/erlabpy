@@ -287,6 +287,100 @@ jobs:
           path: junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
           if-no-files-found: error
 
+  native-platform:
+    name: Native ${{ matrix.platform }} [${{ matrix.qt-api }}]
+    needs: partition-check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      MPLBACKEND: Agg
+      QT_API: ${{ matrix.qt-api }}
+      PYTEST_QT_API: ${{ matrix.qt-api }}
+      QT_QPA_PLATFORM: ${{ matrix.qt-platform }}
+      EXPECTED_SYS_PLATFORM: ${{ matrix.sys-platform }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+        qt-api: [pyqt6, pyside6]
+        include:
+          - os: windows-latest
+            platform: windows
+            sys-platform: win32
+            machine: AMD64
+            qt-platform: windows
+          - os: macos-15
+            platform: macos-arm
+            sys-platform: darwin
+            machine: arm64
+            qt-platform: cocoa
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install macOS runtime libraries
+        if: runner.os == 'macOS'
+        run: brew list libomp >/dev/null 2>&1 || brew install libomp
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.14"
+
+      - name: Install project with test dependencies
+        run: uv sync --locked --dev --group ${{ matrix.qt-api }}
+
+      - name: Verify native Python platform
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import platform
+          import sys
+
+          expected = (os.environ["EXPECTED_SYS_PLATFORM"], os.environ["EXPECTED_MACHINE"])
+          actual = (sys.platform, platform.machine())
+          print(f"Python platform: {actual[0]}, architecture: {actual[1]}")
+          if actual != expected:
+              raise SystemExit(f"Expected native platform {expected}, found {actual}")
+          PY
+
+      - name: Resolve native platform targets
+        run: uv run --no-sync python -m scripts.ci_test_groups native-platform > "$RUNNER_TEMP/targets.txt"
+
+      - name: Run native platform tests
+        env:
+          ERLAB_TEST_DATA_CACHE_DIR: ${{ runner.temp }}/erlabpy-test-data
+        run: |
+          set -euo pipefail
+          targets=()
+          while IFS= read -r target; do
+            # Python writes CRLF on Windows; do not pass CR as part of a node ID.
+            targets+=("${target%$'\r'}")
+          done < "$RUNNER_TEMP/targets.txt"
+          uv run --no-sync pytest \
+            --capture=tee-sys \
+            --no-qt-log \
+            -o faulthandler_timeout=120 \
+            -o faulthandler_exit_on_timeout=true \
+            --junitxml "junit-native-${{ matrix.platform }}-${{ matrix.qt-api }}.xml" \
+            -o junit_family=legacy \
+            "${targets[@]}"
+
+      - name: Upload native platform JUnit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.platform }}-${{ matrix.qt-api }}
+          path: junit-native-${{ matrix.platform }}-${{ matrix.qt-api }}.xml
+          if-no-files-found: error
+
   coverage-combine:
     name: Combine Coverage
     needs: coverage
