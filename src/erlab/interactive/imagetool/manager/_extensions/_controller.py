@@ -99,16 +99,12 @@ class _ExtensionController(QtCore.QObject):
         self._missing_scripts_dialog_slots: (
             tuple[Callable[[str], None], Callable[[int], None]] | None
         ) = None
-        self._manage_dialog = _ManageExtensionsDialog(manager)
-        self._manage_dialog.action_requested.connect(self._manage_action_slot)
+        self._manage_dialog: _ManageExtensionsDialog | None = None
         self._manage_add_script_slot = self.add_script
         self._manage_selection_slot = self._refresh_removal_eligibility
         self._manage_activated_slot = self._refresh_removal_eligibility
         self._execution_state_slot = self._refresh_removal_eligibility
         self._validation_changed_slot = self._session_validation_changed
-        self._manage_dialog.add_script_requested.connect(self._manage_add_script_slot)
-        self._manage_dialog.selection_changed.connect(self._manage_selection_slot)
-        self._manage_dialog.activated.connect(self._manage_activated_slot)
         self.execution.queue_changed.connect(self._execution_state_slot)
         self.execution.validation_changed.connect(self._validation_changed_slot)
         self._menu_show_slot = self._populate_menu
@@ -810,13 +806,26 @@ class _ExtensionController(QtCore.QObject):
 
     @QtCore.Slot()
     def show_manager(self) -> None:
+        if self._closed or not erlab.interactive.utils.qt_is_valid(self._manager):
+            return
+        if self._manage_dialog is None:
+            self._manage_dialog = _ManageExtensionsDialog(self._manager)
+            self._manage_dialog.action_requested.connect(self._manage_action_slot)
+            self._manage_dialog.add_script_requested.connect(
+                self._manage_add_script_slot
+            )
+            self._manage_dialog.selection_changed.connect(self._manage_selection_slot)
+            self._manage_dialog.activated.connect(self._manage_activated_slot)
         self._refresh_manage_dialog()
         self._manage_dialog.show()
         self._manage_dialog.raise_()
 
     def _refresh_manage_dialog(self) -> None:
+        dialog = self._manage_dialog
+        if dialog is None or self._closed:
+            return
         if self.catalog.load_error is not None:
-            self._manage_dialog.set_catalog(_ExtensionCatalogModel())
+            dialog.set_catalog(_ExtensionCatalogModel())
             self._refresh_removal_eligibility()
             return
         source_states: dict[tuple[str, str], str] = {}
@@ -834,7 +843,7 @@ class _ExtensionController(QtCore.QObject):
                 source_states[key] = "Source file unreadable"
             else:
                 source_states[key] = "Ready"
-        self._manage_dialog.set_catalog(
+        dialog.set_catalog(
             self.catalog.model,
             source_states,
             validation_errors={
@@ -986,9 +995,12 @@ class _ExtensionController(QtCore.QObject):
     @QtCore.Slot()
     @QtCore.Slot(str)
     def _refresh_removal_eligibility(self, _script_name: str = "") -> None:
-        script_name = self._manage_dialog.selected_script_name
+        dialog = self._manage_dialog
+        if dialog is None or self._closed:
+            return
+        script_name = dialog.selected_script_name
         reason = None if script_name is None else self._removal_blocker(script_name)
-        self._manage_dialog.set_removal_reason(reason)
+        dialog.set_removal_reason(reason)
 
     def _removal_blocker(self, script_name: str) -> str | None:
         record = self.catalog.model.extensions.get(_script_name_key(script_name))
@@ -1818,23 +1830,27 @@ class _ExtensionController(QtCore.QObject):
             if erlab.interactive.utils.qt_is_valid(action):
                 with contextlib.suppress(TypeError, RuntimeError):
                     action.triggered.disconnect(slot)
-        if erlab.interactive.utils.qt_is_valid(self._manage_dialog):
+        manage_dialog = self._manage_dialog
+        self._manage_dialog = None
+        if manage_dialog is not None and erlab.interactive.utils.qt_is_valid(
+            manage_dialog
+        ):
             for signal, slot in (
-                (self._manage_dialog.action_requested, self._manage_action_slot),
+                (manage_dialog.action_requested, self._manage_action_slot),
                 (
-                    self._manage_dialog.add_script_requested,
+                    manage_dialog.add_script_requested,
                     self._manage_add_script_slot,
                 ),
                 (
-                    self._manage_dialog.selection_changed,
+                    manage_dialog.selection_changed,
                     self._manage_selection_slot,
                 ),
-                (self._manage_dialog.activated, self._manage_activated_slot),
+                (manage_dialog.activated, self._manage_activated_slot),
             ):
                 with contextlib.suppress(TypeError, RuntimeError):
                     signal.disconnect(slot)
-            self._manage_dialog.close()
-            self._manage_dialog.deleteLater()
+            manage_dialog.close()
+            manage_dialog.deleteLater()
         with contextlib.suppress(TypeError, RuntimeError):
             self.execution.queue_changed.disconnect(self._execution_state_slot)
         with contextlib.suppress(TypeError, RuntimeError):

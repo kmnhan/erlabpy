@@ -858,6 +858,7 @@ def test_controller_menu_selection_and_routine_queue_paths(
 
         assert controller.loader_by_name("missing") is None
         controller.show_manager()
+        assert controller._manage_dialog is not None
         assert controller._manage_dialog.isVisible()
         controller._manage_dialog.hide()
 
@@ -2969,7 +2970,11 @@ def load_data(path: Path) -> xr.DataArray:
             )
             == "missing-source"
         )
-        assert manager._extensions._manage_dialog.tree.topLevelItemCount() == 0
+        assert manager._extensions._manage_dialog is None
+        manager._extensions.show_manager()
+        dialog = manager._extensions._manage_dialog
+        assert dialog is not None
+        assert dialog.tree.topLevelItemCount() == 0
         assert errors == ["Extension Catalog Unavailable"]
 
         manager._extensions.catalog.store.path.write_text(
@@ -2981,6 +2986,7 @@ def load_data(path: Path) -> xr.DataArray:
         assert manager._extensions._enabled_routines()
         assert manager._extensions.file_loaders()
         assert manager._extensions.explorer_loaders
+        assert dialog.tree.topLevelItemCount() == 1
 
         manager._extensions.catalog.store.path.write_text("{", encoding="utf-8")
         manager._extensions.catalog.refresh()
@@ -2989,7 +2995,7 @@ def load_data(path: Path) -> xr.DataArray:
         assert manager._extensions._enabled_routines() == ()
         assert manager._extensions.file_loaders() == {}
         assert manager._extensions.explorer_loaders == {}
-        assert manager._extensions._manage_dialog.tree.topLevelItemCount() == 0
+        assert dialog.tree.topLevelItemCount() == 0
         assert errors == ["Extension Catalog Unavailable"]
 
 
@@ -3175,7 +3181,9 @@ def session_health(data: xr.DataArray) -> xr.DataArray:
                 )
                 == "validation-failed"
             )
+            manager._extensions.show_manager()
             dialog = manager._extensions._manage_dialog
+            assert dialog is not None
             assert dialog._buttons["toggle"].property("extensionActionState") == "retry"
             assert dialog._buttons["error"].isVisibleTo(dialog)
 
@@ -5035,6 +5043,100 @@ def test_extension_actions_disconnect_when_controller_closes(
         assert validation_refreshes == [None]
 
 
+def test_manage_dialog_is_created_on_first_open_and_reused(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "first.py"
+    _script(script_path)
+    constructed: list[QtWidgets.QWidget] = []
+    add_script_calls: list[None] = []
+    original_init = extension_dialogs._ManageExtensionsDialog.__init__
+
+    def dialog_init(self, parent) -> None:
+        constructed.append(parent)
+        original_init(self, parent)
+
+    monkeypatch.setattr(
+        extension_dialogs._ManageExtensionsDialog, "__init__", dialog_init
+    )
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (add_script_calls.append(None) or "", ""),
+    )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        assert controller._manage_dialog is None
+        controller.catalog.store.register_script(script_path)
+        controller.catalog.refresh()
+        controller.execution.queue_changed.emit()
+        controller.execution.validation_changed.emit()
+        controller._refresh_manage_dialog()
+        controller._refresh_removal_eligibility()
+        assert controller._manage_dialog is None
+        assert constructed == []
+
+        controller.manage_action.trigger()
+        dialog = controller._manage_dialog
+        assert dialog is not None
+        assert constructed == [manager]
+        assert dialog.isVisible()
+        assert dialog.tree.topLevelItemCount() == 1
+        assert dialog.selected_script_name == script_path.name
+
+        dialog.hide()
+        second_script_path = tmp_path / "second.py"
+        _script(second_script_path)
+        controller.catalog.store.register_script(second_script_path)
+        controller.catalog.refresh()
+        controller.manage_action.trigger()
+
+        assert controller._manage_dialog is dialog
+        assert constructed == [manager]
+        assert dialog.isVisible()
+        assert dialog.tree.topLevelItemCount() == 2
+        dialog.add_script_requested.emit()
+        assert add_script_calls == [None]
+
+
+@pytest.mark.parametrize("opened", [False, True])
+def test_manage_dialog_cleanup_before_and_after_first_open(
+    manager_context,
+    qtbot: pytest.QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    opened: bool,
+) -> None:
+    add_script_calls: list[None] = []
+    monkeypatch.setattr(
+        extension_controller.QtWidgets.QFileDialog,
+        "getOpenFileName",
+        lambda *_args, **_kwargs: (add_script_calls.append(None) or "", ""),
+    )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        if opened:
+            controller.show_manager()
+        dialog = controller._manage_dialog
+        assert (dialog is not None) == opened
+
+        controller.close()
+        controller.close()
+        controller.manage_action.trigger()
+        controller.show_manager()
+        controller._refresh_manage_dialog()
+        controller._refresh_removal_eligibility()
+        assert controller._manage_dialog is None
+        if dialog is not None:
+            assert not dialog.isVisible()
+            dialog.add_script_requested.emit()
+            assert add_script_calls == []
+            qtbot.wait_until(lambda: not erlab.interactive.utils.qt_is_valid(dialog))
+
+
 def test_manage_dialog_enables_only_applicable_actions(
     manager_context,
     tmp_path: pathlib.Path,
@@ -5047,7 +5149,9 @@ def test_manage_dialog_enables_only_applicable_actions(
             script_path
         )
         script_record = catalog.extensions["script.py"]
+        manager._extensions.show_manager()
         dialog = manager._extensions._manage_dialog
+        assert dialog is not None
         dialog.set_catalog(
             _ExtensionCatalogModel(extensions={"script.py": script_record}),
             {("script.py", script_record.source_hash): "Ready"},
@@ -9004,8 +9108,9 @@ def test_changed_script_is_not_offered_as_missing_and_requires_review(
         script_path.write_bytes(source + b"\n# local update\n")
 
         assert manager._extensions._missing_script_records() == ()
-        manager._extensions._refresh_manage_dialog()
+        manager._extensions.show_manager()
         dialog = manager._extensions._manage_dialog
+        assert dialog is not None
         assert dialog.selected_script_name == script_path.name
         assert dialog._buttons["reload"].property("extensionActionState") == "review"
         assert not dialog._buttons["view_source"].isEnabled()
@@ -9664,6 +9769,7 @@ def test_controller_reports_action_and_source_failures(
         )
         controller.catalog.refresh()
         record = controller.catalog.model.extensions[script_path.name]
+        controller.show_manager()
         monkeypatch.setattr(
             controller,
             "_refresh_manage_dialog",
