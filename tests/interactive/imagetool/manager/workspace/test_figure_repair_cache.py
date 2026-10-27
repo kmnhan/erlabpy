@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import json
 import pathlib
@@ -586,6 +587,223 @@ def test_negative_cache_releases_datasets_and_decoded_blobs(
     assert len(blobs) == 2
 
 
+@pytest.mark.parametrize("payload_path", ["objects", "tools/figure", "objects/a/child"])
+def test_negative_cache_requires_one_immutable_object_path(
+    figure_repair_case, payload_path
+):
+    case = figure_repair_case
+    assert (
+        case.saver._workspace_figure_repair_cache_state(
+            (case.path, payload_path), case.attrs
+        )
+        is None
+    )
+
+
+def test_negative_cache_ignores_nonfigure_payloads(figure_repair_case):
+    case = figure_repair_case
+    assert case.saver._workspace_figure_repair_cache_state(case.payload, {}) is None
+
+
+@pytest.mark.parametrize("source_kind", ["missing", "non_imagetool"])
+def test_unavailable_source_does_not_cache_incomplete_comparison(
+    figure_repair_case, repair_counts, source_kind
+):
+    case = figure_repair_case
+    attrs = dict(case.attrs)
+    state = json.loads(attrs["tool_state"])
+    state["sources"][0]["node_uid"] = (
+        "missing-source" if source_kind == "missing" else case.node.uid
+    )
+    attrs["tool_state"] = json.dumps(state)
+    assert case.probe(attrs=attrs) is None
+    assert case.node.uid not in case.saver._figure_repair_cache
+    first = repair_counts.copy()
+    assert case.probe(attrs=attrs) is None
+    assert repair_counts["decode"] > first["decode"]
+
+
+@pytest.mark.parametrize("change", ["identity", "object", "schema"])
+def test_negative_cache_rejects_incomplete_or_mutable_backing(
+    figure_repair_case, tmp_path, change
+):
+    case = figure_repair_case
+    path = tmp_path / "unsupported-backing.itws"
+    shutil.copyfile(case.path, path)
+    with h5py.File(path, "r+") as h5_file:
+        if change == "identity":
+            del h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
+        elif change == "object":
+            del h5_file[case.payload[1]]
+        else:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 4
+    assert (
+        case.saver._workspace_figure_repair_cache_state(
+            (path, case.payload[1]), case.attrs
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("change", ["closed", "path", "conflicted", "recovery"])
+def test_negative_cache_rejects_store_changes_before_reading_inputs(
+    figure_repair_case, monkeypatch, tmp_path, change
+):
+    case = figure_repair_case
+    store = workspace_store.WorkspaceStore.active(case.path)
+    assert store is not None
+    original = workspace_storage._workspace_generation_copy_source
+
+    @contextlib.contextmanager
+    def changing_store(path):
+        with original(path) as h5_file, monkeypatch.context() as context:
+            if change in {"closed", "conflicted"}:
+                context.setattr(store, "_state", change)
+            elif change == "path":
+                context.setattr(store, "_path", tmp_path / "other.itws")
+            else:
+                context.setattr(store, "_recovery_path", tmp_path / "recovery.itws")
+            yield h5_file
+
+    monkeypatch.setattr(
+        workspace_storage, "_workspace_generation_copy_source", changing_store
+    )
+    assert (
+        case.saver._workspace_figure_repair_cache_state(case.payload, case.attrs)
+        is None
+    )
+
+
+@pytest.mark.parametrize("change", ["path", "recovery", "identity", "object", "file"])
+def test_negative_cache_rechecks_backing_after_reading_inputs(
+    figure_repair_case, monkeypatch, tmp_path, change
+):
+    case = figure_repair_case
+    store = workspace_store.WorkspaceStore.active(case.path)
+    assert store is not None
+    payload = case.payload
+    if change == "file":
+        path = tmp_path / "external.itws"
+        shutil.copyfile(case.path, path)
+        payload = path, case.payload[1]
+    original = figure_repair.metadata_fingerprint
+    changed = False
+
+    def change_backing(data):
+        nonlocal changed
+        fingerprint = original(data)
+        if not changed:
+            changed = True
+            if change == "path":
+                context.setattr(store, "_path", tmp_path / "other.itws")
+            elif change == "recovery":
+                context.setattr(store, "_recovery_path", tmp_path / "recovery.itws")
+            else:
+                session = (
+                    h5py.File(payload[0], "r+")
+                    if change == "file"
+                    else store.write_session()
+                )
+                with session as h5_file:
+                    if change == "object":
+                        del h5_file[payload[1]]
+                    else:
+                        h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR] = (
+                            uuid.uuid4().hex
+                        )
+        return fingerprint
+
+    # Restore path/recovery changes before the Manager fixture closes its store.
+    with monkeypatch.context() as context:
+        context.setattr(figure_repair, "metadata_fingerprint", change_backing)
+        assert (
+            case.saver._workspace_figure_repair_cache_state(payload, case.attrs) is None
+        )
+    assert changed
+
+
+def test_negative_cache_uses_xarray_fallback_for_unsupported_direct_reads(
+    figure_repair_case, repair_counts, monkeypatch
+):
+    case = figure_repair_case
+    monkeypatch.setattr(
+        workspace_arrays, "_read_workspace_dataset_group_h5py", lambda *_a, **_kw: None
+    )
+    assert case.probe() is None
+    assert repair_counts["compare"] == 2
+    first = repair_counts.copy()
+    assert case.probe() is None
+    assert repair_counts == first
+
+
+@pytest.mark.parametrize("difference", ["name", "attrs"])
+def test_array_comparison_accepts_omitted_cache_callbacks(
+    figure_repair_case, difference
+):
+    case = figure_repair_case
+    current = case.captured.copy(deep=True)
+    if difference == "name":
+        current = current.rename("other")
+    else:
+        current.attrs["units"] = "normalized"
+    assert not case.saver._workspace_figure_arrays_identical(case.captured, current)
+
+
+def test_repair_ignores_datasets_without_embedded_figure_sources(figure_repair_case):
+    case = figure_repair_case
+    result = case.saver._repair_workspace_figure_dataset(case.node, xr.Dataset())
+    assert result.dataset is None
+    assert result.mismatches is None
+
+
+@pytest.mark.parametrize("missing_data", ["absent", "empty"])
+def test_missing_captured_input_prevents_complete_negative_repair(
+    figure_repair_case, missing_data
+):
+    case = figure_repair_case
+    dataset = workspace_arrays._read_workspace_dataset_group_h5py(
+        *case.payload, preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME
+    )
+    assert dataset is not None
+    try:
+        dataset = dataset.drop_vars("second")
+        if missing_data == "empty":
+            dataset["second"] = interactive_utils._tool_data_placeholder()
+        result = case.saver._repair_workspace_figure_dataset(case.node, dataset)
+        assert result.dataset is None
+        assert result.mismatches is None
+    finally:
+        dataset.close()
+
+
+def test_partial_repair_preserves_other_captured_inputs_and_variables(
+    figure_repair_case,
+):
+    case = figure_repair_case
+    dataset = workspace_arrays._read_workspace_dataset_group_h5py(
+        *case.payload, preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME
+    )
+    assert dataset is not None
+    dataset["annotation"] = xr.DataArray([10, 20], dims="annotation_index")
+    case.sources[0].slicer_area.replace_source_data(case.captured.copy(deep=True))
+    try:
+        result = case.saver._repair_workspace_figure_dataset(case.node, dataset)
+        repaired = result.dataset
+        assert repaired is not None
+        try:
+            references = FigureComposerTool._saved_tool_data_references(repaired)
+            assert set(references) == {_persistence_constants.SAVED_TOOL_DATA_NAME}
+            assert repaired[_persistence_constants.SAVED_TOOL_DATA_NAME].size == 0
+            xr.testing.assert_identical(
+                repaired["second"], dataset["second"].reset_coords(drop=True)
+            )
+            xr.testing.assert_identical(repaired["annotation"], dataset["annotation"])
+        finally:
+            repaired.close()
+    finally:
+        dataset.close()
+
+
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -607,6 +825,42 @@ def test_metadata_cache_rejects_mutable_container_subclasses(base):
 
     with pytest.raises(TypeError, match="Unsupported Figure comparison metadata"):
         figure_repair.attrs_fingerprint({"custom": CustomMetadata()})
+
+
+def test_metadata_cache_rejects_numpy_scalar_subclasses():
+    class CustomScalar(np.float64):
+        pass
+
+    with pytest.raises(TypeError, match="NumPy scalar subclasses"):
+        figure_repair.attrs_fingerprint({"custom": CustomScalar(1.0)})
+
+
+def test_metadata_cache_preserves_bytes_and_numpy_scalar_values():
+    attrs = {"raw": b"\xff", "offset": np.float64(1.0)}
+    before = figure_repair.attrs_fingerprint(attrs)
+    assert figure_repair.attrs_fingerprint(dict(attrs)) == before
+    attrs["raw"] = b"\x00"
+    assert figure_repair.attrs_fingerprint(attrs) != before
+
+
+@pytest.mark.parametrize("container", [list, dict])
+def test_metadata_cache_rejects_cycles(container):
+    cyclic = container()
+    if container is list:
+        cyclic.append(cyclic)
+    else:
+        cyclic["self"] = cyclic
+    with pytest.raises(ValueError, match="Cyclic Figure comparison metadata"):
+        figure_repair.attrs_fingerprint({"cycle": cyclic})
+
+
+@pytest.mark.parametrize("kind", ["raw", "serialized"])
+def test_metadata_cache_bounds_raw_and_serialized_values(monkeypatch, kind):
+    monkeypatch.setattr(figure_repair, "_METADATA_MAX_BYTES", 64)
+    value = b"x" * 65 if kind == "raw" else "\\" * 32
+    expected = "^Figure comparison metadata exceeds" if kind == "raw" else "^Serialized"
+    with pytest.raises(ValueError, match=expected):
+        figure_repair.attrs_fingerprint({"value": value})
 
 
 def test_metadata_fingerprint_excludes_intensity_but_tracks_nested_attrs():
@@ -632,10 +886,39 @@ def test_coordinate_cache_budget_applies_to_all_coordinates(monkeypatch):
         figure_repair.metadata_fingerprint(data)
 
 
-@pytest.mark.parametrize("value", [np.array([1.0]), np.array(b"x", dtype="S4097")])
+@pytest.mark.parametrize(
+    "value",
+    [np.array([1.0]), np.array(b"x", dtype="S4097"), np.ndarray((), dtype="S0")],
+)
 def test_mismatch_witness_requires_one_bounded_scalar(value):
     with pytest.raises(ValueError, match="one small primitive scalar"):
         figure_repair._WorkspaceFigureMismatch("input", (0,), value)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"metadata": bytearray(b"fingerprint")}, TypeError, "immutable fingerprint"),
+        ({"index": (0,)}, ValueError, "both an index and a value"),
+        ({"value": np.array(1.0)}, ValueError, "both an index and a value"),
+        ({"index": (0,), "value": np.float64(1.0)}, TypeError, "plain NumPy array"),
+    ],
+)
+def test_mismatch_witness_rejects_incomplete_or_mutable_records(kwargs, error, message):
+    with pytest.raises(error, match=message):
+        figure_repair._WorkspaceFigureMismatch("input", **kwargs)
+
+
+def test_mismatch_witness_without_proof_requires_full_comparison():
+    witness = figure_repair._WorkspaceFigureMismatch("input")
+    assert not witness.still_differs(xr.DataArray([1.0], dims="x"))
+
+
+@pytest.mark.parametrize("index", [(0,), (5, 0)])
+def test_mismatch_witness_rejects_partial_or_out_of_bounds_indices(index):
+    current = xr.DataArray(np.zeros((2, 3)), dims=("x", "y"))
+    witness = figure_repair._WorkspaceFigureMismatch("input", index, np.array(1.0))
+    assert not witness.still_differs(current)
 
 
 def test_mismatch_witness_owns_immutable_scalar_storage():

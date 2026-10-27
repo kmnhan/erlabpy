@@ -1,5 +1,6 @@
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import pathlib
@@ -1103,6 +1104,37 @@ def test_workspace_unchanged_generation_never_opens_a_writer(
             assert path.read_bytes() == before
 
 
+def test_workspace_unchanged_generation_reuses_legacy_manifest_storage(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "legacy-manifest.itws"
+    manifest = _save_as_seed_manifest("kept")
+    text = workspace_store.WorkspaceStore._manifest_text(manifest)
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(store.object_path("kept"))
+            group = h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP]
+            committed = group.create_group("00000000000000000001")
+            dataset = committed.create_dataset(
+                "manifest", data=text, dtype=h5py.string_dtype("utf-8")
+            )
+            dataset.attrs["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+        before = path.read_bytes()
+
+        @contextlib.contextmanager
+        def unexpected_write(**_kwargs):
+            raise AssertionError("An unchanged legacy manifest must stay read-only")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(store, "write_session", unexpected_write)
+        saved = workspace_storage._write_workspace_generation(
+            store, _save_as_seed_plan(path), compression_mode="none"
+        )
+        assert saved.sequence == 1
+        assert saved.manifest == manifest
+        assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -1111,6 +1143,7 @@ def test_workspace_unchanged_generation_never_opens_a_writer(
         "schema",
         "missing_object",
         "checksum",
+        "missing_checksum",
         "manifest_text",
         "manifest_type",
         "dangling_generation",
@@ -1148,6 +1181,8 @@ def test_workspace_unchanged_generation_does_not_skip_required_writes(
                 )
             elif change == "checksum":
                 h5_file[newest]["manifest"].attrs.modify("sha256", b"invalid")
+            elif change == "missing_checksum":
+                del h5_file[newest]["manifest"].attrs["sha256"]
             elif change == "manifest_text":
                 h5_file[newest]["manifest"][()] = b"{}"
             elif change == "manifest_type":
@@ -1405,7 +1440,14 @@ def test_workspace_save_as_seed_uses_group_copy_for_unsafe_plans(
 
 
 @pytest.mark.parametrize(
-    "source_change", ["legacy-schema", "extra-root", "no-generation"]
+    "source_change",
+    [
+        "legacy-schema",
+        "extra-root",
+        "no-generation",
+        "missing-identity",
+        "empty-stale-manifest",
+    ],
 )
 def test_workspace_save_as_seed_uses_group_copy_for_unsupported_documents(
     monkeypatch, tmp_path, save_as_seed_source, source_change
@@ -1417,11 +1459,15 @@ def test_workspace_save_as_seed_uses_group_copy_for_unsupported_documents(
             h5_file.attrs["imagetool_workspace_schema_version"] = 3
         elif source_change == "extra-root":
             h5_file.create_group("legacy")
+        elif source_change == "missing-identity":
+            del h5_file.attrs[_persistence_constants.WORKSPACE_ID_ATTR]
         else:
             for key in list(
                 h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP]
             ):
                 del h5_file[_persistence_constants.WORKSPACE_GENERATIONS_GROUP][key]
+            if source_change == "empty-stale-manifest":
+                h5_file.attrs[_persistence_constants.WORKSPACE_MANIFEST_ATTR] = "{}"
     monkeypatch.setattr(
         workspace_storage.workspace_file_copy,
         "copy_workspace_file",
@@ -2245,6 +2291,73 @@ def test_workspace_reuse_estimate_caps_hardlink_traversal(tmp_path):
         data = group.create_dataset("data", data=[1.0])
         for index in range(4096):
             group[f"link-{index}"] = data
+        assert not workspace_storage._workspace_reused_payload_allows_byte_copy(
+            h5_file, {"reused"}, 1
+        )
+
+
+@pytest.mark.parametrize("source_size", [0, -1])
+def test_workspace_reuse_estimate_declines_unknown_source_size(tmp_path, source_size):
+    with h5py.File(tmp_path / "unknown-size.h5", "w") as h5_file:
+        h5_file.require_group(workspace_store.WorkspaceStore.object_path("reused"))
+        assert not workspace_storage._workspace_reused_payload_allows_byte_copy(
+            h5_file, {"reused"}, source_size
+        )
+
+
+@pytest.mark.parametrize("objects_root", ["missing", "soft-link", "external-link"])
+def test_workspace_reuse_estimate_rejects_indirect_objects_root(tmp_path, objects_root):
+    external = tmp_path / "external.h5"
+    root_name = _persistence_constants.WORKSPACE_OBJECTS_GROUP
+    with h5py.File(external, "w") as external_h5:
+        external_h5.require_group("objects/reused")
+    with h5py.File(tmp_path / "indirect-root.h5", "w") as h5_file:
+        h5_file.require_group("backing/reused")
+        if objects_root == "soft-link":
+            h5_file[root_name] = h5py.SoftLink("/backing")
+        elif objects_root == "external-link":
+            h5_file[root_name] = h5py.ExternalLink(str(external), "/objects")
+        assert not workspace_storage._workspace_reused_payload_allows_byte_copy(
+            h5_file, {"reused"}, 1
+        )
+
+
+def test_workspace_reuse_estimate_caps_requested_objects(tmp_path):
+    with h5py.File(tmp_path / "many-objects.h5", "w") as h5_file:
+        objects = h5_file.require_group(_persistence_constants.WORKSPACE_OBJECTS_GROUP)
+        reused = objects.create_group("reused")
+        object_ids = {f"linked-{index}" for index in range(4097)}
+        for object_id in object_ids:
+            objects[object_id] = reused
+        assert not workspace_storage._workspace_reused_payload_allows_byte_copy(
+            h5_file, object_ids, 1
+        )
+
+
+def test_workspace_reuse_estimate_declines_named_datatypes(tmp_path):
+    with h5py.File(tmp_path / "named-datatype.h5", "w") as h5_file:
+        group = h5_file.require_group(
+            workspace_store.WorkspaceStore.object_path("reused")
+        )
+        group["named_type"] = np.dtype("float64")
+        assert not workspace_storage._workspace_reused_payload_allows_byte_copy(
+            h5_file, {"reused"}, 1
+        )
+
+
+def test_workspace_reuse_estimate_declines_unreadable_storage_metadata(
+    monkeypatch, tmp_path
+):
+    with h5py.File(tmp_path / "unreadable-metadata.h5", "w") as h5_file:
+        group = h5_file.require_group(
+            workspace_store.WorkspaceStore.object_path("reused")
+        )
+        group.create_dataset("data", data=[1.0])
+
+        def fail_metadata(_object_id):
+            raise OSError(errno.EIO, "Cannot read object metadata")
+
+        monkeypatch.setattr(h5py.h5o, "get_info", fail_metadata)
         assert not workspace_storage._workspace_reused_payload_allows_byte_copy(
             h5_file, {"reused"}, 1
         )
