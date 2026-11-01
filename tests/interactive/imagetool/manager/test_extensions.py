@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import gc
 import hashlib
 import itertools
 import json
@@ -11,6 +12,7 @@ import threading
 import types
 import typing
 import uuid
+import weakref
 
 import numpy as np
 import pydantic
@@ -4197,7 +4199,41 @@ def test_catalog_close_cancels_pending_refresh(
 
     assert not catalog._refresh_timer.isActive()
     assert not changed
+    assert not catalog._watcher.files()
+    assert not catalog._watcher.directories()
     catalog.close()
+
+
+def test_closed_catalog_releases_qt_objects_without_garbage_collection(
+    tmp_path: pathlib.Path, qapp: QtWidgets.QApplication
+) -> None:
+    destruction_threads: list[int] = []
+
+    def record_destruction() -> None:
+        destruction_threads.append(threading.get_ident())
+
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    catalog_ref = weakref.ref(catalog)
+    catalog.destroyed.connect(
+        record_destruction, QtCore.Qt.ConnectionType.DirectConnection
+    )
+    catalog._watcher.destroyed.connect(
+        record_destruction, QtCore.Qt.ConnectionType.DirectConnection
+    )
+    gc_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        catalog.close()
+        del catalog
+
+        assert catalog_ref() is None
+        assert destruction_threads == [threading.get_ident()] * 2
+    finally:
+        if (retained := catalog_ref()) is not None:
+            retained.deleteLater()
+            qapp.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete.value)
+        if gc_enabled:
+            gc.enable()
 
 
 def test_catalog_watcher_propagates_global_record_state(
@@ -10175,3 +10211,44 @@ def test_execution_adapters_workers_and_result_lifecycle_guards(
         execution._pending.append(job)
         execution.shutdown()
         assert execution.queued == ()
+
+
+def test_completed_routine_can_be_removed_before_completion_is_delivered(
+    manager_context,
+    tmp_path: pathlib.Path,
+    qtbot: pytest.QtBot,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        store = manager._extensions.catalog.store
+        catalog, source_hash = store.register_script(script_path)
+        _validate_and_enable(
+            store,
+            "scale.py",
+            expected_record_generation=catalog.extensions["scale.py"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        job_id = execution.queue_routine(
+            script_name="scale.py",
+            source_hash=source_hash,
+            routine_id="scale",
+            parameters={"scale": 3.0},
+            target=target,
+        )
+        assert execution._pool.waitForDone(5000)
+        assert execution._active is not None
+
+        # Completion is still queued on the GUI thread. Removing the job must not
+        # access a runnable that the pool has already destroyed.
+        execution.remove_queued(job_id)
+
+        qtbot.wait_until(lambda: execution._active is None, timeout=5000)
+        assert manager.ntools == 2
+        xr.testing.assert_identical(manager._get_imagetool_data(1), data * 3.0)

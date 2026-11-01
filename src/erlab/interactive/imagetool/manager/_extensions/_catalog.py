@@ -596,13 +596,11 @@ class _ExtensionCatalog(QtCore.QObject):
             self.load_error = str(error)
             self.model = _ExtensionCatalogModel()
         self._watcher = QtCore.QFileSystemWatcher(self)
-        self._schedule_refresh_slot = self._schedule_refresh
-        self._watcher.fileChanged.connect(self._schedule_refresh_slot)
-        self._watcher.directoryChanged.connect(self._schedule_refresh_slot)
+        self._watcher.fileChanged.connect(self._schedule_refresh)
+        self._watcher.directoryChanged.connect(self._schedule_refresh)
         self._refresh_timer = QtCore.QTimer(self)
         self._refresh_timer.setSingleShot(True)
-        self._refresh_slot = self.refresh
-        self._refresh_timer.timeout.connect(self._refresh_slot)
+        self._refresh_timer.timeout.connect(self.refresh)
         self._restore_watches()
         self._resolver_owner = uuid.uuid4().hex
         _set_registered_script_backend(self._resolver_owner, self.store)
@@ -662,7 +660,10 @@ class _ExtensionCatalog(QtCore.QObject):
             return
         self._closed = True
         self._refresh_timer.stop()
-        self._watcher.fileChanged.disconnect(self._schedule_refresh_slot)
-        self._watcher.directoryChanged.disconnect(self._schedule_refresh_slot)
-        self._refresh_timer.timeout.disconnect(self._refresh_slot)
+        self._watcher.fileChanged.disconnect(self._schedule_refresh)
+        self._watcher.directoryChanged.disconnect(self._schedule_refresh)
+        self._refresh_timer.timeout.disconnect(self.refresh)
+        watched_paths = self._watcher.files() + self._watcher.directories()
+        if watched_paths:
+            self._watcher.removePaths(watched_paths)
         _remove_registered_script_backend(self._resolver_owner)

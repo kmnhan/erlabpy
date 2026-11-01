@@ -63,7 +63,7 @@ class _PreviewTrackingTabbedExplorer(_TabbedExplorer):
     def add_tab(self, **kwargs) -> None:
         tab = QtWidgets.QWidget()
         explorer = _PreviewTrackingExplorer(
-            f"tab-{self.tab_widget.count()}", parent=tab
+            f"tab-{self.tab_widget.count()}", parent=self
         )
         tab._explorer = explorer  # type: ignore[attr-defined]
         self.tab_widget.addTab(tab, explorer.current_directory.name)
@@ -74,7 +74,7 @@ class _DeferredPreviewTrackingTabbedExplorer(_TabbedExplorer):
     def add_tab(self, **kwargs) -> None:
         tab = QtWidgets.QWidget()
         explorer = _DeferredPreviewTrackingExplorer(
-            f"tab-{self.tab_widget.count()}", parent=tab
+            f"tab-{self.tab_widget.count()}", parent=self
         )
         tab._explorer = explorer  # type: ignore[attr-defined]
         self.tab_widget.addTab(tab, explorer.current_directory.name)
@@ -156,7 +156,7 @@ def test_tabbed_explorer_discard_tab_defers_busy_preview_workers(qtbot) -> None:
     win = _PreviewTrackingTabbedExplorer()
     qtbot.addWidget(win)
     tab = QtWidgets.QWidget()
-    explorer = _DeferredPreviewTrackingExplorer("busy", tab)
+    explorer = _DeferredPreviewTrackingExplorer("busy", win)
     tab._explorer = explorer  # type: ignore[attr-defined]
     busy_index = win.tab_widget.addTab(tab, "busy")
 
@@ -165,6 +165,38 @@ def test_tabbed_explorer_discard_tab_defers_busy_preview_workers(qtbot) -> None:
     assert win.tab_widget.count() == 1
     assert explorer.stopped_preview_workers == 1
     assert explorer.deferred_delete_count == 1
+
+
+def test_tabbed_explorer_discard_tab_retains_content_until_preview_stops(
+    qtbot, monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    win = _TabbedExplorer(root_path=tmp_path)
+    qtbot.addWidget(win)
+    explorer = win.current_explorer
+    assert explorer is not None
+    tab = win.tab_widget.widget(0)
+    tree_view = explorer._tree_view
+    monkeypatch.setattr(explorer, "_stop_preview_workers", lambda: False)
+    monkeypatch.setattr(explorer._preview_threadpool, "activeThreadCount", lambda: 1)
+
+    win._discard_tab(0)
+    QtWidgets.QApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+
+    assert erlab.interactive.utils.qt_is_valid(tab)
+    assert erlab.interactive.utils.qt_is_valid(tree_view)
+    explorer._dir_loaded()
+
+    monkeypatch.setattr(explorer._preview_threadpool, "activeThreadCount", lambda: 0)
+    explorer._delete_when_preview_workers_done()
+    QtWidgets.QApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+
+    assert not erlab.interactive.utils.qt_is_valid(explorer)
+    assert not erlab.interactive.utils.qt_is_valid(tab)
+    assert not erlab.interactive.utils.qt_is_valid(tree_view)
 
 
 def test_tabbed_explorer_close_stops_preview_workers_without_removing_tabs(

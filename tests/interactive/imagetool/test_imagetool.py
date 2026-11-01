@@ -8658,6 +8658,35 @@ def test_dask_refresh_defers_only_while_workspace_write_is_active(
     win.close()
 
 
+def test_dask_refresh_skips_deleted_slicer(qtbot, monkeypatch) -> None:
+    da = pytest.importorskip("dask.array")
+    data = xr.DataArray(
+        da.from_array(np.arange(6, dtype=np.float32).reshape(2, 3), chunks=(1, 3)),
+        dims=("x", "y"),
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.viewer._workspace_write_in_progress",
+        lambda _value: True,
+    )
+    area._handle_refresh_dask(0, None)
+    assert area._workspace_dask_refresh_scheduled
+    refreshes = []
+    monkeypatch.setattr(
+        area, "_handle_refresh_dask", lambda *args: refreshes.append(args)
+    )
+
+    win.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+    assert not erlab.interactive.utils.qt_is_valid(area)
+    qtbot.wait(150)
+    assert refreshes == []
+
+
 def test_imagetool_keeps_repeatable_xarray_resource_closer(qtbot) -> None:
     close_calls: list[None] = []
     dataset = xr.Dataset(

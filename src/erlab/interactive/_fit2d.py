@@ -1888,9 +1888,12 @@ class Fit2DTool(Fit1DTool):
         for name, (errbar, scatter) in self._param_plot_overlay_items.items():
             if scatter is not item:
                 continue
-            QtCore.QTimer.singleShot(
+            erlab.interactive.utils.single_shot(
+                self,
                 0,
                 functools.partial(self._sync_overlay_visibility, name, scatter, errbar),
+                scatter,
+                errbar,
             )
             break
 
