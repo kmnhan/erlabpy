@@ -884,6 +884,9 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         source_is_healthy: Callable[[str, str], bool],
     ) -> None:
         super().__init__()
+        # Cancellation can inspect this runnable after its result is queued for the
+        # GUI thread. The caller retains ownership so tryTake cannot use a deleted task.
+        self.setAutoDelete(False)
         self.job = job
         self.manager_session_id = manager_session_id
         self.catalog_store = catalog_store

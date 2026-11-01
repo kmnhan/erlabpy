@@ -748,7 +748,7 @@ class HistoryDialog(QtWidgets.QDialog):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if not self._fitting_height:
-            QtCore.QTimer.singleShot(0, self._fit_height_to_content)
+            erlab.interactive.utils.single_shot(self, 0, self._fit_height_to_content)
 
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.viewer.ImageSlicerArea:
@@ -841,7 +841,7 @@ class HistoryDialog(QtWidgets.QDialog):
             self._add_detail_row(row, label, before, after)
             row += 1
         self._fit_height_to_content()
-        QtCore.QTimer.singleShot(0, self._fit_height_to_content)
+        erlab.interactive.utils.single_shot(self, 0, self._fit_height_to_content)
 
     def _update_history_list_height(self) -> None:
         row_count = max(1, min(self._history_list.count(), 8))

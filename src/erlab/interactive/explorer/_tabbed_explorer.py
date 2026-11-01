@@ -284,11 +284,15 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
         explorer = self.get_explorer(index)
         self.tab_widget.removeTab(index)
         if explorer is not None:
+            if tab is not None:
+                # Keep the transferred central widget alive until deferred worker
+                # shutdown also permits the explorer wrapper to be destroyed.
+                tab.setParent(explorer)
             if explorer._stop_preview_workers():
                 explorer.deleteLater()
             else:
                 explorer._delete_when_preview_workers_done()
-        if tab is not None:
+        elif tab is not None:
             tab.deleteLater()
 
     def _stop_preview_workers(self) -> bool:

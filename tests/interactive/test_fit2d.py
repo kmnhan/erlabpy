@@ -1137,6 +1137,28 @@ def test_fit2d_overlay_legend_sync(qtbot) -> None:
     assert win.param_plot_overlay_check.isChecked() is True
 
 
+def test_fit2d_overlay_legend_sync_skips_deleted_window(qtbot) -> None:
+    win = erlab.interactive.ftool(_make_2d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    _seed_fit2d_param_results(
+        win, [win._params.copy() for _ in range(len(win._params_full))]
+    )
+    param_name = win.param_plot_combo.itemText(0)
+    win.param_plot_combo.setCurrentText(param_name)
+    win.param_plot_overlay_check.setChecked(True)
+    win._update_param_plot_overlays()
+    _errbar, scatter = win._param_plot_overlay_items[param_name]
+
+    win._on_image_legend_sample_clicked(types.SimpleNamespace(item=scatter))
+    win.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+    assert not erlab.interactive.utils.qt_is_valid(win)
+    QtCore.QCoreApplication.processEvents()
+
+
 def test_fit2d_update_param_plot_overlays_paths(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

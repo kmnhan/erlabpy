@@ -2315,7 +2315,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._workspace_pending_dask_refresh = (cursor, axes)
             if not self._workspace_dask_refresh_scheduled:
                 self._workspace_dask_refresh_scheduled = True
-                QtCore.QTimer.singleShot(100, self._retry_workspace_dask_refresh)
+                erlab.interactive.utils.single_shot(
+                    self, 100, self._retry_workspace_dask_refresh
+                )
             return
         self._workspace_pending_dask_refresh = None
 

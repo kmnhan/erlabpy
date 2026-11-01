@@ -1264,6 +1264,20 @@ def test_history_dialog_populates_current_entry_and_details(qtbot):
     assert not go_to_btn.isEnabled()
 
 
+def test_history_dialog_skips_pending_resize_after_deletion(qtbot):
+    area = _DummySlicerArea(_states_for_dialog_tests(), 1)
+    dialog = _history.HistoryDialog(area)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    dialog.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+    assert not erlab.interactive.utils.qt_is_valid(dialog)
+    QtCore.QCoreApplication.processEvents()
+
+
 def test_history_dialog_shows_entry_timestamp(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
