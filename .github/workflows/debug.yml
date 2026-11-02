@@ -16,8 +16,7 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       QT_API: pyside6
       PYTEST_QT_API: pyside6
-      FORCE_COLOR: "0"
-      PYTHONUNBUFFERED: "1"
+      FORCE_COLOR: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,44 +39,94 @@ jobs:
           uv pip freeze > native-dependencies.txt
           uv run --no-sync python -m scripts.ci_test_groups compat > "$RUNNER_TEMP/targets.txt"
 
-      - name: Capture native stacks on test timeout
+      - name: Capture native stacks after a normal test process stalls
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/trace.gdb" <<'GDB'
-          set pagination off
-          set confirm off
-          set print elements 30
-          set print max-depth 5
-          set debuginfod enabled off
-          handle SIGPIPE nostop noprint pass
-          set breakpoint pending on
-          break _exit
-          commands
-            silent
-            echo \nNATIVE THREAD STACKS BEFORE PROCESS EXIT\n
-            thread apply all bt full 60
-            info sharedlibrary
-            continue
-          end
-          python
-          import gdb
-          def capture_signal(event):
-              if isinstance(event, gdb.SignalEvent):
-                  print("NATIVE FAILURE: " + event.stop_signal)
-                  gdb.execute("thread apply all bt full 60")
-                  gdb.execute("info sharedlibrary")
-          gdb.events.stop.connect(capture_signal)
-          end
-          run
-          GDB
-          mapfile -t targets < "$RUNNER_TEMP/targets.txt"
-          gdb --batch --return-child-result -x "$RUNNER_TEMP/trace.gdb" \
-            --args "$PWD/.venv/bin/python" -X faulthandler -m pytest \
-            -v --capture=tee-sys --no-qt-log -m compat \
-            -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true \
-            --junitxml native-junit.xml -o junit_family=legacy \
-            "${targets[@]}" 2>&1 | tee native-trace.log
+          cat > "$RUNNER_TEMP/observe.py" <<'PY'
+          import contextlib
+          import os
+          import pathlib
+          import signal
+          import subprocess
+          import sys
+          import time
+          
+          def interrupted(signum, frame):
+              raise SystemExit(128 + signum)
+          
+          signal.signal(signal.SIGTERM, interrupted)
+          targets = pathlib.Path(os.environ["RUNNER_TEMP"], "targets.txt").read_text().splitlines()
+          command = [
+              str(pathlib.Path.cwd() / ".venv" / "bin" / "pytest"),
+              "--capture=tee-sys", "--no-qt-log",
+              "-m", "compat", "-o", "faulthandler_timeout=300",
+              "-o", "faulthandler_exit_on_timeout=true",
+              "--junitxml", "native-junit.xml", "-o", "junit_family=legacy", *targets,
+          ]
+          log_path = pathlib.Path("smoke.log")
+          started = last_progress = time.monotonic()
+          read_offset = 0
+          armed = captured = False
+          environment = os.environ.copy()
+          environment["VIRTUAL_ENV"] = str(pathlib.Path.cwd() / ".venv")
+          environment["PATH"] = environment["VIRTUAL_ENV"] + "/bin:" + environment["PATH"]
+          with log_path.open("wb", buffering=0) as output:
+              child = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                       start_new_session=True, env=environment)
+              try:
+                  while child.poll() is None:
+                      with log_path.open("rb") as reader:
+                          reader.seek(read_offset)
+                          new_output = reader.read()
+                      if new_output:
+                          read_offset += len(new_output)
+                          last_progress = time.monotonic()
+                          armed |= b"tests/interactive/test_momentum_overlays.py" in new_output
+                          sys.stdout.buffer.write(new_output)
+                          sys.stdout.buffer.flush()
+                      now = time.monotonic()
+                      if armed and not captured and now - last_progress >= 90:
+                          captured = True
+                          print("\nCapturing native stacks after 90 seconds without test output.",
+                                flush=True)
+                          debugger = [
+                              "sudo", "-n", "timeout", "--signal=TERM", "--kill-after=5s",
+                              "45s", "gdb", "-q", "--batch", "--nx",
+                              "-iex", "set debuginfod enabled off", "-p", str(child.pid),
+                              "-ex", "set pagination off",
+                              "-ex", "set print elements 30",
+                              "-ex", "set print max-depth 5",
+                              "-ex", "thread apply all bt full 80",
+                              "-ex", "info sharedlibrary",
+                              "-ex", "detach",
+                          ]
+                          with pathlib.Path("native-stacks.log").open("wb") as trace:
+                              result = subprocess.run(debugger, stdout=trace,
+                                                      stderr=subprocess.STDOUT, timeout=55)
+                          print(f"Debugger exit status: {result.returncode}", flush=True)
+                      if now - started > 720:
+                          raise TimeoutError("Diagnostic process exceeded 12 minutes")
+                      time.sleep(1)
+              finally:
+                  if child.poll() is None:
+                      with contextlib.suppress(ProcessLookupError):
+                          os.killpg(child.pid, signal.SIGTERM)
+                      try:
+                          child.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          with contextlib.suppress(ProcessLookupError):
+                              os.killpg(child.pid, signal.SIGKILL)
+                          child.wait()
+          with log_path.open("rb") as reader:
+              reader.seek(read_offset)
+              sys.stdout.buffer.write(reader.read())
+              sys.stdout.buffer.flush()
+          print(f"Pytest exit status: {child.returncode}; native capture: {captured}", flush=True)
+          raise SystemExit(child.returncode if child.returncode >= 0 else 128 - child.returncode)
+          
+          PY
+          .venv/bin/python "$RUNNER_TEMP/observe.py"
 
       - name: Save diagnostic evidence
         if: always()
@@ -85,7 +134,8 @@ jobs:
         with:
           name: ci-641-pyside-native-trace
           path: |
-            native-trace.log
+            smoke.log
+            native-stacks.log
             native-dependencies.txt
             native-junit.xml
           if-no-files-found: error
