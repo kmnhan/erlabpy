@@ -153,7 +153,7 @@ def test_figure_dpi_override_parameter_item_widget(qtbot) -> None:
     param = FigureDpiOverrideParameter(name="dpi", value=150.0)
     item = param.makeTreeItem(0)
     widget = item.widget
-    qtbot.addWidget(widget)
+    qtbot.addWidget(item.layoutWidget)
 
     assert isinstance(widget, FigureDpiOverrideWidget)
     assert not item.hideWidget
@@ -167,7 +167,7 @@ def test_savefig_dpi_parameter_item_widget(qtbot) -> None:
     param = SavefigDpiParameter(name="dpi", value="style")
     item = param.makeTreeItem(0)
     widget = item.widget
-    qtbot.addWidget(widget)
+    qtbot.addWidget(item.layoutWidget)
 
     assert isinstance(widget, SavefigDpiWidget)
     assert not item.hideWidget
@@ -278,7 +278,7 @@ def test_directory_path_parameter_item_widget(qtbot) -> None:
     param = DirectoryPathParameter(name="folder", value="~/data")
     item = param.makeTreeItem(0)
     widget = item.widget
-    qtbot.addWidget(widget)
+    qtbot.addWidget(item.layoutWidget)
 
     assert isinstance(widget, DirectoryPathWidget)
     assert not item.hideWidget
@@ -446,7 +446,7 @@ def test_trusted_folders_parameter_item_widget(qtbot) -> None:
     param = TrustedFoldersParameter(name="folders", value=["~/workspaces"])
     item = param.makeTreeItem(0)
     widget = item.widget
-    qtbot.addWidget(widget)
+    qtbot.addWidget(item.layoutWidget)
 
     assert isinstance(widget, TrustedFoldersWidget)
     assert not item.hideWidget
