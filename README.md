@@ -110,7 +110,7 @@ If you use `erlab` in your research, citation is appreciated! Citation informati
 
 - K. Higashihira Han et al.,
   [Unexpected stabilization of a single-q charge density wave in pristine 1T-TiSe₂](https://doi.org/10.1038/s41467-026-78072-0),
-  *Nature Communications* (2026).
+  *Nature Communications* **17**, 11220 (2026).
 
 - More coming soon
 
