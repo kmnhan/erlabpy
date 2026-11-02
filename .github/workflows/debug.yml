@@ -51,7 +51,8 @@ jobs:
           set print max-depth 5
           set debuginfod enabled off
           handle SIGPIPE nostop noprint pass
-          catch syscall exit_group
+          set breakpoint pending on
+          break _exit
           commands
             silent
             echo \nNATIVE THREAD STACKS BEFORE PROCESS EXIT\n
