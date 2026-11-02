@@ -4,6 +4,7 @@ import errno
 import gc
 import hashlib
 import json
+import os
 import shutil
 import threading
 import typing
@@ -112,6 +113,161 @@ def test_provenance_revision_checkpoints_isolate_data_and_nested_inputs() -> Non
     restored = rollback.resolve_data(first)
     np.testing.assert_array_equal(restored.values, np.arange(4.0))
     assert restored.attrs["nested"]["value"] == 1
+
+
+def test_refresh_retention_preserves_inputs_operation_states_and_temporary_roots():
+    registry = _ProvenanceRevisionStore()
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    original = registry.add(data, full_data())
+    edited = registry.add(data + 1, primary_revision_id=original)
+    refreshed = registry.add(
+        data + 2, primary_revision_id=edited, primary_checkpoint_required=False
+    )
+    latest = registry.add(
+        data + 3, primary_revision_id=refreshed, primary_checkpoint_required=False
+    )
+    pinned = registry.add(
+        data + 10,
+        script(
+            start_label="Pinned input",
+            root_input=ScriptInput(
+                name="data", revision_id=edited, follow_source=False
+            ),
+        ),
+    )
+    with registry.retain((latest,)):
+        registry.discard_unreachable((latest, pinned))
+        assert all(registry.has_data(i) for i in (original, edited, refreshed, latest))
+    registry.discard_unreachable((latest, pinned))
+    assert registry.revision_ids == {original, edited, refreshed, latest, pinned}
+    assert not registry.has_data(refreshed)
+    assert registry.get(refreshed).primary_revision_id == edited
+    xr.testing.assert_identical(registry.resolve_data(original), data)
+    xr.testing.assert_identical(registry.resolve_data(edited), data + 1)
+    xr.testing.assert_identical(registry.resolve_data(latest), data + 3)
+    registry.discard_unreachable((latest,))
+    assert not registry.has_data(edited)
+    assert registry.has_data(original)  # Preserve the distinct operation boundary.
+
+
+def test_refresh_retention_roundtrip_keeps_metadata_without_reading_old_arrays(
+    tmp_path,
+):
+    registry = _ProvenanceRevisionStore()
+    old = registry.add(xr.DataArray(np.ones((2, 3)), dims=("x", "y")))
+    latest = registry.add(
+        xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+        primary_revision_id=old,
+        primary_checkpoint_required=False,
+    )
+    registry.discard_unreachable((latest,))
+    records = registry.reachable((latest,))
+    manifest = _manifest()
+    manifest["provenance_revisions"] = [
+        workspace_revisions.revision_manifest_entry(record) for record in records
+    ]
+    path = tmp_path / "refresh.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        writes = workspace_revisions.revision_object_writes(registry, records)
+        assert [item.object_id for item in writes] == [f"revision-{latest}"]
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(manifest, writes),
+            compression_mode="none",
+        )
+    restored = _ProvenanceRevisionStore()
+    workspace_revisions.restore_revision_store(restored, manifest, path)
+    assert not restored.has_data(old)
+    assert not restored.get(latest).primary_checkpoint_required
+    assert restored.get(latest).primary_revision_id == old
+    xr.testing.assert_identical(
+        restored.resolve_data(latest).compute(), registry.resolve_data(latest)
+    )
+
+
+@pytest.mark.parametrize("metadata_first", [False, True])
+def test_revision_import_merges_optional_checkpoint_without_changing_recipe(
+    metadata_first, monkeypatch
+):
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    registry = _ProvenanceRevisionStore()
+    revision = registry.add(data, full_data())
+    complete = workspace_revisions.revision_manifest_entry(registry.get(revision))
+    metadata = {**complete, "checkpoint_object_id": None}
+    restored = _ProvenanceRevisionStore()
+    entries = (metadata, complete) if metadata_first else (complete, metadata)
+    monkeypatch.setattr(
+        workspace_revisions, "_read_revision_checkpoint", lambda *_args: data
+    )
+    for entry in entries:
+        workspace_revisions.restore_revision_store(
+            restored, {"provenance_revisions": [entry]}, "input.itws"
+        )
+    xr.testing.assert_identical(restored.resolve_data(revision), data)
+    assert restored.get(revision).provenance_spec == full_data()
+
+
+def test_completed_save_does_not_restore_released_refresh_checkpoint():
+    registry = _ProvenanceRevisionStore()
+    old = registry.add(xr.DataArray([1.0]))
+    saved = {
+        "provenance_revisions": [
+            workspace_revisions.revision_manifest_entry(registry.get(old))
+        ]
+    }
+    current = registry.add(
+        xr.DataArray([2.0]),
+        primary_revision_id=old,
+        primary_checkpoint_required=False,
+    )
+    registry.discard_unreachable((current,))
+    workspace_revisions.bind_saved_revision_sources(registry, saved, "saved.itws")
+    assert not registry.has_data(old)
+    assert registry.has_data(current)
+
+
+def test_refresh_retention_ignores_inputs_used_only_by_superseded_results():
+    registry = _ProvenanceRevisionStore()
+    old_input = registry.add(xr.DataArray([1.0]))
+    new_input = registry.add(xr.DataArray([2.0]))
+    old_result = registry.add(
+        xr.DataArray([10.0]),
+        script(
+            start_label="Result",
+            root_input=ScriptInput(name="data", revision_id=old_input),
+        ),
+    )
+    new_result = registry.add(
+        xr.DataArray([20.0]),
+        script(
+            start_label="Result",
+            root_input=ScriptInput(name="data", revision_id=new_input),
+        ),
+        primary_revision_id=old_result,
+        primary_checkpoint_required=False,
+    )
+    registry.discard_unreachable((new_result,))
+    assert registry.revision_ids == {old_input, new_input, old_result, new_result}
+    assert not registry.has_data(old_input)
+    assert not registry.has_data(old_result)
+    assert registry.has_data(new_input)
+    assert registry.has_data(new_result)
+
+
+def test_revision_import_rejects_invalid_checkpoint_retention_atomically():
+    registry = _ProvenanceRevisionStore()
+    with pytest.raises(TypeError, match="retention must be a boolean"):
+        workspace_revisions.restore_revision_store(
+            registry,
+            {
+                "provenance_revisions": [
+                    {"revision_id": "valid"},
+                    {"revision_id": "invalid", "primary_checkpoint_required": "false"},
+                ]
+            },
+            "unused.itws",
+        )
+    assert registry.revision_ids == frozenset()
 
 
 def test_released_input_normalization_preserves_resolved_fallback() -> None:
@@ -2886,6 +3042,8 @@ def test_workspace_generation_removes_partial_object_after_copy_error(
         _source_path,
         target_group_path,
         _attrs,
+        *,
+        shared_groups=None,
     ) -> bool:
         target_file.require_group(target_group_path)
         raise RuntimeError("copy failed")
@@ -4093,8 +4251,21 @@ def test_workspace_store_rejects_replaced_document_path(
             _ = store.h5_file
 
 
+@pytest.mark.parametrize(
+    "replace_open_file",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows cannot replace an open HDF5 file"
+            ),
+        ),
+    ],
+)
 def test_workspace_store_conflict_keeps_lazy_data_for_save_as(
     tmp_path: pathlib.Path,
+    replace_open_file: bool,
 ) -> None:
     path = tmp_path / "workspace.itws"
     replacement = tmp_path / "replacement.itws"
@@ -4120,7 +4291,16 @@ def test_workspace_store_conflict_keeps_lazy_data_for_save_as(
                         _persistence_constants.WORKSPACE_OBJECTS_GROUP
                     ].create_group("external")
                 other.publish(_manifest("external"))
-            replacement.replace(path)
+            if replace_open_file:
+                replacement.replace(path)
+            else:
+                # Exercise stale identity recovery even where the OS prevents
+                # replacement of a file with an open reader.
+                replacement_stat = replacement.stat()
+                store._path_identity = (
+                    replacement_stat.st_dev,
+                    replacement_stat.st_ino,
+                )
 
             with pytest.raises(workspace_store.WorkspaceStoreConflictError):
                 store.publish(_manifest("current"))
@@ -4148,5 +4328,7 @@ def test_workspace_store_conflict_keeps_lazy_data_for_save_as(
         finally:
             opened.close()
 
-    with workspace_store.WorkspaceStore(path) as replacement_store:
+    with workspace_store.WorkspaceStore(
+        path if replace_open_file else replacement
+    ) as replacement_store:
         assert replacement_store.current_generation().manifest == _manifest("external")

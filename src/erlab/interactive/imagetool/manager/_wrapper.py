@@ -2140,7 +2140,12 @@ class _ManagedWindowNode(QtCore.QObject):
                 revision_id,
             )
 
-    def revision_id_for_role(self, data_role: ScriptInputDataRole) -> str:
+    def revision_id_for_role(
+        self,
+        data_role: ScriptInputDataRole,
+        *,
+        primary_checkpoint_required: bool = True,
+    ) -> str:
         """Capture an exact input independently of this window's lifetime."""
         token = self.snapshot_token_for_role(data_role)
         cached = self._revision_ids_by_role.get(data_role)
@@ -2172,6 +2177,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 primary_revision_id=(
                     self._current_revision_id if data_role == "source" else None
                 ),
+                primary_checkpoint_required=primary_checkpoint_required,
             )
             self._revision_ids_by_role[data_role] = (token, revision_id)
             if data_role == "source":
@@ -2733,6 +2739,7 @@ class _ManagedWindowNode(QtCore.QObject):
         propagate_descendants: bool,
         preserve_filter: bool = False,
         detach_source_binding: bool = False,
+        primary_checkpoint_required: bool = True,
         on_commit: Callable[[], None] | None = None,
     ) -> None:
         data = data.compute()
@@ -2769,7 +2776,9 @@ class _ManagedWindowNode(QtCore.QObject):
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
         self._replay_source_data = None
         self._advance_snapshot_token(defer_refresh=not propagate_descendants)
-        self.revision_id_for_role("source")
+        self.revision_id_for_role(
+            "source", primary_checkpoint_required=primary_checkpoint_required
+        )
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
         if propagate_descendants:
@@ -2790,6 +2799,7 @@ class _ManagedWindowNode(QtCore.QObject):
         propagate_descendants: bool = True,
         preserve_filter: bool = False,
         replay_source_data: xr.DataArray | None,
+        primary_checkpoint_required: bool = True,
         on_commit: Callable[[], None] | None = None,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
@@ -2807,6 +2817,7 @@ class _ManagedWindowNode(QtCore.QObject):
             propagate_descendants=propagate_descendants,
             preserve_filter=preserve_filter,
             detach_source_binding=True,
+            primary_checkpoint_required=primary_checkpoint_required,
             on_commit=on_commit,
         )
 
@@ -3115,7 +3126,12 @@ class _ManagedWindowNode(QtCore.QObject):
             not self._suspend_snapshot_token_updates
             and self._current_revision_id is not None
         ):
-            self.revision_id_for_role("source")
+            self.revision_id_for_role(
+                "source",
+                primary_checkpoint_required=(
+                    not self.slicer_area._source_reload_in_progress
+                ),
+            )
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
@@ -3165,6 +3181,7 @@ class _ManagedWindowNode(QtCore.QObject):
                     provenance_spec,
                     propagate_descendants=True,
                     preserve_filter=True,
+                    primary_checkpoint_required=False,
                 )
             except Exception:
                 self.manager._lineage_controller._propagate_source_state_from_uid(
@@ -3229,6 +3246,7 @@ class _ManagedWindowNode(QtCore.QObject):
                         provenance_spec,
                         propagate_descendants=False,
                         preserve_filter=True,
+                        primary_checkpoint_required=False,
                     )
                 except Exception:
                     self._set_source_state("unavailable")

@@ -390,6 +390,7 @@ def _copy_workspace_group(
     source_file: str,
     source_path: str,
     target_path: str,
+    shared_groups: dict[tuple[typing.Any, ...], str] | None = None,
 ) -> None:
     try:
         with (
@@ -402,6 +403,7 @@ def _copy_workspace_group(
                 source_path,
                 target_path,
                 None,
+                shared_groups=shared_groups,
             )
     except Exception as exc:
         with target_store.lock:
@@ -505,6 +507,8 @@ def _write_workspace_generation(
                 pass
 
     with target_store.write_session(on_contention=on_contention):
+        sharing = workspace_arrays._WorkspaceDatasetSharing()
+        shared_groups: dict[tuple[typing.Any, ...], str] = {}
         created_object_ids: list[str] = []
         created_legacy_links: list[str] = []
         try:
@@ -550,6 +554,7 @@ def _write_workspace_generation(
                                 target_path,
                                 item.dataset,
                                 compression_mode=compression_mode,
+                                sharing=sharing,
                             )
                     else:
                         workspace_arrays._write_workspace_dataset_group_to_file(
@@ -557,6 +562,7 @@ def _write_workspace_generation(
                             target_path,
                             item.dataset,
                             compression_mode=compression_mode,
+                            sharing=sharing,
                         )
                     continue
                 if item.blob is not None:
@@ -575,6 +581,7 @@ def _write_workspace_generation(
                     source_file=source_file,
                     source_path=source_path,
                     target_path=target_path,
+                    shared_groups=shared_groups,
                 )
             for item in plan.preserved_groups:
                 object_id = legacy_reader_rebindings.get(item.target_path)
@@ -831,6 +838,7 @@ def _compact_workspace_store(
                 ) as compacted,
                 compacted.write_session(),
             ):
+                shared_groups: dict[tuple[typing.Any, ...], str] = {}
                 with compacted.lock:
                     for group_path in sorted(legacy_group_paths):
                         copied = workspace_arrays._copy_workspace_h5_group_to_open_file(
@@ -839,6 +847,7 @@ def _compact_workspace_store(
                             group_path,
                             group_path,
                             None,
+                            shared_groups=shared_groups,
                         )
                         if not copied:
                             raise KeyError(
@@ -852,6 +861,7 @@ def _compact_workspace_store(
                             object_path,
                             object_path,
                             None,
+                            shared_groups=shared_groups,
                         )
                         if not copied:
                             if object_id in optional_missing_script_source_ids:

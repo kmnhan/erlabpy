@@ -459,6 +459,69 @@ def test_manager_workspace_captures_lazy_input_before_source_changes(
         )
 
 
+def test_manager_reload_retains_exact_pinned_input_and_shares_current_checkpoint(
+    qtbot, tmp_path, test_data, manager_context, monkeypatch
+):
+    path = tmp_path / "refreshed.itws"
+    with manager_context() as manager:
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        node = manager._node_for_target(target)
+        registry = manager._provenance_revisions
+        first = node.revision_id_for_role("source")
+        expected = registry.resolve_data(first)
+        pinned_input = ScriptInput(name="data", revision_id=first, follow_source=False)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data + 100, _in_manager=True),
+            show=False,
+            provenance_spec=script(start_label="Pinned input", root_input=pinned_input),
+        )
+        slicer = node.slicer_area
+        monkeypatch.setattr(slicer, "_direct_reloadable", lambda: True)
+        revisions = []
+        for increment in (10, 20, 30):
+            monkeypatch.setattr(
+                slicer,
+                "_fetch_reload_data",
+                lambda *, authorize, increment=increment: (test_data + increment, {}),
+            )
+            assert slicer._reload()
+            revisions.append(node.current_revision_id)
+            assert not registry.get(revisions[-1]).primary_checkpoint_required
+            assert not slicer._source_reload_in_progress
+        manager._workspace_controller.saving._save_workspace_document(path)
+        assert registry.has_data(first)
+        assert all(not registry.has_data(i) for i in revisions[:-1])
+        assert registry.has_data(revisions[-1])
+        manifest = _current_workspace_manifest(path)
+        entry = next(n for n in manifest["nodes"] if n["uid"] == node.uid)
+        with h5py.File(path, "r") as file:
+            checkpoint = file[f"/__itws_objects/revision-{revisions[-1]}"]
+            payload = file[entry["payload_path"]]
+            name = _persistence_constants.ITOOL_DATA_NAME
+            assert checkpoint[name].id == payload[name].id
+        monkeypatch.setattr(
+            manager,
+            "_apply_provenance",
+            lambda *_args, **_kwargs: pytest.fail("Restoring inputs executed a recipe"),
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            path, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        registry = manager._provenance_revisions
+        xr.testing.assert_identical(registry.resolve_data(first).compute(), expected)
+        xr.testing.assert_identical(
+            registry.resolve_data(revisions[-1]).compute(), expected + 30
+        )
+        assert all(not registry.has_data(i) for i in revisions[:-1])
+        resolved, _ = manager._lineage_controller._resolve_recorded_script_input(
+            pinned_input
+        )
+        xr.testing.assert_identical(resolved.compute(), expected)
+
+
 @pytest.mark.parametrize("workspace_schema", [3, 4, 5])
 @pytest.mark.parametrize("imported", [False, True])
 def test_manager_workspace_normalizes_legacy_seed_on_load_and_save(
@@ -4917,6 +4980,7 @@ def test_manager_workspace_save_as_preserves_manually_chunked_file_backed_data(
             rebound.encoding.get("source")
         ) == str(new_fname.resolve())
 
+        source.close()
         old_fname.unlink()
         assert _compute_first_value(rebound) == 0.0
 

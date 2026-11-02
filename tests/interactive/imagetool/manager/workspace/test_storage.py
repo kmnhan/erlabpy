@@ -42,6 +42,173 @@ def _read_transaction_test_value(fname: pathlib.Path) -> float:
         opened.close()
 
 
+@pytest.mark.parametrize("compression", ["none", "zstd1"])
+def test_workspace_shares_variables_without_sharing_owner_metadata(
+    tmp_path, monkeypatch, compression
+):
+    data = xr.DataArray(
+        np.arange(150_000.0).reshape(300, 500),
+        dims=("x", "y"),
+        coords={"x": np.arange(300), "y": np.arange(500)},
+        attrs={"units": "counts"},
+    )
+    name = _persistence_constants.ITOOL_DATA_NAME
+    first = data.to_dataset(name=name).assign_attrs(owner="window")
+    second = first.copy(deep=True).assign_attrs(owner="checkpoint")
+    path = tmp_path / "shared.itws"
+    manifest = _save_as_seed_manifest("first", "second")
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest,
+        (
+            workspace_storage._WorkspaceObjectWrite("first", dataset=first),
+            workspace_storage._WorkspaceObjectWrite("second", dataset=second),
+        ),
+    )
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store, plan, compression_mode=compression
+        )
+        with store.read_session() as h5_file:
+            a, b = (h5_file[store.object_path(i)] for i in ("first", "second"))
+            assert a.id != b.id
+            assert a.attrs["owner"] == "window"
+            assert b.attrs["owner"] == "checkpoint"
+            assert all(a[key].id == b[key].id for key in (name, "x", "y"))
+            assert b[name].dims[0][0].id == b["x"].id
+
+        def _no_scan(_ds):
+            raise AssertionError("An unchanged save inspected array contents")
+
+        monkeypatch.setattr(workspace_arrays._WorkspaceDatasetSharing, "_key", _no_scan)
+        workspace_storage._write_workspace_generation(
+            store, plan, compression_mode=compression
+        )
+        workspace_storage._compact_workspace_store(store)
+        with store.read_session() as h5_file:
+            assert (
+                h5_file[store.object_path("first")][name].id
+                == h5_file[store.object_path("second")][name].id
+            )
+        copies = tuple(
+            workspace_storage._WorkspaceObjectWrite(
+                i, source_file=str(path), source_path=store.object_path(i)
+            )
+            for i in ("first", "second")
+        )
+        destination = tmp_path / "copy.itws"
+        with workspace_store.WorkspaceStore(destination, create=True) as target:
+            workspace_storage._write_workspace_generation(
+                target,
+                workspace_storage._WorkspaceGenerationPlan(manifest, copies),
+                compression_mode=compression,
+            )
+            with target.read_session() as h5_file:
+                assert (
+                    h5_file[target.object_path("first")][name].id
+                    == h5_file[target.object_path("second")][name].id
+                )
+        for oid, expected in (("first", first), ("second", second)):
+            with workspace_arrays.open_workspace_dataset(
+                destination, store.object_path(oid), chunks=None
+            ) as restored:
+                xr.testing.assert_identical(restored, expected)
+        # Removing one owner must not remove the shared data or dimension scales.
+        store.publish(_save_as_seed_manifest("second"))
+        store.publish(_save_as_seed_manifest("second"))
+        store.collect_garbage(max_objects=10)
+        with store.read_session() as h5_file:
+            assert store.object_path("first") not in h5_file
+            group = h5_file[store.object_path("second")]
+            assert group[name].dims[0][0].id == group["x"].id
+            np.testing.assert_array_equal(group[name][()], second[name].values)
+
+
+@pytest.mark.parametrize("difference", ["values", "coords", "attrs", "zero", "nan"])
+def test_workspace_sharing_verifies_data_and_metadata_after_hash_match(
+    tmp_path, monkeypatch, difference
+):
+    name = _persistence_constants.ITOOL_DATA_NAME
+    first = xr.DataArray(
+        np.array([[0.0, np.nan], [2.0, 3.0]]),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1]},
+    ).to_dataset(name=name)
+    second = first.copy(deep=True)
+    if difference == "values":
+        second[name].values[1, 0] = 4
+    elif difference == "coords":
+        second.coords["x"] = [0, 2]
+    elif difference == "attrs":
+        second["x"].attrs["units"] = "mm"
+    elif difference == "zero":
+        second[name].values[0, 0] = -0.0
+    else:
+        second[name].values.view(np.uint64)[0, 1] = 0x7FF8000000000001
+    monkeypatch.setattr(
+        workspace_arrays._WorkspaceDatasetSharing,
+        "_key",
+        staticmethod(lambda _ds: b"x"),
+    )
+    with workspace_store.WorkspaceStore(
+        tmp_path / "different.itws", create=True
+    ) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                _save_as_seed_manifest("first", "second"),
+                tuple(
+                    workspace_storage._WorkspaceObjectWrite(oid, dataset=ds)
+                    for oid, ds in (("first", first), ("second", second))
+                ),
+            ),
+            compression_mode="none",
+        )
+        with store.read_session() as h5_file:
+            a, b = (h5_file[store.object_path(i)] for i in ("first", "second"))
+            assert a[name].id != b[name].id
+            assert b[name][()].tobytes() == second[name].values.tobytes()
+
+
+def test_workspace_sharing_does_not_materialize_lazy_arrays():
+    import dask.array as da
+    from dask import delayed
+
+    def _read():
+        raise AssertionError("Sharing read lazy data")
+
+    data = xr.DataArray(
+        da.from_delayed(delayed(_read)(), shape=(2, 3), dtype=float),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1, 2]},
+    )
+    assert (
+        workspace_arrays._WorkspaceDatasetSharing._key(
+            data.to_dataset(name=_persistence_constants.ITOOL_DATA_NAME)
+        )
+        is None
+    )
+
+
+def test_workspace_copy_sharing_does_not_reuse_replaced_source_file(tmp_path):
+    source_path = tmp_path / "source.h5"
+    cache = {}
+    addresses = []
+    with h5py.File(tmp_path / "target.h5", "w") as target:
+        for value in (1, 2):
+            with h5py.File(source_path, "w") as source:
+                source.create_dataset("group/data", data=np.full((2, 3), value))
+                if value == 2:
+                    source.attrs["padding"] = "x" * 4096
+                source.flush()
+                addresses.append(h5py.h5o.get_info(source["group/data"].id).addr)
+                assert workspace_arrays._copy_workspace_h5_group_to_open_file(
+                    source, target, "group", f"copy{value}", None, shared_groups=cache
+                )
+        assert addresses[0] == addresses[1]
+        np.testing.assert_array_equal(target["copy1/data"][()], np.full((2, 3), 1))
+        np.testing.assert_array_equal(target["copy2/data"][()], np.full((2, 3), 2))
+
+
 def _create_legacy_transaction(
     h5_file: h5py.File,
     txn_id: str,

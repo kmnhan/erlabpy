@@ -5394,7 +5394,10 @@ def test_manager_file_backed_fit2d_parameter_full_code_is_self_contained(
         assert output_uid in manager._tool_graph.nodes
 
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
-        assert str(source_path) in copied
+        assert any(
+            isinstance(node, ast.Constant) and node.value == str(source_path)
+            for node in ast.walk(ast.parse(copied))
+        )
         namespace = _exec_generated_code(copied, {})
         generated = namespace["parameter_values"]
         assert isinstance(generated, xr.DataArray)
