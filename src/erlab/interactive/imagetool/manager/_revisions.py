@@ -51,6 +51,7 @@ class _ProvenanceRevision:
     primary_revision_id: str | None = None
     source_owner_uid: str | None = None
     checkpoint: _RevisionCheckpoint | None = None
+    primary_checkpoint_required: bool = True
 
     @property
     def checkpoint_object_id(self) -> str:
@@ -172,6 +173,7 @@ class _ProvenanceRevisionStore:
         source_owner_uid: str | None = None,
         revision_id: str | None = None,
         source: _RevisionCheckpointSource | None = None,
+        primary_checkpoint_required: bool = True,
     ) -> str:
         revision_id = uuid.uuid4().hex if revision_id is None else revision_id
         if (
@@ -202,6 +204,7 @@ class _ProvenanceRevisionStore:
             primary_revision_id=primary_revision_id,
             source_owner_uid=source_owner_uid,
             checkpoint=checkpoint,
+            primary_checkpoint_required=primary_checkpoint_required,
         )
         self._records[revision_id] = record
         if protected is not None:
@@ -389,9 +392,11 @@ class _ProvenanceRevisionStore:
         self,
         revision_id: str,
         source: _RevisionCheckpointSource,
+        *,
+        restore: bool = False,
     ) -> None:
         record = self._records[revision_id]
-        if record.checkpoint is None:
+        if record.checkpoint is None and not restore:
             raise ValueError("Cannot bind a revision without a data checkpoint")
         self._records[revision_id] = replace(
             record,
@@ -400,14 +405,51 @@ class _ProvenanceRevisionStore:
         self._data.pop(revision_id, None)
 
     def discard_unreachable(self, revision_ids: Iterable[str]) -> None:
-        retained = {
-            record.revision_id
-            for record in self.reachable(set(revision_ids) | self.retained_roots)
-        }
+        roots = set(revision_ids) | self.retained_roots
+        retained = {record.revision_id for record in self.reachable(roots)}
+        checkpoints = self.checkpoint_revision_ids(roots)
         self._records = {
-            key: record for key, record in self._records.items() if key in retained
+            key: record if key in checkpoints else replace(record, checkpoint=None)
+            for key, record in self._records.items()
+            if key in retained
         }
-        self._data = {key: data for key, data in self._data.items() if key in retained}
+        self._data = {
+            key: data for key, data in self._data.items() if key in checkpoints
+        }
+
+    def checkpoint_revision_ids(self, revision_ids: Iterable[str]) -> frozenset[str]:
+        """Retain exact replay inputs and operation states, not superseded refreshes.
+
+        A refresh keeps its ancestry metadata. Its previous payload is only needed
+        when another owner references it. Operation boundaries still retain the
+        prior checkpoint so that restoring an earlier step needs no replay.
+        Temporary retention protects the complete history for rollback and import.
+        """
+        pending = [(revision_id, True) for revision_id in revision_ids]
+        pending.extend(
+            (record.revision_id, True) for record in self.reachable(self.retained_roots)
+        )
+        visited: set[tuple[str, bool]] = set()
+        checkpoints: set[str] = set()
+        while pending:
+            revision_id, required = pending.pop()
+            if (revision_id, required) in visited:
+                continue
+            visited.add((revision_id, required))
+            record = self._records.get(revision_id)
+            if record is None:
+                continue
+            if required:
+                checkpoints.add(revision_id)
+                pending.extend(
+                    (dependency, True)
+                    for dependency in _spec_revision_ids(record.provenance_spec)
+                )
+            if record.primary_revision_id is not None:
+                pending.append(
+                    (record.primary_revision_id, record.primary_checkpoint_required)
+                )
+        return frozenset(checkpoints)
 
     def normalize_provenance(
         self,

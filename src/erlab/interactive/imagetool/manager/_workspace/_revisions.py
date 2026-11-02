@@ -56,7 +56,7 @@ def retained_revision_ids(
 
 def revision_manifest_entry(record: _ProvenanceRevision) -> dict[str, typing.Any]:
     spec = record.provenance_spec
-    return {
+    entry: dict[str, typing.Any] = {
         "revision_id": record.revision_id,
         "checkpoint_object_id": (
             record.checkpoint_object_id if record.checkpoint is not None else None
@@ -65,6 +65,9 @@ def revision_manifest_entry(record: _ProvenanceRevision) -> dict[str, typing.Any
         "primary_revision_id": record.primary_revision_id,
         "source_owner_uid": record.source_owner_uid,
     }
+    if not record.primary_checkpoint_required:
+        entry["primary_checkpoint_required"] = False
+    return entry
 
 
 def revision_object_writes(
@@ -128,7 +131,7 @@ def bind_saved_revision_sources(
     for entry in manifest.get("provenance_revisions", ()):
         revision_id = entry["revision_id"]
         checkpoint_id = entry.get("checkpoint_object_id")
-        if checkpoint_id is not None and revision_id in store:
+        if checkpoint_id is not None and store.has_data(revision_id):
             source_path = WorkspaceStore.object_path(checkpoint_id)
             store.bind_checkpoint_source(
                 revision_id,
@@ -152,6 +155,7 @@ def restore_revision_store(
     if not isinstance(entries, list):
         raise TypeError("Workspace provenance revisions must be a list")
     staged = store.stage()
+    checkpoint_upgrades: dict[str, _RevisionCheckpointSource] = {}
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise TypeError("Workspace provenance revision must be an object")
@@ -174,6 +178,9 @@ def restore_revision_store(
             raise TypeError(
                 "Workspace revision primary reference must be a revision ID"
             )
+        primary_checkpoint_required = entry.get("primary_checkpoint_required", True)
+        if not isinstance(primary_checkpoint_required, bool):
+            raise TypeError("Workspace revision checkpoint retention must be a boolean")
         source_owner_uid = entry.get("source_owner_uid")
         if source_owner_uid is not None and not isinstance(source_owner_uid, str):
             raise TypeError("Workspace revision source owner must be a node UID")
@@ -192,11 +199,20 @@ def restore_revision_store(
                 "primary_revision_id": primary,
                 "source_owner_uid": source_owner_uid,
             }
+            if not primary_checkpoint_required:
+                loaded_metadata["primary_checkpoint_required"] = False
+            # A saved refresh may keep only metadata for a revision that another
+            # workspace still uses as an exact input. Import can restore that data,
+            # but must never discard an existing checkpoint or change its recipe.
+            if existing.checkpoint is None or checkpoint_id is None:
+                existing_metadata["checkpoint_object_id"] = checkpoint_id
             # Serialized NaN operation values compare equal across JSON decoding.
             if json.dumps(existing_metadata, sort_keys=True) != json.dumps(
                 loaded_metadata, sort_keys=True
             ):
                 raise ValueError("Conflicting workspace provenance revision ID")
+            if existing.checkpoint is None and source is not None:
+                checkpoint_upgrades[revision_id] = source
             continue
         staged.add(
             spec=spec,
@@ -204,5 +220,8 @@ def restore_revision_store(
             primary_revision_id=primary,
             source_owner_uid=source_owner_uid,
             source=source,
+            primary_checkpoint_required=primary_checkpoint_required,
         )
     store.merge(staged)
+    for revision_id, checkpoint_source in checkpoint_upgrades.items():
+        store.bind_checkpoint_source(revision_id, checkpoint_source, restore=True)

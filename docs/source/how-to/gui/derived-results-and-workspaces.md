@@ -101,6 +101,18 @@ analysis history, derived relationships, and Figure Composer recipes. Row notes 
 workspace metadata and do not modify the
 underlying {class}`DataArray <xarray.DataArray>` attributes.
 
+Reloading data and refreshing derived results retain the exact historical inputs
+needed by saved analyses. Superseded refresh arrays are released when no analysis
+needs them. Recorded operations and their restore checkpoints remain available.
+Identical arrays saved together share storage while keeping separate window and
+revision metadata.
+Older workspaces keep their existing checkpoints when refresh boundaries are not
+recorded.
+
+To reclaim space from obsolete saved data, reopen the workspace and choose
+{menuselection}`File --> Compact Workspace`. Ordinary saves reuse unchanged data;
+they do not rewrite the complete file to remove unused space.
+
 {menuselection}`File --> Save Workspace As…` creates an independent workspace.
 
 :::{important}

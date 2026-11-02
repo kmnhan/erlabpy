@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import json
 import os
 import pathlib
@@ -1252,6 +1253,8 @@ def _copy_workspace_h5_group_to_open_file(
     source_path: str,
     target_path: str,
     attrs: Mapping[str, typing.Any] | None,
+    *,
+    shared_groups: dict[tuple[typing.Any, ...], str] | None = None,
 ) -> bool:
     source_path = source_path.strip("/")
     target_path = target_path.strip("/")
@@ -1264,12 +1267,136 @@ def _copy_workspace_h5_group_to_open_file(
     target_name = target_path.rsplit("/", maxsplit=1)[-1]
     if target_name in parent:
         del parent[target_name]
+    shared_key = None
+    if shared_groups is not None and all(
+        isinstance(source_group.get(name, getlink=True), h5py.HardLink)
+        and isinstance(obj, h5py.Dataset)
+        and obj.file.id == source_file.id
+        for name, obj in source_group.items()
+    ):
+        # Identify the open file, not only its path: the path can be replaced
+        # while a retained reader still refers to the original file.
+        with contextlib.suppress(OSError, RuntimeError, TypeError, ValueError):
+            handle = source_file.id.get_vfd_handle()
+            if isinstance(handle, tuple):
+                handle = handle[0]
+            stat = os.fstat(handle)
+            shared_key = (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                tuple(
+                    (name, int(h5py.h5o.get_info(obj.id).addr))
+                    for name, obj in source_group.items()
+                ),
+            )
+        shared_path = None if shared_key is None else shared_groups.get(shared_key)
+        if shared_path is not None:
+            shared_group = target_file[shared_path]
+        elif source_file.id == target_file.id:
+            shared_group = source_group
+        else:
+            shared_group = None
+        if shared_group is not None:
+            target_group = parent.create_group(target_name)
+            for name, obj in shared_group.items():
+                target_group[name] = obj
+            _workspace_h5py_copy_regular_attrs(
+                source_group.attrs, target_group.attrs, skip_dimension_scale_attrs=False
+            )
+            if attrs is not None:
+                _replace_h5_attrs(target_group.attrs, attrs)
+            if shared_key is not None:
+                shared_groups[shared_key] = target_path
+            return True
     source_file.copy(source_path, parent, name=target_name, without_attrs=True)
     target_group = parent[target_name]
     _workspace_h5py_rebuild_dimension_scales(source_group, target_group)
     if attrs is not None:
         _replace_h5_attrs(target_group.attrs, attrs)
+    if shared_groups is not None and shared_key is not None:
+        shared_groups[shared_key] = target_path
     return True
+
+
+class _WorkspaceDatasetSharing:
+    """Share complete immutable variable sets written by one save.
+
+    Only new, in-memory payloads are inspected. Existing and lazy arrays are never
+    read to build the index. Group attributes remain private to each owner; data,
+    coordinate attributes, and dimension scales must all agree before linking.
+    """
+
+    def __init__(self) -> None:
+        self._datasets: dict[bytes, list[tuple[str, xr.Dataset]]] = {}
+
+    @staticmethod
+    def _blocks(values: np.ndarray) -> Iterator[bytes]:
+        for block in np.nditer(
+            values,
+            flags=["external_loop", "buffered", "zerosize_ok"],
+            op_flags=[["readonly"]],
+            order="C",
+            buffersize=max(1, (1 << 20) // max(1, values.dtype.itemsize)),
+        ):
+            yield typing.cast("np.ndarray", block).tobytes()
+
+    @classmethod
+    def _key(cls, ds: xr.Dataset) -> bytes | None:
+        if not _workspace_dataset_can_write_h5py(ds) or any(
+            not variable._in_memory or variable.dtype.kind not in "biufcSU"
+            for variable in ds.variables.values()
+        ):
+            return None
+        digest = hashlib.sha256()
+        for name in sorted(ds.variables, key=str):
+            variable = ds.variables[name]
+            digest.update(
+                repr((name, variable.dims, variable.shape, variable.dtype.str)).encode()
+            )
+            for block in cls._blocks(np.asarray(variable.data)):
+                digest.update(block)
+        return digest.digest()
+
+    @staticmethod
+    def _equal(left: xr.Dataset, right: xr.Dataset) -> bool:
+        if (
+            set(left.coords) != set(right.coords)
+            or left.variables.keys() != right.variables.keys()
+        ):
+            return False
+        for name, variable in left.variables.items():
+            other = right.variables[name]
+            if variable.dtype != other.dtype or not variable.identical(other):
+                return False
+            # Iterate together to align blocks even when array strides differ.
+            # Compare bytes to preserve signed zero and NaN payloads.
+            for a, b in np.nditer(
+                [np.asarray(variable.data), np.asarray(other.data)],
+                flags=["external_loop", "buffered", "zerosize_ok"],
+                op_flags=[["readonly"], ["readonly"]],
+                order="C",
+                buffersize=max(1, (1 << 20) // max(1, variable.dtype.itemsize)),
+            ):
+                if a.tobytes() != b.tobytes():
+                    return False
+        return True
+
+    def link(self, target: typing.Any, path: str, ds: xr.Dataset, key: bytes) -> bool:
+        for previous_path, previous in self._datasets.get(key, ()):
+            if not self._equal(ds, previous):
+                continue
+            parent = _ensure_h5_parent_group(target, path)
+            group = parent.create_group(path.rstrip("/").rsplit("/", maxsplit=1)[-1])
+            for name, obj in target[previous_path].items():
+                group[name] = obj
+            _replace_h5_attrs(group.attrs, ds.attrs)
+            return True
+        return False
+
+    def remember(self, key: bytes, path: str, ds: xr.Dataset) -> None:
+        self._datasets.setdefault(key, []).append((path, ds))
 
 
 def _workspace_h5py_create_dataset(
@@ -1857,6 +1984,7 @@ def _write_workspace_dataset_group_to_file(
     *,
     lock_path: str | os.PathLike[str] | None = None,
     compression_mode: WorkspaceCompressionMode | None = None,
+    sharing: _WorkspaceDatasetSharing | None = None,
 ) -> None:
     encoding = workspace_dataset_encoding(ds, compression_mode=compression_mode)
     if lock_path is not None:
@@ -1894,9 +2022,22 @@ def _write_workspace_dataset_group_to_file(
         else contextlib.nullcontext()
     )
     with maybe_lock:
+        shared_key = (
+            sharing._key(ds)
+            if sharing is not None and isinstance(fname, h5py.File)
+            else None
+        )
+        if (
+            shared_key is not None
+            and sharing is not None
+            and sharing.link(fname, group_path, ds, shared_key)
+        ):
+            return
         if _write_workspace_dataset_group_h5py(
             fname, group_path, ds, encoding=encoding
         ):
+            if shared_key is not None and sharing is not None:
+                sharing.remember(shared_key, group_path, ds)
             return
         netcdf_encoding = {
             name: {**encoding.get(name, {}), "_FillValue": None}

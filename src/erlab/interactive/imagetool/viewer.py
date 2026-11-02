@@ -378,6 +378,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         self._accepted_filter_data: xr.DataArray | None = None
         self._accepted_filter_revision = 0
+        self._source_reload_in_progress = False
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
         # validated view used for slicing. The two share values by default and detach
         # only when a write needs isolation.
@@ -3231,7 +3232,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     )
                     if publication is not None:
                         publication.require_current_for_publication()
-                    self._replace_reload_data(data, kwargs)
+                    self._source_reload_in_progress = True
+                    try:
+                        self._replace_reload_data(data, kwargs)
+                    finally:
+                        self._source_reload_in_progress = False
                     if publication is not None:
                         publication.publish()
             except Exception:

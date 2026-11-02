@@ -2085,6 +2085,7 @@ class _LineageController:
             propagate_descendants=True,
             preserve_filter=True,
             replay_source_data=node.replay_source_data,
+            primary_checkpoint_required=False,
             on_commit=functools.partial(
                 result.commit_revisions, self._manager._provenance_revisions
             ),
