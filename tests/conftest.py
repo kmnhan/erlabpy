@@ -102,6 +102,7 @@ _TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR = (
 _TEST_MANAGER_SETTINGS_PATHS: list[pathlib.Path] = []
 _TEST_EXTENSION_CATALOG_DIRECTORIES: list[tempfile.TemporaryDirectory] = []
 _XDIST_WORKER_ERRORS: list[str] = []
+_QT_WIDGET_REFERENCES = pytest.StashKey[list[QtWidgets.QWidget]]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -258,6 +259,24 @@ def _drop_invalid_qtbot_widgets(item: pytest.Item) -> None:
     ]
 
 
+def _retain_qtbot_widgets(item: pytest.Item) -> None:
+    item.stash[_QT_WIDGET_REFERENCES] = [
+        widget
+        for widget_ref, _ in getattr(item, "qt_widgets", ())
+        if (widget := widget_ref()) is not None and qt_is_valid(widget)
+    ]
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_call(item: pytest.Item):
+    try:
+        return (yield)
+    finally:
+        # pytest-qt processes events after the body returns. Keep its weakly tracked
+        # widgets alive so collection cannot delete a scene inside a Qt callback.
+        _retain_qtbot_widgets(item)
+
+
 def _release_pyqt_owned_wrappers() -> None:
     """Relinquish residual SIP-owned C++ instances before Python finalization."""
     from PyQt6 import sip
@@ -273,11 +292,18 @@ def _release_pyqt_owned_wrappers() -> None:
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_teardown(item: pytest.Item):
+    # Setup failures skip the call hook but can still leave registered widgets.
+    _retain_qtbot_widgets(item)
     # pytest-qt retains weak Python references to registered widgets. Under PySide,
     # a wrapper can remain alive after its C++ widget has been destroyed; calling
     # close() on that wrapper can crash instead of raising a deleted-object error.
     _drop_invalid_qtbot_widgets(item)
-    return (yield)
+    try:
+        return (yield)
+    finally:
+        # The autouse finalizer drains deferred deletes before pytest-qt finishes
+        # processing events and checking exceptions. Release ownership only after it.
+        del item.stash[_QT_WIDGET_REFERENCES]
 
 
 @pytest.hookimpl(optionalhook=True)
@@ -367,12 +393,8 @@ def _isolate_qt_clipboard() -> Iterator[InMemoryClipboard]:
 
 
 @pytest.fixture(autouse=True)
-def _drain_deferred_qt_deletes_after_test(
-    request: pytest.FixtureRequest,
-) -> Iterator[None]:
+def _drain_deferred_qt_deletes_after_test() -> Iterator[None]:
     yield
-    if API_NAME != "PyQt6" or request.node.get_closest_marker("gui") is None:
-        return
     if QtWidgets.QApplication.instance() is not None:
         for _ in range(2):
             QtWidgets.QApplication.sendPostedEvents(

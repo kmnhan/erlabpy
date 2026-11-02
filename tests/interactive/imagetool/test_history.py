@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 import unittest.mock
 
 import numpy as np
@@ -1182,6 +1183,43 @@ def test_history_menu_handles_empty_history(qtbot):
     assert actions[2].objectName() == "itool_history_empty_action"
     assert actions[2].data() == {"kind": "empty"}
     assert not actions[2].isEnabled()
+
+
+@pytest.mark.parametrize("record_history", [False, True])
+@pytest.mark.parametrize("explicit_parent", [False, True])
+def test_history_menu_and_actions_follow_window_lifetime(
+    qtbot, record_history, explicit_parent
+):
+    data = xr.DataArray(np.arange(4).reshape((2, 2)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    if record_history:
+        win.slicer_area.set_index(0, 1 - win.slicer_area.current_indices[0])
+    parent = QtWidgets.QWidget(win) if explicit_parent else win
+    menu = (
+        _history.HistoryMenu(win.slicer_area, parent=parent)
+        if explicit_parent
+        else win._history_menu
+    )
+    qtbot.addWidget(menu)
+    menu.update_actions()
+    actions = menu.actions()
+    destruction_threads: list[int] = []
+    menu.destroyed.connect(
+        lambda: destruction_threads.append(threading.get_ident()),
+        QtCore.Qt.ConnectionType.DirectConnection,
+    )
+
+    assert menu.parentWidget() is parent
+    assert menu.windowType() == QtCore.Qt.WindowType.Popup
+    win.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+
+    assert not erlab.interactive.utils.qt_is_valid(menu)
+    assert all(not erlab.interactive.utils.qt_is_valid(action) for action in actions)
+    assert destruction_threads == [threading.get_ident()]
 
 
 def test_history_menu_populates_actions_and_triggers(qtbot):

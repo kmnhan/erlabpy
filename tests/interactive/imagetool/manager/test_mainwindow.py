@@ -3,6 +3,7 @@ import gc
 import json
 import logging
 import pathlib
+import threading
 import types
 import typing
 import weakref
@@ -392,6 +393,30 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         manager._remove_childtool(child_uid)
         assert not child_node.reveal_in_manager()
         assert not child_tool.reveal_in_manager_action.isVisible()
+
+
+def test_manager_destroys_sidebar_buttons_on_gui_thread(manager_context, qtbot) -> None:
+    existing_widgets = set(QtWidgets.QApplication.allWidgets())
+    destruction_threads: list[int] = []
+    gui_thread = threading.get_ident()
+
+    with manager_context():
+        buttons = [
+            widget
+            for widget in QtWidgets.QApplication.allWidgets()
+            if isinstance(widget, erlab.interactive.utils.IconActionButton)
+            and widget not in existing_widgets
+        ]
+        assert buttons
+        for button in buttons:
+            qtbot.addWidget(button)
+            button.destroyed.connect(
+                lambda _obj=None: destruction_threads.append(threading.get_ident()),
+                QtCore.Qt.ConnectionType.DirectConnection,
+            )
+
+    assert all(not erlab.interactive.utils.qt_is_valid(button) for button in buttons)
+    assert destruction_threads == [gui_thread] * len(buttons)
 
 
 def test_removed_managed_windows_stay_rooted_until_qt_destroys_them(

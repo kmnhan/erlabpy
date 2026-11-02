@@ -138,6 +138,8 @@ class DaskMenu(QtWidgets.QMenu):
 
     def __init__(self, main_window: QtWidgets.QMainWindow, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        if self.parentWidget() is None:
+            self.setParent(main_window, self.windowFlags())
         self._main_window = weakref.ref(main_window)
 
         self.setup_actions()
@@ -163,19 +165,21 @@ class DaskMenu(QtWidgets.QMenu):
 
     def setup_actions(self) -> None:
         # Initialize actions
-        self.create_local_action = QtWidgets.QAction("Create Local Cluster…")
+        self.create_local_action = QtWidgets.QAction("Create Local Cluster…", self)
         self.create_local_action.triggered.connect(self.create_local_cluster)
 
-        self.connect_existing_action = QtWidgets.QAction("Connect to Existing Cluster…")
+        self.connect_existing_action = QtWidgets.QAction(
+            "Connect to Existing Cluster…", self
+        )
         self.connect_existing_action.triggered.connect(self.connect_existing_cluster)
 
-        self.close_client_action = QtWidgets.QAction("Close Client")
+        self.close_client_action = QtWidgets.QAction("Close Client", self)
         self.close_client_action.triggered.connect(self.close_client)
 
-        self.about_client_action = QtWidgets.QAction("Client Info")
+        self.about_client_action = QtWidgets.QAction("Client Info", self)
         self.about_client_action.triggered.connect(self.show_client_info)
 
-        self.open_dashboard_action = QtWidgets.QAction("Open Dashboard")
+        self.open_dashboard_action = QtWidgets.QAction("Open Dashboard", self)
         self.open_dashboard_action.triggered.connect(self.open_dashboard)
 
         # Populate menu
