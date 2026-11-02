@@ -519,11 +519,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             {
                 "Auto": {"qwtype": "chkbox", "checked": True},
                 "lambda": {
-                    "qwtype": "dblspin",
-                    "minimum": 0,
-                    "maximum": 10000,
-                    "singleStep": 0.001,
-                    "decimals": 4,
+                    "widget": pg.SpinBox(
+                        bounds=(0, None),
+                        dec=True,
+                        step=0.1,
+                        minStep=0.001,
+                        decimals=5,
+                        compactHeight=False,
+                    )
                 },
                 "Residuals": {"qwtype": "chkbox", "checked": False},
                 "Corrected": {"qwtype": "chkbox", "checked": False},

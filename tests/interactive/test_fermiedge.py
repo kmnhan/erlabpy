@@ -327,6 +327,70 @@ def test_goldtool(
     tmp_dir.cleanup()
 
 
+def test_goldtool_spline_large_lambda(qtbot, gold, monkeypatch) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+    spin = win.params_spl.widgets["lambda"]
+    assert isinstance(spin, pg.SpinBox)
+    assert spin.isEnabled()
+
+    passed_lambda = []
+    spline_from_edge = erlab.analysis.gold.spline_from_edge
+
+    def tracked_spline(*args, **kwargs):
+        passed_lambda.append(kwargs["lam"])
+        return spline_from_edge(*args, **kwargs)
+
+    monkeypatch.setattr(erlab.analysis.gold, "spline_from_edge", tracked_spline)
+    line = spin.lineEdit()
+    assert line is not None
+    line.selectAll()
+    qtbot.keyClicks(line, "1e8")
+    qtbot.keyClick(line, QtCore.Qt.Key.Key_Return)
+
+    assert spin.value() == 1e8
+    assert passed_lambda[-1] == 1e8
+    parameter_changes = []
+    win.params_spl.sigParameterChanged.connect(parameter_changes.append)
+    passed_lambda.clear()
+    spin.stepBy(1)
+    assert spin.value() == 1.1e8
+    assert passed_lambda == [1.1e8]
+    assert parameter_changes == [{"lambda": 1.1e8}]
+    qtbot.wait(350)
+    assert passed_lambda == [1.1e8]
+    assert parameter_changes == [{"lambda": 1.1e8}]
+    spin.stepBy(-1)
+    assert spin.value() == 1e8
+    assert passed_lambda[-1] == 1e8
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, GoldTool)
+    assert restored.params_spl.values["lambda"] == 1e8
+    assert isinstance(restored.result, scipy.interpolate.BSpline)
+
+    auto = typing.cast("QtWidgets.QCheckBox", win.params_spl.widgets["Auto"])
+    auto.setChecked(True)
+    assert not spin.isEnabled()
+    assert passed_lambda[-1] is None
+    auto.setChecked(False)
+    assert spin.isEnabled()
+    assert spin.value() == 1e8
+    assert passed_lambda[-1] == 1e8
+
+    spin.setValue(-1)
+    assert spin.value() == 0.0
+    assert passed_lambda[-1] == 0.0
+    spin.stepBy(1)
+    assert spin.value() == 0.001
+    assert passed_lambda[-1] == 0.001
+    spin.stepBy(-1)
+    assert spin.value() == 0.0
+    assert passed_lambda[-1] == 0.0
+
+
 def test_goldtool_roundtrip_unfitted(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
     qtbot.addWidget(win)
@@ -838,6 +902,79 @@ def test_goldtool_edge_output_uses_current_result_and_direct_provenance(
     exec(code, namespace, namespace)  # noqa: S102
     assert captured_kwargs["return_edge"] is True
     xr.testing.assert_identical(namespace["edge"], expected)
+
+
+@pytest.mark.parametrize("output_id", [GoldTool.Output.EDGE, GoldTool.Output.CORRECTED])
+def test_goldtool_spline_step_updates_output_immediately(
+    qtbot, gold, monkeypatch, output_id
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_data")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=False, spline=True)
+    alpha = win.data[win._along_dim]
+    edge_center = 0.04 + 1e-5 * alpha - 3e-4 * alpha**2
+    win.post_fit(edge_center, xr.full_like(edge_center, 0.001))
+    spin = typing.cast("pg.SpinBox", win.params_spl.widgets["lambda"])
+    spin.setValue(1e4)
+    previous = win.output_imagetool_data(output_id)
+    published = []
+
+    def launch_stub(data: xr.DataArray, *, output_id: str) -> None:
+        spec = win.output_imagetool_provenance(output_id, data)
+        assert spec is not None
+        published.append((data, spec.display_code()))
+
+    monkeypatch.setattr(win, "_launch_output_imagetool", launch_stub)
+    spin.stepBy(1)
+    if output_id == GoldTool.Output.EDGE:
+        win.open_edge_itool()
+    else:
+        win.open_itool()
+
+    expected_spline = erlab.analysis.gold.spline_from_edge(
+        win.edge_center,
+        weights=1 / win.edge_stderr,
+        lam=1.1e4,
+        along=win._along_dim,
+    )
+    if output_id == GoldTool.Output.EDGE:
+        expected = erlab.analysis.gold._evaluate_edge_model(
+            win.data, expected_spline, along=win._along_dim
+        )
+        result_name = "edge"
+    else:
+        expected = erlab.analysis.gold.correct_with_edge(
+            win.data,
+            expected_spline,
+            along=win._along_dim,
+            shift_coords=False,
+            plot=False,
+        )
+        result_name = "corrected"
+
+    assert spin.value() == 1.1e4
+    assert np.isfinite(expected).any()
+    assert not expected.identical(previous)
+    assert len(published) == 1
+    xr.testing.assert_identical(published[0][0], expected)
+
+    monkeypatch.setattr(
+        erlab.analysis.gold,
+        "edge",
+        lambda *_args, **_kwargs: (win.edge_center, win.edge_stderr),
+    )
+    replay_kwargs = {}
+    spline = erlab.analysis.gold.spline
+
+    def replay_spline(*args, **kwargs):
+        replay_kwargs.update(kwargs)
+        return spline(*args, **kwargs)
+
+    monkeypatch.setattr(erlab.analysis.gold, "spline", replay_spline)
+    namespace = {"era": erlab.analysis, "gold_data": gold}
+    exec(published[0][1], namespace, namespace)  # noqa: S102
+    assert replay_kwargs["lam"] == 1.1e4
+    xr.testing.assert_identical(namespace[result_name], expected)
 
 
 def test_goldtool_open_edge_itool_does_not_store_none(
