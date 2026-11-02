@@ -1,8 +1,9 @@
 import contextlib
+import threading
 
 import dask.distributed
 import pytest
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive._dask import ClientSetupDialog, DaskMenu, _IntOrNoneWidget
@@ -27,6 +28,34 @@ def cleanup_dask_client():
             pass
         else:
             client.close()
+
+
+@pytest.mark.parametrize("explicit_parent", [False, True])
+def test_menu_and_actions_follow_window_lifetime(main_window, qtbot, explicit_parent):
+    parent = QtWidgets.QWidget(main_window) if explicit_parent else main_window
+    menu = (
+        DaskMenu(main_window, parent=parent)
+        if explicit_parent
+        else DaskMenu(main_window)
+    )
+    qtbot.addWidget(menu)
+    actions = menu.actions()
+    destruction_threads: list[int] = []
+    menu.destroyed.connect(
+        lambda: destruction_threads.append(threading.get_ident()),
+        QtCore.Qt.ConnectionType.DirectConnection,
+    )
+
+    assert menu.parentWidget() is parent
+    assert menu.windowType() == QtCore.Qt.WindowType.Popup
+    main_window.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(
+        None, int(QtCore.QEvent.Type.DeferredDelete.value)
+    )
+
+    assert not erlab.interactive.utils.qt_is_valid(menu)
+    assert all(not erlab.interactive.utils.qt_is_valid(action) for action in actions)
+    assert destruction_threads == [threading.get_ident()]
 
 
 def test_actions_visibility(main_window, monkeypatch):

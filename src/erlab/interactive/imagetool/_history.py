@@ -981,6 +981,8 @@ class HistoryMenu(QtWidgets.QMenu):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if self.parentWidget() is None:
+            self.setParent(slicer_area.window(), self.windowFlags())
 
         self._slicer_area = weakref.ref(slicer_area)
         self.aboutToShow.connect(self.update_actions)
@@ -1023,7 +1025,7 @@ class HistoryMenu(QtWidgets.QMenu):
 
         entries = _history_entries(self.slicer_area)
         if not entries:
-            action = QtWidgets.QAction("No history recorded yet")
+            action = QtWidgets.QAction("No history recorded yet", self)
             action.setObjectName("itool_history_empty_action")
             action.setData({"kind": "empty"})
             action.setEnabled(False)
@@ -1033,7 +1035,7 @@ class HistoryMenu(QtWidgets.QMenu):
 
         for state_index, relative_index, summary, _, is_current, _ in entries:
             marker = "•" if is_current else " "
-            action = QtWidgets.QAction(f"{marker} {summary}")
+            action = QtWidgets.QAction(f"{marker} {summary}", self)
             action.setObjectName(f"itool_history_action_{state_index}")
             action.setData(relative_index)
             action.triggered.connect(

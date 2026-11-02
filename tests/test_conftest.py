@@ -1,9 +1,11 @@
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+import textwrap
 import types
 import weakref
 
@@ -145,6 +147,195 @@ def test_qtbot_teardown_drops_deleted_widget_wrappers(monkeypatch) -> None:
     assert item.qt_widgets == [(weakref.ref(valid_widget), None)]
 
 
+def test_qtbot_widgets_survive_event_processing_and_release_after_teardown(
+    tmp_path,
+) -> None:
+    path = pathlib.Path(__file__).with_name("conftest.py")
+    (tmp_path / "conftest.py").write_text(
+        textwrap.dedent(
+            f"""\
+            import gc
+            import importlib.util
+            import json
+            import sys
+            import weakref
+
+            import pytest
+            from pytestqt import plugin as qt_plugin
+
+            sys.path.insert(0, {str(path.parent.parent)!r})
+            spec = importlib.util.spec_from_file_location(
+                "lifetime_conftest", {str(path)!r}
+            )
+            actual = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(actual)
+            pytest_runtest_call = actual.pytest_runtest_call
+            pytest_runtest_teardown = actual.pytest_runtest_teardown
+            _drain_deferred_qt_deletes_after_test = (
+                actual._drain_deferred_qt_deletes_after_test
+            )
+
+            # Force collection at the event-processing boundary instead of relying
+            # on the number of allocations needed to start automatic collection.
+            gc.disable()
+            current = {{}}
+            results = []
+            outcomes = []
+            process_events = qt_plugin._process_events
+
+            def checked_process_events():
+                if current:
+                    gc.collect()
+                    widget = current["widget"]()
+                    scene = current["scene"]()
+                    assert widget is not None, "widget collected during events"
+                    valid = actual.qt_is_valid(widget)
+                    assert valid == (not current["destroyed"])
+                    if valid:
+                        assert scene is not None, "scene collected during events"
+                        assert actual.qt_is_valid(scene)
+                    current["checks"].append(valid)
+                process_events()
+
+            qt_plugin._process_events = checked_process_events
+
+            def register_view(qtbot, *, raise_on_destroy=False):
+                widget = actual.QtWidgets.QGraphicsView()
+                widget.cycle = widget
+                scene = actual.QtWidgets.QGraphicsScene(widget)
+                widget.setScene(scene)
+                qtbot.addWidget(widget)
+                current.update(
+                    widget=weakref.ref(widget),
+                    scene=weakref.ref(scene),
+                    destroyed=False,
+                    checks=[],
+                )
+
+                def destroyed():
+                    current["destroyed"] = True
+                    if raise_on_destroy:
+                        raise RuntimeError("expected destroyed callback failure")
+
+                widget.destroyed.connect(destroyed)
+
+            def pytest_runtest_logreport(report):
+                outcomes.append((report.nodeid, report.when, report.outcome))
+                if report.when == "teardown" and current:
+                    gc.collect()
+                    results.append({{
+                        "name": report.nodeid,
+                        "checks": current["checks"],
+                        "destroyed": current["destroyed"],
+                        "collected": (
+                            current["widget"]() is None
+                            and current["scene"]() is None
+                        ),
+                    }})
+                    current.clear()
+
+            def pytest_terminal_summary(terminalreporter):
+                terminalreporter.write_line("LIFETIME_RESULTS=" + json.dumps(results))
+                terminalreporter.write_line("LIFETIME_OUTCOMES=" + json.dumps(outcomes))
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "test_lifetime.py").write_text(
+        textwrap.dedent(
+            """\
+            import gc
+            import weakref
+
+            import pytest
+            from conftest import actual, register_view
+
+            def test_registered_cycle(qtbot):
+                register_view(qtbot)
+
+            def test_explicit_collection_in_body(qtbot):
+                widget = actual.QtWidgets.QWidget()
+                widget.cycle = widget
+                qtbot.addWidget(widget)
+                ref = weakref.ref(widget)
+                del widget
+                gc.collect()
+                assert ref() is None
+
+            def test_already_deleted_wrapper(qtbot):
+                class Widget(actual.QtWidgets.QWidget):
+                    def close(self):
+                        assert actual.qt_is_valid(self), "closed an invalid wrapper"
+                        return super().close()
+
+                widget = Widget()
+                widget.cycle = widget
+                qtbot.addWidget(widget)
+                widget.deleteLater()
+                actual.QtWidgets.QApplication.sendPostedEvents(
+                    None, actual.QtCore.QEvent.Type.DeferredDelete.value
+                )
+                assert not actual.qt_is_valid(widget)
+
+            def test_body_failure(qtbot):
+                register_view(qtbot)
+                raise RuntimeError("expected test body failure")
+
+            @pytest.fixture
+            def failed_setup(qtbot):
+                register_view(qtbot)
+                raise RuntimeError("expected setup failure")
+
+            def test_setup_failure(failed_setup):
+                raise AssertionError("test body must not run")
+
+            def test_destroyed_callback_failure(qtbot):
+                register_view(qtbot, raise_on_destroy=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["QT_API"] = _CONFTEST.API_NAME.lower()
+    env["PYTEST_QT_API"] = _CONFTEST.API_NAME.lower()
+    env.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == pytest.ExitCode.TESTS_FAILED, output
+    summaries = {
+        line.partition("=")[0]: json.loads(line.partition("=")[2])
+        for line in result.stdout.splitlines()
+        if line.startswith(("LIFETIME_RESULTS=", "LIFETIME_OUTCOMES="))
+    }
+    results = summaries["LIFETIME_RESULTS"]
+    assert len(results) == 4, output
+    for lifecycle in results:
+        assert lifecycle["destroyed"], lifecycle
+        assert lifecycle["collected"], lifecycle
+        assert lifecycle["checks"][-1] is False, lifecycle
+        assert all(lifecycle["checks"][:-1]), lifecycle
+        assert len(lifecycle["checks"]) >= 3, lifecycle
+    assert len(results[0]["checks"]) == 4, results[0]
+    failures = [
+        (nodeid, when)
+        for nodeid, when, outcome in summaries["LIFETIME_OUTCOMES"]
+        if outcome == "failed"
+    ]
+    assert failures == [
+        ("test_lifetime.py::test_body_failure", "call"),
+        ("test_lifetime.py::test_setup_failure", "setup"),
+        ("test_lifetime.py::test_destroyed_callback_failure", "teardown"),
+    ], output
+
+
 def test_xdist_worker_error_fails_session(monkeypatch) -> None:
     node = types.SimpleNamespace(gateway=types.SimpleNamespace(id="gw0"))
     session = types.SimpleNamespace(exitstatus=pytest.ExitCode.OK)
@@ -197,6 +388,7 @@ def test_pyqt_sessionfinish_releases_wrapper_ownership_only_in_serial_process(
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["PYTEST_QT_API"] = "pyqt6"
     env["QT_API"] = "pyqt6"
+    env["PYQTGRAPH_QT_LIB"] = "PyQt6"
     if worker_id is None:
         env.pop("PYTEST_XDIST_WORKER", None)
     else:
@@ -224,11 +416,7 @@ def test_pyqt_sessionfinish_releases_wrapper_ownership_only_in_serial_process(
                 ")[1]; "
                 "widget = module.QtWidgets.QWidget(); "
                 "widget.deleteLater(); "
-                "request = types.SimpleNamespace("
-                "node=types.SimpleNamespace("
-                "get_closest_marker=lambda name: True)); "
-                "drain = module._drain_deferred_qt_deletes_after_test.__wrapped__("
-                "request); "
+                "drain = module._drain_deferred_qt_deletes_after_test.__wrapped__(); "
                 "next(drain); "
                 "next(drain, None); "
                 "drained = sip.isdeleted(widget); "

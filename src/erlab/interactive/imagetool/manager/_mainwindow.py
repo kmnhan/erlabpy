@@ -839,10 +839,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self.unlink_button = erlab.interactive.utils.IconActionButton(
             self.unlink_action, "mdi6.link-variant-off"
         )
-        self.preview_button = erlab.interactive.utils.IconActionButton(
-            self.preview_action, on="ph.eye", off="ph.eye-slash"
-        )
-
         # Initialize GUI
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.main_splitter.splitterMoved.connect(self._mark_workspace_layout_dirty)
