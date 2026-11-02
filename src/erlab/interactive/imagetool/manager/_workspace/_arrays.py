@@ -1359,8 +1359,8 @@ class _WorkspaceDatasetSharing:
                 digest.update(block)
         return digest.digest()
 
-    @classmethod
-    def _equal(cls, left: xr.Dataset, right: xr.Dataset) -> bool:
+    @staticmethod
+    def _equal(left: xr.Dataset, right: xr.Dataset) -> bool:
         if (
             set(left.coords) != set(right.coords)
             or left.variables.keys() != right.variables.keys()
@@ -1370,16 +1370,17 @@ class _WorkspaceDatasetSharing:
             other = right.variables[name]
             if variable.dtype != other.dtype or not variable.identical(other):
                 return False
-            # Preserve signed zero and NaN payloads, and verify hash collisions.
-            if any(
-                a != b
-                for a, b in zip(
-                    cls._blocks(np.asarray(variable.data)),
-                    cls._blocks(np.asarray(other.data)),
-                    strict=True,
-                )
+            # Iterate together to align blocks even when array strides differ.
+            # Compare bytes to preserve signed zero and NaN payloads.
+            for a, b in np.nditer(
+                [np.asarray(variable.data), np.asarray(other.data)],
+                flags=["external_loop", "buffered", "zerosize_ok"],
+                op_flags=[["readonly"], ["readonly"]],
+                order="C",
+                buffersize=max(1, (1 << 20) // max(1, variable.dtype.itemsize)),
             ):
-                return False
+                if a.tobytes() != b.tobytes():
+                    return False
         return True
 
     def link(self, target: typing.Any, path: str, ds: xr.Dataset, key: bytes) -> bool:

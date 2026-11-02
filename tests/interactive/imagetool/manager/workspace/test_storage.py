@@ -43,13 +43,23 @@ def _read_transaction_test_value(fname: pathlib.Path) -> float:
 
 
 @pytest.mark.parametrize("compression", ["none", "zstd1"])
+@pytest.mark.parametrize("layout", ["contiguous", "strided", "transposed", "reversed"])
 def test_workspace_shares_variables_without_sharing_owner_metadata(
-    tmp_path, monkeypatch, compression
+    tmp_path, monkeypatch, compression, layout
 ):
+    values = np.arange(300_000.0).reshape(600, 500)
+    if layout == "contiguous":
+        values = values[:300]
+    else:
+        values = values[::2]
+        if layout == "transposed":
+            values = values.T
+        elif layout == "reversed":
+            values = values[:, ::-1]
     data = xr.DataArray(
-        np.arange(150_000.0).reshape(300, 500),
+        values,
         dims=("x", "y"),
-        coords={"x": np.arange(300), "y": np.arange(500)},
+        coords={"x": np.arange(values.shape[0]), "y": np.arange(values.shape[1])},
         attrs={"units": "counts"},
     )
     name = _persistence_constants.ITOOL_DATA_NAME
