@@ -3042,6 +3042,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget,
             QtWidgets.QSpinBox
             | QtWidgets.QDoubleSpinBox
+            | pg.SpinBox
             | BetterSpinBox
             | FittingParameterWidget,
         ):
@@ -3063,6 +3064,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
         return None
 
     def widget_change_signal(self, widget):
+        if isinstance(widget, pg.SpinBox):
+            return widget.sigValueChanging
         if isinstance(
             widget, QtWidgets.QSpinBox | QtWidgets.QDoubleSpinBox | BetterSpinBox
         ):
@@ -3087,7 +3090,10 @@ class ParameterGroup(QtWidgets.QGroupBox):
         for k, v in self.widgets.items():
             if k not in self.untracked:
                 self.widget_change_signal(v).connect(
-                    lambda x=None, name=k: self.sigParameterChanged.emit({name: x})
+                    # pyqtgraph emits (widget, value); Qt emits only the value.
+                    lambda *args, name=k: self.sigParameterChanged.emit(
+                        {name: args[-1] if args else None}
+                    )
                 )
 
     def widgets_of_type(self, widgetclass):
