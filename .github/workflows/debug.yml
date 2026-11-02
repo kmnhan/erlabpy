@@ -2,46 +2,89 @@ name: Debug
 
 on:
   workflow_dispatch:
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+
 permissions:
   contents: read
-env:
-  FORCE_COLOR: 1
 
 jobs:
-  test:
-    name: Debug Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+  trace:
+    name: Trace Python 3.11 PySide6 smoke hang
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
-      DISPLAY: ":99.0"
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12"]
-        qt-api: ["pyside6"]
+      MPLBACKEND: Agg
+      QT_QPA_PLATFORM: offscreen
+      QT_API: pyside6
+      PYTEST_QT_API: pyside6
+      FORCE_COLOR: "0"
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: pyvista/setup-headless-display-action@v5
-        with:
-          pyvista: false
-          qt: true
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install project with all extras
+      - name: Install native debugger and Qt runtime
         run: |
-          uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
-          export QT_API=${{ matrix.qt-api }}
+          sudo apt-get update
+          sudo apt-get install --yes gdb libegl1
 
-      - name: Test with pytest
-        run: uv run python -X faulthandler -m pytest -vv -s -p no:faulthandler
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked smoke dependencies
+        run: |
+          uv sync --frozen --all-extras --dev --group pyside6
+          uv pip freeze > native-dependencies.txt
+          uv run --no-sync python -m scripts.ci_test_groups compat > "$RUNNER_TEMP/targets.txt"
+
+      - name: Capture native stacks on test timeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/trace.gdb" <<'GDB'
+          set pagination off
+          set confirm off
+          set print elements 30
+          set print max-depth 5
+          set debuginfod enabled off
+          handle SIGPIPE nostop noprint pass
+          catch syscall exit_group
+          commands
+            silent
+            echo \nNATIVE THREAD STACKS BEFORE PROCESS EXIT\n
+            thread apply all bt full 60
+            info sharedlibrary
+            continue
+          end
+          python
+          import gdb
+          def capture_signal(event):
+              if isinstance(event, gdb.SignalEvent):
+                  print("NATIVE FAILURE: " + event.stop_signal)
+                  gdb.execute("thread apply all bt full 60")
+                  gdb.execute("info sharedlibrary")
+          gdb.events.stop.connect(capture_signal)
+          end
+          run
+          GDB
+          mapfile -t targets < "$RUNNER_TEMP/targets.txt"
+          gdb --batch --return-child-result -x "$RUNNER_TEMP/trace.gdb" \
+            --args "$PWD/.venv/bin/python" -X faulthandler -m pytest \
+            -v --capture=tee-sys --no-qt-log -m compat \
+            -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true \
+            --junitxml native-junit.xml -o junit_family=legacy \
+            "${targets[@]}" 2>&1 | tee native-trace.log
+
+      - name: Save diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-641-pyside-native-trace
+          path: |
+            native-trace.log
+            native-dependencies.txt
+            native-junit.xml
+          if-no-files-found: error
