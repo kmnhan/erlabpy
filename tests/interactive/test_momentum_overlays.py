@@ -212,9 +212,7 @@ def test_overlays_pockets(overlays, qtbot):
         ("symmetry_angle", "symmetry_angle", 15),
     ],
 )
-def test_pocket_edit_preserves_other_fields(
-    overlays, qtbot, source, control, field, value
-):
+def test_pocket_edit_preserves_other_fields(overlays, source, control, field, value):
     roi = overlays.add_pocket()
     center = (0.012345678, -0.023456789)
     radii = (0.034567891, 0.045678912)
@@ -239,13 +237,15 @@ def test_pocket_edit_preserves_other_fields(
         )
     else:
         setattr(pocket, field, value)
-    with qtbot.waitSignal(overlays.sigStateChanged):
-        if control in overlays.inputs:
-            overlays.inputs[control].setValue(value)
-        elif control == "group_combo":
-            overlays.group_combo.setCurrentText(value)
-        else:
-            getattr(overlays, control).setChecked(value)
+    notifications = []
+    overlays.sigStateChanged.connect(lambda: notifications.append(None))
+    if control in overlays.inputs:
+        overlays.inputs[control].setValue(value)
+    elif control == "group_combo":
+        overlays.group_combo.setCurrentText(value)
+    else:
+        getattr(overlays, control).setChecked(value)
+    assert notifications == [None]
     assert overlays.state == expected
     assert roi.geometry()[0] == pytest.approx(pocket.center, abs=1e-14)
     assert roi.geometry()[1] == pytest.approx(pocket.radii, abs=1e-14)
@@ -268,7 +268,7 @@ def test_pocket_edit_preserves_other_fields(
     ],
 )
 def test_image_edit_preserves_other_fields(
-    overlays, image_files, qtbot, source, control, field, value
+    overlays, image_files, source, control, field, value
 ):
     overlays.load_image(str(image_files[0]))
     overlays.image_black_transparent.setChecked(True)
@@ -294,11 +294,13 @@ def test_image_edit_preserves_other_fields(
         )
     else:
         setattr(image, field, value)
-    with qtbot.waitSignal(overlays.sigStateChanged):
-        if control in overlays.inputs:
-            overlays.inputs[control].setValue(value)
-        else:
-            getattr(overlays, control).setChecked(value)
+    notifications = []
+    overlays.sigStateChanged.connect(lambda: notifications.append(None))
+    if control in overlays.inputs:
+        overlays.inputs[control].setValue(value)
+    else:
+        getattr(overlays, control).setChecked(value)
+    assert notifications == [None]
     assert overlays.state == expected
     assert overlays._image_roi.geometry()[0] == pytest.approx(image.center, abs=1e-14)
     assert overlays._image_roi.geometry()[1] == image.width
