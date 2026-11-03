@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+    _expression_receiver_code,
     _validate_script_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
@@ -31,6 +32,7 @@ import symtable
 import textwrap
 import types
 import typing
+import unicodedata
 import weakref
 from dataclasses import dataclass
 
@@ -343,19 +345,6 @@ def _merge_operands(
     )
 
 
-def _derived_operand_code(expression: str) -> str:
-    if any(symbol in expression for symbol in (" + ", " - ", " * ", " / ", " // ")):
-        return f"({expression})"
-    if any(symbol in expression for symbol in (" % ", " ** ", " & ", " | ", " ^ ")):
-        return f"({expression})"
-    if any(
-        symbol in expression
-        for symbol in (" < ", " <= ", " > ", " >= ", " == ", " != ")
-    ):
-        return f"({expression})"
-    return expression
-
-
 def _unwrap_console_value(value: typing.Any) -> typing.Any:
     if isinstance(value, _ConsoleDataHandleBase):
         return value.data
@@ -459,7 +448,15 @@ def _format_call_code(
         *arg_operands, *tuple(kwarg_operands.values())
     )
     parts = [operand.code for operand in arg_operands]
-    parts.extend(f"{key}={operand.code}" for key, operand in kwarg_operands.items())
+    for key, operand in kwarg_operands.items():
+        if (
+            key.isidentifier()
+            and not keyword.iskeyword(key)
+            and unicodedata.normalize("NFKC", key) == key
+        ):
+            parts.append(f"{key}={operand.code}")
+        else:
+            parts.append(f"**{{{key!r}: {operand.code}}}")
     return (
         ", ".join(parts),
         inputs,
@@ -904,7 +901,12 @@ class _ConsoleDataHandleBase:
         )
         inputs, copyable, code_prelude = _merge_operands(left_operand, right_operand)
         result = operation(left_operand.value, right_operand.value)
-        expression = f"{left_operand.code} {symbol} {right_operand.code}"
+        left_code = (
+            _expression_receiver_code(left_operand.code)
+            if symbol == "**"
+            else left_operand.code
+        )
+        expression = f"{left_code} {symbol} {right_operand.code}"
         return self._wrap_console_result(
             result,
             expression,
@@ -1736,7 +1738,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
         if self._console_name is None:
             return _ConsoleOperand(
                 self.data,
-                _derived_operand_code(self._expression),
+                _expression_receiver_code(self._expression),
                 self._script_inputs,
                 self._copyable,
                 self._code_prelude,
