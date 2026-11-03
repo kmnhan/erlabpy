@@ -10,6 +10,7 @@ __all__ = [
 
 import itertools
 import math
+import threading
 import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 
@@ -41,12 +42,18 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     Note
     ----
-    Parallel acceleration is only applied when all of the following are true.
+    Compiled acceleration is only applied when all of the following are true.
 
     * `method` is ``"linear"``.
     * Coordinates along all dimensions are evenly spaced.
     * Points are 1D, 2D or 3D.
     * Extrapolation is disabled, i.e., `fill_value` is not `None`.
+
+    Calls from worker threads use serial kernels. Pass ``serial=True`` when calling
+    the interpolator if another scheduler controls parallel execution.
+
+    .. versionchanged:: 3.29.0
+       Added serial execution control and automatic serial execution in worker threads.
 
     See Also
     --------
@@ -107,7 +114,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
             fill_value=fill_value,
         )
 
-    def __call__(self, xi, method: str | None = None):
+    def __call__(self, xi, method: str | None = None, *, serial: bool = False):
         ndim: int = len(self.grid)
         is_linear: bool = method == "linear" or self.method == "linear"
         nd_supported: bool = ndim in (1, 2, 3)
@@ -131,7 +138,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                 )
 
             elif ndim == len(xi_tuple):
-                interp_func = _get_interp_func(ndim)
+                interp_func = _get_interp_func(ndim, serial=serial)
                 return interp_func(
                     *self.grid, self.values, *xi_tuple, fill_value=self.fill_value
                 )
@@ -152,6 +159,8 @@ def interpn(
     method: str = "linear",
     bounds_error: bool = False,
     fill_value: float | None = np.nan,
+    *,
+    serial: bool = False,
 ):
     """Multidimensional interpolation on evenly spaced coordinates.
 
@@ -174,6 +183,9 @@ def interpn(
         The method of interpolation to perform.
     fill_value
         The value to use for points outside of the interpolation domain.
+    serial
+        Use a serial compiled kernel. Set this to `True` inside Dask tasks to let Dask
+        control parallel execution. Worker threads always use serial kernels.
 
     Returns
     -------
@@ -187,11 +199,14 @@ def interpn(
     supplying ``method="linearfast"``. Note that the fallback to `scipy` will be silent
     except when a non-uniform dimension is found, when a warning will be issued.
 
+    .. versionchanged:: 3.29.0
+       Added `serial` and automatic serial execution in worker threads.
+
     """
     interp = FastInterpolator(
         points, values, method=method, bounds_error=bounds_error, fill_value=fill_value
     )
-    return interp(xi)
+    return interp(xi, serial=serial)
 
 
 @numba.njit(nogil=True, cache=True)
@@ -256,8 +271,8 @@ def _val2ind(val, coord):
     return np.divide(val - coord[0], coord[1] - coord[0])
 
 
-@numba.njit(nogil=True, parallel=True, cache=True)
-def _interp1(x, values, xc, fill_value=np.nan):
+@numba.extending.register_jitable(inline="always")
+def _interp1_impl(x, values, xc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[1:]
     xc_flat = xc.ravel()
     n = len(xc_flat)
@@ -275,11 +290,18 @@ def _interp1(x, values, xc, fill_value=np.nan):
     return arr_new.reshape(out_shape)
 
 
-_interp1_serial = numba.njit(_interp1.py_func, parallel=False, cache=True)
-
-
 @numba.njit(nogil=True, parallel=True, cache=True)
-def _interp2(x, y, values, xc, yc, fill_value=np.nan):
+def _interp1(x, values, xc, fill_value=np.nan):
+    return _interp1_impl(x, values, xc, fill_value)
+
+
+@numba.njit(nogil=True, cache=True)
+def _interp1_serial(x, values, xc, fill_value=np.nan):
+    return _interp1_impl(x, values, xc, fill_value)
+
+
+@numba.extending.register_jitable(inline="always")
+def _interp2_impl(x, y, values, xc, yc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[2:]
     xc_flat, yc_flat = xc.ravel(), yc.ravel()
     n = len(xc_flat)
@@ -298,7 +320,17 @@ def _interp2(x, y, values, xc, yc, fill_value=np.nan):
 
 
 @numba.njit(nogil=True, parallel=True, cache=True)
-def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
+def _interp2(x, y, values, xc, yc, fill_value=np.nan):
+    return _interp2_impl(x, y, values, xc, yc, fill_value)
+
+
+@numba.njit(nogil=True, cache=True)
+def _interp2_serial(x, y, values, xc, yc, fill_value=np.nan):
+    return _interp2_impl(x, y, values, xc, yc, fill_value)
+
+
+@numba.extending.register_jitable(inline="always")
+def _interp3_impl(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[3:]
     xc_flat, yc_flat, zc_flat = xc.ravel(), yc.ravel(), zc.ravel()
     n = len(xc_flat)
@@ -320,14 +352,25 @@ def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     return arr_new.reshape(out_shape)
 
 
-def _get_interp_func(ndim: int) -> Callable:
+@numba.njit(nogil=True, parallel=True, cache=True)
+def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
+    return _interp3_impl(x, y, z, values, xc, yc, zc, fill_value)
+
+
+@numba.njit(nogil=True, cache=True)
+def _interp3_serial(x, y, z, values, xc, yc, zc, fill_value=np.nan):
+    return _interp3_impl(x, y, z, values, xc, yc, zc, fill_value)
+
+
+def _get_interp_func(ndim: int, *, serial: bool = False) -> Callable:
+    serial = serial or threading.current_thread() is not threading.main_thread()
     match ndim:
         case 3:
-            return _interp3
+            return _interp3_serial if serial else _interp3
         case 2:
-            return _interp2
+            return _interp2_serial if serial else _interp2
         case 1:
-            return _interp1
+            return _interp1_serial if serial else _interp1
         case _:
             raise ValueError("Fast interpolation only supported for 2D or 3D")
 
