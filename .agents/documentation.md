@@ -3,6 +3,12 @@
 Follow the existing [documentation types](../docs/source/contributing/documentation.md#documentation-types)
 when choosing a page and its scope.
 
+Before writing or delegating documentation, identify a specific user question that
+existing documentation does not answer. A new feature does not automatically justify
+a new section. Keep general instructions in shared guides and API details in
+docstrings. During the final diff review, remove additions that repeat existing
+coverage.
+
 ## Writing explanations
 
 Build an explanation around a concrete user question or physical situation. Explain
