@@ -1673,6 +1673,57 @@ def test_workspace_store_rebinds_only_existing_legacy_payloads(tmp_path) -> None
         assert matching.object_ids == ["payload"]
 
 
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_workspace_rebinding_validates_targets_without_attached_readers(
+    tmp_path, target_exists
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        if target_exists:
+            with store.write_session() as h5_file:
+                h5_file.require_group(store.object_path("payload"))
+            store.rebind_legacy_readers({"/legacy": "payload"})
+        else:
+            with pytest.raises(KeyError, match="payload"):
+                store.rebind_legacy_readers({"/legacy": "payload"})
+
+
+def test_workspace_validated_legacy_rebinding_does_not_open_file(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "workspace.itws"
+    dataset = xr.Dataset({"data": ("x", np.arange(4.0))})
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file, "/legacy", dataset, compression_mode="none"
+            )
+            h5_file[store.object_path("payload")] = h5_file["legacy"]
+        reader = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
+        try:
+            with reader.read_session() as h5_file:
+                assert "legacy" in h5_file.groups
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    store,
+                    "read_session",
+                    lambda: pytest.fail("Validated rebinding must not read the file"),
+                )
+                store.rebind_legacy_readers({"/legacy": "payload"}, validate=False)
+            assert reader.legacy_group_path is None
+            assert reader._group_path == store.object_path("payload")
+            assert store.leased_object_ids == {"payload"}
+            with reader.read_session() as h5_file:
+                values = (
+                    h5_file.groups[_persistence_constants.WORKSPACE_OBJECTS_GROUP]
+                    .groups["payload"]
+                    .variables["data"][:]
+                )
+            np.testing.assert_array_equal(values, dataset["data"].values)
+        finally:
+            reader.close()
+
+
 def test_workspace_reader_attachment_does_not_block_legacy_rebinding(
     monkeypatch, tmp_path
 ) -> None:
@@ -3407,6 +3458,41 @@ def test_workspace_writer_waits_only_for_active_hdf5_reader(
         assert store.h5_file.attrs["overlap_test"]
 
 
+def test_workspace_cleanup_can_defer_contention_and_retry_later(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    path = tmp_path / "workspace.itws"
+    attempts = 0
+
+    def _defer() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("cleanup deferred")
+
+    def _unexpected_wait(_delay) -> None:
+        pytest.fail("Deferred cleanup must not sleep before returning")
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(store.object_path("obsolete"))
+
+        with h5py.File(path, "r", locking="best-effort"):
+            with monkeypatch.context() as patch:
+                patch.setattr(workspace_store.time, "sleep", _unexpected_wait)
+                with pytest.raises(RuntimeError, match="cleanup deferred"):
+                    store.collect_garbage(on_contention=_defer)
+
+            assert attempts == 1
+            assert not store.write_in_progress
+            assert not store._write_opening
+            with store.read_session() as h5_file:
+                assert store.object_path("obsolete") in h5_file
+
+        assert not store.collect_garbage()
+        with store.read_session() as h5_file:
+            assert store.object_path("obsolete") not in h5_file
+
+
 def test_workspace_store_reentrant_and_writer_owned_read_sessions(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -4126,6 +4212,77 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
         assert not store.collect_garbage(max_objects=1)
         remaining = set(store.h5_file[_persistence_constants.WORKSPACE_OBJECTS_GROUP])
         assert remaining == {"current"}
+
+
+def test_workspace_legacy_reader_candidates_do_not_open_file(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group("legacy/payload").create_dataset(
+                "data", data=np.arange(4.0)
+            )
+            h5_file.require_group("empty")
+            h5_file.create_dataset("not-a-group", data=np.arange(2.0))
+            h5_file.require_group(store.object_path("current"))
+
+        readers = [
+            workspace_arrays.WorkspaceFileManager(path, group_path=group_path)
+            for group_path in (
+                "/",
+                "/legacy",
+                "/legacy/payload",
+                "/empty",
+                "/missing",
+                "/not-a-group",
+            )
+        ]
+        readers.append(
+            workspace_arrays.WorkspaceFileManager(
+                path, object_id="current", group_path=store.object_path("current")
+            )
+        )
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    store,
+                    "read_session",
+                    lambda: pytest.fail("Reader candidates must not open the file"),
+                )
+                assert store.leased_legacy_group_candidates == {
+                    "/legacy",
+                    "/legacy/payload",
+                    "/empty",
+                    "/missing",
+                    "/not-a-group",
+                }
+            assert store.leased_legacy_group_paths == {"/legacy/payload"}
+        finally:
+            for reader in readers:
+                reader.close()
+
+
+def test_workspace_empty_legacy_reader_leases_do_not_open_file(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(store.object_path("current"))
+        reader = workspace_arrays.WorkspaceFileManager(
+            path, object_id="current", group_path=store.object_path("current")
+        )
+        try:
+            monkeypatch.setattr(
+                store,
+                "read_session",
+                lambda: pytest.fail("Empty legacy leases must not open the file"),
+            )
+            assert not store.leased_legacy_group_candidates
+            assert not store.leased_legacy_group_paths
+        finally:
+            reader.close()
 
 
 def test_workspace_compaction_preserves_serialized_legacy_group(

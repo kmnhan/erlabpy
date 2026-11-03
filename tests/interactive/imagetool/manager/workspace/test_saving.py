@@ -7,6 +7,7 @@ import os
 import pathlib
 import shutil
 import sys
+import threading
 import time
 import types
 import typing
@@ -29,7 +30,6 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive import _persistence_constants
-from erlab.interactive._code_trust import new_document_trust
 from erlab.interactive._figurecomposer import FigureComposerTool, FigureSourceState
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
@@ -1058,6 +1058,67 @@ def test_workspace_state_repeated_non_node_dirty_during_save(
     assert getattr(state.dirty_events[-1], event_field)
 
 
+def test_workspace_state_snapshot_isolates_saved_manifest() -> None:
+    state = workspace_state._ManagerWorkspaceState()
+    state.saved_manifest = {"nodes": [{"uid": "saved", "payload_path": "/saved"}]}
+    state.saved_extension_object_ids = frozenset({"extension-source"})
+    snapshot = state.snapshot(node_uid_counter=1)
+
+    state.saved_manifest["nodes"][0]["payload_path"] = "/changed"
+    state.saved_extension_object_ids = frozenset()
+    assert snapshot["saved_manifest"] == {
+        "nodes": [{"uid": "saved", "payload_path": "/saved"}]
+    }
+    state.restore(snapshot)
+    assert state.saved_extension_object_ids == frozenset({"extension-source"})
+    assert state.saved_manifest == snapshot["saved_manifest"]
+    assert state.saved_manifest is not None
+    state.saved_manifest["nodes"][0]["payload_path"] = "/changed-again"
+    assert snapshot["saved_manifest"] == {
+        "nodes": [{"uid": "saved", "payload_path": "/saved"}]
+    }
+
+
+def test_workspace_export_preserves_cache_until_document_changes(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    path = tmp_path / "current.itws"
+    exported_path = tmp_path / "exported.itws"
+    data = xr.DataArray(np.arange(30.0).reshape(5, 6), dims=("x", "y"))
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            )
+        )
+        state = manager._workspace_state
+        original_manifest = _current_workspace_manifest(path)
+        assert state.saved_manifest == original_manifest
+
+        root.slicer_area.replace_source_data(
+            data + 10, auto_compute=False, emit_edited=True
+        )
+        controller.saving._save_workspace_document(exported_path, mark_clean=False)
+        assert state.path == path.resolve()
+        assert state.saved_manifest == original_manifest
+        assert _current_workspace_manifest(path) == original_manifest
+        assert _current_workspace_manifest(exported_path) != original_manifest
+
+        adopt_workspace_path(manager, exported_path)
+        assert state.path == exported_path.resolve()
+        assert state.saved_manifest is None
+        assert state.saved_extension_object_ids == frozenset()
+
+
 def test_workspace_script_state_owns_verified_and_explicit_sources() -> None:
     source = b"from erlab.extensions import routine\n"
     source_hash = hashlib.sha256(source).hexdigest()
@@ -1272,15 +1333,13 @@ def test_workspace_save_snapshot_selects_and_preserves_extension_objects(
             )
         source_store.publish(current_manifest)
 
+        state = workspace_state._ManagerWorkspaceState()
+        state.path = source_path.resolve()
+        state.saved_manifest = source_store.current_generation().manifest
+        state.saved_extension_object_ids = frozenset({carried_entry.object_id})
         manager = types.SimpleNamespace(
             _provenance_revisions=_ProvenanceRevisionStore(),
-            _workspace_state=types.SimpleNamespace(
-                dirty_data=set(),
-                dirty_added=set(),
-                dirty_state=set(),
-                path=source_path.resolve(),
-                code_trust=new_document_trust(),
-            ),
+            _workspace_state=state,
             _tool_graph=types.SimpleNamespace(nodes={}),
         )
         saver = workspace_saving._WorkspaceSaver(
@@ -1327,11 +1386,12 @@ def test_committed_generation_merges_embedded_source_into_live_state(
     revisions = _ProvenanceRevisionStore()
     unused_revision_id = revisions.add(xr.DataArray([1.0]))
     retained_revision_id = revisions.add(xr.DataArray([2.0]))
+    state = workspace_state._ManagerWorkspaceState()
+    state.path = pathlib.Path("workspace.itws")
+    state.extension_scripts = scripts
+    state.schema_version = 0
     manager = types.SimpleNamespace(
-        _workspace_state=types.SimpleNamespace(
-            extension_scripts=scripts,
-            schema_version=0,
-        ),
+        _workspace_state=state,
         _provenance_revisions=revisions,
         _tool_graph=types.SimpleNamespace(nodes={}),
     )
@@ -1339,10 +1399,13 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         workspace_controller._WorkspaceController
     )
     controller._manager = manager
-    rebound: list[dict[str, str]] = []
+    rebound: list[tuple[dict[str, str], bool]] = []
+    controller.saving = workspace_saving._WorkspaceSaver(manager, controller)
     controller._workspace_store = types.SimpleNamespace(
         closed=False,
-        rebind_legacy_readers=lambda mappings: rebound.append(mappings),
+        rebind_legacy_readers=lambda mappings, *, validate: rebound.append(
+            (mappings, validate)
+        ),
     )
     monkeypatch.setattr(
         controller,
@@ -1377,7 +1440,8 @@ def test_committed_generation_merges_embedded_source_into_live_state(
         ("embedded.py", embedded_hash),
         ("later.py", later_hash),
     }
-    assert rebound == [{"/legacy/imagetool": "payload"}]
+    assert rebound == [({"/legacy/imagetool": "payload"}, False)]
+    assert manager._workspace_state.saved_manifest == snapshot.generation_plan.manifest
     assert unused_revision_id not in revisions
     assert retained_revision_id in revisions
     assert (
@@ -2686,10 +2750,13 @@ def test_workspace_repair_releases_only_snapshot_owned_readers(
         snapshot.close()
 
 
-def test_workspace_gc_worker_reports_contention_and_errors() -> None:
+@pytest.mark.parametrize("contended", [False, True])
+def test_workspace_gc_worker_defers_contention_and_reports_errors(contended) -> None:
     closed: list[None] = []
 
     class _Store:
+        write_lock = threading.RLock()
+
         def collect_garbage(
             self,
             *,
@@ -2697,7 +2764,8 @@ def test_workspace_gc_worker_reports_contention_and_errors() -> None:
             on_contention,
         ):
             assert max_objects == 1
-            on_contention()
+            if contended:
+                on_contention()
             raise RuntimeError("cleanup failed")
 
     worker = workspace_saving._WorkspaceGcWorker(
@@ -2711,11 +2779,52 @@ def test_workspace_gc_worker_reports_contention_and_errors() -> None:
 
     worker.run()
 
-    assert closed == [None]
+    assert closed == ([None] if contended else [])
     assert len(results) == 1
     assert not results[0][0]
-    assert results[0][1] is not None
-    assert "cleanup failed" in results[0][1]
+    if contended:
+        assert results[0][1] is None
+    else:
+        assert results[0][1] is not None
+        assert "cleanup failed" in results[0][1]
+
+
+def test_workspace_gc_worker_defers_another_writer(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    locked = threading.Event()
+    release = threading.Event()
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(store.object_path("obsolete"))
+
+        def _hold_write_lock() -> None:
+            with store.write_lock:
+                locked.set()
+                release.wait(5)
+
+        holder = threading.Thread(target=_hold_write_lock)
+        holder.start()
+        try:
+            assert locked.wait(2)
+            worker = workspace_saving._WorkspaceGcWorker(store)
+            results: list[tuple[bool, str | None]] = []
+            worker.signals.finished.connect(
+                lambda more, error: results.append((more, error))
+            )
+            worker.run()
+            assert results == [(False, None)]
+            with store.read_session() as h5_file:
+                assert store.object_path("obsolete") in h5_file
+        finally:
+            release.set()
+            holder.join(2)
+        assert not holder.is_alive()
+
+        worker.run()
+        assert results == [(False, None), (False, None)]
+        with store.read_session() as h5_file:
+            assert store.object_path("obsolete") not in h5_file
 
 
 def test_pending_workspace_tool_attrs_update_script_inputs() -> None:
@@ -3001,6 +3110,7 @@ def test_workspace_gc_controller_lifecycle(
     controller._workspace_gc_requested = False
     controller._workspace_gc_worker = None
     controller._workspace_gc_receiver = None
+    controller._workspace_save_after_gc = None
     controller._workspace_store = None
     controller._start_workspace_gc()
 
@@ -3060,6 +3170,79 @@ def test_workspace_gc_controller_lifecycle(
     controller._start_workspace_gc()
     assert controller._workspace_gc_requested
     assert controller._workspace_gc_worker is None
+
+
+@pytest.mark.parametrize("outcome", ["more", "error", "stale"])
+def test_workspace_gc_completion_resumes_or_rejects_pending_save(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, outcome
+) -> None:
+    path = tmp_path / "workspace.itws"
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    manager = QtCore.QObject()
+    state = types.SimpleNamespace(
+        save_in_progress=False,
+        save_as_only=False,
+        document_id="document",
+        path=path,
+    )
+    manager._workspace_state = state
+    manager._status_bar = types.SimpleNamespace(showMessage=lambda *_args: None)
+    action_states: list[bool] = []
+    manager._update_actions = lambda: action_states.append(state.save_in_progress)
+    controller._manager = manager
+    controller._workspace_store = types.SimpleNamespace(closed=False, path=path)
+    controller._workspace_gc_requested = True
+    controller._workspace_gc_worker = None
+    controller._workspace_gc_receiver = None
+    controller._workspace_save_after_gc = None
+    controller.saving = types.SimpleNamespace(
+        _workspace_reader_closers=lambda _path: ()
+    )
+    workers: list[workspace_saving._WorkspaceGcWorker] = []
+    pool = types.SimpleNamespace(start=workers.append)
+    scheduled: list[typing.Callable[[], None]] = []
+    monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", lambda: pool)
+    monkeypatch.setattr(
+        QtCore.QTimer,
+        "singleShot",
+        lambda _delay, callback: scheduled.append(callback),
+    )
+
+    controller._start_workspace_gc()
+    finished: list[bool] = []
+    on_finished = finished.append
+    assert controller.save(native=False, on_finished=on_finished, restore_focus=False)
+    assert state.save_in_progress
+    assert controller._workspace_save_after_gc is not None
+
+    resumed: list[dict[str, typing.Any]] = []
+    monkeypatch.setattr(controller, "save", lambda **kwargs: resumed.append(kwargs))
+    if outcome == "stale":
+        state.document_id = "replacement-document"
+    error = "cleanup failed" if outcome == "error" else None
+    workers[0].signals.finished.emit(True, error)
+
+    assert controller._workspace_gc_worker is None
+    assert controller._workspace_gc_receiver is None
+    assert controller._workspace_save_after_gc is None
+    assert not state.save_in_progress
+    assert action_states == [True, False]
+    assert scheduled == []
+    assert controller._workspace_gc_requested == (outcome == "more")
+    if outcome == "stale":
+        assert resumed == []
+        assert finished == [False]
+    else:
+        assert resumed == [
+            {
+                "native": False,
+                "on_finished": on_finished,
+                "restore_focus": False,
+            }
+        ]
+        assert finished == []
 
 
 def test_manager_async_save_request_error_paths(
@@ -3251,6 +3434,461 @@ def test_manager_background_workspace_save_keeps_new_changes_and_queues_followup
         assert not manager.is_workspace_modified
         assert not operation_errors
         manager._workspace_state.path = None
+
+
+@pytest.mark.parametrize("changed_data", [False, True])
+def test_manager_second_save_keeps_gui_responsive_while_file_access_is_blocked(
+    qtbot, monkeypatch, tmp_path, manager_context, changed_data
+) -> None:
+    import threading
+    import traceback
+
+    path = tmp_path / "cloud-workspace.itws"
+    data = xr.DataArray(
+        np.arange(30.0).reshape(5, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(5.0), "y": np.arange(6.0)},
+    )
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            )
+        )
+        store = controller._workspace_store
+        assert store is not None
+        store._release_handle()
+
+        gui_thread = threading.get_ident()
+        gui_file_access: list[str] = []
+        worker_waiting = threading.Event()
+        release_file = threading.Event()
+        expired_wait: list[None] = []
+        wait_for_access = workspace_store._wait_for_hdf5_access
+
+        def _wait_for_access(operation, **kwargs):
+            def _open():
+                if threading.get_ident() == gui_thread:
+                    # Record this instead of blocking the test's GUI thread.
+                    gui_file_access.append("".join(traceback.format_stack(limit=12)))
+                elif not release_file.is_set():
+                    worker_waiting.set()
+                    if not release_file.wait(5):
+                        expired_wait.append(None)
+                        release_file.set()
+                return operation()
+
+            return wait_for_access(_open, **kwargs)
+
+        monkeypatch.setattr(workspace_store, "_wait_for_hdf5_access", _wait_for_access)
+        errors = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+        monkeypatch.setattr(
+            manager, "_show_operation_error", lambda *args: errors.append(args)
+        )
+        if changed_data:
+            root.slicer_area.replace_source_data(
+                data + 10, auto_compute=False, emit_edited=True
+            )
+        results: list[bool] = []
+        heartbeat: list[bool] = []
+        try:
+            assert controller.save(native=False, on_finished=results.append)
+            qtbot.wait_until(worker_waiting.is_set)
+            QtCore.QTimer.singleShot(
+                0, lambda: heartbeat.append(not release_file.is_set())
+            )
+            qtbot.wait_until(lambda: bool(heartbeat))
+            assert heartbeat == [True]
+            assert manager._workspace_state.save_in_progress
+            assert results == []
+
+            root.slicer_area.replace_source_data(
+                data + 20, auto_compute=False, emit_edited=True
+            )
+            assert not controller.save(native=False)
+            assert manager.is_workspace_modified
+        finally:
+            release_file.set()
+            qtbot.wait_until(
+                lambda: (
+                    not manager._workspace_state.save_in_progress
+                    and controller._background_save_worker is None
+                ),
+                timeout=10000,
+            )
+
+        qtbot.wait_until(
+            lambda: (
+                not manager.is_workspace_modified
+                and controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            ),
+            timeout=10000,
+        )
+        assert results == [True]
+        assert errors == []
+        assert expired_wait == []
+        assert not gui_file_access, "\n".join(gui_file_access)
+        with workspace_arrays.open_workspace_dataset(
+            path, _current_workspace_payload_path(path), chunks=None
+        ) as saved:
+            np.testing.assert_array_equal(
+                saved[_persistence_constants.ITOOL_DATA_NAME].values, data.values + 20
+            )
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_manager_saved_figure_comparison_keeps_gui_responsive(
+    qtbot, monkeypatch, tmp_path, manager_context, pending
+) -> None:
+    import threading
+    import traceback
+
+    path = tmp_path / "cloud-figure.itws"
+    data = xr.DataArray(
+        np.arange(30.0).reshape(5, 6),
+        dims=("x", "y"),
+        coords={"x": np.arange(5.0), "y": np.arange(6.0)},
+        name="cut",
+    )
+    captured = data.copy(deep=True)
+    captured.values[0, 0] = -1.0
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        source_index = manager.add_imagetool(
+            itool(data, manager=False, execute=False), show=False
+        )
+        source = manager._node_for_target(source_index)
+        figure = FigureComposerTool.from_sources(
+            {"cut": captured},
+            sources=(
+                FigureSourceState(
+                    name="cut",
+                    node_uid=source.uid,
+                    node_snapshot_token=source.snapshot_token,
+                ),
+            ),
+            operations=(),
+            primary_source="cut",
+        )
+        figure_uid = manager.add_figuretool(figure, show=False)
+        source._advance_snapshot_token()
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            )
+        )
+        if pending:
+            assert controller.loading._load_workspace_file(
+                path,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+            assert (
+                manager._child_node(figure_uid).pending_workspace_tool_payload
+                is not None
+            )
+        figure_path = f"figures/{figure_uid}"
+        saved = workspace_arrays._read_workspace_dataset_group_h5py(
+            path,
+            _current_workspace_payload_path(path, figure_path),
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+        )
+        assert saved is not None
+        assert not FigureComposerTool._saved_tool_data_references(saved)
+        np.testing.assert_array_equal(
+            saved[_persistence_constants.SAVED_TOOL_DATA_NAME].values, captured.values
+        )
+        saved.close()
+        store = controller._workspace_store
+        assert store is not None
+        store._release_handle()
+
+        gui_thread = threading.get_ident()
+        gui_file_access: list[str] = []
+        comparison_threads: list[int] = []
+        repair_type = workspace_saving.figure_repair._WorkspaceFigureRepair
+        repair_saved = repair_type._repair_saved_workspace_figure_dataset
+
+        def _repair_saved(self, *args, **kwargs):
+            comparison_threads.append(threading.get_ident())
+            return repair_saved(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            repair_type, "_repair_saved_workspace_figure_dataset", _repair_saved
+        )
+        worker_waiting = threading.Event()
+        release_file = threading.Event()
+        expired_wait: list[None] = []
+        wait_for_access = workspace_store._wait_for_hdf5_access
+
+        def _wait_for_access(operation, **kwargs):
+            def _open():
+                if threading.get_ident() == gui_thread:
+                    gui_file_access.append("".join(traceback.format_stack(limit=12)))
+                elif not release_file.is_set():
+                    worker_waiting.set()
+                    if not release_file.wait(5):
+                        expired_wait.append(None)
+                        release_file.set()
+                return operation()
+
+            return wait_for_access(_open, **kwargs)
+
+        monkeypatch.setattr(workspace_store, "_wait_for_hdf5_access", _wait_for_access)
+        results: list[bool] = []
+        heartbeat: list[bool] = []
+        try:
+            assert controller.save(native=False, on_finished=results.append)
+            assert not gui_file_access, "\n".join(gui_file_access)
+            qtbot.wait_until(worker_waiting.is_set)
+            QtCore.QTimer.singleShot(
+                0, lambda: heartbeat.append(not release_file.is_set())
+            )
+            qtbot.wait_until(lambda: bool(heartbeat))
+            assert heartbeat == [True]
+            assert manager._workspace_state.save_in_progress
+            assert results == []
+        finally:
+            release_file.set()
+            qtbot.wait_until(lambda: bool(results), timeout=10000)
+
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            ),
+            timeout=10000,
+        )
+        assert results == [True]
+        assert expired_wait == []
+        assert not gui_file_access, "\n".join(gui_file_access)
+        assert comparison_threads
+        assert gui_thread not in comparison_threads
+        saved = workspace_arrays._read_workspace_dataset_group_h5py(
+            path,
+            _current_workspace_payload_path(path, figure_path),
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+        )
+        assert saved is not None
+        assert not FigureComposerTool._saved_tool_data_references(saved)
+        np.testing.assert_array_equal(
+            saved[_persistence_constants.SAVED_TOOL_DATA_NAME].values, captured.values
+        )
+        saved.close()
+
+
+@pytest.mark.parametrize("reused_source", [False, True])
+def test_manager_async_figure_repair_deduplicates_equal_saved_data(
+    qtbot, monkeypatch, tmp_path, manager_context, reused_source
+) -> None:
+    import threading
+
+    path = tmp_path / "async-figure-repair.itws"
+    data = xr.DataArray(
+        np.random.default_rng(0).random((128, 128)),
+        dims=("x", "y"),
+        coords={"x": np.arange(128.0), "y": np.arange(128.0)},
+        attrs={"units": "counts"},
+        name="cut",
+    )
+    data.values[0, 0] = np.nan
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        source_index = manager.add_imagetool(
+            itool(data, manager=False, execute=False), show=False
+        )
+        source = manager._node_for_target(source_index)
+        figure_uid = manager.create_figure_from_targets((source_index,), show=False)
+        assert figure_uid is not None
+        source._advance_snapshot_token()
+        figure_path = f"figures/{figure_uid}"
+        original_size = None
+        if reused_source:
+            # Reproduce an older workspace with duplicate embedded Figure data.
+            with monkeypatch.context() as context:
+                context.setattr(
+                    controller.saving,
+                    "_repair_workspace_figure_dataset",
+                    lambda _node, _ds: (
+                        workspace_saving.figure_repair._WorkspaceFigureRepairResult()
+                    ),
+                )
+                controller.saving._save_workspace_document(path)
+            saved = workspace_arrays._read_workspace_dataset_group_h5py(
+                path,
+                _current_workspace_payload_path(path, figure_path),
+                preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+            )
+            assert saved is not None
+            assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == data.size
+            assert not FigureComposerTool._saved_tool_data_references(saved)
+            saved.close()
+            original_size = path.stat().st_size
+            assert controller.loading._load_workspace_file(
+                path,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+            source = manager._node_for_target(source_index)
+
+        comparison_threads: list[int] = []
+        compare = workspace_saving._WorkspaceSaver._workspace_figure_arrays_identical
+
+        def _compare(*args, **kwargs):
+            comparison_threads.append(threading.get_ident())
+            return compare(*args, **kwargs)
+
+        monkeypatch.setattr(
+            workspace_saving._WorkspaceSaver,
+            "_workspace_figure_arrays_identical",
+            staticmethod(_compare),
+        )
+        if reused_source:
+            assert _request_workspace_save_and_wait(qtbot, manager, native=False)
+        else:
+            monkeypatch.setattr(
+                controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+            )
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            )
+        )
+        assert comparison_threads
+        assert threading.get_ident() not in comparison_threads
+        if original_size is not None:
+            assert path.stat().st_size < original_size
+
+        saved = workspace_arrays._read_workspace_dataset_group_h5py(
+            path,
+            _current_workspace_payload_path(path, figure_path),
+            preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
+        )
+        assert saved is not None
+        references = FigureComposerTool._saved_tool_data_references(saved)
+        assert saved[_persistence_constants.SAVED_TOOL_DATA_NAME].size == 0
+        reference = references[_persistence_constants.SAVED_TOOL_DATA_NAME]
+        assert reference["node_uid"] == source.uid
+        assert reference["node_snapshot_token"] == source.snapshot_token
+        saved.close()
+        with workspace_arrays.open_workspace_dataset(
+            path, _current_workspace_payload_path(path), chunks=None
+        ) as saved_source:
+            np.testing.assert_array_equal(
+                saved_source[_persistence_constants.ITOOL_DATA_NAME].values, data.values
+            )
+
+
+def test_manager_save_waits_for_cleanup_without_blocking_gui(
+    qtbot, monkeypatch, tmp_path, manager_context
+) -> None:
+    import threading
+
+    path = tmp_path / "cleanup-in-progress.itws"
+    data = xr.DataArray(np.arange(30.0).reshape(5, 6), dims=("x", "y"))
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        monkeypatch.setattr(
+            controller, "_workspace_save_dialog", lambda **_kwargs: str(path)
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            )
+        )
+        store = controller._workspace_store
+        assert store is not None
+        cleanup_waiting = threading.Event()
+        release_cleanup = threading.Event()
+        expired_wait: list[None] = []
+        collect_garbage = store.collect_garbage
+
+        def _collect_garbage(**kwargs):
+            cleanup_waiting.set()
+            if not release_cleanup.wait(5):
+                expired_wait.append(None)
+                release_cleanup.set()
+            return collect_garbage(**kwargs)
+
+        monkeypatch.setattr(store, "collect_garbage", _collect_garbage)
+        snapshots: list[None] = []
+        save_snapshot = controller.saving._workspace_save_snapshot
+
+        def _save_snapshot(*args, **kwargs):
+            snapshots.append(None)
+            return save_snapshot(*args, **kwargs)
+
+        monkeypatch.setattr(
+            controller.saving, "_workspace_save_snapshot", _save_snapshot
+        )
+        root.slicer_area.replace_source_data(
+            data + 10, auto_compute=False, emit_edited=True
+        )
+        results: list[bool] = []
+        heartbeat: list[bool] = []
+        controller._schedule_workspace_gc()
+        try:
+            qtbot.wait_until(cleanup_waiting.is_set)
+            assert controller.save(native=False, on_finished=results.append)
+            assert snapshots == []
+            assert manager._workspace_state.save_in_progress
+            QtCore.QTimer.singleShot(
+                0, lambda: heartbeat.append(not release_cleanup.is_set())
+            )
+            qtbot.wait_until(lambda: bool(heartbeat))
+            assert heartbeat == [True]
+            root.slicer_area.replace_source_data(
+                data + 20, auto_compute=False, emit_edited=True
+            )
+            assert results == []
+        finally:
+            release_cleanup.set()
+            qtbot.wait_until(lambda: bool(results), timeout=10000)
+
+        qtbot.wait_until(
+            lambda: (
+                controller._workspace_gc_worker is None
+                and not controller._workspace_gc_requested
+            ),
+            timeout=10000,
+        )
+        assert results == [True]
+        assert snapshots == [None]
+        assert expired_wait == []
+        assert not manager.is_workspace_modified
+        with workspace_arrays.open_workspace_dataset(
+            path, _current_workspace_payload_path(path), chunks=None
+        ) as saved:
+            np.testing.assert_array_equal(
+                saved[_persistence_constants.ITOOL_DATA_NAME].values, data.values + 20
+            )
 
 
 def test_manager_background_workspace_save_keeps_duplicate_layout_change_dirty(

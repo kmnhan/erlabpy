@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
-import hashlib
 import json
 import logging
 import os
@@ -39,7 +39,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Mapping, MutableMapping
+    from collections.abc import Callable, Iterable, Mapping, MutableMapping
 
     from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
@@ -76,6 +76,18 @@ def _set_imagetool_provenance_attrs(
             attrs[key] = encoded
 
 
+@dataclass(frozen=True)
+class _WorkspaceFigureRepairRequest:
+    uid: str
+    attrs: dict[str, typing.Any]
+    sources: dict[str, figure_repair._WorkspaceFigureSource]
+    payload: tuple[pathlib.Path, str] | None = None
+    dataset: xr.Dataset | None = None
+    cached: tuple[bytes, tuple[figure_repair._WorkspaceFigureMismatch, ...]] | None = (
+        None
+    )
+
+
 @dataclass
 class _WorkspaceSaveSnapshot:
     """One immutable generation and the local state to adopt after publication."""
@@ -90,7 +102,14 @@ class _WorkspaceSaveSnapshot:
     ] = ()
     embedded_script_sources: tuple[tuple[str, str, bytes], ...] = ()
     dataset_source_paths: frozenset[pathlib.Path] = frozenset()
+    figure_repairs: tuple[_WorkspaceFigureRepairRequest, ...] = ()
+    figure_repair_cache_updates: dict[
+        str, tuple[bytes, tuple[figure_repair._WorkspaceFigureMismatch, ...]] | None
+    ] = field(default_factory=dict)
     _source_ownership: contextlib.ExitStack = field(
+        default_factory=contextlib.ExitStack, repr=False
+    )
+    _figure_source_ownership: contextlib.ExitStack = field(
         default_factory=contextlib.ExitStack, repr=False
     )
     _data_closed: bool = field(default=False, init=False, repr=False)
@@ -100,12 +119,12 @@ class _WorkspaceSaveSnapshot:
         return (
             self.dataset_source_paths
             | frozenset(
-                pathlib.Path(item.source_file).resolve()
+                pathlib.Path(item.source_file)
                 for item in self.generation_plan.objects
                 if item.source_file is not None
             )
             | frozenset(
-                pathlib.Path(item.source_file).resolve()
+                pathlib.Path(item.source_file)
                 for item in self.generation_plan.preserved_groups
             )
         )
@@ -117,11 +136,13 @@ class _WorkspaceSaveSnapshot:
         closed: set[int] = set()
         try:
             with contextlib.ExitStack() as datasets:
-                for item in self.generation_plan.objects:
-                    if item.dataset is None or id(item.dataset) in closed:
+                pending = [item.dataset for item in self.generation_plan.objects]
+                pending.extend(item.dataset for item in self.figure_repairs)
+                for dataset in pending:
+                    if dataset is None or id(dataset) in closed:
                         continue
-                    closed.add(id(item.dataset))
-                    datasets.callback(item.dataset.close)
+                    closed.add(id(dataset))
+                    datasets.callback(dataset.close)
         finally:
             # Lazy graphs retain reader leases after their file handles close.
             self.generation_plan = replace(
@@ -131,12 +152,74 @@ class _WorkspaceSaveSnapshot:
                     for item in self.generation_plan.objects
                 ),
             )
+            self.figure_repairs = ()
 
     def close(self) -> None:
         try:
             self.close_data()
         finally:
-            self._source_ownership.close()
+            try:
+                self._figure_source_ownership.close()
+            finally:
+                self._source_ownership.close()
+
+
+def _prepare_workspace_figure_repairs(snapshot: _WorkspaceSaveSnapshot) -> None:
+    """Finish figure comparisons before writing, without accessing Qt objects."""
+    for request in snapshot.figure_repairs:
+        cache = {} if request.cached is None else {request.uid: request.cached}
+        repair = figure_repair._WorkspaceFigureRepair(
+            request.sources,
+            cache,
+            _WorkspaceSaver._workspace_figure_arrays_identical,
+        )
+        if request.payload is not None:
+            dataset = repair._repair_saved_workspace_figure_dataset(
+                request.uid, request.payload, request.attrs
+            )
+            snapshot.figure_repair_cache_updates[request.uid] = cache.get(request.uid)
+        elif request.dataset is not None:
+            dataset = repair._repair_workspace_figure_dataset(
+                request.uid, request.dataset
+            ).dataset
+        else:
+            continue
+        if dataset is None:
+            continue
+        manifest = copy.deepcopy(snapshot.generation_plan.manifest)
+        entries = [
+            dict(entry)
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
+                manifest
+            )
+        ]
+        manifest["nodes"] = entries
+        entry = next(entry for entry in entries if entry.get("uid") == request.uid)
+        objects = {item.object_id: item for item in snapshot.generation_plan.objects}
+        original_id = str(entry["payload_object_id"])
+        original = objects[original_id]
+        object_id = (
+            original_id if original.dataset is not None else f"node-{uuid.uuid4().hex}"
+        )
+        objects[object_id] = workspace_storage._WorkspaceObjectWrite(
+            object_id, dataset=dataset
+        )
+        entry["payload_object_id"] = object_id
+        entry["payload_path"] = workspace_store.WorkspaceStore.object_path(object_id)
+        entry["payload_attrs"] = workspace_format._workspace_manifest_attrs(
+            dataset.attrs
+        )
+        snapshot.generation_plan = replace(
+            snapshot.generation_plan, manifest=manifest, objects=tuple(objects.values())
+        )
+        snapshot.repair_embedded_figure_data = True
+        references = {
+            uid: (uid, token, data_refs)
+            for uid, token, data_refs in snapshot.serialized_tool_data_references
+        }
+        for item in _WorkspaceSaver._serialized_tool_data_references((dataset,)):
+            references[item[0]] = item
+        snapshot.serialized_tool_data_references = tuple(references.values())
 
 
 @dataclass(frozen=True)
@@ -207,6 +290,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         start_time = time.perf_counter()
         error: _WorkspaceSaveError | None = None
         try:
+            _prepare_workspace_figure_repairs(self._snapshot)
             owned_store = False
             target_store = self._store
             if target_store is None:
@@ -229,6 +313,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     compression_mode=self._snapshot.compression_mode,
                     on_contention=self._handle_contention,
                 )
+                self._snapshot._figure_source_ownership.close()
                 if self._snapshot.repair_embedded_figure_data:
                     self._snapshot.close_data()
                     workspace_storage._compact_workspace_store(target_store)
@@ -283,6 +368,10 @@ class _WorkspaceGcResultReceiver(QtCore.QObject):
         self._callback(more, error)
 
 
+class _WorkspaceGcDeferred(Exception):
+    """Stop optional cleanup until a later save can retry it."""
+
+
 class _WorkspaceGcWorker(QtCore.QRunnable):
     """Unlink at most one obsolete payload object outside the save path."""
 
@@ -300,15 +389,24 @@ class _WorkspaceGcWorker(QtCore.QRunnable):
     def _handle_contention(self) -> None:
         for closer in self._reader_closers:
             closer()
+        raise _WorkspaceGcDeferred
 
     def run(self) -> None:
         more = False
         error: str | None = None
         try:
-            more = self._store.collect_garbage(
-                max_objects=1,
-                on_contention=self._handle_contention,
-            )
+            if self._store.write_lock.acquire(blocking=False):
+                try:
+                    more = self._store.collect_garbage(
+                        max_objects=1,
+                        on_contention=self._handle_contention,
+                    )
+                finally:
+                    self._store.write_lock.release()
+        except _WorkspaceGcDeferred:
+            # A later save schedules cleanup again. Do not immediately retry a
+            # cloud provider or another process that still holds the file.
+            pass
         except Exception:
             error = traceback.format_exc()
         self.signals.finished.emit(more, error)
@@ -349,6 +447,8 @@ class _WorkspaceSaver:
         ownership = snapshot._source_ownership
         try:
             for path in snapshot.source_paths:
+                if path not in self._controller._workspace_sources:
+                    path = path.resolve()
                 if path in self._controller._workspace_sources:
                     access = self._controller._workspace_document_access(path)
                     ownership.callback(access.release)
@@ -357,8 +457,26 @@ class _WorkspaceSaver:
                 for item in snapshot.generation_plan.objects
                 if item.source_file is not None and item.source_path is not None
             }
+            figure_payloads = {
+                (str(item.payload[0]), item.payload[1].strip("/"))
+                for item in snapshot.figure_repairs
+                if item.payload is not None
+            }
+            sources.update(
+                (str(source.pending[0]), source.pending[1])
+                for item in snapshot.figure_repairs
+                for source in item.sources.values()
+                if source.pending is not None
+            )
             for source_file, source_path in sources:
-                store = workspace_store.WorkspaceStore.active(source_file)
+                current_store = self._controller._workspace_store
+                store = (
+                    current_store
+                    if current_store is not None
+                    and not current_store.closed
+                    and pathlib.Path(source_file) == current_store.path
+                    else workspace_store.WorkspaceStore.active(source_file)
+                )
                 parts = source_path.strip("/").split("/")
                 if (
                     store is not None
@@ -366,7 +484,26 @@ class _WorkspaceSaver:
                     and parts[0] == _persistence_constants.WORKSPACE_OBJECTS_GROUP
                 ):
                     store.acquire_object(parts[1])
-                    ownership.callback(store.release_object, parts[1])
+                    object_ownership = (
+                        snapshot._figure_source_ownership
+                        if (source_file, source_path.strip("/")) in figure_payloads
+                        else ownership
+                    )
+                    object_ownership.callback(store.release_object, parts[1])
+            figure_source_paths = {
+                path
+                for item in snapshot.figure_repairs
+                for source in item.sources.values()
+                for path in source.source_paths
+            }
+            for path in figure_source_paths:
+                store = workspace_store.WorkspaceStore.active(path)
+                if store is not None:
+                    for object_id in store.leased_object_ids:
+                        store.acquire_object(object_id)
+                        snapshot._figure_source_ownership.callback(
+                            store.release_object, object_id
+                        )
         except Exception:
             snapshot.close()
             raise
@@ -926,133 +1063,74 @@ class _WorkspaceSaver:
                 return False
         return True
 
+    def _capture_figure_repair_sources(
+        self, attrs: Mapping[str, typing.Any], *, capture_data: bool = True
+    ) -> dict[str, figure_repair._WorkspaceFigureSource]:
+        sources = {}
+        for variable_name, source in figure_source_storage.embedded_workspace_sources(
+            attrs
+        ).items():
+            node = self._manager._tool_graph.nodes.get(
+                typing.cast("str", source.node_uid)
+            )
+            if node is None or not node.is_imagetool:
+                continue
+            pending = node.pending_workspace_memory_payload
+            try:
+                data = (
+                    None
+                    if pending is not None or not capture_data
+                    else node.data_for_role(source.data_role)
+                )
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                continue
+            source_paths = set(node._workspace_sources)
+            if data is not None:
+                for variable in (
+                    data.variable,
+                    *(coordinate.variable for coordinate in data.coords.values()),
+                ):
+                    source_path = variable.encoding.get("source")
+                    if not variable._in_memory and isinstance(
+                        source_path, (str, bytes, os.PathLike)
+                    ):
+                        source_paths.add(pathlib.Path(os.fsdecode(source_path)))
+            sources[variable_name] = figure_repair._WorkspaceFigureSource(
+                node_uid=node.uid,
+                snapshot_token=node.snapshot_token_for_role(source.data_role),
+                data_role=source.data_role,
+                data=None if data is None else data.copy(deep=False),
+                pending=pending,
+                attrs=copy.deepcopy(node.pending_workspace_payload_attrs),
+                name=None if node.name == "" else node.name,
+                source_input_ndim=getattr(node, "source_input_ndim", None),
+                source_paths=frozenset(source_paths),
+            )
+        return sources
+
+    def _figure_repair_context(
+        self, attrs: Mapping[str, typing.Any]
+    ) -> figure_repair._WorkspaceFigureRepair:
+        return figure_repair._WorkspaceFigureRepair(
+            self._capture_figure_repair_sources(attrs),
+            self._figure_repair_cache,
+            self._workspace_figure_arrays_identical,
+        )
+
+    def _adopt_figure_repair_cache(self, snapshot: _WorkspaceSaveSnapshot) -> None:
+        for uid, cached in snapshot.figure_repair_cache_updates.items():
+            self._figure_repair_cache.pop(uid, None)
+            if cached is not None:
+                self._figure_repair_cache[uid] = cached
+        while len(self._figure_repair_cache) > 64:
+            self._figure_repair_cache.pop(next(iter(self._figure_repair_cache)))
+
     def _repair_workspace_figure_dataset(
         self, node: _ImageToolWrapper | _ManagedWindowNode, ds: xr.Dataset
     ) -> figure_repair._WorkspaceFigureRepairResult:
-        """Inspect references and report only completed unequal comparisons."""
-        sources = figure_source_storage.embedded_workspace_sources(ds.attrs)
-        if not sources:
-            return figure_repair._WorkspaceFigureRepairResult()
-        references = erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
-        repaired_names: set[str] = set()
-        mismatches: list[figure_repair._WorkspaceFigureMismatch] = []
-        complete = True
-        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
-        tool_cls = erlab.interactive.utils.ToolWindow
-        try:
-            for variable_name, source in sources.items():
-                if variable_name not in ds or not ds[variable_name].size:
-                    complete = False
-                    continue
-                source_uid = typing.cast("str", source.node_uid)
-                source_node = self._manager._tool_graph.nodes.get(source_uid)
-                if source_node is None or not source_node.is_imagetool:
-                    complete = False
-                    continue
-                stored: xr.DataArray | None = None
-                try:
-                    stored = tool_cls._tool_data_items_from_dataset(
-                        ds,
-                        source_parent_data=None,
-                        reference_resolver=None,
-                        variable_names=(variable_name,),
-                    )[variable_name]
-                    stored = figure_source_storage.restore_workspace_source_name(
-                        ds.attrs, source.name, variable_name, stored
-                    )
-                    current = (
-                        self._controller.loading._workspace_tool_reference_source_data(
-                            source_uid,
-                            data_role=source.data_role,
-                            reference_datasets=reference_datasets,
-                        )
-                    )
-                    witnesses: list[figure_repair._WorkspaceFigureMismatch] = []
-
-                    def _remember_mismatch(
-                        index: tuple[int, ...],
-                        value: typing.Any,
-                        *,
-                        name: str = variable_name,
-                        records: list[
-                            figure_repair._WorkspaceFigureMismatch
-                        ] = witnesses,
-                    ) -> None:
-                        records.append(
-                            figure_repair._WorkspaceFigureMismatch(name, index, value)
-                        )
-
-                    def _remember_metadata_mismatch(
-                        *,
-                        name: str = variable_name,
-                        data: xr.DataArray = current,
-                        records: list[
-                            figure_repair._WorkspaceFigureMismatch
-                        ] = witnesses,
-                    ) -> None:
-                        records.append(
-                            figure_repair._WorkspaceFigureMismatch(
-                                name, metadata=figure_repair.metadata_fingerprint(data)
-                            )
-                        )
-
-                    if not self._workspace_figure_arrays_identical(
-                        stored,
-                        current,
-                        on_mismatch=_remember_mismatch,
-                        on_metadata_mismatch=_remember_metadata_mismatch,
-                    ):
-                        if witnesses:
-                            mismatches.extend(witnesses)
-                        else:
-                            complete = False
-                        continue
-                except (KeyError, OSError, RuntimeError, TypeError, ValueError):
-                    complete = False
-                    logger.debug(
-                        "Could not compare saved figure input %s/%s",
-                        node.uid,
-                        source.name,
-                        exc_info=True,
-                    )
-                    continue
-                finally:
-                    # Release this decoded blob before decoding the next input.
-                    stored = None
-                references[variable_name] = {
-                    "kind": "manager_node",
-                    "source": source.name,
-                    "node_uid": source.node_uid,
-                    "node_snapshot_token": source_node.snapshot_token_for_role(
-                        source.data_role
-                    ),
-                    "data_role": source.data_role,
-                }
-                repaired_names.add(variable_name)
-        finally:
-            self._controller.loading._close_workspace_reference_datasets(
-                reference_datasets
-            )
-        if not repaired_names:
-            return figure_repair._WorkspaceFigureRepairResult(
-                mismatches=tuple(mismatches) if complete else None
-            )
-        variables: dict[Hashable, xr.DataArray] = {}
-        for name, data in ds.data_vars.items():
-            if name in repaired_names:
-                variables[name] = erlab.interactive.utils._tool_data_placeholder()
-            elif name in references or (
-                _persistence_constants.TOOL_DATA_BLOB_NAME_ATTR in data.attrs
-            ):
-                variables[name] = data.reset_coords(drop=True)
-            else:
-                variables[name] = data
-        repaired = xr.Dataset(variables, attrs=ds.attrs)
-        repaired.attrs[_persistence_constants.TOOL_DATA_REFERENCES_ATTR] = json.dumps(
-            references
+        return self._figure_repair_context(ds.attrs)._repair_workspace_figure_dataset(
+            node.uid, ds
         )
-        repaired.set_close(ds.close)
-        return figure_repair._WorkspaceFigureRepairResult(dataset=repaired)
 
     def _workspace_figure_repair_cache_state(
         self,
@@ -1062,118 +1140,9 @@ class _WorkspaceSaver:
         cached: tuple[bytes, tuple[figure_repair._WorkspaceFigureMismatch, ...]]
         | None = None,
     ) -> tuple[bytes, bool] | None:
-        """Validate an immutable payload and its current comparison inputs."""
-        path = pathlib.Path(payload[0]).resolve()
-        object_path = "/" + payload[1].strip("/")
-        parts = object_path.strip("/").split("/")
-        if (
-            len(parts) != 2
-            or parts[0] != _persistence_constants.WORKSPACE_OBJECTS_GROUP
-            or not parts[1]
-        ):
-            return None
-        references: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
-        try:
-            sources = figure_source_storage.embedded_workspace_sources(attrs)
-            if not sources:
-                return None
-            before = workspace_storage._workspace_publication_state(path)
-            store = workspace_store.WorkspaceStore.active(path)
-            with workspace_storage._workspace_generation_copy_source(path) as h5_file:
-                if store is not None:
-                    if (
-                        store.closed
-                        or store.path != path
-                        or store.conflicted
-                        or store.recovery_path is not None
-                    ):
-                        return None
-                    store.require_current_path()
-                workspace_id = workspace_store.WorkspaceStore._workspace_id_from_file(
-                    h5_file
-                )
-                schema_version = int(
-                    h5_file.attrs.get("imagetool_workspace_schema_version", 0)
-                )
-                immutable = (
-                    workspace_format._workspace_schema_uses_immutable_generations(
-                        schema_version
-                    )
-                )
-                if workspace_id is None or object_path not in h5_file or not immutable:
-                    return None
-            # Dask workers can acquire this store lock when reading coordinates or
-            # scalar samples. Compute their values outside the HDF5 read session.
-            identity: list[typing.Any] = [
-                str(path),
-                before[1:3] if store is not None else before,
-                workspace_id,
-                object_path,
-                figure_repair.attrs_fingerprint(attrs).hex(),
-            ]
-            current_arrays = {}
-            for variable_name, source in sorted(sources.items()):
-                source_node = self._manager._tool_graph.nodes.get(
-                    typing.cast("str", source.node_uid)
-                )
-                if source_node is None or not source_node.is_imagetool:
-                    return None
-                current = (
-                    self._controller.loading._workspace_tool_reference_source_data(
-                        source_node.uid,
-                        data_role=source.data_role,
-                        reference_datasets=references,
-                    )
-                )
-                pending = source_node.pending_workspace_payload
-                binding = (
-                    None
-                    if pending is None
-                    else (str(pathlib.Path(pending[0]).resolve()), pending[1])
-                )
-                identity.append(
-                    (
-                        variable_name,
-                        source.name,
-                        source_node.uid,
-                        source.data_role,
-                        source_node.snapshot_token_for_role(source.data_role),
-                        binding,
-                        figure_repair.metadata_fingerprint(current).hex(),
-                    )
-                )
-                current_arrays[variable_name] = current
-            key = hashlib.sha256(
-                json.dumps(identity, ensure_ascii=True).encode("ascii")
-            ).digest()
-            hit = (
-                cached is not None
-                and cached[0] == key
-                and len(cached[1]) == len(sources)
-                and all(
-                    mismatch.still_differs(current_arrays[mismatch.variable_name])
-                    for mismatch in cached[1]
-                )
-            )
-            if store is not None:
-                with store.read_session() as h5_file:
-                    if store.path != path or store.recovery_path is not None:
-                        return None
-                    store.require_current_path()
-                    if (
-                        workspace_store.WorkspaceStore._workspace_id_from_file(h5_file)
-                        != workspace_id
-                        or object_path not in h5_file
-                    ):
-                        return None
-            elif workspace_storage._workspace_publication_state(path) != before:
-                return None
-        except (KeyError, OSError, RuntimeError, TypeError, ValueError, RecursionError):
-            return None
-        else:
-            return key, hit
-        finally:
-            self._controller.loading._close_workspace_reference_datasets(references)
+        return self._figure_repair_context(attrs)._workspace_figure_repair_cache_state(
+            payload, attrs, cached=cached
+        )
 
     def _repair_saved_workspace_figure_dataset(
         self,
@@ -1181,54 +1150,9 @@ class _WorkspaceSaver:
         payload: tuple[str | os.PathLike[str], str],
         attrs: Mapping[str, typing.Any],
     ) -> xr.Dataset | None:
-        """Inspect saved inputs without restoring a hidden figure window."""
-        cached = self._figure_repair_cache.get(node.uid)
-        state = self._workspace_figure_repair_cache_state(payload, attrs, cached=cached)
-        if state is not None and state[1]:
-            return None
-        self._figure_repair_cache.pop(node.uid, None)
-        opened: xr.Dataset | None = None
-        try:
-            # Do not retain encoded blobs after each comparison releases its input.
-            opened = workspace_arrays.open_workspace_dataset(
-                payload[0], payload[1], chunks=None, cache=False
-            )
-            captured = workspace_arrays._read_workspace_dataset_group_h5py(
-                payload[0],
-                payload[1],
-                preferred_data_name=_persistence_constants.SAVED_TOOL_DATA_NAME,
-                data_variables=opened.variables,
-            )
-            if captured is None:
-                captured = workspace_format._restore_workspace_dataset_attrs(opened)
-            captured.attrs = dict(attrs)
-            result = self._repair_workspace_figure_dataset(node, captured)
-            repaired = result.dataset
-            if repaired is None:
-                if state is not None and result.mismatches:
-                    entry = state[0], result.mismatches
-                    verified = self._workspace_figure_repair_cache_state(
-                        payload, attrs, cached=entry
-                    )
-                    if verified is not None and verified[1]:
-                        self._figure_repair_cache[node.uid] = entry
-                        if len(self._figure_repair_cache) > 64:
-                            self._figure_repair_cache.pop(
-                                next(iter(self._figure_repair_cache))
-                            )
-                return None
-            repaired.set_close(opened.close)
-            opened = None
-        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
-            logger.debug(
-                "Could not inspect saved figure inputs for %s", node.uid, exc_info=True
-            )
-            return None
-        else:
-            return repaired
-        finally:
-            if opened is not None:
-                opened.close()
+        return self._figure_repair_context(
+            attrs
+        )._repair_saved_workspace_figure_dataset(node.uid, payload, attrs)
 
     def _save_workspace_document(
         self,
@@ -1553,7 +1477,9 @@ class _WorkspaceSaver:
         generation = self._manager._workspace_state.dirty_generation
         self._manager._workspace_state.saving_depth += 1
         try:
-            return self._workspace_generation_save_snapshot(generation, fname=fname)
+            return self._workspace_generation_save_snapshot(
+                generation, fname=fname, defer_figure_repairs=True
+            )
         finally:
             self._manager._workspace_state.saving_depth -= 1
 
@@ -1563,6 +1489,7 @@ class _WorkspaceSaver:
         *,
         fname: str | os.PathLike[str],
         legacy_source_path: str | os.PathLike[str] | None = None,
+        defer_figure_repairs: bool = False,
     ) -> _WorkspaceSaveSnapshot:
         """Capture one immutable generation without copying unchanged payloads."""
         source_store = getattr(self._controller, "_workspace_store", None)
@@ -1574,13 +1501,32 @@ class _WorkspaceSaver:
         current_manifest: dict[str, typing.Any] | None = None
         legacy_manifest: dict[str, typing.Any] | None = None
         legacy_schema_version: int | None = None
-        if source_store is not None and not source_store.closed:
+        state = self._manager._workspace_state
+        metadata_path = explicit_legacy_source_path or state.path
+        cached_metadata = (
+            state.saved_manifest is not None
+            and metadata_path == state.path
+            and (
+                source_store is None
+                or (not source_store.closed and source_store.path == state.path)
+            )
+        )
+        if cached_metadata:
+            if workspace_format._workspace_schema_uses_immutable_generations(
+                state.schema_version
+            ):
+                current_manifest = copy.deepcopy(state.saved_manifest)
+            else:
+                legacy_manifest = copy.deepcopy(state.saved_manifest)
+                legacy_schema_version = state.schema_version
+        elif source_store is not None and not source_store.closed:
             with contextlib.suppress(Exception):
                 current_manifest = source_store.current_generation().manifest
-        metadata_path = (
-            explicit_legacy_source_path or self._manager._workspace_state.path
-        )
-        if current_manifest is None and metadata_path is not None:
+        if (
+            not cached_metadata
+            and current_manifest is None
+            and metadata_path is not None
+        ):
             with contextlib.suppress(Exception):
                 root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(
                     metadata_path
@@ -1649,6 +1595,25 @@ class _WorkspaceSaver:
             workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
         )
         repair_embedded_figure_data = False
+        figure_repairs: dict[str, _WorkspaceFigureRepairRequest] = {}
+
+        def _defer_figure_repair(
+            uid: str,
+            attrs: Mapping[str, typing.Any],
+            *,
+            payload: tuple[str | os.PathLike[str], str] | None = None,
+            dataset: xr.Dataset | None = None,
+        ) -> None:
+            figure_repairs[uid] = _WorkspaceFigureRepairRequest(
+                uid=uid,
+                attrs=copy.deepcopy(dict(attrs)),
+                sources=self._capture_figure_repair_sources(attrs, capture_data=False),
+                payload=(
+                    None if payload is None else (pathlib.Path(payload[0]), payload[1])
+                ),
+                dataset=dataset,
+                cached=self._figure_repair_cache.get(uid),
+            )
 
         def _serialize(uid: str) -> xr.Dataset | None:
             nonlocal repair_embedded_figure_data
@@ -1664,10 +1629,16 @@ class _WorkspaceSaver:
             )
             dataset = constructor.get(self._workspace_payload_path(uid))
             if dataset is not None and not node.is_imagetool:
-                repaired = self._repair_workspace_figure_dataset(node, dataset).dataset
-                if repaired is not None:
-                    repair_embedded_figure_data = True
-                    dataset = repaired
+                if defer_figure_repairs:
+                    if figure_source_storage.embedded_workspace_sources(dataset.attrs):
+                        _defer_figure_repair(uid, dataset.attrs, dataset=dataset)
+                else:
+                    repaired = self._repair_workspace_figure_dataset(
+                        node, dataset
+                    ).dataset
+                    if repaired is not None:
+                        repair_embedded_figure_data = True
+                        dataset = repaired
             return dataset
 
         for entry in base_entries:
@@ -1727,11 +1698,18 @@ class _WorkspaceSaver:
                         typing.cast("Mapping[str, typing.Any]", saved_attrs)
                     )
                 ):
-                    dataset = self._repair_saved_workspace_figure_dataset(
-                        node,
-                        pending,
-                        typing.cast("Mapping[str, typing.Any]", saved_attrs),
-                    )
+                    if defer_figure_repairs:
+                        _defer_figure_repair(
+                            uid,
+                            typing.cast("Mapping[str, typing.Any]", saved_attrs),
+                            payload=pending,
+                        )
+                    else:
+                        dataset = self._repair_saved_workspace_figure_dataset(
+                            node,
+                            pending,
+                            typing.cast("Mapping[str, typing.Any]", saved_attrs),
+                        )
                     if dataset is not None:
                         repair_embedded_figure_data = True
                         dirty_data.add(uid)
@@ -1815,7 +1793,9 @@ class _WorkspaceSaver:
                         source_path=source_path,
                     )
                 if dataset is not None:
-                    dataset.close()
+                    request = figure_repairs.get(uid)
+                    if request is None or request.dataset is not dataset:
+                        dataset.close()
             else:
                 object_id = f"node-{uuid.uuid4().hex}"
                 pending_payload = node.pending_workspace_payload
@@ -1880,17 +1860,18 @@ class _WorkspaceSaver:
             for entry in final_entries
             if entry.get("payload_object_id")
         }
-        previous_extension_object_ids: frozenset[str] = frozenset()
+        saved_source_ids: frozenset[str] = frozenset()
         if current_manifest is not None and source_workspace_path is not None:
-            with contextlib.suppress(OSError, KeyError):
-                previous_extension_object_ids = (
-                    workspace_storage._existing_workspace_object_ids(
+            if cached_metadata:
+                saved_source_ids = state.saved_extension_object_ids
+            else:
+                with contextlib.suppress(OSError, KeyError):
+                    saved_source_ids = workspace_storage._existing_workspace_object_ids(
                         source_workspace_path,
                         workspace_store.WorkspaceStore.manifest_extension_object_ids(
                             current_manifest
                         ),
                     )
-                )
         included_keys = source_keys | scripts.explicit_sources
         embedded_script_sources: list[tuple[str, str, bytes]] = []
         for key, (entry, source) in scripts.verified_sources.items():
@@ -1916,10 +1897,7 @@ class _WorkspaceSaver:
             )
 
         for object_id in extension_object_ids - object_writes.keys():
-            if (
-                source_workspace_path is not None
-                and object_id in previous_extension_object_ids
-            ):
+            if source_workspace_path is not None and object_id in saved_source_ids:
                 object_writes.setdefault(
                     object_id,
                     workspace_storage._WorkspaceObjectWrite(
@@ -1939,7 +1917,9 @@ class _WorkspaceSaver:
         legacy_object_links: tuple[tuple[str, str], ...] = ()
         legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
         leased_legacy_group_paths: frozenset[str] = frozenset()
-        target_path = pathlib.Path(fname).resolve()
+        target_path = pathlib.Path(fname)
+        if target_path != state.path:
+            target_path = target_path.resolve()
         source_store_path = (
             source_store.path
             if source_store is not None and not source_store.closed
@@ -1985,26 +1965,9 @@ class _WorkspaceSaver:
             if uid not in dirty_data and legacy_path in leased_legacy_group_paths:
                 safe_rebindings.append((legacy_path, object_id))
         legacy_reader_rebindings = tuple(sorted(safe_rebindings))
-        if legacy_link_candidates:
-            if target_is_source and source_store is not None:
-                legacy_object_links = tuple(
-                    sorted(
-                        (legacy_path, object_id)
-                        for legacy_path, object_id in legacy_link_candidates
-                        if legacy_path.strip("/") in source_store.h5_file
-                    )
-                )
-            elif in_place_legacy_source is not None:
-                with workspace_arrays._open_workspace_h5_file_for_read(
-                    in_place_legacy_source
-                ) as legacy_h5_file:
-                    legacy_object_links = tuple(
-                        sorted(
-                            (legacy_path, object_id)
-                            for legacy_path, object_id in legacy_link_candidates
-                            if legacy_path.strip("/") in legacy_h5_file
-                        )
-                    )
+        # The writer checks candidate paths while it owns the file. Snapshot
+        # capture must not open a cloud-backed document on the GUI thread.
+        legacy_object_links = tuple(sorted(legacy_link_candidates))
         if source_store is not None and target_path != source_store.path:
             source_path = str(source_store.path)
             for object_id in source_store.leased_object_ids:
@@ -2024,6 +1987,50 @@ class _WorkspaceSaver:
                 )
                 for group_path in sorted(leased_legacy_group_paths)
             )
+        retained_figure_repairs: list[_WorkspaceFigureRepairRequest] = []
+        entries_by_uid = {str(entry["uid"]): entry for entry in final_entries}
+        for uid, request in figure_repairs.items():
+            if uid not in entries_by_uid:
+                continue
+            if request.payload is not None:
+                dataset_source_paths.add(request.payload[0])
+            planned_sources: dict[str, figure_repair._WorkspaceFigureSource] = {}
+            for variable_name, source in request.sources.items():
+                entry = entries_by_uid.get(source.node_uid)
+                if entry is None:
+                    continue
+                item = object_writes.get(str(entry.get("payload_object_id")))
+                if item is None:
+                    continue
+                attrs = workspace_format._restore_workspace_manifest_attrs(
+                    entry.get("payload_attrs", [])
+                )
+                token_key = (
+                    "manager_node_source_snapshot_token"
+                    if source.data_role == "source"
+                    else "manager_node_snapshot_token"
+                )
+                source_paths = set(source.source_paths)
+                pending = None
+                if item.dataset is None:
+                    if item.source_file is None or item.source_path is None:
+                        continue
+                    pending = (pathlib.Path(item.source_file), item.source_path)
+                    source_paths.add(pending[0])
+                planned_sources[variable_name] = replace(
+                    source,
+                    snapshot_token=str(attrs.get(token_key, source.snapshot_token)),
+                    data=None,
+                    dataset=item.dataset,
+                    pending=pending,
+                    attrs=attrs,
+                    source_paths=frozenset(source_paths),
+                )
+            retained_figure_repairs.append(replace(request, sources=planned_sources))
+            for source in planned_sources.values():
+                dataset_source_paths.update(source.source_paths)
+                if source.pending is not None:
+                    dataset_source_paths.add(source.pending[0])
         snapshot = _WorkspaceSaveSnapshot(
             generation=generation,
             generation_plan=workspace_storage._WorkspaceGenerationPlan(
@@ -2045,6 +2052,7 @@ class _WorkspaceSaver:
             ),
             embedded_script_sources=tuple(embedded_script_sources),
             dataset_source_paths=frozenset(dataset_source_paths),
+            figure_repairs=tuple(retained_figure_repairs),
         )
         self._own_snapshot_sources(snapshot)
         return snapshot

@@ -20,6 +20,8 @@ from dask import delayed
 
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._figure_repair as figure_repair
+import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.utils as interactive_utils
@@ -175,6 +177,60 @@ def test_unchanged_historical_figure_skips_decode_and_compare(
     first = repair_counts.copy()
     assert figure_repair_case.probe() is None
     assert repair_counts == first
+
+
+@pytest.mark.parametrize("save_as", [False, True])
+@pytest.mark.parametrize("emit_signals", [False, True])
+def test_deferred_repair_uses_saved_source_after_in_place_edit(
+    figure_repair_case, tmp_path, save_as, emit_signals
+):
+    case = figure_repair_case
+    # Take ownership through the same mutation path as the Manager console.
+    # Later edits can then change the buffer in place instead of detaching it.
+    for source in case.sources:
+        source.slicer_area._set_source_item((0, 0), 0.0)
+    case.saver._save_workspace_document(case.path)
+    expected_source = case.sources[0].slicer_area._data.copy(deep=True)
+    target = tmp_path / "copy.itws" if save_as else case.path
+    snapshot = case.saver._workspace_generation_save_snapshot(
+        case.manager._workspace_state.dirty_generation,
+        fname=target,
+        defer_figure_repairs=True,
+    )
+    try:
+        for source in case.sources:
+            source.slicer_area._set_source_item((0, 0), -1.0, emit_signals=emit_signals)
+        worker = workspace_saving._WorkspaceSaveWorker(target, snapshot)
+        errors = []
+        worker.signals.finished.connect(lambda _elapsed, error: errors.append(error))
+        worker.run()
+        assert errors == [None]
+
+        entries = {
+            str(entry["uid"]): entry
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
+                snapshot.generation_plan.manifest
+            )
+        }
+        figure_entry = entries[case.node.uid]
+        with workspace_arrays.open_workspace_dataset(
+            target, figure_entry["payload_path"], chunks=None
+        ) as saved:
+            assert not FigureComposerTool._saved_tool_data_references(saved)
+            np.testing.assert_array_equal(
+                saved[_persistence_constants.SAVED_TOOL_DATA_NAME].values,
+                case.captured.values,
+            )
+        for source in case.sources:
+            with workspace_arrays.open_workspace_dataset(
+                target, entries[source.uid]["payload_path"], chunks=None
+            ) as saved:
+                np.testing.assert_array_equal(
+                    saved[_persistence_constants.ITOOL_DATA_NAME].values,
+                    expected_source.values,
+                )
+    finally:
+        snapshot.close()
 
 
 @pytest.mark.parametrize(
