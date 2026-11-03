@@ -26,6 +26,7 @@ from erlab.interactive.imagetool._provenance import _execution
 from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    FileDataSelection,
     FileLoadSource,
     FileReplayCall,
     ScriptInput,
@@ -1424,9 +1425,6 @@ def test_manager_console_helpers_preserve_nested_operands() -> None:
         np.testing.assert_equal(evaluated, erlab.utils.misc._convert_to_native(value))
 
     assert manager_console._literal_code(object())[1] is False
-    assert manager_console._derived_operand_code("data_0 + data_1").startswith("(")
-    assert manager_console._derived_operand_code("data_0 == data_1").startswith("(")
-    assert manager_console._derived_operand_code("data_0.sel(x=0)") == "data_0.sel(x=0)"
 
     nested = {"left": [handle, slice(0, 1)], "right": (handle,)}
     assert manager_console._first_console_handle(nested) is handle
@@ -1438,6 +1436,151 @@ def test_manager_console_helpers_preserve_nested_operands() -> None:
     assert [script_input.name for script_input in operand.script_inputs] == ["data_0"]
     assert operand.copyable
     assert operand.value["left"][1] == slice(0, 1)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(-data).clip(min=0)",
+        "(~data).clip(min=0)",
+        "(-data).x",
+        "(-data).isel(x=slice(1, None)).clip(min=0)",
+        "(-data) ** 2",
+        "2.0 ** (-data)",
+        "(-2) ** (data + 4)",
+        "(-2.0) ** data",
+        "(-np.inf) ** data",
+        "(data @ data).clip(min=0)",
+        "data / (data + 5)",
+        "data - (data - 1)",
+        "(data > 0) & (data < 3)",
+        "(data ** 2) ** 3",
+        "data ** (data ** 2)",
+    ],
+)
+def test_manager_console_provenance_preserves_expression_grouping(
+    expression: str,
+) -> None:
+    data = xr.DataArray(
+        np.arange(-4, 5).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [1, 2, 3], "y": [1, 2, 3]},
+    )
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (ScriptInput(name="data_0", label="ImageTool 0"),),
+        copyable=True,
+    )
+    expected = eval(expression, {"data": data, "np": np})  # noqa: S307
+    result = eval(expression, {"data": handle, "np": np})  # noqa: S307
+    xr.testing.assert_identical(result.data, expected)
+
+    spec = result._console_provenance_spec(
+        active_name="derived", label="Evaluate console expression"
+    )
+    assert spec is not None
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            spec, {"data_0": data}, authorize=_authorize_execution
+        ),
+        expected,
+    )
+    namespace = _exec_generated_code(spec.display_code(), {"data_0": data})
+    xr.testing.assert_identical(namespace[spec.active_name], expected)
+
+
+def test_manager_console_file_provenance_preserves_unary_grouping(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(-4.0, 5.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": [0, 1, 2], "y": [0, 1, 2]},
+        name="source",
+    )
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path, engine="h5netcdf")
+    expected = (-data).clip(min=0)
+
+    with manager_context() as manager:
+        manager._data_ingress.receive_data(
+            [xr.load_dataarray(path, engine="h5netcdf")],
+            {
+                "file_path": path,
+                "load_func": (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            },
+            show=False,
+        )
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        manager.console._console_widget.execute("(-tools[0]).clip(min=0)")
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        xr.testing.assert_identical(manager.get_imagetool(1).slicer_area.data, expected)
+
+        spec = manager._tool_graph.root_wrappers[1].displayed_provenance_spec
+        assert spec is not None
+        namespace = _exec_generated_code(spec.display_code(), {})
+        xr.testing.assert_identical(namespace[spec.active_name], expected)
+
+        manager.get_imagetool(1).slicer_area.reload()
+        xr.testing.assert_identical(manager.get_imagetool(1).slicer_area.data, expected)
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
+@pytest.mark.parametrize("dimension", ["some dim", "class", "µ", "|some dim|"])
+@pytest.mark.parametrize("method", ["shift", "roll"])
+def test_manager_console_provenance_preserves_keyword_names(
+    dimension: str, method: str
+) -> None:
+    data = xr.DataArray(np.arange(6).reshape(2, 3), dims=(dimension, "energy"))
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (ScriptInput(name="data_0", label="ImageTool 0"),),
+        copyable=True,
+    )
+    expected = getattr(data, method)(**{dimension: 1})
+    result = getattr(handle, method)(**{dimension: 1})
+    xr.testing.assert_identical(result.data, expected)
+
+    spec = result._console_provenance_spec(
+        active_name="derived", label="Evaluate console expression"
+    )
+    assert spec is not None
+    xr.testing.assert_identical(
+        replay_script_provenance(
+            spec, {"data_0": data}, authorize=_authorize_execution
+        ),
+        expected,
+    )
+    namespace = _exec_generated_code(spec.display_code(), {"data_0": data})
+    xr.testing.assert_identical(namespace[spec.active_name], expected)
+
+
+def test_manager_console_call_preserves_keyword_order() -> None:
+    kwargs = {"first": 1, "some dim": 2, "class": 3, "µ": 4, "last": 5}
+    code, *_ = manager_console._format_call_code((0,), kwargs)
+
+    def capture(*args: object, **captured_kwargs: object) -> tuple[object, ...]:
+        return args, tuple(captured_kwargs.items())
+
+    actual = eval(f"capture({code})", {"capture": capture})  # noqa: S307
+    assert actual == capture(0, **kwargs)
 
 
 def test_manager_console_namespace_protocols_and_proxies() -> None:

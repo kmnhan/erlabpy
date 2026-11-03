@@ -1053,18 +1053,21 @@ def _assignment_code(
     function_code = ast.get_source_segment(expression, parsed.body.func)
     if function_code is None:
         return code
+    function_code = _expression_receiver_code(function_code)
     arguments: list[str] = []
     for argument in parsed.body.args:
         argument_code = ast.get_source_segment(expression, argument)
         if argument_code is None:
             return code
-        if isinstance(argument, ast.GeneratorExp):
+        if isinstance(argument, ast.GeneratorExp | ast.NamedExpr):
             argument_code = f"({argument_code})"
         arguments.append(argument_code)
     for keyword_arg in parsed.body.keywords:
         value_code = ast.get_source_segment(expression, keyword_arg.value)
         if value_code is None:
             return code
+        if isinstance(keyword_arg.value, ast.NamedExpr):
+            value_code = f"({value_code})"
         prefix = "**" if keyword_arg.arg is None else f"{keyword_arg.arg}="
         arguments.append(f"{prefix}{value_code}")
     if not arguments:
@@ -1464,7 +1467,17 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             Either an assignment statement when ``output_name`` is provided, or a bare
             expression when it is ``None``.
         """
-        inputs = {} if bound_inputs is None else dict(bound_inputs)
+        input_name = _expression_receiver_code(input_name)
+        if source_name is not None:
+            source_name = _expression_receiver_code(source_name)
+        inputs = (
+            {}
+            if bound_inputs is None
+            else {
+                slot: _expression_receiver_code(expression)
+                for slot, expression in bound_inputs.items()
+            }
+        )
         try:
             expression = self.expression_code_with_inputs(
                 input_name,
@@ -1713,7 +1726,9 @@ def operations_expression_code(
     """
     if not operations:
         return ""
-    source_name = input_name if source_name is None else source_name
+    source_name = _expression_receiver_code(
+        input_name if source_name is None else source_name
+    )
     expression = input_name
     for operation in operations:
         expression = operation.expression_code(

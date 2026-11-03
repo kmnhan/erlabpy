@@ -788,6 +788,68 @@ def test_assignment_code_wraps_generator_calls_without_changing_behavior() -> No
     assert namespace[output_name] == 45
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(lambda value: value + 1)(2)",
+        "(abs if True else float)(-2)",
+        "(abs if False else float)(-2)",
+        "(abs or float)(-2)",
+        "(selected := abs)(-2)",
+        "dict(value=(temp := 2))",
+        "dict(**(temp := {'value': 2}))",
+        "list((temp := range(2)))",
+    ],
+)
+def test_assignment_code_preserves_expression_grouping(expression: str) -> None:
+    output_name = "generated_result_with_a_name_long_enough_to_require_wrapping"
+    code = _assignment_code(output_name, expression, line_length=40)
+    assert "\n" in code
+    namespace: dict[str, object] = {}
+    exec(code, {}, namespace)  # noqa: S102
+    assert namespace[output_name] == eval(expression)  # noqa: S307
+
+
+@pytest.mark.parametrize("condition", [True, False])
+def test_display_code_preserves_conditional_callable_after_temp_renaming(
+    condition: bool,
+) -> None:
+    data = xr.DataArray(np.arange(6.0).reshape(2, 3), dims=("x", "y"))
+    active_name = "conditional_result_with_long_name"
+    inputs = []
+    for name, source_name in (("left", "source_left"), ("right", "source_right")):
+        input_spec = script(
+            ScriptCodeOperation(
+                label="Create array",
+                code=(
+                    f"{active_name} = (xr.zeros_like if {condition!r} "
+                    f"else xr.ones_like)({source_name}, dtype='float64')"
+                ),
+                copyable=True,
+            ),
+            start_label="Create array",
+            active_name=active_name,
+            script_inputs=(ScriptInput(name=source_name),),
+        )
+        inputs.append(
+            ScriptInput(name=name, provenance_spec=input_spec.model_dump(mode="json"))
+        )
+    spec = script(
+        ScriptCodeOperation(
+            label="Add arrays", code="result = left + right", copyable=True
+        ),
+        start_label="Add arrays",
+        active_name="result",
+        script_inputs=inputs,
+    )
+
+    namespace = _exec_generated_code(
+        spec.display_code(), {"source_left": data, "source_right": data, "xr": xr}
+    )
+    expected = 2.0 * (xr.zeros_like(data) if condition else xr.ones_like(data))
+    xr.testing.assert_identical(namespace["result"], expected)
+
+
 def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
     operations = stamp_operation_group(
         (
@@ -1390,6 +1452,77 @@ def test_external_input_bypasses_trust_required_recorded_fallback() -> None:
             authorize=_authorize_execution,
         ),
         data,
+    )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        TransposeOperation(dims=("y", "x")),
+        NormalizeOperation(dims=("y",), mode="minmax"),
+        SelectCoordOperation(coord_name="x"),
+    ],
+)
+def test_operation_replay_code_preserves_input_expression_grouping(
+    operation: ToolProvenanceOperation,
+) -> None:
+    left = xr.DataArray(
+        np.arange(1.0, 7.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1, 2]},
+    )
+    right = left * 2.0
+    namespace = _exec_generated_code(
+        operation.replay_code("left - right", output_name="result"),
+        {"left": left, "right": right},
+    )
+    xr.testing.assert_identical(namespace["result"], operation.apply(left - right))
+
+
+def test_operation_statement_replay_preserves_input_expression_grouping() -> None:
+    left = _base_data()
+    right = left * 2.0
+    original = left.copy(deep=True)
+    operation = KspaceWorkFunctionOperation(work_function=4.2)
+    namespace = _exec_generated_code(
+        operation.replay_code("left if use_left else right", output_name="result"),
+        {"left": left, "right": right, "use_left": True},
+    )
+    xr.testing.assert_identical(namespace["result"], operation.apply(original))
+    xr.testing.assert_identical(left, original)
+
+
+@pytest.mark.parametrize("chained", [False, True])
+def test_operation_code_preserves_source_expression_grouping(chained: bool) -> None:
+    data = _base_data()
+    operation = SortCoordOrderOperation()
+    if chained:
+        expression = operations_expression_code(
+            (operation,), "data", source_name="-data"
+        )
+        code = f"result = {expression}"
+    else:
+        code = operation.replay_code("data", output_name="result", source_name="-data")
+    namespace = _exec_generated_code(code, {"data": data, "erlab": erlab})
+    xr.testing.assert_identical(
+        namespace["result"], operation._apply_schema_v2(data, parent_data=-data)
+    )
+
+
+def test_operation_replay_code_preserves_bound_expression_grouping() -> None:
+    data = _base_data()
+    shift = xr.DataArray([0.0, 0.1, 0.2], dims="x", coords={"x": data.x})
+    operation = ShiftFromInputOperation(along="y", negate=True)
+    namespace = _exec_generated_code(
+        operation.replay_code(
+            "data",
+            output_name="result",
+            bound_inputs={"shift": "shift + 0.1"},
+        ),
+        {"data": data, "shift": shift, "era": erlab.analysis},
+    )
+    xr.testing.assert_identical(
+        namespace["result"], operation.apply_with_inputs(data, {"shift": shift + 0.1})
     )
 
 
