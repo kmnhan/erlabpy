@@ -18,6 +18,8 @@ loader.
    erpes
    esm
    espresso
+   esqm
+   fesuma
    hers
    i05
    kriss

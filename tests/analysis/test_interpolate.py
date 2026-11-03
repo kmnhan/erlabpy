@@ -1,3 +1,5 @@
+import concurrent.futures
+
 import numpy as np
 import pytest
 import scipy.interpolate
@@ -41,10 +43,11 @@ values_4d = value_func_4d(*np.meshgrid(x, y, z, w, indexing="ij"))
 
 @pytest.mark.parametrize("values", [values_1d, values_2d, values_3d, values_4d])
 @pytest.mark.parametrize("point", [np.array([2.21, 2.67]), np.array([[2.21], [2.67]])])
-def test_interpn_1d(values, point) -> None:
+@pytest.mark.parametrize("serial", [False, True])
+def test_interpn_1d(values, point, serial) -> None:
     points = (x,)
     assert np.allclose(
-        interpn(points, values, point),
+        interpn(points, values, point, serial=serial),
         scipy.interpolate.interpn(
             points, values, point, method="linear", bounds_error=False
         ),
@@ -55,10 +58,11 @@ def test_interpn_1d(values, point) -> None:
 @pytest.mark.parametrize(
     "point", [np.array([2.21, 3.12]), np.array([[2.21, 3.12], [2.67, 3.54]])]
 )
-def test_interpn_2d(values, point) -> None:
+@pytest.mark.parametrize("serial", [False, True])
+def test_interpn_2d(values, point, serial) -> None:
     points = (x, y)
     assert np.allclose(
-        interpn(points, values, point),
+        interpn(points, values, point, serial=serial),
         scipy.interpolate.interpn(
             points, values, point, method="linear", bounds_error=False
         ),
@@ -67,14 +71,43 @@ def test_interpn_2d(values, point) -> None:
 
 @pytest.mark.parametrize("values", [values_3d, values_4d])
 @pytest.mark.parametrize("point", [np.array([[2.21, 3.12, 1.15], [2.67, 3.54, 1.03]])])
-def test_interpn_3d(values, point) -> None:
+@pytest.mark.parametrize("serial", [False, True])
+def test_interpn_3d(values, point, serial) -> None:
     points = (x, y, z)
     assert np.allclose(
-        interpn(points, values, point),
+        interpn(points, values, point, serial=serial),
         scipy.interpolate.interpn(
             points, values, point, method="linear", bounds_error=False
         ),
     )
+
+
+@pytest.mark.parametrize("ndim", [1, 2, 3])
+@pytest.mark.parametrize("execution", ["serial", "worker"])
+def test_interpn_serial_dispatch(ndim, execution, monkeypatch) -> None:
+    points = (x, y, z)[:ndim]
+    values = (values_1d, values_2d, values_3d)[ndim - 1]
+    targets = tuple(np.array([grid[0], grid[-1], -0.1, 0.37]) for grid in points)
+    expected = scipy.interpolate.interpn(
+        points, values, np.stack(targets, axis=-1), bounds_error=False
+    )
+
+    def fail_parallel_kernel(*args, **kwargs):
+        raise AssertionError("Parallel interpolation was used in serial execution")
+
+    monkeypatch.setattr(
+        erlab.analysis.interpolate, f"_interp{ndim}", fail_parallel_kernel
+    )
+    if execution == "worker":
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(interpn, points, values, targets) for _ in range(2)
+            ]
+            for future in futures:
+                np.testing.assert_allclose(future.result(), expected)
+    else:
+        actual = interpn(points, values, targets, serial=True)
+        np.testing.assert_allclose(actual, expected)
 
 
 def test_slice_along_path() -> None:
@@ -228,7 +261,8 @@ def test_fast_interpolator_from_xarray_matches_scipy() -> None:
     np.testing.assert_allclose(interp(points), expected)
 
 
-def test_fast_interpolator_warns_for_uneven_coords() -> None:
+@pytest.mark.parametrize("serial", [False, True])
+def test_fast_interpolator_warns_for_uneven_coords(serial) -> None:
     x = np.array([0.0, 1.0, 3.0])
     y = np.array([0.0, 1.0, 2.0])
     values = value_func_2d(*np.meshgrid(x, y, indexing="ij"))
@@ -238,7 +272,7 @@ def test_fast_interpolator_warns_for_uneven_coords() -> None:
     points = np.array([[0.5, 0.5]])
 
     with pytest.warns(RuntimeWarning, match="falling back to scipy"):
-        res = interp(points)
+        res = interp(points, serial=serial)
 
     scipy_interp = scipy.interpolate.RegularGridInterpolator(
         (x, y), values, bounds_error=False, fill_value=np.nan
