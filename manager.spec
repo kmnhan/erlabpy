@@ -96,6 +96,7 @@ for module_name in (
     "igorwriter",  # Igor file writing
     "xraydb",  # Periodic table and XPS database
     "nexusformat",  # NeXus definitions for LOREA/NXS loading
+    "onnxruntime",  # Native libraries and data for ARPES denoising
 ):
     tmp_ret = collect_all(module_name)
     datas += tmp_ret[0]

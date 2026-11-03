@@ -4,12 +4,24 @@ Various image processing functions including tools for visualizing dispersive fe
 Some filter functions in `scipy.ndimage` and `scipy.signal` are extended to work with
 regularly spaced xarray DataArrays.
 
+.. currentmodule:: erlab.analysis.image
+
+.. rubric:: Modules
+
+.. autosummary::
+   :toctree:
+
+   ml
+
 Notes
 -----
 - For many scipy-based filter functions, the default value of the `mode` argument is
   different from scipy.
 - Many functions in this module has conflicting names with the SciPy functions. It is
   good practice to avoid direct imports.
+- The `ml` submodule contains machine learning methods for image processing. Currently,
+  it only contains a denoising method that uses a pretrained model from Ref.
+  :cite:p:`kim2021denoise`.
 
 """
 
@@ -23,6 +35,7 @@ __all__ = [
     "gradient_magnitude",
     "laplace",
     "minimum_gradient",
+    "ml",
     "ndsavgol",
     "remove_stripe",
     "scaled_laplace",
@@ -34,6 +47,7 @@ import typing
 import warnings
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 
+import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
 import scipy
@@ -43,12 +57,20 @@ from numba import carray, cfunc, types
 
 import erlab
 
+# Keep the existing functions in this module and load ML methods on first access.
+__getattr__, _, _ = _lazy.attach(__name__, submodules={"ml"})
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
 if typing.TYPE_CHECKING:
     import findiff
 
-else:
-    import lazy_loader as _lazy
+    from erlab.analysis.image import ml
 
+else:
     findiff = _lazy.load("findiff")
 
 
