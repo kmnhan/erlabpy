@@ -2775,14 +2775,18 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
                 return owner_window
         return None
 
-    @QtCore.Slot()
-    def open_itool(self) -> None:
+    def _imagetool_data(self) -> xr.DataArray | None:
         if self.data_array is None:
             if self.image is None:
-                return
-            da = xr.DataArray(np.asarray(self.image)).T
-        else:
-            da = self.data_array.T
+                return None
+            return xr.DataArray(np.asarray(self.image)).T
+        return self.data_array.T
+
+    @QtCore.Slot()
+    def open_itool(self) -> None:
+        da = self._imagetool_data()
+        if da is None:
+            return
 
         owner_tool = self._owner_tool_window()
         if owner_tool is not None:

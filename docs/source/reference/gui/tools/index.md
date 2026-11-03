@@ -9,6 +9,7 @@ interfaces. Most can be opened from ImageTool or from Python.
 | --- | --- |
 | {doc}`ktool` | Configure, preview, and apply momentum conversion to ARPES data |
 | {doc}`dtool` | Visualize dispersive data with derivative-based methods |
+| {doc}`dntool` | ML-based denoising |
 | {doc}`goldtool` | Fit Fermi edges in reference spectra and create energy and angle corrections |
 | {doc}`ftool` | Fit one- and two-dimensional data interactively with lmfit models |
 | {doc}`restool` | Fit a resolution-broadened Fermi–Dirac EDC to estimate energy resolution |
@@ -29,6 +30,7 @@ relationship and place its results below the tool. See
 
 ktool
 dtool
+dntool
 goldtool
 ftool
 restool

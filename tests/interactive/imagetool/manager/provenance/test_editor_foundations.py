@@ -51,6 +51,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     BoxcarFilterOperation,
     CoarsenOperation,
+    DenoiseOperation,
     DivideByCoordOperation,
     DropScalarCoordsOperation,
     GaussianFilterOperation,
@@ -943,6 +944,7 @@ def test_file_load_edit_dialog_batch_disabled_without_peers(qtbot) -> None:
             method="diffn",
             kwargs={"coord": "x", "order": 2},
         ),
+        DenoiseOperation(along="x"),
         RemoveMeshOperation(
             first_order_peaks=((1, 1), (1, 2), (1, 0)),
             order=1,

@@ -1,15 +1,4 @@
-"""Denoise angle-energy slices of ARPES data with the bundled ONNX model.
-
-Pipeline for each slice (see ``denoise``):
-
-1. Rebin the input onto the processing grid (``resize``) by area overlap,
-   which preserves total intensity.
-2. Normalize the image so it sums to ``NORMALIZED_TOTAL``.
-3. Run the model, optionally averaging over the eight flips/transposes of the
-   image (test-time augmentation, TTA).
-4. Map the prediction back onto the processing grid, then optionally undo the
-   normalization and rebin to the original grid.
-"""
+"""Denoise angle-energy slices of ARPES data with the bundled ONNX model."""
 
 __all__ = ["denoise"]
 import copy
@@ -423,26 +412,35 @@ def denoise(
 ) -> xr.DataArray:
     """Denoise angle-energy slices of ARPES data.
 
-    The energy dimension is ``"eV"`` and the angular dimension is selected by
-    ``along``. Each slice along the remaining dimensions is denoised independently.
-    For example, data with dimensions ``("alpha", "eV", "beta")`` is processed one
-    ``alpha``-``eV`` slice at each ``beta`` value.
+    The energy dimension is ``"eV"`` and the angular dimension is selected by ``along``.
+    Each slice along the remaining dimensions is denoised independently. For example,
+    data with dimensions ``("alpha", "eV", "beta")`` is processed one ``alpha``-``eV``
+    slice at each ``beta`` value.
 
-    The model receives each slice in ``("eV", along)`` order on the ``resize`` grid.
-    The result keeps the input dimension order. By default each denoised slice is
-    rebinned back onto the input grid and keeps the input coordinates.
+    The model receives each slice in ``("eV", along)`` order on the ``resize`` grid. The
+    result keeps the input dimension order.
+
+    The denoising procedure is as follows:
+
+    1. Rebin the input onto the processing grid (``resize``) by area overlap, which
+       preserves total intensity.
+    2. Normalize the image so it sums to ``NORMALIZED_TOTAL``.
+    3. Run the model, optionally averaging over the eight flips/transposes of the image
+       (test-time augmentation, TTA).
+    4. Map the prediction back onto the processing grid, then optionally undo the
+       normalization and rebin to the original grid.
 
     Parameters
     ----------
     data : xarray.DataArray
-        Floating-point data containing ``"eV"`` and ``along`` dimensions. Values must
-        be finite, and each slice must have a positive total intensity. Numeric
-        coordinates on the two selected dimensions must be uniformly spaced;
-        non-numeric ones are allowed only on axes that are not resized. Coordinates
-        on other dimensions are kept unchanged. Dask-backed arrays stay lazy. Each
-        selected dimension must be contained in one chunk; other dimensions can be
-        split across chunks. For example, use
-        ``data.chunk({"eV": -1, "alpha": -1, "beta": 1})`` for one slice per chunk.
+        Floating-point data containing ``"eV"`` and ``along`` dimensions. Values must be
+        finite, and each slice must have a positive total intensity. Numeric coordinates
+        on the two selected dimensions must be uniformly spaced; non-numeric ones are
+        allowed only on axes that are not resized. Coordinates on other dimensions are
+        kept unchanged. Dask-backed arrays stay lazy. Each selected dimension must be
+        contained in one chunk; other dimensions can be split across chunks. For
+        example, use ``data.chunk({"eV": -1, "alpha": -1, "beta": 1})`` for one slice
+        per chunk.
     resize : int or (int, int), default (300, 300)
         Processing grid as ``(energy_pixels, along_pixels)``, independent of the input
         dimension order. An int means a square grid.
@@ -456,18 +454,19 @@ def denoise(
         Average predictions over the eight flips/transposes of the image. ``False`` runs
         a single forward pass.
     restore_scale
-        Undo each slice's normalization. This rescales by that slice's input total
-        but does not force its output total to equal it.
+        Undo each slice's normalization. This rescales by that slice's input total but
+        does not force its output total to equal it.
     restore_size
         Rebin each slice to its original grid by area sums and reuse the original
-        coordinates (including auxiliary ones). The predicted total is kept, so
-        pixel values scale with the change in pixel area. This does not recover
-        detail lost at ``resize``. If ``False``, only ``"eV"`` and ``along`` are
-        resized, with coordinates resampled over the same pixel-edge extent.
+        coordinates (including auxiliary ones). The predicted total is kept, so pixel
+        values scale with the change in pixel area. This does not recover detail lost at
+        ``resize``. If ``False``, only ``"eV"`` and ``along`` are resized, with
+        coordinates resampled over the same pixel-edge extent.
     num_threads
-        ONNX Runtime intra-op thread count for unchunked data. The default, ``0``,
-        lets ONNX Runtime choose the thread count. Chunked data always uses one
-        ONNX thread to avoid nested parallelism.
+        ONNX Runtime intra-op thread count for unchunked data. The default, ``0``, lets
+        ONNX Runtime choose the thread count. This parameter is ignored for chunked
+        input since chunked data always uses one thread to avoid nested parallelism with
+        Dask.
 
     Returns
     -------
@@ -479,12 +478,11 @@ def denoise(
 
     Notes
     -----
-    This function uses the pretrained denoising model from Ref.
-    :cite:p:`kim2021denoise`. Install ``erlab[ml]`` to enable ONNX Runtime inference.
+    This function uses the pretrained denoising model from :cite:t:`kim2021denoise`.
 
-    ONNX sessions are cached within each process by model path, modification time,
-    file size and thread count. For chunked input, intensity validation and model
-    loading occur when the result is computed.
+    ONNX sessions are cached within each process by model path, modification time, file
+    size and thread count. For chunked input, intensity validation and model loading
+    occur when the result is computed.
     """
     if not isinstance(data, xr.DataArray):
         raise TypeError("data must be an xarray.DataArray.")

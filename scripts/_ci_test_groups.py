@@ -179,6 +179,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/test_bzplot.py",
         "tests/interactive/test_dask.py",
         "tests/interactive/test_derivative.py",
+        "tests/interactive/test_denoise.py",
         "tests/interactive/test_explorer.py",
         "tests/interactive/test_fastbinning.py",
         "tests/interactive/test_fermiedge.py",
