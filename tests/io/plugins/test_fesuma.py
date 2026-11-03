@@ -254,13 +254,14 @@ def test_preserves_sweeps_and_intensity(tmp_path):
     assert "frame_group" not in loaded.coords
 
 
-def test_partial_scan_does_not_stretch_energy(tmp_path):
+@pytest.mark.parametrize("chunks", [None, {}, {"eV": 2}])
+def test_partial_scan_uses_recorded_energy_axis(tmp_path, chunks):
     images = _images(4)
     path = _write_fesuma(tmp_path / "Data_00000.h5", images, expected_steps=8)
-    loaded = _load(path)
+    loaded = _load(path, chunks=chunks)
 
-    assert loaded.dims == ("frame", "detector_x", "detector_y")
-    assert loaded.eV.dims == ("frame",)
+    assert loaded.dims == ("eV", "detector_x", "detector_y")
+    assert loaded.eV.dims == ("eV",)
     np.testing.assert_array_equal(loaded.eV, [10, 10.5, 11, 11.5])
     np.testing.assert_array_equal(loaded.values, images)
     assert "step" not in loaded.coords

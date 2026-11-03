@@ -176,9 +176,6 @@ class FeSuMaLoader(LoaderBase):
             }
             if len(chunk_sizes) != len(chunks):
                 raise ValueError("Duplicate FeSuMa chunk dimensions")
-            unknown_dims = set(chunk_sizes) - set(darr.dims)
-            if unknown_dims:
-                raise ValueError(f"Unknown FeSuMa chunk dimensions: {unknown_dims}")
             darr = darr.chunk(chunk_sizes)
         return darr
 
@@ -422,18 +419,14 @@ class FeSuMaLoader(LoaderBase):
             nsteps = int(np.count_nonzero(sweep_values == unique_sweeps[0]))
             regular = False
             if attrs["AcquisitionCoordinate"] == "EKIN":
-                start, stop, delta = (
-                    float(attrs["AcquisitionEkin" + key])
-                    for key in ("Start", "Stop", "Step")
+                start, delta = (
+                    float(attrs["AcquisitionEkin" + key]) for key in ("Start", "Step")
                 )
                 energy_values = start + delta * step_values
-                expected = int(abs((stop - start) / delta))
-                regular = (
-                    expected == nsteps
-                    and np.array_equal(sweep_values, np.repeat(unique_sweeps, nsteps))
-                    and np.array_equal(
-                        step_values, np.tile(np.arange(nsteps), len(unique_sweeps))
-                    )
+                regular = np.array_equal(
+                    sweep_values, np.repeat(unique_sweeps, nsteps)
+                ) and np.array_equal(
+                    step_values, np.tile(np.arange(nsteps), len(unique_sweeps))
                 )
             if regular:
                 if len(unique_sweeps) == 1:
