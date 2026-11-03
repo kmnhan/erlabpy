@@ -1419,6 +1419,26 @@ def test_workspace_unchanged_generation_keeps_existing_legacy_links(tmp_path) ->
         assert path.read_bytes() == before
 
 
+def test_workspace_missing_legacy_link_candidate_writes_snapshot_data(tmp_path) -> None:
+    path = tmp_path / "missing-legacy-link.itws"
+    dataset = xr.Dataset({"data": (("x", "y"), np.arange(6.0).reshape(2, 3))})
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_save_as_seed_manifest("new"),
+        objects=(workspace_storage._WorkspaceObjectWrite("new", dataset=dataset),),
+        legacy_object_links=(("/missing", "new"),),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+        with store.read_session() as h5_file:
+            np.testing.assert_array_equal(
+                h5_file[store.object_path("new")]["data"][()],
+                dataset["data"].values,
+            )
+
+
 def test_workspace_unchanged_generation_assigns_missing_identity(tmp_path) -> None:
     path = tmp_path / "missing-identity.itws"
     manifest = _save_as_seed_manifest()

@@ -493,6 +493,9 @@ def _write_workspace_generation(
                     # must be repaired even when its older fallback is identical.
                     saved = target_store._read_manifest(group)
                     if group["manifest"].asstr()[()] == text:
+                        target_store.rebind_legacy_readers(
+                            dict(plan.legacy_reader_rebindings)
+                        )
                         return workspace_store._WorkspaceGeneration(
                             int(max(names)), saved
                         )
@@ -514,10 +517,11 @@ def _write_workspace_generation(
         try:
             with target_store.lock:
                 target_store.require_current_path()
-            legacy_object_links = {
-                object_id: legacy_path
-                for legacy_path, object_id in plan.legacy_object_links
-            }
+                legacy_object_links = {
+                    object_id: legacy_path
+                    for legacy_path, object_id in plan.legacy_object_links
+                    if legacy_path.strip("/") in target_store.h5_file
+                }
             legacy_reader_rebindings = dict(plan.legacy_reader_rebindings)
             for item in plan.preserved_groups:
                 if item.target_path in legacy_reader_rebindings:
@@ -594,7 +598,8 @@ def _write_workspace_generation(
                     target_path=item.target_path,
                 ):
                     created_legacy_links.append(item.target_path)
-            return target_store.publish(plan.manifest)
+            committed = target_store.publish(plan.manifest)
+            target_store.rebind_legacy_readers(dict(plan.legacy_reader_rebindings))
         except Exception:
             with contextlib.suppress(Exception), target_store.lock:
                 for group_path in created_legacy_links:
@@ -615,6 +620,8 @@ def _write_workspace_generation(
                         )
                 target_store.h5_file.flush()
             raise
+        else:
+            return committed
 
 
 def _read_workspace_blob(

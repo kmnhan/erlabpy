@@ -282,8 +282,9 @@ class _PendingWorkspacePayloads:
         )
         return node._finalize_script_input_data(data)
 
+    @classmethod
     def _workspace_imagetool_source_data_from_payload(
-        self,
+        cls,
         opened: xr.Dataset,
         *,
         attrs: Mapping[typing.Any, typing.Any] | None,
@@ -296,13 +297,15 @@ class _PendingWorkspacePayloads:
         ds = _serialization.restore_private_coords(
             ds, _persistence_constants.ITOOL_DATA_NAME
         )
-        data = self._loader._workspace_imagetool_payload_data(ds).rename(name)
+        if _persistence_constants.ITOOL_DATA_NAME not in ds:
+            raise ValueError("Pending workspace payload has no ImageTool data")
+        data = ds[_persistence_constants.ITOOL_DATA_NAME].rename(name)
         if attrs is None:
             attrs = ds.attrs
         data = _serialization.restore_legacy_nonuniform_data(
             data, str(attrs.get("erlab_version", "0.0.0"))
         )
-        data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
+        data = cls._pending_workspace_data_with_saved_dim_order(data, attrs)
         if data_role == "displayed":
             raw_state = attrs.get("itool_state")
             if isinstance(raw_state, bytes):
@@ -317,7 +320,7 @@ class _PendingWorkspacePayloads:
                     )
                 else:
                     if isinstance(state, collections.abc.Mapping):
-                        data = self._apply_pending_workspace_filter(
+                        data = cls._apply_pending_workspace_filter(
                             data, state.get("filter_operation")
                         )
         if source_input_ndim == 1:

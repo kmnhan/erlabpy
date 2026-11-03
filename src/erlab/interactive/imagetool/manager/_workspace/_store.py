@@ -992,6 +992,8 @@ class WorkspaceStore:
     def rebind_legacy_readers(
         self,
         legacy_reader_rebindings: Mapping[str, str],
+        *,
+        validate: bool = True,
     ) -> None:
         """Retarget unchanged legacy readers to immutable payload objects.
 
@@ -1007,17 +1009,15 @@ class WorkspaceStore:
                 (reader, legacy_reader_rebindings.get(reader.legacy_group_path))
                 for reader in readers
             )
-            object_ids = {
-                object_id for _reader, object_id in rebindings if object_id is not None
-            }
-            with self.read_session() as h5_file:
-                missing = [
-                    object_id
-                    for object_id in object_ids
-                    if self.object_path(object_id).strip("/") not in h5_file
-                ]
-            if missing:
-                raise KeyError(f"Workspace object {missing[0]!r} is missing")
+            if validate:
+                with self.read_session() as h5_file:
+                    missing = [
+                        object_id
+                        for object_id in set(legacy_reader_rebindings.values())
+                        if self.object_path(object_id).strip("/") not in h5_file
+                    ]
+                if missing:
+                    raise KeyError(f"Workspace object {missing[0]!r} is missing")
             for reader, object_id in rebindings:
                 if object_id is not None:
                     reader._rebind_legacy_group_to_object(object_id)
@@ -1170,14 +1170,22 @@ class WorkspaceStore:
                         self._serialized_legacy_group_pins.pop(key, None)
 
     @property
-    def leased_legacy_group_paths(self) -> frozenset[str]:
-        """Return old-format payload groups that still have lazy readers."""
-        with self.read_session() as h5_file:
-            paths = {
+    def leased_legacy_group_candidates(self) -> frozenset[str]:
+        """Return legacy reader paths without inspecting the workspace file."""
+        with self._lock:
+            return frozenset(
                 path
                 for reader in self._readers
                 if (path := reader.legacy_group_path) not in {None, "/"}
-            }
+            )
+
+    @property
+    def leased_legacy_group_paths(self) -> frozenset[str]:
+        """Return old-format payload groups that still have lazy readers."""
+        paths = self.leased_legacy_group_candidates
+        if not paths:
+            return frozenset()
+        with self.read_session() as h5_file:
             return frozenset(
                 path
                 for path in paths

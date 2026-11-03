@@ -319,6 +319,8 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     dirty_generation: int
     dirty_events: tuple[_WorkspaceDirtyEvent, ...]
     schema_version: int
+    saved_manifest: dict[str, typing.Any] | None
+    saved_extension_object_ids: frozenset[str]
     save_as_only: bool
     degraded_reasons: tuple[str, ...]
     extension_scripts: _WorkspaceScriptState
@@ -350,6 +352,8 @@ class _ManagerWorkspaceState:
         self.dirty_events: list[_WorkspaceDirtyEvent] = []
         self.save_in_progress: bool = False
         self.schema_version: int = _current_workspace_schema_version()
+        self.saved_manifest: dict[str, typing.Any] | None = None
+        self.saved_extension_object_ids: frozenset[str] = frozenset()
         self.code_trust = new_document_trust()
         self.access: _WorkspaceDocumentAccess | None = None
         self.closing_document: bool = False
@@ -496,6 +500,8 @@ class _ManagerWorkspaceState:
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "schema_version": self.schema_version,
+            "saved_manifest": copy.deepcopy(self.saved_manifest),
+            "saved_extension_object_ids": self.saved_extension_object_ids,
             "save_as_only": self.save_as_only,
             "degraded_reasons": self.degraded_reasons,
             "extension_scripts": self.extension_scripts.copy(),
@@ -521,6 +527,8 @@ class _ManagerWorkspaceState:
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.schema_version = snapshot["schema_version"]
+        self.saved_manifest = copy.deepcopy(snapshot["saved_manifest"])
+        self.saved_extension_object_ids = snapshot["saved_extension_object_ids"]
         self.save_as_only = snapshot["save_as_only"]
         self.degraded_reasons = snapshot["degraded_reasons"]
         self.extension_scripts.replace(snapshot["extension_scripts"])

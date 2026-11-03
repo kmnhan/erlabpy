@@ -4252,6 +4252,43 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         assert not loaded.data_file_backed
         np.testing.assert_array_equal(loaded._data.values, data.values)
 
+        controller = manager._workspace_controller
+        store = controller._workspace_store
+        assert store is not None
+        saved = store.current_generation().manifest
+        assert manager._workspace_state.saved_manifest == saved
+        assert manager._workspace_state.saved_extension_object_ids == frozenset()
+
+        def _unexpected_metadata_read(*args, **kwargs):
+            pytest.fail("save preparation must use the loaded metadata cache")
+
+        monkeypatch.setattr(store, "current_generation", _unexpected_metadata_read)
+        monkeypatch.setattr(
+            workspace_arrays,
+            "_read_workspace_root_attrs_h5py",
+            _unexpected_metadata_read,
+        )
+        monkeypatch.setattr(
+            workspace_storage,
+            "_existing_workspace_object_ids",
+            _unexpected_metadata_read,
+        )
+        snapshot = controller.saving._workspace_save_snapshot(fname)
+        try:
+            object_id = saved["nodes"][0]["payload_object_id"]
+            assert (
+                snapshot.generation_plan.manifest["nodes"][0]["payload_object_id"]
+                == object_id
+            )
+            reused = next(
+                item
+                for item in snapshot.generation_plan.objects
+                if item.object_id == object_id
+            )
+            assert reused.dataset is None
+        finally:
+            snapshot.close()
+
 
 @pytest.mark.parametrize(
     "attrs_mode", ["missing", "empty", "invalid", "hidden", "visible"]

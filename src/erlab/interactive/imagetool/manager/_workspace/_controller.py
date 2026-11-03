@@ -158,6 +158,7 @@ class _WorkspaceController:
             workspace_saving._WorkspaceGcResultReceiver | None
         ) = None
         self._workspace_gc_requested = False
+        self._workspace_save_after_gc: Callable[[], None] | None = None
         self._code_trust_manifest_binding_depth = 0
         self._code_trust_manifest_binding_pending = False
         self._local_provenance_changes: (
@@ -1283,8 +1284,11 @@ class _WorkspaceController:
     def _workspace_document_access(
         self, fname: str | os.PathLike[str]
     ) -> _WorkspaceDocumentAccess:
-        workspace_path = pathlib.Path(fname).resolve()
+        workspace_path = pathlib.Path(fname)
         ownership = self._workspace_sources.get(workspace_path)
+        if ownership is None:
+            workspace_path = workspace_path.resolve()
+            ownership = self._workspace_sources.get(workspace_path)
         if ownership is None:
             ownership = _WorkspaceDocumentLock(
                 workspace_storage._acquire_workspace_document_lock(workspace_path)
@@ -1332,6 +1336,8 @@ class _WorkspaceController:
         )
         self._workspace_store = store
         self._manager._workspace_state.path = workspace_path
+        self._manager._workspace_state.saved_manifest = None
+        self._manager._workspace_state.saved_extension_object_ids = frozenset()
         self._manager._workspace_state.advance_document_identity()
         if old_workspace_path is not None and workspace_path is not None:
             self._repoint_pending_workspace_payloads(old_workspace_path, workspace_path)
@@ -1398,6 +1404,14 @@ class _WorkspaceController:
         manifest: Mapping[str, typing.Any],
     ) -> None:
         """Apply one committed generation to live manager references."""
+        self.saving._adopt_figure_repair_cache(snapshot)
+        state = self._manager._workspace_state
+        if pathlib.Path(workspace_path) == state.path:
+            state.saved_manifest = copy.deepcopy(dict(manifest))
+            state.saved_extension_object_ids = (
+                workspace_store.WorkspaceStore.manifest_extension_object_ids(manifest)
+                & {item.object_id for item in snapshot.generation_plan.objects}
+            )
         workspace_revisions.bind_saved_revision_sources(
             self._manager._provenance_revisions,
             manifest,
@@ -1407,8 +1421,11 @@ class _WorkspaceController:
         self._commit_saved_tool_data_references(snapshot)
         store = self._workspace_store
         if store is not None and not store.closed:
+            # The writer validated these objects before reporting success. Save
+            # As can transfer a different store's live readers to this path.
             store.rebind_legacy_readers(
-                dict(snapshot.generation_plan.legacy_reader_rebindings)
+                dict(snapshot.generation_plan.legacy_reader_rebindings),
+                validate=False,
             )
         self._repoint_saved_pending_workspace_payloads(
             workspace_path,
@@ -2562,7 +2579,9 @@ class _WorkspaceController:
                 on_start_error()
             return False
 
-        target_path = pathlib.Path(fname).resolve()
+        target_path = pathlib.Path(fname)
+        if target_path != self._manager._workspace_state.path:
+            target_path = target_path.resolve()
         store = (
             self._workspace_store
             if self._workspace_store is not None
@@ -2608,7 +2627,7 @@ class _WorkspaceController:
         receiver = workspace_saving._WorkspaceSaveResultReceiver(
             callback=_finish,
             waiting_callback=lambda: self._manager._status_bar.showMessage(
-                "Waiting for active workspace computations..."
+                "Waiting for workspace file access..."
             ),
             parent=self._manager,
         )
@@ -2669,6 +2688,8 @@ class _WorkspaceController:
             self._workspace_gc_worker = None
             if receiver is not None:
                 receiver.deleteLater()
+            resume_save = self._workspace_save_after_gc
+            self._workspace_save_after_gc = None
             if error is not None:
                 logger.warning(
                     "Workspace cleanup failed:\n%s",
@@ -2676,12 +2697,13 @@ class _WorkspaceController:
                     extra={"suppress_ui_alert": True},
                 )
                 self._workspace_gc_requested = False
-                return
-            if self._manager._workspace_state.document_id != document_id:
+            elif self._manager._workspace_state.document_id != document_id:
                 self._workspace_gc_requested = False
-                return
-            self._workspace_gc_requested = more
-            if more:
+            else:
+                self._workspace_gc_requested = more
+            if resume_save is not None:
+                resume_save()
+            elif self._workspace_gc_requested:
                 QtCore.QTimer.singleShot(0, self._start_workspace_gc)
 
         receiver = workspace_saving._WorkspaceGcResultReceiver(
@@ -2882,6 +2904,31 @@ class _WorkspaceController:
             self._manager._status_bar.showMessage("Workspace save queued", 3000)
             return False
 
+        if self._workspace_gc_worker is not None:
+            # Cleanup can be inside a slow filesystem call while it owns the
+            # store lock. Resume from its result instead of blocking the GUI
+            # while snapshot preparation acquires reader leases.
+            self._manager._workspace_state.save_in_progress = True
+            self._manager._status_bar.showMessage("Saving workspace...")
+            self._manager._update_actions()
+            pending_document_id = self._manager._workspace_state.document_id
+
+            def _resume_save() -> None:
+                self._manager._workspace_state.save_in_progress = False
+                self._manager._update_actions()
+                if self._manager._workspace_state.document_id != pending_document_id:
+                    if on_finished is not None:
+                        on_finished(False)
+                    return
+                self.save(
+                    native=native,
+                    on_finished=on_finished,
+                    restore_focus=restore_focus,
+                )
+
+            self._workspace_save_after_gc = _resume_save
+            return True
+
         origin = self._active_managed_window()
         document_id = self._manager._workspace_state.document_id
         imported_backing_snapshot = self._imported_workspace_backing_snapshot()
@@ -3009,6 +3056,7 @@ class _WorkspaceController:
                 snapshot = self.saving._workspace_generation_save_snapshot(
                     generation,
                     fname=worker_path,
+                    defer_figure_repairs=True,
                 )
                 # Successful Save As adopts this directory with the new path.
                 snapshot.generation_plan.manifest["loader_state"][

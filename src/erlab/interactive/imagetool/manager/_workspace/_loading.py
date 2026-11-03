@@ -2694,6 +2694,9 @@ class _WorkspaceLoader:
         self,
         fname: str | os.PathLike[str],
     ) -> Mapping[str, typing.Any] | None:
+        state = self._manager._workspace_state
+        if state.saved_manifest is not None and pathlib.Path(fname) == state.path:
+            return state.saved_manifest
         manifest = None
         store = getattr(self._controller, "_workspace_store", None)
         if (
@@ -2855,6 +2858,33 @@ class _WorkspaceLoader:
         schema_version = 1
         nodes_before_load = frozenset(self._manager._tool_graph.nodes)
 
+        def _remember_associated_metadata(
+            path: pathlib.Path, manifest: Mapping[str, typing.Any] | None
+        ) -> None:
+            state = self._manager._workspace_state
+            if state.path is None:
+                return
+            if state.path != path or state.schema_version != schema_version:
+                # Legacy association can publish a converted document at another
+                # path. Cache that committed manifest, not the original one.
+                store = self._controller._workspace_store
+                if store is None:
+                    return
+                manifest = store.current_generation().manifest
+            state.saved_manifest = (
+                None if manifest is None else copy.deepcopy(dict(manifest))
+            )
+            state.saved_extension_object_ids = (
+                frozenset()
+                if manifest is None
+                else workspace_storage._existing_workspace_object_ids(
+                    state.path,
+                    workspace_store.WorkspaceStore.manifest_extension_object_ids(
+                        manifest
+                    ),
+                )
+            )
+
         def _retain_imported_source(
             access: _WorkspaceDocumentAccess, loaded: bool
         ) -> bool:
@@ -2950,6 +2980,7 @@ class _WorkspaceLoader:
                                     workspace_access=access,
                                     rebind_data=False,
                                 )
+                                _remember_associated_metadata(access.path, manifest)
                                 store_adopted = (
                                     self._controller._workspace_store is load_store
                                 )
@@ -3024,6 +3055,7 @@ class _WorkspaceLoader:
                             native=native,
                             workspace_access=access,
                         )
+                        _remember_associated_metadata(access.path, manifest)
                         fallback_store_adopted = (
                             self._controller._workspace_store is fallback_store
                         )
