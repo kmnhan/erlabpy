@@ -4,6 +4,8 @@ import json
 import logging
 import pathlib
 import shutil
+import subprocess
+import sys
 import types
 import typing
 import weakref
@@ -72,6 +74,38 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _WorkspaceSweepToolState,
     add_source_childtool,
 )
+
+
+@pytest.mark.parametrize("associate", [True, False])
+def test_workspace_open_with_stale_write_flag_leaves_file_unchanged(
+    tmp_path, manager_context, associate
+):
+    path = tmp_path / "interrupted.itws"
+    script = """
+import h5py, os, sys
+f = h5py.File(sys.argv[1], 'w', libver='latest')
+f.attrs['is_itool_workspace'] = 1
+f.create_dataset('values', data=[[1, 2, 3], [4, 5, 6]])
+f.flush()
+os._exit(0)
+"""
+    subprocess.run([sys.executable, "-c", script, str(path)], check=True)
+    original = path.read_bytes()
+
+    with manager_context() as manager:
+        with pytest.raises(OSError, match="file consistency flags"):
+            manager._workspace_controller.loading._load_workspace_file(
+                path,
+                replace=associate,
+                associate=associate,
+                mark_dirty=not associate,
+                select=False,
+            )
+        assert not manager._tool_graph.nodes
+        assert manager._workspace_state.path is None
+
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob("*.itws")) == [path]
 
 
 class _ManagedInputAuthorityTool(_AddedTimeChildTool):

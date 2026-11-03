@@ -1033,13 +1033,24 @@ def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
         current = current.__cause__ or current.__context__
 
 
+def _is_workspace_hdf5_consistency_error(exc: BaseException) -> bool:
+    # h5py exposes this HDF5 diagnostic as OSError without a distinct errno.
+    return any(
+        isinstance(err, OSError) and "file consistency flags" in str(err).lower()
+        for err in _iter_exception_chain(exc)
+    )
+
+
 def _is_workspace_file_lock_error(exc: BaseException) -> bool:
     lock_errnos = {errno.EACCES, errno.EAGAIN}
     if hasattr(errno, "EWOULDBLOCK"):
         lock_errnos.add(errno.EWOULDBLOCK)
 
     for err in _iter_exception_chain(exc):
-        if isinstance(err, BlockingIOError):
+        if isinstance(err, BlockingIOError) or getattr(err, "winerror", None) in {
+            32,
+            33,
+        }:
             return True
         message = str(err).lower()
         if not any(
@@ -1047,14 +1058,14 @@ def _is_workspace_file_lock_error(exc: BaseException) -> bool:
             for marker in (
                 "unable to lock file",
                 "resource temporarily unavailable",
-                "file is already open",
+                "file is already open for read-only",
             )
         ):
             continue
         err_no = getattr(err, "errno", None)
         if err_no in lock_errnos or "unable to lock file" in message:
             return True
-        if "file is already open" in message:
+        if "file is already open for read-only" in message:
             return True
     return False
 
