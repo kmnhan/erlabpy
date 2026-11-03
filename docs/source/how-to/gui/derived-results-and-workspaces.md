@@ -131,6 +131,35 @@ another workspace must be added without replacing the current session.
 Watched notebook rows reopen disconnected. Recreate their variables and follow
 {ref}`imagetool-manager-reconnect-watches` to reconnect them.
 
+(imagetool-manager-workspace-recovery)=
+
+### Opening a workspace after an interrupted write
+
+After a crash or forced quit, a workspace can retain a marker that says a write is
+in progress. The file may also be incomplete or damaged. Manager does not clear
+this marker automatically.
+
+The [HDF5 `h5clear` utility](https://support.hdfgroup.org/documentation/hdf5/latest/_h5_t_o_o_l__c_r__u_g.html)
+can clear this marker so you can inspect the file. HDF5 is the file format used by
+`.itws` workspaces. `h5clear` does not repair damaged data or restore unsaved changes.
+
+1. Close all applications that may have the workspace open.
+2. Duplicate the workspace and keep the original unchanged. Use a distinct name,
+   such as `workspace-copy.itws`, for the copy.
+3. If `h5clear` is not available, install the HDF5 tools from the
+   [HDF Group download page](https://www.hdfgroup.org/download-hdf5/).
+   On macOS, if you already use Homebrew, you can instead install its
+   [HDF5 package](https://formulae.brew.sh/formula/hdf5) with `brew install hdf5`.
+4. Open a terminal and use `cd` to enter the folder that contains the copy. Then run
+   the following command, with the name of your copied file:
+
+   ```sh
+   h5clear -s "workspace-copy.itws"
+   ```
+
+5. Open the copied file in Manager and inspect the restored windows and data before
+   continuing work. If it still does not open, restore a known good backup.
+
 (how-to-gui-review-workspace-code)=
 
 ## Reviewing stored workspace code

@@ -31,6 +31,63 @@ from tests.interactive.imagetool.manager.workspace._support import (
 )
 
 
+def test_workspace_write_error_is_not_a_lock_diagnosis():
+    error = OSError(
+        "Unable to open file (file is already open for write "
+        "(may use <h5clear file> to clear file consistency flags))"
+    )
+    assert not workspace_storage._is_workspace_file_lock_error(error)
+    assert not workspace_storage._is_workspace_file_lock_error(
+        OSError("file is already open for write")
+    )
+    assert workspace_storage._is_workspace_file_lock_error(
+        BlockingIOError(errno.EAGAIN, "unable to lock file")
+    )
+    # A real lock conflict after the stale-flag error still indicates contention.
+    blocked = BlockingIOError(errno.EAGAIN, "unable to lock file")
+    blocked.__context__ = error
+    assert workspace_storage._is_workspace_file_lock_error(blocked)
+    windows_blocked = OSError("The process cannot access the file")
+    windows_blocked.winerror = 33
+    windows_blocked.__context__ = error
+    assert workspace_storage._is_workspace_file_lock_error(windows_blocked)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            OSError(
+                "Unable to open file (file is already open for write "
+                "(may use <h5clear file> to clear file consistency flags))"
+            ),
+            True,
+        ),
+        (
+            OSError(
+                "file is already open for write/SWMR write "
+                "(may use <h5clear file> to clear file consistency flags)"
+            ),
+            True,
+        ),
+        (OSError("file is already open for write"), False),
+        (PermissionError(errno.EACCES, "Permission denied"), False),
+        (BlockingIOError(errno.EAGAIN, "unable to lock file"), False),
+        (OSError("bad object header checksum"), False),
+        (RuntimeError("file consistency flags"), False),
+    ],
+)
+def test_workspace_hdf5_consistency_error_detection(error, expected):
+    assert workspace_storage._is_workspace_hdf5_consistency_error(error) is expected
+
+
+@pytest.mark.parametrize("chain_attribute", ["__cause__", "__context__"])
+def test_workspace_hdf5_consistency_error_detection_follows_chain(chain_attribute):
+    error = RuntimeError("Cannot open workspace")
+    setattr(error, chain_attribute, OSError("file consistency flags"))
+    assert workspace_storage._is_workspace_hdf5_consistency_error(error)
+
+
 def _read_transaction_test_value(fname: pathlib.Path) -> float:
     opened = workspace_arrays.open_workspace_datatree(fname, chunks=None)
     try:
@@ -789,8 +846,11 @@ def test_workspace_document_access_releases_lock(tmp_path) -> None:
 def test_workspace_lock_error_detection_message_variants() -> None:
     transient = OSError(errno.EACCES, "resource temporarily unavailable")
     assert workspace_storage._is_workspace_file_lock_error(transient)
-    assert workspace_storage._is_workspace_file_lock_error(
+    assert not workspace_storage._is_workspace_file_lock_error(
         RuntimeError("file is already open by another process")
+    )
+    assert workspace_storage._is_workspace_file_lock_error(
+        RuntimeError("file is already open for read-only")
     )
     assert workspace_storage._is_workspace_file_lock_error(
         RuntimeError("unable to lock file")

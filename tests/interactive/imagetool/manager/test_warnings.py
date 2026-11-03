@@ -788,9 +788,14 @@ def test_open_multiple_files_dropped_itws_error_does_not_fall_through_to_loaders
     assert "cannot read workspace" in critical_calls[0][1]["detailed_text"]
 
 
+@pytest.mark.parametrize(
+    "probe_error",
+    [RuntimeError("not a workspace"), OSError("file consistency flags")],
+)
 def test_open_multiple_files_h5_workspace_probe_failure_falls_back_to_loaders(
     monkeypatch,
     tmp_path,
+    probe_error,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -801,7 +806,7 @@ def test_open_multiple_files_h5_workspace_probe_failure_falls_back_to_loaders(
     fname.write_bytes(b"not a workspace")
 
     def _raise_open_datatree(*args, **kwargs):
-        raise RuntimeError("not a workspace")
+        raise probe_error
 
     def _fake_file_loaders(paths):
         file_loader_calls.append(list(paths))
@@ -1164,3 +1169,92 @@ def test_uncaught_exception_alert(
         assert detailed_text is not None
         assert "boom" in detailed_text
         assert "RuntimeError" in detailed_text
+
+
+@pytest.mark.parametrize("route", ["open", "import", "ingress"])
+def test_workspace_consistency_error_shows_recovery_steps_once(
+    monkeypatch, tmp_path, manager_context, route
+) -> None:
+    source = tmp_path / "interrupted.itws"
+    critical_calls: list[tuple[typing.Any, ...]] = []
+
+    def _raise_consistency_error(*args, **kwargs):
+        raise OSError(
+            "Unable to open file (file is already open for write "
+            "(may use <h5clear file> to clear file consistency flags))"
+        )
+
+    def _critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog, "critical", staticmethod(_critical)
+    )
+    monkeypatch.setattr(
+        workspace_arrays, "open_workspace_datatree", _raise_consistency_error
+    )
+    monkeypatch.setattr(
+        workspace_controller,
+        "_show_workspace_file_lock_error",
+        lambda *args: pytest.fail("Consistency flags were treated as a live lock"),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *args: pytest.fail("Workspace error fell through to data loaders"),
+    )
+    monkeypatch.setattr(QtWidgets.QFileDialog, "exec", lambda self: True)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog, "selectedFiles", lambda self: [str(source)]
+    )
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        monkeypatch.setattr(
+            controller.loading, "_load_workspace_file", _raise_consistency_error
+        )
+        if route == "open":
+            assert not controller._load_workspace_path(source, native=False)
+        elif route == "import":
+            assert not manager.import_workspace(native=False)
+        else:
+            manager._data_ingress.open_multiple_files([source], try_workspace=True)
+        QtWidgets.QApplication.processEvents()
+        assert manager._alert_dialogs == []
+
+    assert len(critical_calls) == 1
+    args, kwargs = critical_calls[0]
+    message = "\n".join((*args[1:], kwargs["detailed_text"]))
+    command = 'h5clear -s "workspace-copy.itws"'
+    assert command in message
+    assert message.lower().index("copy") < message.index(command)
+    assert "file consistency flags" in kwargs["detailed_text"]
+
+
+def test_workspace_live_lock_takes_precedence_over_consistency_error(
+    monkeypatch, tmp_path, manager_context
+) -> None:
+    source = tmp_path / "locked.itws"
+    lock_calls: list[pathlib.Path] = []
+    error = BlockingIOError(35, "unable to lock file")
+    error.__context__ = OSError("file consistency flags")
+
+    def _raise_locked(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(
+        workspace_controller,
+        "_show_workspace_file_lock_error",
+        lambda _parent, path: lock_calls.append(pathlib.Path(path)),
+    )
+    monkeypatch.setattr(
+        workspace_controller,
+        "_show_workspace_hdf5_consistency_error",
+        lambda *args: pytest.fail("A live lock showed recovery instructions"),
+    )
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        monkeypatch.setattr(controller.loading, "_load_workspace_file", _raise_locked)
+        assert not controller._load_workspace_path(source, native=False)
+    assert lock_calls == [source]

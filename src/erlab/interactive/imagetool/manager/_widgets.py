@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import html
 import itertools
 import logging
 import os
@@ -1308,6 +1309,46 @@ def _show_workspace_file_lock_error(
         "This workspace is already open somewhere else.",
         informative_text,
         detailed_text=_workspace_lock_details_text(fname, lock_info),
+    )
+
+
+def _show_workspace_hdf5_consistency_error(
+    parent: QtWidgets.QWidget,
+    fname: str | os.PathLike[str],
+) -> None:
+    homebrew_hint = ""
+    if sys.platform == "darwin":
+        homebrew_hint = (
+            "If you already use Homebrew, you can install the HDF5 tools with:\n\n"
+            "brew install hdf5\n\n"
+        )
+    details = (
+        "Install the HDF5 command-line tools:\n"
+        "https://www.hdfgroup.org/download-hdf5/\n\n"
+        "h5clear instructions:\n"
+        "https://support.hdfgroup.org/documentation/hdf5/latest/"
+        "_h5_t_o_o_l__c_r__u_g.html\n\n"
+        f"Workspace: {pathlib.Path(fname)}"
+    )
+    if (exc := sys.exception()) is not None:
+        details += f"\n\n{exc}"
+    erlab.interactive.utils.MessageDialog.critical(
+        parent,
+        "Workspace File May Be Corrupt",
+        "This workspace may be corrupt or incomplete after an interrupted save.",
+        "The file is still marked as being written. This can happen if Manager "
+        "or the computer stopped unexpectedly.\n\n"
+        "To try opening it again:\n"
+        "1. Close any application that could have this workspace open.\n"
+        "2. Make a copy of the file. Keep the original unchanged.\n"
+        "3. Open a terminal in the folder containing the copy and run:\n\n"
+        'h5clear -s "workspace-copy.itws"\n\n'
+        "Replace workspace-copy.itws with your copy's filename, keeping the quotes. "
+        "Then open the copy in Manager and check the restored data.\n\n"
+        "h5clear is a command-line tool included with HDF5, the format used by "
+        "workspace files. If the command is not found, install the HDF5 tools; "
+        "see Show Details for links.\n\n" + homebrew_hint,
+        detailed_text=f"<pre>{html.escape(details)}</pre>",
     )
 
 

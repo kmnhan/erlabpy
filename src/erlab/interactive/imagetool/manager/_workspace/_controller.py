@@ -70,6 +70,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS,
     _manager_settings,
     _show_workspace_file_lock_error,
+    _show_workspace_hdf5_consistency_error,
     _window_title_with_modified_placeholder,
     _WorkspaceDocumentAccess,
     _WorkspaceDocumentLock,
@@ -1019,6 +1020,8 @@ class _WorkspaceController:
                     extra={"suppress_ui_alert": True},
                 )
                 _show_workspace_file_lock_error(self._manager, path)
+            elif workspace_storage._is_workspace_hdf5_consistency_error(exc):
+                _show_workspace_hdf5_consistency_error(self._manager, path)
             else:
                 logger.exception(
                     "Error while loading workspace",
@@ -1084,6 +1087,12 @@ class _WorkspaceController:
                     extra={"suppress_ui_alert": True},
                 )
                 _show_workspace_file_lock_error(self._manager, path)
+                return "handled"
+            if (
+                explicit_workspace
+                and workspace_storage._is_workspace_hdf5_consistency_error(exc)
+            ):
+                _show_workspace_hdf5_consistency_error(self._manager, path)
                 return "handled"
             if explicit_workspace:
                 self._manager._show_operation_error(
@@ -3439,6 +3448,8 @@ class _WorkspaceController:
                     extra={"suppress_ui_alert": True},
                 )
                 _show_workspace_file_lock_error(self._manager, fname)
+            elif workspace_storage._is_workspace_hdf5_consistency_error(exc):
+                _show_workspace_hdf5_consistency_error(self._manager, fname)
             else:
                 logger.exception(
                     "Error while importing workspace",
