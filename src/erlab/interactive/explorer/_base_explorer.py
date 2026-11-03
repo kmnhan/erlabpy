@@ -741,8 +741,10 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
 
 class _LoaderInfoDelegate(QtWidgets.QStyledItemDelegate):
     def initStyleOption(
-        self, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex
+        self, option: QtWidgets.QStyleOptionViewItem | None, index: QtCore.QModelIndex
     ) -> None:
+        if option is None:
+            return
         super().initStyleOption(option, index)
         model = index.model()
         if (
