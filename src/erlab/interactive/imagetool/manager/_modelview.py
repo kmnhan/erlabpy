@@ -789,7 +789,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         badge_font = self._scaled_font(option.font, self.tool_type_font_scale)
         badge_width = self._text_width(badge_font, text) + self.tool_type_rect_hpad * 2
         rect = QtCore.QRect(option.rect.left(), rect_y, badge_width, rect_size)
-        return rect, text, option.palette.color(QtGui.QPalette.ColorRole.Mid)
+        return rect, text, option.palette.color(QtGui.QPalette.ColorRole.Text)
 
     def _compute_child_status_info(
         self,

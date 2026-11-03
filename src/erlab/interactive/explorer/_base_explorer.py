@@ -690,10 +690,6 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
                 font = QtGui.QFont()
                 font.setBold(True)
                 return font
-            if role == QtCore.Qt.ItemDataRole.BackgroundRole:
-                return QtWidgets.QApplication.palette().brush(
-                    QtGui.QPalette.ColorRole.AlternateBase
-                )
             return None
         if role == QtCore.Qt.ItemDataRole.DisplayRole:
             match index.column():
@@ -743,12 +739,39 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
         return 2
 
 
+class _LoaderInfoDelegate(QtWidgets.QStyledItemDelegate):
+    def initStyleOption(
+        self, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex
+    ) -> None:
+        super().initStyleOption(option, index)
+        model = index.model()
+        if (
+            isinstance(model, _LoaderInfoModel)
+            and model.loader_name_for_row(index.row()) is None
+        ):
+            # Keep model flags disabled so keyboard navigation skips the headings.
+            option.state |= QtWidgets.QStyle.StateFlag.State_Enabled
+            palette = option.palette
+            palette.setCurrentColorGroup(
+                QtGui.QPalette.ColorGroup.Active
+                if QtWidgets.QStyle.StateFlag.State_Active in option.state
+                else QtGui.QPalette.ColorGroup.Inactive
+            )
+            option.backgroundBrush = palette.brush(QtGui.QPalette.ColorRole.Window)
+            palette.setBrush(
+                QtGui.QPalette.ColorRole.Text,
+                palette.brush(QtGui.QPalette.ColorRole.WindowText),
+            )
+            option.palette = palette
+
+
 class _LoaderWidget(QtWidgets.QComboBox):
     def __init__(self, file_browser: _DataExplorer) -> None:
         super().__init__(file_browser)
 
         model = _LoaderInfoModel(file_browser)
         view = QtWidgets.QTableView()
+        view.setItemDelegate(_LoaderInfoDelegate(view))
         view.setCornerButtonEnabled(False)
         typing.cast("QtWidgets.QHeaderView", view.verticalHeader()).hide()
         view.setSelectionBehavior(
