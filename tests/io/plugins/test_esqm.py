@@ -433,6 +433,43 @@ def test_varying_analyzer_mode_prevents_angular_conversion(tmp_path):
         _calibrated_loader().load(path)
 
 
+@pytest.mark.parametrize(
+    "modes",
+    [
+        ("Direct", "Direct Low", "Direct"),
+        ("Fourier 16°", "Fourier 28°", "Fourier 16°"),
+        ("Direct", "Fourier 16°", "Direct Low"),
+    ],
+)
+@pytest.mark.parametrize("chunks", [None, {"eV": 1}])
+def test_uncalibrated_varying_modes_keep_native_images(
+    tmp_path, monkeypatch, modes, chunks
+):
+    path = tmp_path / "Data_00000.h5"
+    images, source_x, source_y = _write_angle_file(path)
+    with h5py.File(path, "r+") as file:
+        for index, mode in enumerate(modes):
+            group = file[f"{index:05d}"]
+            group["AnalyzerMode"][0] = mode.encode()
+            group["analysisImage"].attrs["AnalyzerMode"] = np.bytes_(mode.encode())
+    loader = _calibrated_loader(coefficients=None)
+    type(loader).fourier32_coefficients = (0.0, 2.0)
+    with monkeypatch.context() as patch:
+        if chunks is not None:
+            _forbid_image_reads(patch)
+        loaded = loader.load(path, chunks=chunks)
+
+    assert loaded.dims == ("eV", "detector_x", "detector_y")
+    assert (loaded.chunks is None) == (chunks is None)
+    assert loaded.AnalyzerMode.dims == ("eV",)
+    np.testing.assert_array_equal(loaded.AnalyzerMode, modes)
+    np.testing.assert_array_equal(loaded.compute().values, images)
+    np.testing.assert_array_equal(loaded.detector_x, source_x)
+    np.testing.assert_array_equal(loaded.detector_y, source_y)
+    assert loaded.detector_x.attrs["units"] == "mm"
+    assert loaded.detector_y.attrs["units"] == "mm"
+
+
 def test_can_disable_resampling(tmp_path):
     path = tmp_path / "Data_00000.h5"
     images, source_x, source_y = _write_angle_file(path)

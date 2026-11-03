@@ -185,14 +185,16 @@ class FeSuMaLoader(LoaderBase):
         dims = ("detector_x", "detector_y")
         if all(data[dim].attrs["units"] == "degree" for dim in dims):
             return data
+        calibrations = {
+            "Fourier 16°": (self.fourier16_coefficients, 8.0),
+            "Fourier 28°": (self.fourier28_coefficients, 15.0),
+            "Fourier 32°": (self.fourier32_coefficients, 17.0),
+        }
         if "AnalyzerMode" in data.coords:
+            modes = data["AnalyzerMode"].values
             if any(
-                value is not None
-                for value in (
-                    self.fourier16_coefficients,
-                    self.fourier28_coefficients,
-                    self.fourier32_coefficients,
-                )
+                coefficients is not None and mode in modes
+                for mode, (coefficients, _) in calibrations.items()
             ):
                 raise ValueError(
                     "FeSuMa angle conversion requires one lens mode per file"
@@ -201,21 +203,12 @@ class FeSuMaLoader(LoaderBase):
         mode = data.attrs["AnalyzerMode"]
         if mode in ("Direct", "Direct Low"):
             return data
-        coefficients, max_angle = {
-            "Fourier 16°": (self.fourier16_coefficients, 8.0),
-            "Fourier 28°": (self.fourier28_coefficients, 15.0),
-            "Fourier 32°": (self.fourier32_coefficients, 17.0),
-        }[mode]
+        coefficients, max_angle = calibrations[mode]
         if coefficients is None:
             return data
         source = [np.asarray(data[dim].values, dtype=float) for dim in dims]
         coefficients_array = np.asarray(coefficients, dtype=float)
-        if (
-            coefficients_array.ndim != 1
-            or coefficients_array.size < 2
-            or not np.isfinite(coefficients_array).all()
-            or coefficients_array[0] != 0
-        ):
+        if coefficients_array[0] != 0:
             raise ValueError("Invalid FeSuMa radial calibration coefficients")
         angles = np.linspace(0, max_angle, 8193)
         radii = np.polynomial.polynomial.polyval(angles, coefficients_array)
