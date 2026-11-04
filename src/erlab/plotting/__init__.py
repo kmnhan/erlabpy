@@ -12,22 +12,23 @@ For figure preparation tasks, see the :doc:`Plotting How-to guides
 Importing :mod:`erlab.plotting` registers these public style sheets with Matplotlib:
 
 ``erlab.general``
-    General ERLab figure dimensions, line widths, tick settings, and font sizes.
+    General-purpose defaults for nice figures.
 ``erlab.nature``
-    Compact figure dimensions and line weights for Nature-style figures.
+    For Springer Nature journals.
+``erlab.physrev``
+    For Physical Review journals.
 ``erlab.arial``
-    Arial text and MathText. Install Arial for the requested typeface.
+    Arial text and MathText. Requires Arial to be installed.
 ``erlab.helvetica``
-    Helvetica text and MathText. Install Helvetica for the requested typeface.
+    Helvetica text and MathText. Requires Helvetica to be installed.
 ``erlab.times``
-    Times text with STIX MathText. Install Times New Roman or Times for the requested
-    typeface.
+    Times New Roman text with STIX MathText.
 ``erlab.stixsans-fallback``
-    STIX Sans fallback glyphs for MathText.
+    STIX Sans fallback glyphs for MathText, useful when using ``erlab.helvetica`` or
+    ``erlab.arial`` that may not have all glyphs available in the font.
 
-Combine the general, output, and font styles in a Matplotlib style context. For example,
-use ``["erlab.general", "erlab.nature", "erlab.arial"]``. Matplotlib uses the next
-available fallback font when a requested font is not installed.
+You may combine multiple styles together like ``plt.style.use(["erlab.general",
+"erlab.nature", "erlab.arial"])``.
 
 .. rubric:: Modules
 
@@ -39,14 +40,7 @@ directly.
 .. autosummary::
    :toctree: generated
 
-   annotations
-   atoms
-   bz
-   colors
-   erplot
-   fitting
-   general
-   plot3d
+   annotations atoms bz colors erplot fitting general plot3d
 
 """
 
