@@ -40,7 +40,14 @@ directly.
 .. autosummary::
    :toctree: generated
 
-   annotations atoms bz colors erplot fitting general plot3d
+   annotations
+   atoms
+   bz
+   colors
+   erplot
+   fitting
+   general
+   plot3d
 
 """
 

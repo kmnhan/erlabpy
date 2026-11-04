@@ -90,7 +90,7 @@ dev = [
   "colorspacious>=1.1.2",
   "commitizen>=4.3.0",
   "coverage>=7.10.5",
-  "cz-changeup>=1.1.2",
+  "cz-changeup>=1.1.4",
   "ipykernel>=6.29.5,!=7.2.0",
   "jupyter-bokeh>=4.0.5",
   "marimo>=0.19.11",
