@@ -47,7 +47,7 @@ repos:
     rev: v4.19.2
     hooks:
       - id: commitizen
-        additional_dependencies: [cz-changeup]
+        additional_dependencies: ["cz-changeup>=1.1.4"]
       - id: commitizen-branch
-        additional_dependencies: [cz-changeup]
+        additional_dependencies: ["cz-changeup>=1.1.4"]
         stages: [pre-push]

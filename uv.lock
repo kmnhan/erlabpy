@@ -1037,14 +1037,14 @@ wheels = [
 
 [[package]]
 name = "cz-changeup"
-version = "1.1.2"
+version = "1.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "commitizen" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/54/e98511cf11c4a12268a13f28714227b510d1f166e44f5cd2fd234e9297ab/cz_changeup-1.1.2.tar.gz", hash = "sha256:f3876c32b558cb6e15a9bf8b69b7de840e90a79c0f4765439f4a9f13d4e004f2", size = 8513, upload-time = "2024-12-18T01:55:00.462Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/9e/78bdbeea783dc0511e3508b38eb8f46e8b9528f8924fba9505b738eddfd1/cz_changeup-1.1.4.tar.gz", hash = "sha256:0dd44b9108143c6d6c267e9b5ac2993224214a3eae7766a16889402ebe0b20f9", size = 15562, upload-time = "2026-11-04T13:09:19.909Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/38/170eab7c366e42df418486172d136b209b5208f5c04d2008d1be9b27d261/cz_changeup-1.1.2-py3-none-any.whl", hash = "sha256:938a3715cfc248e824b2ac5985b94a0cd1c505d201d8d67289fd1005e8465ec3", size = 5551, upload-time = "2024-12-18T01:54:59.064Z" },
+    { url = "https://files.pythonhosted.org/packages/da/04/91c0e94f103d3dcb91334b39aff3c149c4c96e7a4e2b535329e64bb23194/cz_changeup-1.1.4-py3-none-any.whl", hash = "sha256:cfe459d7f2a6f860c7a569203a8745e85183bf0a22060af8c19427bd8e43df11", size = 7516, upload-time = "2026-11-04T13:09:18.638Z" },
 ]
 
 [[package]]
@@ -1380,7 +1380,7 @@ dev = [
     { name = "colorspacious", specifier = ">=1.1.2" },
     { name = "commitizen", specifier = ">=4.3.0" },
     { name = "coverage", specifier = ">=7.10.5" },
-    { name = "cz-changeup", specifier = ">=1.1.2" },
+    { name = "cz-changeup", specifier = ">=1.1.4" },
     { name = "ipykernel", specifier = ">=6.29.5,!=7.2.0" },
     { name = "jupyter-bokeh", specifier = ">=4.0.5" },
     { name = "marimo", specifier = ">=0.19.11" },
