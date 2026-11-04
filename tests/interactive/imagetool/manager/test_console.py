@@ -41,6 +41,7 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
+    ConcatOperation,
     GaussianFilterOperation,
     NormalizeOperation,
     ScriptCodeOperation,
@@ -48,6 +49,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     SqueezeOperation,
     TransposeOperation,
 )
+from erlab.interactive.imagetool._provenance._trust import provenance_code_trust_entries
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
@@ -2929,6 +2931,7 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
             join="outer",
             combine_attrs="override",
         )
+        expected_raw = expected
         expected = expected.assign_coords(concat_dim=np.arange(2))
 
         select_tools(manager, [0, 1])
@@ -2951,10 +2954,14 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
             manager._tool_graph.root_wrappers[0].snapshot_token,
             manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
-        operation_entry = provenance.operations[-1].derivation_entry()
-        assert operation_entry.label == "Concatenate selected ImageTools"
-        assert operation_entry.code is not None
-        assert "xr.concat([data_0, data_1]" in operation_entry.code
+        assert isinstance(provenance.operations[-1], ConcatOperation)
+        assert provenance.primary_input == "data_0"
+        assert provenance.steps[-1].input_bindings == {"other_0": "data_1"}
+        assert provenance_code_trust_entries(provenance, location_prefix="concat") == ()
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"data_0": data0, "data_1": data1})
+        xr.testing.assert_identical(namespace["derived"], expected_raw)
         assert manager.dependency_status_for_uid(concat_wrapper.uid) == "current"
 
         manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 1.0)
@@ -2996,6 +3003,118 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
             manager.get_imagetool(3).slicer_area.data,
             expected_removed_inputs,
         )
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_manager_concat_preserves_three_input_order(
+    qtbot, accept_dialog, manager_context, replace
+) -> None:
+    inputs = [
+        xr.DataArray(
+            np.full((2, 3), value),
+            dims=("y", "x"),
+            coords={"y": [0, 1], "x": [0, 1, 2], "scan": value},
+        )
+        for value in (2.0, 0.0, 1.0)
+    ]
+    expected = xr.concat(
+        inputs,
+        dim="scan",
+        coords="minimal",
+        compat="override",
+        join="outer",
+        combine_attrs="override",
+    )
+    with manager_context() as manager:
+        for data in inputs:
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data), show=False
+            )
+        select_tools(manager, [0, 1, 2])
+
+        def configure(dialog: _ConcatDialog) -> None:
+            dialog._dim_line.setText("scan")
+            if replace:
+                dialog._result_combo.setCurrentIndex(
+                    dialog._result_combo.findData(_ConcatDialog._RESULT_REPLACE)
+                )
+                dialog._replace_target_combo.setCurrentIndex(
+                    dialog._replace_target_combo.findData(1)
+                )
+
+        accept_dialog(manager.concat_action.trigger, pre_call=configure)
+        target = 1 if replace else 3
+        node = manager._node_for_target(target)
+        xr.testing.assert_identical(node.current_source_data(), expected)
+        provenance = node.provenance_spec
+        assert provenance is not None
+        assert provenance.primary_input == "data_0"
+        assert provenance.steps[0].input_bindings == {
+            "other_0": "data_1",
+            "other_1": "data_2",
+        }
+        assert provenance_code_trust_entries(provenance, location_prefix="concat") == ()
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(
+            code, dict(zip(("data_0", "data_1", "data_2"), inputs, strict=True))
+        )
+        xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_manager_concat_cancel_preserves_sources(qtbot, accept_dialog, manager_context):
+    data = xr.DataArray(np.ones((2, 3)), dims=("y", "x"))
+    with manager_context() as manager:
+        for offset in (0, 1):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data + offset), show=False
+            )
+        select_tools(manager, [0, 1])
+        before = [manager._node_for_target(index).snapshot_token for index in (0, 1)]
+        accept_dialog(
+            manager.concat_action.trigger, accept_call=lambda dialog: dialog.reject()
+        )
+        assert manager.ntools == 2
+        assert [
+            manager._node_for_target(index).snapshot_token for index in (0, 1)
+        ] == before
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_manager_concat_invalid_options_preserve_sources(
+    accept_dialog, manager_context, monkeypatch, replace
+) -> None:
+    data = xr.DataArray(np.ones((2, 3)), dims=("y", "x"))
+    errors = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **kwargs: errors.append(args),
+    )
+    with manager_context() as manager:
+        for offset in (0, 1):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(data + offset), show=False
+            )
+        select_tools(manager, [0, 1])
+        before = [manager._node_for_target(index).snapshot_token for index in (0, 1)]
+
+        def configure(dialog: _ConcatDialog) -> None:
+            dialog._coords_combo.setCurrentText("different")
+            dialog._sources_combo.setCurrentIndex(
+                dialog._sources_combo.findData(_ConcatDialog._SOURCES_REMOVE)
+            )
+            if replace:
+                dialog._result_combo.setCurrentIndex(
+                    dialog._result_combo.findData(_ConcatDialog._RESULT_REPLACE)
+                )
+
+        accept_dialog(manager.concat_action.trigger, pre_call=configure)
+        assert len(errors) == 1
+        assert manager.ntools == 2
+        assert [
+            manager._node_for_target(index).snapshot_token for index in (0, 1)
+        ] == before
 
 
 def test_manager_concat_can_replace_source_tool_and_preserve_children(
@@ -3104,6 +3223,13 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
         replacement_wrapper = manager._tool_graph.root_wrappers[0]
         replacement_provenance = replacement_wrapper.provenance_spec
         assert replacement_provenance is not None
+        assert isinstance(replacement_provenance.operations[-1], ConcatOperation)
+        assert (
+            provenance_code_trust_entries(
+                replacement_provenance, location_prefix="concat", include_inputs=False
+            )
+            == ()
+        )
         assert manager.dependency_status_for_uid(replacement_wrapper.uid) == "current"
         assert [source.node_uid for source in replacement_provenance.script_inputs] == [
             None,

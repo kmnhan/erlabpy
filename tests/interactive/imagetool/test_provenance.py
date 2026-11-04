@@ -142,6 +142,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     BoxcarFilterOperation,
     CoarsenOperation,
+    ConcatOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
     DropScalarCoordsOperation,
@@ -1524,6 +1525,128 @@ def test_operation_replay_code_preserves_bound_expression_grouping() -> None:
     xr.testing.assert_identical(
         namespace["result"], operation.apply_with_inputs(data, {"shift": shift + 0.1})
     )
+
+
+@pytest.mark.parametrize("dim", ["x", 'sample "temperature"'])
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"join": "inner", "combine_attrs": "drop"},
+        {"coords": "all", "compat": "equals"},
+        {"coords": "different", "compat": "no_conflicts"},
+    ],
+)
+def test_concat_operation_round_trip_replay_and_generated_code(dim, options) -> None:
+    arrays = {
+        name: xr.DataArray(
+            np.arange(6.0).reshape(2, 3) + offset,
+            dims=("x", "y"),
+            coords={"x": [0, 1], "y": np.arange(3) + index},
+            name="spectrum",
+            attrs={"sample": "test", "scan": index},
+        )
+        for index, (name, offset) in enumerate(
+            (("first_scan", 0), ("last_scan", 20), ("middle_scan", 10))
+        )
+    }
+    originals = {name: array.copy(deep=True) for name, array in arrays.items()}
+    operation = ConcatOperation(input_count=3, dim=dim, **options)
+    # The slot sequence defines the order, independent of mapping insertion order.
+    bindings = {"other_1": "middle_scan", "other_0": "last_scan"}
+    expected = xr.concat(
+        [arrays["first_scan"], arrays["last_scan"], arrays["middle_scan"]],
+        dim=dim,
+        coords=options.get("coords", "minimal"),
+        compat=options.get("compat", "override"),
+        join=options.get("join", "outer"),
+        combine_attrs=options.get("combine_attrs", "override"),
+    )
+    xr.testing.assert_identical(
+        operation.apply_with_inputs(
+            arrays["first_scan"],
+            {slot: arrays[name] for slot, name in bindings.items()},
+        ),
+        expected,
+    )
+    spec = recipe(
+        ReplayStep(operation=operation, input_bindings=bindings),
+        start_label="Concatenate scans",
+        active_name="joined",
+        script_inputs=tuple(ScriptInput(name=name) for name in arrays),
+        primary_input="first_scan",
+    )
+    restored = parse_tool_provenance_spec(json.loads(spec.model_dump_json()))
+    assert restored == spec
+    assert operation.input_slots() == ("other_0", "other_1")
+    assert provenance_code_trust_entries(restored, location_prefix="concat") == ()
+    assert script_provenance_replayable(restored, external_input_names=set(arrays))
+    xr.testing.assert_identical(replay_script_provenance(restored, arrays), expected)
+    code = spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, {**arrays, "xr": xr})
+    xr.testing.assert_identical(namespace["joined"], expected)
+    for name, original in originals.items():
+        xr.testing.assert_identical(arrays[name], original)
+
+
+def test_concat_operation_generated_code_preserves_input_expressions() -> None:
+    data = _base_data()
+    operation = ConcatOperation(input_count=2, dim="scan")
+    code = operation.replay_code(
+        "data + 1",
+        output_name="joined",
+        bound_inputs={"other_0": "data * 2 if use_scaled else data - 1"},
+    )
+    namespace = _exec_generated_code(code, {"data": data, "use_scaled": True, "xr": xr})
+    xr.testing.assert_identical(
+        namespace["joined"],
+        xr.concat(
+            [data + 1, data * 2],
+            dim="scan",
+            coords="minimal",
+            compat="override",
+            join="outer",
+            combine_attrs="override",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"input_count": 1},
+        {"input_count": True},
+        {"input_count": 2.0},
+        {"input_count": "2"},
+        {"dim": ""},
+        {"dim": 1},
+        {"dim": None},
+        {"coords": ["x"]},
+        {"coords": "unknown"},
+        {"coords": "different", "compat": "override"},
+        {"compat": "unknown"},
+        {"join": "unknown"},
+        {"combine_attrs": lambda attrs, context: attrs[0]},
+        {"combine_attrs": "unknown"},
+        {"data_vars": "all"},
+    ],
+)
+def test_concat_operation_rejects_invalid_fields(fields) -> None:
+    with pytest.raises(ValidationError):
+        ConcatOperation(**{"input_count": 2, "dim": "scan", **fields})
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [{}, {"other_0": "second"}, {"other_0": "second", "unknown": "third"}],
+)
+def test_concat_operation_requires_all_ordered_input_bindings(bindings) -> None:
+    with pytest.raises(ValueError, match="must match the operation input slots"):
+        ReplayStep(
+            operation=ConcatOperation(input_count=3, dim="scan"),
+            input_bindings=bindings,
+        )
 
 
 def test_operation_code_base_edges() -> None:
@@ -4372,6 +4495,7 @@ def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
 def test_current_structured_operations_round_trip_without_script_fallback() -> None:
     operations = _representative_structured_operations()
     assert {operation.op for operation in operations} == set(_OPERATION_TYPES) - {
+        "concat",
         "script_code",
         "shift_from_input",
         "source_view",

@@ -13,12 +13,14 @@ import erlab
 import erlab.interactive.utils
 from erlab.interactive.imagetool import _kspace_conversion, dialogs
 from erlab.interactive.imagetool._provenance._operations import (
+    ConcatOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
     NormalizeOperation,
     ScriptCodeOperation,
     SortByOperation,
 )
+from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -28,6 +30,7 @@ if typing.TYPE_CHECKING:
         ToolProvenanceSpec,
         _ProvenanceStepRef,
     )
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,6 +132,53 @@ class _ScriptCodeEditDialog(QtWidgets.QDialog):
             )
             return
         super().accept()
+
+
+class _ConcatOperationEditDialog(_ConcatDialog):
+    def __init__(
+        self,
+        operation: ConcatOperation,
+        parent: ImageToolManager,
+    ) -> None:
+        super().__init__(parent)
+        self._operation = operation
+        self.setObjectName("managerProvenanceConcatEditDialog")
+        self.setWindowTitle("Edit Concatenate")
+        self._dim_line.setText(operation.dim)
+        self._coords_combo.setCurrentText(operation.coords)
+        self._compat_combo.setCurrentText(operation.compat)
+        self._join_combo.setCurrentText(operation.join)
+        self._combine_attrs_combo.setCurrentText(operation.combine_attrs)
+        for widget in (
+            self._result_combo,
+            self._replace_target_combo,
+            self._sources_combo,
+        ):
+            self._option_layout.setRowVisible(widget, False)
+
+    def operation(self) -> ConcatOperation:
+        return ConcatOperation(
+            input_count=self._operation.input_count,
+            group=self._operation.group,
+            **self.concat_kwargs(),
+        )
+
+    def open(self) -> None:
+        QtWidgets.QDialog.open(self)
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        try:
+            self.operation()
+        except (TypeError, ValueError):
+            reason = (
+                "Enter a dimension name."
+                if not self._dim_line.text()
+                else "coords='different' cannot be used with compat='override'."
+            )
+            QtWidgets.QMessageBox.warning(self, "Invalid Concatenate Options", reason)
+            return
+        QtWidgets.QDialog.accept(self)
 
 
 def _iter_dialog_classes(

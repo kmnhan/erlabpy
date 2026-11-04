@@ -69,6 +69,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
+    OperationGroupMarker,
     ReplayStage,
     ReplayStep,
     ScriptInput,
@@ -79,6 +80,7 @@ from erlab.interactive.imagetool._provenance._model import (
     file_load,
     full_data,
     parse_script_inputs,
+    parse_tool_provenance_spec,
     public_data,
     rebase_script_inputs_node_uids,
     recipe,
@@ -88,6 +90,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
     CoarsenOperation,
+    ConcatOperation,
     CorrectWithEdgeOperation,
     DivideByCoordOperation,
     ExtensionRoutineOperation,
@@ -286,6 +289,221 @@ def test_concrete_bound_input_operation_replays_without_stored_code() -> None:
         (AverageOperation(dims=("y",)),),
     )
     assert tuple(item.name for item in replaced.script_inputs) == ("data",)
+
+
+_LEGACY_CONCAT_CODE = (
+    "derived = xr.concat([left, right], dim='x', coords='minimal', "
+    "compat='override', join='outer', combine_attrs='override')"
+)
+
+
+def test_saved_manager_concat_migrates_to_bound_operation() -> None:
+    group = OperationGroupMarker(kind="action", id="concat", index=0, size=1)
+    inputs = (
+        ScriptInput(name="left", revision_id="first", follow_source=False),
+        ScriptInput(name="right", revision_id="second", data_role="source"),
+        ScriptInput(name="middle", revision_id="third"),
+    )
+    original = script(
+        ScriptCodeOperation(
+            label="Concatenate selected ImageTools",
+            code=_LEGACY_CONCAT_CODE.replace("[left, right]", "[right, middle, left]"),
+            group=group,
+        ),
+        ScriptCodeOperation(
+            label="Average", code="derived = derived.qsel.average('y')"
+        ),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=inputs,
+    )
+    migrated = parse_tool_provenance_spec(original.model_dump(mode="json"))
+    assert migrated is not None
+    assert isinstance(migrated.operations[0], ConcatOperation)
+    assert isinstance(migrated.operations[1], AverageOperation)
+    assert migrated.operations[0].group == group
+    assert migrated.script_inputs == inputs
+    assert migrated.primary_input == "right"
+    assert migrated.steps[0].input_bindings == {"other_0": "middle", "other_1": "left"}
+    assert provenance_requires_code_trust(migrated) is False
+    assert parse_tool_provenance_spec(migrated.model_dump(mode="json")) == migrated
+
+    arrays = {
+        name: xr.DataArray(
+            np.arange(4.0).reshape(2, 2) + index,
+            dims=("y", "x"),
+            coords={"y": [0, 1], "x": [2 * index, 2 * index + 1]},
+        )
+        for index, name in enumerate(("left", "right", "middle"))
+    }
+    expected = xr.concat(
+        [arrays["right"], arrays["middle"], arrays["left"]],
+        dim="x",
+        coords="minimal",
+        compat="override",
+        join="outer",
+        combine_attrs="override",
+    ).qsel.average("y")
+    graph = compile_replay_graph(migrated, external_inputs=arrays)
+    xr.testing.assert_identical(execute_replay_graph(graph), expected)
+    copied_code = emit_replay_code(
+        compile_replay_graph(migrated, display=True), output_name="derived"
+    )
+    namespace = _exec_generated_code(copied_code, {**arrays, "xr": xr})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_runtime_manager_concat_keeps_its_explicit_script() -> None:
+    original = script(
+        ScriptCodeOperation(label="Concat", code=_LEGACY_CONCAT_CODE),
+        start_label="Manager action",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="left"), ScriptInput(name="right")),
+    )
+    assert parse_tool_provenance_spec(original) is original
+    assert provenance_requires_code_trust(original) is True
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        _LEGACY_CONCAT_CODE + "; events.append('run')",
+        "import xarray as xr\n" + _LEGACY_CONCAT_CODE,
+        _LEGACY_CONCAT_CODE.replace("derived =", "result ="),
+        _LEGACY_CONCAT_CODE.replace("xr.concat", "xarray.concat"),
+        _LEGACY_CONCAT_CODE.replace("[left, right]", "(left, right)"),
+        _LEGACY_CONCAT_CODE.replace("[left, right]", "[left, missing]"),
+        _LEGACY_CONCAT_CODE.replace("[left, right]", "[left, left]"),
+        _LEGACY_CONCAT_CODE.replace("[left, right]", "[*left, right]"),
+        _LEGACY_CONCAT_CODE.replace("[left, right]", "*[left, right]"),
+        _LEGACY_CONCAT_CODE.replace("dim='x'", "dim=choose_dim()"),
+        _LEGACY_CONCAT_CODE.replace("dim='x'", "dim=''"),
+        _LEGACY_CONCAT_CODE.replace("coords='minimal'", "coords=1"),
+        _LEGACY_CONCAT_CODE.replace("join='outer'", "join='unknown'"),
+        _LEGACY_CONCAT_CODE.replace(", coords='minimal'", ""),
+        _LEGACY_CONCAT_CODE[:-1] + ", dim='y')",
+        _LEGACY_CONCAT_CODE[:-1] + ", positions=[0, 1])",
+        _LEGACY_CONCAT_CODE[:-1] + ", **options)",
+    ],
+)
+def test_saved_concat_migration_rejects_other_python(code: str) -> None:
+    original = script(
+        ScriptCodeOperation(label="Concat", code=code),
+        start_label="Manager action",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="left"), ScriptInput(name="right")),
+    )
+    migrated = parse_tool_provenance_spec(original.model_dump(mode="json"))
+    assert migrated == original
+    assert isinstance(migrated.operations[0], ScriptCodeOperation)
+    assert migrated.operations[0].code == code
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "seed",
+        "primary",
+        "root",
+        "file-load",
+        "context",
+        "legacy-context",
+        "hidden",
+        "not-copyable",
+        "script-tail",
+        "shadowed-xr",
+        "extra-input",
+    ],
+)
+def test_saved_concat_migration_keeps_other_execution_context(case: str) -> None:
+    first = ReplayStep(
+        operation=ScriptCodeOperation(label="Concat", code=_LEGACY_CONCAT_CODE)
+    )
+    inputs = (ScriptInput(name="left"), ScriptInput(name="right"))
+    steps = (first,)
+    kwargs = {}
+    if case == "seed":
+        kwargs["seed_code"] = "xr = replacement"
+    elif case == "primary":
+        kwargs["primary_input"] = "left"
+    elif case == "root":
+        kwargs["root_input"] = ScriptInput(name="base")
+    elif case == "file-load":
+        kwargs["file_load_source"] = FileLoadSource(
+            path="/data/input.h5", loader_label="Loader", loader_text="", kwargs_text=""
+        )
+    elif case == "context":
+        steps = (first.model_copy(update={"context_names": ("left",)}),)
+    elif case == "legacy-context":
+        steps = (
+            ReplayStep.model_validate(
+                {
+                    **first.model_dump(mode="json"),
+                    "legacy_context": {"index": 0, "input_policy": "current"},
+                }
+            ),
+        )
+    elif case in {"hidden", "not-copyable"}:
+        field = "visible" if case == "hidden" else "copyable"
+        steps = (
+            first.model_copy(
+                update={"operation": first.operation.model_copy(update={field: False})}
+            ),
+        )
+    elif case == "script-tail":
+        steps = (
+            first,
+            ReplayStep(
+                operation=ScriptCodeOperation(
+                    label="Use original input", code="derived = derived + left"
+                )
+            ),
+        )
+    elif case == "shadowed-xr":
+        inputs = (inputs[0], ScriptInput(name="xr"))
+        steps = (
+            first.model_copy(
+                update={
+                    "operation": first.operation.model_copy(
+                        update={"code": _LEGACY_CONCAT_CODE.replace("right", "xr")}
+                    )
+                }
+            ),
+        )
+    else:
+        inputs = (*inputs, ScriptInput(name="unused"))
+    original = script(
+        steps=steps,
+        start_label="Manager action",
+        active_name="derived",
+        script_inputs=inputs,
+        **kwargs,
+    )
+    migrated = parse_tool_provenance_spec(original.model_dump(mode="json"))
+    assert migrated == original
+    assert isinstance(migrated.operations[0], ScriptCodeOperation)
+
+
+def test_nested_saved_concat_uses_the_same_deserialize_boundary() -> None:
+    original = script(
+        ScriptCodeOperation(label="Concat", code=_LEGACY_CONCAT_CODE),
+        start_label="Manager action",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="left"), ScriptInput(name="right")),
+    )
+    outer = recipe(
+        ReplayStep(operation=AverageOperation(dims=("y",))),
+        start_label="Average concat",
+        active_name="averaged",
+        primary_input="combined",
+        script_inputs=(ScriptInput(name="combined", provenance_spec=original),),
+    )
+    migrated = parse_tool_provenance_spec(outer.model_dump(mode="json"))
+    assert migrated is not None
+    nested = migrated.script_inputs[0].parsed_provenance_spec()
+    assert nested is not None
+    assert isinstance(nested.operations[0], ConcatOperation)
+    assert provenance_requires_code_trust(migrated) is False
 
 
 def test_bound_input_step_validates_its_slots_and_primary_input() -> None:
