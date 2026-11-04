@@ -1,5 +1,6 @@
 import json
 import pathlib
+import threading
 import types
 import typing
 from collections.abc import Callable
@@ -10,6 +11,7 @@ import xarray as xr
 
 import erlab
 import erlab.interactive.imagetool._highdim as imagetool_highdim
+import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive import _persistence_constants
@@ -40,6 +42,7 @@ from tests.interactive.imagetool.manager.helpers import (
     manager_preview_pixmap,
     metadata_detail_map,
     select_child_tool,
+    select_metadata_rows,
     select_tools,
     trigger_menu_action,
 )
@@ -1554,3 +1557,576 @@ def test_manager_dependency_summary_coalesces_matching_input_name_and_label() ->
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
 
     assert controller.dependency_input_summary_for_uid("derived") == ("data: Missing")
+
+
+def test_manager_dntool_image_menu_source_and_result(
+    qtbot, manager_context, monkeypatch, tmp_path
+):
+    from qtpy import QtWidgets
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._logging.get_log_file_path",
+        lambda: tmp_path / "manager.log",
+    )
+    pytest.importorskip("onnxruntime")
+    from erlab.interactive._dntool import DenoiseTool
+    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
+
+    data = xr.DataArray(
+        np.arange(1.0, 31.0).reshape(5, 6),
+        dims=("beta", "eV"),
+        coords={"beta": np.arange(5.0), "eV": np.arange(6.0)},
+        name="spectrum",
+    )
+    with manager_context() as manager:
+        parent_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(parent_tool, show=False)
+        image = parent_tool.slicer_area.images[0]
+        menu = image.vb.getMenu(None)
+        action = next(
+            a for a in menu.actions() if a.objectName() == "itool_dntool_action"
+        )
+        expected_input = image.current_data.T
+        action.trigger()
+        parent_node = manager._tool_graph.root_wrappers[0]
+        qtbot.wait_until(lambda: len(parent_node._childtool_indices) == 1)
+        uid = parent_node._childtool_indices[0]
+        tool = manager.get_childtool(uid)
+        assert isinstance(tool, DenoiseTool)
+        xr.testing.assert_identical(tool.tool_data, expected_input)
+        assert tool.script_inputs[0].node_uid == parent_node.uid
+        assert tool.source_state == "fresh"
+
+        tool.energy_spin.setValue(8)
+        tool.angle_spin.setValue(10)
+        tool.tta_check.setChecked(False)
+        tool.denoise()
+        qtbot.wait_until(tool.open_btn.isEnabled)
+        tool.open_btn.click()
+        node = manager._child_node(uid)
+        qtbot.wait_until(lambda: len(node._childtool_indices) == 1)
+        output_uid = node._childtool_indices[0]
+        output_node = manager._child_node(output_uid)
+        assert output_node.output_id == tool.Output.RESULT
+        output = manager.get_imagetool(output_uid)
+        xr.testing.assert_identical(output.slicer_area.data, tool.result)
+        spec = tool.output_imagetool_provenance(tool.Output.RESULT, tool.result)
+        assert spec is not None
+        assert any(isinstance(op, DenoiseOperation) for op in spec.operations)
+        namespace = _exec_generated_code(
+            spec.display_code(), {"data": data.copy(deep=True)}
+        )
+        xr.testing.assert_identical(namespace["result"], output.slicer_area.data)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, output_uid)
+        manager._update_info(uid=output_uid)
+        denoise_rows = []
+        for index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if row.edit_ref is not None:
+                row_spec = manager._provenance_edit_controller._display_spec_for_row(
+                    output_node, row
+                )
+                if row_spec is not None and isinstance(
+                    row_spec._operation_for_ref(row.edit_ref), DenoiseOperation
+                ):
+                    denoise_rows.append(index)
+        assert len(denoise_rows) == 1
+        select_metadata_rows(manager, denoise_rows)
+        code = manager._selected_derivation_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"data": tool.tool_data})
+        xr.testing.assert_identical(namespace["result"], tool.result)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_copy_selected_action.isEnabled()
+        assert manager._metadata_edit_step_action.isEnabled()
+        manager._metadata_copy_selected_action.trigger()
+        clipboard = QtWidgets.QApplication.clipboard()
+        assert clipboard.text() == code
+        copied = manager_details_panel._provenance_step_clipboard_payload(
+            clipboard.mimeData()
+        )
+        assert copied is not None
+        assert len(copied.operations) == 1
+        assert isinstance(copied.operations[0], DenoiseOperation)
+
+        output_node._set_source_auto_update(True)
+        tool.undo()
+        qtbot.wait_until(
+            lambda: output_node.source_state == "unavailable", timeout=5000
+        )
+        tool.redo()
+        qtbot.wait_until(lambda: output_node.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(output.slicer_area.data, tool.result)
+
+        updated = data * 2
+        parent_tool.slicer_area.replace_source_data(updated)
+        qtbot.wait_until(lambda: tool.source_state == "stale", timeout=5000)
+        assert not manager._lineage_controller._refresh_source_chain_to_uid(output_uid)
+        qtbot.wait_until(lambda: tool.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(
+            tool.tool_data, updated.transpose(*tool.tool_data.dims)
+        )
+        expected = erlab.analysis.image.ml.denoise(
+            tool.tool_data, along="beta", resize=(8, 10), tta=False
+        )
+        xr.testing.assert_identical(tool.result, expected)
+        qtbot.wait_until(lambda: output.slicer_area.data.identical(expected))
+        xr.testing.assert_identical(output.slicer_area.data, expected)
+
+        tool.energy_spin.setValue(12)
+        workspace = tmp_path / "denoising.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace, replace=True, associate=False, mark_dirty=False, select=False
+        )
+        restored_parent = manager._tool_graph.root_wrappers[0]
+        restored_uid = restored_parent._childtool_indices[0]
+        restored = manager.get_childtool(restored_uid)
+        assert isinstance(restored, DenoiseTool)
+        assert restored.energy_spin.value() == 12
+        assert restored._result_provenance()[0].resize == (8, 10)
+        xr.testing.assert_identical(restored.result, expected)
+
+
+def test_manager_dntool_image_menu_requires_energy(
+    qtbot, manager_context, monkeypatch, tmp_path
+):
+    from qtpy import QtWidgets
+
+    from erlab.interactive._dntool import DenoiseTool
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._logging.get_log_file_path",
+        lambda: tmp_path / "manager.log",
+    )
+    errors = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "critical", lambda *args: errors.append(args)
+    )
+    data = xr.DataArray(np.ones((5, 6)), dims=("x", "y"))
+    with manager_context() as manager:
+        parent_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(parent_tool, show=False)
+        image = parent_tool.slicer_area.images[0]
+        menu = image.vb.getMenu(None)
+        action = next(
+            a for a in menu.actions() if a.objectName() == "itool_dntool_action"
+        )
+        assert not action.isEnabled()
+        action.trigger()
+        assert errors == []
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == []
+
+        # The direct handler still rejects invalid data if called without the menu.
+        image.open_in_dntool()
+        assert len(errors) == 1
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == []
+
+        updated = xr.DataArray(np.ones((5, 6)), dims=("eV", "y"))
+        parent_tool.slicer_area.replace_source_data(updated)
+        assert image.vb.getMenu(None) is menu
+        assert action.isEnabled()
+        action.trigger()
+        parent_node = manager._tool_graph.root_wrappers[0]
+        qtbot.wait_until(lambda: len(parent_node._childtool_indices) == 1)
+        assert isinstance(
+            manager.get_childtool(parent_node._childtool_indices[0]), DenoiseTool
+        )
+
+
+def test_manager_dntool_cropped_selection(
+    qtbot, manager_context, monkeypatch, tmp_path
+):
+    from qtpy import QtCore, QtWidgets
+
+    from erlab.interactive._dntool import DenoiseTool
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._logging.get_log_file_path",
+        lambda: tmp_path / "manager.log",
+    )
+    data = xr.DataArray(
+        np.arange(1.0, 43.0).reshape(6, 7),
+        dims=("beta", "eV"),
+        coords={"beta": np.arange(6.0), "eV": np.arange(7.0)},
+    )
+    with manager_context() as manager:
+        parent_tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(parent_tool, show=False)
+        area = parent_tool.slicer_area
+        area.set_manual_limits({"beta": (1.0, 3.0), "eV": (2.0, 5.0)})
+        image = area.main_image
+        monkeypatch.setattr(
+            QtWidgets.QApplication,
+            "queryKeyboardModifiers",
+            lambda: QtCore.Qt.KeyboardModifier.AltModifier,
+        )
+        menu = image.vb.getMenu(None)
+        action = next(
+            a for a in menu.actions() if a.objectName() == "itool_dntool_action"
+        )
+        expected = image.current_data.T
+        assert expected.size < data.size
+        action.trigger()
+        parent_node = manager._tool_graph.root_wrappers[0]
+        qtbot.wait_until(lambda: len(parent_node._childtool_indices) == 1)
+        tool = manager.get_childtool(parent_node._childtool_indices[0])
+        assert isinstance(tool, DenoiseTool)
+        xr.testing.assert_identical(tool.tool_data, expected)
+        source = tool.script_inputs[0].parsed_source_spec()
+        assert source is not None
+        xr.testing.assert_identical(
+            source.apply(area._tool_source_parent_data()), expected
+        )
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_manager_dntool_output_provenance_edit_and_copy(
+    qtbot, manager_context, monkeypatch, tmp_path, detached
+):
+    from qtpy import QtWidgets
+
+    from erlab.interactive._dntool import DenoiseTool
+    from erlab.interactive.imagetool import dialogs
+    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._logging.get_log_file_path",
+        lambda: tmp_path / "manager.log",
+    )
+
+    def denoise(data, resize, **kwargs):
+        del kwargs
+        return data + resize[0]
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", denoise)
+    data = xr.DataArray(
+        np.arange(1.0, 31.0).reshape(5, 6),
+        dims=("beta", "eV"),
+        coords={"beta": np.arange(5.0), "eV": np.arange(6.0)},
+        name="data",
+    )
+    with manager_context() as manager:
+        manager._data_ingress.receive_data([data], {}, watched_var=("data", "kernel-0"))
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        parent_tool = manager.get_imagetool(0)
+        menu = parent_tool.slicer_area.images[0].vb.getMenu(None)
+        next(
+            action
+            for action in menu.actions()
+            if action.objectName() == "itool_dntool_action"
+        ).trigger()
+        parent_node = manager._tool_graph.root_wrappers[0]
+        qtbot.wait_until(lambda: len(parent_node._childtool_indices) == 1)
+        tool = manager.get_childtool(parent_node._childtool_indices[0])
+        assert isinstance(tool, DenoiseTool)
+        tool.energy_spin.setValue(8)
+        tool.angle_spin.setValue(10)
+        tool.tta_check.setChecked(False)
+        tool.denoise()
+        qtbot.wait_until(tool.open_btn.isEnabled)
+        before_uids = set(manager._tool_graph.nodes)
+        if detached:
+            tool.show()
+            tool.images[1].open_itool()
+        else:
+            tool.open_btn.click()
+        qtbot.wait_until(lambda: len(manager._tool_graph.nodes) == len(before_uids) + 1)
+        output_uid = (set(manager._tool_graph.nodes) - before_uids).pop()
+        output_node = manager._tool_graph.nodes[output_uid]
+        output = manager.get_imagetool(output_uid)
+        before = output.slicer_area.data.copy(deep=True)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, output_uid)
+        manager._update_info(uid=output_uid)
+        denoise_rows = []
+        for index in range(manager.metadata_derivation_list.conceptual_count()):
+            item = manager.metadata_derivation_list.conceptual_item(index)
+            assert item is not None
+            row = item.data(0, manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
+            if row.edit_ref is None:
+                continue
+            row_spec = manager._provenance_edit_controller._display_spec_for_row(
+                output_node, row
+            )
+            if row_spec is not None and isinstance(
+                row_spec._operation_for_ref(row.edit_ref), DenoiseOperation
+            ):
+                denoise_rows.append(index)
+        assert len(denoise_rows) == 1
+        select_metadata_rows(manager, denoise_rows)
+        assert manager._build_metadata_derivation_menu() is not None
+        assert manager._metadata_edit_step_action.isEnabled()
+
+        edited = []
+
+        def edit_denoise(dialog):
+            assert dialog.energy_spin.value() == 8
+            assert dialog.angle_spin.value() == 10
+            assert dialog.along_combo.currentData() == "beta"
+            assert not dialog.tta_check.isChecked()
+            dialog.energy_spin.setValue(12)
+            edited.append(True)
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(dialogs._DenoiseDialog, "exec", edit_denoise)
+        manager._metadata_edit_step_action.trigger()
+        assert edited == [True]
+        expected = tool.tool_data + 12
+        if detached:
+            expected = expected.T
+        assert not output.slicer_area.data.identical(before)
+        xr.testing.assert_identical(output.slicer_area.data, expected)
+        spec = output_node.displayed_provenance_spec
+        assert spec is not None
+        operations = [op for op in spec.operations if isinstance(op, DenoiseOperation)]
+        assert len(operations) == 1
+        assert operations[0].resize == (12, 10)
+        copied = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda code: copied.append(code) or code,
+        )
+        monkeypatch.setattr(manager, "_prompt_replay_input_name", lambda _node: "data")
+        manager._update_info(uid=output_uid)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_copy_full_action.isEnabled()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
+        assert copied
+        namespace = _exec_generated_code(copied[-1], {"data": data})
+        assert spec.active_name is not None
+        xr.testing.assert_identical(namespace[spec.active_name], expected)
+
+
+@pytest.mark.parametrize("succeeds", [True, False], ids=["commit", "abort"])
+def test_manager_dntool_source_refresh_is_responsive_and_atomic(
+    qtbot, manager_context, monkeypatch, tmp_path, succeeds
+):
+    from qtpy import QtCore, QtWidgets
+
+    from erlab.interactive._dntool import DenoiseTool
+    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._logging.get_log_file_path",
+        lambda: tmp_path / "manager.log",
+    )
+    data = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("beta", "eV"),
+        coords={"beta": np.arange(4), "eV": np.arange(5)},
+        name="data",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    errors = []
+    gui_thread = threading.get_ident()
+
+    def apply(_operation, input_data):
+        calls.append((input_data.copy(deep=True), threading.get_ident()))
+        if len(calls) > 1:
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError("Denoise test worker was not released")
+            if not succeeds:
+                raise ValueError("Failed source refresh")
+        return input_data * 2
+
+    monkeypatch.setattr(DenoiseOperation, "apply", apply)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "critical", lambda *args: errors.append(args)
+    )
+    with manager_context() as manager:
+        parent = itool(data, manager=False, execute=False)
+        parent_index = manager.add_imagetool(parent, show=False)
+        tool = DenoiseTool(data)
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="source"),), primary_input="data"
+        )
+        uid = manager.add_childtool(
+            tool, script_inputs={"data": parent_index}, show=False
+        )
+        tool.denoise()
+        qtbot.wait_until(tool.open_btn.isEnabled)
+        tool.open_btn.click()
+        node = manager._child_node(uid)
+        qtbot.wait_until(lambda: len(node._childtool_indices) == 1)
+        output_uid = node._childtool_indices[0]
+        output_node = manager._child_node(output_uid)
+        output_node._set_source_auto_update(True)
+        output = manager.get_imagetool(output_uid)
+        previous_result = tool.result.copy(deep=True)
+        previous_inputs = tool.script_inputs
+        previous_snapshot = node.snapshot_token
+
+        updated = data + 100
+        parent.slicer_area.replace_source_data(updated)
+        qtbot.wait_until(lambda: tool.source_state == "stale")
+        try:
+            assert not manager._lineage_controller._refresh_tool_inputs(
+                uid, allow_recorded=True
+            )
+            qtbot.wait_until(entered.is_set)
+            assert tool._source_refresh_deferred
+            assert tool._input_state().pending is not None
+            assert tool.script_inputs == previous_inputs
+            assert node.snapshot_token == previous_snapshot
+            xr.testing.assert_identical(tool.tool_data, data)
+            xr.testing.assert_identical(tool.result, previous_result)
+            xr.testing.assert_identical(output.slicer_area.data, previous_result)
+            processed = []
+            QtCore.QTimer.singleShot(0, lambda: processed.append(threading.get_ident()))
+            qtbot.wait_until(lambda: bool(processed))
+            assert processed == [gui_thread]
+            assert calls[-1][1] != gui_thread
+        finally:
+            release.set()
+
+        qtbot.wait_until(lambda: not tool._busy)
+        qtbot.wait_until(lambda: not tool._source_refresh_deferred)
+        assert tool._input_state().pending is None
+        assert len(calls) == 2
+        if succeeds:
+            qtbot.wait_until(lambda: tool.source_state == "fresh")
+            expected = updated * 2
+            qtbot.wait_until(lambda: output.slicer_area.data.identical(expected))
+            xr.testing.assert_identical(tool.tool_data, updated)
+            xr.testing.assert_identical(tool.result, expected)
+            assert node.snapshot_token != previous_snapshot
+            assert errors == []
+        else:
+            qtbot.wait_until(lambda: len(errors) == 1)
+            assert tool.source_state == "stale"
+            assert tool.script_inputs == previous_inputs
+            assert node.snapshot_token == previous_snapshot
+            xr.testing.assert_identical(tool.tool_data, data)
+            xr.testing.assert_identical(tool.result, previous_result)
+            xr.testing.assert_identical(output.slicer_area.data, previous_result)
+        qtbot.wait_until(
+            lambda: not manager._dependency_tracker.has_pending_source_refreshes()
+        )
+
+
+@pytest.mark.parametrize("completion", ["finish", "restore_state", "close"])
+def test_manager_dntool_source_refresh_uses_latest_queued_input(
+    qtbot, manager_context, monkeypatch, tmp_path, completion
+):
+    from erlab.interactive._dntool import DenoiseTool, _denoise_coordinator
+    from erlab.interactive.imagetool._provenance._operations import DenoiseOperation
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool.manager._logging.get_log_file_path",
+        lambda: tmp_path / "manager.log",
+    )
+    data = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("beta", "eV"),
+        coords={"beta": np.arange(4), "eV": np.arange(5)},
+        name="data",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def apply(_operation, input_data):
+        calls.append(input_data.copy(deep=True))
+        if len(calls) == 2:
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError("Denoise test worker was not released")
+        return input_data * 2
+
+    monkeypatch.setattr(DenoiseOperation, "apply", apply)
+    with manager_context() as manager:
+        parent = itool(data, manager=False, execute=False)
+        parent_index = manager.add_imagetool(parent, show=False)
+        tool = DenoiseTool(data)
+        tool.set_script_inputs(
+            (ScriptInput(name="data", data_role="source"),), primary_input="data"
+        )
+        uid = manager.add_childtool(
+            tool, script_inputs={"data": parent_index}, show=False
+        )
+        pre_run_status = tool.tool_status.model_copy(deep=True)
+        tool.denoise()
+        qtbot.wait_until(tool.open_btn.isEnabled)
+        tool.open_btn.click()
+        node = manager._child_node(uid)
+        qtbot.wait_until(lambda: len(node._childtool_indices) == 1)
+        output_uid = node._childtool_indices[0]
+        manager._child_node(output_uid)._set_source_auto_update(True)
+        output = manager.get_imagetool(output_uid)
+        accepted_inputs = tool.script_inputs
+        accepted_provenance = tool._result_provenance()
+
+        first = data + 100
+        parent.slicer_area.replace_source_data(first)
+        qtbot.wait_until(lambda: tool.source_state == "stale")
+        latest = data + 200
+        try:
+            assert not manager._lineage_controller._refresh_tool_inputs(
+                uid, allow_recorded=True
+            )
+            qtbot.wait_until(entered.is_set)
+            tool._set_source_auto_update(True)
+            parent.slicer_area.replace_source_data(latest)
+            qtbot.wait_until(
+                lambda: manager._dependency_tracker.source_refresh_queued(uid, uid)
+            )
+            assert tool._source_refresh_deferred
+            xr.testing.assert_identical(tool.tool_data, data)
+            xr.testing.assert_identical(output.slicer_area.data, data * 2)
+            task = tool._denoise_task
+            assert task is not None
+            if completion == "restore_state":
+                tool.tool_status = pre_run_status
+            elif completion == "close":
+                assert tool.close()
+            if completion != "finish":
+                assert not tool._source_refresh_deferred
+                assert tool._input_state().pending is None
+        finally:
+            release.set()
+
+        qtbot.wait_until(lambda: task not in _denoise_coordinator()._tasks)
+        if completion != "finish":
+            qtbot.wait_until(lambda: not manager._interaction_gate.pending_keys)
+            assert len(calls) == 2
+            assert not tool._busy
+            assert tool._denoise_task is None
+            assert tool.script_inputs == accepted_inputs
+            xr.testing.assert_identical(tool.tool_data, data)
+            xr.testing.assert_identical(output.slicer_area.data, data * 2)
+            if completion == "restore_state":
+                assert tool.tool_status == pre_run_status
+                assert tool._result_provenance() == ()
+                with pytest.raises(ValueError, match="Denoise the data first"):
+                    _ = tool.result
+            else:
+                xr.testing.assert_identical(tool.result, data * 2)
+                assert tool._result_provenance() == accepted_provenance
+            assert not manager._dependency_tracker.has_pending_source_refreshes()
+            return
+
+        qtbot.wait_until(lambda: len(calls) == 3 and not tool._busy)
+        qtbot.wait_until(lambda: tool.source_state == "fresh")
+        expected = latest * 2
+        qtbot.wait_until(lambda: output.slicer_area.data.identical(expected))
+        xr.testing.assert_identical(calls[1], first)
+        xr.testing.assert_identical(calls[2], latest)
+        xr.testing.assert_identical(tool.tool_data, latest)
+        xr.testing.assert_identical(tool.result, expected)
+        assert not tool._source_refresh_deferred
+        assert tool._input_state().pending is None
+        qtbot.wait_until(
+            lambda: not manager._dependency_tracker.has_pending_source_refreshes()
+        )

@@ -200,7 +200,8 @@ For a procedure that synchronizes slices and bins across windows, see
   exporting the current selection, and opening tools.
 
   On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`,
-  {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool
+  {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, {ref}`dntool
+  <guide-dntool>`, and {ref}`ftool
   <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
   Image and line plot context menus can also send the current plot to
   {ref}`Figure Composer <figure-composer>`.

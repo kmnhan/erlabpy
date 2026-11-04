@@ -6,6 +6,7 @@ __all__ = [
     "colors",
     "data_explorer",
     "derivative",
+    "dntool",
     "dtool",
     "explorer",
     "fermiedge",
@@ -34,6 +35,7 @@ from . import (
     kspace,
     utils,
 )
+from ._dntool import dntool
 from ._fit2d import ftool
 from ._mesh import meshtool
 from ._options import options

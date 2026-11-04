@@ -20,6 +20,7 @@ _BUILTIN_TOOL_MODULES = {
     "erlab.interactive._fit2d:Fit2DTool": "erlab.interactive._fit2d",
     "erlab.interactive._mesh:MeshTool": "erlab.interactive._mesh",
     FIGURE_COMPOSER_TOOL_ID: "erlab.interactive._figurecomposer._tool",
+    "erlab.interactive._dntool:DenoiseTool": "erlab.interactive._dntool",
     "erlab.interactive.derivative:DerivativeTool": "erlab.interactive.derivative",
     "erlab.interactive.fermiedge:GoldTool": "erlab.interactive.fermiedge",
     "erlab.interactive.fermiedge:ResolutionTool": "erlab.interactive.fermiedge",

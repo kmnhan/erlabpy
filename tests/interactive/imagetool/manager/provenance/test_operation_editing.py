@@ -37,6 +37,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
+    DenoiseOperation,
     DivideByCoordOperation,
     ExtensionRoutineOperation,
     GaussianFilterOperation,
@@ -106,6 +107,133 @@ def test_manager_provenance_native_transform_edit_mode_uses_dialog_operations(
     assert dialog.provenance_edit_operations() == [
         QSelAggregationOperation(dims=("x",), func="sum")
     ]
+
+
+def test_manager_denoise_provenance_editor_restores_and_copies_parameters(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(np.arange(24.0).reshape(2, 3, 4), dims=("alpha", "beta", "eV"))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    operation = DenoiseOperation(
+        along="beta",
+        resize=(8, 10),
+        model_path=str(tmp_path / "custom.onnx"),
+        tta=False,
+        restore_scale=False,
+        restore_size=False,
+        num_threads=3,
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    controller = _fake_edit_controller(node)
+    assert controller.can_edit_row(spec.display_rows()[1]) == (True, "")
+    assert provenance_editors._dialog_class_for_operation(operation) is (
+        imagetool_dialogs._DenoiseDialog
+    )
+
+    dialog = imagetool_dialogs._DenoiseDialog(
+        tool.slicer_area, provenance_edit_mode=True
+    )
+    provenance_edit_controller._ProvenanceEditController._restore_native_edit_dialog(
+        dialog, (operation,), None
+    )
+    assert dialog.provenance_edit_operations() == [operation]
+
+    dialog.energy_spin.setValue(12)
+    dialog.angle_spin.setValue(14)
+    dialog.threads_spin.setValue(2)
+    dialog.tta_check.setChecked(True)
+    dialog.scale_check.setChecked(True)
+    dialog.size_check.setChecked(True)
+    dialog.along_combo.setCurrentIndex(dialog.along_combo.findData("alpha"))
+    expected = operation.model_copy(
+        update={
+            "along": "alpha",
+            "resize": (12, 14),
+            "tta": True,
+            "restore_scale": True,
+            "restore_size": True,
+            "num_threads": 2,
+        }
+    )
+    assert dialog.provenance_edit_operations() == [expected]
+
+    calls = []
+
+    def fake_denoise(input_data: xr.DataArray, **kwargs: typing.Any) -> xr.DataArray:
+        calls.append(kwargs)
+        return input_data + 7
+
+    monkeypatch.setattr(erlab.analysis.image.ml, "denoise", fake_denoise)
+    namespace = {"era": erlab.analysis, "data": data}
+    exec(f"result = {dialog.make_code()}", namespace, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], data + 7)
+    assert calls == [expected.kwargs]
+
+
+def test_manager_denoise_provenance_editor_model_picker(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray(np.ones((3, 4)), dims=("beta", "eV"))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = imagetool_dialogs._DenoiseDialog(
+        tool.slicer_area, provenance_edit_mode=True
+    )
+    model_path = str(tmp_path / "custom.onnx")
+    responses = iter((("", ""), (model_path, "ONNX models (*.onnx)"), ("", "")))
+    calls = []
+
+    def choose_file(parent, title, directory, name_filter):
+        calls.append((parent, directory, name_filter))
+        return next(responses)
+
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileName", choose_file)
+    assert dialog.source_transform_operation().model_path is None
+    assert dialog.use_bundled_model_btn.isHidden()
+    dialog.choose_model_btn.click()
+    assert dialog.source_transform_operation().model_path is None
+    dialog.choose_model_btn.click()
+    assert dialog.source_transform_operation().model_path == model_path
+    assert dialog.model_label.toolTip() == QtCore.QDir.toNativeSeparators(model_path)
+    assert not dialog.use_bundled_model_btn.isHidden()
+    dialog.choose_model_btn.click()
+    assert dialog.source_transform_operation().model_path == model_path
+    assert calls[-1][1] == model_path
+    assert calls[0][0] is dialog
+    assert "*.onnx" in calls[0][2]
+    dialog.use_bundled_model_btn.click()
+    assert dialog.source_transform_operation().model_path is None
+    assert dialog.use_bundled_model_btn.isHidden()
+
+
+def test_manager_denoise_provenance_editor_restores_square_grid_and_checks_dimensions(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.ones((3, 4)), dims=("beta", "eV"))
+    tool = erlab.interactive.imagetool.ImageTool(data)
+    qtbot.addWidget(tool)
+    dialog = imagetool_dialogs._DenoiseDialog(
+        tool.slicer_area, provenance_edit_mode=True
+    )
+    dialog.restore_transform_operation(DenoiseOperation(along="beta", resize=16))
+    assert dialog.source_transform_operation().resize == (16, 16)
+    with pytest.raises(ValueError, match=r"Dimension.*alpha.*not available"):
+        dialog.restore_transform_operation(DenoiseOperation(along="alpha"))
+
+    missing_energy = erlab.interactive.imagetool.ImageTool(data.rename(eV="x"))
+    qtbot.addWidget(missing_energy)
+    invalid_dialog = imagetool_dialogs._DenoiseDialog(
+        missing_energy.slicer_area, provenance_edit_mode=True
+    )
+    with pytest.raises(ValueError, match="energy and angle dimensions"):
+        invalid_dialog.source_transform_operation()
 
 
 def test_manager_provenance_native_edit_mode_uses_dialog_accept_validation(
