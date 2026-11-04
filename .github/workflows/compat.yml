@@ -2,6 +2,11 @@ name: Compatibility
 
 on:
   workflow_dispatch:
+    inputs:
+      native_debug:
+        description: Run the full GUI suite under GDB with Python 3.11 and PySide6
+        type: boolean
+        default: false
   schedule:
     # Every friday at 22:00 UTC (Every saturday at 07:00 KST/JST)
     - cron: "0 22 * * FRI"
@@ -83,15 +88,32 @@ jobs:
     timeout-minutes: 90
     env:
       DISPLAY: ":99.0"
+      PYTHONUNBUFFERED: "1"
+      PYTEST_QT_API: ${{ matrix.qt-api }}
+      QT_API: ${{ matrix.qt-api }}
+      ERLAB_CI_DIAGNOSTICS_DIR: compat-diagnostics
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-        qt-api: ["pyqt6", "pyside6"]
+        python-version: ${{ fromJSON(inputs.native_debug && '["3.11"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
+        qt-api: ${{ fromJSON(inputs.native_debug && '["pyside6"]' || '["pyqt6", "pyside6"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Record runner configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ERLAB_CI_DIAGNOSTICS_DIR"
+          {
+            uname -a
+            cat /etc/os-release
+            lscpu
+            free -m
+            ulimit -a
+          } > "$ERLAB_CI_DIAGNOSTICS_DIR/runner.txt"
 
       - name: Load test data configuration
         shell: bash
@@ -114,7 +136,42 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install project with upgraded dependencies
-        run: uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
+        shell: bash
+        env:
+          QT_GROUP: ${{ matrix.qt-api }}
+        run: |
+          set -euo pipefail
+          uv sync --all-extras --dev --group "$QT_GROUP" --upgrade \
+            2>&1 | tee "$ERLAB_CI_DIAGNOSTICS_DIR/install.log"
+
+      - name: Record resolved environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp uv.lock "$ERLAB_CI_DIAGNOSTICS_DIR/uv.lock"
+          uv --version > "$ERLAB_CI_DIAGNOSTICS_DIR/uv-version.txt"
+          uv pip freeze --python .venv/bin/python > "$ERLAB_CI_DIAGNOSTICS_DIR/packages.txt"
+          uv run --no-sync python - <<'PY' > "$ERLAB_CI_DIAGNOSTICS_DIR/python-qt.txt"
+          import platform
+          import sys
+          from importlib.metadata import version
+
+          import qtpy
+          from qtpy import QtCore
+
+          print(sys.version)
+          print(f"Executable: {sys.executable}")
+          print(f"Platform: {platform.platform()}")
+          print(f"Qt binding: {qtpy.API_NAME} {version(qtpy.API_NAME)}")
+          print(f"Qt runtime: {QtCore.qVersion()}")
+          PY
+
+      - name: Install native debugger
+        if: inputs.native_debug
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes gdb
+          gdb --version > "$ERLAB_CI_DIAGNOSTICS_DIR/gdb-version.txt"
 
       - name: Restore test data cache
         uses: actions/cache/restore@v6
@@ -134,8 +191,7 @@ jobs:
       - name: Run compatibility suite
         shell: bash
         env:
-          PYTEST_QT_API: ${{ matrix.qt-api }}
-          QT_API: ${{ matrix.qt-api }}
+          NATIVE_DEBUG: ${{ inputs.native_debug }}
         run: |
           set -euo pipefail
           common_args=(
@@ -149,22 +205,42 @@ jobs:
             --dist=loadgroup
             --max-worker-restart=0
           )
-          uv run pytest \
+          pytest_command=(uv run --no-sync python -X faulthandler -m pytest)
+          /usr/bin/time -v -o "$ERLAB_CI_DIAGNOSTICS_DIR/non-gui-resources.txt" \
+            "${pytest_command[@]}" \
             "${common_args[@]}" \
             "${xdist_args[@]}" \
             -m "not gui" \
-            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml"
-          uv run pytest \
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-non-gui.xml" \
+            2>&1 | tee "$ERLAB_CI_DIAGNOSTICS_DIR/non-gui.log"
+          if [[ "$NATIVE_DEBUG" == "true" ]]; then
+            pytest_command=(
+              uv run --no-sync gdb --batch --nx -x scripts/ci_gdb.gdb
+              --args .venv/bin/python -X faulthandler -m pytest
+            )
+          fi
+          /usr/bin/time -v -o "$ERLAB_CI_DIAGNOSTICS_DIR/gui-resources.txt" \
+            "${pytest_command[@]}" \
             "${common_args[@]}" \
             --capture=tee-sys \
             --no-qt-log \
             -m gui \
-            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-gui.xml"
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-gui.xml" \
+            2>&1 | tee "$ERLAB_CI_DIAGNOSTICS_DIR/gui.log"
 
-      - name: Upload compatibility JUnit artifact
+      - name: Record final memory availability
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$ERLAB_CI_DIAGNOSTICS_DIR"
+          free -m > "$ERLAB_CI_DIAGNOSTICS_DIR/memory-after.txt"
+
+      - name: Upload compatibility artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: compat-${{ matrix.python-version }}-${{ matrix.qt-api }}
-          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}*.xml
+          path: |
+            junit-${{ matrix.python-version }}-${{ matrix.qt-api }}*.xml
+            compat-diagnostics/
           if-no-files-found: error
